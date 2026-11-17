@@ -1,0 +1,8 @@
+# Placeholder bootc image. Not built or tested yet (milestone M0).
+# Base: Fedora Kinoite (dogfooding on the dev laptop). A headless variant based on
+# quay.io/fedora/fedora-bootc comes later.
+FROM quay.io/fedora-ostree-desktops/kinoite:45
+
+# Melissa binaries and units will be added here.
+LABEL org.opencontainers.image.title="melissa" \
+      org.opencontainers.image.description="Melissa bee image (work in progress)"

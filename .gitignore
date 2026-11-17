@@ -3,7 +3,14 @@
 *.key
 *.pem
 secrets/
+/target/
 /bin/
 /dist/
 *.test
 .DS_Store
+# Nix / devenv / direnv
+.devenv/
+.direnv/
+devenv.local.nix
+.pre-commit-config.yaml
+result

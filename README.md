@@ -10,7 +10,28 @@ and let an agent keep the hive updated, backed up and healthy.
 - **Hive** = the cluster.
 - **Queen bee** = the master agent that coordinates the hive. Every bee can also run its own agents.
 
-Principles: immutable base (Fedora bootc), Go everywhere, boring web UI with no AI-generated UI,
-works on a LAN with no internet dependency for the UI, open source so others can build on top.
+Principles: immutable base (Fedora bootc), **Rust** almost everywhere (agents work better with a safe,
+strongly typed language), a boring server-rendered web UI with no AI-generated UI, a UI that works on a LAN
+without internet, and open source so others can build on top.
 
-Status: early planning. Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md) first.
+## Layout
+
+```
+crates/queen   queen bee (coordinator + agent layer entrypoint)
+crates/bee     per-node daemon
+crates/web     web UI (axum + maud + embedded htmx)
+image/         bootc Containerfile(s)
+docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
+```
+
+## Quick start (dev)
+
+With Nix + devenv + direnv available (see [docs/DEV-ENV.md](docs/DEV-ENV.md)):
+
+```
+direnv allow      # or: devenv shell
+just check        # fmt, clippy, tests
+```
+
+Status: early planning; the crates are a skeleton and have not been built yet.
+Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md) first.

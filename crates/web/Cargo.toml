@@ -1,0 +1,15 @@
+[package]
+name = "melissa-web"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = "0.8"
+maud = { version = "0.27", features = ["axum"] }
+rust-embed = "8"
+tokio = { version = "1", features = ["net"] }
+
+[lints]
+workspace = true
