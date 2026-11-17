@@ -28,6 +28,11 @@ Read docs/PLAN.md and docs/DEV-ENV.md before changing anything. These rules are 
 - Keep this project fully separate from any employer: no code, assets, data, docs or snippets from outside work may be copied in.
 - Immutable OS: do not assume `dnf install` on the host. Use containers, flatpak, Nix/devenv, or the bootc image build.
 
+## Reference material (outside this repo)
+- Agents may read `../reference/first-draft` (that is, `~/dev/reference/first-draft`) for ideas. It is an earlier, partial draft of similar concepts and lacks the Kubernetes and Tailscale parts.
+- It is reference only: **never copy code verbatim, never commit anything from it, and never carry over its project name or any other names from it into Melissa.** Re-implement ideas in your own words and structure.
+- Do not move, symlink or vendor it into this repo, and do not add it to git (it lives outside the repo on purpose).
+
 ## Working style
 - Small, reviewable changes. Update docs/PLAN.md when decisions change; record unresolved items in its Open questions section.
 - Ask the user rather than guessing when a choice affects licensing, naming, security or publishing.
