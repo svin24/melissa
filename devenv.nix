@@ -1,6 +1,6 @@
 { pkgs, ... }:
 {
-  # Rust toolchain from fenix (see devenv.yaml): rustc, cargo, clippy, rustfmt, rust-analyzer.
+  # Rust toolchain from rust-overlay (see devenv.yaml): rustc, cargo, clippy, rustfmt, rust-analyzer.
   languages.rust = {
     enable = true;
     channel = "stable";
