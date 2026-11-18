@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 
-use melissa_hive::render::{APPS_SERVICE_ACCOUNT, MELISSA_NAMESPACE, OWNER_LABEL, WORKLOAD_ROLE};
+use melissa_hive::render::{
+    APPS_SERVICE_ACCOUNT, ASSIGNED_AT_ANNOTATION, CELL_LABEL, COMB_LABEL, LEGACY_OWNER_LABEL,
+    MELISSA_NAMESPACE, OWNER_BEE_LABEL, WORKLOAD_ROLE,
+};
 
 fn manifest(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -166,12 +169,25 @@ fn admission_policies_guard_the_write_identity() {
     );
     assert!(ns.contains("startsWith('app-')"));
     assert!(ns.contains("['baseline', 'restricted']"));
-    // Ownership: required on create, frozen on update (adopt goes through k3s admin).
-    assert!(ns.contains(&format!("'{OWNER_LABEL}' in object.metadata.labels")));
+    // Cells: cell and comb labels required on create, comb frozen, the owner bee changes
+    // only with a new assignment record, the old owner label may only go away.
     assert!(ns.contains(&format!(
-        "object.metadata.labels['{OWNER_LABEL}'] == oldObject.metadata.labels['{OWNER_LABEL}']"
+        "object.metadata.labels['{CELL_LABEL}'] == object.metadata.name.substring(4)"
     )));
-    assert!(ns.contains("^(owner|job-[a-z0-9]{1,40})$"));
+    assert!(ns.contains(&format!(
+        "object.metadata.labels['{COMB_LABEL}'] == oldObject.metadata.labels['{COMB_LABEL}']"
+    )));
+    assert!(ns.contains("^c-[0-9a-f]{8}$"));
+    assert!(ns.contains("^c-[0-9a-f]{8}[.]b[1-9][0-9]{0,8}$"));
+    assert!(ns.contains(&format!(
+        "object.metadata.labels['{OWNER_BEE_LABEL}'] == oldObject.metadata.labels['{OWNER_BEE_LABEL}'] ||\n            variables.newAssignment"
+    )));
+    assert!(ns.contains(&format!(
+        "object.metadata.annotations['{ASSIGNED_AT_ANNOTATION}'] !="
+    )));
+    assert!(ns.contains(&format!(
+        "!('{LEGACY_OWNER_LABEL}' in object.metadata.labels))"
+    )));
     let rb = doc(
         &docs,
         "ValidatingAdmissionPolicy",

@@ -8,20 +8,20 @@
 //!                                                            waiting for confirmations
 //!   `sudo melissa-queen app-credentials <app>`                the owner's view of an app's
 //!                                                            generated credentials
-//!   `melissa-queen [--config <path>] chat`                    talk to the Queen (line based)
-//!   `melissa-queen [--config <path>] ask <message>`           one message, stream the answer
+//!   `melissa-queen [--config <path>] chat [--bee <bee>]`      talk to the Queen or a bee
+//!   `melissa-queen [--config <path>] ask [--bee <bee>] <message>`  one message, stream it
 //!   `melissa-queen [--config <path>] confirm list|approve <id>|deny <id>`
-//!   `melissa-queen [--config <path>] bees`                 the Queen's bee agents
+//!   `melissa-queen [--config <path>] bee list|rename <bee> <name>`  this comb's bees
+//!   `melissa-queen [--config <path>] cell list|reassign <cell> --to <bee>`  cells and owners
 //!
 //! The client commands talk to the running daemon on its configured `listen` address.
 //!
-//! Config: `$XDG_CONFIG_HOME/melissa/queen.toml` (optional). Audit log and agent working
-//! directory: `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
+//! Config: `$XDG_CONFIG_HOME/melissa/queen.toml` (optional). Audit log, agent working
+//! directory, comb id (`comb.json`) and bee registry (`bees/`): `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
 //! systemd credential, else `kubeconfig` in the config, else `/run/melissa-kube/queen.kubeconfig`
 //! (written by root once k3s is up). They are looked up on every cluster call, so the queen
 //! never waits for k3s and attaches to it without a restart.
 
-mod adopt;
 mod client;
 mod config;
 mod credentials;
@@ -30,25 +30,27 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{bail, Context};
 use melissa_agent::{
+    comb::CombIdentity,
     mcp::McpServer,
     queen::{
         bees::{BeeLimits, BeePool},
         events::EventLog,
+        registry::BeeRegistry,
         transcript::Transcript,
         Queen, QueenSettings,
     },
     session::SessionBackend,
-    tools::{BeeInfo, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry},
+    tools::{BeeInfo, BeeNames, CellStore, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry},
     AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EgressProxy, McpLink,
     TaskBoard,
 };
-use melissa_hive::{app_tools, AppOwners, AppSettings, ClusterHealth, KubeApps, LazyCluster};
+use melissa_hive::{app_tools, AppSettings, Cells, ClusterHealth, KubeApps, LazyCluster};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
 use config::{BackendSpec, Dirs, QueenConfig};
 
-/// The Queen's system prompt and the instructions every bee gets (reviewed text files).
+/// The Queen's system prompt and every bee's (reviewed text files).
 const QUEEN_PROMPT: &str = include_str!("../prompts/queen.md");
 const BEE_PROMPT: &str = include_str!("../prompts/bee.md");
 
@@ -59,11 +61,14 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   tool --wait <name> [json]   run one tool in the running daemon; waits for a confirmation
                               (answer it with `confirm approve <id>` from another shell)
   app-credentials <app>       show an app's generated credentials (owner only, needs root)
-  app-adopt <app>             make an app a bee job created yours (owner only, needs root)
-  chat                        talk to the Queen (Ctrl-C cancels a turn)
-  ask <message>               send one message and stream the answer
+  chat [--bee <bee>]          talk to the Queen, or directly to a bee (Ctrl-C cancels a turn)
+  ask [--bee <bee>] <message> send one message and stream the answer
   confirm list|approve <id>|deny <id>
-  bees                     list the Queen's bee agents";
+  bee list                    this comb's bees (also: bees)
+  bee rename <bee> <name>     give a bee a new name
+  cell list                   every cell (installed app) and the bee that looks after it
+  cell reassign <cell> --to <bee>
+                              give a cell to another bee (your decision, no confirmation)";
 
 enum Command {
     Serve,
@@ -78,11 +83,17 @@ enum Command {
         args: Value,
     },
     AppCredentials(String),
-    AppAdopt(String),
-    Chat,
-    Ask(String),
+    /// Talk to the Queen (None) or a bee.
+    Chat(Option<String>),
+    Ask(Option<String>, String),
     Confirm(String, Option<u64>),
     Bees,
+    RenameBee(String, String),
+    Cells,
+    Reassign {
+        cell: String,
+        to: String,
+    },
 }
 
 #[tokio::main]
@@ -107,11 +118,18 @@ async fn main() -> anyhow::Result<()> {
     config.validate()?;
 
     let api = client::Client::new(config.listen);
+    let to = |bee: &Option<String>| match bee {
+        Some(b) => client::Client::new(config.listen).with_bee(b),
+        None => client::Client::new(config.listen),
+    };
     match &command {
-        Command::Chat => return client::chat(&api).await,
-        Command::Ask(message) => return client::ask(&api, message).await,
+        Command::Chat(bee) => return client::chat(&to(bee)).await,
+        Command::Ask(bee, message) => return client::ask(&to(bee), message).await,
         Command::Confirm(action, id) => return client::confirm(&api, action, *id).await,
         Command::Bees => return client::bees(&api).await,
+        Command::RenameBee(bee, name) => return client::rename_bee(&api, bee, name).await,
+        Command::Cells => return client::cells(&api).await,
+        Command::Reassign { cell, to } => return client::reassign(&api, cell, to).await,
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
         Command::AppCredentials(app) => {
             return credentials::show(
@@ -122,13 +140,14 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::AppAdopt(app) => {
-            return adopt::adopt(app, std::path::Path::new(credentials::ADMIN_KUBECONFIG)).await
-        }
         Command::Serve | Command::Tool { .. } => {}
     }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
+    // This device's comb id (made once) and its bees.
+    let comb = CombIdentity::load_or_create(&dirs.state.join("comb.json"))?;
+    let registry = BeeRegistry::open(&dirs.state.join("bees"), &comb.id)?;
+    let names: Arc<dyn BeeNames> = Arc::new(registry.clone());
     let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
     let cluster = LazyCluster::for_queen(creds.as_deref(), config.kubeconfig.as_deref());
     let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -140,20 +159,37 @@ async fn main() -> anyhow::Result<()> {
     let apps = Arc::new(KubeApps::new(LazyCluster::for_apps(
         config.apps.kubeconfig.as_deref(),
     )));
-    tools.extend(app_tools(
-        AppSettings {
-            catalog_dir: config.apps.catalog.clone(),
-            domain: config.apps.domain.clone(),
-        },
-        Some(apps.clone()),
-    ));
-    // Who owns which app, for the scope check before every app-changing tool call.
-    let owners: Arc<dyn ResourceOwners> = Arc::new(AppOwners::new(Some(apps)));
+    let app_settings = AppSettings {
+        catalog_dir: config.apps.catalog.clone(),
+        domain: config.apps.domain.clone(),
+        comb: comb.id.clone(),
+        bees: Some(names.clone()),
+    };
+    tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
+    // Who owns which cell, for the scope check before every cell-changing tool call; also
+    // the list of cells and the reassign path.
+    let cells = Arc::new(Cells::new(app_settings, Some(apps)));
+    let wiring = Wiring {
+        owners: cells.clone(),
+        cells,
+        names,
+        registry,
+        comb: comb.id,
+    };
 
     match command {
-        Command::Tool { name, args } => run_tool(audit, tools, owners, &name, args).await,
-        _ => serve(config, dirs, audit, tools, owners).await,
+        Command::Tool { name, args } => run_tool(audit, tools, &wiring, &name, args).await,
+        _ => serve(config, dirs, audit, tools, wiring).await,
     }
+}
+
+/// Who owns which cell and what the bees are called, shared by the daemon and `tool`.
+struct Wiring {
+    owners: Arc<dyn ResourceOwners>,
+    cells: Arc<dyn CellStore>,
+    names: Arc<dyn BeeNames>,
+    registry: BeeRegistry,
+    comb: String,
 }
 
 async fn serve(
@@ -161,7 +197,7 @@ async fn serve(
     dirs: Dirs,
     audit: AuditLog,
     mut tools: Vec<Arc<dyn Tool>>,
-    owners: Arc<dyn ResourceOwners>,
+    wiring: Wiring,
 ) -> anyhow::Result<()> {
     let workdir = dirs.state.join("work");
     let queen_state = dirs.state.join("queen");
@@ -175,14 +211,18 @@ async fn serve(
             max_concurrent: q.max_bees,
             default_timeout: Duration::from_secs(q.bee_timeout_secs),
             max_timeout: Duration::from_secs(q.bee_timeout_max_secs),
+            transcript_max_bytes: q.transcript_max_kib.saturating_mul(1024),
         },
         events.clone(),
+        wiring.registry,
+        Some(wiring.cells),
     );
     tools.extend(pool.tools());
     // Confirmations wait less long than the agents' MCP clients do (see the config field).
     let mcp = McpServer::new(
         ToolRegistry::new(tools, Some(audit.clone()))
-            .with_owners(owners)
+            .with_owners(wiring.owners)
+            .with_bees(wiring.names)
             .with_confirm_timeout(config.confirm_timeout()),
     );
     // Sandboxed agents reach the network only through this (allowlist, audited) and
@@ -244,6 +284,7 @@ async fn serve(
         state_dir: queen_state,
         workdir: workdir.join("queen"),
         tools: q.tools.clone(),
+        comb: wiring.comb,
     };
     let queen = Queen::new(settings, sessions, board.clone(), events, &pool)
         .context("setting up the Queen")?;
@@ -267,7 +308,7 @@ async fn serve(
 async fn run_tool(
     audit: AuditLog,
     tools: Vec<Arc<dyn Tool>>,
-    owners: Arc<dyn ResourceOwners>,
+    wiring: &Wiring,
     name: &str,
     args: Value,
 ) -> anyhow::Result<()> {
@@ -275,14 +316,15 @@ async fn run_tool(
     // still runs the call, which is acceptable for read-only operator queries.
     let registry = ToolRegistry::new(tools, Some(audit))
         .with_confirm_timeout(Duration::ZERO)
-        .with_owners(owners);
+        .with_owners(wiring.owners.clone())
+        .with_bees(wiring.names.clone());
     let mcp = McpServer::new(registry);
     let token = mcp
         .open_session(
             0,
-            // The operator is the owner: no ownership checks; the label policy still applies.
+            // The operator is the user: no ownership checks; the label policy still applies.
             TaskContext {
-                scope: Scope::Owner,
+                scope: Scope::User,
                 ..TaskContext::default()
             },
             None,
@@ -338,7 +380,10 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
         [c, app] if c == "app-credentials" => Command::AppCredentials(app.clone()),
-        [c, app] if c == "app-adopt" => Command::AppAdopt(app.clone()),
+        [c, ..] if c == "app-adopt" => bail!(
+            "app-adopt is gone: cells now belong to bees. Use `melissa-queen cell list` and \
+             `melissa-queen cell reassign <cell> --to <bee>`"
+        ),
         [tool, name] if tool == "tool" => Command::Tool {
             name: name.clone(),
             args: json!({}),
@@ -347,10 +392,28 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             name: name.clone(),
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
-        [c] if c == "chat" => Command::Chat,
-        [c, words @ ..] if c == "ask" && !words.is_empty() => Command::Ask(words.join(" ")),
+        [c] if c == "chat" => Command::Chat(None),
+        [c, flag, bee] if c == "chat" && flag == "--bee" => Command::Chat(Some(bee.clone())),
+        [c, flag, bee, words @ ..] if c == "ask" && flag == "--bee" && !words.is_empty() => {
+            Command::Ask(Some(bee.clone()), words.join(" "))
+        }
+        [c, words @ ..] if c == "ask" && !words.is_empty() && words[0] != "--bee" => {
+            Command::Ask(None, words.join(" "))
+        }
         // `workers`: hidden alias from before the hive model (one release).
         [c] if c == "bees" || c == "workers" => Command::Bees,
+        [c, a] if c == "bee" && a == "list" => Command::Bees,
+        [c, a, bee, words @ ..] if c == "bee" && a == "rename" && !words.is_empty() => {
+            Command::RenameBee(bee.clone(), words.join(" "))
+        }
+        [c] if c == "cell" => Command::Cells,
+        [c, a] if c == "cell" && a == "list" => Command::Cells,
+        [c, a, cell, flag, to] if c == "cell" && a == "reassign" && flag == "--to" => {
+            Command::Reassign {
+                cell: cell.clone(),
+                to: to.clone(),
+            }
+        }
         [c] if c == "confirm" => Command::Confirm("list".into(), None),
         [c, a] if c == "confirm" && a == "list" => Command::Confirm("list".into(), None),
         [c, a, id] if c == "confirm" && (a == "approve" || a == "deny") => Command::Confirm(
@@ -397,16 +460,34 @@ mod tests {
             matches!(parse(&["app-credentials", "nextcloud"]).unwrap().1, Command::AppCredentials(a) if a == "nextcloud")
         );
         assert!(parse(&["app-credentials"]).is_err());
-        assert!(
-            matches!(parse(&["app-adopt", "blog"]).unwrap().1, Command::AppAdopt(a) if a == "blog")
-        );
-        assert!(parse(&["app-adopt"]).is_err());
+        // Replaced by `cell reassign`.
+        assert!(parse(&["app-adopt", "blog"]).is_err());
         assert!(parse(&["bogus"]).is_err());
-        assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat));
+        assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat(None)));
         assert!(
-            matches!(parse(&["ask", "how", "are you?"]).unwrap().1, Command::Ask(m) if m == "how are you?")
+            matches!(parse(&["chat", "--bee", "Ada"]).unwrap().1, Command::Chat(Some(b)) if b == "Ada")
+        );
+        assert!(
+            matches!(parse(&["ask", "how", "are you?"]).unwrap().1, Command::Ask(None, m) if m == "how are you?")
+        );
+        assert!(
+            matches!(parse(&["ask", "--bee", "Ada", "hi", "there"]).unwrap().1, Command::Ask(Some(b), m) if b == "Ada" && m == "hi there")
         );
         assert!(parse(&["ask"]).is_err());
+        assert!(parse(&["ask", "--bee", "Ada"]).is_err());
+        assert!(matches!(parse(&["bee", "list"]).unwrap().1, Command::Bees));
+        assert!(
+            matches!(parse(&["bee", "rename", "Ada", "Ada", "Lovelace"]).unwrap().1, Command::RenameBee(b, n) if b == "Ada" && n == "Ada Lovelace")
+        );
+        assert!(parse(&["bee", "rename", "Ada"]).is_err());
+        assert!(matches!(
+            parse(&["cell", "list"]).unwrap().1,
+            Command::Cells
+        ));
+        assert!(
+            matches!(parse(&["cell", "reassign", "nextcloud", "--to", "Bo"]).unwrap().1, Command::Reassign { cell, to } if cell == "nextcloud" && to == "Bo")
+        );
+        assert!(parse(&["cell", "reassign", "nextcloud", "Bo"]).is_err());
         assert!(matches!(parse(&["bees"]).unwrap().1, Command::Bees));
         assert!(matches!(parse(&["workers"]).unwrap().1, Command::Bees));
         assert!(matches!(parse(&["confirm"]).unwrap().1, Command::Confirm(a, None) if a == "list"));
@@ -419,20 +500,33 @@ mod tests {
 
     #[tokio::test]
     async fn tool_command_refuses_unknown_tools() {
-        let audit = AuditLog::new(std::env::temp_dir().join("melissa-queen-tool-test.jsonl"));
+        let dir = std::env::temp_dir().join(format!("melissa-queen-tool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let audit = AuditLog::new(dir.join("audit.jsonl"));
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ClusterHealth::new(None))];
-        let owners: Arc<dyn ResourceOwners> = Arc::new(AppOwners::new::<KubeApps>(None));
-        assert!(run_tool(
-            audit.clone(),
-            tools.clone(),
-            owners.clone(),
-            "nope",
-            json!({})
-        )
-        .await
-        .is_err());
-        run_tool(audit, tools, owners, "cluster_health", json!({}))
+        let registry = BeeRegistry::open(&dir.join("bees"), "c-0a1b2c3d").unwrap();
+        let settings = AppSettings {
+            catalog_dir: dir.join("catalog"),
+            domain: "example.com".into(),
+            comb: "c-0a1b2c3d".into(),
+            bees: None,
+        };
+        let cells = Arc::new(Cells::new::<KubeApps>(settings, None));
+        let wiring = Wiring {
+            owners: cells.clone(),
+            cells,
+            names: Arc::new(registry.clone()),
+            registry,
+            comb: "c-0a1b2c3d".into(),
+        };
+        assert!(
+            run_tool(audit.clone(), tools.clone(), &wiring, "nope", json!({}))
+                .await
+                .is_err()
+        );
+        run_tool(audit, tools, &wiring, "cluster_health", json!({}))
             .await
             .unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

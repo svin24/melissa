@@ -98,14 +98,15 @@ pub struct QueenSection {
     /// Session backends (`kind = "acp"` or `"claude"`) to try in order; the next is used
     /// if one fails to start.
     pub backends: Vec<String>,
-    /// Tools the Queen may use (default: all). Include the bee tools (`start_bee`,
-    /// `bee_status`, `list_bees`, `stop_bee`) to let it start bees. Bees
-    /// never get more than this.
+    /// Tools the Queen may use (default: all). Include the bee tools (`create_bee`,
+    /// `give_bee_job`, `bee_status`, `list_bees`, `stop_bee`, `message_bee`) to let her
+    /// direct bees, and `reassign_cell` to move cells. Bees never get more than this.
     pub tools: Option<Vec<String>>,
-    /// Backend for bees when the Queen names none (default: the first Queen backend).
+    /// Backend for new bees when the Queen names none (default: the first Queen backend).
+    /// Must be a session backend (`kind = "acp"` or `"claude"`).
     #[serde(alias = "worker_backend")]
     pub bee_backend: Option<String>,
-    /// Bees running at the same time.
+    /// Bees working on a job at the same time.
     #[serde(alias = "max_workers")]
     pub max_bees: usize,
     /// Bee time limit when the Queen gives none, in seconds.
@@ -321,8 +322,16 @@ impl QueenConfig {
             }
         }
         if let Some(w) = &q.bee_backend {
-            if !names.contains(&w.as_str()) {
-                bail!("[queen] bee_backend `{w}` is not a configured backend");
+            match self.backends.iter().find(|b| b.name() == w) {
+                Some(b) if b.is_session() => {}
+                Some(_) => bail!(
+                    "[queen] bee_backend `{w}` is a one-shot CLI backend; bees need a session \
+                     backend (`kind = \"acp\"` or `\"claude\"`)"
+                ),
+                None if names.contains(&w.as_str()) => {
+                    bail!("[queen] bee_backend `{w}` is not a session backend; bees need one")
+                }
+                None => bail!("[queen] bee_backend `{w}` is not a configured backend"),
             }
         }
         if q.bee_timeout_secs == 0 || q.bee_timeout_secs > q.bee_timeout_max_secs {
@@ -698,8 +707,8 @@ mod tests {
             r#"
             [queen]
             backends = ["grok-acp"]
-            tools = ["bee_info", "start_bee", "bee_status"]
-            bee_backend = "echo"
+            tools = ["bee_info", "create_bee", "give_bee_job", "bee_status"]
+            bee_backend = "claude-session"
             max_bees = 1
             bee_timeout_secs = 60
             bee_timeout_max_secs = 120
@@ -707,7 +716,7 @@ mod tests {
         )
         .unwrap();
         config.validate().unwrap();
-        assert_eq!(config.queen.bee_backend.as_deref(), Some("echo"));
+        assert_eq!(config.queen.bee_backend.as_deref(), Some("claude-session"));
         // Keys from before the hive model still work.
         let old: QueenConfig =
             toml::from_str("[queen]\nmax_workers = 3\nworker_timeout_secs = 30").unwrap();
@@ -717,6 +726,7 @@ mod tests {
             "[queen]\nbackends = []",
             "[queen]\nbackends = [\"claude\"]",
             "[queen]\nbee_backend = \"nope\"",
+            "[queen]\nbee_backend = \"echo\"",
             "[queen]\nbee_timeout_secs = 1000",
         ] {
             let c: QueenConfig = toml::from_str(bad).unwrap();

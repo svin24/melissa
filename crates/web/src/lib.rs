@@ -407,6 +407,7 @@ mod tests {
             queen::{
                 bees::{BeeLimits, BeePool},
                 events::EventLog,
+                registry::BeeRegistry,
                 QueenSettings,
             },
             session::{OpenSession, OpenedSession, SessionBackend},
@@ -457,10 +458,16 @@ mod tests {
         }
 
         fn app() -> (Router, Queen) {
-            let dir =
-                std::env::temp_dir().join(format!("melissa-web-queen-{}", std::process::id()));
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "melissa-web-queen-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
             let events = EventLog::new(None);
-            let pool = BeePool::new(BeeLimits::default(), events.clone());
+            let registry = BeeRegistry::open(&dir.join("bees"), "c-0a1b2c3d").unwrap();
+            let pool = BeePool::new(BeeLimits::default(), events.clone(), registry, None);
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
             tools.push(Arc::new(Touch));
             let mcp = McpServer::new(ToolRegistry::new(tools, None));
@@ -478,10 +485,11 @@ mod tests {
                 backends: vec!["stuck".into()],
                 system_prompt: "test".into(),
                 bee_prompt: "test".into(),
-                bee_backend: Some("echo".into()),
+                bee_backend: Some("stuck".into()),
                 state_dir: dir.join("queen"),
                 workdir: dir.join("work/queen"),
                 tools: None,
+                comb: "c-0a1b2c3d".into(),
             };
             let queen = Queen::new(
                 settings,
@@ -566,6 +574,90 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn the_user_talks_to_a_bee_directly() {
+            let (app, queen) = app();
+            let ada = queen
+                .bees()
+                .registry()
+                .create("Ada", "stuck", None, "the Queen (task 1)")
+                .unwrap();
+            let (_, body) = send_json(&app, get("/api/bees")).await;
+            assert_eq!(body["bees"][0]["name"], "Ada");
+            assert_eq!(body["bees"][0]["status"], "idle");
+
+            // By name (any case) or id; same shapes as the Queen's chat.
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/bees/ada/messages", r#"{"text":"Hello Ada"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            assert_eq!(body["turn"], 1);
+            let since = body["since"].as_u64().unwrap();
+            let uri = format!("/api/bees/{}/messages", ada.id);
+            let (status, _) = send_json(&app, json_post(&uri, r#"{"text":"Again"}"#)).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            let (_, st) = send_json(&app, get("/api/bees/Ada/status")).await;
+            assert_eq!(st["turn"], 1);
+            let (_, b) = send_json(&app, get("/api/bees/Ada")).await;
+            assert_eq!(b["status"], "working");
+            let (_, body) = send_json(&app, json_post("/api/bees/Ada/cancel", "")).await;
+            assert_eq!(body["cancelled"], true);
+            let (status, page) = send_json(
+                &app,
+                get(&format!("/api/bees/Ada/events?since={since}&wait=1")),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let types: Vec<&str> = page["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["type"].as_str().unwrap())
+                .collect();
+            assert_eq!(types, ["user_message", "turn_finished"]);
+            assert_eq!(page["events"][0]["text"], "Hello Ada");
+            // The Queen's log did not get the bee's conversation.
+            let (_, page) = send_json(&app, get("/api/queen/events?since=0")).await;
+            assert_eq!(page["events"], serde_json::json!([]));
+
+            // The user renames; names stay unique.
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/bees/Ada/rename", r#"{"name":"Ada Lovelace"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["id"], ada.id.as_str());
+            queen
+                .bees()
+                .registry()
+                .create("Bo", "stuck", None, "the user")
+                .unwrap();
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/bees/Bo/rename", r#"{"name":"ada lovelace"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            for (req, code) in [
+                (get("/api/bees/nobody"), StatusCode::NOT_FOUND),
+                (
+                    json_post("/api/bees/nobody/messages", r#"{"text":"hi"}"#),
+                    StatusCode::NOT_FOUND,
+                ),
+                // No cell store here (no k3s).
+                (get("/api/cells"), StatusCode::BAD_GATEWAY),
+                (
+                    json_post("/api/cells/nextcloud/reassign", r#"{"to":"nobody"}"#),
+                    StatusCode::NOT_FOUND,
+                ),
+            ] {
+                assert_eq!(send_json(&app, req).await.0, code);
+            }
+        }
+
+        #[tokio::test]
         async fn confirmations_can_be_listed_and_resolved() {
             let (app, queen) = app();
             let (c, rx) = queen.confirmations().request(
@@ -596,7 +688,7 @@ mod tests {
         async fn operator_tool_calls_wait_for_the_inbox() {
             let (app, queen) = app();
             // Unknown and Queen-only tools look the same: not found.
-            for name in ["nope", "start_bee"] {
+            for name in ["nope", "create_bee", "reassign_cell"] {
                 let (status, _) =
                     send_json(&app, json_post(&format!("/api/tools/{name}"), "{}")).await;
                 assert_eq!(status, StatusCode::NOT_FOUND, "{name}");
@@ -645,6 +737,9 @@ mod tests {
             for uri in [
                 "/api/queen/messages",
                 "/api/queen/cancel",
+                "/api/bees/Ada/messages",
+                "/api/bees/Ada/rename",
+                "/api/cells/nextcloud/reassign",
                 "/api/confirmations/1/approve",
                 "/api/tools/touch",
             ] {

@@ -6,11 +6,13 @@
 //! `uninstall_app` Destructive (always confirmed, even when the data is kept). Generated
 //! secrets never appear in any tool's output.
 //!
-//! Ownership: every tool declares its `app` argument as its target (`Tool::target`), so the
-//! registry checks the caller's scope first (`melissa_agent::tools::scope`): `install_app`
-//! and `uninstall_app` change the app, `app_logs` reads into it (scoped), `app_status` only
-//! reads names and phases. `install_app` records the owner on a new app's namespace
-//! ([`Ownership`]) and keeps an existing record; [`AppOwners`] reads it back.
+//! Cells: an installed app is a cell (docs/HIVE-MODEL.md) owned by one bee. Every tool
+//! declares its `app` argument as its target (`Tool::target`), so the registry checks the
+//! caller's scope first (`melissa_agent::tools::scope`): `install_app` and `uninstall_app`
+//! change the cell, `app_logs` reads into it (scoped), `app_status` only reads names and
+//! phases. `install_app` records the comb and the owning bee on a new cell's namespace
+//! ([`Ownership`]): a bee's new cell is its own, the Queen names the bee (`bee`), the user
+//! may. An existing record is kept. [`Cells`] reads it back, lists cells and reassigns them.
 
 use std::{collections::BTreeMap, io::Read, path::PathBuf, sync::Arc};
 
@@ -21,8 +23,8 @@ use k8s_openapi::api::{
 };
 use melissa_agent::{
     tools::{
-        Access, Effect, Labels, Owner, ResourceKind, ResourceOwners, Target, TaskContext, Tool,
-        ToolError, ToolSpec,
+        describe_bee, Access, BeeNames, CellInfo, CellStore, Effect, Labels, Owner, ResourceKind,
+        ResourceOwners, Scope, Target, TaskContext, Tool, ToolError, ToolSpec,
     },
     BoxFuture, TaskId,
 };
@@ -32,7 +34,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     apps::{AppDeployer, AppObject, AppRead, LogRequest},
     health::reason_code,
-    render::{render, secret_object, Ownership, CONFIG_ANNOTATION, OWNER_LABEL},
+    render::{assign_patch, render, secret_object, Ownership, CONFIG_ANNOTATION},
     ClusterError,
 };
 
@@ -44,11 +46,15 @@ const MAX_LOG_BYTES: usize = 64 * 1024;
 /// Longer log lines are cut (single huge lines are a cheap way to flood an agent).
 const MAX_LOG_LINE_CHARS: usize = 2000;
 
-/// Where the catalog lives and which domain ingress hosts use.
-#[derive(Debug, Clone)]
+/// Where the catalog lives, which domain ingress hosts use, and the comb the cells are on.
+#[derive(Clone)]
 pub struct AppSettings {
     pub catalog_dir: PathBuf,
     pub domain: String,
+    /// This comb's id, recorded on every new cell.
+    pub comb: String,
+    /// Bee names, for the `bee` argument of `install_app` and for messages.
+    pub bees: Option<Arc<dyn BeeNames>>,
 }
 
 impl AppSettings {
@@ -102,29 +108,37 @@ where
 /// The `app` argument as a scope target.
 const fn app_target(access: Access, verb: &'static str) -> Target {
     Target {
-        kind: ResourceKind::App,
+        kind: ResourceKind::Cell,
         arg: "app",
         access,
         verb,
     }
 }
 
-/// Reads app owners from the `melissa.io/owner` label on their namespaces, for the
-/// registry's scope check (`ToolRegistry::with_owners`). A namespace without the label
-/// (installed before ownership existed) is the owner's.
-pub struct AppOwners {
+/// The cells of this comb in the cluster: who owns each (the `melissa.io/owner-bee` label on
+/// its namespace, for the registry's scope check, `ToolRegistry::with_owners`), the list of
+/// cells, and the reassign path ([`CellStore::assign`]). A namespace without the label
+/// (from before bees) is unassigned.
+pub struct Cells {
+    settings: AppSettings,
     read: Option<Arc<dyn AppRead>>,
+    deploy: Option<Arc<dyn AppDeployer>>,
 }
 
-impl AppOwners {
-    pub fn new<C: AppRead + 'static>(cluster: Option<Arc<C>>) -> Self {
+impl Cells {
+    pub fn new<C: AppRead + AppDeployer + 'static>(
+        settings: AppSettings,
+        cluster: Option<Arc<C>>,
+    ) -> Self {
         Self {
-            read: cluster.map(|c| c as Arc<dyn AppRead>),
+            settings,
+            read: cluster.clone().map(|c| c as Arc<dyn AppRead>),
+            deploy: cluster.map(|c| c as Arc<dyn AppDeployer>),
         }
     }
 }
 
-impl ResourceOwners for AppOwners {
+impl ResourceOwners for Cells {
     fn owner<'a>(
         &'a self,
         kind: ResourceKind,
@@ -132,7 +146,7 @@ impl ResourceOwners for AppOwners {
     ) -> BoxFuture<'a, Result<Option<Owner>, String>> {
         Box::pin(async move {
             match kind {
-                ResourceKind::App => {}
+                ResourceKind::Cell => {}
             }
             if !valid_app_name(name) {
                 // The tool rejects the name itself; nothing by that name can exist.
@@ -140,15 +154,63 @@ impl ResourceOwners for AppOwners {
             }
             let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
             let ns = read.namespace(name).await.map_err(|e| e.to_string())?;
-            Ok(ns.map(|ns| {
-                Owner::from_label(
-                    ns.metadata
-                        .labels
-                        .as_ref()
-                        .and_then(|l| l.get(OWNER_LABEL))
-                        .map(String::as_str),
-                )
-            }))
+            Ok(ns.map(|ns| Ownership::of(&ns).owner))
+        })
+    }
+}
+
+impl CellStore for Cells {
+    fn cells(&self) -> BoxFuture<'_, Result<Vec<CellInfo>, String>> {
+        Box::pin(async move {
+            let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+            let mut out = Vec::new();
+            // Per catalog app: the write identity may get namespaces but not list them.
+            for name in self.settings.catalog().apps.keys() {
+                let Some(ns) = read.namespace(name).await.map_err(|e| e.to_string())? else {
+                    continue;
+                };
+                let o = Ownership::of(&ns);
+                out.push(CellInfo {
+                    name: name.clone(),
+                    owner: o.owner,
+                    comb: o.comb,
+                    assigned_by: o.assigned_by,
+                    assigned_at: o.assigned_at,
+                    legacy_owner: o.legacy_owner,
+                });
+            }
+            Ok(out)
+        })
+    }
+
+    fn assign<'a>(
+        &'a self,
+        cell: &'a str,
+        bee: &'a str,
+        by: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if !valid_app_name(cell) {
+                return Err(format!("`{cell}` is not a cell name"));
+            }
+            let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
+                return Err(no_cluster().to_string());
+            };
+            let ns = read
+                .namespace(cell)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("no cell `{cell}` on this comb"))?;
+            if is_terminating(&ns) {
+                return Err(format!("`{cell}` is being deleted"));
+            }
+            let comb = Ownership::of(&ns)
+                .comb
+                .unwrap_or_else(|| self.settings.comb.clone());
+            deploy
+                .patch_namespace(cell, &assign_patch(cell, &comb, bee, by, &now_precise()))
+                .await
+                .map_err(|e| e.to_string())
         })
     }
 }
@@ -261,13 +323,59 @@ struct InstallApp {
     deploy: Option<Arc<dyn AppDeployer>>,
 }
 
+/// Who is installing, from the caller's scope (None: the plain `call`, i.e. the user).
+struct Installer<'a> {
+    scope: &'a Scope,
+    task: TaskId,
+}
+
 impl InstallApp {
-    /// `who`: owner label for a new app and the "installed by" text (from the caller's
-    /// scope). An existing app keeps its record: reinstalling never changes the owner.
-    async fn install(&self, args: Value, who: Option<(Owner, String)>) -> Result<Value, ToolError> {
+    /// The owner a new cell gets: a bee's own new cell is its; the Queen names the bee that
+    /// looks after it (`bee`, required); the user may name one (else unassigned).
+    fn new_owner(&self, who: &Installer<'_>, bee_arg: Option<&str>) -> Result<Owner, ToolError> {
+        let resolve = |name: &str| {
+            self.settings
+                .bees
+                .as_ref()
+                .and_then(|b| b.resolve_id(name))
+                .map(Owner::Bee)
+                .ok_or_else(|| {
+                    ToolError::BadArgs(format!(
+                        "no bee `{name}` on this comb (create one with create_bee)"
+                    ))
+                })
+        };
+        match (who.scope, bee_arg) {
+            (Scope::Bee { id }, None) => Ok(Owner::Bee(id.clone())),
+            (Scope::Bee { id }, Some(b)) => match resolve(b)? {
+                Owner::Bee(other) if other == *id => Ok(Owner::Bee(other)),
+                _ => Err(ToolError::BadArgs(
+                    "a bee's new cells are its own; leave out `bee`".into(),
+                )),
+            },
+            (Scope::Queen { .. }, None) => Err(ToolError::BadArgs(
+                "say which bee will look after this new cell (`bee`: its name); create one \
+                 with create_bee if none fits"
+                    .into(),
+            )),
+            (Scope::Queen { .. } | Scope::User, Some(b)) => resolve(b),
+            (Scope::User, None) => Ok(Owner::Unassigned),
+            (Scope::Nothing, _) => Err(ToolError::Refused(
+                "not yours: this session may not create cells".into(),
+            )),
+        }
+    }
+
+    /// An existing cell keeps its record: reinstalling never changes the owner.
+    async fn install(&self, args: Value, who: Installer<'_>) -> Result<Value, ToolError> {
         let args = arg_object(&args)?;
-        reject_unknown(args, &["app", "config"])?;
+        reject_unknown(args, &["app", "config", "bee"])?;
         let app = app_arg(args)?;
+        let bee_arg = match args.get("bee") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(b)) if !b.trim().is_empty() => Some(b.trim()),
+            Some(_) => return Err(ToolError::BadArgs("`bee` must be a bee's name".into())),
+        };
         let overrides = match args.get("config") {
             None | Some(Value::Null) => Map::new(),
             Some(Value::Object(o)) => o.clone(),
@@ -289,22 +397,45 @@ impl InstallApp {
                 )));
             }
         }
-        let ownership = match (&existing, who) {
-            (Some(ns), _) => Ownership::of(ns),
-            (None, Some((owner, actor))) => Ownership {
-                owner: owner.label_value(),
-                installed_by: actor,
-                installed_at: now_rfc3339(),
-                origin: "catalog".into(),
-            },
-            (None, None) => {
-                return Err(ToolError::Refused(
-                    "not yours: this session may not create apps".into(),
-                ))
+        let names = self.settings.bees.as_deref();
+        let ownership = match &existing {
+            Some(ns) => {
+                let mut o = Ownership::of(ns);
+                if let Some(b) = bee_arg {
+                    let wanted = names.and_then(|n| n.resolve_id(b));
+                    if wanted.as_deref() != o.owner.label_value() {
+                        return Err(ToolError::BadArgs(format!(
+                            "`{app}` is already installed and looked after by {}; reinstall \
+                             without `bee` (moving a cell is reassign_cell)",
+                            match &o.owner {
+                                Owner::Bee(id) => describe_bee(names, id),
+                                Owner::Unassigned => "no bee".into(),
+                            }
+                        )));
+                    }
+                }
+                // Cells from before combs had ids get this comb's.
+                o.comb.get_or_insert_with(|| self.settings.comb.clone());
+                o
+            }
+            None => {
+                let owner = self.new_owner(&who, bee_arg)?;
+                let actor = who.scope.actor(who.task, names);
+                let now = now_rfc3339();
+                Ownership {
+                    comb: Some(self.settings.comb.clone()),
+                    assigned_by: owner.label_value().map(|_| actor.clone()),
+                    assigned_at: owner.label_value().map(|_| now_precise()),
+                    owner,
+                    installed_by: actor,
+                    installed_at: now,
+                    origin: "catalog".into(),
+                    legacy_owner: None,
+                }
             }
         };
         let mut objects = render(&manifest, &config, &self.settings.domain);
-        ownership.apply_to(&mut objects.namespace);
+        ownership.apply_to(&app, &mut objects.namespace);
 
         let mut applied = Vec::new();
         for object in [
@@ -354,7 +485,9 @@ impl InstallApp {
             "namespace": manifest.namespace(),
             "url": manifest.ingress.as_ref().map(|_| self.settings.url(&app)),
             "applied": applied,
-            "owner": ownership.owner,
+            "bee": ownership.owner.label_value(),
+            "bee_name": ownership.owner.label_value().and_then(|id| names.and_then(|n| n.name_of(id))),
+            "comb": ownership.comb,
             "installed_by": ownership.installed_by,
             "config": config.values,
             "secrets": secrets.map(|state| json!({
@@ -386,6 +519,7 @@ impl Tool for InstallApp {
                 "properties": {
                     "app": {"type": "string", "description": "App name from list_catalog"},
                     "config": {"type": "object", "description": "Overrides for declared, non-secret config fields"},
+                    "bee": {"type": "string", "description": "The bee that will look after the new cell (its name). The Queen must name one; a bee's own new cells are its own (leave this out)."},
                 },
                 "required": ["app"],
                 "additionalProperties": false,
@@ -394,8 +528,14 @@ impl Tool for InstallApp {
     }
 
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        // Without a caller (direct use, tests): the owner.
-        Box::pin(self.install(args, Some((Owner::Human, "owner".into()))))
+        // Without a caller (direct use, tests): the user.
+        Box::pin(self.install(
+            args,
+            Installer {
+                scope: &Scope::User,
+                task: 0,
+            },
+        ))
     }
 
     fn call_in<'a>(
@@ -404,8 +544,13 @@ impl Tool for InstallApp {
         ctx: &'a mut TaskContext,
         args: Value,
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
-        let who = ctx.scope.creator().map(|o| (o, ctx.scope.actor(task)));
-        Box::pin(self.install(args, who))
+        Box::pin(self.install(
+            args,
+            Installer {
+                scope: &ctx.scope,
+                task,
+            },
+        ))
     }
 
     fn target(&self) -> Option<Target> {
@@ -421,6 +566,18 @@ fn now_rfc3339() -> String {
         .map(|d| d.as_secs())
         .unwrap_or_default();
     k8s_openapi::jiff::Timestamp::from_second(i64::try_from(secs).unwrap_or(0))
+        .map(|t| t.to_string())
+        .unwrap_or_default()
+}
+
+/// Now, RFC 3339 to the nanosecond: two reassignments never record the same `assigned-at`
+/// (the admission policy lets the owner label change only with a new one).
+fn now_precise() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    k8s_openapi::jiff::Timestamp::from_nanosecond(i128::try_from(nanos).unwrap_or(0))
         .map(|t| t.to_string())
         .unwrap_or_default()
 }
@@ -492,6 +649,9 @@ impl AppStatus {
         if report["url"].is_null() && ingress.is_some() {
             report["url"] = json!(self.settings.url(&app));
         }
+        if let (Some(id), Some(names)) = (report["bee"].as_str(), &self.settings.bees) {
+            report["bee_name"] = json!(names.name_of(id));
+        }
         Ok(report)
     }
 }
@@ -502,8 +662,8 @@ impl Tool for AppStatus {
             name: "app_status",
             description: "State of an installed app: phase (not_installed, starting, ready, \
                 failing, uninstalled_data_kept, deleting), ready replicas, URL, config, \
-                owner (`owner` = the human, `job-<key>` = a bee's job) and who installed \
-                it, volumes, and pods with sanitized problem reasons (e.g. ImagePullBackOff, \
+                the bee that looks after the cell (`bee`: id, `bee_name`; null = no bee) \
+                and who installed it, volumes, and pods with sanitized problem reasons (e.g. ImagePullBackOff, \
                 CrashLoopBackOff, OOMKilled).",
             // Names, counts, phases and kubelet reason codes only; no free text from the app.
             labels: Labels::READ_ONLY,
@@ -658,7 +818,10 @@ pub(crate) fn status_report(
         "app": app,
         "namespace": namespace_of(app),
         "phase": phase,
-        "owner": ownership.as_ref().map(|o| &o.owner),
+        "bee": ownership.as_ref().and_then(|o| o.owner.label_value()),
+        "comb": ownership.as_ref().and_then(|o| o.comb.as_ref()),
+        "assigned_by": ownership.as_ref().and_then(|o| o.assigned_by.as_ref()),
+        "legacy_owner": ownership.as_ref().and_then(|o| o.legacy_owner.as_ref()),
         "installed_by": ownership.as_ref().map(|o| &o.installed_by),
         "installed_at": ownership.as_ref().map(|o| &o.installed_at),
         "installed": deployment.is_some(),

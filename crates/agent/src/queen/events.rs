@@ -1,4 +1,4 @@
-//! The Queen's event stream: typed, numbered events that clients (the CLI today, the web UI
+//! A conversation's event stream (the Queen's, or a bee's: same shape): typed, numbered events that clients (the CLI today, the web UI
 //! later) read with a cursor, plus the JSONL transcript they are recorded in.
 //!
 //! Every event gets a sequence number (`seq`, starting at 1, never reused while the daemon
@@ -30,9 +30,10 @@ pub enum QueenEvent {
     UserMessage { turn: TurnId, text: String },
     /// A piece of the Queen's reply (not line-buffered).
     Text { turn: TurnId, text: String },
-    /// The Queen's whole reply for a turn (sent at the end of the turn; the transcript keeps
-    /// this instead of the pieces).
-    QueenMessage { turn: TurnId, text: String },
+    /// The agent's whole reply for a turn (sent at the end of the turn; the transcript keeps
+    /// this instead of the pieces). Was `queen_message` before bees had conversations.
+    #[serde(alias = "queen_message")]
+    AgentMessage { turn: TurnId, text: String },
     /// The Queen's agent started or finished a tool call (its own or one of Melissa's).
     ToolCall {
         turn: Option<TurnId>,
@@ -57,17 +58,31 @@ pub enum QueenEvent {
     },
     /// A confirmation was decided (`approved`, `denied`) or withdrawn (`withdrawn`).
     ConfirmationResolved { id: u64, outcome: String },
-    /// The Queen started a bee agent.
-    BeeStarted {
-        bee: TaskId,
+    /// The Queen (or the user) created a bee.
+    BeeCreated {
+        bee: String,
+        name: String,
         backend: String,
+    },
+    /// The Queen gave a bee a job (the bee's turn runs in its own conversation).
+    BeeStarted {
+        bee: String,
+        name: String,
         goal: String,
     },
-    /// A bee ended (`succeeded`, `failed`, `cancelled`).
+    /// A bee's job ended (`succeeded`, `failed`, `cancelled`).
     BeeFinished {
-        bee: TaskId,
+        bee: String,
+        name: String,
         status: String,
         error: Option<String>,
+    },
+    /// A cell got a new owning bee (`from`: the previous bee, None if it had none).
+    CellReassigned {
+        cell: String,
+        from: Option<String>,
+        to: String,
+        by: String,
     },
     /// The Queen's agent session started. `resumed`: the agent's previous session (and its
     /// context) was resumed; otherwise the Queen starts fresh.
@@ -93,7 +108,7 @@ impl QueenEvent {
         match self {
             Self::UserMessage { turn, .. }
             | Self::Text { turn, .. }
-            | Self::QueenMessage { turn, .. }
+            | Self::AgentMessage { turn, .. }
             | Self::TurnFinished { turn, .. } => Some(*turn),
             Self::ToolCall { turn, .. }
             | Self::Permission { turn, .. }
@@ -252,7 +267,8 @@ mod tests {
             seq: 3,
             ts: 10,
             event: QueenEvent::BeeFinished {
-                bee: 7,
+                bee: "c-0a1b2c3d.b7".into(),
+                name: "Ada".into(),
                 status: "succeeded".into(),
                 error: None,
             },
@@ -260,7 +276,7 @@ mod tests {
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["type"], "bee_finished");
         assert_eq!(json["seq"], 3);
-        assert_eq!(json["bee"], 7);
+        assert_eq!(json["bee"], "c-0a1b2c3d.b7");
         let back: EventRecord = serde_json::from_value(json).unwrap();
         assert_eq!(back, rec);
     }

@@ -7,13 +7,24 @@
 //!   seq, "missed": bool}`; waits up to `wait` (max 30) seconds for the first new event.
 //! - `POST /api/queen/cancel` → `{"cancelled": bool}`.
 //! - `GET /api/queen/status` → `{"turn": n|null, "backend": "..."|null, "last_seq": seq}`.
-//! - `GET /api/bees` → the Queen's bees, newest first.
+//! - `GET /api/bees` → `{"bees": [...]}`: this comb's bees (id, name, backend, status, job).
+//! - `GET /api/bees/{bee}` (name or id) → one bee; 404 if there is none.
+//! - The user talks to a bee directly, same shapes as the Queen's: `POST
+//!   /api/bees/{bee}/messages`, `GET /api/bees/{bee}/events`, `POST /api/bees/{bee}/cancel`,
+//!   `GET /api/bees/{bee}/status` (409 while the bee works on a job or another message).
+//! - `POST /api/bees/{bee}/rename` `{"name": "..."}` → the bee (the user renames; 422 for a
+//!   bad or taken name).
+//! - `GET /api/cells` → `{"cells": [...]}`: every cell and its owning bee (502 if k3s is
+//!   unreachable).
+//! - `POST /api/cells/{cell}/reassign` `{"to": "<bee>"}` → the cell: the user's own
+//!   reassignment (no confirmation; audited `cell.reassign`, actor ui). 404 no such bee,
+//!   422 no such cell.
 //! - `GET /api/confirmations`; `POST /api/confirmations/{id}/approve|deny` → 200 or 404.
 //! - `POST /api/tools/{name}` (JSON arguments) → 200 `{"result": ...}`: runs one tool for an
 //!   operator (`melissa-queen tool --wait`) through the daemon's registry, as an unattended
 //!   task (task 0): the policy applies and confirmations land in the same inbox, so the call
 //!   waits for `approve`/`deny` (up to the confirmation timeout). Queen-only tools are not
-//!   reachable. The caller is the owner (scope `Owner`: no ownership checks). Errors: 404 unknown
+//!   reachable. The caller is the user (scope `User`: no ownership checks). Errors: 404 unknown
 //!   tool, 422 bad arguments, 403 denied or refused, 408 confirmation
 //!   timeout, 502 tool failure.
 
@@ -45,6 +56,14 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/queen/cancel", post(cancel))
         .route("/api/queen/status", get(status))
         .route("/api/bees", get(bees))
+        .route("/api/bees/{bee}", get(bee))
+        .route("/api/bees/{bee}/messages", post(bee_message))
+        .route("/api/bees/{bee}/events", get(bee_events))
+        .route("/api/bees/{bee}/cancel", post(bee_cancel))
+        .route("/api/bees/{bee}/status", get(bee_status))
+        .route("/api/bees/{bee}/rename", post(bee_rename))
+        .route("/api/cells", get(cells))
+        .route("/api/cells/{cell}/reassign", post(reassign))
         .route("/api/confirmations", get(confirmations))
         .route("/api/confirmations/{id}/{verdict}", post(resolve))
         .with_state(queen)
@@ -70,10 +89,10 @@ async fn call_tool(
             tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
         }
     }
-    // Unattended, untainted, no delegation; the caller is the owner (local API), so the
+    // Unattended, untainted, no delegation; the caller is the user (local API), so the
     // scope is theirs: no ownership checks, but the label policy still asks for confirmations.
     let mut ctx = TaskContext {
-        scope: Scope::Owner,
+        scope: Scope::User,
         ..TaskContext::default()
     };
     match registry.call(0, &mut ctx, &name, args).await {
@@ -131,22 +150,106 @@ async fn status(State(queen): State<Queen>) -> Response {
     Json(queen.status()).into_response()
 }
 
+fn queen_error(e: QueenError) -> Response {
+    match e {
+        QueenError::Busy => error(StatusCode::CONFLICT, e),
+        QueenError::NoSuchBee(_) => error(StatusCode::NOT_FOUND, e),
+        QueenError::Failed(_) => error(StatusCode::BAD_GATEWAY, e),
+        _ => error(StatusCode::UNPROCESSABLE_ENTITY, e),
+    }
+}
+
 async fn bees(State(queen): State<Queen>) -> Response {
-    let list: Vec<_> = queen
-        .bees()
-        .into_iter()
-        .map(|t| {
-            json!({
-                "bee": t.id,
-                "backend": t.backend,
-                "status": t.status.as_str(),
-                "elapsed_secs": t.elapsed.as_secs(),
-                "goal": queen.bee_goal(t.id),
-                "error": t.error,
-            })
-        })
-        .collect();
-    Json(json!({"bees": list})).into_response()
+    Json(json!({"bees": queen.bees().list()})).into_response()
+}
+
+async fn bee(State(queen): State<Queen>, Path(bee): Path<String>) -> Response {
+    match queen.bees().get(&bee) {
+        Some(b) => Json(b).into_response(),
+        None => queen_error(QueenError::NoSuchBee(bee)),
+    }
+}
+
+async fn bee_message(
+    State(queen): State<Queen>,
+    Path(bee): Path<String>,
+    Json(msg): Json<Message>,
+) -> Response {
+    match queen.bees().user_send(&bee, &msg.text) {
+        Ok((turn, since)) => (
+            StatusCode::ACCEPTED,
+            Json(json!({"turn": turn, "since": since})),
+        )
+            .into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+async fn bee_events(
+    State(queen): State<Queen>,
+    Path(bee): Path<String>,
+    Query(q): Query<EventsQuery>,
+) -> Response {
+    let events = match queen.bees().events_of(&bee) {
+        Ok(e) => e,
+        Err(e) => return queen_error(e),
+    };
+    let limit = q.limit.unwrap_or(500).clamp(1, 1000);
+    let wait = Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
+    Json(events.wait_since(q.since, limit, wait).await).into_response()
+}
+
+async fn bee_cancel(State(queen): State<Queen>, Path(bee): Path<String>) -> Response {
+    match queen.bees().user_cancel(&bee).await {
+        Ok(cancelled) => Json(json!({"cancelled": cancelled})).into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+async fn bee_status(State(queen): State<Queen>, Path(bee): Path<String>) -> Response {
+    match queen.bees().conversation_status(&bee) {
+        Ok(s) => Json(s).into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Rename {
+    name: String,
+}
+
+async fn bee_rename(
+    State(queen): State<Queen>,
+    Path(bee): Path<String>,
+    Json(body): Json<Rename>,
+) -> Response {
+    match queen.bees().rename(&bee, &body.name) {
+        Ok(b) => Json(b).into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+async fn cells(State(queen): State<Queen>) -> Response {
+    match queen.bees().cells().await {
+        Ok(list) => Json(json!({"cells": list})).into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Reassign {
+    to: String,
+}
+
+async fn reassign(
+    State(queen): State<Queen>,
+    Path(cell): Path<String>,
+    Json(body): Json<Reassign>,
+) -> Response {
+    match queen.bees().user_reassign(&cell, &body.to).await {
+        Ok(c) => Json(c).into_response(),
+        Err(e) => queen_error(e),
+    }
 }
 
 async fn confirmations(State(queen): State<Queen>) -> Response {

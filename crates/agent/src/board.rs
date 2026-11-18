@@ -83,11 +83,10 @@ impl Default for DispatchOptions {
         Self {
             ctx: TaskContext {
                 attended: true,
-                // Started and watched by the owner: acts for them; changing their apps
-                // still needs a confirmation that says so.
-                scope: Scope::ForOwner {
-                    agent: "an agent task".into(),
-                },
+                // A one-off task the user starts in the UI is neither the Queen nor a bee:
+                // it may read, but cells are changed only by their bee, the Queen or the
+                // user (docs/HIVE-MODEL.md).
+                scope: Scope::Nothing,
                 ..TaskContext::default()
             },
             allow: None,

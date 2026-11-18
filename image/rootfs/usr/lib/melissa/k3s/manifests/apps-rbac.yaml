@@ -8,12 +8,15 @@
 #   pin all of that to namespaces named app-<name> labelled melissa.io/app=<name> with Pod
 #   Security "baseline" (or "restricted") enforced, and to RoleBindings that grant exactly
 #   melissa-app-workload to exactly this ServiceAccount.
-# - App ownership (melissa.io/owner on the namespace: `owner` or `job-<key>`) is set when a
-#   namespace is created and can never be changed by this identity afterwards; only the
-#   owner's `sudo melissa-queen app-adopt <app>` (k3s admin, not matched here) changes it.
-#   Unlabelled namespaces (from before ownership) may only gain `owner`. Which agent may act
-#   on which app is enforced in the queen (agents hold no cluster credentials); see
-#   docs/agent-skills/ownership-and-scopes.md.
+# - Cells (docs/HIVE-MODEL.md): every new app namespace carries melissa.io/cell=<name> and
+#   melissa.io/comb=<comb id>; melissa.io/owner-bee=<bee id> names the bee that owns it
+#   (absent: unassigned). The comb is fixed once set. The owner bee can only change together
+#   with a new melissa.io/assigned-at (and assigned-by) annotation: that is the reassign path
+#   (the Queen's reassign_cell after the user approved it, or the user's
+#   `melissa-queen cell reassign`); an owned cell never becomes unassigned again. The old
+#   melissa.io/owner label (`owner`/`job-<key>`, before bees) may only be dropped. Which agent
+#   may act on which cell is enforced in the queen (agents hold no cluster credentials); see
+#   docs/agent-skills/cells-and-ownership.md.
 # - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
 #   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
 #   generated credentials are for the owner); pods and logs read.
@@ -39,6 +42,16 @@ spec:
   variables:
     - name: ns
       expression: "request.operation == 'DELETE' ? oldObject : object"
+    # A fresh assignment record: assigned-by and assigned-at present, assigned-at new.
+    - name: newAssignment
+      expression: >-
+        request.operation != 'DELETE' && has(object.metadata.annotations) &&
+        'melissa.io/assigned-by' in object.metadata.annotations &&
+        'melissa.io/assigned-at' in object.metadata.annotations &&
+        (request.operation != 'UPDATE' || !has(oldObject.metadata.annotations) ||
+         !('melissa.io/assigned-at' in oldObject.metadata.annotations) ||
+         object.metadata.annotations['melissa.io/assigned-at'] !=
+           oldObject.metadata.annotations['melissa.io/assigned-at'])
   validations:
     - expression: "variables.ns.metadata.name.startsWith('app-')"
       message: "melissa-apps may only manage namespaces named app-<name>"
@@ -54,17 +67,46 @@ spec:
       message: "app namespaces must enforce Pod Security baseline or restricted"
     - expression: >-
         request.operation != 'CREATE' ||
-        ('melissa.io/owner' in object.metadata.labels &&
-         object.metadata.labels['melissa.io/owner'].matches('^(owner|job-[a-z0-9]{1,40})$'))
-      message: "new app namespaces must carry melissa.io/owner=owner or job-<key>"
+        ('melissa.io/cell' in object.metadata.labels &&
+         object.metadata.labels['melissa.io/cell'] == object.metadata.name.substring(4) &&
+         'melissa.io/comb' in object.metadata.labels &&
+         !('melissa.io/owner' in object.metadata.labels))
+      message: "new cells must carry melissa.io/cell=<name> and melissa.io/comb=<comb id>"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !('melissa.io/comb' in object.metadata.labels) ||
+        object.metadata.labels['melissa.io/comb'].matches('^c-[0-9a-f]{8}$')
+      message: "melissa.io/comb must be a comb id (c-<8 hex>)"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !('melissa.io/owner-bee' in object.metadata.labels) ||
+        object.metadata.labels['melissa.io/owner-bee'].matches('^c-[0-9a-f]{8}[.]b[1-9][0-9]{0,8}$')
+      message: "melissa.io/owner-bee must be a bee id (<comb id>.b<n>)"
     - expression: >-
         request.operation != 'UPDATE' ||
-        (has(oldObject.metadata.labels) && 'melissa.io/owner' in oldObject.metadata.labels ?
-          ('melissa.io/owner' in object.metadata.labels &&
-           object.metadata.labels['melissa.io/owner'] == oldObject.metadata.labels['melissa.io/owner']) :
-          (!('melissa.io/owner' in object.metadata.labels) ||
-           object.metadata.labels['melissa.io/owner'] == 'owner'))
-      message: "melissa-apps may not change an app's owner (the owner uses melissa-queen app-adopt)"
+        !(has(oldObject.metadata.labels) && 'melissa.io/comb' in oldObject.metadata.labels) ||
+        ('melissa.io/comb' in object.metadata.labels &&
+         object.metadata.labels['melissa.io/comb'] == oldObject.metadata.labels['melissa.io/comb'])
+      message: "a cell's comb never changes"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !('melissa.io/owner' in object.metadata.labels) ||
+        (request.operation == 'UPDATE' && has(oldObject.metadata.labels) &&
+         'melissa.io/owner' in oldObject.metadata.labels &&
+         object.metadata.labels['melissa.io/owner'] == oldObject.metadata.labels['melissa.io/owner'])
+      message: "the old melissa.io/owner label may only be kept or dropped"
+    - expression: >-
+        request.operation != 'CREATE' ||
+        !('melissa.io/owner-bee' in object.metadata.labels) || variables.newAssignment
+      message: "a new cell's owner bee needs melissa.io/assigned-by and melissa.io/assigned-at"
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        ((has(oldObject.metadata.labels) && 'melissa.io/owner-bee' in oldObject.metadata.labels) ?
+          ('melissa.io/owner-bee' in object.metadata.labels &&
+           (object.metadata.labels['melissa.io/owner-bee'] == oldObject.metadata.labels['melissa.io/owner-bee'] ||
+            variables.newAssignment)) :
+          (!('melissa.io/owner-bee' in object.metadata.labels) || variables.newAssignment))
+      message: "a cell's owner bee changes only through the reassign path (new melissa.io/assigned-at)"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -9,7 +9,7 @@ use k8s_openapi::{
 };
 use kube::api::ObjectMeta;
 use melissa_agent::{
-    tools::{Decision, JobScope, Scope, TaskContext, ToolRegistry, Verdict},
+    tools::{Decision, Scope, TaskContext, ToolRegistry, Verdict},
     AuditLog,
 };
 
@@ -48,10 +48,15 @@ impl Fake {
 }
 
 impl AppRead for Fake {
-    fn namespace(&self, _: &str) -> BoxFuture<'_, Result<Option<Namespace>, ClusterError>> {
+    fn namespace(&self, app: &str) -> BoxFuture<'_, Result<Option<Namespace>, ClusterError>> {
+        let name = namespace_of(app);
         Box::pin(async move {
             self.check()?;
-            Ok(self.state().namespace.clone())
+            Ok(self
+                .state()
+                .namespace
+                .clone()
+                .filter(|ns| ns.metadata.name.as_deref() == Some(name.as_str())))
         })
     }
     fn deployment(&self, _: &str) -> BoxFuture<'_, Result<Option<Deployment>, ClusterError>> {
@@ -140,12 +145,66 @@ impl AppDeployer for Fake {
             Ok(existed)
         })
     }
+    fn patch_namespace<'a>(
+        &'a self,
+        _: &'a str,
+        patch: &'a Value,
+    ) -> BoxFuture<'a, Result<(), ClusterError>> {
+        Box::pin(async move {
+            let mut s = self.state();
+            let ns = s.namespace.as_mut().ok_or(ClusterError::NotConfigured)?;
+            // JSON merge patch of labels and annotations: null removes a key.
+            for (field, map) in [
+                (
+                    "labels",
+                    ns.metadata.labels.get_or_insert_with(BTreeMap::new),
+                ),
+                (
+                    "annotations",
+                    ns.metadata.annotations.get_or_insert_with(BTreeMap::new),
+                ),
+            ] {
+                for (k, v) in patch["metadata"][field].as_object().into_iter().flatten() {
+                    match v.as_str() {
+                        Some(v) => map.insert(k.clone(), v.into()),
+                        None => map.remove(k),
+                    };
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+const COMB: &str = "c-0a1b2c3d";
+const ADA: &str = "c-0a1b2c3d.b1";
+const BO: &str = "c-0a1b2c3d.b2";
+
+/// Two bees: Ada and Bo.
+struct Names;
+impl BeeNames for Names {
+    fn name_of(&self, id: &str) -> Option<String> {
+        match id {
+            ADA => Some("Ada".into()),
+            BO => Some("Bo".into()),
+            _ => None,
+        }
+    }
+    fn resolve_id(&self, name: &str) -> Option<String> {
+        match name.to_ascii_lowercase().as_str() {
+            "ada" | ADA => Some(ADA.into()),
+            "bo" | BO => Some(BO.into()),
+            _ => None,
+        }
+    }
 }
 
 fn settings() -> AppSettings {
     AppSettings {
         catalog_dir: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../manifests"),
         domain: "melissa.home.arpa".into(),
+        comb: COMB.into(),
+        bees: Some(Arc::new(Names)),
     }
 }
 
@@ -234,6 +293,10 @@ async fn install_rejects_bad_arguments_before_touching_the_cluster() {
 async fn install_refuses_while_the_namespace_is_being_deleted() {
     let fake = Arc::new(Fake::default());
     fake.state().namespace = Some(Namespace {
+        metadata: ObjectMeta {
+            name: Some("app-nextcloud".into()),
+            ..ObjectMeta::default()
+        },
         status: Some(NamespaceStatus {
             phase: Some("Terminating".into()),
             ..NamespaceStatus::default()
@@ -563,9 +626,14 @@ async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None).with_confirm_timeout(Duration::from_secs(5));
     let mut ctx = queen();
-    reg.call(1, &mut ctx, "install_app", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
+    reg.call(
+        1,
+        &mut ctx,
+        "install_app",
+        json!({"app": "nextcloud", "bee": "Ada"}),
+    )
+    .await
+    .unwrap();
     fake.state().pods = vec![pod("p", 1, true, None)];
     fake.state().log = "hello".into();
     reg.call(1, &mut ctx, "app_logs", json!({"app": "nextcloud"}))
@@ -603,53 +671,65 @@ async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     assert!(fake.state().namespace.is_none());
 }
 
-// ---- ownership and scopes ------------------------------------------------------------------
+// ---- cells, bees and scopes ---------------------------------------------------------------
 
 fn registry(fake: &Arc<Fake>, audit: Option<AuditLog>) -> ToolRegistry {
     ToolRegistry::new(app_tools(settings(), Some(fake.clone())), audit)
-        .with_owners(Arc::new(AppOwners::new(Some(fake.clone()))))
+        .with_owners(Arc::new(Cells::new(settings(), Some(fake.clone()))))
+        .with_bees(Arc::new(Names))
         .with_confirm_timeout(Duration::from_millis(300))
 }
 
-/// The attended Queen.
+/// The attended Queen of comb `COMB`.
 fn queen() -> TaskContext {
     TaskContext {
         attended: true,
         delegate: true,
-        scope: Scope::ForOwner {
-            agent: "the Queen".into(),
-        },
+        scope: Scope::Queen { comb: COMB.into() },
         ..TaskContext::default()
     }
 }
 
-/// An unattended bee of job `key` that may create apps and was given `apps`.
-fn bee(key: &str, apps: &[&str]) -> TaskContext {
-    TaskContext {
-        scope: Scope::Job(JobScope {
-            key: key.into(),
-            apps: apps.iter().map(|a| a.to_string()).collect(),
-            create: true,
-            for_owner: false,
-        }),
+/// An unattended bee with pre-approved installs (so only scope and destructive checks ask).
+fn bee(id: &str) -> TaskContext {
+    let mut ctx = TaskContext {
+        scope: Scope::Bee { id: id.into() },
         ..TaskContext::default()
-    }
+    };
+    ctx.preapproved.insert("install_app".into());
+    ctx
 }
 
-/// Nextcloud as installed before ownership existed: a namespace without an owner label.
-fn legacy_nextcloud(fake: &Fake) {
+/// Nextcloud as a cell with `labels` on its namespace (and a running deployment).
+fn nextcloud_with(fake: &Fake, labels: &[(&str, &str)]) {
+    let mut all = BTreeMap::from([("melissa.io/app".to_string(), "nextcloud".to_string())]);
+    all.extend(labels.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     fake.state().namespace = Some(Namespace {
         metadata: ObjectMeta {
             name: Some("app-nextcloud".into()),
-            labels: Some(BTreeMap::from([(
-                "melissa.io/app".to_string(),
-                "nextcloud".to_string(),
-            )])),
+            labels: Some(all),
             ..ObjectMeta::default()
         },
         ..Namespace::default()
     });
     fake.state().deployment = Some(Deployment::default());
+}
+
+/// Nextcloud from before bees: the old owner label, no cell labels.
+fn legacy_nextcloud(fake: &Fake) {
+    nextcloud_with(fake, &[("melissa.io/owner", "owner")]);
+}
+
+/// Nextcloud looked after by bee `bee`.
+fn nextcloud_of(fake: &Fake, bee: &str) {
+    nextcloud_with(
+        fake,
+        &[
+            ("melissa.io/cell", "nextcloud"),
+            ("melissa.io/comb", COMB),
+            ("melissa.io/owner-bee", bee),
+        ],
+    );
 }
 
 fn ns_label(fake: &Fake, key: &str) -> Option<String> {
@@ -682,17 +762,43 @@ fn audit_lines(path: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+/// Run `tool` for `ctx` and return the reason of the confirmation it asks for (denied).
+async fn confirmation_reason(
+    reg: &ToolRegistry,
+    ctx: TaskContext,
+    tool: &str,
+    args: Value,
+) -> String {
+    let waiter = {
+        let reg = reg.clone();
+        let tool = tool.to_string();
+        tokio::spawn(async move {
+            let mut ctx = ctx;
+            reg.call(1, &mut ctx, &tool, args).await
+        })
+    };
+    let pending = loop {
+        if let Some(c) = reg.confirmations().pending().first().cloned() {
+            break c;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(pending.tool, tool);
+    reg.confirmations().resolve(pending.id, Verdict::Denied);
+    assert_eq!(waiter.await.unwrap(), Err(ToolError::Denied));
+    pending.reason
+}
+
 #[tokio::test]
-async fn a_bee_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
+async fn bee_a_is_refused_on_bee_bs_cell_and_nobody_is_asked() {
     let path =
         std::env::temp_dir().join(format!("melissa-scope-audit-{}.jsonl", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let fake = Arc::new(Fake::default());
-    legacy_nextcloud(&fake);
+    nextcloud_of(&fake, BO);
     let reg = registry(&fake, Some(AuditLog::new(&path)));
-    let mut ctx = bee("k1", &[]);
-    // Even pre-approval for the tools does not open someone else's app.
-    ctx.preapproved.insert("install_app".into());
+    // Even pre-approval for the tools does not open another bee's cell.
+    let mut ctx = bee(ADA);
 
     for (tool, args) in [
         (
@@ -705,10 +811,10 @@ async fn a_bee_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
     ] {
         let r = reg.call(7, &mut ctx, tool, args).await;
         match r {
-            Err(ToolError::Refused(reason)) => {
-                assert!(reason.contains("not yours"), "{reason}");
-                assert!(reason.contains("belongs to the owner"), "{reason}");
-            }
+            Err(ToolError::Refused(reason)) => assert_eq!(
+                reason,
+                "not yours: the cell `nextcloud` belongs to bee Bo (c-0a1b2c3d.b2); ask the Queen"
+            ),
             other => panic!("{tool}: {other:?}"),
         }
         assert!(
@@ -716,15 +822,15 @@ async fn a_bee_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
             "{tool}: a refusal never becomes a confirmation"
         );
     }
-    // Nothing changed; unlabelled (legacy) Nextcloud counted as the owner's.
     assert!(fake.state().applied.is_empty());
     assert!(fake.state().namespace.is_some() && fake.state().deployment.is_some());
-    // Names and phases stay readable.
+    // Names and phases stay readable, with the owning bee.
     let status = reg
         .call(7, &mut ctx, "app_status", json!({"app": "nextcloud"}))
         .await
         .unwrap();
-    assert_eq!(status["owner"], "owner");
+    assert_eq!(status["bee"], BO);
+    assert_eq!(status["bee_name"], "Bo");
 
     let lines = audit_lines(&path);
     let refused: Vec<&Value> = lines
@@ -738,7 +844,7 @@ async fn a_bee_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
     assert!(refused[0]["detail"]
         .as_str()
         .unwrap()
-        .starts_with("not yours: the app `nextcloud` belongs to the owner"));
+        .starts_with("not yours: the cell `nextcloud` belongs to bee Bo"));
     assert!(!lines
         .iter()
         .any(|l| l["action"] == "tool.confirm_requested"));
@@ -749,98 +855,111 @@ async fn a_bee_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
 }
 
 #[tokio::test]
-async fn a_bee_owns_and_may_change_the_app_its_job_created() {
+async fn a_bee_owns_the_cell_it_creates() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None);
-    let mut ctx = bee("k1", &[]);
-    ctx.preapproved.insert("install_app".into());
+    let mut ctx = bee(ADA);
     let out = reg
         .call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
         .await
         .unwrap();
-    assert_eq!(out["owner"], "job-k1");
+    assert_eq!(out["bee"], ADA);
+    assert_eq!(out["bee_name"], "Ada");
+    assert_eq!(out["comb"], COMB);
     assert_eq!(
-        ns_label(&fake, "melissa.io/owner").as_deref(),
-        Some("job-k1")
+        ns_label(&fake, "melissa.io/owner-bee").as_deref(),
+        Some(ADA)
     );
+    assert_eq!(
+        ns_label(&fake, "melissa.io/cell").as_deref(),
+        Some("nextcloud")
+    );
+    assert_eq!(ns_label(&fake, "melissa.io/comb").as_deref(), Some(COMB));
+    assert_eq!(ns_label(&fake, "melissa.io/owner"), None);
+    let by = "bee Ada (c-0a1b2c3d.b1) (task 7)";
     assert_eq!(
         ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
-        Some("bee task 7, job k1")
+        Some(by)
     );
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/assigned-by").as_deref(),
+        Some(by)
+    );
+    assert!(ns_annotation(&fake, "melissa.io/assigned-at").is_some());
     assert_eq!(
         ns_annotation(&fake, "melissa.io/origin").as_deref(),
         Some("catalog")
     );
+    // A bee can't hand its new cell to another bee.
+    fake.state().namespace = None;
+    let r = reg
+        .call(
+            7,
+            &mut ctx,
+            "install_app",
+            json!({"app": "nextcloud", "bee": "Bo"}),
+        )
+        .await;
+    assert!(matches!(r, Err(ToolError::BadArgs(_))), "{r:?}");
+    reg.call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
 
-    // Reinstalling its own app: in scope, no ownership question.
+    // Reinstalling its own cell: in scope, no ownership question.
     reg.call(8, &mut ctx, "install_app", json!({"app": "nextcloud"}))
         .await
         .unwrap();
-    // Uninstalling is destructive: the usual confirmation, but nothing about ownership.
-    let waiter = {
-        let reg = reg.clone();
-        let mut ctx = ctx.clone();
-        tokio::spawn(async move {
-            reg.call(7, &mut ctx, "uninstall_app", json!({"app": "nextcloud"}))
-                .await
-        })
-    };
-    let pending = loop {
-        if let Some(c) = reg.confirmations().pending().first().cloned() {
-            break c;
-        }
-        tokio::task::yield_now().await;
-    };
-    assert_eq!(pending.reason, "destructive action");
-    reg.confirmations().resolve(pending.id, Verdict::Approved);
-    waiter.await.unwrap().unwrap();
+    // Uninstalling is destructive: the usual confirmation, nothing about ownership.
+    let reason =
+        confirmation_reason(&reg, bee(ADA), "uninstall_app", json!({"app": "nextcloud"})).await;
+    assert_eq!(reason, "destructive action");
 
-    // Another job may not touch it.
-    let mut other = bee("k2", &[]);
+    // Another bee may not touch it.
     let r = reg
-        .call(9, &mut other, "install_app", json!({"app": "nextcloud"}))
+        .call(9, &mut bee(BO), "install_app", json!({"app": "nextcloud"}))
         .await;
     assert!(
-        matches!(&r, Err(ToolError::Refused(m)) if m.contains("belongs to bee job k1")),
+        matches!(&r, Err(ToolError::Refused(m)) if m.contains("belongs to bee Ada")),
         "{r:?}"
     );
 }
 
 #[tokio::test]
-async fn the_queen_changing_an_owner_app_gets_a_confirmation_naming_the_owner() {
+async fn the_queens_destructive_action_on_a_bees_cell_names_the_bee() {
     let fake = Arc::new(Fake::default());
-    legacy_nextcloud(&fake);
+    nextcloud_of(&fake, ADA);
     let reg = registry(&fake, None);
-    for (tool, reason) in [
-        (
-            "uninstall_app",
-            "`nextcloud` belongs to you; the Queen wants to uninstall it; destructive action",
-        ),
-        (
-            "install_app",
-            "`nextcloud` belongs to you; the Queen wants to install over it",
-        ),
-    ] {
-        let waiter = {
-            let reg = reg.clone();
-            tokio::spawn(async move {
-                reg.call(1, &mut queen(), tool, json!({"app": "nextcloud"}))
-                    .await
-            })
-        };
-        let pending = loop {
-            if let Some(c) = reg.confirmations().pending().first().cloned() {
-                break c;
-            }
-            tokio::task::yield_now().await;
-        };
-        assert_eq!(pending.tool, tool);
-        assert_eq!(pending.reason, reason);
-        reg.confirmations().resolve(pending.id, Verdict::Denied);
-        assert_eq!(waiter.await.unwrap(), Err(ToolError::Denied));
-    }
-    assert!(fake.state().applied.is_empty());
-    // Reading the owner's app logs is fine for the Queen (no confirmation, but taints).
+    let reason = confirmation_reason(
+        &reg,
+        queen(),
+        "uninstall_app",
+        json!({"app": "nextcloud", "delete_data": true}),
+    )
+    .await;
+    assert_eq!(
+        reason,
+        "`nextcloud` is looked after by bee Ada (c-0a1b2c3d.b1); destructive action"
+    );
+    assert!(fake.state().namespace.is_some(), "nothing deleted");
+    // A reversible change by the attended Queen: allowed (the label policy), no question.
+    reg.call(1, &mut queen(), "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert!(reg.confirmations().pending().is_empty());
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner-bee").as_deref(),
+        Some(ADA)
+    );
+    // A tainted Queen is asked, still naming the bee first.
+    let mut tainted = queen();
+    tainted.tainted = true;
+    let reason =
+        confirmation_reason(&reg, tainted, "install_app", json!({"app": "nextcloud"})).await;
+    assert!(
+        reason.starts_with("`nextcloud` is looked after by bee Ada (c-0a1b2c3d.b1); this task has read untrusted content"),
+        "{reason}"
+    );
+    // Reading logs is fine for the Queen (no confirmation, but taints).
     fake.state().pods = vec![pod("p", 1, true, None)];
     let mut ctx = queen();
     reg.call(1, &mut ctx, "app_logs", json!({"app": "nextcloud"}))
@@ -850,18 +969,87 @@ async fn the_queen_changing_an_owner_app_gets_a_confirmation_naming_the_owner() 
 }
 
 #[tokio::test]
-async fn installs_record_the_owner_and_reinstalls_keep_it() {
+async fn unassigned_cells_from_before_bees_are_only_the_queens_with_approval() {
     let fake = Arc::new(Fake::default());
+    legacy_nextcloud(&fake);
     let reg = registry(&fake, None);
-    // A new app from the attended Queen: no question, and it belongs to the owner.
-    let out = reg
-        .call(3, &mut queen(), "install_app", json!({"app": "nextcloud"}))
+    // A bee is refused.
+    let r = reg
+        .call(
+            7,
+            &mut bee(ADA),
+            "uninstall_app",
+            json!({"app": "nextcloud"}),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::Refused(m)) if m.contains("not assigned to any bee")),
+        "{r:?}"
+    );
+    // The Queen is asked, whatever she does.
+    for (tool, reason) in [
+        (
+            "uninstall_app",
+            "`nextcloud` is not assigned to any bee (only you decide about it); the Queen wants \
+             to uninstall it; destructive action",
+        ),
+        (
+            "install_app",
+            "`nextcloud` is not assigned to any bee (only you decide about it); the Queen wants \
+             to install over it",
+        ),
+    ] {
+        let got = confirmation_reason(&reg, queen(), tool, json!({"app": "nextcloud"})).await;
+        assert_eq!(got, reason);
+    }
+    assert!(fake.state().applied.is_empty());
+    let status = reg
+        .call(7, &mut bee(ADA), "app_status", json!({"app": "nextcloud"}))
         .await
         .unwrap();
-    assert_eq!(out["owner"], "owner");
+    assert_eq!(status["bee"], Value::Null);
+    assert_eq!(status["legacy_owner"], "owner");
+}
+
+#[tokio::test]
+async fn every_install_gets_an_owning_bee_and_reinstalls_keep_it() {
+    let fake = Arc::new(Fake::default());
+    let reg = registry(&fake, None);
+    // The Queen must say which bee looks after a new cell.
+    let r = reg
+        .call(3, &mut queen(), "install_app", json!({"app": "nextcloud"}))
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::BadArgs(m)) if m.contains("which bee")),
+        "{r:?}"
+    );
+    let r = reg
+        .call(
+            3,
+            &mut queen(),
+            "install_app",
+            json!({"app": "nextcloud", "bee": "Nobody"}),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::BadArgs(m)) if m.contains("no bee")),
+        "{r:?}"
+    );
+    assert!(fake.state().applied.is_empty());
+    // "Ada looks after Nextcloud."
+    let out = reg
+        .call(
+            3,
+            &mut queen(),
+            "install_app",
+            json!({"app": "nextcloud", "bee": "ada"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["bee"], ADA);
     assert_eq!(
-        ns_label(&fake, "melissa.io/owner").as_deref(),
-        Some("owner")
+        ns_label(&fake, "melissa.io/owner-bee").as_deref(),
+        Some(ADA)
     );
     assert_eq!(
         ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
@@ -870,39 +1058,41 @@ async fn installs_record_the_owner_and_reinstalls_keep_it() {
     let at = ns_annotation(&fake, "melissa.io/installed-at").unwrap();
     assert!(at.ends_with('Z') && at.len() == 20, "{at}");
 
-    // The operator (owner scope) reinstalls: no ownership question, record unchanged.
+    // The user (operator) reinstalls: no ownership question, record unchanged; naming a
+    // different bee is not how cells move.
     let mut operator = TaskContext {
         attended: true,
-        scope: Scope::Owner,
+        scope: Scope::User,
         ..TaskContext::default()
     };
     reg.call(0, &mut operator, "install_app", json!({"app": "nextcloud"}))
         .await
         .unwrap();
     assert_eq!(
-        ns_label(&fake, "melissa.io/owner").as_deref(),
-        Some("owner")
-    );
-    assert_eq!(
-        ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
-        Some("the Queen (task 3)")
+        ns_label(&fake, "melissa.io/owner-bee").as_deref(),
+        Some(ADA)
     );
     assert_eq!(ns_annotation(&fake, "melissa.io/installed-at"), Some(at));
+    let r = reg
+        .call(
+            0,
+            &mut operator,
+            "install_app",
+            json!({"app": "nextcloud", "bee": "Bo"}),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::BadArgs(m)) if m.contains("reassign_cell")),
+        "{r:?}"
+    );
 
-    // A bee created for the owner (approved at start_bee) records the owner.
+    // The user may install without a bee: unassigned.
     fake.state().namespace = None;
-    let mut ctx = bee("k3", &[]);
-    if let Scope::Job(j) = &mut ctx.scope {
-        j.for_owner = true;
-    }
-    ctx.preapproved.insert("install_app".into());
-    reg.call(5, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+    reg.call(0, &mut operator, "install_app", json!({"app": "nextcloud"}))
         .await
         .unwrap();
-    assert_eq!(
-        ns_label(&fake, "melissa.io/owner").as_deref(),
-        Some("owner")
-    );
+    assert_eq!(ns_label(&fake, "melissa.io/owner-bee"), None);
+    assert_eq!(ns_label(&fake, "melissa.io/comb").as_deref(), Some(COMB));
 
     // A session without a scope may not create anything.
     fake.state().namespace = None;
@@ -918,22 +1108,63 @@ async fn installs_record_the_owner_and_reinstalls_keep_it() {
 }
 
 #[tokio::test]
-async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
+async fn legacy_cells_migrate_and_the_reassign_path_moves_them() {
     let fake = Arc::new(Fake::default());
     legacy_nextcloud(&fake);
+    let cells = Cells::new(settings(), Some(fake.clone()));
+    let list = cells.cells().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "nextcloud");
+    assert_eq!(list[0].owner, Owner::Unassigned);
+    assert_eq!(list[0].legacy_owner.as_deref(), Some("owner"));
+    assert_eq!(list[0].comb, None);
+
+    // The user's reinstall migrates the labels (the legacy one is not written again).
     let reg = registry(&fake, None);
-    // Granted (the Queen asked the owner when it started the bee): in scope.
-    let mut ctx = bee("k1", &["nextcloud"]);
-    ctx.attended = true;
-    reg.call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+    let mut operator = TaskContext {
+        scope: Scope::User,
+        ..TaskContext::default()
+    };
+    operator.preapproved.insert("install_app".into());
+    reg.call(0, &mut operator, "install_app", json!({"app": "nextcloud"}))
         .await
         .unwrap();
+    assert_eq!(ns_label(&fake, "melissa.io/owner"), None);
     assert_eq!(
-        ns_label(&fake, "melissa.io/owner").as_deref(),
-        Some("owner"),
-        "a reinstall never changes the owner"
+        ns_label(&fake, "melissa.io/cell").as_deref(),
+        Some("nextcloud")
     );
+    assert_eq!(ns_label(&fake, "melissa.io/comb").as_deref(), Some(COMB));
 
+    // Reassign: owner label, comb, fresh assignment record, legacy label gone.
+    legacy_nextcloud(&fake);
+    cells.assign("nextcloud", ADA, "the user").await.unwrap();
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner-bee").as_deref(),
+        Some(ADA)
+    );
+    assert_eq!(ns_label(&fake, "melissa.io/comb").as_deref(), Some(COMB));
+    assert_eq!(ns_label(&fake, "melissa.io/owner"), None);
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/assigned-by").as_deref(),
+        Some("the user")
+    );
+    let first = ns_annotation(&fake, "melissa.io/assigned-at").unwrap();
+    cells
+        .assign("nextcloud", BO, "the Queen, approved by the user")
+        .await
+        .unwrap();
+    let second = ns_annotation(&fake, "melissa.io/assigned-at").unwrap();
+    assert_ne!(
+        first, second,
+        "every assignment has a new record (admission needs it)"
+    );
+    assert_eq!(ns_label(&fake, "melissa.io/owner-bee").as_deref(), Some(BO));
+    assert!(cells.assign("blog", ADA, "the user").await.is_err());
+}
+
+#[tokio::test]
+async fn unknown_owners_fail_closed() {
     // k3s unreachable: the owner can't be checked, so nothing is changed.
     let down = Arc::new(Fake {
         down: true,
@@ -943,7 +1174,7 @@ async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
     let r = reg
         .call(
             7,
-            &mut bee("k1", &[]),
+            &mut bee(ADA),
             "uninstall_app",
             json!({"app": "nextcloud"}),
         )
@@ -955,31 +1186,28 @@ async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
 }
 
 #[test]
-fn bees_see_only_the_app_tools_their_scope_allows() {
+fn bees_are_told_their_scope_and_scopeless_sessions_only_read() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None);
     let names = |ctx: &TaskContext| -> Vec<&'static str> {
         reg.visible_to(ctx, None).iter().map(|s| s.name).collect()
     };
-    // No apps, no create right: nothing to change, nothing to read logs from.
-    let mut closed = bee("k1", &[]);
-    if let Scope::Job(j) = &mut closed.scope {
-        j.create = false;
-    }
-    assert_eq!(names(&closed), ["app_status", "list_apps", "list_catalog"]);
-    // Given one app only: the tools show exactly that app.
-    if let Scope::Job(j) = &mut closed.scope {
-        j.apps.insert("nextcloud".into());
-    }
-    let specs = reg.visible_to(&closed, None);
-    let uninstall = specs.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert_eq!(
-        uninstall.params["properties"]["app"]["enum"],
-        json!(["nextcloud"])
+        names(&TaskContext::default()),
+        ["app_status", "list_apps", "list_catalog"]
     );
+    let specs = reg.visible_to(&bee(ADA), None);
+    assert_eq!(specs.len(), 6);
+    let uninstall = specs.iter().find(|s| s.name == "uninstall_app").unwrap();
+    assert!(uninstall.params["properties"]["app"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("cells you look after"));
     // The Queen sees everything unchanged.
     let all = reg.visible_to(&queen(), None);
-    assert_eq!(all.len(), 6); // + list_apps (read-only, added by the E2E work)
+    assert_eq!(all.len(), 6);
     let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
-    assert!(uninstall.params["properties"]["app"].get("enum").is_none());
+    assert!(uninstall.params["properties"]["app"]
+        .get("description")
+        .is_none());
 }

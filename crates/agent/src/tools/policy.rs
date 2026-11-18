@@ -16,6 +16,9 @@ pub enum Effect {
     Reversible,
     /// Can lose data or availability (remove an app, restore over data, delete a volume).
     Destructive,
+    /// Changes who looks after a cell (reassign). Always confirmed: only the user decides
+    /// ownership, whoever asks.
+    Ownership,
 }
 
 /// Security-relevant facts about a tool.
@@ -67,6 +70,9 @@ pub enum Decision {
 pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
     if labels.effect == Effect::Destructive {
         return Decision::Confirm("destructive action".into());
+    }
+    if labels.effect == Effect::Ownership {
+        return Decision::Confirm("changes who looks after a cell (only you decide that)".into());
     }
     if ctx.tainted && (labels.egress || labels.effect != Effect::None) {
         return Decision::Confirm(

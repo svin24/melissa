@@ -16,6 +16,7 @@ mod backend;
 mod board;
 pub mod claude;
 mod cli;
+pub mod comb;
 mod echo;
 pub mod egress;
 pub mod mcp;
