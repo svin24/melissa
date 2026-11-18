@@ -34,7 +34,8 @@ impl Default for QueenConfig {
 }
 
 /// Headless invocations of the agent CLIs Melissa knows about. Backends whose binary is
-/// missing show up as "not installed" and cannot be selected.
+/// missing show up as "not installed" and cannot be selected. Each runs in its built-in
+/// bubblewrap sandbox preset (`SandboxSpec::preset`) unless the config says otherwise.
 pub fn default_backends() -> Vec<CliSpec> {
     vec![
         // `--tools ""` removes Claude's built-in tools (shell, file access); it acts only
@@ -82,6 +83,8 @@ impl QueenConfig {
                 bail!("duplicate backend name `{}`", b.name);
             }
             names.push(&b.name);
+            b.validate()
+                .with_context(|| format!("backend `{}`", b.name))?;
         }
         Ok(())
     }
@@ -157,6 +160,51 @@ mod tests {
             toml::from_str("[[backend]]\nname = \"echo\"\ncommand = \"x\"").unwrap();
         assert!(dup.validate().is_err());
         assert!(toml::from_str::<QueenConfig>("nonsense = 1").is_err());
+    }
+
+    #[test]
+    fn sandbox_is_on_by_default_and_configurable() {
+        for b in default_backends() {
+            assert!(b.effective_sandbox().enabled, "{}", b.name);
+        }
+        // Old configs without a sandbox table get the preset for their command.
+        let config: QueenConfig =
+            toml::from_str("[[backend]]\nname = \"gemma\"\ncommand = \"opencode\"").unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.backends[0].effective_sandbox(),
+            melissa_agent::SandboxSpec::preset("opencode")
+        );
+        let config: QueenConfig = toml::from_str(
+            r#"
+            [[backend]]
+            name = "x"
+            command = "x"
+            [backend.sandbox]
+            rw = [".x/token"]
+            env = ["X_API_KEY"]
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let sandbox = config.backends[0].effective_sandbox();
+        assert!(sandbox.enabled);
+        assert_eq!(sandbox.rw, [".x/token"]);
+        let off: QueenConfig = toml::from_str(
+            "[[backend]]\nname = \"x\"\ncommand = \"x\"\nsandbox = { enabled = false }",
+        )
+        .unwrap();
+        assert!(!off.backends[0].effective_sandbox().enabled);
+        // Unknown keys and paths that escape $HOME are rejected.
+        assert!(toml::from_str::<QueenConfig>(
+            "[[backend]]\nname = \"x\"\ncommand = \"x\"\nsandbox = { network = false }",
+        )
+        .is_err());
+        let escape: QueenConfig = toml::from_str(
+            "[[backend]]\nname = \"x\"\ncommand = \"x\"\nsandbox = { ro = [\"../..\"] }",
+        )
+        .unwrap();
+        assert!(escape.validate().is_err());
     }
 
     #[test]
