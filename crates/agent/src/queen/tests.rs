@@ -24,7 +24,10 @@ use crate::{
     },
     mcp::McpServer,
     session::{OpenSession, OpenedSession, SessionBackend},
-    tools::{BeeInfo, Labels, TaskContext, Tool, ToolError, ToolRegistry, ToolSpec},
+    tools::{
+        BeeInfo, JobScope, Labels, Owner, ResourceKind, ResourceOwners, Scope, TaskContext, Tool,
+        ToolError, ToolRegistry, ToolSpec, Verdict,
+    },
     AgentError, AuditLog, Backend, BackendInfo, BoxFuture, EchoBackend, EventSink, McpLink,
     RunRequest, TaskBoard, TaskStatus,
 };
@@ -157,6 +160,24 @@ impl Setup {
     }
 }
 
+/// `nextcloud` is the owner's, `blog` belongs to an earlier job, anything else doesn't exist.
+struct FakeOwners;
+impl ResourceOwners for FakeOwners {
+    fn owner<'a>(
+        &'a self,
+        _: ResourceKind,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Owner>, String>> {
+        Box::pin(async move {
+            Ok(match name {
+                "nextcloud" => Some(Owner::Human),
+                "blog" => Some(Owner::Job("0ld".into())),
+                _ => None,
+            })
+        })
+    }
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("melissa-queen-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -176,7 +197,8 @@ fn setup_in(dir: PathBuf, scripts: Vec<Vec<Step>>, tune: impl FnOnce(&mut QueenS
     tools.extend(pool.tools());
     let audit = AuditLog::new(dir.join("audit.jsonl"));
     let registry = ToolRegistry::new(tools, Some(audit.clone()))
-        .with_confirm_timeout(Duration::from_millis(200));
+        .with_confirm_timeout(Duration::from_millis(200))
+        .with_owners(Arc::new(FakeOwners));
     let server = McpServer::new(registry);
     let board = TaskBoard::with_tools(
         vec![Arc::new(EchoBackend::new()), Arc::new(Hang)],
@@ -743,9 +765,7 @@ async fn a_tainted_queen_needs_approval_to_start_workers() {
             break id;
         }
     };
-    s.queen
-        .confirmations()
-        .resolve(id, crate::tools::Verdict::Denied);
+    s.queen.confirmations().resolve(id, Verdict::Denied);
     assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
     assert!(s.queen.workers().is_empty());
     // The resolution is published too.
@@ -972,4 +992,188 @@ async fn no_working_backend_fails_the_turn() {
     assert!(events.iter().any(|e| matches!(e, QueenEvent::Error { message, .. } if message.contains("tried: broken-acp, missing"))));
     // The Queen is free for the next message.
     assert_eq!(s.queen.status().turn, None);
+}
+
+/// The MCP token of worker `id` (from its mcp.json).
+fn worker_token(s: &Setup, id: u64) -> String {
+    let config: Value = serde_json::from_str(
+        &std::fs::read_to_string(s.dir.join(format!("work/task-{id}/mcp.json"))).unwrap(),
+    )
+    .unwrap();
+    let url = config["mcpServers"]["melissa"]["url"].as_str().unwrap();
+    url.rsplit('/').next().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owner() {
+    let s = setup("scopes", Vec::new());
+    let (ctx, allow) = s.queen.session_policy();
+    assert!(matches!(&ctx.scope, Scope::ForOwner { agent } if agent == "the Queen"));
+    let queen = s
+        .server
+        .open_session(s.queen.task_id(), ctx, allow)
+        .unwrap();
+
+    // Default: only what the worker creates; its job key is fresh and random.
+    let r = call(
+        &s.server,
+        &queen,
+        "start_worker",
+        json!({"goal": "wait", "backend": "hang"}),
+    )
+    .await;
+    assert_eq!(r["isError"], false, "{r}");
+    let scope = &r["structuredContent"]["scope"];
+    assert_eq!(scope["apps"], json!([]));
+    assert_eq!(scope["create_apps"], true);
+    assert_eq!(scope["for_owner"], false);
+    let key = scope["job"].as_str().unwrap().to_string();
+    assert!(
+        crate::tools::scope::valid_job_key(&key) && key.len() == 12,
+        "{key}"
+    );
+    let w1 = r["structuredContent"]["worker"].as_u64().unwrap();
+    let wctx = s.server.session_context(&worker_token(&s, w1)).unwrap();
+    assert!(matches!(&wctx.scope, Scope::Job(j) if j.key == key && j.apps.is_empty() && j.create));
+    let r = call(&s.server, &queen, "cancel_worker", json!({"worker": w1})).await;
+    assert_eq!(r["isError"], false, "{r}");
+
+    // An app of an earlier job: the Queen may change it, so it may grant it, no question.
+    let r = call(
+        &s.server,
+        &queen,
+        "start_worker",
+        json!({"goal": "fix the blog", "backend": "hang", "apps": ["blog"], "create_apps": false}),
+    )
+    .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(r["structuredContent"]["scope"]["apps"], json!(["blog"]));
+    assert!(s.queen.confirmations().pending().is_empty());
+    let w2 = r["structuredContent"]["worker"].as_u64().unwrap();
+    call(&s.server, &queen, "cancel_worker", json!({"worker": w2})).await;
+
+    // The owner's Nextcloud: the owner must approve the grant; the question names them.
+    let registry = s.server.registry().clone();
+    let task = s.queen.task_id();
+    let grant = {
+        let registry = registry.clone();
+        let mut ctx = s.queen.session_policy().0;
+        tokio::spawn(async move {
+            registry
+                .call(
+                    task,
+                    &mut ctx,
+                    "start_worker",
+                    json!({"goal": "update nextcloud", "backend": "hang", "apps": ["nextcloud"]}),
+                )
+                .await
+        })
+    };
+    let pending = loop {
+        if let Some(c) = s.queen.confirmations().pending().first().cloned() {
+            break c;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    assert_eq!(pending.tool, "start_worker");
+    assert_eq!(
+        pending.reason,
+        "`nextcloud` belongs to you; the Queen wants to let a worker change it"
+    );
+    s.queen.confirmations().resolve(pending.id, Verdict::Denied);
+    assert_eq!(grant.await.unwrap(), Err(ToolError::Denied));
+    assert_eq!(
+        s.queen
+            .workers()
+            .iter()
+            .filter(|w| w.status == TaskStatus::Running)
+            .count(),
+        0,
+        "no worker without the owner's yes"
+    );
+
+    // Creating for the owner needs the owner's yes too (timeout = no).
+    let r = call(
+        &s.server,
+        &queen,
+        "start_worker",
+        json!({"goal": "x", "backend": "hang", "for_owner": true}),
+    )
+    .await;
+    assert!(err_text(&r).contains("timed out"), "{r}");
+
+    // A session without the owner's authority can't hand out apps, even with delegation.
+    let mut job = TaskContext {
+        delegate: true,
+        attended: true,
+        scope: Scope::Job(JobScope {
+            key: "k1".into(),
+            apps: Default::default(),
+            create: true,
+            for_owner: false,
+        }),
+        ..TaskContext::default()
+    };
+    let r = registry
+        .call(
+            99,
+            &mut job,
+            "start_worker",
+            json!({"goal": "x", "backend": "hang", "apps": ["blog"]}),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::Refused(m)) if m.contains("not yours")),
+        "{r:?}"
+    );
+    let r = call(
+        &s.server,
+        &queen,
+        "start_worker",
+        json!({"goal": "x", "apps": ["Bad Name"]}),
+    )
+    .await;
+    assert!(err_text(&r).contains("app names"), "{r}");
+}
+
+#[tokio::test]
+async fn agents_reach_only_the_workers_they_started() {
+    let s = setup("own-workers", Vec::new());
+    let (ctx, allow) = s.queen.session_policy();
+    let queen = s
+        .server
+        .open_session(s.queen.task_id(), ctx.clone(), allow.clone())
+        .unwrap();
+    let r = call(
+        &s.server,
+        &queen,
+        "start_worker",
+        json!({"goal": "wait", "backend": "hang"}),
+    )
+    .await;
+    let w = r["structuredContent"]["worker"].as_u64().unwrap();
+
+    // Another delegating session (not the Queen's task) sees none of them.
+    let other = s.server.open_session(500, ctx, allow).unwrap();
+    for (tool, args) in [
+        ("worker_status", json!({"worker": w})),
+        ("cancel_worker", json!({"worker": w})),
+    ] {
+        let r = call(&s.server, &other, tool, args).await;
+        assert!(err_text(&r).contains("no worker"), "{tool}: {r}");
+    }
+    let r = call(&s.server, &other, "list_workers", json!({})).await;
+    assert_eq!(r["structuredContent"]["workers"], json!([]));
+
+    // A worker sees no worker tools at all, so it can't read its siblings' output.
+    let worker = worker_token(&s, w);
+    let names = tool_names(&s.server, &worker).await;
+    assert!(!names.iter().any(|n| n.contains("worker")), "{names:?}");
+    let r = call(&s.server, &worker, "worker_status", json!({"worker": w})).await;
+    assert!(err_text(&r).contains("unknown tool"), "{r}");
+
+    // The Queen still can.
+    let r = call(&s.server, &queen, "worker_status", json!({"worker": w})).await;
+    assert_eq!(r["structuredContent"]["status"], "running");
+    call(&s.server, &queen, "cancel_worker", json!({"worker": w})).await;
 }
