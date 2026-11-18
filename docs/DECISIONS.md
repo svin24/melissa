@@ -43,5 +43,11 @@ Format: date — decision. Why. Alternatives considered.
   catalog: too big, slow to update), agents running containers themselves (rejected: bypasses policy and audit).
 - **2026-11-18 — Image = bare necessities for web UI + agents, plus k3s; the box ships empty and agents set up the rest.**
   Owner decision. k3s stays in the image (it's the platform agents act on; installing it would need host root).
+- **2026-11-18 — Agent CLIs run under bubblewrap by default, with per-CLI presets of the narrowest home paths that
+  work.** Why: defence in depth; agents must not read the user's files or change the host. bwrap ships with Fedora
+  Atomic desktops and fedora-bootc (listed in `packages-common.txt` so it stays), is small, rootless, and needs no
+  network setup (rootless podman's pasta networking is broken on the dev laptop). Host network is shared for now;
+  a deny-by-default egress proxy is the next step. Alternatives: rootless podman (network broken here, heavier),
+  systemd-run/landlock (less isolation of the file tree), no sandbox (rejected).
 - **2026-11-18 — The Queen is the head agent; workers are sandboxed agents it starts.** Owner decision. Queen backend is a
   configurable list of subscription backends; no local LLMs on weak hardware.
