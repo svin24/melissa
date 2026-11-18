@@ -40,8 +40,9 @@ fn yes() -> bool {
 /// Where Claude Code keeps its sessions, relative to `$HOME`.
 pub const CLAUDE_SESSION_STORE: &str = ".claude/projects";
 
-/// How long Claude may wait for one of Melissa's MCP tools (`MCP_TOOL_TIMEOUT`, ms): tool
-/// calls can wait up to 15 minutes for a human's confirmation.
+/// How long Claude may wait for one of Melissa's MCP tools (`MCP_TOOL_TIMEOUT`, ms). In
+/// practice claude 2.1.327 gives up on an HTTP MCP call after 300 s regardless (and leaves
+/// the request open), which is why the queen's `confirm_timeout_secs` stays below that.
 const MCP_TOOL_TIMEOUT_MS: &str = "960000";
 
 /// Extra arguments a config may add (each followed by one value). Everything else is set by

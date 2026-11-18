@@ -67,7 +67,7 @@ Code still uses older names; the rename and bee/cell ownership are the next deve
   Secret + PVC + Deployment + Service + Traefik Ingress (`<app>.melissa.home.arpa` by default,
   `[apps] domain`) and server-side applied by a second identity, `melissa/melissa-apps`, whose writes
   admission policies pin to `app-*` namespaces with Pod Security baseline (no Secret reads anywhere).
-  Tools: `list_catalog`, `install_app`, `app_status`, `app_logs`, `uninstall_app`. First app: Nextcloud
+  Tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `uninstall_app`. First app: Nextcloud
   34.0.6 (official Apache image by digest, SQLite). Verified in the headless VM: install with
   confirmation, ready, `status.php` from the host, owner login, logs cap, keep-data uninstall +
   reinstall, delete-data uninstall, RBAC denials, smoke test, no AVC denials. Details:
@@ -277,7 +277,8 @@ Roadmap (rough, phases may overlap):
 - **M1 — Queen bee + UI skeleton:** agent abstraction with three backends, narrow tool API, Rust (axum + maud) + htmx web UI with the base component library, audit log.
 - **M2 — Single-node k3s + apps:** k3s on one bee, wildcard ingress, manifest format, Nextcloud and Immich installable from the UI.
   Progress (2026-11-18): k3s, manifest format, write identity and app tools done; Nextcloud installs,
-  reports status/logs and uninstalls through the tool path with confirmations (VM-verified). Open: LAN
+  reports status/logs and uninstalls through the tool path with confirmations (VM-verified), and the
+  same loop works by chatting with the Queen (grok-acp and claude-session, 2026-11-18). Open: LAN
   DNS + TLS for `*.melissa.home.arpa` (Q22), Immich, the UI (owner's design), per-app NetworkPolicy.
 - **M3 — Multi-bee:** hive of VMs, mesh via Tailscale, bee join flow, node labels, queen bee failover design, shared storage (Longhorn).
 - **M4 — VPS bee + backups:** edge/ingress bee, offsite backups with restic or Kopia, restore drills, VPN exit, seedbox as optional apps.
@@ -338,6 +339,7 @@ Roadmap (rough, phases may overlap):
     (2026-11-18: `claude-session` sets `MCP_TOOL_TIMEOUT=960000`, not measured; OpenCode has a per-server MCP
     `timeout` config key, not set.)
     (Since 2026-11-18 MCP goes through the sandbox bridge and an MCP-only socket; that path adds no timeout.)
+    (2026-11-18, measured: claude gives up after 300 s and leaves the call open; see 41.)
 30. The system prompt is a preamble of the first message; long sessions may compact it away. Use ACP
     `systemPrompt` where an agent supports it, or Grok's `AGENTS.md` in the Queen's working directory?
     Claude has `--append-system-prompt` (and `--system-prompt`); not used yet, so all backends behave alike.
@@ -370,6 +372,22 @@ Roadmap (rough, phases may overlap):
     per app namespace with ingress from Traefik only, and an egress allowlist per manifest?
 39. Nextcloud on SQLite is for M2; move to Postgres (second container or a shared DB service?) before
     real use, plus background jobs (cron) and `trusted_proxies`/`overwriteprotocol` once TLS exists.
+40. The Queen's taint is sticky for the whole conversation since 2026-11-18 (it survives session reopens
+    and restarts, because the agent keeps the content). How does the owner start a fresh, untainted
+    conversation (ties to 31, `/new`)? Show the taint in the UI? Old `session.json` files without the
+    flag resume untainted once.
+41. Confirmation waits vs the agents' MCP timeouts: Claude Code 2.1.327 abandons an HTTP MCP call at
+    300 s (despite `MCP_TOOL_TIMEOUT`) without closing or cancelling it, so `confirm_timeout_secs`
+    (default 240) withdraws confirmations first. Measure grok and opencode; per-backend limits? For
+    owners who answer later (no notification channel yet, 17), should a waiting action become a
+    durable request the Queen can pick up again instead of failing?
+42. Maintenance tools are missing (end-to-end test 2026-11-18): disk usage of `/var` and per app volume,
+    list/prune unused images, restart an app, update an app to the catalog's current digest, app events
+    (pull progress, probe failures), bootc update status/stage/rollback, journal usage/vacuum. Most need
+    root on the bee (crictl, bootc, journald), not the k3s API: a narrow privileged helper with fixed
+    verbs, or k8s-only tools where possible? (`list_apps` added.)
+43. `install_app` from an attended, untainted Queen needs no confirmation (decided 2026-11-18). It pulls
+    ~0.5 GB and fills `/var` (2.0 GB left in the test VM after Nextcloud): revisit together with 36.
 20. Update policy: the stock `bootc-fetch-apply-updates.timer` (download + reboot) is masked in Melissa images;
     Melissa must stage updates itself, with health checks (greenboot or own) for automatic rollback.
 40. Ownership (2026-11-18): should the owner be able to hand an app *to* a job or release it (today `app-adopt`

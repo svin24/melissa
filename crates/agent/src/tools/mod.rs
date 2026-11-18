@@ -46,7 +46,7 @@ pub enum ToolError {
     /// Out of the task's scope (not its resource): refused without asking anyone.
     #[error("refused: {0}")]
     Refused(String),
-    #[error("confirmation timed out")]
+    #[error("confirmation timed out: nobody answered in time, so the request was withdrawn")]
     ConfirmationTimeout,
     #[error("tool failed: {0}")]
     Failed(String),

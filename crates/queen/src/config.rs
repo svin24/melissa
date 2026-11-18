@@ -18,6 +18,12 @@ pub struct QueenConfig {
     pub listen: SocketAddr,
     /// Maximum run time for one agent task, in seconds.
     pub task_timeout_secs: u64,
+    /// How long a tool call waits for a human in the confirmation inbox, in seconds; then
+    /// it is withdrawn and the agent is told. Keep it below the agents' own MCP request
+    /// timeouts: Claude Code gives up after 300 s but leaves the request open (no cancel,
+    /// no close), so a longer wait would leave a confirmation that runs, once approved,
+    /// for an agent that stopped waiting.
+    pub confirm_timeout_secs: u64,
     /// Agent backends: one-shot CLIs (`kind = "cli"`, the default), ACP agents
     /// (`kind = "acp"`) and Claude Code sessions over stream-json (`kind = "claude"`). The
     /// built-in `echo` backend is always present in addition.
@@ -75,6 +81,7 @@ impl Default for QueenConfig {
         Self {
             listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             task_timeout_secs: 300,
+            confirm_timeout_secs: 240,
             backends: default_backends(),
             kubeconfig: None,
             queen: QueenSection::default(),
@@ -272,6 +279,9 @@ impl QueenConfig {
         if self.task_timeout_secs == 0 {
             bail!("task_timeout_secs must be greater than 0");
         }
+        if !(1..=3600).contains(&self.confirm_timeout_secs) {
+            bail!("confirm_timeout_secs must be 1-3600");
+        }
         if !valid_domain(&self.apps.domain) {
             bail!(
                 "[apps] domain `{}` must be a lowercase DNS name like `melissa.home.arpa`",
@@ -318,6 +328,10 @@ impl QueenConfig {
 
     pub fn task_timeout(&self) -> Duration {
         Duration::from_secs(self.task_timeout_secs)
+    }
+
+    pub fn confirm_timeout(&self) -> Duration {
+        Duration::from_secs(self.confirm_timeout_secs)
     }
 }
 
@@ -389,6 +403,7 @@ mod tests {
             r#"
             listen = "127.0.0.1:9000"
             task_timeout_secs = 60
+            confirm_timeout_secs = 120
             kubeconfig = "/run/example/kubeconfig"
             [[backend]]
             name = "gemma"
@@ -399,6 +414,7 @@ mod tests {
         .unwrap();
         config.validate().unwrap();
         assert_eq!(config.listen.port(), 9000);
+        assert_eq!(config.confirm_timeout(), Duration::from_secs(120));
         assert_eq!(config.backends.len(), 1);
         assert_eq!(
             config.kubeconfig.as_deref(),
@@ -421,6 +437,11 @@ mod tests {
             toml::from_str("[[backend]]\nname = \"echo\"\ncommand = \"x\"").unwrap();
         assert!(dup.validate().is_err());
         assert!(toml::from_str::<QueenConfig>("nonsense = 1").is_err());
+        for bad in ["confirm_timeout_secs = 0", "confirm_timeout_secs = 3601"] {
+            let c: QueenConfig = toml::from_str(bad).unwrap();
+            assert!(c.validate().is_err(), "{bad}");
+        }
+        assert!(QueenConfig::default().confirm_timeout() < Duration::from_secs(300));
     }
 
     #[test]

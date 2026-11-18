@@ -1,6 +1,7 @@
-//! The app tools: `list_catalog`, `install_app`, `app_status`, `app_logs`, `uninstall_app`.
+//! The app tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`,
+//! `uninstall_app`.
 //!
-//! Labels (policy keys off them): `list_catalog` and `app_status` read-only; `app_logs`
+//! Labels (policy keys off them): `list_catalog`, `list_apps` and `app_status` read-only; `app_logs`
 //! reads untrusted content (app output is attacker-influenced); `install_app` Reversible;
 //! `uninstall_app` Destructive (always confirmed, even when the data is kept). Generated
 //! secrets never appear in any tool's output.
@@ -68,7 +69,7 @@ impl AppSettings {
     }
 }
 
-/// All five tools over one cluster connection (`None` = no k3s on this bee).
+/// All six tools over one cluster connection (`None` = no k3s on this bee).
 pub fn app_tools<C>(settings: AppSettings, cluster: Option<Arc<C>>) -> Vec<Arc<dyn Tool>>
 where
     C: AppRead + AppDeployer + 'static,
@@ -85,6 +86,10 @@ where
             read: read.clone(),
             deploy: deploy.clone(),
         }),
+        Arc::new(ListApps(AppStatus {
+            settings: settings.clone(),
+            read: read.clone(),
+        })),
         Arc::new(AppStatus {
             settings: settings.clone(),
             read: read.clone(),
@@ -517,6 +522,67 @@ impl Tool for AppStatus {
 
     fn target(&self) -> Option<Target> {
         Some(app_target(Access::Read, "check"))
+    }
+}
+
+// ---- list_apps ---------------------------------------------------------------------------
+
+/// Every catalog app that is on the bee in some form (running, starting, failing, data kept
+/// after an uninstall, being deleted), with the same phases as `app_status`. Built from
+/// per-app reads, because the write identity may get namespaces but not list them.
+struct ListApps(AppStatus);
+
+impl ListApps {
+    async fn list(&self, args: Value) -> Result<Value, ToolError> {
+        reject_unknown(arg_object(&args)?, &[])?;
+        let mut apps = Vec::new();
+        let mut not_installed = Vec::new();
+        // BTreeMap: sorted by name.
+        for name in self.0.settings.catalog().apps.keys() {
+            let report = self.0.status(json!({ "app": name })).await?;
+            if report["k3s_reachable"] == false {
+                return Ok(report);
+            }
+            if report["phase"] == "not_installed" {
+                not_installed.push(name.clone());
+                continue;
+            }
+            apps.push(json!({
+                "app": name,
+                "phase": report["phase"],
+                "ready_replicas": report["ready_replicas"],
+                "replicas": report["replicas"],
+                "url": report["url"],
+                "volumes": report["volumes"],
+                "problem_pods": report["pods"].as_array().map(|p| {
+                    p.iter().filter(|p| !p["reason"].is_null()).cloned().collect::<Vec<_>>()
+                }),
+            }));
+        }
+        Ok(json!({"apps": apps, "not_installed": not_installed}))
+    }
+}
+
+impl Tool for ListApps {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "list_apps",
+            description: "Catalog apps present on this bee: running, starting, failing, \
+                uninstalled with data kept, or being deleted (phase as in app_status), with \
+                ready replicas, URL, volumes and problem pods; plus the catalog apps that are \
+                not installed. Use it to find leftovers such as kept data.",
+            // Same content as app_status: names, counts, phases, reason codes.
+            labels: Labels::READ_ONLY,
+            params: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.list(args))
     }
 }
 

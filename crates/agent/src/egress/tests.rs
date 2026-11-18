@@ -413,3 +413,84 @@ fn default_allowlists_parse() {
     }
     assert!(default_allow("sh").is_empty());
 }
+
+/// A destructive tool, so every call waits in the confirmation inbox.
+struct NeedsApproval;
+impl Tool for NeedsApproval {
+    fn spec(&self) -> crate::tools::ToolSpec {
+        crate::tools::ToolSpec {
+            name: "remove_everything",
+            description: "test",
+            labels: crate::tools::Labels {
+                effect: crate::tools::Effect::Destructive,
+                ..crate::tools::Labels::READ_ONLY
+            },
+            params: json!({"type": "object"}),
+        }
+    }
+    fn call<'a>(
+        &'a self,
+        _args: Value,
+    ) -> crate::BoxFuture<'a, Result<Value, crate::tools::ToolError>> {
+        Box::pin(async { Ok(json!({"removed": true})) })
+    }
+}
+
+/// An agent's MCP client gives up on a call that waits for a confirmation (Claude Code's
+/// HTTP client does so after 300 s) and closes the connection: the confirmation must leave
+/// the inbox, or a later approval would run an action nobody is waiting for.
+#[tokio::test]
+async fn mcp_call_abandoned_by_the_client_withdraws_its_confirmation() {
+    let root = scratch("mcp-abandon");
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(NeedsApproval)];
+    let server = McpServer::new(ToolRegistry::new(tools, None));
+    let token = server
+        .open_session(7, TaskContext::default(), None)
+        .unwrap();
+    let proxy = EgressProxy::new(root.join("sockets"), None)
+        .unwrap()
+        .with_netbridge("/usr/bin/true".into())
+        .with_mcp(server.clone(), "127.0.0.1:8080".parse().unwrap());
+    let lease = proxy
+        .open(request(NetworkMode::None, &[], vec![token.clone()]))
+        .unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+    let inbox = server.registry().confirmations().clone();
+
+    for half_close in [false, true] {
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "remove_everything", "arguments": {}}})
+        .to_string();
+        let mut s = UnixStream::connect(dir.join(MCP_SOCKET)).await.unwrap();
+        let req = format!(
+            "POST /mcp/{token} HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{call}",
+            call.len()
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        for _ in 0..200 {
+            if !inbox.pending().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(inbox.pending().len(), 1, "the call waits for a human");
+        // The bridge passes a client's close on as a half-close (copy_bidirectional); a
+        // killed bridge closes the socket completely.
+        if half_close {
+            s.shutdown().await.unwrap();
+        } else {
+            drop(s);
+        }
+        for _ in 0..200 {
+            if inbox.pending().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            inbox.pending().is_empty(),
+            "half_close={half_close}: confirmation still pending after the client left"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

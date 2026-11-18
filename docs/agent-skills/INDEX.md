@@ -23,6 +23,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [ownership-and-scopes.md](ownership-and-scopes.md) — who owns which app (`melissa.io/owner`), task scopes
   (Owner/ForOwner/Job), the one scope check in the registry (refused vs confirmation), worker grants,
   declaring a tool's target, `app-adopt`, the owner-label admission rules.
+- [e2e-queen-app-install.md](e2e-queen-app-install.md) — the owner installs/checks/uninstalls Nextcloud by
+  chatting with the Queen: laptop Queen + VM k3s setup, verified run with timings, taint and confirmation gotchas.
 
 ## Claude Code plugins and project skills (2026-11-18)
 - Project skill `.claude/skills/melissa-ui/SKILL.md`: binding UI rules; overrides third-party design skills.

@@ -3,7 +3,10 @@
 //! Transport: JSON-RPC 2.0 over HTTP POST (the MCP "streamable HTTP" transport, JSON responses
 //! only, no server-initiated streams). Each task gets its own session token, embedded in the
 //! URL the agent CLI is given; the token selects the task's policy context. Methods handled:
-//! `initialize`, `ping`, `tools/list`, `tools/call`; notifications are accepted and ignored.
+//! `initialize`, `ping`, `tools/list`, `tools/call`; of the notifications only
+//! `notifications/cancelled` does something (it stops that session's call with the given
+//! request id, which withdraws a confirmation it waits for); the others are accepted and
+//! ignored.
 
 use std::{
     collections::HashMap,
@@ -12,6 +15,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
+use tokio::sync::oneshot;
 
 use crate::{
     tools::{TaskContext, ToolRegistry},
@@ -33,6 +37,27 @@ struct Session {
 pub struct McpServer {
     registry: ToolRegistry,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    /// `tools/call`s in flight by (session token, JSON-RPC id as JSON text), so a client's
+    /// `notifications/cancelled` can stop one.
+    inflight: Arc<InflightMap>,
+}
+
+/// Cancel handles of calls in flight, by (session token, JSON-RPC id as JSON text).
+type InflightMap = Mutex<HashMap<(String, String), oneshot::Sender<()>>>;
+
+/// JSON-RPC error code MCP uses for a request the client cancelled.
+const REQUEST_CANCELLED: i64 = -32800;
+
+/// Removes a call's cancel handle when the call ends (finished, failed or dropped).
+struct Inflight<'a> {
+    map: &'a InflightMap,
+    key: (String, String),
+}
+
+impl Drop for Inflight<'_> {
+    fn drop(&mut self) {
+        lock(self.map).remove(&self.key);
+    }
 }
 
 impl McpServer {
@@ -40,6 +65,7 @@ impl McpServer {
         Self {
             registry,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -107,6 +133,18 @@ impl McpServer {
             .unwrap_or_default()
             .to_string();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        if method == "notifications/cancelled" && id.is_none() {
+            // An agent's MCP client gave up on a call (e.g. its own request timeout). Stop
+            // it, so a confirmation it waits for leaves the inbox instead of running later
+            // for nobody.
+            if let Some(request) = params.get("requestId") {
+                let key = (token.to_string(), request.to_string());
+                if let Some(cancel) = lock(&self.inflight).remove(&key) {
+                    let _ = cancel.send(());
+                }
+            }
+            return None;
+        }
         // Notifications (no id) never get a response.
         let id = id?;
         let result = match method.as_str() {
@@ -118,7 +156,7 @@ impl McpServer {
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(self.tools_list(token)),
-            "tools/call" => self.tools_call(token, &params).await,
+            "tools/call" => self.cancellable_call(token, &id, &params).await,
             _ => Err((-32601, format!("method not found: {method}"))),
         };
         Some(match result {
@@ -141,6 +179,43 @@ impl McpServer {
             .map(|s| json!({"name": s.name, "description": s.description, "inputSchema": s.params}))
             .collect();
         json!({"tools": tools})
+    }
+
+    /// `tools/call` that stops when the client sends `notifications/cancelled` for `id`.
+    async fn cancellable_call(
+        &self,
+        token: &str,
+        id: &Value,
+        params: &Value,
+    ) -> Result<Value, (i64, String)> {
+        let (cancel, cancelled) = oneshot::channel();
+        let key = (token.to_string(), id.to_string());
+        lock(&self.inflight).insert(key.clone(), cancel);
+        let _inflight = Inflight {
+            map: &self.inflight,
+            key,
+        };
+        tokio::select! {
+            result = self.tools_call(token, params) => result,
+            Ok(()) = cancelled => {
+                // The call's future is dropped here: a pending confirmation is withdrawn.
+                let task = lock(&self.sessions).get(token).map(|s| s.task);
+                let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+                let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+                if let Some(task) = task {
+                    self.registry.audit_agent(
+                        task,
+                        "",
+                        "tool.cancelled",
+                        name,
+                        &args,
+                        "the agent's MCP client cancelled the call",
+                    );
+                }
+                tracing::info!(tool = name, "MCP client cancelled a tool call");
+                Err((REQUEST_CANCELLED, "request cancelled by the client".into()))
+            }
+        }
     }
 
     async fn tools_call(&self, token: &str, params: &Value) -> Result<Value, (i64, String)> {
@@ -291,5 +366,93 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert_ne!(a, b);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    struct Destructive;
+    impl crate::tools::Tool for Destructive {
+        fn spec(&self) -> crate::tools::ToolSpec {
+            crate::tools::ToolSpec {
+                name: "wipe",
+                description: "test",
+                labels: crate::tools::Labels {
+                    effect: crate::tools::Effect::Destructive,
+                    ..crate::tools::Labels::READ_ONLY
+                },
+                params: json!({"type": "object"}),
+            }
+        }
+        fn call<'a>(
+            &'a self,
+            _args: Value,
+        ) -> crate::BoxFuture<'a, Result<Value, crate::tools::ToolError>> {
+            Box::pin(async { Ok(json!({"wiped": true})) })
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_notification_stops_the_call_and_withdraws_its_confirmation() {
+        let dir = std::env::temp_dir().join(format!("melissa-mcp-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let audit = crate::AuditLog::new(dir.join("audit.jsonl"));
+        let server = McpServer::new(ToolRegistry::new(
+            vec![std::sync::Arc::new(Destructive)],
+            Some(audit.clone()),
+        ));
+        let token = server
+            .open_session(5, TaskContext::default(), None)
+            .unwrap();
+        let inbox = server.registry().confirmations().clone();
+        let call = {
+            let (server, token) = (server.clone(), token.clone());
+            tokio::spawn(async move {
+                server
+                    .handle(
+                        &token,
+                        json!({"jsonrpc": "2.0", "id": "req-7", "method": "tools/call",
+                            "params": {"name": "wipe", "arguments": {}}}),
+                    )
+                    .await
+            })
+        };
+        while inbox.pending().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // Another session's cancel, or one for another id, changes nothing.
+        let (other_server, other) = (
+            server.clone(),
+            server
+                .open_session(6, TaskContext::default(), None)
+                .unwrap(),
+        );
+        for (t, id) in [(other.as_str(), json!("req-7")), (token.as_str(), json!(7))] {
+            let none = other_server
+                .handle(
+                    t,
+                    json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": id, "reason": "timeout"}}),
+                )
+                .await
+                .unwrap();
+            assert!(none.is_none(), "notifications get no answer");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(inbox.pending().len(), 1);
+        server
+            .handle(
+                &token,
+                json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                    "params": {"requestId": "req-7", "reason": "timeout"}}),
+            )
+            .await
+            .unwrap();
+        let answer = call.await.unwrap().unwrap().unwrap();
+        assert_eq!(answer["id"], "req-7");
+        assert_eq!(answer["error"]["code"], REQUEST_CANCELLED);
+        assert!(inbox.pending().is_empty(), "confirmation withdrawn");
+        assert!(lock(&server.inflight).is_empty());
+        let log = std::fs::read_to_string(audit.path()).unwrap();
+        assert!(log.contains("tool.cancelled"), "{log}");
+        assert!(!log.contains("tool.call"), "the tool never ran: {log}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -14,6 +14,10 @@
 //!   resume the old one from the agent's own session store (kept in Melissa's state
 //!   directory, see [`OpenSession::state_dir`]); if that fails, the new session is primed
 //!   with a short summary from Melissa's transcript.
+//! - **Taint survives.** Once the Queen's MCP session has read untrusted content (app logs,
+//!   a worker that did), every later session of this conversation starts tainted too: a
+//!   resumed session still has that content, and a new one is primed from the transcript.
+//!   The flag is saved in `session.json`, so it also survives a daemon restart.
 //! - **System prompt.** The first message of every new session carries the Queen's system
 //!   prompt (a reviewed text file shipped with Melissa) as a preamble: ACP has no system
 //!   prompt field that Grok supports.
@@ -145,6 +149,8 @@ struct Inner {
     live: Mutex<Option<Live>>,
     gen: AtomicU64,
     pool: WorkerPool,
+    /// The conversation has read untrusted content (sticky, saved in `session.json`).
+    tainted: AtomicBool,
 }
 
 /// Handle to the Queen. Cheap to clone.
@@ -158,6 +164,15 @@ pub struct Queen {
 struct SavedSession {
     backend: String,
     session_id: String,
+    /// The conversation read untrusted content; the next session starts tainted.
+    #[serde(default)]
+    tainted: bool,
+}
+
+fn load_session(path: &std::path::Path) -> Option<SavedSession> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
 }
 
 impl Queen {
@@ -191,6 +206,8 @@ impl Queen {
             ),
         };
         let task = board.reserve_id();
+        let tainted =
+            load_session(&settings.state_dir.join("session.json")).is_some_and(|s| s.tainted);
         pool.attach(
             board.clone(),
             settings.worker_backend.clone().unwrap_or(first),
@@ -214,6 +231,7 @@ impl Queen {
                 live: Mutex::new(None),
                 gen: AtomicU64::new(0),
                 pool: pool.clone(),
+                tainted: AtomicBool::new(tainted),
             }),
         })
     }
@@ -368,6 +386,7 @@ impl Queen {
     pub async fn close(&self) {
         let live = lock(&self.inner.live).take();
         if let Some(live) = live {
+            self.keep_taint(&live.token);
             self.inner.server.close_session(&live.token);
             let _ = live.session.close().await;
         }
@@ -444,10 +463,9 @@ impl Queen {
     async fn open_session(&self) -> Result<Live, String> {
         let inner = &self.inner;
         let saved_path = inner.settings.state_dir.join("session.json");
-        let saved: Option<SavedSession> = std::fs::read_to_string(&saved_path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok());
-        let (ctx, allow) = self.session_policy();
+        let saved = load_session(&saved_path);
+        let (mut ctx, allow) = self.session_policy();
+        ctx.tainted = inner.tainted.load(Ordering::SeqCst);
         let mut tried = Vec::new();
         for name in &inner.settings.backends {
             tried.push(name.as_str());
@@ -509,6 +527,7 @@ impl Queen {
                 &SavedSession {
                     backend: name.clone(),
                     session_id: live.session.id().to_string(),
+                    tainted: ctx.tainted,
                 },
             );
             tokio::spawn(pump(Arc::downgrade(&self.inner), live.gen, opened.events));
@@ -546,6 +565,7 @@ impl Queen {
             l.take()
         };
         let Some(live) = live else { return };
+        self.keep_taint(&live.token);
         self.inner.server.close_session(&live.token);
         tracing::warn!(backend = %live.backend, "Queen session lost: {reason}");
         self.inner.events.push(QueenEvent::SessionLost {
@@ -573,7 +593,30 @@ impl Queen {
     }
 
     /// End `turn` (once): publish the full reply, an error if any, then `turn_finished`.
+    /// Remember (and save) that the MCP session `token` read untrusted content, so the
+    /// next session of this conversation starts tainted too.
+    fn keep_taint(&self, token: &str) {
+        let tainted = self
+            .inner
+            .server
+            .session_context(token)
+            .is_some_and(|c| c.tainted);
+        if !tainted || self.inner.tainted.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let path = self.inner.settings.state_dir.join("session.json");
+        if let Some(mut saved) = load_session(&path) {
+            saved.tainted = true;
+            save_session(&path, &saved);
+        }
+    }
+
     fn finish_turn(&self, turn: TurnId, stop_reason: &str, error: Option<String>) {
+        // Taint comes from tool calls, which happen during turns.
+        let token = lock(&self.inner.live).as_ref().map(|l| l.token.clone());
+        if let Some(token) = token {
+            self.keep_taint(&token);
+        }
         let mut t = lock(&self.inner.turn);
         if t.busy != Some(turn) {
             return;

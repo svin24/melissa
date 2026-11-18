@@ -179,7 +179,12 @@ async fn serve(
         events.clone(),
     );
     tools.extend(pool.tools());
-    let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())).with_owners(owners));
+    // Confirmations wait less long than the agents' MCP clients do (see the config field).
+    let mcp = McpServer::new(
+        ToolRegistry::new(tools, Some(audit.clone()))
+            .with_owners(owners)
+            .with_confirm_timeout(config.confirm_timeout()),
+    );
     // Sandboxed agents reach the network only through this (allowlist, audited) and
     // Melissa's MCP endpoint at the same address as outside (config.listen).
     let egress = EgressProxy::new(dirs.egress.clone(), Some(audit.clone()))

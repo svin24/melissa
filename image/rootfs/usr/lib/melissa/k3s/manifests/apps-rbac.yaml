@@ -1,6 +1,6 @@
 # Melissa: the write identity for app installs (ServiceAccount melissa/melissa-apps), separate
 # from the read-only melissa-queen. Only the queen's app tools (install_app, uninstall_app,
-# app_status, app_logs) use it; see docs/agent-skills/app-catalog.md and docs/DECISIONS.md.
+# app_status, app_logs, list_apps) use it; see docs/agent-skills/app-catalog.md and docs/DECISIONS.md.
 #
 # Shape:
 # - Cluster-wide, this identity may only: create/patch/delete Namespaces and create/patch
