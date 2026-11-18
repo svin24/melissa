@@ -6,14 +6,15 @@
 //! headless agent CLIs such as Claude Code, Grok or OpenCode. The [`TaskBoard`]
 //! dispatches prompts to backends, collects their output, supports cancellation and
 //! timeouts, and writes every mutating action to an [`AuditLog`]. Long-lived agent sessions
-//! ([`session`]) run over ACP ([`acp`], e.g. `grok agent stdio`); [`AcpBackend`] also serves
-//! one-prompt tasks on the board. Agents act on the hive only
+//! ([`session`]) run over ACP ([`acp`], e.g. `grok agent stdio`, `opencode acp`) or Claude
+//! Code's stream-json protocol ([`claude`]); both also serve one-prompt tasks on the board. Agents act on the hive only
 //! through the narrow [`tools`] API, whose policy decides when a human must confirm.
 
 pub mod acp;
 mod audit;
 mod backend;
 mod board;
+pub mod claude;
 mod cli;
 mod echo;
 pub mod egress;
@@ -33,6 +34,7 @@ pub use board::{
     DispatchError, DispatchOptions, McpLink, TaskBoard, TaskId, TaskSnapshot, TaskStatus,
     MAX_PROMPT_BYTES,
 };
+pub use claude::{ClaudeBackend, ClaudeSpec};
 pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
 pub use echo::EchoBackend;
 pub use egress::{EgressProxy, NetworkMode};

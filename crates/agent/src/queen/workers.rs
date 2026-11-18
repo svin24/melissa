@@ -421,7 +421,7 @@ impl Tool for StartWorker {
                 "properties": {
                     "goal": {"type": "string", "description": "What the worker should do and report back. Self-contained: the worker does not see this conversation."},
                     "backend": {"type": "string", "description": "Agent backend (default: the configured worker backend)."},
-                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the worker may use (default: all of yours except the worker tools)."},
+                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the worker may use, by their plain names such as `bee_info` (no `mcp__melissa__` or other prefix). Default: all of yours except the worker tools."},
                     "timeout_secs": {"type": "integer", "minimum": 1, "maximum": l.max_timeout.as_secs(), "description": format!("Time limit (default {}).", l.default_timeout.min(l.max_timeout).as_secs())},
                 },
                 "required": ["goal"],

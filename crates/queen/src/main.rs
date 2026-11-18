@@ -38,7 +38,8 @@ use melissa_agent::{
     },
     session::SessionBackend,
     tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
-    AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, EgressProxy, McpLink, TaskBoard,
+    AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EgressProxy, McpLink,
+    TaskBoard,
 };
 use melissa_hive::{app_tools, AppSettings, ClusterHealth, KubeApps, LazyCluster};
 use serde_json::{json, Value};
@@ -197,6 +198,15 @@ async fn serve(
                 );
                 sessions.push(acp.clone());
                 acp
+            }
+            BackendSpec::Claude(spec) => {
+                let claude = Arc::new(
+                    ClaudeBackend::new(spec.clone(), workdir.clone())
+                        .with_mcp(mcp.clone())
+                        .with_egress(egress.clone()),
+                );
+                sessions.push(claude.clone());
+                claude
             }
         };
         let info = backend.info();
