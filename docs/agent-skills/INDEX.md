@@ -11,3 +11,12 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
+
+## Claude Code plugins and project skills (2026-11-18)
+- Project skill `.claude/skills/melissa-ui/SKILL.md`: binding UI rules; overrides third-party design skills.
+- Plugins enabled at project scope (`.claude/settings.json`, skill-only, no MCP/hooks/network):
+  `frontend-design` (Anthropic) and `modern-web-guidance` (Google Chrome, pinned commit). Use them for typography,
+  spacing, accessibility and modern CSS inside the fixed component library, never for runtime agent UI.
+- Not installed: `playwright` (runs `npx @playwright/mcp@latest`, unpinned; no Node on the host; T3 Code's preview
+  tools cover browser checks), `rust-analyzer-lsp` (rust-analyzer only exists in the dev shell; no global installs).
+
