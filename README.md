@@ -42,3 +42,5 @@ Images: `just image-build desktop|headless`, VM tests with `just vm-disk` / `jus
 
 Status: early. The multi-agent demo works locally; images are being brought up in VMs (milestone M0).
 Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md) first.
+
+Credits and third-party notices: [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).

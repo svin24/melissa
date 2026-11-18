@@ -168,7 +168,10 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 ## 8. Licensing and legal
 
-- Open source so others can build on it. Candidate: **AGPL-3.0 plus a commercial license/EULA (dual license)** for those who cannot use AGPL. Alternatives (Apache-2.0/MPL) if community growth matters more than protecting the commercial path.
+- **Owner leaning (2026-11-18): MIT.** Not switched yet (Cargo.toml still says the old candidate); confirm before changing.
+  Attributions for design inspiration (T3 Code, Universal Blue) and redistributed third-party software live in
+  `ACKNOWLEDGMENTS.md` regardless of the final license.
+- Open source so others can build on it. Earlier candidate: **AGPL-3.0 plus a commercial license/EULA (dual license)** for those who cannot use AGPL. Alternatives (Apache-2.0/MPL) if community growth matters more than protecting the commercial path.
 - Dual licensing requires owning the copyright: either a **CLA** (e.g. CLA Assistant) for outside contributors, or keep development internal-only until the license is settled. Decide before accepting external PRs.
 - **Name risk:** Melissa Data holds MELISSA trademarks in classes 9 and 42 (US/UK/EU). Get a legal/trademark check before any commercial launch; have a fallback name ready (the owner decides any rename; agents must not rename the project).
 - Candidate identifiers (appeared unregistered on 2026-11-17, not reserved): domain `getmelissa.dev`, GitHub org `getmelissa`. Re-check availability before relying on them.
