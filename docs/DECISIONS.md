@@ -253,3 +253,5 @@ Format: date — decision. Why. Alternatives considered.
   Queen has the final say; Bees are worker agents that own Cells; Cells host Services; only a Queen or the User
   reassigns Cells; cross-comb takeovers only on the User's say. The merged ownership work (owner/job labels, scope check
   in the tool registry) is the foundation and gets adapted to Bee/Cell ownership next.
+- **2026-11-18 — Desktop variant = KDE plus the full server running by default (owner).** Same server setup as headless
+  (k3s, system queen, web UI at boot); built after the headless demo. Supersedes "k3s disabled, per-user queen on desktop".

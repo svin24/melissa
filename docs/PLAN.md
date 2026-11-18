@@ -271,7 +271,10 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 **Pre-alpha demo (owner, weekend of 2026-11-21/22):** the owner publishes a pre-alpha online for people to try.
 Focus: easy to try, honest about being pre-alpha (notice in README and UI), the chat-first web UI from the concepts,
-two ways in (run from source; a ready VM image). Further security hardening (throwaway worker bees, taint UX,
+two ways in (run from source; a ready VM image). **Headless first; then the desktop variant (owner, 2026-11-18):** a Fedora
+KDE (Kinoite) image that also runs the full server by default, the same as headless (k3s enabled, the system
+queen and web UI at boot, independent of who is logged in), with KDE on top. Today the desktop image has k3s
+installed but disabled and runs the queen per user; that changes after the headless demo works. Further security hardening (throwaway worker bees, taint UX,
 escape test suite) is parked until after the demo; the existing basics stay on.
 
 
