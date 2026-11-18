@@ -35,7 +35,7 @@ args = ["run", "-m", "<provider>/<gemma-model>", "{prompt}"]
 - `CliSpec.mcp_args` are appended only when the task has a config; `{mcp_config}` = path of that file.
 - Claude: `claude -p <prompt> --tools "" --mcp-config <file> --strict-mcp-config --allowedTools mcp__melissa`.
   `--tools ""` removes all built-in tools (no Bash/Read); `--strict-mcp-config` ignores the user's own MCP
-  servers. Verified: Claude calls `bee_info`, and reports it has no shell or file tools.
+  servers. Verified: Claude calls `comb_info`, and reports it has no shell or file tools.
   Order matters: `--tools` and `--mcp-config` are variadic, so the prompt goes before them.
 - Grok: no per-run MCP option for `grok -p` (only `grok mcp add`, persistent user config). Use the ACP backend
   `grok-acp` instead: it passes Melissa's MCP endpoint per session (verified 2026-11-18, see
@@ -64,7 +64,7 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   Details, verified host lists and how to add hosts: [agent-egress.md](agent-egress.md). (Before: `--share-net`
   and `/run/systemd/resolve` bound, so an agent could reach the LAN, the queen's whole HTTP API and host
   abstract Unix sockets.)
-- What each CLI needed (all three verified through the queen; Claude also called `bee_info` and the audit log
+- What each CLI needed (all three verified through the queen; Claude also called `comb_info` and the audit log
   shows `tool.call`):
 
 | Backend  | Binary bound (ro)                                  | Home paths                                                       |
@@ -103,7 +103,7 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 - All three honour `HTTPS_PROXY`; none needed DNS inside the sandbox.
 
 ## Session backends (verified 2026-11-18 through the queen, sandboxed, `network = "proxy"`)
-| Backend | Command | bee_info task | Queen ask + worker | Cancel | Resume |
+| Backend | Command | comb_info task | Queen ask + worker | Cancel | Resume |
 |---|---|---|---|---|---|
 | `grok-acp` | `grok --permission-mode default agent --no-leader stdio` | ~11 s | 23 s | yes | yes |
 | `claude-session` | `claude -p --input-format stream-json … --tools "" --permission-prompt-tool stdio` | 3.1 s | 11.8 s | yes (interrupt) | yes (`--resume`) |

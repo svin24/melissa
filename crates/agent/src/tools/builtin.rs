@@ -1,4 +1,4 @@
-//! Built-in tools that need nothing but the local bee.
+//! Built-in tools that need nothing but the local comb (this device).
 
 use std::path::PathBuf;
 
@@ -7,14 +7,14 @@ use serde_json::{json, Value};
 use super::{Labels, Tool, ToolError, ToolSpec};
 use crate::BoxFuture;
 
-/// `bee_info`: OS, kernel, Melissa release, uptime and memory of this comb. Read-only.
+/// `comb_info`: OS, kernel, Melissa release, uptime and memory of this comb. Read-only.
 #[derive(Debug, Clone)]
-pub struct BeeInfo {
+pub struct CombInfo {
     /// Filesystem root to read from (`/` in production; a fixture dir in tests).
     root: PathBuf,
 }
 
-impl BeeInfo {
+impl CombInfo {
     pub fn new() -> Self {
         Self {
             root: PathBuf::from("/"),
@@ -30,16 +30,16 @@ impl BeeInfo {
     }
 }
 
-impl Default for BeeInfo {
+impl Default for CombInfo {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Tool for BeeInfo {
+impl Tool for CombInfo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "bee_info",
+            name: "comb_info",
             description: "Describe this comb (the device Melissa runs on): OS, kernel, Melissa release, uptime and memory.",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
@@ -119,7 +119,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, body).unwrap();
         }
-        let out = BeeInfo::with_root(&dir).call(Value::Null).await.unwrap();
+        let out = CombInfo::with_root(&dir).call(Value::Null).await.unwrap();
         assert_eq!(out["os"], "Fedora Linux 45");
         assert_eq!(out["melissa_variant"], "headless");
         assert_eq!(out["kernel"], "7.3.4");
@@ -130,7 +130,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_files_give_nulls_not_errors() {
-        let out = BeeInfo::with_root("/nonexistent-melissa")
+        let out = CombInfo::with_root("/nonexistent-melissa")
             .call(Value::Null)
             .await
             .unwrap();

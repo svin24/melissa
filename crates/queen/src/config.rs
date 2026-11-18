@@ -707,7 +707,7 @@ mod tests {
             r#"
             [queen]
             backends = ["grok-acp"]
-            tools = ["bee_info", "create_bee", "give_bee_job", "bee_status"]
+            tools = ["comb_info", "create_bee", "give_bee_job", "bee_status"]
             bee_backend = "claude-session"
             max_bees = 1
             bee_timeout_secs = 60

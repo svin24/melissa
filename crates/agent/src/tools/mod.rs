@@ -16,7 +16,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub use builtin::BeeInfo;
+pub use builtin::CombInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext};
 pub use scope::{
@@ -149,7 +149,7 @@ impl ToolRegistry {
 
     /// Every built-in tool that works on any bee.
     pub fn builtin(audit: Option<AuditLog>) -> Self {
-        Self::new(vec![Arc::new(BeeInfo::new())], audit)
+        Self::new(vec![Arc::new(CombInfo::new())], audit)
     }
 
     pub fn confirmations(&self) -> &ConfirmationStore {

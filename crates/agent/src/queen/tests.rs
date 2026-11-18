@@ -26,7 +26,7 @@ use crate::{
     mcp::McpServer,
     session::{OpenSession, OpenedSession, SessionBackend},
     tools::{
-        Access, BeeInfo, CellInfo, CellStore, Effect, Labels, Owner, ResourceKind, ResourceOwners,
+        Access, CellInfo, CellStore, CombInfo, Effect, Labels, Owner, ResourceKind, ResourceOwners,
         Target, Tool, ToolError, ToolRegistry, ToolSpec, Verdict,
     },
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
@@ -282,7 +282,7 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// A Queen with tools `bee_info`, `app_logs`, `uninstall_app` and the bee tools, a replay
+/// A Queen with tools `comb_info`, `app_logs`, `uninstall_app` and the bee tools, a replay
 /// backend `fake-acp` playing `scripts` (one per Queen session) and `bee-acp` playing
 /// `bee_scripts` (one per bee session).
 fn setup_full(
@@ -305,7 +305,7 @@ fn setup_full(
         Some(cells.clone()),
     );
     let mut tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(BeeInfo::new()),
+        Arc::new(CombInfo::new()),
         Arc::new(AppLogs),
         Arc::new(Uninstall),
     ];
@@ -460,7 +460,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
     script.extend([
         // The first message carries the system prompt.
         prompt(2, "s-1", "<contains:You are the Queen (test).>"),
-        tool("s-1", "t1", "melissa__bee_info"),
+        tool("s-1", "t1", "melissa__comb_info"),
         Step::recv(
             json!({"jsonrpc": "2.0", "id": "perm-1", "method": "session/request_permission",
             "params": {"sessionId": "s-1", "toolCall": {"toolCallId": "t1"}, "options": [
@@ -471,7 +471,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
             json!({"jsonrpc": "2.0", "id": "perm-1", "result": {"outcome": {"outcome": "selected", "optionId": "allow-once"}}}),
         ),
         Step::mcp(
-            "bee_info",
+            "comb_info",
             json!({}),
             json!({"result": {"isError": false}}),
         ),
@@ -506,18 +506,18 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
         QueenEvent::ToolCall {
             turn: Some(turn),
             id: "t1".into(),
-            title: "melissa__bee_info".into(),
+            title: "melissa__comb_info".into(),
             status: "pending".into(),
         },
         QueenEvent::Permission {
             turn: Some(turn),
-            title: "melissa__bee_info".into(),
+            title: "melissa__comb_info".into(),
             decision: "allow_once".into(),
         },
         QueenEvent::ToolCall {
             turn: Some(turn),
             id: "t1".into(),
-            title: "melissa__bee_info".into(),
+            title: "melissa__comb_info".into(),
             status: "done".into(),
         },
         QueenEvent::Text {
@@ -575,7 +575,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
     );
     let qt = s.queen.task_id();
     assert!(lines.iter().all(|l| l["task"] == qt));
-    assert_eq!(lines[3]["tool"], "bee_info");
+    assert_eq!(lines[3]["tool"], "comb_info");
     // Transcript: no text pieces, but the whole reply.
     let transcript = std::fs::read_to_string(s.dir.join("queen/transcript.jsonl")).unwrap();
     assert!(!transcript.contains(r#""type":"text""#));
@@ -962,7 +962,7 @@ async fn the_queen_creates_a_named_bee_and_gives_it_a_job() {
         prompt(2, "s-1", "<any>"),
         Step::mcp(
             "create_bee",
-            json!({"name": "Ada", "tools": ["bee_info"]}),
+            json!({"name": "Ada", "tools": ["comb_info"]}),
             json!({"result": {"isError": false, "structuredContent": {
                 "bee": ADA, "name": "Ada", "backend": "bee-acp", "status": "idle"}}}),
         ),
@@ -979,7 +979,7 @@ async fn the_queen_creates_a_named_bee_and_gives_it_a_job() {
                 "name": "Ada", "status": "idle", "job": "Report the kernel version.",
                 "result": "Kernel 6.1.0-test", "stop_reason": "end_turn",
                 "read_untrusted_content": false,
-                "activity": ["tool melissa__bee_info: pending", "tool melissa__bee_info: done"]}}}),
+                "activity": ["tool melissa__comb_info: pending", "tool melissa__comb_info: done"]}}}),
         ),
         text("s-1", "Ada reports kernel 6.1.0-test."),
         done(2, "end_turn"),
@@ -992,8 +992,12 @@ async fn the_queen_creates_a_named_bee_and_gives_it_a_job() {
             "b-1",
             "<contains:You are bee Ada (id c-0a1b2c3d.b1) on comb c-0a1b2c3d.>",
         ),
-        tool("b-1", "t1", "melissa__bee_info"),
-        Step::mcp("bee_info", json!({}), json!({"result": {"isError": false}})),
+        tool("b-1", "t1", "melissa__comb_info"),
+        Step::mcp(
+            "comb_info",
+            json!({}),
+            json!({"result": {"isError": false}}),
+        ),
         tool_done("b-1", "t1"),
         text("b-1", "Kernel 6.1.0-test"),
         done(2, "end_turn"),
@@ -1059,7 +1063,7 @@ async fn the_queen_creates_a_named_bee_and_gives_it_a_job() {
     let reg = BeeRegistry::open(&dir.join("bees"), COMB).unwrap();
     let ada = reg.get(ADA).unwrap();
     assert_eq!(ada.name, "Ada");
-    assert_eq!(ada.tools, Some(vec!["bee_info".to_string()]));
+    assert_eq!(ada.tools, Some(vec!["comb_info".to_string()]));
     assert_eq!(
         ada.created_by,
         format!("the Queen (task {})", s.queen.task_id())
@@ -1082,7 +1086,7 @@ async fn the_queen_creates_a_named_bee_and_gives_it_a_job() {
     assert_ne!(bee_task, json!(s.queen.task_id()));
     assert!(lines
         .iter()
-        .any(|l| l["action"] == "tool.call" && l["tool"] == "bee_info" && l["task"] == bee_task));
+        .any(|l| l["action"] == "tool.call" && l["tool"] == "comb_info" && l["task"] == bee_task));
     assert!(lines
         .iter()
         .any(|l| l["action"] == "bee.session" && l["task"] == bee_task));

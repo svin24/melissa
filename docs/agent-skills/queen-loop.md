@@ -92,7 +92,7 @@ to, by). Agent text is untrusted: render as plain text.
 ```toml
 [queen]
 backends = ["grok-acp", "claude-session", "opencode-acp"]   # session backends (acp or claude), in order
-# tools = ["bee_info", "cluster_health", "create_bee", "give_bee_job", "bee_status", "list_bees", "stop_bee"]
+# tools = ["comb_info", "cluster_health", "create_bee", "give_bee_job", "bee_status", "list_bees", "stop_bee"]
 # bee_backend = "grok-acp"   # session backend for new bees; default: first Queen backend
 max_bees = 2                 # bees working on a job at once
 bee_timeout_secs = 300       # job time limit when the Queen gives none
@@ -106,8 +106,8 @@ read (aliases, one release).
 `$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessions/<backend>/` (0700) there.
 
 ## Verified with persistent bees (2026-11-18, dev laptop, grok-acp, temp XDG dirs, no k3s)
-- `ask "Create a bee named Ada with only the bee_info tool and give her a small job: check this comb with
-  bee_info and report the kernel version. Wait for her result, then summarise in one line."` → 22.5 s:
+- `ask "Create a bee named Ada with only the comb_info tool and give her a small job: check this comb with
+  comb_info and report the kernel version. Wait for her result, then summarise in one line."` → 22.5 s:
   Grok found the tools via `search_tool`, `create_bee` → `[bee Ada] created (c-….b1, grok-acp)`,
   `give_bee_job`, `bee_status` (waited) → `[bee Ada] succeeded` → correct one-line answer.
 - `ask --bee ada "…what was your last job and what did you find?"` → 3.7 s, same session, correct.
@@ -115,23 +115,23 @@ read (aliases, one release).
   `[session] grok-acp: resumed the previous session`, correct answer in 3.2 s.
 - Audit: `queen.message` (ui) → `queen.session` → `tool.call create_bee` (task 1) → `bee.message` actor
   queen on the bee's task 2 ("A job from the Queen: …") → `bee.session opened grok-acp (new)` (task 2) →
-  `tool.call bee_info` (task 2) → `tool.call bee_status` (task 1) → `bee.message` actor ui →
+  `tool.call comb_info` (task 2) → `tool.call bee_status` (task 1) → `bee.message` actor ui →
   `bee.rename` → after the restart `bee.session opened grok-acp (resumed)`. `cell list` without k3s:
   502 "k3s is not running on this comb". `registry.json` mode 600.
 
 ## Verified facts (2026-11-18, dev laptop, grok 1.0.89 via `grok-acp`, temp XDG dirs; worker era)
 Tool names in this and the next sections are the pre-bee ones (`start_worker` = today's create +
 `give_bee_job`, `worker_status` = `bee_status`).
-- `melissa-queen ask "Check this bee with bee_info, then start a worker that reports the kernel version using
-  bee_info, wait for it, and summarise both in two lines."` → correct two-line answer in 23 s. Grok finds
+- `melissa-queen ask "Check this bee with comb_info, then start a worker that reports the kernel version using
+  comb_info, wait for it, and summarise both in two lines."` → correct two-line answer in 23 s. Grok finds
   Melissa's tools with its own `search_tool`, then calls each through `use_tool`; each call comes as a
   permission request titled `melissa__<tool>` (allowed once; the MCP layer applies policy). The worker
-  (grok-acp, own sandbox, tools `bee_info` + `cluster_health`) took 8 s. The Queen called `worker_status`
+  (grok-acp, own sandbox, tools `comb_info` + `cluster_health`) took 8 s. The Queen called `worker_status`
   with a wait: the call returned 6 s later when the worker finished (so Grok's MCP tool timeout is > 6 s;
   the upper bound is still unknown, hence `wait_secs` ≤ 50).
 - Audit for that run: `queen.message` (ui) → `queen.session` opened → `agent.permission` + `tool.call`
-  bee_info (task 1 = the Queen) → `tool.call` start_worker → `task.dispatch` task 2 `parent: 1` actor queen →
-  the worker's own `agent.permission` + `tool.call` bee_info (task 2) → `task.finish` → `tool.call`
+  comb_info (task 1 = the Queen) → `tool.call` start_worker → `task.dispatch` task 2 `parent: 1` actor queen →
+  the worker's own `agent.permission` + `tool.call` comb_info (task 2) → `task.finish` → `tool.call`
   worker_status.
 - `chat` keeps context across messages ("My favourite colour is teal" → "teal"). Ctrl-C during a long
   answer: one more line streamed, then `turn ended: cancelled`; the next message worked in the same session.
@@ -144,7 +144,7 @@ Tool names in this and the next sections are the pre-bee ones (`start_worker` = 
 
 ## Verified with Claude and OpenCode (2026-11-18, dev laptop, temp XDG dirs, `network = "proxy"`)
 Queen backend forced per run with `[queen] backends = ["claude-session"]` / `["opencode-acp"]`; the same ask as
-above ("Check this bee with bee_info, then start a worker …"):
+above ("Check this bee with comb_info, then start a worker …"):
 - `claude-session` (claude 2.1.327): two-line answer in 11.8 s, worker on claude-session in 3 s. Every MCP call
   is a `can_use_tool` prompt → `agent.permission allow_once … mcp__melissa__<tool>` then `tool.call`. Egress:
   `api.anthropic.com` only. Context across messages ("teal"), cancel mid-answer (`turn ended: cancelled`, next
@@ -177,7 +177,7 @@ Install → ready (cold 513 MB pull) 6 m 18 s with a grok worker polling `app_st
   nobody watches the inbox the agent gets a withdrawal error and should say so (verified with claude).
 - The Queen's and the workers' agents run behind the egress proxy like every sandboxed agent (`network =
   "proxy"`, [agent-egress.md](agent-egress.md)); their `egress.*` audit records carry the Queen's task id or the
-  worker's. Verified 2026-11-18: the bee_info + worker run above still takes ~23 s with grok.com and Mixpanel
+  worker's. Verified 2026-11-18: the comb_info + worker run above still takes ~23 s with grok.com and Mixpanel
   denied. A long-lived Queen keeps many tunnels open: the per-sandbox cap is 64.
 - Tests: a polling loop must advance its cursor; `wait_since` returns at once when events exist, and a loop
   that never awaits starves the single-threaded test runtime (looked like a deadlock; `eu-stack -p` showed

@@ -977,7 +977,7 @@ impl Tool for CreateBee {
                 "properties": {
                     "name": {"type": "string", "description": "Display name, unique on this comb (letters, digits, spaces, - _ .; at most 40)."},
                     "backend": {"type": "string", "description": "Agent session backend (default: the configured bee backend)."},
-                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the bee may use, by plain names such as `bee_info`. Default: all of yours except the bee and cell tools."},
+                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the bee may use, by plain names such as `comb_info`. Default: all of yours except the bee and cell tools."},
                 },
                 "required": ["name"],
                 "additionalProperties": false,

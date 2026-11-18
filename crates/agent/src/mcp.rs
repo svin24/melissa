@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(init["result"]["serverInfo"]["name"], "melissa");
         assert!(init["result"]["capabilities"]["tools"].is_object());
         let list = rpc(&server, &token, "tools/list", json!({})).await;
-        assert_eq!(list["result"]["tools"][0]["name"], "bee_info");
+        assert_eq!(list["result"]["tools"][0]["name"], "comb_info");
         assert!(list["result"]["tools"][0]["inputSchema"].is_object());
     }
 
@@ -333,7 +333,7 @@ mod tests {
             &server,
             &token,
             "tools/call",
-            json!({"name": "bee_info", "arguments": {}}),
+            json!({"name": "comb_info", "arguments": {}}),
         )
         .await;
         assert_eq!(out["result"]["isError"], false);
@@ -368,7 +368,7 @@ mod tests {
             .unwrap();
         let list = rpc(&server, &token, "tools/list", json!({})).await;
         assert_eq!(list["result"]["tools"], json!([]));
-        let call = rpc(&server, &token, "tools/call", json!({"name": "bee_info"})).await;
+        let call = rpc(&server, &token, "tools/call", json!({"name": "comb_info"})).await;
         assert_eq!(call["result"]["isError"], true);
     }
 

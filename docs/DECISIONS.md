@@ -221,7 +221,7 @@ Format: date — decision. Why. Alternatives considered.
   without asking), Melissa's MCP server with `codemode: false`, project config/auto-update/Claude-compat off; the
   sandbox does not bind the user's `~/.config/opencode`. Why: with Code Mode on (default) MCP tools are only
   reachable through OpenCode's JavaScript `execute` tool, so the permission request shows code, not a tool name,
-  and Melissa could not tell a bee_info call from anything else; `codemode` can only be set in config, not in
+  and Melissa could not tell a comb_info call from anything else; `codemode` can only be set in config, not in
   ACP's `session/new`. Hiding the user's config keeps their `allow` rules from merging into Melissa's. Trade-off:
   the user's model/provider choice does not apply (set `model = "provider/model"` on the backend); an OpenCode
   policy reject ends the turn (`cancelled`) rather than letting the agent continue. Also: the `opencode` preset
@@ -262,8 +262,8 @@ Format: date — decision. Why. Alternatives considered.
   `crates/comb` (`melissa-comb`); "worker" is "bee" everywhere (events, API, CLI, config keys with one-release
   aliases, prompts). Agent-facing tool names: `create_bee`, `give_bee_job`, `bee_status`, `list_bees`,
   `stop_bee`, `message_bee`, `reassign_cell`: verb-first plain words an LLM picks correctly (Grok found them by
-  searching "create bee"); "job" for a unit of work because a bee is long-lived and gets many. `bee_info` keeps
-  its name although it describes the comb (open question 46).
+  searching "create bee"); "job" for a unit of work because a bee is long-lived and gets many. The tool that
+  describes the device is `comb_info` (renamed from `bee_info` the same day, no alias; open question 46).
 - **2026-11-18 — Bees are persistent conversations; their registry lives in Melissa's state directory.**
   `$XDG_STATE_HOME/melissa/bees/registry.json` (0600, atomic rename) + `bees/<id>/` (agent session store,
   `session.json`, transcript). Why there and not in k3s: bees are this comb's agents, not workloads; they exist
