@@ -38,7 +38,7 @@ pub enum ToolError {
     BadArgs(String),
     #[error("denied by a human")]
     Denied,
-    #[error("confirmation timed out")]
+    #[error("confirmation timed out: nobody answered in time, so the request was withdrawn")]
     ConfirmationTimeout,
     #[error("tool failed: {0}")]
     Failed(String),
