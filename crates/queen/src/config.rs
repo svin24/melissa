@@ -23,7 +23,8 @@ pub struct QueenConfig {
     #[serde(rename = "backend")]
     pub backends: Vec<BackendSpec>,
     /// Kubeconfig for the local k3s API, used when no `melissa.kubeconfig` systemd credential
-    /// is present (e.g. a desktop queen pointed at a cluster). Unset = no cluster access.
+    /// is present (e.g. a desktop queen pointed at a cluster); checked before the headless
+    /// default `/run/melissa-kube/queen.kubeconfig`. Re-read on every cluster call.
     pub kubeconfig: Option<PathBuf>,
 }
 

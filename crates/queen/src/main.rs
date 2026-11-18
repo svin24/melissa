@@ -7,7 +7,9 @@
 //!
 //! Config: `$XDG_CONFIG_HOME/melissa/queen.toml` (optional). Audit log and agent working
 //! directory: `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
-//! systemd credential, else `kubeconfig` in the config, else none.
+//! systemd credential, else `kubeconfig` in the config, else `/run/melissa-kube/queen.kubeconfig`
+//! (written by root once k3s is up). They are looked up on every cluster call, so the queen
+//! never waits for k3s and attaches to it without a restart.
 
 mod config;
 
@@ -19,7 +21,7 @@ use melissa_agent::{
     tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
     AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, McpLink, TaskBoard,
 };
-use melissa_hive::{ClusterHealth, ClusterRead, KubeCluster};
+use melissa_hive::{ClusterHealth, LazyCluster};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
@@ -53,36 +55,16 @@ async fn main() -> anyhow::Result<()> {
     config.validate()?;
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
-    let cluster = connect_cluster(&config).await;
+    let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
+    let cluster = LazyCluster::for_queen(creds.as_deref(), config.kubeconfig.as_deref());
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(BeeInfo::new()),
-        Arc::new(ClusterHealth::new(cluster)),
+        Arc::new(ClusterHealth::new(Some(Arc::new(cluster)))),
     ];
 
     match command {
         Command::Serve => serve(config, dirs, audit, tools).await,
         Command::Tool { name, args } => run_tool(audit, tools, &name, args).await,
-    }
-}
-
-/// Cluster client from the systemd credential or the configured path. Missing or broken
-/// credentials are not fatal: the queen runs without the cluster (desktop, k3s disabled).
-async fn connect_cluster(config: &QueenConfig) -> Option<Arc<dyn ClusterRead>> {
-    let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
-    let Some(path) = melissa_hive::find_kubeconfig(creds.as_deref(), config.kubeconfig.as_deref())
-    else {
-        tracing::info!("no kubeconfig; cluster tools will report k3s as not running");
-        return None;
-    };
-    match KubeCluster::from_kubeconfig(&path).await {
-        Ok(cluster) => {
-            tracing::info!(path = %path.display(), "k3s client configured");
-            Some(Arc::new(cluster))
-        }
-        Err(e) => {
-            tracing::warn!("{e}; running without cluster access");
-            None
-        }
     }
 }
 

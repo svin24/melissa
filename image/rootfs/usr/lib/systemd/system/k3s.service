@@ -9,9 +9,11 @@ ConditionPathExists=/usr/bin/k3s
 Type=notify
 EnvironmentFile=-/etc/default/k3s
 ExecStartPre=/usr/libexec/melissa/k3s-prepare
+# Written by k3s-prepare (systemd re-reads it for each command): MELISSA_K3S_ARGS pins the node IP.
+EnvironmentFile=-/run/melissa/k3s.env
 ExecStartPre=-/usr/sbin/modprobe br_netfilter
 ExecStartPre=-/usr/sbin/modprobe overlay
-ExecStart=/usr/bin/k3s server
+ExecStart=/usr/bin/k3s server $MELISSA_K3S_ARGS
 # k3s manages its own container processes inside this cgroup.
 KillMode=process
 Delegate=yes

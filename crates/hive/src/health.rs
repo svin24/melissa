@@ -33,7 +33,11 @@ impl ClusterHealth {
         // The version endpoint is public to any authenticated client; use it as the probe.
         let version = match cluster.server_version().await {
             Ok(v) => v,
-            Err(e @ ClusterError::Unreachable(_)) => return Ok(unreachable(&e)),
+            Err(
+                e @ (ClusterError::Unreachable(_)
+                | ClusterError::NotConfigured
+                | ClusterError::Starting),
+            ) => return Ok(unreachable(&e)),
             Err(e) => return Err(ToolError::Failed(e.to_string())),
         };
         // k3s restarts itself now and then (e.g. when the node's IPs change at boot), so the
@@ -325,6 +329,23 @@ mod tests {
         let out = ClusterHealth::new(None).call(Value::Null).await.unwrap();
         assert_eq!(out["k3s_reachable"], false);
         assert!(out["reason"].as_str().unwrap().contains("not running"));
+    }
+
+    #[tokio::test]
+    async fn missing_or_pending_credentials_are_results() {
+        for (err, needle) in [
+            (ClusterError::NotConfigured, "not running"),
+            (ClusterError::Starting, "starting"),
+        ] {
+            let out = call(Fake {
+                version: Some(Err(err)),
+                ..Fake::default()
+            })
+            .await
+            .unwrap();
+            assert_eq!(out["k3s_reachable"], false);
+            assert!(out["reason"].as_str().unwrap().contains(needle), "{out}");
+        }
     }
 
     #[tokio::test]

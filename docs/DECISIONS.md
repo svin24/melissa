@@ -64,6 +64,16 @@ Format: date — decision. Why. Alternatives considered.
   with a path) because a missing credential is fine: the queen starts without k3s (desktop, k3s down) and
   `cluster_health` says so. Alternatives: bound tokens + timer + restart (rejected: restarts), reading k3s.yaml
   (rejected: cluster-admin), a group-readable token file refreshed in place (possible later).
+- **2026-11-18 — Revised: the queen's kubeconfig is a group-readable file in `/run/melissa-kube`, not a systemd
+  credential, and the queen does not wait for k3s.** `melissa-kubeconfig` writes `queen.kubeconfig` root:`melissa-kube`
+  0640 on tmpfs (dir 0750, headless only); `melissa-queen.service` keeps `DynamicUser=yes` and gets
+  `SupplementaryGroups=melissa-kube`; the queen re-reads the file on every cluster call. Why: credentials are copied
+  only at service start, so ordering the queen after the 300 s oneshot delayed the web UI and agents at first boot,
+  and a late or rotated kubeconfig needed a restart that kills agent tasks. Trade-off: the token is readable by group
+  `melissa-kube` instead of root only; no login user is in that group and only root can put a unit in it, so the
+  exposure is the same set of principals (root + the queen). Alternatives: credential + restart on change (rejected:
+  kills tasks), ACL for the dynamic UID (UID changes per start), a root helper serving tokens over a socket (more code;
+  revisit for short-lived tokens, PLAN Q25).
 - **2026-11-18 — Cluster code lives in a new `crates/hive` (kube-rs 5.1 + k8s-openapi 0.29 `v1_37`, rustls + ring),
   behind narrow traits (`ClusterRead` now, a separate write trait later).** Why: keeps the large kube dependency tree out
   of `melissa-agent`, tools are unit-tested against a fake, and read-only tools can't reach write methods.
