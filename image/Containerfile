@@ -32,7 +32,7 @@ RUN pkgs=$(cat /tmp/pkgs/*.txt | sed 's/#.*//' | xargs) \
 COPY image/rootfs/ /
 COPY image/${VARIANT}/ /
 RUN set -eu; \
-    systemctl enable tailscaled.service; \
+    systemctl enable tailscaled.service sshd.service; \
     # Melissa drives updates itself; don't let the stock timer download and reboot.
     systemctl mask bootc-fetch-apply-updates.timer 2>/dev/null || true; \
     if [ "$VARIANT" = headless ]; then \

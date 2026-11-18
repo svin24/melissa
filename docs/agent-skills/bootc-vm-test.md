@@ -29,7 +29,14 @@ ssh -p 2222 -i vm/test_key bee@127.0.0.1      # desktop variant: port 2223, VM_D
   `[[customizations.filesystem]] mountpoint="/" minsize="40 GiB"`.
 - `bootc status` needs root even for reading.
 
+## Seeing the screen (desktop VM)
+`scripts/vm-screenshot.py desktop` → `vm/desktop/screen.png` via the QEMU monitor `screendump` (stdlib only), then
+read the PNG. Verified 2026-11-18: desktop image boots to Plasma's first-run "Welcome to Plasma Desktop" setup with
+Secure Boot on (kernel logs `Lockdown: ... hibernation is restricted`).
+
 ## Gotchas
+- Kinoite ships `sshd` **disabled**; fedora-bootc enables it. The images enable `sshd.service` and ship
+  `/etc/ssh/sshd_config.d/40-melissa.conf` (keys only, no root login).
 - bootc-image-builder reads root's container storage, so images built rootless must be copied with
   `just image-to-root` first (reference lab: verified for bib).
 - Faster loop for content-only changes: `bootc switch` an already-booted VM to a new tag instead of rebuilding
