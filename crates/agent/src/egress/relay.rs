@@ -14,6 +14,9 @@ use tokio::{
     time::Instant,
 };
 
+/// How long a tunnel stays open after one side has closed its direction.
+const HALF_CLOSE_GRACE: Duration = Duration::from_secs(2);
+
 /// Relay until both sides are done, the tunnel is idle for `idle`, or `max_bytes` have
 /// passed. Returns the bytes sent (client → upstream) and received.
 pub async fn relay<A, B>(client: A, upstream: B, idle: Duration, max_bytes: u64) -> (u64, u64)
@@ -40,13 +43,22 @@ where
     let b = Box::pin(pump(ur, cw, down.clone(), shared));
     tokio::pin!(a, b);
     let (mut a_done, mut b_done) = (false, false);
+    // When one side has finished, the other gets a short grace period, not the idle
+    // timeout: some servers never answer a half-close, which would pin the tunnel.
+    let mut half_closed: Option<Instant> = None;
     loop {
         let since = Duration::from_millis(last.load(Ordering::Relaxed));
-        let deadline = start + since + idle;
+        let mut deadline = start + since + idle;
+        if let Some(at) = half_closed {
+            deadline = deadline.min(at + HALF_CLOSE_GRACE);
+        }
         tokio::select! {
             ok = &mut a, if !a_done => { a_done = true; if !ok { break; } }
             ok = &mut b, if !b_done => { b_done = true; if !ok { break; } }
             () = tokio::time::sleep_until(deadline) => {
+                if half_closed.is_some_and(|at| Instant::now() >= at + HALF_CLOSE_GRACE) {
+                    break;
+                }
                 // Woken by the deadline computed before the last activity: re-check.
                 let since = Duration::from_millis(last.load(Ordering::Relaxed));
                 if Instant::now() >= start + since + idle {
@@ -57,6 +69,9 @@ where
         }
         if a_done && b_done {
             break;
+        }
+        if (a_done || b_done) && half_closed.is_none() {
+            half_closed = Some(Instant::now());
         }
     }
     (up.load(Ordering::Relaxed), down.load(Ordering::Relaxed))
@@ -137,6 +152,23 @@ mod tests {
             .unwrap();
         assert_eq!(result, (1, 0));
         assert!(started.elapsed() >= Duration::from_millis(450));
+    }
+
+    #[tokio::test]
+    async fn a_half_closed_tunnel_ends_after_a_short_grace() {
+        let (client, client_peer) = tokio::io::duplex(64);
+        let (upstream, _upstream_peer) = tokio::io::duplex(64);
+        // The client is gone; the upstream never closes its side.
+        drop(client_peer);
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            relay(client, upstream, Duration::from_secs(600), 1 << 20),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, (0, 0));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[tokio::test]

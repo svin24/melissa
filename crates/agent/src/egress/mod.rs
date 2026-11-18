@@ -91,12 +91,14 @@ pub fn default_allow(command: &str) -> Vec<String> {
         .and_then(|n| n.to_str())
         .unwrap_or_default();
     let hosts: &[&str] = match name {
-        // Claude Code: the Messages API; OAuth token refresh goes to the platform host.
+        // Claude Code: the Messages API (also its own metrics/event endpoints) and the OAuth
+        // token endpoint (`platform.claude.com/v1/oauth/token`). Denied: Datadog log intake.
         "claude" => &["api.anthropic.com", "platform.claude.com"],
-        // Grok CLI: the xAI API and its login service (token refresh).
-        "grok" => &["api.x.ai", "auth.x.ai"],
-        // OpenCode: its hosted model gateway (free default models) and model catalogue.
-        "opencode" => &["opencode.ai", "models.dev"],
+        // Grok CLI: the subscription chat proxy, the xAI API, and the login issuer
+        // (`auth.x.ai`, token refresh). Denied: grok.com, Mixpanel analytics.
+        "grok" => &["cli-chat-proxy.grok.com", "api.x.ai", "auth.x.ai"],
+        // OpenCode: its hosted gateway (the free default models) and model catalogue.
+        "opencode" => &["opencode.ai", "models.opencode.ai"],
         _ => &[],
     };
     hosts.iter().map(|h| (*h).to_string()).collect()
@@ -120,7 +122,7 @@ pub struct EgressLimits {
 impl Default for EgressLimits {
     fn default() -> Self {
         Self {
-            max_connections: 32,
+            max_connections: 64,
             head_timeout: Duration::from_secs(10),
             connect_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(600),
@@ -205,15 +207,20 @@ impl EgressProxy {
     /// an earlier run are removed). Unix socket paths are limited to 107 bytes, so keep
     /// `dir` short (e.g. `$XDG_RUNTIME_DIR/melissa/egress`).
     pub fn new(dir: PathBuf, audit: Option<AuditLog>) -> std::io::Result<Self> {
-        if dir.exists() {
-            for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
-                if path.is_dir() {
-                    let _ = std::fs::remove_dir_all(&path);
-                }
-            }
+        // `<dir>/<16 hex>/egress.sock` must fit in sockaddr_un (108 bytes with the NUL).
+        let longest = dir.as_os_str().len() + 1 + 16 + 1 + EGRESS_SOCKET.len();
+        if longest > 107 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "egress socket directory {} is too long for Unix socket paths \
+                     ({longest} > 107 bytes); use a shorter XDG_RUNTIME_DIR",
+                    dir.display()
+                ),
+            ));
         }
         create_private_dir(&dir)?;
+        remove_stale_leases(&dir);
         Ok(Self {
             inner: Arc::new(ProxyInner {
                 dir,
@@ -273,11 +280,7 @@ impl EgressProxy {
         };
         let mut ports = Vec::new();
         let mut proxy = None;
-        let ctx = Arc::new(LeaseCtx {
-            proxy: self.inner.clone(),
-            slots: Arc::new(Semaphore::new(self.inner.limits.max_connections)),
-            req,
-        });
+        let ctx = Arc::new(LeaseCtx::new(self.inner.clone(), req));
 
         let mcp = match (&self.inner.mcp, ctx.req.mcp_tokens.is_empty()) {
             (Some((server, addr)), false) => Some((server.clone(), *addr)),
@@ -334,6 +337,22 @@ pub fn find_netbridge() -> Option<PathBuf> {
         .or_else(|| crate::cli::resolve_program(NETBRIDGE))
 }
 
+/// Remove lease directories left behind by a queen that died. A directory whose sockets
+/// still accept connections belongs to a running queen (sharing the runtime dir) and stays.
+fn remove_stale_leases(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        let live = [EGRESS_SOCKET, MCP_SOCKET]
+            .iter()
+            .any(|s| std::os::unix::net::UnixStream::connect(path.join(s)).is_ok());
+        if !live {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
 /// Directories a binary needs besides `/usr`: `/nix/store` if its ELF interpreter lives
 /// there (a build from the Nix dev shell). Image builds use `/usr/lib64` and need nothing.
 fn runtime_dirs(binary: &Path) -> Vec<PathBuf> {
@@ -382,13 +401,56 @@ fn elf_interpreter(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Repeated identical denials within this window are counted, not written one by one.
+const DENY_REPEAT_WINDOW: Duration = Duration::from_secs(60);
+
 struct LeaseCtx {
     proxy: Arc<ProxyInner>,
     slots: Arc<Semaphore>,
     req: EgressRequest,
+    /// Per denial detail: when it was last written, and how many repeats since.
+    denials: std::sync::Mutex<HashMap<String, (std::time::Instant, u64)>>,
 }
 
 impl LeaseCtx {
+    fn new(proxy: Arc<ProxyInner>, req: EgressRequest) -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(proxy.limits.max_connections)),
+            proxy,
+            req,
+            denials: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Audit a denial. CLIs retry denied telemetry hosts many times a minute; identical
+    /// denials within [`DENY_REPEAT_WINDOW`] are counted and reported with the next record
+    /// for the same detail (or when the sandbox ends), so every attempt is accounted for.
+    fn deny(&self, detail: String) {
+        let now = std::time::Instant::now();
+        let repeats = {
+            let mut seen = self.denials.lock().unwrap_or_else(|p| p.into_inner());
+            match seen.get_mut(&detail) {
+                Some((last, n)) if now.duration_since(*last) < DENY_REPEAT_WINDOW => {
+                    *n += 1;
+                    return;
+                }
+                Some((last, n)) => {
+                    *last = now;
+                    std::mem::take(n)
+                }
+                None => {
+                    seen.insert(detail.clone(), (now, 0));
+                    0
+                }
+            }
+        };
+        let detail = match repeats {
+            0 => detail,
+            n => format!("{detail} (+{n} repeats)"),
+        };
+        self.audit("egress.deny", detail);
+    }
+
     fn audit(&self, action: &str, detail: String) {
         let level_deny = action != "egress.allow";
         if level_deny {
@@ -402,6 +464,18 @@ impl LeaseCtx {
             if let Err(e) = log.append(&record) {
                 tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
             }
+        }
+    }
+}
+
+impl Drop for LeaseCtx {
+    // The sandbox is gone: report the denials that were only counted.
+    fn drop(&mut self) {
+        let seen = std::mem::take(self.denials.get_mut().unwrap_or_else(|p| p.into_inner()));
+        let mut pending: Vec<_> = seen.into_iter().filter(|(_, (_, n))| *n > 0).collect();
+        pending.sort();
+        for (detail, (_, n)) in pending {
+            self.audit("egress.deny", format!("{detail} (+{n} repeats)"));
         }
     }
 }
@@ -434,11 +508,6 @@ enum Decision {
 
 async fn handle_proxy(mut stream: UnixStream, ctx: Arc<LeaseCtx>) {
     let limits = &ctx.proxy.limits;
-    let Ok(_slot) = ctx.slots.clone().try_acquire_owned() else {
-        ctx.audit("egress.deny", "too many open connections".into());
-        let _ = respond(&mut stream, "429 Too Many Requests", "too many connections").await;
-        return;
-    };
     let (head, rest) = match tokio::time::timeout(limits.head_timeout, read_head(&mut stream)).await
     {
         Ok(Ok(parts)) => parts,
@@ -451,10 +520,9 @@ async fn handle_proxy(mut stream: UnixStream, ctx: Arc<LeaseCtx>) {
         Ok(ProxyRequest::Connect { host, port }) => (host, port),
         Ok(ProxyRequest::Other { method, target }) => {
             let target: String = target.chars().take(200).collect();
-            ctx.audit(
-                "egress.deny",
-                format!("{method} {target}: only CONNECT (HTTPS) is proxied"),
-            );
+            ctx.deny(format!(
+                "{method} {target}: only CONNECT (HTTPS) is proxied"
+            ));
             let _ = respond(&mut stream, "403 Forbidden", "only CONNECT is allowed").await;
             return;
         }
@@ -463,9 +531,17 @@ async fn handle_proxy(mut stream: UnixStream, ctx: Arc<LeaseCtx>) {
             return;
         }
     };
+    let Ok(_slot) = ctx.slots.clone().try_acquire_owned() else {
+        let max = limits.max_connections;
+        ctx.deny(format!(
+            "{host}:{port}: too many open connections (max {max})"
+        ));
+        let _ = respond(&mut stream, "429 Too Many Requests", "too many connections").await;
+        return;
+    };
     match decide(&ctx, &host, port).await {
         Decision::Refuse(status, reason) => {
-            ctx.audit("egress.deny", format!("{host}:{port}: {reason}"));
+            ctx.deny(format!("{host}:{port}: {reason}"));
             let _ = respond(&mut stream, status, &reason).await;
         }
         Decision::Tunnel(mut upstream, detail) => {

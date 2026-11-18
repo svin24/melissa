@@ -161,6 +161,51 @@ async fn allowlisted_hosts_tunnel_and_everything_is_audited() {
 }
 
 #[tokio::test]
+async fn repeated_denials_are_counted_not_repeated() {
+    let root = scratch("repeat");
+    let audit = AuditLog::new(root.join("audit.jsonl"));
+    let proxy = EgressProxy::new(root.join("sockets"), Some(audit.clone()))
+        .unwrap()
+        .with_netbridge("/usr/bin/true".into());
+    let lease = proxy
+        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+    for _ in 0..5 {
+        let (status, _) = connect(&dir, "CONNECT telemetry.example:443 HTTP/1.1\r\n\r\n").await;
+        assert!(status.contains("403"));
+    }
+    let (status, _) = connect(&dir, "CONNECT other.example:443 HTTP/1.1\r\n\r\n").await;
+    assert!(status.contains("403"));
+    let details = |log: &AuditLog| -> Vec<String> {
+        audit_lines(log)
+            .iter()
+            .map(|l| l["detail"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        details(&audit),
+        [
+            "telemetry.example:443: not in the allowlist",
+            "other.example:443: not in the allowlist"
+        ]
+    );
+    // When the sandbox ends, the counted repeats are written.
+    drop(lease);
+    for _ in 0..50 {
+        if details(&audit).len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        details(&audit)[2],
+        "telemetry.example:443: not in the allowlist (+4 repeats)"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
 async fn learn_mode_allows_unlisted_hosts_but_not_private_ones() {
     let root = scratch("learn");
     let audit = AuditLog::new(root.join("audit.jsonl"));
@@ -200,14 +245,18 @@ async fn connection_limit_per_sandbox() {
             max_connections: 1,
             ..EgressLimits::default()
         });
+    // The first tunnel holds the only slot while it is open.
+    let server = echo_server().await;
+    let proxy = proxy.with_resolver_override("one.test.example", vec![server.ip()]);
+    let rule = format!("one.test.example:{}", server.port());
     let lease = proxy
-        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .open(request(NetworkMode::Proxy, &[&rule], vec![]))
         .unwrap();
     let dir = lease.bridge().unwrap().socket_dir.clone();
-    // The first connection holds its slot while it has not sent a full head.
-    let _held = UnixStream::connect(dir.join(EGRESS_SOCKET)).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let (status, _) = connect(&dir, "CONNECT example.com:443 HTTP/1.1\r\n\r\n").await;
+    let head = format!("CONNECT {rule} HTTP/1.1\r\n\r\n");
+    let (status, _held) = connect(&dir, &head).await;
+    assert!(status.contains("200"), "{status}");
+    let (status, _) = connect(&dir, &head).await;
     assert!(status.contains("429"), "{status}");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -310,6 +359,32 @@ async fn proxy_port_moves_aside_for_the_mcp_port_and_needs_a_bridge() {
         no_bridge.open(request(NetworkMode::Proxy, &[], vec![])),
         Err(EgressError::NoNetbridge)
     ));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn startup_keeps_live_leases_and_rejects_long_paths() {
+    let root = scratch("stale");
+    let sockets = root.join("s");
+    let first = EgressProxy::new(sockets.clone(), None)
+        .unwrap()
+        .with_netbridge("/usr/bin/true".into());
+    let live = first
+        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .unwrap();
+    let live_dir = live.bridge().unwrap().socket_dir.clone();
+    let stale = sockets.join("0123456789abcdef");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join(EGRESS_SOCKET), "").unwrap();
+    // A second queen on the same directory removes only the dead lease.
+    let _second = EgressProxy::new(sockets.clone(), None).unwrap();
+    assert!(live_dir.exists());
+    assert!(!stale.exists());
+
+    let long = root.join("x".repeat(100));
+    let err = EgressProxy::new(long, None).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    drop(live);
     let _ = std::fs::remove_dir_all(&root);
 }
 
