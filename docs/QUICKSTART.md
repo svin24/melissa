@@ -158,7 +158,9 @@ Pick one (not yet tested by us on Ubuntu; please tell us what worked):
   `sysctl kernel.unprivileged_userns_clone` (must be 1).
 - **"cannot listen on 127.0.0.1:8080".** Something else uses the port, perhaps another Melissa. Stop it,
   or create `~/.config/melissa/queen.toml` with `listen = "127.0.0.1:8090"` and open that port instead
-  (`just chat`/`ask` read the same file).
+  (`just chat`/`ask` read the same file). On a machine running the Melissa desktop image (e.g. the dev
+  laptop) the system queen always holds 127.0.0.1:8080, so put `listen = "127.0.0.1:8090"` in
+  `~/.config/melissa/queen.toml` once for `just demo`.
 - **The Queen answers "not logged in" or every backend fails.** Run the CLI once by hand (`claude`,
   `grok`, `opencode`) and log in, then send the message again. To pin one agent, put this in
   `~/.config/melissa/queen.toml`:
