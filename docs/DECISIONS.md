@@ -229,3 +229,9 @@ Format: date — decision. Why. Alternatives considered.
 - **2026-11-18 — Queen backend order: `grok-acp`, then `claude-session`, then `opencode-acp`** (config
   `[queen] backends`). Each is tried when the previous one fails to start (missing CLI, login, handshake).
   Workers default to the first Queen backend and may use any session backend.
+- **2026-11-18 — Web UI home is the Queen chat with a compact app-state preview (owner).** Simple, chat-bot-like; approvals
+  inline. Concepts exist as mockups; building needs the owner's go.
+- **2026-11-18 — Sub-agents may build apps in their own sandboxed environments; Nix is a candidate for those
+  environments (owner).** Agents also handle cleanup and maintenance behind confirmations.
+- **2026-11-18 — Isolation by default, communication by explicit, approved, audited links (owner).** Agent to agent via
+  the Queen; app to app via manifest-declared NetworkPolicy links; agent to app via tools only.
