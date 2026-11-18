@@ -4,7 +4,6 @@ members = ["crates/agent", "crates/catalog", "crates/hive", "crates/queen", "cra
 
 [workspace.package]
 edition = "2021"
-license = "AGPL-3.0-or-later"   # candidate, see docs/PLAN.md section 8
 publish = false
 
 [workspace.dependencies]

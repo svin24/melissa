@@ -2,7 +2,6 @@
 name = "melissa-catalog"
 version = "0.0.1"
 edition.workspace = true
-license.workspace = true
 publish.workspace = true
 description = "Melissa app catalog: the app manifest schema, validation and config resolution"
 

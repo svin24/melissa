@@ -1,14 +1,19 @@
 # Melissa
 
-**An open source, clustered, agent-run, immutable self-hosting OS.**
+> **Pre-alpha software.** This is an early demo for people to try and give feedback on. Expect bugs, breaking
+> changes and missing pieces. Don't run it on a machine or with data you care about, and don't expose it to the
+> internet. Agents act on your behalf through AI subscriptions you log in to; review what they ask to do.
+
+**A clustered, agent-run, immutable self-hosting OS.**
 
 Melissa turns a handful of ordinary machines (a laptop, a mini PC, a NAS, a VPS) into one self-hosting
-cluster that an AI agent operates for you. Install apps like Nextcloud or Immich from a fixed catalog,
-and let an agent keep the hive updated, backed up and healthy.
+cluster that AI agents run for you. You chat with the Queen; she and her bees install apps like Nextcloud,
+keep them healthy and tidy up, asking you before anything risky.
 
-- **Bee** = a node (any machine running Melissa).
-- **Hive** = the cluster.
-- **Queen bee** = the master agent that coordinates the hive. Every bee can also run its own agents.
+- **Hive**: all your devices together. **Comb**: one device, with one **Queen** (the lead agent).
+- **Bees**: worker agents; each looks after its own **cells** (apps and their services).
+- You can talk to any Queen or bee. Only a Queen, or you, can hand a cell to another bee.
+  Full model: [docs/HIVE-MODEL.md](docs/HIVE-MODEL.md).
 
 Principles: immutable base (Fedora bootc), **Rust** almost everywhere (agents work better with a safe,
 strongly typed language), a boring server-rendered web UI with no AI-generated UI, a UI that works on a LAN
@@ -44,3 +49,5 @@ Status: early. The multi-agent demo works locally; images are being brought up i
 Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md) first.
 
 Credits and third-party notices: [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
+
+License: not chosen yet (Melissa is meant to become open source). Until a license is added, no rights to reuse the code are granted.

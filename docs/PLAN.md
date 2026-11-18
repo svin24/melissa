@@ -257,7 +257,8 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 ## 8. Licensing and legal
 
-- **Owner leaning (2026-11-18): MIT.** Not switched yet (Cargo.toml still says the old candidate); confirm before changing.
+- **Owner decision (2026-11-18): license decided later; no LICENSE file for now.** The AGPL declaration was removed
+  from Cargo.toml and the image label; the README says no license has been chosen. (Owner had leaned towards MIT.)
   Attributions for design inspiration (T3 Code, Universal Blue) and redistributed third-party software live in
   `ACKNOWLEDGMENTS.md` regardless of the final license.
 - Open source so others can build on it. Earlier candidate: **AGPL-3.0 plus a commercial license/EULA (dual license)** for those who cannot use AGPL. Alternatives (Apache-2.0/MPL) if community growth matters more than protecting the commercial path.
@@ -267,6 +268,12 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 - Keep the project separate from any employer: no outside code or assets.
 
 ## 9. Milestones
+
+**Pre-alpha demo (owner, weekend of 2026-11-21/22):** the owner publishes a pre-alpha online for people to try.
+Focus: easy to try, honest about being pre-alpha (notice in README and UI), the chat-first web UI from the concepts,
+two ways in (run from source; a ready VM image). Further security hardening (throwaway worker bees, taint UX,
+escape test suite) is parked until after the demo; the existing basics stay on.
+
 
 **Demo (target: end of the current week):** multi-agent demo on the laptop showing Claude, Grok and OpenCode (Gemma) as backends behind the same agent interface, coordinated by a minimal queen bee, with a minimal web UI that lists agents and lets one install/inspect something. Scripted and repeatable.
 
