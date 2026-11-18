@@ -28,6 +28,45 @@ pub struct QueenConfig {
     pub kubeconfig: Option<PathBuf>,
     /// The Queen (head agent) and its workers.
     pub queen: QueenSection,
+    /// The app catalog and app installs.
+    pub apps: AppsSection,
+}
+
+/// `[apps]`: where the catalog is, which domain apps get, the write identity's kubeconfig.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AppsSection {
+    /// Directory of app manifests (`<name>.toml`).
+    pub catalog: PathBuf,
+    /// Apps are served at `<app>.<domain>`.
+    pub domain: String,
+    /// Kubeconfig of the write identity (`melissa-apps`); default
+    /// `/run/melissa-kube/apps.kubeconfig`. Re-read on every call.
+    pub kubeconfig: Option<PathBuf>,
+}
+
+impl Default for AppsSection {
+    fn default() -> Self {
+        Self {
+            catalog: PathBuf::from(melissa_catalog::DEFAULT_CATALOG_DIR),
+            domain: melissa_catalog::DEFAULT_DOMAIN.into(),
+            kubeconfig: None,
+        }
+    }
+}
+
+/// A DNS name of lowercase labels (`melissa.home.arpa`).
+fn valid_domain(d: &str) -> bool {
+    d.len() <= 200
+        && d.split('.').count() >= 2
+        && d.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 impl Default for QueenConfig {
@@ -38,6 +77,7 @@ impl Default for QueenConfig {
             backends: default_backends(),
             kubeconfig: None,
             queen: QueenSection::default(),
+            apps: AppsSection::default(),
         }
     }
 }
@@ -204,6 +244,12 @@ impl QueenConfig {
         if self.task_timeout_secs == 0 {
             bail!("task_timeout_secs must be greater than 0");
         }
+        if !valid_domain(&self.apps.domain) {
+            bail!(
+                "[apps] domain `{}` must be a lowercase DNS name like `melissa.home.arpa`",
+                self.apps.domain
+            );
+        }
         let mut names = vec!["echo"];
         for b in &self.backends {
             if names.contains(&b.name()) {
@@ -275,6 +321,24 @@ impl Dirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apps_section_defaults_and_domain_check() {
+        let config: QueenConfig = toml::from_str("").unwrap();
+        assert_eq!(config.apps.domain, "melissa.home.arpa");
+        assert_eq!(config.apps.catalog, Path::new("/usr/share/melissa/catalog"));
+        let config: QueenConfig = toml::from_str(
+            "[apps]\ndomain = \"home.example.com\"\ncatalog = \"/tmp/c\"\nkubeconfig = \"/tmp/k\"",
+        )
+        .unwrap();
+        config.validate().unwrap();
+        for bad in ["Home.Example", "localhost", "a..b", "-x.y", "x y.z"] {
+            let config: QueenConfig =
+                toml::from_str(&format!("[apps]\ndomain = \"{bad}\"")).unwrap();
+            assert!(config.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<QueenConfig>("[apps]\nimage = \"x\"").is_err());
+    }
 
     #[test]
     fn empty_file_means_defaults() {

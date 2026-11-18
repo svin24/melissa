@@ -4,6 +4,10 @@
 //! Usage:
 //!   `melissa-queen [--config <path>]`                         serve the web UI and agents
 //!   `melissa-queen [--config <path>] tool <name> [json-args]` run one tool and print its JSON
+//!   `melissa-queen [--config <path>] tool --wait <name> [json]` same, in the running daemon,
+//!                                                            waiting for confirmations
+//!   `sudo melissa-queen app-credentials <app>`                the owner's view of an app's
+//!                                                            generated credentials
 //!   `melissa-queen [--config <path>] chat`                    talk to the Queen (line based)
 //!   `melissa-queen [--config <path>] ask <message>`           one message, stream the answer
 //!   `melissa-queen [--config <path>] confirm list|approve <id>|deny <id>`
@@ -19,6 +23,7 @@
 
 mod client;
 mod config;
+mod credentials;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -35,7 +40,7 @@ use melissa_agent::{
     tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
     AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, McpLink, TaskBoard,
 };
-use melissa_hive::{ClusterHealth, LazyCluster};
+use melissa_hive::{app_tools, AppSettings, ClusterHealth, KubeApps, LazyCluster};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
@@ -47,7 +52,11 @@ const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
 
 const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   (none)                      serve the web UI, the Queen and agents
-  tool <name> [json-args]     run one tool and print its JSON result
+  tool <name> [json-args]     run one tool here and print its JSON result (unattended:
+                              anything that needs a confirmation is refused)
+  tool --wait <name> [json]   run one tool in the running daemon; waits for a confirmation
+                              (answer it with `confirm approve <id>` from another shell)
+  app-credentials <app>       show an app's generated credentials (owner only, needs root)
   chat                        talk to the Queen (Ctrl-C cancels a turn)
   ask <message>               send one message and stream the answer
   confirm list|approve <id>|deny <id>
@@ -60,6 +69,12 @@ enum Command {
         name: String,
         args: Value,
     },
+    /// The same through the daemon's API, waiting for confirmations.
+    ToolWait {
+        name: String,
+        args: Value,
+    },
+    AppCredentials(String),
     Chat,
     Ask(String),
     Confirm(String, Option<u64>),
@@ -93,16 +108,36 @@ async fn main() -> anyhow::Result<()> {
         Command::Ask(message) => return client::ask(&api, message).await,
         Command::Confirm(action, id) => return client::confirm(&api, action, *id).await,
         Command::Workers => return client::workers(&api).await,
+        Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
+        Command::AppCredentials(app) => {
+            return credentials::show(
+                app,
+                &config.apps.catalog,
+                &config.apps.domain,
+                std::path::Path::new(credentials::ADMIN_KUBECONFIG),
+            )
+            .await
+        }
         Command::Serve | Command::Tool { .. } => {}
     }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
     let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
     let cluster = LazyCluster::for_queen(creds.as_deref(), config.kubeconfig.as_deref());
-    let tools: Vec<Arc<dyn Tool>> = vec![
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(BeeInfo::new()),
         Arc::new(ClusterHealth::new(Some(Arc::new(cluster)))),
     ];
+    // App tools use the separate write identity (melissa-apps); read-only tools above
+    // never hold it.
+    let apps = KubeApps::new(LazyCluster::for_apps(config.apps.kubeconfig.as_deref()));
+    tools.extend(app_tools(
+        AppSettings {
+            catalog_dir: config.apps.catalog.clone(),
+            domain: config.apps.domain.clone(),
+        },
+        Some(Arc::new(apps)),
+    ));
 
     match command {
         Command::Tool { name, args } => run_tool(audit, tools, &name, args).await,
@@ -238,6 +273,15 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             println!("{USAGE}");
             std::process::exit(0);
         }
+        [tool, wait, name] if tool == "tool" && wait == "--wait" => Command::ToolWait {
+            name: name.clone(),
+            args: json!({}),
+        },
+        [tool, wait, name, args] if tool == "tool" && wait == "--wait" => Command::ToolWait {
+            name: name.clone(),
+            args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
+        },
+        [c, app] if c == "app-credentials" => Command::AppCredentials(app.clone()),
         [tool, name] if tool == "tool" => Command::Tool {
             name: name.clone(),
             args: json!({}),
@@ -283,6 +327,18 @@ mod tests {
         let (_, cmd) = parse(&["tool", "bee_info", r#"{"a":1}"#]).unwrap();
         assert!(matches!(cmd, Command::Tool { args, .. } if args["a"] == 1));
         assert!(parse(&["tool", "x", "not json"]).is_err());
+        let (_, cmd) = parse(&["tool", "--wait", "install_app", r#"{"app":"nextcloud"}"#]).unwrap();
+        assert!(
+            matches!(cmd, Command::ToolWait { name, args } if name == "install_app" && args["app"] == "nextcloud")
+        );
+        assert!(matches!(
+            parse(&["tool", "--wait", "app_status"]).unwrap().1,
+            Command::ToolWait { .. }
+        ));
+        assert!(
+            matches!(parse(&["app-credentials", "nextcloud"]).unwrap().1, Command::AppCredentials(a) if a == "nextcloud")
+        );
+        assert!(parse(&["app-credentials"]).is_err());
         assert!(parse(&["bogus"]).is_err());
         assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat));
         assert!(

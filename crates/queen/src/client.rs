@@ -403,3 +403,36 @@ pub async fn workers(client: &Client) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// `tool --wait <name> [args]`: run one tool in the daemon (operator call, unattended
+/// policy). While it waits for a confirmation, says which one and how to answer it (on
+/// stderr, so stdout stays the result JSON).
+pub async fn tool(client: &Client, name: &str, args: Value) -> anyhow::Result<()> {
+    let path = format!("/api/tools/{name}");
+    let call = client.post(&path, args);
+    tokio::pin!(call);
+    let mut announced = std::collections::BTreeSet::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    let (status, body) = loop {
+        tokio::select! {
+            res = &mut call => break res?,
+            _ = tick.tick() => {
+                // Operator calls run as task 0; show only confirmations for this tool.
+                let Ok(list) = client.get("/api/confirmations").await else { continue };
+                for c in list["confirmations"].as_array().into_iter().flatten() {
+                    let Some(id) = c["id"].as_u64() else { continue };
+                    if c["task"] == 0 && c["tool"] == name && announced.insert(id) {
+                        eprintln!(
+                            "waiting for confirmation #{id} ({}): approve with \
+                             `melissa-queen confirm approve {id}`, or deny",
+                            c["reason"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+            }
+        }
+    };
+    let body = ok(status, body)?;
+    println!("{}", serde_json::to_string_pretty(&body["result"])?);
+    Ok(())
+}
