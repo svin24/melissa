@@ -8,3 +8,4 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [bootc-image-build.md](bootc-image-build.md) — building desktop/headless images, layer order, laptop switch.
 - [bootc-vm-test.md](bootc-vm-test.md) — qcow2 with bootc-image-builder, booting in QEMU, SSH into test VMs.
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test.
+- [acp-sessions.md](acp-sessions.md) — ACP for long-lived Queen/worker sessions: protocol, which agents, permission mapping, sandbox, replay tests.

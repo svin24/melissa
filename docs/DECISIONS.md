@@ -51,3 +51,7 @@ Format: date — decision. Why. Alternatives considered.
   systemd-run/landlock (less isolation of the file tree), no sandbox (rejected).
 - **2026-11-18 — The Queen is the head agent; workers are sandboxed agents it starts.** Owner decision. Queen backend is a
   configurable list of subscription backends; no local LLMs on weak hardware.
+- **2026-11-18 — ACP is the primary protocol for long-lived Queen/worker sessions; one-shot CLI runs stay as fallback.**
+  Why: standard JSON-RPC over stdio with streaming updates, permission requests, cancel and resume; Grok/Kiro/fx speak
+  it; tools can be passed per session (`mcpServers`). Use the official Rust crate `agent-client-protocol` (Apache-2.0).
+  Permission requests map onto Melissa's policy; never answer with "always". Studied in T3 Code (MIT, reference only).
