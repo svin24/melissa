@@ -249,3 +249,7 @@ Format: date — decision. Why. Alternatives considered.
   tool, not even behind a confirmation (persuasion/confirmation fatigue on the input every other check trusts).
   Trade-offs: the Queen's reinstalls/config changes of owner apps now always ask; jobs' apps outlive their job
   (Queen may still change them; the owner adopts them); without k3s the owner can't be checked → fail closed.
+- **2026-11-18 — Hive model from the owner's diagram (`docs/hive-model.svg`).** Comb = device with one Queen; main-comb
+  Queen has the final say; Bees are worker agents that own Cells; Cells host Services; only a Queen or the User
+  reassigns Cells; cross-comb takeovers only on the User's say. The merged ownership work (owner/job labels, scope check
+  in the tool registry) is the foundation and gets adapted to Bee/Cell ownership next.
