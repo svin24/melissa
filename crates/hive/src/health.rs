@@ -36,9 +36,14 @@ impl ClusterHealth {
             Err(e @ ClusterError::Unreachable(_)) => return Ok(unreachable(&e)),
             Err(e) => return Err(ToolError::Failed(e.to_string())),
         };
-        let (nodes, namespaces, pods) =
-            tokio::try_join!(cluster.nodes(), cluster.namespaces(), cluster.pods())
-                .map_err(|e| ToolError::Failed(e.to_string()))?;
+        // k3s restarts itself now and then (e.g. when the node's IPs change at boot), so the
+        // API can vanish between the probe and the lists: that is "unreachable", not a failure.
+        let lists = tokio::try_join!(cluster.nodes(), cluster.namespaces(), cluster.pods());
+        let (nodes, namespaces, pods) = match lists {
+            Ok(l) => l,
+            Err(e @ ClusterError::Unreachable(_)) => return Ok(unreachable(&e)),
+            Err(e) => return Err(ToolError::Failed(e.to_string())),
+        };
 
         // Every namespace appears, even empty ones (a freshly created app namespace).
         let mut by_ns: BTreeMap<String, BTreeMap<String, u64>> = namespaces
@@ -346,6 +351,17 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ToolError::Failed(m) if m.contains("forbidden")));
+    }
+
+    #[tokio::test]
+    async fn api_vanishing_mid_call_is_unreachable() {
+        let out = call(Fake {
+            pods_error: Some(ClusterError::Unreachable("connection reset".into())),
+            ..Fake::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(out["k3s_reachable"], false);
     }
 
     #[tokio::test]
