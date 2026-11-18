@@ -483,3 +483,95 @@ async fn agent_death_between_turns_ends_the_event_stream() {
     ));
     agent.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn real_opencode_transcript_replays() {
+    // Recorded from `opencode acp` (2.3.2, flavor opencode) through the queen; see the header.
+    // Melissa's MCP server is in OpenCode's config, so `session/new` carries none, and the
+    // tool is named `melissa_bee_info` (no Code Mode).
+    let audit_path = scratch("opencode").join("audit.jsonl");
+    let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
+    let steps = agent::parse(&fixture("opencode_bee_info.jsonl"));
+    let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), false), None).await;
+    let OpenedSession {
+        session,
+        mut events,
+        ..
+    } = opened;
+    let caps = session.capabilities().clone();
+    assert!(caps.load && caps.resume && caps.close && caps.mcp_http);
+    assert_eq!(caps.agent.as_deref(), Some("OpenCode 2.3.2"));
+    let (sink, mut rx) = EventSink::channel();
+    let stop = one_turn(
+        session.as_ref(),
+        &mut events,
+        "Use the bee_info tool, then reply with one line: the kernel version.",
+        &sink,
+    )
+    .await
+    .unwrap();
+    assert_eq!(stop, StopReason::EndTurn);
+    session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+    drop(sink);
+    let mut lines = Vec::new();
+    while let Some(l) = rx.recv().await {
+        lines.push((l.stream, l.text));
+    }
+    let err = |s: &str| (Stream::Stderr, s.to_string());
+    assert_eq!(
+        lines,
+        [
+            err("[tool] melissa_bee_info → pending"),
+            err("[permission] melissa_bee_info → allow_once"),
+            err("[tool] melissa_bee_info → done"),
+            (Stream::Stdout, "Kernel: 7.3.4-300.fc45.x86_64".to_string()),
+        ]
+    );
+    let log = std::fs::read_to_string(&audit_path).unwrap();
+    assert!(log.contains("allow_once (other): melissa tool"), "{log}");
+}
+
+#[test]
+fn opencode_flavor_owns_the_config() {
+    use super::{opencode_env, AcpFlavor, AcpSpec};
+    let servers = vec![McpServerSpec {
+        name: "melissa".into(),
+        url: "http://127.0.0.1:8080/mcp/0123456789abcdef".into(),
+        headers: vec![("X-A".into(), "b".into())],
+    }];
+    let env = opencode_env(&servers, Some("opencode/big-pickle"));
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let config: Value = serde_json::from_str(&get("OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
+    // Every tool asks; nothing is pre-approved.
+    assert_eq!(config["permission"], serde_json::json!({"*": "ask"}));
+    let mcp = &config["mcp"]["melissa"];
+    assert_eq!(mcp["type"], "remote");
+    assert_eq!(mcp["codemode"], false);
+    assert_eq!(mcp["url"], "http://127.0.0.1:8080/mcp/0123456789abcdef");
+    assert_eq!(mcp["headers"]["X-A"], "b");
+    assert_eq!(config["model"], "opencode/big-pickle");
+    assert_eq!(get("OPENCODE_DISABLE_PROJECT_CONFIG").as_deref(), Some("1"));
+    let no_model: Value = serde_json::from_str(&opencode_env(&[], None)[0].1).unwrap();
+    assert!(no_model.get("model").is_none());
+    assert_eq!(no_model["mcp"], serde_json::json!({}));
+
+    // The managed preset hides the user's OpenCode config; a generic opencode ACP spec does not.
+    let spec = AcpSpec::new("opencode-acp", "opencode", &["acp"]).with_flavor(AcpFlavor::Opencode);
+    assert!(spec.effective_sandbox().ro.is_empty());
+    assert!(!AcpSpec::new("x", "opencode", &["acp"])
+        .effective_sandbox()
+        .ro
+        .is_empty());
+    assert_eq!(super::flavor_for("/usr/bin/opencode"), AcpFlavor::Opencode);
+    // `model` is only for the opencode flavor, and must look like `provider/model`.
+    let mut ok = spec.clone();
+    ok.model = Some("opencode/big-pickle".into());
+    ok.validate().unwrap();
+    let mut bad = spec;
+    bad.model = Some("x\"; rm".into());
+    assert!(bad.validate().is_err());
+    let mut generic = AcpSpec::new("g", "grok", &[]);
+    generic.model = Some("a/b".into());
+    assert!(generic.validate().is_err());
+}

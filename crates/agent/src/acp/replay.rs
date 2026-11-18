@@ -7,8 +7,9 @@
 //!
 //! The [`Recorder`] writes transcripts from real sessions (enable with `record_dir` on an ACP
 //! backend) and scrubs what it knows is private: the home directory, the working directory,
-//! the MCP session token, the user and host name, and every UUID (session ids, agent ids),
-//! which become fixed placeholders. **Still review every transcript by hand before
+//! the MCP session token, the user and host name, e-mail addresses, and every UUID (session
+//! ids, agent ids), which become fixed placeholders. The same format records Claude's
+//! stream-json sessions ([`crate::claude`]); only the protocol in the header differs. **Still review every transcript by hand before
 //! committing it** (prompts and replies can contain anything).
 //!
 //! In tests, a replay agent plays the agent's side: it expects each `send` message (matched
@@ -66,6 +67,18 @@ impl Recorder {
         workdir: &Path,
         secrets: Vec<String>,
     ) -> std::io::Result<Self> {
+        Self::create_for(dir, name, "acp-v1", home, workdir, secrets)
+    }
+
+    /// Like [`Recorder::create`], for another `protocol` (e.g. `claude-stream-json`).
+    pub fn create_for(
+        dir: &Path,
+        name: &str,
+        protocol: &str,
+        home: Option<&Path>,
+        workdir: &Path,
+        secrets: Vec<String>,
+    ) -> std::io::Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::create_dir_all(dir)?;
         let ts = std::time::SystemTime::now()
@@ -81,9 +94,10 @@ impl Recorder {
         let header = json!({
             "type": "transcript",
             "agent": name,
-            "protocol": "acp-v1",
+            "protocol": protocol,
             "notes": "Recorded by Melissa. Scrubbed: home → /home/user, workdir → /work, \
-                      MCP token → <redacted>, user/host names, UUIDs → fixed ids. Review by hand.",
+                      MCP token → <redacted>, user/host names, e-mail addresses, UUIDs → fixed \
+                      ids. Review by hand.",
         });
         writeln!(file, "{header}")?;
         Ok(Self {
@@ -164,7 +178,7 @@ impl Scrubber {
         for (word, replacement) in &self.words {
             out = replace_word(&out, word, replacement);
         }
-        out
+        replace_emails(&out)
     }
 
     /// Replace each distinct UUID with `00000000-0000-4000-8000-<n>` (stable per transcript).
@@ -191,6 +205,43 @@ impl Scrubber {
         }
         out
     }
+}
+
+/// Replace anything shaped like an e-mail address (`local@domain.tld`) with
+/// `user@example.com` (agents put the account's address into their handshakes).
+fn replace_emails(text: &str) -> String {
+    let is_part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('@') {
+        let before = &rest[..at];
+        let local_start = before
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_part(*c))
+            .last()
+            .map_or(at, |(i, _)| i);
+        let after = &rest[at + 1..];
+        let domain_len = after.find(|c: char| !is_part(c)).unwrap_or(after.len());
+        let domain = after[..domain_len].trim_end_matches('.');
+        let looks_like_mail = local_start < at
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && domain
+                .rsplit('.')
+                .next()
+                .is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
+        if looks_like_mail {
+            out.push_str(&rest[..local_start]);
+            out.push_str("user@example.com");
+            rest = &after[domain.len()..];
+        } else {
+            out.push_str(&rest[..=at]);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn is_uuid(b: &[u8]) -> bool {
@@ -449,6 +500,22 @@ mod tests {
         assert!(
             out.contains(r#""name":"malice_x""#),
             "words inside identifiers stay"
+        );
+    }
+
+    #[test]
+    fn emails_are_scrubbed() {
+        assert_eq!(
+            replace_emails(r#"{"email":"first.last+x@mail.example.org","n":"a@b"}"#),
+            r#"{"email":"user@example.com","n":"a@b"}"#
+        );
+        assert_eq!(
+            replace_emails("mail me: bob@host.io. Thanks @all"),
+            "mail me: user@example.com. Thanks @all"
+        );
+        assert_eq!(
+            replace_emails("pkg@1.2.3 and x@y.z9"),
+            "pkg@1.2.3 and x@y.z9"
         );
     }
 

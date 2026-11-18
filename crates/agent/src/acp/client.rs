@@ -63,7 +63,7 @@ impl StderrTail {
         q.push_back(line);
     }
 
-    fn summary(&self) -> String {
+    pub(crate) fn summary(&self) -> String {
         let q = self.0.lock().unwrap_or_else(|p| p.into_inner());
         if q.is_empty() {
             String::new()

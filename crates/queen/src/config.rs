@@ -212,6 +212,13 @@ pub fn default_backends() -> Vec<BackendSpec> {
             ],
         )
         .with_session_store(".grok/sessions"),
+        // OpenCode over ACP. Melissa writes its whole config (flavor `opencode`): every tool
+        // asks (`permission: {"*": "ask"}`), Melissa's MCP server without Code Mode, the
+        // user's own config hidden. Sessions live in its database under
+        // `~/.local/share/opencode`; for the Queen that directory is Melissa's own.
+        AcpSpec::new("opencode-acp", "opencode", &["acp"])
+            .with_flavor(melissa_agent::acp::AcpFlavor::Opencode)
+            .with_session_store(".local/share/opencode"),
     ];
     cli.into_iter()
         .map(BackendSpec::Cli)
@@ -536,6 +543,16 @@ mod tests {
     #[test]
     fn grok_acp_is_built_in_with_a_strict_permission_mode() {
         let backends = default_backends();
+        let opencode = backends
+            .iter()
+            .find_map(|b| match b {
+                BackendSpec::Acp(s) if s.name == "opencode-acp" => Some(s),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(opencode.flavor, melissa_agent::acp::AcpFlavor::Opencode);
+        // The user's own OpenCode config (which may allow tools) is not bound.
+        assert!(opencode.effective_sandbox().ro.is_empty());
         let grok = backends
             .iter()
             .find_map(|b| match b {

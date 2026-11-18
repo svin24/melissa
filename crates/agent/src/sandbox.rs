@@ -141,19 +141,34 @@ impl SandboxSpec {
                 rw: strings(&[".grok/auth.json"]),
                 ..Self::default()
             },
-            // OpenCode: its config read-only, provider logins (`auth.json`) if any; the
-            // session database and caches are fresh per run.
+            // OpenCode: its config files read-only (not the whole directory: it also holds
+            // `service.json`, a local server password, and plugins), provider logins
+            // (`auth.json`) if any; the session database and caches are fresh per run.
             "opencode" => Self {
                 tmpfs: strings(&[
                     ".local/share/opencode",
                     ".local/state/opencode",
                     ".cache/opencode",
+                    ".config/opencode",
                 ]),
-                ro: strings(&[".config/opencode"]),
+                ro: strings(&[
+                    ".config/opencode/opencode.json",
+                    ".config/opencode/opencode.jsonc",
+                ]),
                 rw: strings(&[".local/share/opencode/auth.json"]),
                 ..Self::default()
             },
             _ => Self::default(),
+        }
+    }
+
+    /// OpenCode with a config Melissa writes (ACP flavor `opencode`): like the `opencode`
+    /// preset but without the user's config files, whose permission rules could allow tools
+    /// without asking.
+    pub fn preset_opencode_managed() -> Self {
+        Self {
+            ro: Vec::new(),
+            ..Self::preset("opencode")
         }
     }
 
@@ -170,12 +185,7 @@ impl SandboxSpec {
             HostRule::parse(rule)?;
         }
         for name in &self.env {
-            let valid = !name.is_empty()
-                && !name.starts_with(|c: char| c.is_ascii_digit())
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-            if !valid || RESERVED_ENV.contains(&name.as_str()) {
-                return Err(SandboxError::BadEnv(name.clone()));
-            }
+            check_env_name(name)?;
         }
         Ok(())
     }
@@ -192,6 +202,17 @@ impl SandboxSpec {
     }
 }
 
+/// A valid environment variable name that the sandbox does not set itself.
+pub fn check_env_name(name: &str) -> Result<(), SandboxError> {
+    let valid = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid || RESERVED_ENV.contains(&name) {
+        return Err(SandboxError::BadEnv(name.to_string()));
+    }
+    Ok(())
+}
+
 /// Errors from sandbox configuration or setup.
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
@@ -203,6 +224,10 @@ pub enum SandboxError {
     BadEnv(String),
     #[error(transparent)]
     BadRule(#[from] crate::egress::BadRule),
+    #[error("model `{0}` is not valid here (`provider/model`, only for flavor = \"opencode\")")]
+    BadModel(String),
+    #[error("argument `{0}` is not allowed here (only --model, --fallback-model, --effort with a value)")]
+    BadArg(String),
     #[error("HOME is not set or not absolute; cannot build the sandbox")]
     NoHome,
     #[error("cannot resolve the CLI binary {path}: {source}")]
@@ -341,6 +366,17 @@ impl SandboxPlan {
             env,
             network,
         })
+    }
+
+    /// Set fixed environment variables inside the sandbox (e.g. an agent's config chosen by
+    /// Melissa). Names must be valid and not reserved ([`check_env_name`]).
+    pub fn with_env(mut self, env: &[(String, String)]) -> Result<Self, SandboxError> {
+        for (name, value) in env {
+            check_env_name(name)?;
+            self.env.retain(|(n, _)| n != name);
+            self.env.push((name.clone(), OsString::from(value)));
+        }
+        Ok(self)
     }
 
     /// Run the CLI behind `bridge` (ignored for `network = "host"`).
@@ -819,7 +855,21 @@ mod tests {
         assert!(claude.enabled);
         assert_eq!(claude.rw, [".claude/.credentials.json"]);
         assert_eq!(SandboxSpec::preset("grok").rw, [".grok/auth.json"]);
-        assert_eq!(SandboxSpec::preset("opencode").ro, [".config/opencode"]);
+        // Only OpenCode's config files, not its whole config dir (service password, plugins).
+        let opencode = SandboxSpec::preset("opencode");
+        assert_eq!(
+            opencode.ro,
+            [
+                ".config/opencode/opencode.json",
+                ".config/opencode/opencode.jsonc"
+            ]
+        );
+        assert!(opencode.tmpfs.contains(&".config/opencode".to_string()));
+        // Managed (ACP flavor): none of the user's config.
+        let managed = SandboxSpec::preset_opencode_managed();
+        assert!(managed.ro.is_empty());
+        assert_eq!(managed.rw, opencode.rw);
+        managed.validate().unwrap();
         assert_eq!(SandboxSpec::preset("other"), SandboxSpec::default());
         for name in ["claude", "grok", "opencode"] {
             SandboxSpec::preset(name).validate().unwrap();
@@ -836,6 +886,8 @@ mod tests {
             };
             assert!(spec.validate().is_err(), "{path:?} accepted");
         }
+        assert!(check_env_name("OPENCODE_CONFIG_CONTENT").is_ok());
+        assert!(check_env_name("HTTPS_PROXY").is_err());
         for name in ["HOME", "PATH", "", "1X", "A-B", "A B"] {
             let spec = SandboxSpec {
                 env: vec![name.into()],

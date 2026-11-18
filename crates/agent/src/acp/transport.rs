@@ -64,7 +64,9 @@ where
 }
 
 /// Read one line (without the newline). `None` at end of stream. Blank lines are skipped.
-async fn read_line<R: AsyncRead + Unpin>(reader: &mut BufReader<R>) -> io::Result<Option<String>> {
+pub(crate) async fn read_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> io::Result<Option<String>> {
     loop {
         let mut buf = Vec::new();
         let n = (&mut *reader)
