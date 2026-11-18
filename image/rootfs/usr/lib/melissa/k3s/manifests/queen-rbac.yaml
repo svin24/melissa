@@ -1,5 +1,6 @@
-# Melissa: the queen's identity in k3s. Read-only for now (cluster_health); writes for app
-# installs come later as separate, narrower Roles. No access to Secrets.
+# Melissa: the queen's read-only identity in k3s (cluster_health and other read-only tools).
+# No access to Secrets, no writes. App installs use a separate identity, melissa-apps
+# (apps-rbac.yaml), held only by the app tools.
 # The queen gets a kubeconfig for this ServiceAccount from melissa-kubeconfig.service;
 # it never sees k3s's admin kubeconfig.
 apiVersion: v1

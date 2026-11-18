@@ -9,6 +9,12 @@
 //! - `GET /api/queen/status` → `{"turn": n|null, "backend": "..."|null, "last_seq": seq}`.
 //! - `GET /api/workers` → the Queen's workers, newest first.
 //! - `GET /api/confirmations`; `POST /api/confirmations/{id}/approve|deny` → 200 or 404.
+//! - `POST /api/tools/{name}` (JSON arguments) → 200 `{"result": ...}`: runs one tool for an
+//!   operator (`melissa-queen tool --wait`) through the daemon's registry, as an unattended
+//!   task (task 0): the policy applies and confirmations land in the same inbox, so the call
+//!   waits for `approve`/`deny` (up to the confirmation timeout). Queen-only tools are not
+//!   reachable. Errors: 404 unknown tool, 422 bad arguments, 403 denied, 408 confirmation
+//!   timeout, 502 tool failure.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -20,11 +26,13 @@ use axum::{
     Json, Router,
 };
 use melissa_agent::{
+    mcp::McpServer,
     queen::{Queen, QueenError},
-    tools::Verdict,
+    tools::{TaskContext, ToolError, Verdict},
+    AuditRecord,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// Longest long-poll wait for events.
 const MAX_WAIT_SECS: u64 = 30;
@@ -39,6 +47,38 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/confirmations", get(confirmations))
         .route("/api/confirmations/{id}/{verdict}", post(resolve))
         .with_state(queen)
+}
+
+pub(crate) fn tool_routes(mcp: McpServer) -> Router {
+    Router::new()
+        .route("/api/tools/{name}", post(call_tool))
+        .with_state(mcp)
+}
+
+/// One operator tool call through the daemon's registry (see the module docs).
+async fn call_tool(
+    State(mcp): State<McpServer>,
+    Path(name): Path<String>,
+    Json(args): Json<Value>,
+) -> Response {
+    let registry = mcp.registry();
+    if let Some(log) = registry.audit_log() {
+        let record =
+            AuditRecord::now("operator.tool", 0, "", "tool call from the local API").by("operator");
+        if let Err(e) = log.append(&record.with_tool(&name, "")) {
+            tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
+        }
+    }
+    // Unattended, untainted, no delegation: the strictest context a session can have.
+    let mut ctx = TaskContext::default();
+    match registry.call(0, &mut ctx, &name, args).await {
+        Ok(result) => Json(json!({"result": result})).into_response(),
+        Err(e @ ToolError::UnknownTool(_)) => error(StatusCode::NOT_FOUND, e),
+        Err(e @ ToolError::BadArgs(_)) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
+        Err(e @ ToolError::Denied) => error(StatusCode::FORBIDDEN, e),
+        Err(e @ ToolError::ConfirmationTimeout) => error(StatusCode::REQUEST_TIMEOUT, e),
+        Err(e @ ToolError::Failed(_)) => error(StatusCode::BAD_GATEWAY, e),
+    }
 }
 
 fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {

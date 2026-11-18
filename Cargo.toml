@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agent", "crates/hive", "crates/queen", "crates/bee", "crates/web"]
+members = ["crates/agent", "crates/catalog", "crates/hive", "crates/queen", "crates/bee", "crates/web"]
 
 [workspace.package]
 edition = "2021"
@@ -11,6 +11,7 @@ publish = false
 melissa-agent = { path = "crates/agent" }
 melissa-web = { path = "crates/web" }
 melissa-hive = { path = "crates/hive" }
+melissa-catalog = { path = "crates/catalog" }
 # ACP (Agent Client Protocol) client: long-lived agent sessions (Grok `agent stdio`). Apache-2.0.
 agent-client-protocol = { version = "5.3", default-features = false }
 anyhow = "1"

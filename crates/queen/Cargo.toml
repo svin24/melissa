@@ -10,6 +10,9 @@ description = "Melissa queen bee: coordinates the hive and hosts the agent layer
 melissa-agent = { workspace = true }
 melissa-web = { workspace = true }
 melissa-hive = { workspace = true }
+melissa-catalog = { workspace = true }
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
 anyhow = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }

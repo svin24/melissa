@@ -67,6 +67,9 @@ RUN set -eu; . /usr/lib/melissa/k3s.lock; \
 # Static config. Defaults go under /usr/lib so the /etc 3-way merge never strands them.
 COPY image/rootfs/ /
 COPY image/${VARIANT}/ /
+# The app catalog: small reviewed manifests only. No app images ship; containerd pulls them
+# when an app is installed.
+COPY manifests/ /usr/share/melissa/catalog/
 RUN set -eu; \
     systemctl enable tailscaled.service sshd.service; \
     # Melissa drives updates itself; don't let the stock timer download and reboot.

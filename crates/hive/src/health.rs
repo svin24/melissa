@@ -192,7 +192,7 @@ fn problem(pod: &Pod, phase: &str) -> Option<Value> {
 
 /// Reason fields are short CamelCase codes set by the kubelet/scheduler (`CrashLoopBackOff`,
 /// `ErrImagePull`, `Evicted`). Keep only that shape so no free text reaches the agent.
-fn reason_code(s: &str) -> String {
+pub(crate) fn reason_code(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         .take(64)

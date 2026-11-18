@@ -1137,12 +1137,23 @@ name = "melissa-bee"
 version = "0.0.1"
 
 [[package]]
+name = "melissa-catalog"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "melissa-hive"
 version = "0.0.1"
 dependencies = [
  "k8s-openapi",
  "kube",
  "melissa-agent",
+ "melissa-catalog",
  "serde_json",
  "thiserror",
  "tokio",
@@ -1157,7 +1168,10 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "k8s-openapi",
+ "kube",
  "melissa-agent",
+ "melissa-catalog",
  "melissa-hive",
  "melissa-web",
  "serde",
@@ -1181,6 +1195,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ description = "Melissa hive layer: the queen's client for the local k3s API and 
 
 [dependencies]
 melissa-agent = { workspace = true }
+melissa-catalog = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true }
 serde_json = { workspace = true }

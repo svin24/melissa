@@ -1,0 +1,199 @@
+# Melissa: the write identity for app installs (ServiceAccount melissa/melissa-apps), separate
+# from the read-only melissa-queen. Only the queen's app tools (install_app, uninstall_app,
+# app_status, app_logs) use it; see docs/agent-skills/app-catalog.md and docs/DECISIONS.md.
+#
+# Shape:
+# - Cluster-wide, this identity may only: create/patch/delete Namespaces and create/patch
+#   RoleBindings, and bind the melissa-app-workload ClusterRole. The admission policies below
+#   pin all of that to namespaces named app-<name> labelled melissa.io/app=<name> with Pod
+#   Security "baseline" (or "restricted") enforced, and to RoleBindings that grant exactly
+#   melissa-app-workload to exactly this ServiceAccount.
+# - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
+#   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
+#   generated credentials are for the owner); pods and logs read.
+# - Nothing in kube-system or any other namespace; no PersistentVolumes, no nodes, no exec.
+# The token reaches the queen as /run/melissa-kube/apps.kubeconfig (melissa-kubeconfig).
+#
+# Admission policies come first so they exist before the permissions do.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-apps-namespaces
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["namespaces"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+  matchConditions:
+    - name: melissa-apps-only
+      expression: "request.userInfo.username == 'system:serviceaccount:melissa:melissa-apps'"
+  variables:
+    - name: ns
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+  validations:
+    - expression: "variables.ns.metadata.name.startsWith('app-')"
+      message: "melissa-apps may only manage namespaces named app-<name>"
+    - expression: >-
+        has(variables.ns.metadata.labels) &&
+        'melissa.io/app' in variables.ns.metadata.labels &&
+        variables.ns.metadata.labels['melissa.io/app'] == variables.ns.metadata.name.substring(4)
+      message: "app namespaces must carry melissa.io/app=<name>"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        ('pod-security.kubernetes.io/enforce' in object.metadata.labels &&
+         object.metadata.labels['pod-security.kubernetes.io/enforce'] in ['baseline', 'restricted'])
+      message: "app namespaces must enforce Pod Security baseline or restricted"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-apps-namespaces
+spec:
+  policyName: melissa-apps-namespaces
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-apps-rolebindings
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        resources: ["rolebindings"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+  matchConditions:
+    - name: melissa-apps-only
+      expression: "request.userInfo.username == 'system:serviceaccount:melissa:melissa-apps'"
+  validations:
+    - expression: >-
+        request.namespace.startsWith('app-') &&
+        has(namespaceObject.metadata.labels) &&
+        'melissa.io/app' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['melissa.io/app'] == request.namespace.substring(4)
+      message: "melissa-apps may only bind roles in app-<name> namespaces"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'melissa-app-workload')
+      message: "melissa-apps may only bind the melissa-app-workload ClusterRole"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (has(object.subjects) && object.subjects.size() == 1 &&
+         object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'melissa-apps' &&
+                                has(s.namespace) && s.namespace == 'melissa'))
+      message: "melissa-apps may only bind the role to itself"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-apps-rolebindings
+spec:
+  policyName: melissa-apps-rolebindings
+  validationActions: [Deny]
+---
+# Services stay inside the cluster: no NodePort/LoadBalancer (k3s's service load balancer
+# would open host ports) and no externalIPs (CVE-2020-8554). Apps are reached through Ingress.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-apps-services
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["services"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: melissa-apps-only
+      expression: "request.userInfo.username == 'system:serviceaccount:melissa:melissa-apps'"
+  validations:
+    - expression: "!has(object.spec.type) || object.spec.type == 'ClusterIP'"
+      message: "app Services must be ClusterIP"
+    - expression: "!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0"
+      message: "app Services may not set externalIPs"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-apps-services
+spec:
+  policyName: melissa-apps-services
+  validationActions: [Deny]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: melissa-apps
+  namespace: melissa
+automountServiceAccountToken: false
+---
+# Long-lived token, like melissa-queen-token (see DECISIONS.md). Rotate with
+# `/usr/libexec/melissa/melissa-kubeconfig rotate apps`.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: melissa-apps-token
+  namespace: melissa
+  annotations:
+    kubernetes.io/service-account.name: melissa-apps
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: melissa-apps
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["melissa-app-workload"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: melissa-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: melissa-apps
+subjects:
+  - kind: ServiceAccount
+    name: melissa-apps
+    namespace: melissa
+---
+# Never bound cluster-wide: only per app namespace, by the installer (RoleBinding melissa-apps).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: melissa-app-workload
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Generated credentials: written once, never read back by Melissa (the owner reads them
+  # with root's admin kubeconfig: `sudo melissa-queen app-credentials <app>`).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]

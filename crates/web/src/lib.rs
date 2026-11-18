@@ -55,6 +55,7 @@ pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
 /// The UI router, the MCP endpoint and the Queen's JSON API (`/api/...`, see [`api`]).
 pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Router {
     ui_routes(board)
+        .merge(api::tool_routes(mcp.clone()))
         .merge(
             Router::new()
                 .route("/mcp/{token}", post(mcp_post).get(mcp_get))
@@ -433,12 +434,35 @@ mod tests {
             }
         }
 
+        /// A reversible tool: an unattended call needs a confirmation.
+        struct Touch;
+        impl Tool for Touch {
+            fn spec(&self) -> melissa_agent::tools::ToolSpec {
+                melissa_agent::tools::ToolSpec {
+                    name: "touch",
+                    description: "test",
+                    labels: melissa_agent::tools::Labels {
+                        effect: melissa_agent::tools::Effect::Reversible,
+                        ..melissa_agent::tools::Labels::READ_ONLY
+                    },
+                    params: serde_json::json!({"type": "object"}),
+                }
+            }
+            fn call<'a>(
+                &'a self,
+                args: Value,
+            ) -> BoxFuture<'a, Result<Value, melissa_agent::tools::ToolError>> {
+                Box::pin(async move { Ok(serde_json::json!({"touched": args["what"]})) })
+            }
+        }
+
         fn app() -> (Router, Queen) {
             let dir =
                 std::env::temp_dir().join(format!("melissa-web-queen-{}", std::process::id()));
             let events = EventLog::new(None);
             let pool = WorkerPool::new(WorkerLimits::default(), events.clone());
-            let tools: Vec<Arc<dyn Tool>> = pool.tools();
+            let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
+            tools.push(Arc::new(Touch));
             let mcp = McpServer::new(ToolRegistry::new(tools, None));
             let board = TaskBoard::with_tools(
                 vec![Arc::new(EchoBackend::new())],
@@ -569,12 +593,60 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn operator_tool_calls_wait_for_the_inbox() {
+            let (app, queen) = app();
+            // Unknown and Queen-only tools look the same: not found.
+            for name in ["nope", "start_worker"] {
+                let (status, _) =
+                    send_json(&app, json_post(&format!("/api/tools/{name}"), "{}")).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{name}");
+            }
+            let call = {
+                let app = app.clone();
+                tokio::spawn(async move {
+                    send_json(&app, json_post("/api/tools/touch", r#"{"what":"x"}"#)).await
+                })
+            };
+            let pending = loop {
+                if let Some(c) = queen.confirmations().pending().first().cloned() {
+                    break c;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            assert_eq!(pending.tool, "touch");
+            assert_eq!(pending.reason, "changes state while nobody is watching");
+            let uri = format!("/api/confirmations/{}/approve", pending.id);
+            assert_eq!(send_json(&app, json_post(&uri, "")).await.0, StatusCode::OK);
+            let (status, body) = call.await.unwrap();
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["result"]["touched"], "x");
+
+            // Denied → 403.
+            let call = {
+                let app = app.clone();
+                tokio::spawn(
+                    async move { send_json(&app, json_post("/api/tools/touch", "{}")).await },
+                )
+            };
+            let pending = loop {
+                if let Some(c) = queen.confirmations().pending().first().cloned() {
+                    break c;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            let uri = format!("/api/confirmations/{}/deny", pending.id);
+            send_json(&app, json_post(&uri, "")).await;
+            assert_eq!(call.await.unwrap().0, StatusCode::FORBIDDEN);
+        }
+
+        #[tokio::test]
         async fn cross_site_api_calls_are_rejected() {
             let (app, queen) = app();
             for uri in [
                 "/api/queen/messages",
                 "/api/queen/cancel",
                 "/api/confirmations/1/approve",
+                "/api/tools/touch",
             ] {
                 let req = axum::http::Request::post(uri)
                     .header(header::CONTENT_TYPE, "application/json")
