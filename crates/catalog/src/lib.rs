@@ -221,7 +221,7 @@ impl EnvValue {
 pub enum Builtin {
     /// `<app>.<domain>`.
     IngressHost,
-    /// `http://<app>.<domain>` (https once the bee has its CA).
+    /// `http://<app>.<domain>` (https once the comb has its CA).
     IngressUrl,
 }
 

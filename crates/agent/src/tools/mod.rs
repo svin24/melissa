@@ -20,7 +20,8 @@ pub use builtin::BeeInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext};
 pub use scope::{
-    Access, JobScope, Owner, ResourceKind, ResourceOwners, Scope, ScopeDecision, Target,
+    describe_bee, Access, BeeNames, CellInfo, CellStore, Owner, ResourceKind, ResourceOwners,
+    Scope, ScopeDecision, Target,
 };
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
@@ -59,7 +60,7 @@ pub trait Tool: Send + Sync {
 
     /// Like [`Tool::call`], for tools that need to know who is calling: the task and its
     /// policy context. A tool may set `ctx.tainted` when it hands back untrusted content
-    /// (e.g. the output of a tainted worker). Default: [`Tool::call`].
+    /// (e.g. the output of a tainted bee). Default: [`Tool::call`].
     fn call_in<'a>(
         &'a self,
         _task: TaskId,
@@ -70,7 +71,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Only sessions that may delegate ([`TaskContext::delegate`], the Queen) see and may
-    /// call this tool (e.g. `start_worker`). Default: false.
+    /// call this tool (e.g. `start_bee`). Default: false.
     fn queen_only(&self) -> bool {
         false
     }
@@ -81,17 +82,25 @@ pub trait Tool: Send + Sync {
     fn target(&self) -> Option<Target> {
         None
     }
+
+    /// A short description of this call for the person asked to confirm it (e.g. "move cell
+    /// `nextcloud` to bee `Bo`"). Default: none (the arguments are shown anyway).
+    fn describe_call(&self, _args: &Value) -> Option<String> {
+        None
+    }
 }
 
-/// All tools available on this bee, plus the confirmation inbox.
+/// All tools available on this comb, plus the confirmation inbox.
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<BTreeMap<&'static str, Arc<dyn Tool>>>,
     confirmations: ConfirmationStore,
     audit: Option<AuditLog>,
     confirm_timeout: Duration,
-    /// Who owns resources (None: every existing resource counts as the human's).
+    /// Who owns cells (None: every cell counts as existing and unassigned, the strictest).
     owners: Option<Arc<dyn ResourceOwners>>,
+    /// Bee names for messages and confirmations.
+    bees: Option<Arc<dyn BeeNames>>,
 }
 
 impl ToolRegistry {
@@ -103,21 +112,33 @@ impl ToolRegistry {
             audit,
             confirm_timeout: Duration::from_secs(15 * 60),
             owners: None,
+            bees: None,
         }
     }
 
-    /// Where the scope check learns who owns a resource. Without it, every resource is
-    /// treated as existing and owned by the human (the strictest answer).
+    /// Where the scope check learns who owns a cell. Without it, every cell is treated as
+    /// existing and unassigned (the strictest answer).
     pub fn with_owners(mut self, owners: Arc<dyn ResourceOwners>) -> Self {
         self.owners = Some(owners);
         self
     }
 
-    /// Who owns resource `name` of `kind` now (`Ok(None)`: it does not exist).
+    /// Where messages and confirmations look up bee names.
+    pub fn with_bees(mut self, bees: Arc<dyn BeeNames>) -> Self {
+        self.bees = Some(bees);
+        self
+    }
+
+    /// The bee names, if wired.
+    pub fn bee_names(&self) -> Option<&dyn BeeNames> {
+        self.bees.as_deref()
+    }
+
+    /// Who owns cell `name` of `kind` now (`Ok(None)`: it does not exist).
     pub async fn owner_of(&self, kind: ResourceKind, name: &str) -> Result<Option<Owner>, String> {
         match &self.owners {
             Some(o) => o.owner(kind, name).await,
-            None => Ok(Some(Owner::Human)),
+            None => Ok(Some(Owner::Unassigned)),
         }
     }
 
@@ -190,7 +211,7 @@ impl ToolRegistry {
             .cloned()
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
         if tool.queen_only() && !ctx.delegate {
-            // Same answer as for a nonexistent tool: workers never learn these exist.
+            // Same answer as for a nonexistent tool: bees never learn these exist.
             return Err(ToolError::UnknownTool(name.to_string()));
         }
         if !args.is_object() && !args.is_null() {
@@ -200,18 +221,28 @@ impl ToolRegistry {
         let hash = args_hash(&args);
 
         let mut reasons = Vec::new();
+        let mut note = None;
         if let Some(target) = tool.target() {
-            if let Some(reason) = self
+            match self
                 .check_scope(task, ctx, name, &target, &args, &hash)
                 .await?
             {
-                reasons.push(reason);
+                ScopeDecision::Confirm(reason) => reasons.push(reason),
+                ScopeDecision::Note(n) => note = Some(n),
+                ScopeDecision::Allow | ScopeDecision::Refuse(_) => {}
             }
         }
         if let Decision::Confirm(reason) = decide(name, &spec.labels, ctx) {
             reasons.push(reason);
         }
         if !reasons.is_empty() {
+            // Whoever answers sees whose cell it is first, then what the call does.
+            if let Some(d) = tool.describe_call(&args) {
+                reasons.insert(0, d);
+            }
+            if let Some(n) = note {
+                reasons.insert(0, n);
+            }
             self.confirm(task, name, &args, &reasons.join("; ")).await?;
         }
 
@@ -227,8 +258,8 @@ impl ToolRegistry {
         result
     }
 
-    /// The scope check for a targeted call: `Ok(Some(reason))` = needs a confirmation,
-    /// `Err(Refused)` = out of scope (audited `tool.refused`).
+    /// The scope check for a targeted call: `Allow`, `Note` or `Confirm`; out of scope is
+    /// `Err(Refused)` (audited `tool.refused`).
     async fn check_scope(
         &self,
         task: TaskId,
@@ -237,7 +268,7 @@ impl ToolRegistry {
         target: &Target,
         args: &Value,
         hash: &str,
-    ) -> Result<Option<String>, ToolError> {
+    ) -> Result<ScopeDecision, ToolError> {
         let resource = match args.get(target.arg) {
             Some(Value::String(s)) => s.as_str(),
             _ => {
@@ -247,7 +278,7 @@ impl ToolRegistry {
                 )))
             }
         };
-        let owner = if ctx.scope.needs_owner(target.access, resource) {
+        let owner = if ctx.scope.needs_owner(target.access) {
             match self.owner_of(target.kind, resource).await {
                 Ok(owner) => owner,
                 Err(e) => {
@@ -260,13 +291,18 @@ impl ToolRegistry {
         } else {
             None
         };
-        match scope::check(&ctx.scope, target, resource, owner.as_ref()) {
-            ScopeDecision::Allow => Ok(None),
-            ScopeDecision::Confirm(reason) => Ok(Some(reason)),
+        match scope::check(
+            &ctx.scope,
+            target,
+            resource,
+            owner.as_ref(),
+            self.bee_names(),
+        ) {
             ScopeDecision::Refuse(reason) => {
                 self.audit(task, "tool.refused", name, hash, &reason);
                 Err(ToolError::Refused(reason))
             }
+            other => Ok(other),
         }
     }
 
@@ -543,7 +579,7 @@ mod tests {
     impl Tool for QueenOnly {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "start_worker",
+                name: "start_bee",
                 description: "test",
                 labels: Labels::READ_ONLY,
                 params: json!({"type": "object"}),
@@ -560,11 +596,11 @@ mod tests {
     #[tokio::test]
     async fn queen_only_tools_need_delegation() {
         let reg = ToolRegistry::new(vec![Arc::new(QueenOnly)], None);
-        let mut worker = attended();
-        assert!(reg.visible_to(&worker, None).is_empty());
+        let mut bee = attended();
+        assert!(reg.visible_to(&bee, None).is_empty());
         assert_eq!(
-            reg.call(1, &mut worker, "start_worker", json!({})).await,
-            Err(ToolError::UnknownTool("start_worker".into()))
+            reg.call(1, &mut bee, "start_bee", json!({})).await,
+            Err(ToolError::UnknownTool("start_bee".into()))
         );
         let mut queen = TaskContext {
             delegate: true,
@@ -572,12 +608,12 @@ mod tests {
         };
         assert_eq!(reg.visible_to(&queen, None).len(), 1);
         assert_eq!(
-            reg.call(1, &mut queen, "start_worker", json!({})).await,
+            reg.call(1, &mut queen, "start_bee", json!({})).await,
             Ok(json!("started"))
         );
         // Name matching for permission requests still knows the tool.
         assert_eq!(reg.visible(None).len(), 1);
-        assert!(reg.is_queen_only("start_worker"));
+        assert!(reg.is_queen_only("start_bee"));
     }
 
     #[test]

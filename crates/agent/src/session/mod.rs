@@ -6,7 +6,7 @@
 //! typed [`SessionEvent`]s (text, thoughts, tool calls, plans, usage) and the turn ends with
 //! a [`StopReason`]. A turn can be cancelled; dropping the session kills the agent.
 //!
-//! The Queen keeps one session open across many prompts; worker tasks use one prompt per
+//! The Queen keeps one session open across many prompts; bee tasks use one prompt per
 //! session ([`crate::AcpBackend`]). ACP ([`crate::acp`]) is the first implementation.
 //!
 //! The traits return [`BoxFuture`]s so they stay object safe (`Arc<dyn AgentSession>`), like
@@ -74,7 +74,7 @@ pub struct OpenSession {
     /// A persistent, Melissa-owned host directory for the agent's own session store (the
     /// Queen's). Backends that know where their agent keeps sessions bind it there inside
     /// the sandbox, so a later [`OpenSession::resume`] can find the session. None: the
-    /// agent's session store is throw-away (workers).
+    /// agent's session store is throw-away (bees).
     pub state_dir: Option<PathBuf>,
     /// Session id to resume (where the agent supports it); a new session if that fails.
     pub resume: Option<String>,

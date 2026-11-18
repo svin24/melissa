@@ -1,4 +1,5 @@
-//! Command-line client for a running queen: `chat`, `ask`, `confirm`, `workers`.
+//! Command-line client for a running queen: `chat`, `ask` (with the Queen or, with `--bee`,
+//! any bee), `confirm`, `bee list|rename`, `cell list|reassign`.
 //!
 //! Talks to the daemon's JSON API (`/api/...`) on its configured listen address (loopback)
 //! with plain HTTP/1.1, one connection per request. Sends no `Origin` header, like any
@@ -19,11 +20,26 @@ const POLL_SECS: u64 = 20;
 
 pub struct Client {
     addr: SocketAddr,
+    /// The conversation `chat`/`ask` talk to: `/api/queen` or `/api/bees/<bee>`.
+    base: String,
+    /// Who that is, for messages ("the Queen", "bee Ada").
+    who: String,
 }
 
 impl Client {
     pub fn new(addr: SocketAddr) -> Self {
-        Self { addr }
+        Self {
+            addr,
+            base: "/api/queen".into(),
+            who: "the Queen".into(),
+        }
+    }
+
+    /// Talk to bee `bee` (name or id) instead of the Queen.
+    pub fn with_bee(mut self, bee: &str) -> Self {
+        self.base = format!("/api/bees/{}", path_segment(bee));
+        self.who = format!("bee {bee}");
+        self
     }
 
     async fn request(
@@ -82,7 +98,7 @@ impl Client {
 
     async fn events(&self, since: u64, wait: u64) -> anyhow::Result<EventPage> {
         let body = self
-            .get(&format!("/api/queen/events?since={since}&wait={wait}"))
+            .get(&format!("{}/events?since={since}&wait={wait}", self.base))
             .await?;
         Ok(serde_json::from_value(body)?)
     }
@@ -90,12 +106,13 @@ impl Client {
     /// Send a message; returns the turn and the event cursor to follow it from.
     async fn send(&self, text: &str) -> anyhow::Result<(TurnId, u64)> {
         let (status, body) = self
-            .post("/api/queen/messages", json!({"text": text}))
+            .post(&format!("{}/messages", self.base), json!({"text": text}))
             .await?;
         if status == StatusCode::CONFLICT {
             bail!(
-                "the Queen is still working on another message (from this or another client); \
-                 wait for it or cancel it"
+                "{} is still working on another message (from this or another client, or a \
+                 job from the Queen); wait for it or cancel it",
+                self.who
             );
         }
         let body = ok(status, body)?;
@@ -105,6 +122,18 @@ impl Client {
             .context("no event cursor in the reply")?;
         Ok((turn, since))
     }
+}
+
+/// `name` as one URL path segment (bee names may contain spaces).
+fn path_segment(name: &str) -> String {
+    name.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn ok(status: StatusCode, body: Value) -> anyhow::Result<Value> {
@@ -145,7 +174,7 @@ impl Printer {
             }
             // Shown as typed (chat) or given on the command line (ask); the whole reply was
             // already streamed.
-            QueenEvent::UserMessage { .. } | QueenEvent::QueenMessage { .. } => {}
+            QueenEvent::UserMessage { .. } | QueenEvent::AgentMessage { .. } => {}
             QueenEvent::ToolCall { title, status, .. } => {
                 self.line(&format!("[tool] {} → {status}", one_line(title)));
             }
@@ -167,24 +196,27 @@ impl Printer {
             QueenEvent::ConfirmationResolved { id, outcome } => {
                 self.line(&format!("[confirm #{id}] {outcome}"));
             }
-            QueenEvent::WorkerStarted {
-                worker,
-                backend,
-                goal,
-            } => {
-                self.line(&format!(
-                    "[worker {worker}] started on {backend}: {}",
-                    one_line(goal)
-                ));
+            QueenEvent::BeeCreated { bee, name, backend } => {
+                self.line(&format!("[bee {name}] created ({bee}, {backend})"));
             }
-            QueenEvent::WorkerFinished {
-                worker,
+            QueenEvent::BeeStarted { name, goal, .. } => {
+                self.line(&format!("[bee {name}] job: {}", one_line(goal)));
+            }
+            QueenEvent::BeeFinished {
+                name,
                 status,
                 error,
+                ..
             } => match error {
-                Some(e) => self.line(&format!("[worker {worker}] {status}: {}", one_line(e))),
-                None => self.line(&format!("[worker {worker}] {status}")),
+                Some(e) => self.line(&format!("[bee {name}] {status}: {}", one_line(e))),
+                None => self.line(&format!("[bee {name}] {status}")),
             },
+            QueenEvent::CellReassigned { cell, from, to, by } => {
+                self.line(&format!(
+                    "[cell {cell}] now looked after by {to} (was: {}; by {by})",
+                    from.as_deref().unwrap_or("no bee")
+                ));
+            }
             QueenEvent::SessionOpened { backend, resumed } => {
                 let how = if *resumed {
                     "resumed the previous session"
@@ -201,7 +233,7 @@ impl Printer {
             }
             QueenEvent::SessionLost { reason } => {
                 self.line(&format!(
-                    "[session] lost: {}. The Queen's context may be lost; the next message starts \
+                    "[session] lost: {}. The agent's context may be lost; the next message starts \
                      a new session.",
                     one_line(reason)
                 ));
@@ -263,7 +295,7 @@ async fn follow_turn(
                 }
                 cancelled = true;
                 printer.line("[cancelling the turn; Ctrl-C again quits]");
-                if let Err(e) = client.post("/api/queen/cancel", json!({})).await {
+                if let Err(e) = client.post(&format!("{}/cancel", client.base), json!({})).await {
                     printer.line(&format!("[error] cancel failed: {e:#}"));
                 }
             }
@@ -282,15 +314,15 @@ pub async fn ask(client: &Client, message: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `chat`: a line-based conversation. Events that arrive between turns (a worker finishing,
+/// `chat`: a line-based conversation. Events that arrive between turns (a bee finishing,
 /// a confirmation) are shown while waiting for input.
 pub async fn chat(client: &Client) -> anyhow::Result<()> {
-    let status = client.get("/api/queen/status").await?;
+    let status = client.get(&format!("{}/status", client.base)).await?;
     let mut since = status["last_seq"].as_u64().unwrap_or(0);
     println!(
-        "Talking to the Queen at http://{}. Enter sends; Ctrl-C cancels a running turn; \
+        "Talking to {} at http://{}. Enter sends; Ctrl-C cancels a running turn; \
          Ctrl-D (or Ctrl-C at the prompt) quits.",
-        client.addr
+        client.who, client.addr
     );
     let mut printer = Printer::default();
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -379,28 +411,86 @@ pub async fn confirm(client: &Client, action: &str, id: Option<u64>) -> anyhow::
     }
 }
 
-/// `workers`: the Queen's workers.
-pub async fn workers(client: &Client) -> anyhow::Result<()> {
-    let body = client.get("/api/workers").await?;
-    let list = body["workers"].as_array().cloned().unwrap_or_default();
+/// `bee list` (also `bees`): this comb's bees.
+pub async fn bees(client: &Client) -> anyhow::Result<()> {
+    let body = client.get("/api/bees").await?;
+    let list = body["bees"].as_array().cloned().unwrap_or_default();
     if list.is_empty() {
-        println!("No workers.");
+        println!("No bees yet (the Queen creates them).");
     }
-    for w in list {
-        let elapsed = Duration::from_secs(w["elapsed_secs"].as_u64().unwrap_or(0));
+    for b in list {
         println!(
-            "#{}  {:<9}  {}  {}s  {}{}",
-            w["worker"],
-            w["status"].as_str().unwrap_or("?"),
-            w["backend"].as_str().unwrap_or("?"),
-            elapsed.as_secs(),
-            one_line(w["goal"].as_str().unwrap_or("")),
-            w["error"]
+            "{:<12}  {:<16}  {:<8}  {}{}",
+            b["name"].as_str().unwrap_or("?"),
+            b["id"].as_str().unwrap_or("?"),
+            b["status"].as_str().unwrap_or("?"),
+            b["backend"].as_str().unwrap_or("?"),
+            b["job"]
                 .as_str()
-                .map(|e| format!("  error: {}", one_line(e)))
+                .map(|j| format!("  job: {}", one_line(j)))
                 .unwrap_or_default()
         );
     }
+    Ok(())
+}
+
+/// `bee rename <bee> <new name>`.
+pub async fn rename_bee(client: &Client, bee: &str, name: &str) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post(
+            &format!("/api/bees/{}/rename", path_segment(bee)),
+            json!({"name": name}),
+        )
+        .await?;
+    let body = ok(status, body)?;
+    println!(
+        "{} is now called {}",
+        body["id"].as_str().unwrap_or(bee),
+        body["name"].as_str().unwrap_or(name)
+    );
+    Ok(())
+}
+
+fn print_cell(c: &Value) {
+    let bee = match (c["bee_name"].as_str(), c["bee"].as_str()) {
+        (Some(name), Some(id)) => format!("{name} ({id})"),
+        (None, Some(id)) => id.to_string(),
+        _ => "no bee (only you or the Queen with your approval)".into(),
+    };
+    println!(
+        "{:<14}  {}{}",
+        c["cell"].as_str().unwrap_or("?"),
+        bee,
+        c["legacy_owner"]
+            .as_str()
+            .map(|o| format!("  [old owner label: {o}]"))
+            .unwrap_or_default()
+    );
+}
+
+/// `cell list`: every cell and the bee that looks after it.
+pub async fn cells(client: &Client) -> anyhow::Result<()> {
+    let body = client.get("/api/cells").await?;
+    let list = body["cells"].as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        println!("No cells (no apps installed).");
+    }
+    for c in &list {
+        print_cell(c);
+    }
+    Ok(())
+}
+
+/// `cell reassign <cell> --to <bee>`: the user's own reassignment (no confirmation).
+pub async fn reassign(client: &Client, cell: &str, to: &str) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post(
+            &format!("/api/cells/{}/reassign", path_segment(cell)),
+            json!({"to": to}),
+        )
+        .await?;
+    let body = ok(status, body)?;
+    print_cell(&body);
     Ok(())
 }
 

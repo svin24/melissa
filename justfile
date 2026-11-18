@@ -61,7 +61,7 @@ vm-k3s-smoke:
     scripts/vm-k3s-smoke.sh
 
 # --- third-party licenses -------------------------------------------------------------
-# License report for the Rust crates in melissa-queen/-bee (cargo-about, allowlist in about.toml).
+# License report for the Rust crates in melissa-queen/-comb (cargo-about, allowlist in about.toml).
 # Fails if a crate's license is not on the allowlist or cannot be identified. Needs the network
 # only for `cargo fetch` (crate sources); the image build runs the same command.
 licenses out="target/THIRD-PARTY-LICENSES.md":

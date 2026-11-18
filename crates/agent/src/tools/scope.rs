@@ -1,38 +1,39 @@
-//! Resource ownership and agent scopes: agents change only what belongs to them.
+//! Cell ownership and agent scopes: a bee changes only the cells it looks after.
 //!
-//! Every resource a tool changes (today: apps) has an [`Owner`]: the human owner, or the
-//! worker job that created it. Every task has a [`Scope`]: the set of resources it may
-//! change. A tool declares which argument names its resource ([`Tool::target`]); the
-//! [`super::ToolRegistry`] checks the scope **before** the label policy, for every tool, in
-//! one place ([`check`]):
+//! The hive model (docs/HIVE-MODEL.md): every **cell** (today: an installed app) is owned by
+//! exactly one **bee**; a bee may change only its own cells; only the **Queen** or the
+//! **user** reassign cells. Every task has a [`Scope`] that says who it is. A tool declares
+//! which argument names its cell ([`Tool::target`]); the [`super::ToolRegistry`] checks the
+//! scope **before** the label policy, for every tool, in one place ([`check`]):
 //!
-//! - out of scope → refused outright (`ToolError::Refused`, audited `tool.refused`), never a
-//!   confirmation a tired human might click through;
-//! - in scope but owned by the human while an agent acts for them (the Queen) → a
-//!   confirmation that names the owner ("`nextcloud` belongs to you; the Queen wants to
-//!   uninstall it");
+//! - a bee on another bee's (or an unassigned) cell → refused outright
+//!   (`ToolError::Refused("not yours: …")`, audited `tool.refused`), never a confirmation a
+//!   tired human might click through;
+//! - the Queen on a bee's cell → allowed; if the label policy asks the user anyway
+//!   (destructive actions always do), the confirmation names the owning bee
+//!   ([`ScopeDecision::Note`]);
+//! - the Queen on an unassigned cell (from before bees existed) → a confirmation: only the
+//!   user decides about those;
 //! - otherwise → the usual label policy.
 //!
-//! Ownership is stored with the resource (for apps: the `melissa.io/owner` label on the
-//! namespace) and read through [`ResourceOwners`]. A resource without an owner record
-//! counts as the human's (safe default for apps installed before ownership existed).
+//! Ownership is stored with the cell (the `melissa.io/owner-bee` label on the app namespace)
+//! and read through [`ResourceOwners`]. A cell without that label is [`Owner::Unassigned`].
 //!
 //! [`Tool::target`]: super::Tool::target
 
-use std::collections::BTreeSet;
-
-use crate::BoxFuture;
+use crate::{comb::comb_of, comb::valid_bee_id, BoxFuture};
 
 /// Kinds of resources with owners. New kinds (backups, agent-built apps, ...) add a variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResourceKind {
-    App,
+    /// A cell: an installed app (`app-<name>` namespace) and its services.
+    Cell,
 }
 
 impl ResourceKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::App => "app",
+            Self::Cell => "cell",
         }
     }
 }
@@ -40,136 +41,113 @@ impl ResourceKind {
 /// What a call does to its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
-    /// Names, phases, counts: any task may read any resource (e.g. `app_status`).
+    /// Names, phases, counts: any task may read any cell (e.g. `app_status`).
     Read,
-    /// Reads content from the resource that the resource controls (e.g. `app_logs`): only
-    /// in scope, except for agents acting for the owner (the Queen).
+    /// Reads content from the cell that the cell controls (e.g. `app_logs`): its own bee,
+    /// the Queen and the user.
     ReadScoped,
-    /// Creates, changes or deletes the resource (install over, uninstall, update, restart,
+    /// Creates, changes or deletes the cell (install over, uninstall, update, restart,
     /// scale, stop).
     Change,
 }
 
-/// The resource a tool works on, declared once per tool ([`super::Tool::target`]).
+/// The cell a tool works on, declared once per tool ([`super::Tool::target`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub kind: ResourceKind,
-    /// Name of the (string) argument that names the resource, e.g. `app`.
+    /// Name of the (string) argument that names the cell, e.g. `app`.
     pub arg: &'static str,
     pub access: Access,
     /// What the tool does to it, for messages: "uninstall", "install over", "read the logs of".
     pub verb: &'static str,
 }
 
-/// Who owns a resource.
+/// Who owns a cell.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owner {
-    /// The human who owns this bee.
-    Human,
-    /// The worker job with this key (a worker created it for its job).
-    Job(String),
+    /// The bee with this id (`<comb>.b<n>`).
+    Bee(String),
+    /// No bee: a cell from before bees existed, or one the user installed without naming a
+    /// bee. Only the Queen (with the user's approval) or the user may change it.
+    Unassigned,
 }
-
-/// Label value for [`Owner::Human`].
-pub const OWNER_HUMAN: &str = "owner";
-/// Prefix of the label value for [`Owner::Job`].
-pub const OWNER_JOB_PREFIX: &str = "job-";
 
 impl Owner {
-    /// Value for a Kubernetes label (`owner` or `job-<key>`).
-    pub fn label_value(&self) -> String {
+    /// From the `melissa.io/owner-bee` label: a valid bee id, else unassigned (no label,
+    /// garbage, or the old `melissa.io/owner` scheme).
+    pub fn from_label(owner_bee: Option<&str>) -> Self {
+        match owner_bee {
+            Some(id) if valid_bee_id(id) => Self::Bee(id.into()),
+            _ => Self::Unassigned,
+        }
+    }
+
+    /// The label value (None: no label).
+    pub fn label_value(&self) -> Option<&str> {
         match self {
-            Self::Human => OWNER_HUMAN.into(),
-            Self::Job(key) => format!("{OWNER_JOB_PREFIX}{key}"),
-        }
-    }
-
-    /// Parse a label value. `None` (no label) and anything unrecognised mean the human:
-    /// when in doubt, a resource is the owner's.
-    pub fn from_label(value: Option<&str>) -> Self {
-        match value.and_then(|v| v.strip_prefix(OWNER_JOB_PREFIX)) {
-            Some(key) if valid_job_key(key) => Self::Job(key.into()),
-            _ => Self::Human,
-        }
-    }
-
-    /// For messages to the human.
-    pub fn describe(&self) -> String {
-        match self {
-            Self::Human => "the owner".into(),
-            Self::Job(key) => format!("worker job {key}"),
+            Self::Bee(id) => Some(id),
+            Self::Unassigned => None,
         }
     }
 }
 
-/// Job keys: 1-40 of `[a-z0-9]` (fits a label value with the prefix).
-pub fn valid_job_key(key: &str) -> bool {
-    (1..=40).contains(&key.len())
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+/// Bee names for messages and the `bee` argument of tools (implemented by the bee registry).
+pub trait BeeNames: Send + Sync {
+    /// The display name of bee `id`.
+    fn name_of(&self, id: &str) -> Option<String>;
+    /// The id of the bee called `name_or_id` (or with that id).
+    fn resolve_id(&self, name_or_id: &str) -> Option<String>;
 }
 
-/// A worker job's scope.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobScope {
-    /// The job's key, recorded as owner of what it creates.
-    pub key: String,
-    /// Existing apps the Queen granted (each granted under the Queen's own rules).
-    pub apps: BTreeSet<String>,
-    /// May create new apps (owned by this job, or by the human if `for_owner`).
-    pub create: bool,
-    /// The human approved that what this job creates belongs to them.
-    pub for_owner: bool,
+/// `bee Ada (c-0a1b2c3d.b1)`, or the id alone when the name is unknown.
+pub fn describe_bee(names: Option<&dyn BeeNames>, id: &str) -> String {
+    match names.and_then(|n| n.name_of(id)) {
+        Some(name) => format!("bee {name} ({id})"),
+        None => format!("bee {id}"),
+    }
 }
 
-/// What a task may change.
+/// Who a task is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Scope {
-    /// Nothing (the default, e.g. a session nobody gave a scope).
+    /// Nobody in particular (the default, e.g. a session nobody gave a scope): reads only.
     #[default]
     Nothing,
-    /// The human themself (operator CLI and API): everything, no ownership confirmations.
-    Owner,
-    /// An agent acting for the human in an attended session (the Queen, tasks the human
-    /// starts in the UI): every resource; changing one the human owns needs a confirmation
-    /// that names them. What it creates belongs to the human.
-    ForOwner {
-        /// Who acts, for messages ("the Queen").
-        agent: String,
-    },
-    /// A worker: only granted resources and those its job creates.
-    Job(JobScope),
+    /// The user in person (operator CLI and API): every cell, no ownership confirmations.
+    User,
+    /// The Queen of comb `comb`: every cell on her comb; destructive actions name the
+    /// owning bee; unassigned cells need the user's approval. Cells on other combs are
+    /// their own Queen's.
+    Queen { comb: String },
+    /// Bee `id`: only the cells it owns, and new cells (which then belong to it).
+    Bee { id: String },
 }
 
 impl Scope {
-    /// Owner recorded on a resource this scope creates (None: may not create).
-    pub fn creator(&self) -> Option<Owner> {
-        match self {
-            Self::Nothing => None,
-            Self::Owner | Self::ForOwner { .. } => Some(Owner::Human),
-            Self::Job(j) if j.for_owner => Some(Owner::Human),
-            Self::Job(j) => Some(Owner::Job(j.key.clone())),
-        }
-    }
-
-    /// Who acted, for the resource's "installed by" record.
-    pub fn actor(&self, task: crate::TaskId) -> String {
+    /// Who acted, for the cell's "installed by" record.
+    pub fn actor(&self, task: crate::TaskId, names: Option<&dyn BeeNames>) -> String {
         match self {
             Self::Nothing => format!("task {task}"),
-            Self::Owner => "owner".into(),
-            Self::ForOwner { agent } => format!("{agent} (task {task})"),
-            Self::Job(j) => format!("worker task {task}, job {}", j.key),
+            Self::User => "the user".into(),
+            Self::Queen { .. } => format!("the Queen (task {task})"),
+            Self::Bee { id } => format!("{} (task {task})", describe_bee(names, id)),
         }
     }
 
-    /// Does a call with `access` to resource `name` need its current owner to decide?
-    pub fn needs_owner(&self, access: Access, name: &str) -> bool {
+    /// Does a call with `access` need the cell's current owner to decide?
+    pub fn needs_owner(&self, access: Access) -> bool {
         match (self, access) {
-            (_, Access::Read) | (Self::Owner | Self::Nothing, _) => false,
-            (Self::ForOwner { .. }, Access::ReadScoped) => false,
-            (Self::ForOwner { .. }, Access::Change) => true,
-            (Self::Job(j), _) => !j.apps.contains(name),
+            (_, Access::Read) | (Self::User | Self::Nothing, _) => false,
+            (Self::Queen { .. }, Access::ReadScoped) => false,
+            (Self::Queen { .. } | Self::Bee { .. }, _) => true,
+        }
+    }
+
+    /// The bee this scope is (bee sessions only).
+    pub fn bee(&self) -> Option<&str> {
+        match self {
+            Self::Bee { id } => Some(id),
+            _ => None,
         }
     }
 }
@@ -178,84 +156,83 @@ impl Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeDecision {
     Allow,
-    /// Allowed after a human approves; the reason names the owner.
+    /// Allowed; if the label policy asks a human anyway, this goes first in the reason
+    /// (it names the cell's bee).
+    Note(String),
+    /// Allowed after the user approves; the reason says why.
     Confirm(String),
     /// Out of scope: refused without asking anyone.
     Refuse(String),
 }
 
-/// Decide whether a task with `scope` may do `target.access` to resource `name`, owned by
+/// Decide whether a task with `scope` may do `target.access` to cell `name`, owned by
 /// `owner` (None = it does not exist; only looked up when [`Scope::needs_owner`]).
-pub fn check(scope: &Scope, target: &Target, name: &str, owner: Option<&Owner>) -> ScopeDecision {
+pub fn check(
+    scope: &Scope,
+    target: &Target,
+    name: &str,
+    owner: Option<&Owner>,
+    names: Option<&dyn BeeNames>,
+) -> ScopeDecision {
     let kind = target.kind.as_str();
     if target.access == Access::Read {
         return ScopeDecision::Allow;
     }
     match scope {
-        Scope::Owner => ScopeDecision::Allow,
+        Scope::User => ScopeDecision::Allow,
         Scope::Nothing => ScopeDecision::Refuse(format!(
             "not yours: this session may not change or read the {kind} `{name}`"
         )),
-        Scope::ForOwner { agent } => match (target.access, owner) {
-            (Access::Change, Some(Owner::Human)) => ScopeDecision::Confirm(format!(
-                "`{name}` belongs to you; {agent} wants to {} it",
+        Scope::Queen { comb } => match (target.access, owner) {
+            (Access::Change, Some(Owner::Bee(id))) => match comb_of(id) {
+                Some(c) if c != comb => ScopeDecision::Refuse(format!(
+                    "not yours: the {kind} `{name}` is on comb {c}; ask that comb's Queen"
+                )),
+                _ => ScopeDecision::Note(format!(
+                    "`{name}` is looked after by {}",
+                    describe_bee(names, id)
+                )),
+            },
+            (Access::Change, Some(Owner::Unassigned)) => ScopeDecision::Confirm(format!(
+                "`{name}` is not assigned to any bee (only you decide about it); the Queen \
+                 wants to {} it",
                 target.verb
             )),
             _ => ScopeDecision::Allow,
         },
-        Scope::Job(j) => {
-            if j.apps.contains(name) {
-                return ScopeDecision::Allow;
-            }
-            match owner {
-                Some(Owner::Job(key)) if *key == j.key => ScopeDecision::Allow,
-                // Creating is a change to a resource that doesn't exist yet.
-                None if j.create => ScopeDecision::Allow,
-                None => ScopeDecision::Refuse(format!(
-                    "not yours: this job may only use the {kind}s it was given ({})",
-                    list(&j.apps)
-                )),
-                Some(other) => ScopeDecision::Refuse(format!(
-                    "not yours: the {kind} `{name}` belongs to {}; ask the Queen",
-                    other.describe()
-                )),
-            }
-        }
-    }
-}
-
-fn list(apps: &BTreeSet<String>) -> String {
-    if apps.is_empty() {
-        "none".into()
-    } else {
-        apps.iter().cloned().collect::<Vec<_>>().join(", ")
+        Scope::Bee { id } => match owner {
+            Some(Owner::Bee(o)) if o == id => ScopeDecision::Allow,
+            // Creating is a change to a cell that doesn't exist yet; it becomes the bee's.
+            None => ScopeDecision::Allow,
+            Some(Owner::Bee(other)) => ScopeDecision::Refuse(format!(
+                "not yours: the {kind} `{name}` belongs to {}; ask the Queen",
+                describe_bee(names, other)
+            )),
+            Some(Owner::Unassigned) => ScopeDecision::Refuse(format!(
+                "not yours: the {kind} `{name}` is not assigned to any bee; only the Queen or \
+                 the user may change it"
+            )),
+        },
     }
 }
 
 /// Adjust what a task sees of a targeted tool: `false` hides the tool; otherwise the target
-/// argument's description (and, if the set is closed, an `enum`) lists what is in scope.
+/// argument's description says what is in scope.
 pub fn present(scope: &Scope, target: &Target, params: &mut serde_json::Value) -> bool {
     if target.access == Access::Read {
         return true;
     }
-    let (apps, create) = match scope {
-        Scope::Owner | Scope::ForOwner { .. } => return true,
+    match scope {
+        Scope::User | Scope::Queen { .. } => return true,
         Scope::Nothing => return false,
-        Scope::Job(j) => (&j.apps, j.create),
-    };
-    if apps.is_empty() && !create {
-        return false;
+        Scope::Bee { .. } => {}
     }
-    let mut note = format!(
-        "You may only {} these {}s: {}",
+    let note = format!(
+        "You may only {} the {}s you look after and new ones you create (they become yours). \
+         Others are refused.",
         target.verb,
         target.kind.as_str(),
-        list(apps)
     );
-    if create {
-        note.push_str(", and those you create in this job");
-    }
-    note.push_str(". Others are refused.");
     if let Some(prop) = params
         .get_mut("properties")
         .and_then(|p| p.get_mut(target.arg))
@@ -266,24 +243,48 @@ pub fn present(scope: &Scope, target: &Target, params: &mut serde_json::Value) -
             None => note,
         };
         prop.insert("description".into(), desc.into());
-        if !create {
-            prop.insert(
-                "enum".into(),
-                apps.iter().cloned().collect::<Vec<_>>().into(),
-            );
-        }
     }
     true
 }
 
-/// Looks up who owns a resource. `Ok(None)`: no such resource. A resource without an owner
-/// record must be reported as [`Owner::Human`].
+/// Looks up who owns a cell. `Ok(None)`: no such cell. A cell without an owner record must
+/// be reported as [`Owner::Unassigned`].
 pub trait ResourceOwners: Send + Sync {
     fn owner<'a>(
         &'a self,
         kind: ResourceKind,
         name: &'a str,
     ) -> BoxFuture<'a, Result<Option<Owner>, String>>;
+}
+
+/// One cell as the cell store sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellInfo {
+    /// The cell's name (its app).
+    pub name: String,
+    pub owner: Owner,
+    /// The comb it is on (None: not recorded yet, a cell from before combs had ids).
+    pub comb: Option<String>,
+    /// Who assigned it to its bee, and when (RFC 3339).
+    pub assigned_by: Option<String>,
+    pub assigned_at: Option<String>,
+    /// The old `melissa.io/owner` value (`owner`, `job-<key>`) of a cell not yet migrated.
+    pub legacy_owner: Option<String>,
+}
+
+/// Where cells live (the cluster): list them and change their owner. Only the reassign path
+/// (the Queen's `reassign_cell` after the user's approval, or the user's own
+/// `melissa-queen cell reassign`) calls [`CellStore::assign`].
+pub trait CellStore: Send + Sync {
+    fn cells(&self) -> BoxFuture<'_, Result<Vec<CellInfo>, String>>;
+    /// Make bee `bee` (an id) the owner of cell `cell`, recording `by`. Errors if the cell
+    /// does not exist.
+    fn assign<'a>(
+        &'a self,
+        cell: &'a str,
+        bee: &'a str,
+        by: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>>;
 }
 
 #[cfg(test)]
@@ -293,7 +294,7 @@ mod tests {
     use super::*;
 
     const UNINSTALL: Target = Target {
-        kind: ResourceKind::App,
+        kind: ResourceKind::Cell,
         arg: "app",
         access: Access::Change,
         verb: "uninstall",
@@ -309,148 +310,184 @@ mod tests {
         ..UNINSTALL
     };
 
-    fn job(apps: &[&str], create: bool) -> Scope {
-        Scope::Job(JobScope {
-            key: "k1".into(),
-            apps: apps.iter().map(|a| a.to_string()).collect(),
-            create,
-            for_owner: false,
-        })
+    const ADA: &str = "c-0a1b2c3d.b1";
+    const BO: &str = "c-0a1b2c3d.b2";
+
+    struct Names;
+    impl BeeNames for Names {
+        fn name_of(&self, id: &str) -> Option<String> {
+            match id {
+                ADA => Some("Ada".into()),
+                BO => Some("Bo".into()),
+                _ => None,
+            }
+        }
+        fn resolve_id(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn bee(id: &str) -> Scope {
+        Scope::Bee { id: id.into() }
     }
 
     fn queen() -> Scope {
-        Scope::ForOwner {
-            agent: "the Queen".into(),
+        Scope::Queen {
+            comb: "c-0a1b2c3d".into(),
+        }
+    }
+
+    fn check_(scope: &Scope, t: &Target, name: &str, owner: Option<&Owner>) -> ScopeDecision {
+        check(scope, t, name, owner, Some(&Names))
+    }
+
+    #[test]
+    fn owner_labels_default_to_unassigned() {
+        assert_eq!(Owner::from_label(Some(ADA)), Owner::Bee(ADA.into()));
+        assert_eq!(Owner::Bee(ADA.into()).label_value(), Some(ADA));
+        assert_eq!(Owner::Unassigned.label_value(), None);
+        // Unlabelled, the old scheme and garbage are unassigned.
+        for v in [
+            None,
+            Some("owner"),
+            Some("job-ab12"),
+            Some("someone"),
+            Some(""),
+        ] {
+            assert_eq!(Owner::from_label(v), Owner::Unassigned, "{v:?}");
         }
     }
 
     #[test]
-    fn owner_labels_round_trip_and_default_to_the_human() {
-        assert_eq!(Owner::Human.label_value(), "owner");
-        assert_eq!(Owner::Job("ab12".into()).label_value(), "job-ab12");
-        assert_eq!(
-            Owner::from_label(Some("job-ab12")),
-            Owner::Job("ab12".into())
-        );
-        assert_eq!(Owner::from_label(Some("owner")), Owner::Human);
-        // Unlabelled (legacy) and garbage count as the human's.
-        assert_eq!(Owner::from_label(None), Owner::Human);
-        assert_eq!(Owner::from_label(Some("job-")), Owner::Human);
-        assert_eq!(Owner::from_label(Some("job-UPPER")), Owner::Human);
-        assert_eq!(Owner::from_label(Some("someone")), Owner::Human);
-    }
-
-    #[test]
-    fn a_worker_may_not_touch_the_owners_app() {
-        let d = check(
-            &job(&[], true),
+    fn a_bee_may_not_touch_another_bees_cell() {
+        let d = check_(
+            &bee(ADA),
             &UNINSTALL,
             "nextcloud",
-            Some(&Owner::Human),
+            Some(&Owner::Bee(BO.into())),
         );
-        assert!(
-            matches!(&d, ScopeDecision::Refuse(r) if r.contains("not yours") && r.contains("belongs to the owner")),
-            "{d:?}"
+        assert_eq!(
+            d,
+            ScopeDecision::Refuse(
+                "not yours: the cell `nextcloud` belongs to bee Bo (c-0a1b2c3d.b2); ask the Queen"
+                    .into()
+            )
         );
-        let other = Owner::Job("k2".into());
         assert!(matches!(
-            check(&job(&[], true), &UNINSTALL, "x", Some(&other)),
-            ScopeDecision::Refuse(_)
+            check_(&bee(ADA), &UNINSTALL, "old", Some(&Owner::Unassigned)),
+            ScopeDecision::Refuse(r) if r.contains("not assigned to any bee")
         ));
         assert!(matches!(
-            check(&job(&[], true), &LOGS, "nextcloud", Some(&Owner::Human)),
+            check_(&bee(ADA), &LOGS, "nextcloud", Some(&Owner::Bee(BO.into()))),
             ScopeDecision::Refuse(_)
         ));
         // Reads of names and phases stay open.
         assert_eq!(
-            check(&job(&[], false), &STATUS, "nextcloud", Some(&Owner::Human)),
+            check_(
+                &bee(ADA),
+                &STATUS,
+                "nextcloud",
+                Some(&Owner::Bee(BO.into()))
+            ),
             ScopeDecision::Allow
         );
     }
 
     #[test]
-    fn a_worker_may_change_what_its_job_created_or_was_granted() {
-        let mine = Owner::Job("k1".into());
+    fn a_bee_may_change_its_own_cells_and_create_new_ones() {
         assert_eq!(
-            check(&job(&[], false), &UNINSTALL, "blog", Some(&mine)),
+            check_(&bee(ADA), &UNINSTALL, "blog", Some(&Owner::Bee(ADA.into()))),
             ScopeDecision::Allow
         );
         assert_eq!(
-            check(&job(&["nextcloud"], false), &UNINSTALL, "nextcloud", None),
+            check_(&bee(ADA), &LOGS, "blog", Some(&Owner::Bee(ADA.into()))),
             ScopeDecision::Allow
         );
-        // Creating needs the create right.
         assert_eq!(
-            check(&job(&[], true), &UNINSTALL, "new", None),
+            check_(&bee(ADA), &UNINSTALL, "new", None),
             ScopeDecision::Allow
         );
-        assert!(matches!(
-            check(&job(&["a"], false), &UNINSTALL, "new", None),
-            ScopeDecision::Refuse(_)
-        ));
     }
 
     #[test]
-    fn the_queen_needs_a_confirmation_naming_the_owner() {
+    fn the_queen_names_the_bee_and_asks_for_unassigned_cells() {
         assert_eq!(
-            check(&queen(), &UNINSTALL, "nextcloud", Some(&Owner::Human)),
+            check_(
+                &queen(),
+                &UNINSTALL,
+                "nextcloud",
+                Some(&Owner::Bee(ADA.into()))
+            ),
+            ScopeDecision::Note("`nextcloud` is looked after by bee Ada (c-0a1b2c3d.b1)".into())
+        );
+        assert_eq!(
+            check_(&queen(), &UNINSTALL, "old", Some(&Owner::Unassigned)),
             ScopeDecision::Confirm(
-                "`nextcloud` belongs to you; the Queen wants to uninstall it".into()
+                "`old` is not assigned to any bee (only you decide about it); the Queen wants \
+                 to uninstall it"
+                    .into()
             )
         );
         assert_eq!(
-            check(&queen(), &UNINSTALL, "blog", Some(&Owner::Job("k1".into()))),
+            check_(&queen(), &UNINSTALL, "new", None),
             ScopeDecision::Allow
         );
         assert_eq!(
-            check(&queen(), &UNINSTALL, "new", None),
+            check_(&queen(), &LOGS, "old", Some(&Owner::Unassigned)),
             ScopeDecision::Allow
         );
+        // A cell on another comb is that comb's Queen's.
+        assert!(matches!(
+            check_(&queen(), &UNINSTALL, "x", Some(&Owner::Bee("c-ffffffff.b1".into()))),
+            ScopeDecision::Refuse(r) if r.contains("comb c-ffffffff")
+        ));
         assert_eq!(
-            check(&queen(), &LOGS, "nextcloud", Some(&Owner::Human)),
-            ScopeDecision::Allow
-        );
-        assert_eq!(
-            check(&Scope::Owner, &UNINSTALL, "nextcloud", Some(&Owner::Human)),
+            check_(&Scope::User, &UNINSTALL, "old", Some(&Owner::Unassigned)),
             ScopeDecision::Allow
         );
         assert!(matches!(
-            check(&Scope::Nothing, &UNINSTALL, "x", None),
+            check_(&Scope::Nothing, &UNINSTALL, "x", None),
             ScopeDecision::Refuse(_)
         ));
+        // Without names, the id alone.
+        assert_eq!(
+            check(
+                &queen(),
+                &UNINSTALL,
+                "n",
+                Some(&Owner::Bee(ADA.into())),
+                None
+            ),
+            ScopeDecision::Note("`n` is looked after by bee c-0a1b2c3d.b1".into())
+        );
     }
 
     #[test]
-    fn creators_and_lookups() {
-        assert_eq!(queen().creator(), Some(Owner::Human));
-        assert_eq!(job(&[], true).creator(), Some(Owner::Job("k1".into())));
-        let mut j = job(&[], true);
-        if let Scope::Job(s) = &mut j {
-            s.for_owner = true;
-        }
-        assert_eq!(j.creator(), Some(Owner::Human));
-        assert_eq!(Scope::Nothing.creator(), None);
-        assert!(!queen().needs_owner(Access::ReadScoped, "x"));
-        assert!(queen().needs_owner(Access::Change, "x"));
-        assert!(!job(&["x"], false).needs_owner(Access::Change, "x"));
-        assert!(job(&["x"], false).needs_owner(Access::Change, "y"));
-        assert!(!Scope::Owner.needs_owner(Access::Change, "x"));
+    fn actors_and_lookups() {
+        assert_eq!(queen().actor(3, None), "the Queen (task 3)");
+        assert_eq!(
+            bee(ADA).actor(7, Some(&Names)),
+            "bee Ada (c-0a1b2c3d.b1) (task 7)"
+        );
+        assert_eq!(Scope::User.actor(0, None), "the user");
+        assert!(!queen().needs_owner(Access::ReadScoped));
+        assert!(queen().needs_owner(Access::Change));
+        assert!(bee(ADA).needs_owner(Access::ReadScoped));
+        assert!(!bee(ADA).needs_owner(Access::Read));
+        assert!(!Scope::User.needs_owner(Access::Change));
+        assert_eq!(bee(ADA).bee(), Some(ADA));
+        assert_eq!(queen().bee(), None);
     }
 
     #[test]
-    fn workers_see_only_their_apps() {
+    fn bees_are_told_their_limits_and_nobody_sees_nothing() {
         let params = || json!({"properties": {"app": {"type": "string"}}});
         let mut p = params();
-        assert!(present(&job(&["blog"], false), &UNINSTALL, &mut p));
-        assert_eq!(p["properties"]["app"]["enum"], json!(["blog"]));
+        assert!(present(&bee(ADA), &UNINSTALL, &mut p));
         assert!(p["properties"]["app"]["description"]
             .as_str()
             .unwrap()
-            .contains("blog"));
-        let mut p = params();
-        assert!(present(&job(&[], true), &UNINSTALL, &mut p));
-        assert!(p["properties"]["app"].get("enum").is_none());
-        assert!(!present(&job(&[], false), &UNINSTALL, &mut params()));
+            .contains("you look after"));
         assert!(!present(&Scope::Nothing, &LOGS, &mut params()));
         assert!(present(&Scope::Nothing, &STATUS, &mut params()));
         let mut p = params();

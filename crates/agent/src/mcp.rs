@@ -98,6 +98,18 @@ impl McpServer {
         lock(&self.sessions).get(token).map(|s| s.ctx.clone())
     }
 
+    /// Mark a session tainted (it was handed untrusted content outside a tool call, e.g. a
+    /// message from a tainted Queen). Returns false for an unknown session.
+    pub fn taint_session(&self, token: &str) -> bool {
+        match lock(&self.sessions).get_mut(token) {
+            Some(s) => {
+                s.ctx.tainted = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The tool allowlist of a session (None = no limit beyond the policy context).
     pub fn session_allow(&self, token: &str) -> Option<Option<Vec<&'static str>>> {
         lock(&self.sessions).get(token).map(|s| s.allow.clone())

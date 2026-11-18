@@ -57,7 +57,7 @@ pub struct TaskSnapshot {
     pub truncated: bool,
     pub error: Option<String>,
     pub elapsed: Duration,
-    /// The task that started this one (workers: the Queen).
+    /// The task that started this one (bees: the Queen).
     pub parent: Option<TaskId>,
     /// The task's MCP session read untrusted content (known once the task finished).
     pub tainted: bool,
@@ -83,11 +83,10 @@ impl Default for DispatchOptions {
         Self {
             ctx: TaskContext {
                 attended: true,
-                // Started and watched by the owner: acts for them; changing their apps
-                // still needs a confirmation that says so.
-                scope: Scope::ForOwner {
-                    agent: "an agent task".into(),
-                },
+                // A one-off task the user starts in the UI is neither the Queen nor a bee:
+                // it may read, but cells are changed only by their bee, the Queen or the
+                // user (docs/HIVE-MODEL.md).
+                scope: Scope::Nothing,
                 ..TaskContext::default()
             },
             allow: None,
@@ -102,7 +101,7 @@ impl Default for DispatchOptions {
 pub enum DispatchError {
     #[error("unknown backend `{0}`")]
     UnknownBackend(String),
-    #[error("backend `{0}` is not available on this bee")]
+    #[error("backend `{0}` is not available on this comb")]
     Unavailable(String),
     #[error("prompt is empty")]
     EmptyPrompt,

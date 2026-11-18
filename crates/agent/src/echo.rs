@@ -1,4 +1,4 @@
-//! Built-in backend with no LLM. Echoes the prompt back; useful on bees without any
+//! Built-in backend with no LLM. Echoes the prompt back; useful on combs without any
 //! agent subscription and as a deterministic backend for tests and demos.
 
 use std::time::Duration;

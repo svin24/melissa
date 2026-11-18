@@ -30,6 +30,7 @@ use k8s_openapi::{
     },
 };
 use kube::api::ObjectMeta;
+use melissa_agent::tools::Owner;
 use melissa_catalog::{Builtin, EnvSource, Manifest, ResolvedConfig};
 
 /// Label on every object of an app (and the namespace): the app's name.
@@ -41,20 +42,27 @@ pub const APPS_SERVICE_ACCOUNT: &str = "melissa-apps";
 pub const MELISSA_NAMESPACE: &str = "melissa";
 /// ClusterRole bound per app namespace for [`APPS_SERVICE_ACCOUNT`].
 pub const WORKLOAD_ROLE: &str = "melissa-app-workload";
-/// Label on the app's namespace: who owns the app (`owner` or `job-<key>`, see
-/// `melissa_agent::tools::scope`). Set at the first install, never changed by the queen
-/// afterwards (admission policy `melissa-apps-namespaces`); only the owner's
-/// `melissa-queen app-adopt` changes it.
-pub const OWNER_LABEL: &str = "melissa.io/owner";
+/// Cell labels on the app's namespace (docs/HIVE-MODEL.md): the cell's name, the comb it is
+/// on and the bee that owns it. `melissa.io/cell` and `melissa.io/comb` are set at the first
+/// install; `melissa.io/owner-bee` is set at the first install (absent: unassigned) and
+/// changed only by the reassign path together with fresh `assigned-*` annotations (admission
+/// policy `melissa-apps-namespaces`).
+pub const CELL_LABEL: &str = "melissa.io/cell";
+pub const COMB_LABEL: &str = "melissa.io/comb";
+pub const OWNER_BEE_LABEL: &str = "melissa.io/owner-bee";
+/// Who gave the cell to its bee (`the Queen, approved by the user`, `the user`, `bee Ada
+/// (…) (task 7)` for a cell a bee created) and when (RFC 3339, sub-second).
+pub const ASSIGNED_BY_ANNOTATION: &str = "melissa.io/assigned-by";
+pub const ASSIGNED_AT_ANNOTATION: &str = "melissa.io/assigned-at";
+/// The owner label from before bees (`owner` or `job-<key>`). Read for migration only: such
+/// a cell counts as unassigned and loses the label at its next install or reassignment.
+pub const LEGACY_OWNER_LABEL: &str = "melissa.io/owner";
 /// Annotations on the app's namespace, set at the first install and kept: who installed it
-/// (`owner`, `the Queen (task 3)`, `worker task 7, job <key>`), when (RFC 3339), and from
-/// where (`catalog`).
+/// (`the user`, `the Queen (task 3)`, `bee Ada (c-….b1) (task 7)`), when (RFC 3339), and
+/// from where (`catalog`).
 pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
 pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
 pub const ORIGIN_ANNOTATION: &str = "melissa.io/origin";
-/// Set by `app-adopt`: when the owner took the app over, and from whom.
-pub const ADOPTED_AT_ANNOTATION: &str = "melissa.io/adopted-at";
-pub const ADOPTED_FROM_ANNOTATION: &str = "melissa.io/adopted-from";
 /// Annotation on the Deployment: the resolved, non-secret config as JSON.
 pub const CONFIG_ANNOTATION: &str = "melissa.io/config";
 /// Pod Security Standard enforced in app namespaces. `baseline` forbids privileged pods,
@@ -122,56 +130,88 @@ fn meta(m: &Manifest, name: &str) -> ObjectMeta {
     }
 }
 
-/// Who owns an app and how it got here, for its namespace.
+/// A cell's record on its namespace: which comb and bee, and how it got here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ownership {
-    /// `melissa.io/owner` label value.
-    pub owner: String,
+    /// The comb id (None on a namespace from before combs had ids; set at the next install).
+    pub comb: Option<String>,
+    /// The owning bee (`Unassigned`: no `melissa.io/owner-bee` label).
+    pub owner: Owner,
+    pub assigned_by: Option<String>,
+    pub assigned_at: Option<String>,
     pub installed_by: String,
     pub installed_at: String,
     pub origin: String,
+    /// `melissa.io/owner` from before bees, if still there.
+    pub legacy_owner: Option<String>,
 }
 
 impl Ownership {
-    /// The record on an existing namespace. Namespaces from before ownership existed have
-    /// none: they get `owner` (the safe default), the rest stays unknown.
+    /// The record on an existing namespace. Namespaces from before bees have no owner-bee
+    /// label: they are unassigned (only the Queen with the user's approval, or the user,
+    /// may change them); unknown annotations stay `unknown`.
     pub fn of(ns: &Namespace) -> Self {
-        let label = ns
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|l| l.get(OWNER_LABEL))
-            .map(String::as_str);
+        let label = |k: &str| ns.metadata.labels.as_ref().and_then(|l| l.get(k)).cloned();
         let ann = |k: &str| {
             ns.metadata
                 .annotations
                 .as_ref()
                 .and_then(|a| a.get(k))
                 .cloned()
-                .unwrap_or_else(|| "unknown".into())
         };
+        let unknown = |v: Option<String>| v.unwrap_or_else(|| "unknown".into());
         Self {
-            owner: label.map_or_else(
-                || melissa_agent::tools::Owner::Human.label_value(),
-                str::to_string,
-            ),
-            installed_by: ann(INSTALLED_BY_ANNOTATION),
-            installed_at: ann(INSTALLED_AT_ANNOTATION),
-            origin: ann(ORIGIN_ANNOTATION),
+            comb: label(COMB_LABEL),
+            owner: Owner::from_label(label(OWNER_BEE_LABEL).as_deref()),
+            assigned_by: ann(ASSIGNED_BY_ANNOTATION),
+            assigned_at: ann(ASSIGNED_AT_ANNOTATION),
+            installed_by: unknown(ann(INSTALLED_BY_ANNOTATION)),
+            installed_at: unknown(ann(INSTALLED_AT_ANNOTATION)),
+            origin: unknown(ann(ORIGIN_ANNOTATION)),
+            legacy_owner: label(LEGACY_OWNER_LABEL),
         }
     }
 
-    /// Put the record on a rendered namespace.
-    pub fn apply_to(&self, ns: &mut Namespace) {
-        ns.metadata
-            .labels
-            .get_or_insert_with(BTreeMap::new)
-            .insert(OWNER_LABEL.into(), self.owner.clone());
+    /// Put the record on a rendered namespace for cell `cell`. The legacy owner label is not
+    /// written again, so a reinstall migrates the namespace to the cell labels.
+    pub fn apply_to(&self, cell: &str, ns: &mut Namespace) {
+        let labels = ns.metadata.labels.get_or_insert_with(BTreeMap::new);
+        labels.insert(CELL_LABEL.into(), cell.into());
+        if let Some(comb) = &self.comb {
+            labels.insert(COMB_LABEL.into(), comb.clone());
+        }
+        if let Some(bee) = self.owner.label_value() {
+            labels.insert(OWNER_BEE_LABEL.into(), bee.into());
+        }
         let annotations = ns.metadata.annotations.get_or_insert_with(BTreeMap::new);
+        if let (Some(by), Some(at)) = (&self.assigned_by, &self.assigned_at) {
+            annotations.insert(ASSIGNED_BY_ANNOTATION.into(), by.clone());
+            annotations.insert(ASSIGNED_AT_ANNOTATION.into(), at.clone());
+        }
         annotations.insert(INSTALLED_BY_ANNOTATION.into(), self.installed_by.clone());
         annotations.insert(INSTALLED_AT_ANNOTATION.into(), self.installed_at.clone());
         annotations.insert(ORIGIN_ANNOTATION.into(), self.origin.clone());
     }
+}
+
+/// The merge patch that gives cell `cell` on comb `comb` to bee `bee` (the reassign path):
+/// new owner label, fresh `assigned-*` annotations (the admission policy requires them for
+/// an owner change), and the legacy owner label removed.
+pub fn assign_patch(cell: &str, comb: &str, bee: &str, by: &str, at: &str) -> serde_json::Value {
+    serde_json::json!({
+        "metadata": {
+            "labels": {
+                CELL_LABEL: cell,
+                COMB_LABEL: comb,
+                OWNER_BEE_LABEL: bee,
+                LEGACY_OWNER_LABEL: null,
+            },
+            "annotations": {
+                ASSIGNED_BY_ANNOTATION: by,
+                ASSIGNED_AT_ANNOTATION: at,
+            },
+        }
+    })
 }
 
 /// Render `manifest` with resolved `config` for ingress domain `domain`.

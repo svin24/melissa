@@ -3,7 +3,7 @@
 //!
 //! [`AcpBackend`] spawns the agent under the bubblewrap sandbox ([`crate::sandbox`]) and
 //! implements both [`SessionBackend`] (open a session, many prompts: the Queen) and
-//! [`Backend`] (one task = one session with one prompt: workers on the task board).
+//! [`Backend`] (one task = one session with one prompt: bees on the task board).
 //! Melissa declares no client file system or terminal capabilities: the agent acts through
 //! its own sandboxed tools (each asked through `session/request_permission`, answered by
 //! [`PolicyPermissions`]) and through Melissa's MCP tools.

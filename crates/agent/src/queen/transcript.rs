@@ -1,5 +1,6 @@
-//! The Queen's transcript: every event except text pieces, as JSON Lines, in Melissa's
-//! state directory (`$XDG_STATE_HOME/melissa/queen/transcript.jsonl`).
+//! A conversation's transcript (the Queen's or a bee's): every event except text pieces, as
+//! JSON Lines, in Melissa's state directory (`$XDG_STATE_HOME/melissa/queen/transcript.jsonl`,
+//! `$XDG_STATE_HOME/melissa/bees/<id>/transcript.jsonl`).
 //!
 //! Bounded: when the file grows past its limit it is renamed to `transcript.jsonl.1`
 //! (replacing the previous one) and a new file starts, so at most twice the limit is kept.
@@ -83,7 +84,8 @@ impl Transcript {
             };
             let (who, msg) = match record.event {
                 QueenEvent::UserMessage { text, .. } => ("user", text),
-                QueenEvent::QueenMessage { text, .. } => ("queen", text),
+                // Seen from the agent being primed: its own earlier replies.
+                QueenEvent::AgentMessage { text, .. } => ("you", text),
                 _ => continue,
             };
             let msg = shorten(&msg, 600);
@@ -132,7 +134,7 @@ mod tests {
             ));
             t.append(&record(
                 i,
-                QueenEvent::QueenMessage {
+                QueenEvent::AgentMessage {
                     turn: i,
                     text: format!("reply {i}"),
                 },
@@ -146,10 +148,20 @@ mod tests {
             0o600
         );
         let recent = t.recent_messages(40);
-        assert_eq!(recent.last().unwrap(), &("queen", "reply 39".to_string()));
+        assert_eq!(recent.last().unwrap(), &("you", "reply 39".to_string()));
         assert!(recent.len() < 10);
         let all = t.recent_messages(100_000);
         assert!(all.len() > recent.len());
+        // Transcripts from before bees had conversations still read.
+        std::fs::write(
+            t.path(),
+            "{\"seq\":1,\"ts\":0,\"type\":\"queen_message\",\"turn\":1,\"text\":\"old\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            t.recent_messages(100_000).last().unwrap(),
+            &("you", "old".to_string())
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

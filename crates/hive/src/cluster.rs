@@ -23,7 +23,7 @@ use melissa_agent::BoxFuture;
 /// Name of the systemd credential (and of its file in `/run/credstore`) holding the kubeconfig.
 pub const CREDENTIAL_NAME: &str = "melissa.kubeconfig";
 
-/// Directory where `melissa-kubeconfig` (root) puts the queen's kubeconfig on bees that run k3s.
+/// Directory where `melissa-kubeconfig` (root) puts the queen's kubeconfig on combs that run k3s.
 /// Created at boot (tmpfiles.d, headless image), group `melissa-kube`, so "directory present but
 /// no file" means k3s is enabled and still starting.
 pub const RUNTIME_DIR: &str = "/run/melissa-kube";
@@ -37,8 +37,8 @@ pub const APPS_RUNTIME_FILE: &str = "apps.kubeconfig";
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum ClusterError {
-    /// No kubeconfig: k3s is not enabled on this bee (desktop) or its credentials are missing.
-    #[error("k3s is not running on this bee (no cluster credentials)")]
+    /// No kubeconfig: k3s is not enabled on this comb (desktop) or its credentials are missing.
+    #[error("k3s is not running on this comb (no cluster credentials)")]
     NotConfigured,
     /// k3s is enabled here but the queen's credentials aren't issued yet (k3s still starting).
     #[error("k3s is starting: the queen's cluster credentials are not issued yet")]
@@ -287,7 +287,7 @@ current-context: local
         let file = dir.join(RUNTIME_FILE);
         let lazy = LazyCluster::new(vec![file.clone()], Some(dir.clone()));
 
-        // No directory: this bee has no k3s.
+        // No directory: this comb has no k3s.
         assert_eq!(
             lazy.server_version().await,
             Err(ClusterError::NotConfigured)

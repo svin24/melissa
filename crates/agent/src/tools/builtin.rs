@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use super::{Labels, Tool, ToolError, ToolSpec};
 use crate::BoxFuture;
 
-/// `bee_info`: OS, kernel, Melissa release, uptime and memory of this bee. Read-only.
+/// `bee_info`: OS, kernel, Melissa release, uptime and memory of this comb. Read-only.
 #[derive(Debug, Clone)]
 pub struct BeeInfo {
     /// Filesystem root to read from (`/` in production; a fixture dir in tests).
@@ -40,7 +40,7 @@ impl Tool for BeeInfo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bee_info",
-            description: "Describe this bee: OS, kernel, Melissa release, uptime and memory.",
+            description: "Describe this comb (the device Melissa runs on): OS, kernel, Melissa release, uptime and memory.",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         }

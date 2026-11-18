@@ -4,6 +4,11 @@
 health → uninstall through the confirmation inbox) after changes to the Queen, the MCP layer, the
 policy, the app tools or the image; trying a new Queen backend against real apps.
 
+Note (2026-11-18, later): this run predates persistent bees. Today the Queen creates a named bee and
+gives it the job (`create_bee`, `give_bee_job`, `bee_status`) instead of `start_worker`/`worker_status`,
+and `install_app` from the Queen names the bee that looks after the new cell
+([cells-and-ownership.md](cells-and-ownership.md)). Not re-run against the VM yet.
+
 ## Setup (laptop Queen, VM cluster)
 The headless test VM has k3s and the app RBAC but no agent CLI logins; the dev laptop has them. So
 the Queen daemon runs on the laptop (temp XDG dirs, egress proxy, default sandbox) and its cluster

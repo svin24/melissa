@@ -102,6 +102,12 @@ pub trait AppDeployer: Send + Sync {
     ) -> BoxFuture<'a, Result<Vec<&'static str>, ClusterError>>;
     /// Delete the app's namespace and everything in it, including its volumes' data.
     fn delete_namespace<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<bool, ClusterError>>;
+    /// Merge-patch the app's namespace (the reassign path: owner label and annotations).
+    fn patch_namespace<'a>(
+        &'a self,
+        app: &'a str,
+        patch: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<(), ClusterError>>;
 }
 
 /// [`AppRead`] + [`AppDeployer`] over the write identity's kubeconfig, found lazily like the
@@ -326,6 +332,24 @@ impl AppDeployer for KubeApps {
                     .await,
             )?
             .is_some())
+        })
+    }
+
+    fn patch_namespace<'a>(
+        &'a self,
+        app: &'a str,
+        patch: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<(), ClusterError>> {
+        Box::pin(async move {
+            let api: Api<Namespace> = Api::all(self.client().await?);
+            let params = PatchParams {
+                field_manager: Some(FIELD_MANAGER.into()),
+                ..PatchParams::default()
+            };
+            api.patch(&namespace_of(app), &params, &Patch::Merge(patch))
+                .await
+                .map(|_| ())
+                .map_err(map_err)
         })
     }
 }

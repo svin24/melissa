@@ -35,7 +35,7 @@ pub async fn admin_client(
              sudo melissa-queen {command} {app}"
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("no k3s on this bee ({} is missing)", kubeconfig.display())
+            bail!("no k3s on this comb ({} is missing)", kubeconfig.display())
         }
         Err(e) => return Err(e).with_context(|| format!("opening {}", kubeconfig.display())),
     }
