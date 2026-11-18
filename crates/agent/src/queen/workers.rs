@@ -6,6 +6,12 @@
 //! than the configured maximum. At most `max_concurrent` workers run at once. The tools here
 //! are Queen-only ([`Tool::queen_only`]): workers and UI tasks never see them.
 //!
+//! Scope: a worker may change only the apps the Queen names in `apps` (each one the Queen
+//! may change itself; the owner's apps only after the owner approves the grant) and, with
+//! `create_apps` (default), the apps it creates, which belong to its job (or to the owner
+//! with `for_owner`, approved by the owner). See [`crate::tools::scope`]. The worker tools
+//! only reach the caller's own workers; workers never see them.
+//!
 //! Taint flows both ways: a worker started by a tainted Queen starts tainted, and the Queen
 //! becomes tainted when it reads the output of a worker that read untrusted content.
 
@@ -22,7 +28,10 @@ use super::{
     transcript::shorten,
 };
 use crate::{
-    tools::{check_tool_set, Effect, Labels, TaskContext, Tool, ToolError, ToolSpec},
+    tools::{
+        check_tool_set, Effect, JobScope, Labels, Owner, ResourceKind, Scope, TaskContext, Tool,
+        ToolError, ToolSpec,
+    },
     BoxFuture, DispatchOptions, Stream, TaskBoard, TaskId, TaskSnapshot, TaskStatus,
     MAX_PROMPT_BYTES,
 };
@@ -130,17 +139,122 @@ impl WorkerPool {
             .ok_or_else(|| ToolError::Failed("workers are not available on this bee".into()))
     }
 
-    /// Tools a worker may get: the Queen's own, without the Queen-only ones.
+    /// Tools a worker may get: the Queen's own, without the Queen-only ones. (What a worker
+    /// may do with them is limited by its scope, not by hiding them here.)
     fn handable(&self, a: &Attached) -> Vec<(&'static str, Labels)> {
         let Some(link) = a.board.mcp_link() else {
             return Vec::new();
         };
-        link.server
-            .registry()
-            .visible_to(&TaskContext::default(), a.queen_allow.as_deref())
+        let registry = link.server.registry();
+        registry
+            .visible(a.queen_allow.as_deref())
             .into_iter()
+            .filter(|s| !registry.is_queen_only(s.name))
             .map(|s| (s.name, s.labels))
             .collect()
+    }
+
+    /// The worker's scope from `apps`, `create_apps` and `for_owner`: never more than the
+    /// caller's own (`ctx.scope`). Grants the owner must approve are asked for here, in one
+    /// confirmation that names them.
+    async fn worker_scope(
+        &self,
+        a: &Attached,
+        parent: TaskId,
+        ctx: &TaskContext,
+        args: &serde_json::Map<String, Value>,
+    ) -> Result<Scope, ToolError> {
+        let mut apps = std::collections::BTreeSet::new();
+        match args.get("apps") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(names)) => {
+                for n in names {
+                    match n.as_str() {
+                        Some(n) if plausible_name(n) => {
+                            apps.insert(n.to_string());
+                        }
+                        _ => {
+                            return Err(ToolError::BadArgs(
+                                "`apps` must be a list of app names".into(),
+                            ))
+                        }
+                    }
+                }
+            }
+            Some(_) => {
+                return Err(ToolError::BadArgs(
+                    "`apps` must be a list of app names".into(),
+                ))
+            }
+        }
+        let flag = |name: &str, default: bool| match args.get(name) {
+            None | Some(Value::Null) => Ok(default),
+            Some(Value::Bool(b)) => Ok(*b),
+            Some(_) => Err(ToolError::BadArgs(format!("`{name}` must be a boolean"))),
+        };
+        let create = flag("create_apps", true)?;
+        let for_owner = flag("for_owner", false)?;
+
+        let agent = match &ctx.scope {
+            Scope::Owner => None,
+            Scope::ForOwner { agent } => Some(agent.clone()),
+            // Only sessions acting for the owner hand out scopes (workers can't start workers).
+            Scope::Nothing | Scope::Job(_) => {
+                return Err(ToolError::Refused(
+                    "not yours: this session may not give apps to workers".into(),
+                ))
+            }
+        };
+        let mut reasons = Vec::new();
+        if let Some(agent) = &agent {
+            let registry = a
+                .board
+                .mcp_link()
+                .map(|l| l.server.registry().clone())
+                .ok_or_else(|| ToolError::Failed("workers are not available on this bee".into()))?;
+            let mut owners_apps = Vec::new();
+            for app in &apps {
+                match registry.owner_of(ResourceKind::App, app).await {
+                    Ok(Some(Owner::Human)) => owners_apps.push(format!("`{app}`")),
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Err(ToolError::Failed(format!(
+                            "could not check who owns `{app}`: {e}"
+                        )))
+                    }
+                }
+            }
+            if !owners_apps.is_empty() {
+                reasons.push(format!(
+                    "{} belong{} to you; {agent} wants to let a worker change {}",
+                    owners_apps.join(", "),
+                    if owners_apps.len() == 1 { "s" } else { "" },
+                    if owners_apps.len() == 1 { "it" } else { "them" },
+                ));
+            }
+            if for_owner && create {
+                reasons.push(format!(
+                    "{agent} wants the apps a worker creates to belong to you"
+                ));
+            }
+            if !reasons.is_empty() {
+                let shown = serde_json::json!({
+                    "goal": args.get("goal"),
+                    "apps": apps,
+                    "create_apps": create,
+                    "for_owner": for_owner,
+                });
+                registry
+                    .confirm(parent, "start_worker", &shown, &reasons.join("; "))
+                    .await?;
+            }
+        }
+        Ok(Scope::Job(JobScope {
+            key: job_key().map_err(|e| ToolError::Failed(format!("job key: {e}")))?,
+            apps,
+            create,
+            for_owner: for_owner && create,
+        }))
     }
 
     /// Workers of `parent`, newest first.
@@ -167,9 +281,25 @@ impl WorkerPool {
             .ok_or_else(|| ToolError::BadArgs(format!("no worker {id}")))
     }
 
-    fn start(&self, parent: TaskId, ctx: &TaskContext, args: &Value) -> Result<Value, ToolError> {
+    async fn start(
+        &self,
+        parent: TaskId,
+        ctx: &TaskContext,
+        args: &Value,
+    ) -> Result<Value, ToolError> {
         let a = self.attached()?;
-        let args = object(args, &["goal", "backend", "tools", "timeout_secs"])?;
+        let args = object(
+            args,
+            &[
+                "goal",
+                "backend",
+                "tools",
+                "timeout_secs",
+                "apps",
+                "create_apps",
+                "for_owner",
+            ],
+        )?;
         let goal = args
             .get("goal")
             .and_then(Value::as_str)
@@ -243,6 +373,18 @@ impl WorkerPool {
             )));
         }
 
+        // Last, after every cheap check: it may wait for the owner.
+        let scope = self.worker_scope(a, parent, ctx, &args).await?;
+        let scope_json = match &scope {
+            Scope::Job(j) => json!({
+                "job": j.key,
+                "apps": j.apps,
+                "create_apps": j.create,
+                "for_owner": j.for_owner,
+            }),
+            _ => Value::Null,
+        };
+
         let id = {
             let _start = lock(&self.inner.start);
             let running = a
@@ -262,6 +404,7 @@ impl WorkerPool {
                 ctx: TaskContext {
                     attended: false,
                     tainted: ctx.tainted,
+                    scope,
                     ..TaskContext::default()
                 },
                 allow: Some(tools.iter().map(|(n, _)| *n).collect()),
@@ -301,6 +444,7 @@ impl WorkerPool {
             "backend": backend,
             "tools": tools.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
             "timeout_secs": timeout.as_secs(),
+            "scope": scope_json,
             "status": "running",
         }))
     }
@@ -367,6 +511,22 @@ impl WorkerPool {
     }
 }
 
+/// Cheap shape check for app names in `apps` (the app tools validate names fully).
+fn plausible_name(n: &str) -> bool {
+    (1..=63).contains(&n.len())
+        && n.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// A new job key: 12 hex characters from the kernel CSPRNG. Unique across daemon restarts
+/// (task ids are not), so ownership labels never point at a different, later job.
+fn job_key() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 6];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -414,7 +574,8 @@ impl Tool for StartWorker {
             description: "Start a sandboxed worker agent for one concrete job (a multi-step check, \
                           a longer investigation). It works unattended with your tools or the subset \
                           in `tools`, cannot start workers itself, and is stopped after \
-                          `timeout_secs`. Returns its worker id; then use worker_status.",
+                          `timeout_secs`. It may change only the apps in `apps` and the ones it \
+                          creates. Returns its worker id; then use worker_status.",
             labels: START_LABELS,
             params: json!({
                 "type": "object",
@@ -423,6 +584,9 @@ impl Tool for StartWorker {
                     "backend": {"type": "string", "description": "Agent backend (default: the configured worker backend)."},
                     "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the worker may use, by their plain names such as `bee_info` (no `mcp__melissa__` or other prefix). Default: all of yours except the worker tools."},
                     "timeout_secs": {"type": "integer", "minimum": 1, "maximum": l.max_timeout.as_secs(), "description": format!("Time limit (default {}).", l.default_timeout.min(l.max_timeout).as_secs())},
+                    "apps": {"type": "array", "items": {"type": "string"}, "description": "Existing apps the worker may change (install over, uninstall, read logs). Default: none. Granting an app that belongs to the owner asks the owner first. Any other app is refused to the worker."},
+                    "create_apps": {"type": "boolean", "default": true, "description": "The worker may install new apps; they belong to its job (it and you may change them later)."},
+                    "for_owner": {"type": "boolean", "default": false, "description": "Apps the worker creates belong to the owner instead of the job (asks the owner first)."},
                 },
                 "required": ["goal"],
                 "additionalProperties": false,
@@ -438,7 +602,7 @@ impl Tool for StartWorker {
         ctx: &'a mut TaskContext,
         args: Value,
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async move { self.0.start(task, ctx, &args) })
+        Box::pin(async move { self.0.start(task, ctx, &args).await })
     }
     fn queen_only(&self) -> bool {
         true

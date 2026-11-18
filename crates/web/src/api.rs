@@ -13,7 +13,8 @@
 //!   operator (`melissa-queen tool --wait`) through the daemon's registry, as an unattended
 //!   task (task 0): the policy applies and confirmations land in the same inbox, so the call
 //!   waits for `approve`/`deny` (up to the confirmation timeout). Queen-only tools are not
-//!   reachable. Errors: 404 unknown tool, 422 bad arguments, 403 denied, 408 confirmation
+//!   reachable. The caller is the owner (scope `Owner`: no ownership checks). Errors: 404 unknown
+//!   tool, 422 bad arguments, 403 denied or refused, 408 confirmation
 //!   timeout, 502 tool failure.
 
 use std::time::{Duration, UNIX_EPOCH};
@@ -28,7 +29,7 @@ use axum::{
 use melissa_agent::{
     mcp::McpServer,
     queen::{Queen, QueenError},
-    tools::{TaskContext, ToolError, Verdict},
+    tools::{Scope, TaskContext, ToolError, Verdict},
     AuditRecord,
 };
 use serde::Deserialize;
@@ -69,13 +70,17 @@ async fn call_tool(
             tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
         }
     }
-    // Unattended, untainted, no delegation: the strictest context a session can have.
-    let mut ctx = TaskContext::default();
+    // Unattended, untainted, no delegation; the caller is the owner (local API), so the
+    // scope is theirs: no ownership checks, but the label policy still asks for confirmations.
+    let mut ctx = TaskContext {
+        scope: Scope::Owner,
+        ..TaskContext::default()
+    };
     match registry.call(0, &mut ctx, &name, args).await {
         Ok(result) => Json(json!({"result": result})).into_response(),
         Err(e @ ToolError::UnknownTool(_)) => error(StatusCode::NOT_FOUND, e),
         Err(e @ ToolError::BadArgs(_)) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
-        Err(e @ ToolError::Denied) => error(StatusCode::FORBIDDEN, e),
+        Err(e @ (ToolError::Denied | ToolError::Refused(_))) => error(StatusCode::FORBIDDEN, e),
         Err(e @ ToolError::ConfirmationTimeout) => error(StatusCode::REQUEST_TIMEOUT, e),
         Err(e @ ToolError::Failed(_)) => error(StatusCode::BAD_GATEWAY, e),
     }

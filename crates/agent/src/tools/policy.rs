@@ -5,6 +5,8 @@
 
 use std::collections::BTreeSet;
 
+use super::scope::Scope;
+
 /// What running the tool changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
@@ -49,6 +51,8 @@ pub struct TaskContext {
     /// May start worker agents (the Queen only). Tools marked [`crate::tools::Tool::queen_only`]
     /// are hidden from, and refused for, every other session: workers cannot start workers.
     pub delegate: bool,
+    /// What this task may change ([`super::scope`]); checked before the label policy.
+    pub scope: Scope,
 }
 
 /// The outcome for one tool call.
