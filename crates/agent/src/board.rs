@@ -57,7 +57,7 @@ pub struct TaskSnapshot {
     pub truncated: bool,
     pub error: Option<String>,
     pub elapsed: Duration,
-    /// The task that started this one (workers: the Queen).
+    /// The task that started this one (bees: the Queen).
     pub parent: Option<TaskId>,
     /// The task's MCP session read untrusted content (known once the task finished).
     pub tainted: bool,

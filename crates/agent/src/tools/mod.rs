@@ -59,7 +59,7 @@ pub trait Tool: Send + Sync {
 
     /// Like [`Tool::call`], for tools that need to know who is calling: the task and its
     /// policy context. A tool may set `ctx.tainted` when it hands back untrusted content
-    /// (e.g. the output of a tainted worker). Default: [`Tool::call`].
+    /// (e.g. the output of a tainted bee). Default: [`Tool::call`].
     fn call_in<'a>(
         &'a self,
         _task: TaskId,
@@ -70,7 +70,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Only sessions that may delegate ([`TaskContext::delegate`], the Queen) see and may
-    /// call this tool (e.g. `start_worker`). Default: false.
+    /// call this tool (e.g. `start_bee`). Default: false.
     fn queen_only(&self) -> bool {
         false
     }
@@ -190,7 +190,7 @@ impl ToolRegistry {
             .cloned()
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
         if tool.queen_only() && !ctx.delegate {
-            // Same answer as for a nonexistent tool: workers never learn these exist.
+            // Same answer as for a nonexistent tool: bees never learn these exist.
             return Err(ToolError::UnknownTool(name.to_string()));
         }
         if !args.is_object() && !args.is_null() {
@@ -543,7 +543,7 @@ mod tests {
     impl Tool for QueenOnly {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "start_worker",
+                name: "start_bee",
                 description: "test",
                 labels: Labels::READ_ONLY,
                 params: json!({"type": "object"}),
@@ -560,11 +560,11 @@ mod tests {
     #[tokio::test]
     async fn queen_only_tools_need_delegation() {
         let reg = ToolRegistry::new(vec![Arc::new(QueenOnly)], None);
-        let mut worker = attended();
-        assert!(reg.visible_to(&worker, None).is_empty());
+        let mut bee = attended();
+        assert!(reg.visible_to(&bee, None).is_empty());
         assert_eq!(
-            reg.call(1, &mut worker, "start_worker", json!({})).await,
-            Err(ToolError::UnknownTool("start_worker".into()))
+            reg.call(1, &mut bee, "start_bee", json!({})).await,
+            Err(ToolError::UnknownTool("start_bee".into()))
         );
         let mut queen = TaskContext {
             delegate: true,
@@ -572,12 +572,12 @@ mod tests {
         };
         assert_eq!(reg.visible_to(&queen, None).len(), 1);
         assert_eq!(
-            reg.call(1, &mut queen, "start_worker", json!({})).await,
+            reg.call(1, &mut queen, "start_bee", json!({})).await,
             Ok(json!("started"))
         );
         // Name matching for permission requests still knows the tool.
         assert_eq!(reg.visible(None).len(), 1);
-        assert!(reg.is_queen_only("start_worker"));
+        assert!(reg.is_queen_only("start_bee"));
     }
 
     #[test]

@@ -502,7 +502,7 @@ impl Tool for AppStatus {
             name: "app_status",
             description: "State of an installed app: phase (not_installed, starting, ready, \
                 failing, uninstalled_data_kept, deleting), ready replicas, URL, config, \
-                owner (`owner` = the human, `job-<key>` = a worker's job) and who installed \
+                owner (`owner` = the human, `job-<key>` = a bee's job) and who installed \
                 it, volumes, and pods with sanitized problem reasons (e.g. ImagePullBackOff, \
                 CrashLoopBackOff, OOMKilled).",
             // Names, counts, phases and kubelet reason codes only; no free text from the app.

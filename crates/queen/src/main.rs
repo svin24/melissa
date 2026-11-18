@@ -11,7 +11,7 @@
 //!   `melissa-queen [--config <path>] chat`                    talk to the Queen (line based)
 //!   `melissa-queen [--config <path>] ask <message>`           one message, stream the answer
 //!   `melissa-queen [--config <path>] confirm list|approve <id>|deny <id>`
-//!   `melissa-queen [--config <path>] workers`                 the Queen's worker agents
+//!   `melissa-queen [--config <path>] bees`                 the Queen's bee agents
 //!
 //! The client commands talk to the running daemon on its configured `listen` address.
 //!
@@ -32,9 +32,9 @@ use anyhow::{bail, Context};
 use melissa_agent::{
     mcp::McpServer,
     queen::{
+        bees::{BeeLimits, BeePool},
         events::EventLog,
         transcript::Transcript,
-        workers::{WorkerLimits, WorkerPool},
         Queen, QueenSettings,
     },
     session::SessionBackend,
@@ -48,9 +48,9 @@ use tracing_subscriber::EnvFilter;
 
 use config::{BackendSpec, Dirs, QueenConfig};
 
-/// The Queen's system prompt and the instructions every worker gets (reviewed text files).
+/// The Queen's system prompt and the instructions every bee gets (reviewed text files).
 const QUEEN_PROMPT: &str = include_str!("../prompts/queen.md");
-const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
+const BEE_PROMPT: &str = include_str!("../prompts/bee.md");
 
 const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   (none)                      serve the web UI, the Queen and agents
@@ -59,11 +59,11 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   tool --wait <name> [json]   run one tool in the running daemon; waits for a confirmation
                               (answer it with `confirm approve <id>` from another shell)
   app-credentials <app>       show an app's generated credentials (owner only, needs root)
-  app-adopt <app>             make an app a worker job created yours (owner only, needs root)
+  app-adopt <app>             make an app a bee job created yours (owner only, needs root)
   chat                        talk to the Queen (Ctrl-C cancels a turn)
   ask <message>               send one message and stream the answer
   confirm list|approve <id>|deny <id>
-  workers                     list the Queen's worker agents";
+  bees                     list the Queen's bee agents";
 
 enum Command {
     Serve,
@@ -82,7 +82,7 @@ enum Command {
     Chat,
     Ask(String),
     Confirm(String, Option<u64>),
-    Workers,
+    Bees,
 }
 
 #[tokio::main]
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Chat => return client::chat(&api).await,
         Command::Ask(message) => return client::ask(&api, message).await,
         Command::Confirm(action, id) => return client::confirm(&api, action, *id).await,
-        Command::Workers => return client::workers(&api).await,
+        Command::Bees => return client::bees(&api).await,
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
         Command::AppCredentials(app) => {
             return credentials::show(
@@ -170,11 +170,11 @@ async fn serve(
         queen_state.join("transcript.jsonl"),
         q.transcript_max_kib.saturating_mul(1024),
     )));
-    let pool = WorkerPool::new(
-        WorkerLimits {
-            max_concurrent: q.max_workers,
-            default_timeout: Duration::from_secs(q.worker_timeout_secs),
-            max_timeout: Duration::from_secs(q.worker_timeout_max_secs),
+    let pool = BeePool::new(
+        BeeLimits {
+            max_concurrent: q.max_bees,
+            default_timeout: Duration::from_secs(q.bee_timeout_secs),
+            max_timeout: Duration::from_secs(q.bee_timeout_max_secs),
         },
         events.clone(),
     );
@@ -239,8 +239,8 @@ async fn serve(
     let settings = QueenSettings {
         backends: q.backends.clone(),
         system_prompt: QUEEN_PROMPT.into(),
-        worker_prompt: WORKER_PROMPT.into(),
-        worker_backend: q.worker_backend.clone(),
+        bee_prompt: BEE_PROMPT.into(),
+        bee_backend: q.bee_backend.clone(),
         state_dir: queen_state,
         workdir: workdir.join("queen"),
         tools: q.tools.clone(),
@@ -349,7 +349,8 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
         },
         [c] if c == "chat" => Command::Chat,
         [c, words @ ..] if c == "ask" && !words.is_empty() => Command::Ask(words.join(" ")),
-        [c] if c == "workers" => Command::Workers,
+        // `workers`: hidden alias from before the hive model (one release).
+        [c] if c == "bees" || c == "workers" => Command::Bees,
         [c] if c == "confirm" => Command::Confirm("list".into(), None),
         [c, a] if c == "confirm" && a == "list" => Command::Confirm("list".into(), None),
         [c, a, id] if c == "confirm" && (a == "approve" || a == "deny") => Command::Confirm(
@@ -406,7 +407,8 @@ mod tests {
             matches!(parse(&["ask", "how", "are you?"]).unwrap().1, Command::Ask(m) if m == "how are you?")
         );
         assert!(parse(&["ask"]).is_err());
-        assert!(matches!(parse(&["workers"]).unwrap().1, Command::Workers));
+        assert!(matches!(parse(&["bees"]).unwrap().1, Command::Bees));
+        assert!(matches!(parse(&["workers"]).unwrap().1, Command::Bees));
         assert!(matches!(parse(&["confirm"]).unwrap().1, Command::Confirm(a, None) if a == "list"));
         assert!(
             matches!(parse(&["confirm", "approve", "#3"]).unwrap().1, Command::Confirm(a, Some(3)) if a == "approve")

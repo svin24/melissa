@@ -33,7 +33,7 @@ pub struct QueenConfig {
     /// is present (e.g. a desktop queen pointed at a cluster); checked before the headless
     /// default `/run/melissa-kube/queen.kubeconfig`. Re-read on every cluster call.
     pub kubeconfig: Option<PathBuf>,
-    /// The Queen (head agent) and its workers.
+    /// The Queen (head agent) and its bees.
     pub queen: QueenSection,
     /// The app catalog and app installs.
     pub apps: AppsSection,
@@ -90,25 +90,30 @@ impl Default for QueenConfig {
     }
 }
 
-/// `[queen]`: the head agent's session backends, tools and worker limits.
+/// `[queen]`: the head agent's session backends, tools and bee limits. The old `worker_*`
+/// and `max_workers` keys are still read (aliases, one release).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct QueenSection {
     /// Session backends (`kind = "acp"` or `"claude"`) to try in order; the next is used
     /// if one fails to start.
     pub backends: Vec<String>,
-    /// Tools the Queen may use (default: all). Include the worker tools (`start_worker`,
-    /// `worker_status`, `list_workers`, `cancel_worker`) to let it start workers. Workers
+    /// Tools the Queen may use (default: all). Include the bee tools (`start_bee`,
+    /// `bee_status`, `list_bees`, `stop_bee`) to let it start bees. Bees
     /// never get more than this.
     pub tools: Option<Vec<String>>,
-    /// Backend for workers when the Queen names none (default: the first Queen backend).
-    pub worker_backend: Option<String>,
-    /// Workers running at the same time.
-    pub max_workers: usize,
-    /// Worker time limit when the Queen gives none, in seconds.
-    pub worker_timeout_secs: u64,
-    /// Largest worker time limit the Queen may ask for, in seconds.
-    pub worker_timeout_max_secs: u64,
+    /// Backend for bees when the Queen names none (default: the first Queen backend).
+    #[serde(alias = "worker_backend")]
+    pub bee_backend: Option<String>,
+    /// Bees running at the same time.
+    #[serde(alias = "max_workers")]
+    pub max_bees: usize,
+    /// Bee time limit when the Queen gives none, in seconds.
+    #[serde(alias = "worker_timeout_secs")]
+    pub bee_timeout_secs: u64,
+    /// Largest bee time limit the Queen may ask for, in seconds.
+    #[serde(alias = "worker_timeout_max_secs")]
+    pub bee_timeout_max_secs: u64,
     /// Size at which the transcript is rotated (one old file is kept), in KiB.
     pub transcript_max_kib: u64,
 }
@@ -122,10 +127,10 @@ impl Default for QueenSection {
                 "opencode-acp".into(),
             ],
             tools: None,
-            worker_backend: None,
-            max_workers: 2,
-            worker_timeout_secs: 300,
-            worker_timeout_max_secs: 900,
+            bee_backend: None,
+            max_bees: 2,
+            bee_timeout_secs: 300,
+            bee_timeout_max_secs: 900,
             transcript_max_kib: 4096,
         }
     }
@@ -315,13 +320,13 @@ impl QueenConfig {
                 ),
             }
         }
-        if let Some(w) = &q.worker_backend {
+        if let Some(w) = &q.bee_backend {
             if !names.contains(&w.as_str()) {
-                bail!("[queen] worker_backend `{w}` is not a configured backend");
+                bail!("[queen] bee_backend `{w}` is not a configured backend");
             }
         }
-        if q.worker_timeout_secs == 0 || q.worker_timeout_secs > q.worker_timeout_max_secs {
-            bail!("[queen] worker_timeout_secs must be between 1 and worker_timeout_max_secs");
+        if q.bee_timeout_secs == 0 || q.bee_timeout_secs > q.bee_timeout_max_secs {
+            bail!("[queen] bee_timeout_secs must be between 1 and bee_timeout_max_secs");
         }
         Ok(())
     }
@@ -678,7 +683,7 @@ mod tests {
             let b = config.backends.iter().find(|b| b.name() == name).unwrap();
             assert!(b.is_session(), "{name}");
         }
-        assert_eq!(config.queen.max_workers, 2);
+        assert_eq!(config.queen.max_bees, 2);
         let grok = config
             .backends
             .iter()
@@ -693,21 +698,26 @@ mod tests {
             r#"
             [queen]
             backends = ["grok-acp"]
-            tools = ["bee_info", "start_worker", "worker_status"]
-            worker_backend = "echo"
-            max_workers = 1
-            worker_timeout_secs = 60
-            worker_timeout_max_secs = 120
+            tools = ["bee_info", "start_bee", "bee_status"]
+            bee_backend = "echo"
+            max_bees = 1
+            bee_timeout_secs = 60
+            bee_timeout_max_secs = 120
             "#,
         )
         .unwrap();
         config.validate().unwrap();
-        assert_eq!(config.queen.worker_backend.as_deref(), Some("echo"));
+        assert_eq!(config.queen.bee_backend.as_deref(), Some("echo"));
+        // Keys from before the hive model still work.
+        let old: QueenConfig =
+            toml::from_str("[queen]\nmax_workers = 3\nworker_timeout_secs = 30").unwrap();
+        assert_eq!(old.queen.max_bees, 3);
+        assert_eq!(old.queen.bee_timeout_secs, 30);
         for bad in [
             "[queen]\nbackends = []",
             "[queen]\nbackends = [\"claude\"]",
-            "[queen]\nworker_backend = \"nope\"",
-            "[queen]\nworker_timeout_secs = 1000",
+            "[queen]\nbee_backend = \"nope\"",
+            "[queen]\nbee_timeout_secs = 1000",
         ] {
             let c: QueenConfig = toml::from_str(bad).unwrap();
             assert!(c.validate().is_err(), "{bad}");

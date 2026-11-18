@@ -48,7 +48,7 @@ pub enum QueenEvent {
         /// `allow_once`, `reject_once` or `cancelled`.
         decision: String,
     },
-    /// A tool call (of the Queen or a worker) waits for a human: approve or deny it.
+    /// A tool call (of the Queen or a bee) waits for a human: approve or deny it.
     ConfirmationNeeded {
         id: u64,
         task: TaskId,
@@ -57,15 +57,15 @@ pub enum QueenEvent {
     },
     /// A confirmation was decided (`approved`, `denied`) or withdrawn (`withdrawn`).
     ConfirmationResolved { id: u64, outcome: String },
-    /// The Queen started a worker agent.
-    WorkerStarted {
-        worker: TaskId,
+    /// The Queen started a bee agent.
+    BeeStarted {
+        bee: TaskId,
         backend: String,
         goal: String,
     },
-    /// A worker ended (`succeeded`, `failed`, `cancelled`).
-    WorkerFinished {
-        worker: TaskId,
+    /// A bee ended (`succeeded`, `failed`, `cancelled`).
+    BeeFinished {
+        bee: TaskId,
         status: String,
         error: Option<String>,
     },
@@ -251,16 +251,16 @@ mod tests {
         let rec = EventRecord {
             seq: 3,
             ts: 10,
-            event: QueenEvent::WorkerFinished {
-                worker: 7,
+            event: QueenEvent::BeeFinished {
+                bee: 7,
                 status: "succeeded".into(),
                 error: None,
             },
         };
         let json = serde_json::to_value(&rec).unwrap();
-        assert_eq!(json["type"], "worker_finished");
+        assert_eq!(json["type"], "bee_finished");
         assert_eq!(json["seq"], 3);
-        assert_eq!(json["worker"], 7);
+        assert_eq!(json["bee"], 7);
         let back: EventRecord = serde_json::from_value(json).unwrap();
         assert_eq!(back, rec);
     }

@@ -1,7 +1,7 @@
-//! `melissa-queen app-adopt <app>`: the owner takes over an app a worker job created.
+//! `melissa-queen app-adopt <app>`: the owner takes over an app a bee job created.
 //!
 //! Apps record their owner in the `melissa.io/owner` label of their namespace (`owner`, or
-//! `job-<key>` for an app a worker created for its job). Agents can only change apps in
+//! `job-<key>` for an app a bee created for its job). Agents can only change apps in
 //! their scope, and nothing in the queen changes an existing owner label: the admission
 //! policy `melissa-apps-namespaces` rejects any change of it by the queen's write identity.
 //! Changing ownership is therefore an owner-only command, like `app-credentials`: it runs

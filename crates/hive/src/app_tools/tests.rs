@@ -623,8 +623,8 @@ fn queen() -> TaskContext {
     }
 }
 
-/// An unattended worker of job `key` that may create apps and was given `apps`.
-fn worker(key: &str, apps: &[&str]) -> TaskContext {
+/// An unattended bee of job `key` that may create apps and was given `apps`.
+fn bee(key: &str, apps: &[&str]) -> TaskContext {
     TaskContext {
         scope: Scope::Job(JobScope {
             key: key.into(),
@@ -683,14 +683,14 @@ fn audit_lines(path: &std::path::Path) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn a_worker_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
+async fn a_bee_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
     let path =
         std::env::temp_dir().join(format!("melissa-scope-audit-{}.jsonl", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let fake = Arc::new(Fake::default());
     legacy_nextcloud(&fake);
     let reg = registry(&fake, Some(AuditLog::new(&path)));
-    let mut ctx = worker("k1", &[]);
+    let mut ctx = bee("k1", &[]);
     // Even pre-approval for the tools does not open someone else's app.
     ctx.preapproved.insert("install_app".into());
 
@@ -749,10 +749,10 @@ async fn a_worker_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
 }
 
 #[tokio::test]
-async fn a_worker_owns_and_may_change_the_app_its_job_created() {
+async fn a_bee_owns_and_may_change_the_app_its_job_created() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None);
-    let mut ctx = worker("k1", &[]);
+    let mut ctx = bee("k1", &[]);
     ctx.preapproved.insert("install_app".into());
     let out = reg
         .call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
@@ -765,7 +765,7 @@ async fn a_worker_owns_and_may_change_the_app_its_job_created() {
     );
     assert_eq!(
         ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
-        Some("worker task 7, job k1")
+        Some("bee task 7, job k1")
     );
     assert_eq!(
         ns_annotation(&fake, "melissa.io/origin").as_deref(),
@@ -796,12 +796,12 @@ async fn a_worker_owns_and_may_change_the_app_its_job_created() {
     waiter.await.unwrap().unwrap();
 
     // Another job may not touch it.
-    let mut other = worker("k2", &[]);
+    let mut other = bee("k2", &[]);
     let r = reg
         .call(9, &mut other, "install_app", json!({"app": "nextcloud"}))
         .await;
     assert!(
-        matches!(&r, Err(ToolError::Refused(m)) if m.contains("belongs to worker job k1")),
+        matches!(&r, Err(ToolError::Refused(m)) if m.contains("belongs to bee job k1")),
         "{r:?}"
     );
 }
@@ -889,9 +889,9 @@ async fn installs_record_the_owner_and_reinstalls_keep_it() {
     );
     assert_eq!(ns_annotation(&fake, "melissa.io/installed-at"), Some(at));
 
-    // A worker created for the owner (approved at start_worker) records the owner.
+    // A bee created for the owner (approved at start_bee) records the owner.
     fake.state().namespace = None;
-    let mut ctx = worker("k3", &[]);
+    let mut ctx = bee("k3", &[]);
     if let Scope::Job(j) = &mut ctx.scope {
         j.for_owner = true;
     }
@@ -922,8 +922,8 @@ async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
     let fake = Arc::new(Fake::default());
     legacy_nextcloud(&fake);
     let reg = registry(&fake, None);
-    // Granted (the Queen asked the owner when it started the worker): in scope.
-    let mut ctx = worker("k1", &["nextcloud"]);
+    // Granted (the Queen asked the owner when it started the bee): in scope.
+    let mut ctx = bee("k1", &["nextcloud"]);
     ctx.attended = true;
     reg.call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
         .await
@@ -943,7 +943,7 @@ async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
     let r = reg
         .call(
             7,
-            &mut worker("k1", &[]),
+            &mut bee("k1", &[]),
             "uninstall_app",
             json!({"app": "nextcloud"}),
         )
@@ -955,14 +955,14 @@ async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
 }
 
 #[test]
-fn workers_see_only_the_app_tools_their_scope_allows() {
+fn bees_see_only_the_app_tools_their_scope_allows() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None);
     let names = |ctx: &TaskContext| -> Vec<&'static str> {
         reg.visible_to(ctx, None).iter().map(|s| s.name).collect()
     };
     // No apps, no create right: nothing to change, nothing to read logs from.
-    let mut closed = worker("k1", &[]);
+    let mut closed = bee("k1", &[]);
     if let Scope::Job(j) = &mut closed.scope {
         j.create = false;
     }

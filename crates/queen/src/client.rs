@@ -1,4 +1,4 @@
-//! Command-line client for a running queen: `chat`, `ask`, `confirm`, `workers`.
+//! Command-line client for a running queen: `chat`, `ask`, `confirm`, `bees`.
 //!
 //! Talks to the daemon's JSON API (`/api/...`) on its configured listen address (loopback)
 //! with plain HTTP/1.1, one connection per request. Sends no `Origin` header, like any
@@ -167,23 +167,15 @@ impl Printer {
             QueenEvent::ConfirmationResolved { id, outcome } => {
                 self.line(&format!("[confirm #{id}] {outcome}"));
             }
-            QueenEvent::WorkerStarted {
-                worker,
-                backend,
-                goal,
-            } => {
+            QueenEvent::BeeStarted { bee, backend, goal } => {
                 self.line(&format!(
-                    "[worker {worker}] started on {backend}: {}",
+                    "[bee {bee}] started on {backend}: {}",
                     one_line(goal)
                 ));
             }
-            QueenEvent::WorkerFinished {
-                worker,
-                status,
-                error,
-            } => match error {
-                Some(e) => self.line(&format!("[worker {worker}] {status}: {}", one_line(e))),
-                None => self.line(&format!("[worker {worker}] {status}")),
+            QueenEvent::BeeFinished { bee, status, error } => match error {
+                Some(e) => self.line(&format!("[bee {bee}] {status}: {}", one_line(e))),
+                None => self.line(&format!("[bee {bee}] {status}")),
             },
             QueenEvent::SessionOpened { backend, resumed } => {
                 let how = if *resumed {
@@ -282,7 +274,7 @@ pub async fn ask(client: &Client, message: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `chat`: a line-based conversation. Events that arrive between turns (a worker finishing,
+/// `chat`: a line-based conversation. Events that arrive between turns (a bee finishing,
 /// a confirmation) are shown while waiting for input.
 pub async fn chat(client: &Client) -> anyhow::Result<()> {
     let status = client.get("/api/queen/status").await?;
@@ -379,18 +371,18 @@ pub async fn confirm(client: &Client, action: &str, id: Option<u64>) -> anyhow::
     }
 }
 
-/// `workers`: the Queen's workers.
-pub async fn workers(client: &Client) -> anyhow::Result<()> {
-    let body = client.get("/api/workers").await?;
-    let list = body["workers"].as_array().cloned().unwrap_or_default();
+/// `bees`: the Queen's bees.
+pub async fn bees(client: &Client) -> anyhow::Result<()> {
+    let body = client.get("/api/bees").await?;
+    let list = body["bees"].as_array().cloned().unwrap_or_default();
     if list.is_empty() {
-        println!("No workers.");
+        println!("No bees.");
     }
     for w in list {
         let elapsed = Duration::from_secs(w["elapsed_secs"].as_u64().unwrap_or(0));
         println!(
             "#{}  {:<9}  {}  {}s  {}{}",
-            w["worker"],
+            w["bee"],
             w["status"].as_str().unwrap_or("?"),
             w["backend"].as_str().unwrap_or("?"),
             elapsed.as_secs(),

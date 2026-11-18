@@ -1,7 +1,7 @@
 //! Resource ownership and agent scopes: agents change only what belongs to them.
 //!
 //! Every resource a tool changes (today: apps) has an [`Owner`]: the human owner, or the
-//! worker job that created it. Every task has a [`Scope`]: the set of resources it may
+//! bee job that created it. Every task has a [`Scope`]: the set of resources it may
 //! change. A tool declares which argument names its resource ([`Tool::target`]); the
 //! [`super::ToolRegistry`] checks the scope **before** the label policy, for every tool, in
 //! one place ([`check`]):
@@ -66,7 +66,7 @@ pub struct Target {
 pub enum Owner {
     /// The human who owns this comb.
     Human,
-    /// The worker job with this key (a worker created it for its job).
+    /// The bee job with this key (a bee created it for its job).
     Job(String),
 }
 
@@ -97,7 +97,7 @@ impl Owner {
     pub fn describe(&self) -> String {
         match self {
             Self::Human => "the owner".into(),
-            Self::Job(key) => format!("worker job {key}"),
+            Self::Job(key) => format!("bee job {key}"),
         }
     }
 }
@@ -110,7 +110,7 @@ pub fn valid_job_key(key: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
-/// A worker job's scope.
+/// A bee job's scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobScope {
     /// The job's key, recorded as owner of what it creates.
@@ -138,7 +138,7 @@ pub enum Scope {
         /// Who acts, for messages ("the Queen").
         agent: String,
     },
-    /// A worker: only granted resources and those its job creates.
+    /// A bee: only granted resources and those its job creates.
     Job(JobScope),
 }
 
@@ -159,7 +159,7 @@ impl Scope {
             Self::Nothing => format!("task {task}"),
             Self::Owner => "owner".into(),
             Self::ForOwner { agent } => format!("{agent} (task {task})"),
-            Self::Job(j) => format!("worker task {task}, job {}", j.key),
+            Self::Job(j) => format!("bee task {task}, job {}", j.key),
         }
     }
 
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_may_not_touch_the_owners_app() {
+    fn a_bee_may_not_touch_the_owners_app() {
         let d = check(
             &job(&[], true),
             &UNINSTALL,
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_may_change_what_its_job_created_or_was_granted() {
+    fn a_bee_may_change_what_its_job_created_or_was_granted() {
         let mine = Owner::Job("k1".into());
         assert_eq!(
             check(&job(&[], false), &UNINSTALL, "blog", Some(&mine)),
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn workers_see_only_their_apps() {
+    fn bees_see_only_their_apps() {
         let params = || json!({"properties": {"app": {"type": "string"}}});
         let mut p = params();
         assert!(present(&job(&["blog"], false), &UNINSTALL, &mut p));

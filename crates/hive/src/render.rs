@@ -47,7 +47,7 @@ pub const WORKLOAD_ROLE: &str = "melissa-app-workload";
 /// `melissa-queen app-adopt` changes it.
 pub const OWNER_LABEL: &str = "melissa.io/owner";
 /// Annotations on the app's namespace, set at the first install and kept: who installed it
-/// (`owner`, `the Queen (task 3)`, `worker task 7, job <key>`), when (RFC 3339), and from
+/// (`owner`, `the Queen (task 3)`, `bee task 7, job <key>`), when (RFC 3339), and from
 /// where (`catalog`).
 pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
 pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";

@@ -48,8 +48,8 @@ pub struct TaskContext {
     pub tainted: bool,
     /// Tools the owner pre-approved for this task (reversible effects only).
     pub preapproved: BTreeSet<String>,
-    /// May start worker agents (the Queen only). Tools marked [`crate::tools::Tool::queen_only`]
-    /// are hidden from, and refused for, every other session: workers cannot start workers.
+    /// May start bee agents (the Queen only). Tools marked [`crate::tools::Tool::queen_only`]
+    /// are hidden from, and refused for, every other session: bees cannot start bees.
     pub delegate: bool,
     /// What this task may change ([`super::scope`]); checked before the label policy.
     pub scope: Scope,

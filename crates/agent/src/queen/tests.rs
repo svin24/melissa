@@ -11,9 +11,9 @@ use std::{
 use serde_json::{json, Value};
 
 use super::{
+    bees::{BeeLimits, BeePool},
     events::{EventLog, QueenEvent, TurnId},
     transcript::Transcript,
-    workers::{WorkerLimits, WorkerPool},
     Queen, QueenError, QueenSettings,
 };
 use crate::{
@@ -189,14 +189,14 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// A Queen on a board with `echo` and `hang`, tools `bee_info`, `app_logs` and the worker
+/// A Queen on a board with `echo` and `hang`, tools `bee_info`, `app_logs` and the bee
 /// tools, and a replay backend `fake-acp` playing `scripts` (one per session).
 fn setup_in(dir: PathBuf, scripts: Vec<Vec<Step>>, tune: impl FnOnce(&mut QueenSettings)) -> Setup {
     let events = EventLog::new(Some(Transcript::new(
         dir.join("queen/transcript.jsonl"),
         1 << 20,
     )));
-    let pool = WorkerPool::new(WorkerLimits::default(), events.clone());
+    let pool = BeePool::new(BeeLimits::default(), events.clone());
     let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(BeeInfo::new()), Arc::new(AppLogs)];
     tools.extend(pool.tools());
     let audit = AuditLog::new(dir.join("audit.jsonl"));
@@ -219,8 +219,8 @@ fn setup_in(dir: PathBuf, scripts: Vec<Vec<Step>>, tune: impl FnOnce(&mut QueenS
     let mut settings = QueenSettings {
         backends: vec!["broken-acp".into(), "fake-acp".into()],
         system_prompt: "You are the Queen (test).".into(),
-        worker_prompt: "You are a worker (test).".into(),
-        worker_backend: Some("echo".into()),
+        bee_prompt: "You are a bee (test).".into(),
+        bee_backend: Some("echo".into()),
         state_dir: dir.join("queen"),
         workdir: dir.join("work/queen"),
         tools: None,
@@ -460,61 +460,61 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
 }
 
 #[tokio::test]
-async fn queen_starts_a_worker_and_reads_its_result() {
+async fn queen_starts_a_bee_and_reads_its_result() {
     let mut script = handshake("s-1");
     script.extend([
         prompt(2, "s-1", "<any>"),
-        tool("s-1", "t1", "melissa__start_worker"),
-        // The Queen's task is 1, so the first worker is task 2.
+        tool("s-1", "t1", "melissa__start_bee"),
+        // The Queen's task is 1, so the first bee is task 2.
         Step::mcp(
-            "start_worker",
+            "start_bee",
             json!({"goal": "Report the kernel version.", "tools": ["bee_info"]}),
             json!({"result": {"isError": false, "structuredContent": {
-                "worker": 2, "backend": "echo", "tools": ["bee_info"], "status": "running",
+                "bee": 2, "backend": "echo", "tools": ["bee_info"], "status": "running",
                 "timeout_secs": 300}}}),
         ),
         tool_done("s-1", "t1"),
-        tool("s-1", "t2", "melissa__worker_status"),
+        tool("s-1", "t2", "melissa__bee_status"),
         Step::mcp(
-            "worker_status",
-            json!({"worker": 2, "wait_secs": 5}),
+            "bee_status",
+            json!({"bee": 2, "wait_secs": 5}),
             json!({"result": {"isError": false, "structuredContent": {
-                "worker": 2, "status": "succeeded", "goal": "Report the kernel version.",
+                "bee": 2, "status": "succeeded", "goal": "Report the kernel version.",
                 "result": "<contains:echo: Report the kernel version.>"}}}),
         ),
         tool_done("s-1", "t2"),
-        text("s-1", "The worker is done."),
+        text("s-1", "The bee is done."),
         done(2, "end_turn"),
     ]);
-    let s = setup("worker", vec![script]);
+    let s = setup("bee", vec![script]);
     let (turn, since) = s
         .queen
-        .send("Start a worker that reports the kernel version.")
+        .send("Start a bee that reports the kernel version.")
         .unwrap();
     let events = turn_events(&s.queen, since, turn).await;
     assert_eq!(finished(&events), "end_turn");
     s.queen.close().await;
     s.replay.check().await;
-    assert!(events.contains(&QueenEvent::WorkerStarted {
-        worker: 2,
+    assert!(events.contains(&QueenEvent::BeeStarted {
+        bee: 2,
         backend: "echo".into(),
         goal: "Report the kernel version.".into(),
     }));
-    // The watcher publishes the end of the worker (it may come after the turn's end).
+    // The watcher publishes the end of the bee (it may come after the turn's end).
     let all = s.queen.events().since(0, 1000).events;
     let finished_at = all.iter().position(|r| {
         r.event
-            == QueenEvent::WorkerFinished {
-                worker: 2,
+            == QueenEvent::BeeFinished {
+                bee: 2,
                 status: "succeeded".into(),
                 error: None,
             }
     });
     assert!(finished_at.is_some(), "{all:#?}");
-    let workers = s.queen.workers();
-    assert_eq!(workers.len(), 1);
-    assert_eq!(workers[0].parent, Some(s.queen.task_id()));
-    assert_eq!(workers[0].status, TaskStatus::Succeeded);
+    let bees = s.queen.bees();
+    assert_eq!(bees.len(), 1);
+    assert_eq!(bees[0].parent, Some(s.queen.task_id()));
+    assert_eq!(bees[0].status, TaskStatus::Succeeded);
 
     let audit = s.audit();
     let dispatch: Value = audit
@@ -530,8 +530,8 @@ async fn queen_starts_a_worker_and_reads_its_result() {
         "{audit}"
     );
     for needle in [
-        r#""tool":"start_worker""#,
-        r#""tool":"worker_status""#,
+        r#""tool":"start_bee""#,
+        r#""tool":"bee_status""#,
         r#""action":"task.finish""#,
     ] {
         assert!(audit.contains(needle), "{needle} missing:\n{audit}");
@@ -575,16 +575,16 @@ fn err_text(result: &Value) -> String {
 }
 
 #[tokio::test]
-async fn worker_guards_allowlist_depth_and_concurrency() {
-    // The Queen may use bee_info and the worker tools, not app_logs.
+async fn bee_guards_allowlist_depth_and_concurrency() {
+    // The Queen may use bee_info and the bee tools, not app_logs.
     let s = setup_in(scratch("guards"), Vec::new(), |q| {
         q.tools = Some(
             [
                 "bee_info",
-                "start_worker",
-                "worker_status",
-                "list_workers",
-                "cancel_worker",
+                "start_bee",
+                "bee_status",
+                "list_bees",
+                "stop_bee",
             ]
             .map(String::from)
             .to_vec(),
@@ -601,32 +601,28 @@ async fn worker_guards_allowlist_depth_and_concurrency() {
         names,
         [
             "bee_info",
-            "cancel_worker",
-            "list_workers",
-            "start_worker",
-            "worker_status"
+            "bee_status",
+            "list_bees",
+            "start_bee",
+            "stop_bee"
         ]
     );
 
-    // Allowlist: only a subset of the Queen's own tools, never the worker tools.
-    for tools in [
-        json!(["app_logs"]),
-        json!(["start_worker"]),
-        json!(["nope"]),
-    ] {
+    // Allowlist: only a subset of the Queen's own tools, never the bee tools.
+    for tools in [json!(["app_logs"]), json!(["start_bee"]), json!(["nope"])] {
         let r = call(
             &s.server,
             &queen,
-            "start_worker",
+            "start_bee",
             json!({"goal": "x", "backend": "hang", "tools": tools}),
         )
         .await;
-        assert!(err_text(&r).contains("cannot be given to a worker"), "{r}");
+        assert!(err_text(&r).contains("cannot be given to a bee"), "{r}");
     }
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "x", "timeout_secs": 100_000}),
     )
     .await;
@@ -634,48 +630,42 @@ async fn worker_guards_allowlist_depth_and_concurrency() {
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "x", "bogus": 1}),
     )
     .await;
     assert!(err_text(&r).contains("unknown argument"));
 
-    // A worker gets the Queen's tools minus the worker tools, unattended, no delegation.
+    // A bee gets the Queen's tools minus the bee tools, unattended, no delegation.
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "wait", "backend": "hang"}),
     )
     .await;
     assert_eq!(r["isError"], false, "{r}");
     assert_eq!(r["structuredContent"]["tools"], json!(["bee_info"]));
-    let w1 = r["structuredContent"]["worker"].as_u64().unwrap();
+    let w1 = r["structuredContent"]["bee"].as_u64().unwrap();
     let config: Value = serde_json::from_str(
         &std::fs::read_to_string(s.dir.join(format!("work/task-{w1}/mcp.json"))).unwrap(),
     )
     .unwrap();
     let url = config["mcpServers"]["melissa"]["url"].as_str().unwrap();
-    let worker = url.rsplit('/').next().unwrap().to_string();
-    assert_eq!(tool_names(&s.server, &worker).await, ["bee_info"]);
-    let r = call(
-        &s.server,
-        &worker,
-        "start_worker",
-        json!({"goal": "recurse"}),
-    )
-    .await;
-    assert!(err_text(&r).contains("unknown tool `start_worker`"));
-    let r = call(&s.server, &worker, "app_logs", json!({})).await;
+    let bee = url.rsplit('/').next().unwrap().to_string();
+    assert_eq!(tool_names(&s.server, &bee).await, ["bee_info"]);
+    let r = call(&s.server, &bee, "start_bee", json!({"goal": "recurse"})).await;
+    assert!(err_text(&r).contains("unknown tool `start_bee`"));
+    let r = call(&s.server, &bee, "app_logs", json!({})).await;
     assert!(err_text(&r).contains("unknown tool"));
-    let wctx = s.server.session_context(&worker).unwrap();
+    let wctx = s.server.session_context(&bee).unwrap();
     assert!(!wctx.attended && !wctx.delegate);
 
     // At most two at once.
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "wait", "backend": "hang"}),
     )
     .await;
@@ -683,44 +673,38 @@ async fn worker_guards_allowlist_depth_and_concurrency() {
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "wait", "backend": "hang"}),
     )
     .await;
     assert!(err_text(&r).contains("at most 2"), "{r}");
-    let r = call(&s.server, &queen, "list_workers", json!({})).await;
-    assert_eq!(
-        r["structuredContent"]["workers"].as_array().unwrap().len(),
-        2
-    );
-    let r = call(&s.server, &queen, "cancel_worker", json!({"worker": w1})).await;
+    let r = call(&s.server, &queen, "list_bees", json!({})).await;
+    assert_eq!(r["structuredContent"]["bees"].as_array().unwrap().len(), 2);
+    let r = call(&s.server, &queen, "stop_bee", json!({"bee": w1})).await;
     assert_eq!(r["structuredContent"]["status"], "cancelled");
-    assert!(
-        !s.server.has_session(&worker),
-        "cancel closes the worker's tools"
-    );
+    assert!(!s.server.has_session(&bee), "cancel closes the bee's tools");
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "wait", "backend": "hang"}),
     )
     .await;
     assert_eq!(r["isError"], false, "{r}");
 
-    // Only the Queen's own workers.
+    // Only the Queen's own bees.
     let r = call(
         &s.server,
         &queen,
-        "worker_status",
-        json!({"worker": s.queen.task_id()}),
+        "bee_status",
+        json!({"bee": s.queen.task_id()}),
     )
     .await;
-    assert!(err_text(&r).contains("no worker"));
-    let r = call(&s.server, &queen, "worker_status", json!({"worker": w1})).await;
+    assert!(err_text(&r).contains("no bee"));
+    let r = call(&s.server, &queen, "bee_status", json!({"bee": w1})).await;
     assert_eq!(r["structuredContent"]["status"], "cancelled");
 
-    // A UI task (no delegation) does not see the worker tools either.
+    // A UI task (no delegation) does not see the bee tools either.
     let ui = s
         .server
         .open_session(
@@ -738,7 +722,7 @@ async fn worker_guards_allowlist_depth_and_concurrency() {
 }
 
 #[tokio::test]
-async fn a_tainted_queen_needs_approval_to_start_workers() {
+async fn a_tainted_queen_needs_approval_to_start_bees() {
     let s = setup("taint", Vec::new());
     let registry = s.server.registry().clone();
     let mut ctx = s.queen.session_policy().0;
@@ -749,7 +733,7 @@ async fn a_tainted_queen_needs_approval_to_start_workers() {
         let task = s.queen.task_id();
         tokio::spawn(async move {
             registry
-                .call(task, &mut ctx, "start_worker", json!({"goal": "x"}))
+                .call(task, &mut ctx, "start_bee", json!({"goal": "x"}))
                 .await
         })
     };
@@ -763,7 +747,7 @@ async fn a_tainted_queen_needs_approval_to_start_workers() {
             .await;
         cursor = page.next;
         if let Some(id) = page.events.iter().find_map(|r| match &r.event {
-            QueenEvent::ConfirmationNeeded { id, tool, .. } if tool == "start_worker" => Some(*id),
+            QueenEvent::ConfirmationNeeded { id, tool, .. } if tool == "start_bee" => Some(*id),
             _ => None,
         }) {
             break id;
@@ -771,7 +755,7 @@ async fn a_tainted_queen_needs_approval_to_start_workers() {
     };
     s.queen.confirmations().resolve(id, Verdict::Denied);
     assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
-    assert!(s.queen.workers().is_empty());
+    assert!(s.queen.bees().is_empty());
     // The resolution is published too.
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(s
@@ -947,15 +931,15 @@ async fn taint_outlives_the_session_and_the_daemon() {
     drop(s);
 
     // A new daemon resumes s-1, which still holds the logs: its MCP session starts tainted,
-    // so starting a worker needs a confirmation (none comes: the call times out).
+    // so starting a bee needs a confirmation (none comes: the call times out).
     let mut second = handshake("unused");
     second.truncate(2);
     second.extend([
         Step::send(json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume", "params": {"sessionId": "s-1", "cwd": "<any>", "mcpServers": "<any>"}})),
         Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
-        prompt(2, "s-1", "Start a worker."),
+        prompt(2, "s-1", "Start a bee."),
         Step::mcp(
-            "start_worker",
+            "start_bee",
             json!({"goal": "x"}),
             json!({"result": {"isError": true}}),
         ),
@@ -963,7 +947,7 @@ async fn taint_outlives_the_session_and_the_daemon() {
         done(2, "end_turn"),
     ]);
     let s = setup_in(dir.clone(), vec![second], |_| {});
-    let (turn, since) = s.queen.send("Start a worker.").unwrap();
+    let (turn, since) = s.queen.send("Start a bee.").unwrap();
     let events = turn_events(&s.queen, since, turn).await;
     assert!(events.contains(&QueenEvent::SessionOpened {
         backend: "fake-acp".into(),
@@ -974,7 +958,7 @@ async fn taint_outlives_the_session_and_the_daemon() {
         "{}",
         s.audit()
     );
-    assert!(s.queen.workers().is_empty());
+    assert!(s.queen.bees().is_empty());
     s.queen.close().await;
     s.replay.check().await;
     let saved = std::fs::read_to_string(dir.join("queen/session.json")).unwrap();
@@ -1054,8 +1038,8 @@ async fn no_working_backend_fails_the_turn() {
     assert_eq!(s.queen.status().turn, None);
 }
 
-/// The MCP token of worker `id` (from its mcp.json).
-fn worker_token(s: &Setup, id: u64) -> String {
+/// The MCP token of bee `id` (from its mcp.json).
+fn bee_token(s: &Setup, id: u64) -> String {
     let config: Value = serde_json::from_str(
         &std::fs::read_to_string(s.dir.join(format!("work/task-{id}/mcp.json"))).unwrap(),
     )
@@ -1065,7 +1049,7 @@ fn worker_token(s: &Setup, id: u64) -> String {
 }
 
 #[tokio::test]
-async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owner() {
+async fn bee_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owner() {
     let s = setup("scopes", Vec::new());
     let (ctx, allow) = s.queen.session_policy();
     assert!(matches!(&ctx.scope, Scope::ForOwner { agent } if agent == "the Queen"));
@@ -1074,11 +1058,11 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
         .open_session(s.queen.task_id(), ctx, allow)
         .unwrap();
 
-    // Default: only what the worker creates; its job key is fresh and random.
+    // Default: only what the bee creates; its job key is fresh and random.
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "wait", "backend": "hang"}),
     )
     .await;
@@ -1092,25 +1076,25 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
         crate::tools::scope::valid_job_key(&key) && key.len() == 12,
         "{key}"
     );
-    let w1 = r["structuredContent"]["worker"].as_u64().unwrap();
-    let wctx = s.server.session_context(&worker_token(&s, w1)).unwrap();
+    let w1 = r["structuredContent"]["bee"].as_u64().unwrap();
+    let wctx = s.server.session_context(&bee_token(&s, w1)).unwrap();
     assert!(matches!(&wctx.scope, Scope::Job(j) if j.key == key && j.apps.is_empty() && j.create));
-    let r = call(&s.server, &queen, "cancel_worker", json!({"worker": w1})).await;
+    let r = call(&s.server, &queen, "stop_bee", json!({"bee": w1})).await;
     assert_eq!(r["isError"], false, "{r}");
 
     // An app of an earlier job: the Queen may change it, so it may grant it, no question.
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "fix the blog", "backend": "hang", "apps": ["blog"], "create_apps": false}),
     )
     .await;
     assert_eq!(r["isError"], false, "{r}");
     assert_eq!(r["structuredContent"]["scope"]["apps"], json!(["blog"]));
     assert!(s.queen.confirmations().pending().is_empty());
-    let w2 = r["structuredContent"]["worker"].as_u64().unwrap();
-    call(&s.server, &queen, "cancel_worker", json!({"worker": w2})).await;
+    let w2 = r["structuredContent"]["bee"].as_u64().unwrap();
+    call(&s.server, &queen, "stop_bee", json!({"bee": w2})).await;
 
     // The owner's Nextcloud: the owner must approve the grant; the question names them.
     let registry = s.server.registry().clone();
@@ -1123,7 +1107,7 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
                 .call(
                     task,
                     &mut ctx,
-                    "start_worker",
+                    "start_bee",
                     json!({"goal": "update nextcloud", "backend": "hang", "apps": ["nextcloud"]}),
                 )
                 .await
@@ -1135,28 +1119,28 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     };
-    assert_eq!(pending.tool, "start_worker");
+    assert_eq!(pending.tool, "start_bee");
     assert_eq!(
         pending.reason,
-        "`nextcloud` belongs to you; the Queen wants to let a worker change it"
+        "`nextcloud` belongs to you; the Queen wants to let a bee change it"
     );
     s.queen.confirmations().resolve(pending.id, Verdict::Denied);
     assert_eq!(grant.await.unwrap(), Err(ToolError::Denied));
     assert_eq!(
         s.queen
-            .workers()
+            .bees()
             .iter()
             .filter(|w| w.status == TaskStatus::Running)
             .count(),
         0,
-        "no worker without the owner's yes"
+        "no bee without the owner's yes"
     );
 
     // Creating for the owner needs the owner's yes too (timeout = no).
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "x", "backend": "hang", "for_owner": true}),
     )
     .await;
@@ -1178,7 +1162,7 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
         .call(
             99,
             &mut job,
-            "start_worker",
+            "start_bee",
             json!({"goal": "x", "backend": "hang", "apps": ["blog"]}),
         )
         .await;
@@ -1189,7 +1173,7 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "x", "apps": ["Bad Name"]}),
     )
     .await;
@@ -1197,8 +1181,8 @@ async fn worker_scopes_are_a_subset_of_the_queens_and_owner_grants_need_the_owne
 }
 
 #[tokio::test]
-async fn agents_reach_only_the_workers_they_started() {
-    let s = setup("own-workers", Vec::new());
+async fn agents_reach_only_the_bees_they_started() {
+    let s = setup("own-bees", Vec::new());
     let (ctx, allow) = s.queen.session_policy();
     let queen = s
         .server
@@ -1207,33 +1191,36 @@ async fn agents_reach_only_the_workers_they_started() {
     let r = call(
         &s.server,
         &queen,
-        "start_worker",
+        "start_bee",
         json!({"goal": "wait", "backend": "hang"}),
     )
     .await;
-    let w = r["structuredContent"]["worker"].as_u64().unwrap();
+    let w = r["structuredContent"]["bee"].as_u64().unwrap();
 
     // Another delegating session (not the Queen's task) sees none of them.
     let other = s.server.open_session(500, ctx, allow).unwrap();
     for (tool, args) in [
-        ("worker_status", json!({"worker": w})),
-        ("cancel_worker", json!({"worker": w})),
+        ("bee_status", json!({"bee": w})),
+        ("stop_bee", json!({"bee": w})),
     ] {
         let r = call(&s.server, &other, tool, args).await;
-        assert!(err_text(&r).contains("no worker"), "{tool}: {r}");
+        assert!(err_text(&r).contains("no bee"), "{tool}: {r}");
     }
-    let r = call(&s.server, &other, "list_workers", json!({})).await;
-    assert_eq!(r["structuredContent"]["workers"], json!([]));
+    let r = call(&s.server, &other, "list_bees", json!({})).await;
+    assert_eq!(r["structuredContent"]["bees"], json!([]));
 
-    // A worker sees no worker tools at all, so it can't read its siblings' output.
-    let worker = worker_token(&s, w);
-    let names = tool_names(&s.server, &worker).await;
-    assert!(!names.iter().any(|n| n.contains("worker")), "{names:?}");
-    let r = call(&s.server, &worker, "worker_status", json!({"worker": w})).await;
+    // A bee sees no bee tools at all, so it can't read its siblings' output.
+    let bee = bee_token(&s, w);
+    let names = tool_names(&s.server, &bee).await;
+    assert!(
+        !names.iter().any(|n| n.contains("bee") && n != "bee_info"),
+        "{names:?}"
+    );
+    let r = call(&s.server, &bee, "bee_status", json!({"bee": w})).await;
     assert!(err_text(&r).contains("unknown tool"), "{r}");
 
     // The Queen still can.
-    let r = call(&s.server, &queen, "worker_status", json!({"worker": w})).await;
+    let r = call(&s.server, &queen, "bee_status", json!({"bee": w})).await;
     assert_eq!(r["structuredContent"]["status"], "running");
-    call(&s.server, &queen, "cancel_worker", json!({"worker": w})).await;
+    call(&s.server, &queen, "stop_bee", json!({"bee": w})).await;
 }

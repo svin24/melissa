@@ -1,19 +1,19 @@
-//! Worker agents: sandboxed agents the Queen starts for concrete jobs.
+//! Bee agents: sandboxed agents the Queen starts for concrete jobs.
 //!
-//! A worker is a task on the [`TaskBoard`] whose parent is the Queen. It runs unattended
+//! A bee is a task on the [`TaskBoard`] whose parent is the Queen. It runs unattended
 //! (reversible actions need a human), with at most the Queen's own tools (or a subset the
-//! Queen names), never the worker tools themselves (depth 1), under a time limit no longer
-//! than the configured maximum. At most `max_concurrent` workers run at once. The tools here
-//! are Queen-only ([`Tool::queen_only`]): workers and UI tasks never see them.
+//! Queen names), never the bee tools themselves (depth 1), under a time limit no longer
+//! than the configured maximum. At most `max_concurrent` bees run at once. The tools here
+//! are Queen-only ([`Tool::queen_only`]): bees and UI tasks never see them.
 //!
-//! Scope: a worker may change only the apps the Queen names in `apps` (each one the Queen
+//! Scope: a bee may change only the apps the Queen names in `apps` (each one the Queen
 //! may change itself; the owner's apps only after the owner approves the grant) and, with
 //! `create_apps` (default), the apps it creates, which belong to its job (or to the owner
-//! with `for_owner`, approved by the owner). See [`crate::tools::scope`]. The worker tools
-//! only reach the caller's own workers; workers never see them.
+//! with `for_owner`, approved by the owner). See [`crate::tools::scope`]. The bee tools
+//! only reach the caller's own bees; bees never see them.
 //!
-//! Taint flows both ways: a worker started by a tainted Queen starts tainted, and the Queen
-//! becomes tainted when it reads the output of a worker that read untrusted content.
+//! Taint flows both ways: a bee started by a tainted Queen starts tainted, and the Queen
+//! becomes tainted when it reads the output of a bee that read untrusted content.
 
 use std::{
     collections::HashMap,
@@ -36,10 +36,10 @@ use crate::{
     MAX_PROMPT_BYTES,
 };
 
-/// Limits for worker agents (`[queen]` in the queen config).
+/// Limits for bee agents (`[queen]` in the queen config).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkerLimits {
-    /// Workers running at the same time.
+pub struct BeeLimits {
+    /// Bees running at the same time.
     pub max_concurrent: usize,
     /// Time limit when the Queen gives none.
     pub default_timeout: Duration,
@@ -47,7 +47,7 @@ pub struct WorkerLimits {
     pub max_timeout: Duration,
 }
 
-impl Default for WorkerLimits {
+impl Default for BeeLimits {
     fn default() -> Self {
         Self {
             max_concurrent: 2,
@@ -57,11 +57,11 @@ impl Default for WorkerLimits {
     }
 }
 
-/// Longest `wait_secs` for `worker_status` (agents' MCP clients time out tool calls).
+/// Longest `wait_secs` for `bee_status` (agents' MCP clients time out tool calls).
 const MAX_WAIT_SECS: u64 = 50;
-/// Output lines returned by `worker_status`.
+/// Output lines returned by `bee_status`.
 const TAIL_LINES: usize = 30;
-/// Characters of a finished worker's reply returned by `worker_status`.
+/// Characters of a finished bee's reply returned by `bee_status`.
 const RESULT_CHARS: usize = 8000;
 
 struct Attached {
@@ -73,23 +73,23 @@ struct Attached {
 }
 
 struct PoolInner {
-    limits: WorkerLimits,
+    limits: BeeLimits,
     events: EventLog,
     attached: OnceLock<Attached>,
-    /// Goal text per worker (the board keeps the full prompt with the preamble).
+    /// Goal text per bee (the board keeps the full prompt with the preamble).
     goals: Mutex<HashMap<TaskId, String>>,
     /// Serialises the concurrency check and the dispatch.
     start: Mutex<()>,
 }
 
-/// Starts and tracks worker agents. Cheap to clone.
+/// Starts and tracks bee agents. Cheap to clone.
 #[derive(Clone)]
-pub struct WorkerPool {
+pub struct BeePool {
     inner: Arc<PoolInner>,
 }
 
-impl WorkerPool {
-    pub fn new(limits: WorkerLimits, events: EventLog) -> Self {
+impl BeePool {
+    pub fn new(limits: BeeLimits, events: EventLog) -> Self {
         Self {
             inner: Arc::new(PoolInner {
                 limits,
@@ -101,17 +101,17 @@ impl WorkerPool {
         }
     }
 
-    pub fn limits(&self) -> &WorkerLimits {
+    pub fn limits(&self) -> &BeeLimits {
         &self.inner.limits
     }
 
-    /// The four worker tools, to register in the [`crate::tools::ToolRegistry`].
+    /// The four bee tools, to register in the [`crate::tools::ToolRegistry`].
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![
-            Arc::new(StartWorker(self.clone())),
-            Arc::new(WorkerStatus(self.clone())),
-            Arc::new(ListWorkers(self.clone())),
-            Arc::new(CancelWorker(self.clone())),
+            Arc::new(StartBee(self.clone())),
+            Arc::new(BeeStatus(self.clone())),
+            Arc::new(ListBees(self.clone())),
+            Arc::new(StopBee(self.clone())),
         ]
     }
 
@@ -136,10 +136,10 @@ impl WorkerPool {
         self.inner
             .attached
             .get()
-            .ok_or_else(|| ToolError::Failed("workers are not available on this comb".into()))
+            .ok_or_else(|| ToolError::Failed("bees are not available on this comb".into()))
     }
 
-    /// Tools a worker may get: the Queen's own, without the Queen-only ones. (What a worker
+    /// Tools a bee may get: the Queen's own, without the Queen-only ones. (What a bee
     /// may do with them is limited by its scope, not by hiding them here.)
     fn handable(&self, a: &Attached) -> Vec<(&'static str, Labels)> {
         let Some(link) = a.board.mcp_link() else {
@@ -154,10 +154,10 @@ impl WorkerPool {
             .collect()
     }
 
-    /// The worker's scope from `apps`, `create_apps` and `for_owner`: never more than the
+    /// The bee's scope from `apps`, `create_apps` and `for_owner`: never more than the
     /// caller's own (`ctx.scope`). Grants the owner must approve are asked for here, in one
     /// confirmation that names them.
-    async fn worker_scope(
+    async fn bee_scope(
         &self,
         a: &Attached,
         parent: TaskId,
@@ -198,10 +198,10 @@ impl WorkerPool {
         let agent = match &ctx.scope {
             Scope::Owner => None,
             Scope::ForOwner { agent } => Some(agent.clone()),
-            // Only sessions acting for the owner hand out scopes (workers can't start workers).
+            // Only sessions acting for the owner hand out scopes (bees can't start bees).
             Scope::Nothing | Scope::Job(_) => {
                 return Err(ToolError::Refused(
-                    "not yours: this session may not give apps to workers".into(),
+                    "not yours: this session may not give apps to bees".into(),
                 ))
             }
         };
@@ -211,9 +211,7 @@ impl WorkerPool {
                 .board
                 .mcp_link()
                 .map(|l| l.server.registry().clone())
-                .ok_or_else(|| {
-                    ToolError::Failed("workers are not available on this comb".into())
-                })?;
+                .ok_or_else(|| ToolError::Failed("bees are not available on this comb".into()))?;
             let mut owners_apps = Vec::new();
             for app in &apps {
                 match registry.owner_of(ResourceKind::App, app).await {
@@ -228,7 +226,7 @@ impl WorkerPool {
             }
             if !owners_apps.is_empty() {
                 reasons.push(format!(
-                    "{} belong{} to you; {agent} wants to let a worker change {}",
+                    "{} belong{} to you; {agent} wants to let a bee change {}",
                     owners_apps.join(", "),
                     if owners_apps.len() == 1 { "s" } else { "" },
                     if owners_apps.len() == 1 { "it" } else { "them" },
@@ -236,7 +234,7 @@ impl WorkerPool {
             }
             if for_owner && create {
                 reasons.push(format!(
-                    "{agent} wants the apps a worker creates to belong to you"
+                    "{agent} wants the apps a bee creates to belong to you"
                 ));
             }
             if !reasons.is_empty() {
@@ -247,7 +245,7 @@ impl WorkerPool {
                     "for_owner": for_owner,
                 });
                 registry
-                    .confirm(parent, "start_worker", &shown, &reasons.join("; "))
+                    .confirm(parent, "start_bee", &shown, &reasons.join("; "))
                     .await?;
             }
         }
@@ -259,7 +257,7 @@ impl WorkerPool {
         }))
     }
 
-    /// Workers of `parent`, newest first.
+    /// Bees of `parent`, newest first.
     pub fn list(&self, parent: TaskId) -> Vec<TaskSnapshot> {
         match self.inner.attached.get() {
             Some(a) => a
@@ -272,15 +270,15 @@ impl WorkerPool {
         }
     }
 
-    pub fn goal(&self, worker: TaskId) -> Option<String> {
-        lock(&self.inner.goals).get(&worker).cloned()
+    pub fn goal(&self, bee: TaskId) -> Option<String> {
+        lock(&self.inner.goals).get(&bee).cloned()
     }
 
-    fn worker(&self, a: &Attached, parent: TaskId, id: TaskId) -> Result<TaskSnapshot, ToolError> {
+    fn bee(&self, a: &Attached, parent: TaskId, id: TaskId) -> Result<TaskSnapshot, ToolError> {
         a.board
             .get(id)
             .filter(|t| t.parent == Some(parent))
-            .ok_or_else(|| ToolError::BadArgs(format!("no worker {id}")))
+            .ok_or_else(|| ToolError::BadArgs(format!("no bee {id}")))
     }
 
     async fn start(
@@ -342,7 +340,7 @@ impl WorkerPool {
                     let Some(t) = handable.iter().find(|(h, _)| *h == n) else {
                         let allowed: Vec<&str> = handable.iter().map(|(h, _)| *h).collect();
                         return Err(ToolError::BadArgs(format!(
-                            "tool `{n}` cannot be given to a worker; allowed: {}",
+                            "tool `{n}` cannot be given to a bee; allowed: {}",
                             allowed.join(", ")
                         )));
                     };
@@ -376,7 +374,7 @@ impl WorkerPool {
         }
 
         // Last, after every cheap check: it may wait for the owner.
-        let scope = self.worker_scope(a, parent, ctx, &args).await?;
+        let scope = self.bee_scope(a, parent, ctx, &args).await?;
         let scope_json = match &scope {
             Scope::Job(j) => json!({
                 "job": j.key,
@@ -397,7 +395,7 @@ impl WorkerPool {
                 .count();
             if running >= limits.max_concurrent {
                 return Err(ToolError::Failed(format!(
-                    "{running} workers are already running (at most {}); wait for one to finish \
+                    "{running} bees are already running (at most {}); wait for one to finish \
                      or cancel one",
                     limits.max_concurrent
                 )));
@@ -419,8 +417,8 @@ impl WorkerPool {
                 .map_err(|e| ToolError::Failed(e.to_string()))?
         };
         lock(&self.inner.goals).insert(id, goal.to_string());
-        self.inner.events.push(QueenEvent::WorkerStarted {
-            worker: id,
+        self.inner.events.push(QueenEvent::BeeStarted {
+            bee: id,
             backend: backend.clone(),
             goal: shorten(goal, 200),
         });
@@ -429,8 +427,8 @@ impl WorkerPool {
             loop {
                 match board.wait(id, Duration::from_secs(3600)).await {
                     Some(snap) if snap.status.is_finished() => {
-                        events.push(QueenEvent::WorkerFinished {
-                            worker: id,
+                        events.push(QueenEvent::BeeFinished {
+                            bee: id,
                             status: snap.status.as_str().into(),
                             error: snap.error,
                         });
@@ -442,7 +440,7 @@ impl WorkerPool {
             }
         });
         Ok(json!({
-            "worker": id,
+            "bee": id,
             "backend": backend,
             "tools": tools.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
             "timeout_secs": timeout.as_secs(),
@@ -458,8 +456,8 @@ impl WorkerPool {
         args: &Value,
     ) -> Result<Value, ToolError> {
         let a = self.attached()?;
-        let args = object(args, &["worker", "wait_secs"])?;
-        let id = worker_id(&args)?;
+        let args = object(args, &["bee", "wait_secs"])?;
+        let id = bee_id(&args)?;
         let wait = match args.get("wait_secs") {
             None | Some(Value::Null) => 0,
             Some(v) => v.as_u64().filter(|w| *w <= MAX_WAIT_SECS).ok_or_else(|| {
@@ -468,15 +466,15 @@ impl WorkerPool {
                 ))
             })?,
         };
-        self.worker(a, parent, id)?;
+        self.bee(a, parent, id)?;
         let snap = if wait > 0 {
             a.board.wait(id, Duration::from_secs(wait)).await
         } else {
             a.board.get(id)
         }
-        .ok_or_else(|| ToolError::BadArgs(format!("no worker {id}")))?;
+        .ok_or_else(|| ToolError::BadArgs(format!("no bee {id}")))?;
         if snap.tainted {
-            // The worker read untrusted content; so does whoever reads its output.
+            // The bee read untrusted content; so does whoever reads its output.
             ctx.tainted = true;
         }
         let tail: Vec<String> = snap
@@ -499,7 +497,7 @@ impl WorkerPool {
             reply.chars().skip(skip).collect::<String>()
         });
         Ok(json!({
-            "worker": id,
+            "bee": id,
             "backend": snap.backend,
             "goal": self.goal(id),
             "status": snap.status.as_str(),
@@ -546,49 +544,49 @@ fn object(args: &Value, known: &[&str]) -> Result<serde_json::Map<String, Value>
     Ok(map)
 }
 
-fn worker_id(args: &serde_json::Map<String, Value>) -> Result<TaskId, ToolError> {
-    args.get("worker")
+fn bee_id(args: &serde_json::Map<String, Value>) -> Result<TaskId, ToolError> {
+    args.get("bee")
         .and_then(Value::as_u64)
-        .ok_or_else(|| ToolError::BadArgs("`worker` must be a worker id".into()))
+        .ok_or_else(|| ToolError::BadArgs("`bee` must be a bee id".into()))
 }
 
-/// Starting a worker spends money and lets an agent act (unattended): reversible. Attended
+/// Starting a bee spends money and lets an agent act (unattended): reversible. Attended
 /// Queen sessions may do it without asking; a tainted Queen needs a human.
 const START_LABELS: Labels = Labels {
     effect: Effect::Reversible,
     ..Labels::READ_ONLY
 };
 
-struct StartWorker(WorkerPool);
-struct WorkerStatus(WorkerPool);
-struct ListWorkers(WorkerPool);
-struct CancelWorker(WorkerPool);
+struct StartBee(BeePool);
+struct BeeStatus(BeePool);
+struct ListBees(BeePool);
+struct StopBee(BeePool);
 
 fn needs_context<'a>() -> BoxFuture<'a, Result<Value, ToolError>> {
-    Box::pin(async { Err(ToolError::Failed("worker tools need a caller".into())) })
+    Box::pin(async { Err(ToolError::Failed("bee tools need a caller".into())) })
 }
 
-impl Tool for StartWorker {
+impl Tool for StartBee {
     fn spec(&self) -> ToolSpec {
         let l = self.0.limits();
         ToolSpec {
-            name: "start_worker",
-            description: "Start a sandboxed worker agent for one concrete job (a multi-step check, \
+            name: "start_bee",
+            description: "Start a sandboxed bee agent for one concrete job (a multi-step check, \
                           a longer investigation). It works unattended with your tools or the subset \
-                          in `tools`, cannot start workers itself, and is stopped after \
+                          in `tools`, cannot start bees itself, and is stopped after \
                           `timeout_secs`. It may change only the apps in `apps` and the ones it \
-                          creates. Returns its worker id; then use worker_status.",
+                          creates. Returns its bee id; then use bee_status.",
             labels: START_LABELS,
             params: json!({
                 "type": "object",
                 "properties": {
-                    "goal": {"type": "string", "description": "What the worker should do and report back. Self-contained: the worker does not see this conversation."},
-                    "backend": {"type": "string", "description": "Agent backend (default: the configured worker backend)."},
-                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the worker may use, by their plain names such as `bee_info` (no `mcp__melissa__` or other prefix). Default: all of yours except the worker tools."},
+                    "goal": {"type": "string", "description": "What the bee should do and report back. Self-contained: the bee does not see this conversation."},
+                    "backend": {"type": "string", "description": "Agent backend (default: the configured bee backend)."},
+                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the bee may use, by their plain names such as `bee_info` (no `mcp__melissa__` or other prefix). Default: all of yours except the bee tools."},
                     "timeout_secs": {"type": "integer", "minimum": 1, "maximum": l.max_timeout.as_secs(), "description": format!("Time limit (default {}).", l.default_timeout.min(l.max_timeout).as_secs())},
-                    "apps": {"type": "array", "items": {"type": "string"}, "description": "Existing apps the worker may change (install over, uninstall, read logs). Default: none. Granting an app that belongs to the owner asks the owner first. Any other app is refused to the worker."},
-                    "create_apps": {"type": "boolean", "default": true, "description": "The worker may install new apps; they belong to its job (it and you may change them later)."},
-                    "for_owner": {"type": "boolean", "default": false, "description": "Apps the worker creates belong to the owner instead of the job (asks the owner first)."},
+                    "apps": {"type": "array", "items": {"type": "string"}, "description": "Existing apps the bee may change (install over, uninstall, read logs). Default: none. Granting an app that belongs to the owner asks the owner first. Any other app is refused to the bee."},
+                    "create_apps": {"type": "boolean", "default": true, "description": "The bee may install new apps; they belong to its job (it and you may change them later)."},
+                    "for_owner": {"type": "boolean", "default": false, "description": "Apps the bee creates belong to the owner instead of the job (asks the owner first)."},
                 },
                 "required": ["goal"],
                 "additionalProperties": false,
@@ -611,22 +609,22 @@ impl Tool for StartWorker {
     }
 }
 
-impl Tool for WorkerStatus {
+impl Tool for BeeStatus {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "worker_status",
-            description: "Status of one of your workers: running/succeeded/failed/cancelled, its last \
+            name: "bee_status",
+            description: "Status of one of your bees: running/succeeded/failed/cancelled, its last \
                           output lines, and its final reply (`result`) once finished. `wait_secs` waits \
                           up to that long for it to finish.",
-            // Output of a worker that read untrusted content taints the caller (see `status`).
+            // Output of a bee that read untrusted content taints the caller (see `status`).
             labels: Labels::READ_ONLY,
             params: json!({
                 "type": "object",
                 "properties": {
-                    "worker": {"type": "integer"},
+                    "bee": {"type": "integer"},
                     "wait_secs": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECS},
                 },
-                "required": ["worker"],
+                "required": ["bee"],
                 "additionalProperties": false,
             }),
         }
@@ -647,11 +645,11 @@ impl Tool for WorkerStatus {
     }
 }
 
-impl Tool for ListWorkers {
+impl Tool for ListBees {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "list_workers",
-            description: "Your workers, newest first: id, backend, status and goal.",
+            name: "list_bees",
+            description: "Your bees, newest first: id, backend, status and goal.",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         }
@@ -667,13 +665,13 @@ impl Tool for ListWorkers {
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(async move {
             object(&args, &[])?;
-            let workers: Vec<Value> = self
+            let bees: Vec<Value> = self
                 .0
                 .list(task)
                 .into_iter()
                 .map(|t| {
                     json!({
-                        "worker": t.id,
+                        "bee": t.id,
                         "backend": t.backend,
                         "status": t.status.as_str(),
                         "elapsed_secs": t.elapsed.as_secs(),
@@ -681,7 +679,7 @@ impl Tool for ListWorkers {
                     })
                 })
                 .collect();
-            Ok(json!({"workers": workers}))
+            Ok(json!({"bees": bees}))
         })
     }
     fn queen_only(&self) -> bool {
@@ -689,17 +687,17 @@ impl Tool for ListWorkers {
     }
 }
 
-impl Tool for CancelWorker {
+impl Tool for StopBee {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "cancel_worker",
-            description: "Stop one of your running workers.",
+            name: "stop_bee",
+            description: "Stop one of your running bees.",
             // Stops work in progress: a change of state, harmless to undo by starting again.
             labels: START_LABELS,
             params: json!({
                 "type": "object",
-                "properties": {"worker": {"type": "integer"}},
-                "required": ["worker"],
+                "properties": {"bee": {"type": "integer"}},
+                "required": ["bee"],
                 "additionalProperties": false,
             }),
         }
@@ -715,9 +713,9 @@ impl Tool for CancelWorker {
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(async move {
             let a = self.0.attached()?;
-            let args = object(&args, &["worker"])?;
-            let id = worker_id(&args)?;
-            self.0.worker(a, task, id)?;
+            let args = object(&args, &["bee"])?;
+            let id = bee_id(&args)?;
+            self.0.bee(a, task, id)?;
             a.board
                 .cancel_by(id, "queen")
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -726,7 +724,7 @@ impl Tool for CancelWorker {
                 .get(id)
                 .map(|t| t.status.as_str())
                 .unwrap_or("unknown");
-            Ok(json!({"worker": id, "status": status}))
+            Ok(json!({"bee": id, "status": status}))
         })
     }
     fn queen_only(&self) -> bool {

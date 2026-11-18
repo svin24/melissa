@@ -1,5 +1,5 @@
 //! The Queen: Melissa's head agent. One long-lived agent session per daemon that the user
-//! talks to; it plans, uses Melissa's tools and starts worker agents ([`workers`]).
+//! talks to; it plans, uses Melissa's tools and starts bee agents ([`bees`]).
 //!
 //! - **Lazy session, ordered backends.** The session opens on the first message, trying
 //!   the configured session backends in order (a backend that fails to start is logged
@@ -15,7 +15,7 @@
 //!   directory, see [`OpenSession::state_dir`]); if that fails, the new session is primed
 //!   with a short summary from Melissa's transcript.
 //! - **Taint survives.** Once the Queen's MCP session has read untrusted content (app logs,
-//!   a worker that did), every later session of this conversation starts tainted too: a
+//!   a bee that did), every later session of this conversation starts tainted too: a
 //!   resumed session still has that content, and a new one is primed from the transcript.
 //!   The flag is saved in `session.json`, so it also survives a daemon restart.
 //! - **System prompt.** The first message of every new session carries the Queen's system
@@ -24,9 +24,9 @@
 //! - Everything is recorded in the [`events::EventLog`] (clients follow it with a cursor)
 //!   and the JSONL [`transcript::Transcript`].
 
+pub mod bees;
 pub mod events;
 pub mod transcript;
-pub mod workers;
 
 #[cfg(test)]
 mod tests;
@@ -57,9 +57,9 @@ use crate::{
     AgentError, AuditLog, AuditRecord, TaskBoard, TaskId, TaskSnapshot, MAX_PROMPT_BYTES,
 };
 
+use bees::BeePool;
 use events::{EventLog, QueenEvent, TurnId};
 use transcript::shorten;
-use workers::WorkerPool;
 
 /// How long a cancelled turn may take to stop before Melissa kills the session.
 const CANCEL_GRACE: Duration = Duration::from_secs(10);
@@ -73,15 +73,15 @@ pub struct QueenSettings {
     pub backends: Vec<String>,
     /// The Queen's system prompt.
     pub system_prompt: String,
-    /// Instructions put in front of every worker's goal.
-    pub worker_prompt: String,
-    /// Backend for workers when the Queen names none (default: the first Queen backend).
-    pub worker_backend: Option<String>,
+    /// Instructions put in front of every bee's goal.
+    pub bee_prompt: String,
+    /// Backend for bees when the Queen names none (default: the first Queen backend).
+    pub bee_backend: Option<String>,
     /// Melissa's state for the Queen: `session.json`, the agent's session store.
     pub state_dir: PathBuf,
     /// The Queen agent's working directory.
     pub workdir: PathBuf,
-    /// Tools the Queen may use (None = all). Workers get at most these.
+    /// Tools the Queen may use (None = all). Bees get at most these.
     pub tools: Option<Vec<String>>,
 }
 
@@ -140,7 +140,7 @@ struct Inner {
     base_url: String,
     events: EventLog,
     audit: Option<AuditLog>,
-    /// The Queen's id in audit records, confirmations and as the workers' parent.
+    /// The Queen's id in audit records, confirmations and as the bees' parent.
     task: TaskId,
     allow: Option<Vec<&'static str>>,
     turn: Mutex<TurnState>,
@@ -148,7 +148,7 @@ struct Inner {
     text: Mutex<String>,
     live: Mutex<Option<Live>>,
     gen: AtomicU64,
-    pool: WorkerPool,
+    pool: BeePool,
     /// The conversation has read untrusted content (sticky, saved in `session.json`).
     tainted: AtomicBool,
 }
@@ -183,7 +183,7 @@ impl Queen {
         backends: Vec<Arc<dyn SessionBackend>>,
         board: TaskBoard,
         events: EventLog,
-        pool: &WorkerPool,
+        pool: &BeePool,
     ) -> Result<Self, QueenError> {
         let first = settings
             .backends
@@ -210,8 +210,8 @@ impl Queen {
             load_session(&settings.state_dir.join("session.json")).is_some_and(|s| s.tainted);
         pool.attach(
             board.clone(),
-            settings.worker_backend.clone().unwrap_or(first),
-            settings.worker_prompt.clone(),
+            settings.bee_backend.clone().unwrap_or(first),
+            settings.bee_prompt.clone(),
             allow.clone(),
         );
         forward_confirmations(registry.confirmations(), events.clone());
@@ -244,13 +244,13 @@ impl Queen {
         self.inner.server.registry().confirmations()
     }
 
-    /// The Queen's task id (audit records, confirmations, workers' parent).
+    /// The Queen's task id (audit records, confirmations, bees' parent).
     pub fn task_id(&self) -> TaskId {
         self.inner.task
     }
 
-    /// The Queen's workers, newest first.
-    pub fn workers(&self) -> Vec<TaskSnapshot> {
+    /// The Queen's bees, newest first.
+    pub fn bees(&self) -> Vec<TaskSnapshot> {
         self.inner
             .board
             .list()
@@ -259,8 +259,8 @@ impl Queen {
             .collect()
     }
 
-    /// The goal the Queen gave worker `id`.
-    pub fn worker_goal(&self, id: TaskId) -> Option<String> {
+    /// The goal the Queen gave bee `id`.
+    pub fn bee_goal(&self, id: TaskId) -> Option<String> {
         self.inner.pool.goal(id)
     }
 

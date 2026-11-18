@@ -405,8 +405,8 @@ mod tests {
     mod queen_api {
         use melissa_agent::{
             queen::{
+                bees::{BeeLimits, BeePool},
                 events::EventLog,
-                workers::{WorkerLimits, WorkerPool},
                 QueenSettings,
             },
             session::{OpenSession, OpenedSession, SessionBackend},
@@ -460,7 +460,7 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("melissa-web-queen-{}", std::process::id()));
             let events = EventLog::new(None);
-            let pool = WorkerPool::new(WorkerLimits::default(), events.clone());
+            let pool = BeePool::new(BeeLimits::default(), events.clone());
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
             tools.push(Arc::new(Touch));
             let mcp = McpServer::new(ToolRegistry::new(tools, None));
@@ -477,8 +477,8 @@ mod tests {
             let settings = QueenSettings {
                 backends: vec!["stuck".into()],
                 system_prompt: "test".into(),
-                worker_prompt: "test".into(),
-                worker_backend: Some("echo".into()),
+                bee_prompt: "test".into(),
+                bee_backend: Some("echo".into()),
                 state_dir: dir.join("queen"),
                 workdir: dir.join("work/queen"),
                 tools: None,
@@ -561,8 +561,8 @@ mod tests {
             assert_eq!(page["events"], serde_json::json!([]));
             let (_, body) = send_json(&app, json_post("/api/queen/cancel", "")).await;
             assert_eq!(body["cancelled"], false);
-            let (_, body) = send_json(&app, get("/api/workers")).await;
-            assert_eq!(body["workers"], serde_json::json!([]));
+            let (_, body) = send_json(&app, get("/api/bees")).await;
+            assert_eq!(body["bees"], serde_json::json!([]));
         }
 
         #[tokio::test]
@@ -596,7 +596,7 @@ mod tests {
         async fn operator_tool_calls_wait_for_the_inbox() {
             let (app, queen) = app();
             // Unknown and Queen-only tools look the same: not found.
-            for name in ["nope", "start_worker"] {
+            for name in ["nope", "start_bee"] {
                 let (status, _) =
                     send_json(&app, json_post(&format!("/api/tools/{name}"), "{}")).await;
                 assert_eq!(status, StatusCode::NOT_FOUND, "{name}");

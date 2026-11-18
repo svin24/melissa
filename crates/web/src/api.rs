@@ -7,7 +7,7 @@
 //!   seq, "missed": bool}`; waits up to `wait` (max 30) seconds for the first new event.
 //! - `POST /api/queen/cancel` → `{"cancelled": bool}`.
 //! - `GET /api/queen/status` → `{"turn": n|null, "backend": "..."|null, "last_seq": seq}`.
-//! - `GET /api/workers` → the Queen's workers, newest first.
+//! - `GET /api/bees` → the Queen's bees, newest first.
 //! - `GET /api/confirmations`; `POST /api/confirmations/{id}/approve|deny` → 200 or 404.
 //! - `POST /api/tools/{name}` (JSON arguments) → 200 `{"result": ...}`: runs one tool for an
 //!   operator (`melissa-queen tool --wait`) through the daemon's registry, as an unattended
@@ -44,7 +44,7 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/queen/events", get(events))
         .route("/api/queen/cancel", post(cancel))
         .route("/api/queen/status", get(status))
-        .route("/api/workers", get(workers))
+        .route("/api/bees", get(bees))
         .route("/api/confirmations", get(confirmations))
         .route("/api/confirmations/{id}/{verdict}", post(resolve))
         .with_state(queen)
@@ -131,22 +131,22 @@ async fn status(State(queen): State<Queen>) -> Response {
     Json(queen.status()).into_response()
 }
 
-async fn workers(State(queen): State<Queen>) -> Response {
+async fn bees(State(queen): State<Queen>) -> Response {
     let list: Vec<_> = queen
-        .workers()
+        .bees()
         .into_iter()
         .map(|t| {
             json!({
-                "worker": t.id,
+                "bee": t.id,
                 "backend": t.backend,
                 "status": t.status.as_str(),
                 "elapsed_secs": t.elapsed.as_secs(),
-                "goal": queen.worker_goal(t.id),
+                "goal": queen.bee_goal(t.id),
                 "error": t.error,
             })
         })
         .collect();
-    Json(json!({"workers": list})).into_response()
+    Json(json!({"bees": list})).into_response()
 }
 
 async fn confirmations(State(queen): State<Queen>) -> Response {
