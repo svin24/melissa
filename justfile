@@ -44,6 +44,25 @@ vm-disk variant="headless":
         --type qcow2 --rootfs btrfs --config /output/config.toml localhost/melissa-{{variant}}:dev
     sudo chown -R $(id -u):$(id -g) vm/{{variant}}
 
+# --- downloadable VM disk for testers (docs/TRY-THE-VM.md) ---------------------------
+# No user, password or key inside: the tester creates the account on first boot.
+# Run `just image-build` and `just image-to-root` first. RELEASE_CONFIG=<file> for another config.
+# Build the published qcow2 into dist/<variant>/ with bootc-image-builder (needs sudo).
+release-disk variant="headless":
+    mkdir -p dist/{{variant}}
+    cp "${RELEASE_CONFIG:-image/release/config.toml}" dist/{{variant}}/config.toml
+    sudo podman run --rm --privileged --pull=newer --network=host \
+        --security-opt label=type:unconfined_t \
+        -v ./dist/{{variant}}:/output \
+        -v /var/lib/containers/storage:/var/lib/containers/storage \
+        quay.io/centos-bootc/bootc-image-builder:latest \
+        --type qcow2 --rootfs btrfs --config /output/config.toml localhost/melissa-{{variant}}:dev
+    sudo chown -R $(id -u):$(id -g) dist/{{variant}}
+
+# Compress the release qcow2 and write its sha256 (rootless): dist/melissa-<variant>-<version>-x86_64.qcow2
+release-pack variant="headless":
+    scripts/release-pack.sh {{variant}}
+
 # Boot the VM disk in QEMU (UEFI, KVM). Uses a throwaway overlay so the built disk stays clean.
 vm-run variant="headless":
     scripts/vm-run.sh {{variant}}

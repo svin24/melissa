@@ -1,0 +1,24 @@
+[Unit]
+Description=Melissa first boot: create the admin account
+Documentation=file:///usr/libexec/melissa/melissa-firstboot
+# Once per machine. The script also exits at once if an admin user already exists.
+ConditionPathExists=!/var/lib/melissa-firstboot.done
+After=systemd-sysusers.service systemd-user-sessions.service plymouth-quit-wait.service
+# Hold back the login prompts until the account exists.
+Before=getty-pre.target
+Wants=getty-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/melissa/melissa-firstboot
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

@@ -7,14 +7,22 @@ Wants=network-online.target
 # to k3s when the credentials appear (and follows rotations) without a restart.
 
 [Service]
-DynamicUser=yes
+# A fixed system user (sysusers.d/melissa.conf), not DynamicUser: the agent CLIs and their
+# logins live in its home, /var/lib/melissa/home, set up with `sudo melissa-setup agent <name>`.
+# Each agent still runs in its own bubblewrap sandbox with only its own credential file.
+User=melissa
+Group=melissa
 StateDirectory=melissa
+StateDirectoryMode=0750
 ConfigurationDirectory=melissa
 # Per-sandbox egress sockets (crates/agent/src/egress) live in /run/melissa/egress.
 RuntimeDirectory=melissa
 RuntimeDirectoryMode=0700
 # Maps the XDG paths used by the queen to /etc/melissa, /var/lib/melissa and /run/melissa.
 Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib XDG_RUNTIME_DIR=/run
+# Where the vendors' installers put the agent CLIs (found on PATH as claude, grok, opencode).
+Environment=HOME=/var/lib/melissa/home
+Environment=PATH=/var/lib/melissa/home/.local/bin:/var/lib/melissa/home/.grok/bin:/var/lib/melissa/home/.opencode/bin:/usr/bin
 # Read access to the read-only k3s kubeconfig (root:melissa-kube 0640 in /run/melissa-kube).
 SupplementaryGroups=melissa-kube
 ExecStart=/usr/bin/melissa-queen
