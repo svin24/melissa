@@ -1,0 +1,19 @@
+{"type":"transcript","agent":"fake","protocol":"acp-v1","notes":"Hand-written: handshake, streamed updates, a permission request for a Melissa MCP tool (answered allow-once, never allow-always), tool call, unknown update kinds, end of turn."}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"melissa","version":"<any>"}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"mcpCapabilities":{"http":true,"sse":true},"sessionCapabilities":{"resume":{},"close":{}}},"agentInfo":{"name":"fake-agent","version":"0.1.0"},"authMethods":[]}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"<any>","mcpServers":[{"type":"http","name":"melissa","url":"http://127.0.0.1:8080/mcp/0123456789abcdef","headers":"<any>"}]}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"_x.vendor/session/setup","params":{"sessionId":"s-1","phase":"mcp_merge"}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1"}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s-1","prompt":[{"type":"text","text":"Use the bee_info tool, then reply with the kernel version."}]}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"I should call bee_info."}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"plan","entries":[{"content":"Call bee_info","priority":"high","status":"in_progress"},{"content":"Answer","priority":"medium","status":"pending"}]}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"melissa__bee_info","kind":"other","status":"pending","rawInput":{}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{"sessionId":"s-1","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"allow-always","name":"Always allow","kind":"allow_always"},{"optionId":"allow-once","name":"Allow","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"},{"optionId":"reject-always","name":"Never","kind":"reject_always"}]}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":"perm-1","result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"in_progress"}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","rawOutput":{"kernel":"6.1.0-test"}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"vendor_specific_thing","x":1}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Kernel: 6.1"}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".0-test\nDone."}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"usage_update","used":1200,"size":256000}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}}

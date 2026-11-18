@@ -1,0 +1,13 @@
+{"type":"transcript","agent":"fake","protocol":"acp-v1","notes":"Hand-written: a shell command needs a human; the turn is cancelled while the confirmation waits. Expected: session/cancel, then the permission answered `cancelled`, then stopReason cancelled."}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false},"authMethods":[]}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"<any>","mcpServers":[]}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-2"}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s-2","prompt":"<any>"}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Cleaning up.\n"}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-2","update":{"sessionUpdate":"tool_call","toolCallId":"t9","title":"Execute `rm -rf build`","kind":"execute","status":"pending","rawInput":{"command":"rm -rf build"}}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s-2","toolCall":{"toolCallId":"t9"},"options":[{"optionId":"allow-always","name":"Always allow","kind":"allow_always"},{"optionId":"allow-once","name":"Allow","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s-2"}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"cancelled"}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-2","update":{"sessionUpdate":"tool_call_update","toolCallId":"t9","status":"failed"}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}}
