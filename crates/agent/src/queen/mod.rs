@@ -46,7 +46,9 @@ use crate::{
         AgentSession, McpServerSpec, OpenSession, PermissionContext, PolicyPermissions,
         SessionBackend, SessionEvent, ToolStatus,
     },
-    tools::{ConfirmationEvent, ConfirmationStore, TaskContext},
+    tools::{
+        Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, TaskContext, Verdict,
+    },
     AgentError, AuditLog, AuditRecord, TaskBoard, TaskId, TaskSnapshot, MAX_PROMPT_BYTES,
 };
 
@@ -141,6 +143,7 @@ struct Inner {
     text: Mutex<String>,
     live: Mutex<Option<Live>>,
     gen: AtomicU64,
+    pool: WorkerPool,
 }
 
 /// Handle to the Queen. Cheap to clone.
@@ -209,6 +212,7 @@ impl Queen {
                 text: Mutex::new(String::new()),
                 live: Mutex::new(None),
                 gen: AtomicU64::new(0),
+                pool: pool.clone(),
             }),
         })
     }
@@ -234,6 +238,36 @@ impl Queen {
             .into_iter()
             .filter(|t| t.parent == Some(self.inner.task))
             .collect()
+    }
+
+    /// The goal the Queen gave worker `id`.
+    pub fn worker_goal(&self, id: TaskId) -> Option<String> {
+        self.inner.pool.goal(id)
+    }
+
+    /// A human approves or denies a pending confirmation (audited, actor `ui`). `None` if
+    /// it no longer exists.
+    pub fn resolve_confirmation(
+        &self,
+        id: ConfirmationId,
+        verdict: Verdict,
+    ) -> Option<Confirmation> {
+        let c = self.confirmations().resolve(id, verdict)?;
+        if let Some(log) = &self.inner.audit {
+            let record = AuditRecord::now(
+                &format!("confirmation.{}", verdict.as_str()),
+                c.task,
+                "",
+                format!("confirmation {id}: {}", c.reason),
+            )
+            .by("ui");
+            if let Err(e) =
+                log.append(&record.with_tool(&c.tool, &crate::tools::args_hash(&c.args)))
+            {
+                tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
+            }
+        }
+        Some(c)
     }
 
     pub fn status(&self) -> QueenStatus {

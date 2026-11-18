@@ -266,7 +266,7 @@ impl Drop for Withdraw<'_> {
 }
 
 /// SHA-256 of the canonical (compact, key-sorted) JSON arguments.
-fn args_hash(args: &Value) -> String {
+pub(crate) fn args_hash(args: &Value) -> String {
     // Sort explicitly: serde_json's `preserve_order` feature (enabled by a dependency
     // anywhere in the build) makes `Map` keep insertion order instead of sorting.
     let bytes = serde_json::to_vec(&canonical(args)).unwrap_or_default();
