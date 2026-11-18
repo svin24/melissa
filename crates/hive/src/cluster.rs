@@ -1,10 +1,16 @@
 //! Kubernetes access for the queen.
 //!
-//! The queen never uses k3s's admin kubeconfig. It gets a kubeconfig for the `melissa-queen`
-//! ServiceAccount as a systemd credential (`ImportCredential=melissa.kubeconfig`), or from a
-//! path in its config. Without one, the cluster is "not configured" and cluster tools say so.
+//! The queen never uses k3s's admin kubeconfig. It reads a kubeconfig for the `melissa-queen`
+//! ServiceAccount that a root helper writes into [`RUNTIME_DIR`] once k3s is up (or one from a
+//! systemd credential, or a path in its config). The queen starts without waiting for k3s:
+//! [`LazyCluster`] looks for the kubeconfig on every call and picks up a new or rotated one
+//! without a restart. Without one, the cluster is "not configured" (or "still starting" while
+//! [`RUNTIME_DIR`] exists but is empty) and cluster tools say so.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
 use kube::{
@@ -17,11 +23,22 @@ use melissa_agent::BoxFuture;
 /// Name of the systemd credential (and of its file in `/run/credstore`) holding the kubeconfig.
 pub const CREDENTIAL_NAME: &str = "melissa.kubeconfig";
 
+/// Directory where `melissa-kubeconfig` (root) puts the queen's kubeconfig on bees that run k3s.
+/// Created at boot (tmpfiles.d, headless image), group `melissa-kube`, so "directory present but
+/// no file" means k3s is enabled and still starting.
+pub const RUNTIME_DIR: &str = "/run/melissa-kube";
+
+/// File name of the kubeconfig inside [`RUNTIME_DIR`].
+pub const RUNTIME_FILE: &str = "queen.kubeconfig";
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum ClusterError {
     /// No kubeconfig: k3s is not enabled on this bee (desktop) or its credentials are missing.
     #[error("k3s is not running on this bee (no cluster credentials)")]
     NotConfigured,
+    /// k3s is enabled here but the queen's credentials aren't issued yet (k3s still starting).
+    #[error("k3s is starting: the queen's cluster credentials are not issued yet")]
+    Starting,
     /// The API server did not answer (k3s stopped, starting, or crashed).
     #[error("k3s API unreachable: {0}")]
     Unreachable(String),
@@ -76,16 +93,96 @@ impl KubeCluster {
     }
 }
 
-/// Where the queen finds its kubeconfig: the systemd credential if present, else the
-/// configured path if it exists, else nowhere.
-pub fn find_kubeconfig(
-    credentials_dir: Option<&Path>,
-    configured: Option<&Path>,
-) -> Option<PathBuf> {
-    credentials_dir
-        .map(|d| d.join(CREDENTIAL_NAME))
-        .filter(|p| p.is_file())
-        .or_else(|| configured.filter(|p| p.is_file()).map(Path::to_path_buf))
+/// A [`ClusterRead`] that finds its kubeconfig on every call, so the queen can start before k3s
+/// and attach to the cluster whenever the credentials appear (or change after a rotation).
+///
+/// The first existing file in `candidates` wins. The client is rebuilt only when the file's
+/// contents change; building a client does not contact the server.
+pub struct LazyCluster {
+    candidates: Vec<PathBuf>,
+    /// If this directory exists while no candidate does, report [`ClusterError::Starting`].
+    pending_dir: Option<PathBuf>,
+    current: tokio::sync::Mutex<Option<Loaded>>,
+}
+
+struct Loaded {
+    path: PathBuf,
+    contents: Vec<u8>,
+    cluster: Arc<KubeCluster>,
+}
+
+impl LazyCluster {
+    pub fn new(candidates: Vec<PathBuf>, pending_dir: Option<PathBuf>) -> Self {
+        Self {
+            candidates,
+            pending_dir,
+            current: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// The queen's sources in order: systemd credential, configured path, [`RUNTIME_DIR`].
+    pub fn for_queen(credentials_dir: Option<&Path>, configured: Option<&Path>) -> Self {
+        let runtime = PathBuf::from(RUNTIME_DIR);
+        let candidates = credentials_dir
+            .map(|d| d.join(CREDENTIAL_NAME))
+            .into_iter()
+            .chain(configured.map(Path::to_path_buf))
+            .chain([runtime.join(RUNTIME_FILE)])
+            .collect();
+        Self::new(candidates, Some(runtime))
+    }
+
+    /// The client for the current kubeconfig, (re)built if the file appeared or changed.
+    async fn cluster(&self) -> Result<Arc<KubeCluster>, ClusterError> {
+        let found = self.candidates.iter().find(|p| p.is_file());
+        let mut current = self.current.lock().await;
+        let Some(path) = found else {
+            if current.take().is_some() {
+                tracing::warn!("k3s kubeconfig is gone; cluster tools are offline");
+            }
+            return Err(match &self.pending_dir {
+                Some(d) if d.is_dir() => ClusterError::Starting,
+                _ => ClusterError::NotConfigured,
+            });
+        };
+        let contents = tokio::fs::read(path)
+            .await
+            .map_err(|e| ClusterError::Config {
+                path: path.clone(),
+                message: e.to_string(),
+            })?;
+        if let Some(loaded) = current.as_ref() {
+            if loaded.path == *path && loaded.contents == contents {
+                return Ok(loaded.cluster.clone());
+            }
+        }
+        let cluster = Arc::new(KubeCluster::from_kubeconfig(path).await?);
+        tracing::info!(path = %path.display(), "k3s client configured");
+        *current = Some(Loaded {
+            path: path.clone(),
+            contents,
+            cluster: cluster.clone(),
+        });
+        Ok(cluster)
+    }
+}
+
+impl ClusterRead for LazyCluster {
+    fn server_version(&self) -> BoxFuture<'_, Result<String, ClusterError>> {
+        Box::pin(async move { self.cluster().await?.server_version().await })
+    }
+
+    fn nodes(&self) -> BoxFuture<'_, Result<Vec<Node>, ClusterError>> {
+        Box::pin(async move { self.cluster().await?.nodes().await })
+    }
+
+    fn namespaces(&self) -> BoxFuture<'_, Result<Vec<Namespace>, ClusterError>> {
+        Box::pin(async move { self.cluster().await?.namespaces().await })
+    }
+
+    fn pods(&self) -> BoxFuture<'_, Result<Vec<Pod>, ClusterError>> {
+        Box::pin(async move { self.cluster().await?.pods().await })
+    }
 }
 
 fn map_err(e: kube::Error) -> ClusterError {
@@ -150,25 +247,76 @@ impl ClusterRead for KubeCluster {
 mod tests {
     use super::*;
 
-    #[test]
-    fn credential_wins_over_configured_path() {
-        let dir = std::env::temp_dir().join(format!("melissa-hive-cred-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let configured = dir.join("configured.yaml");
-        std::fs::write(&configured, "x").unwrap();
+    fn kubeconfig(server: &str) -> String {
+        format!(
+            r#"apiVersion: v1
+kind: Config
+clusters:
+- name: local
+  cluster: {{server: "{server}", insecure-skip-tls-verify: true}}
+users:
+- name: queen
+  user: {{token: placeholder}}
+contexts:
+- name: local
+  context: {{cluster: local, user: queen}}
+current-context: local
+"#
+        )
+    }
 
+    #[tokio::test]
+    async fn lazy_cluster_attaches_when_the_kubeconfig_appears_and_follows_changes() {
+        let dir = std::env::temp_dir().join(format!("melissa-hive-lazy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join(RUNTIME_FILE);
+        let lazy = LazyCluster::new(vec![file.clone()], Some(dir.clone()));
+
+        // No directory: this bee has no k3s.
         assert_eq!(
-            find_kubeconfig(Some(&dir), Some(&configured)),
-            Some(configured.clone())
+            lazy.server_version().await,
+            Err(ClusterError::NotConfigured)
         );
-        std::fs::write(dir.join(CREDENTIAL_NAME), "x").unwrap();
-        assert_eq!(
-            find_kubeconfig(Some(&dir), Some(&configured)),
-            Some(dir.join(CREDENTIAL_NAME))
-        );
-        assert_eq!(find_kubeconfig(None, Some(&dir.join("missing"))), None);
-        assert_eq!(find_kubeconfig(None, None), None);
+        // Directory but no file: k3s is enabled and still starting.
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(lazy.server_version().await, Err(ClusterError::Starting));
+        // The kubeconfig appears: the same object now talks to the (dead) server.
+        std::fs::write(&file, kubeconfig("https://127.0.0.1:1")).unwrap();
+        assert!(matches!(
+            lazy.nodes().await,
+            Err(ClusterError::Unreachable(_))
+        ));
+        let first = lazy.cluster().await.unwrap();
+        // Unchanged file: the client is reused.
+        assert!(Arc::ptr_eq(&first, &lazy.cluster().await.unwrap()));
+        // Rotated file: a new client.
+        std::fs::write(&file, kubeconfig("https://127.0.0.1:2")).unwrap();
+        assert!(!Arc::ptr_eq(&first, &lazy.cluster().await.unwrap()));
+        // A broken file is a config error, not a panic.
+        std::fs::write(&file, "not: [a kubeconfig").unwrap();
+        assert!(matches!(
+            lazy.server_version().await,
+            Err(ClusterError::Config { .. })
+        ));
+        // Gone again (k3s disabled, reboot): back to "starting".
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(lazy.server_version().await, Err(ClusterError::Starting));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queen_sources_are_ordered_credential_config_runtime() {
+        let lazy =
+            LazyCluster::for_queen(Some(Path::new("/creds")), Some(Path::new("/etc/x.yaml")));
+        assert_eq!(
+            lazy.candidates,
+            vec![
+                PathBuf::from("/creds").join(CREDENTIAL_NAME),
+                PathBuf::from("/etc/x.yaml"),
+                Path::new(RUNTIME_DIR).join(RUNTIME_FILE),
+            ]
+        );
+        assert_eq!(lazy.pending_dir.as_deref(), Some(Path::new(RUNTIME_DIR)));
     }
 
     #[tokio::test]
