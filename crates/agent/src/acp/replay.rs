@@ -285,7 +285,6 @@ pub(crate) mod agent {
             }
         }
         /// Call tool `name`; the result must match `expect`.
-        #[allow(dead_code)] // used by the Queen tests (next commit)
         pub fn mcp(name: &str, arguments: Value, expect: Value) -> Self {
             Self {
                 dir: Dir::Mcp,

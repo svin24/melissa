@@ -17,6 +17,7 @@ mod board;
 mod cli;
 mod echo;
 pub mod mcp;
+pub mod queen;
 pub mod sandbox;
 pub mod session;
 pub mod tools;

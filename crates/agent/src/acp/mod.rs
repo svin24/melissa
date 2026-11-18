@@ -8,9 +8,9 @@
 //! its own sandboxed tools (each asked through `session/request_permission`, answered by
 //! [`PolicyPermissions`]) and through Melissa's MCP tools.
 
-mod client;
+pub(crate) mod client;
 pub mod replay;
-mod transport;
+pub(crate) mod transport;
 
 use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
