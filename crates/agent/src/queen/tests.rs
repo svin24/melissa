@@ -128,14 +128,18 @@ impl Backend for Hang {
     }
 }
 
-/// A read-only tool the Queen in some tests is not allowed to use.
+/// A tool that reads untrusted content (taints the task), like the real `app_logs`; the
+/// Queen in some tests is not allowed to use it.
 struct AppLogs;
 impl Tool for AppLogs {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "app_logs",
             description: "test",
-            labels: Labels::READ_ONLY,
+            labels: Labels {
+                reads_untrusted: true,
+                ..Labels::READ_ONLY
+            },
             params: json!({"type": "object"}),
         }
     }
@@ -902,6 +906,62 @@ async fn a_restarted_daemon_resumes_the_agent_session() {
     }));
     s.queen.close().await;
     s.replay.check().await;
+}
+
+#[tokio::test]
+async fn taint_outlives_the_session_and_the_daemon() {
+    let dir = scratch("taint-restart");
+    let mut first = handshake("s-1");
+    first.extend([
+        prompt(2, "s-1", "<any>"),
+        Step::mcp("app_logs", json!({}), json!({"result": {"isError": false}})),
+        text("s-1", "The logs look fine."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup_in(dir.clone(), vec![first], |_| {});
+    let (turn, since) = s.queen.send("Check the logs.").unwrap();
+    turn_events(&s.queen, since, turn).await;
+    let saved = std::fs::read_to_string(dir.join("queen/session.json")).unwrap();
+    assert!(saved.contains(r#""tainted":true"#), "{saved}");
+    // Simulate a crash: no clean close, the agent just goes away.
+    drop(s);
+
+    // A new daemon resumes s-1, which still holds the logs: its MCP session starts tainted,
+    // so starting a worker needs a confirmation (none comes: the call times out).
+    let mut second = handshake("unused");
+    second.truncate(2);
+    second.extend([
+        Step::send(json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume", "params": {"sessionId": "s-1", "cwd": "<any>", "mcpServers": "<any>"}})),
+        Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
+        prompt(2, "s-1", "Start a worker."),
+        Step::mcp(
+            "start_worker",
+            json!({"goal": "x"}),
+            json!({"result": {"isError": true}}),
+        ),
+        text("s-1", "That needs approval."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup_in(dir.clone(), vec![second], |_| {});
+    let (turn, since) = s.queen.send("Start a worker.").unwrap();
+    let events = turn_events(&s.queen, since, turn).await;
+    assert!(events.contains(&QueenEvent::SessionOpened {
+        backend: "fake-acp".into(),
+        resumed: true
+    }));
+    assert!(
+        s.audit().contains("tool.confirm_requested"),
+        "{}",
+        s.audit()
+    );
+    assert!(s.queen.workers().is_empty());
+    s.queen.close().await;
+    s.replay.check().await;
+    let saved = std::fs::read_to_string(dir.join("queen/session.json")).unwrap();
+    assert!(
+        saved.contains(r#""tainted":true"#),
+        "still tainted: {saved}"
+    );
 }
 
 #[tokio::test]
