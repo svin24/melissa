@@ -55,6 +55,8 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/queen/events", get(events))
         .route("/api/queen/cancel", post(cancel))
         .route("/api/queen/status", get(status))
+        .route("/api/queen/new-chat", post(new_chat))
+        .route("/api/queen/chats", get(past_chats))
         .route("/api/bees", get(bees))
         .route("/api/bees/{bee}", get(bee))
         .route("/api/bees/{bee}/messages", post(bee_message))
@@ -144,6 +146,19 @@ async fn events(State(queen): State<Queen>, Query(q): Query<EventsQuery>) -> Res
 
 async fn cancel(State(queen): State<Queen>) -> Response {
     Json(json!({"cancelled": queen.cancel().await})).into_response()
+}
+
+/// A new chat with the Queen: `{"archived": <id or null>}`.
+async fn new_chat(State(queen): State<Queen>) -> Response {
+    match queen.new_chat().await {
+        Ok(archived) => Json(json!({ "archived": archived })).into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+/// Archived chats, newest first.
+async fn past_chats(State(queen): State<Queen>) -> Response {
+    Json(json!({ "chats": queen.past_chats() })).into_response()
 }
 
 async fn status(State(queen): State<Queen>) -> Response {

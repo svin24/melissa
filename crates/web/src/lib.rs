@@ -455,6 +455,7 @@ mod tests {
                 bees::{BeeLimits, BeePool},
                 events::{EventLog, QueenEvent},
                 registry::BeeRegistry,
+                transcript::Transcript,
                 QueenSettings,
             },
             session::{OpenSession, OpenedSession, SessionBackend},
@@ -540,8 +541,10 @@ mod tests {
                     serde_json::json!({"nodes": [{"name": "comb-1", "ready": true, "allocatable": {"cpu": "4"}}]}),
                 )),
                 Arc::new(Fixed(
-                    "bee_info",
-                    serde_json::json!({"os": "Fedora Linux 45", "mem_total_kib": 8_388_608, "mem_available_kib": 4_194_304}),
+                    "comb_info",
+                    serde_json::json!({"os": "Fedora Linux 45", "mem_total_kib": 8_388_608, "mem_available_kib": 4_194_304,
+                        "disks": [{"path": "/", "total_bytes": 10_000_000_000u64, "available_bytes": 5_000_000_000u64, "used_percent": 50},
+                                  {"path": "/var", "total_bytes": 20_000_000_000u64, "available_bytes": 1_800_000_000u64, "used_percent": 91}]}),
                 )),
             ]
         }
@@ -554,7 +557,10 @@ mod tests {
                 N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             ));
             let _ = std::fs::remove_dir_all(&dir);
-            let events = EventLog::new(None);
+            let events = EventLog::new(Some(Transcript::new(
+                dir.join("queen/transcript.jsonl"),
+                1 << 20,
+            )));
             let registry = BeeRegistry::open(&dir.join("bees"), "c-0a1b2c3d").unwrap();
             let pool = BeePool::new(BeeLimits::default(), events.clone(), registry, None);
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
@@ -882,7 +888,10 @@ mod tests {
                 .contains("script-src 'self'"));
             assert!(body.contains("Pre-alpha."));
             assert!(body.contains("Hi, I'm Melissa."));
-            assert!(body.contains("sse-connect=\"/ui/stream?since=0\""));
+            assert!(body.contains(&format!(
+                "sse-connect=\"/ui/stream?since=0&amp;epoch={}\"",
+                queen.events().epoch()
+            )));
             assert!(body.contains("/assets/htmx-ext-sse.min.js"));
             assert!(body.contains("Nextcloud running, Immich installing"));
             assert!(body.contains("comb-1"));
@@ -924,7 +933,7 @@ mod tests {
             assert!(body.contains("Install Immich?"));
             assert!(body.contains(&format!("hx-post=\"/ui/confirmations/{}/approve\"", c.id)));
             assert!(body.contains(">Install jellyfin</textarea>"));
-            assert!(body.contains("sse-connect=\"/ui/stream?since=3\""));
+            assert!(body.contains("sse-connect=\"/ui/stream?since=3&amp;epoch="));
             // One waiting in the rail.
             assert!(body.contains("<span class=\"count\">1"));
         }
@@ -941,9 +950,15 @@ mod tests {
             assert!(body.contains("href=\"/?draft=Install%20jellyfin\""));
             assert!(body.contains("Fedora Linux 45"));
             assert!(body.contains("4.0 GB of 8.0 GB used"));
+            // comb_info's /var is 91% used: a storage meter and a warning on the card.
+            assert!(body.contains("<span>Storage</span>"));
+            assert!(body.contains("value=\"91\""));
+            assert!(body.contains("Storage is almost full: 1.7 GB left."));
             let (status, _, body) = get_html(&app, "/ui/strip").await;
             assert_eq!(status, StatusCode::OK);
             assert!(body.starts_with("<section class=\"strip\""));
+            assert!(body
+                .contains("<span class=\"strip-warn\">Storage almost full (1.7 GB left)</span>"));
             let (_, _, body) = get_html(&app, "/ui/hive/apps").await;
             assert!(body.starts_with("<div id=\"hive-apps\""));
         }
@@ -1038,7 +1053,7 @@ mod tests {
                 assert_eq!(status, StatusCode::OK, "{uri}");
                 assert!(body.contains("Nothing here yet with Ada."));
                 assert!(body.contains(&format!(
-                    "sse-connect=\"/ui/bees/{}/stream?since=0\"",
+                    "sse-connect=\"/ui/bees/{}/stream?since=0&amp;epoch=",
                     ada.id
                 )));
                 assert!(body.contains(&format!("hx-post=\"/ui/bees/{}/messages\"", ada.id)));
@@ -1080,6 +1095,119 @@ mod tests {
                 ada.id
             )));
             assert!(home.contains("Check &lt;the&gt; device"));
+        }
+
+        #[tokio::test]
+        async fn the_taint_note_shows_in_the_chat() {
+            let (app, queen) = app();
+            queen.events().push(QueenEvent::Tainted {
+                tool: Some("app_logs".into()),
+                subject: Some("nextcloud".into()),
+            });
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains("class=\"note guard\""), "{home}");
+            assert!(home.contains(
+                "Melissa read text from outside (Nextcloud's logs). Changes now need your OK \
+                 until you start a new chat."
+            ));
+        }
+
+        #[tokio::test]
+        async fn a_new_chat_archives_the_old_one_and_reloads_pages() {
+            let (app, queen) = app();
+            queen.events().push(QueenEvent::UserMessage {
+                turn: 1,
+                text: "Hi <there>".into(),
+            });
+            queen.events().push(QueenEvent::TurnFinished {
+                turn: 1,
+                stop_reason: "end_turn".into(),
+            });
+            let (c, _rx) = queen.confirmations().request(
+                queen.task_id(),
+                "touch",
+                &serde_json::json!({}),
+                "because",
+            );
+            let (other, _rx2) =
+                queen
+                    .confirmations()
+                    .request(99, "touch", &serde_json::json!({}), "a bee's");
+            let res = app
+                .clone()
+                .oneshot(get(&format!(
+                    "/ui/stream?since={}&epoch={}",
+                    queen.events().last_seq(),
+                    queen.events().epoch()
+                )))
+                .await
+                .unwrap();
+            let mut stream = res.into_body();
+
+            let req = post("/ui/new-chat")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::empty())
+                .unwrap();
+            let (status, headers, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/");
+            // The Queen's confirmation is withdrawn, a bee's stays.
+            let pending: Vec<u64> = queen
+                .confirmations()
+                .pending()
+                .iter()
+                .map(|p| p.id)
+                .collect();
+            assert_eq!(pending, [other.id]);
+            assert!(next_frame(&mut stream).await.starts_with("event: reload"));
+
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains("Hi, I'm Melissa."));
+            assert!(!home.contains("<li class=\"entry\""), "{home}");
+            assert!(home.contains("Past chats"));
+            assert!(home.contains("Hi &lt;there&gt;"));
+            let chats = queen.past_chats();
+            assert_eq!(chats.len(), 1);
+            let (status, _, past) = get_html(&app, &format!("/chats/{}", chats[0].id)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(past.contains("Hi &lt;there&gt;"));
+            assert!(!past.contains("sse-connect"), "read-only");
+            assert!(!past.contains("name=\"text\""), "no composer");
+            assert_eq!(get_html(&app, "/chats/1").await.0, StatusCode::NOT_FOUND);
+            let _ = c;
+
+            // Cross-site posts are refused.
+            let req = post("/ui/new-chat")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
+            // The JSON API does the same.
+            let (status, body) = send_json(&app, json_post("/api/queen/new-chat", "{}")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["archived"], Value::Null, "nothing said since");
+        }
+
+        #[tokio::test]
+        async fn a_stream_from_another_epoch_reloads() {
+            let (app, queen) = app();
+            queen.events().push(QueenEvent::UserMessage {
+                turn: 1,
+                text: "Hi".into(),
+            });
+            let mut body = app
+                .clone()
+                .oneshot(get("/ui/stream?since=1&epoch=12345"))
+                .await
+                .unwrap()
+                .into_body();
+            assert!(next_frame(&mut body).await.starts_with("event: reload"));
+            let req = axum::http::Request::get("/ui/stream")
+                .header("last-event-id", "12345-1")
+                .body(Body::empty())
+                .unwrap();
+            let mut body = app.clone().oneshot(req).await.unwrap().into_body();
+            assert!(next_frame(&mut body).await.starts_with("event: reload"));
         }
 
         #[tokio::test]
@@ -1136,7 +1264,7 @@ mod tests {
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.starts_with("event: feed\n"), "{frame}");
-            assert!(frame.contains("id: 3\n"));
+            assert!(frame.contains(&format!("id: {}-3\n", queen.events().epoch())));
             assert!(frame.contains("hx-swap-oob=\"innerHTML:#f-r2\""));
             assert!(frame.contains("Hello &lt;there&gt;"));
 

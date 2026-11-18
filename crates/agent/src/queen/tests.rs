@@ -292,10 +292,9 @@ fn setup_full(
     limits: BeeLimits,
     tune: impl FnOnce(&mut QueenSettings),
 ) -> Setup {
-    let events = EventLog::new(Some(Transcript::new(
-        dir.join("queen/transcript.jsonl"),
-        1 << 20,
-    )));
+    // Like the daemon: the earlier chat comes back from the transcript.
+    let events =
+        EventLog::with_history(Transcript::new(dir.join("queen/transcript.jsonl"), 1 << 20));
     let registry = BeeRegistry::open(&dir.join("bees"), COMB).unwrap();
     let cells = FakeCells::new();
     let pool = BeePool::new(
@@ -817,6 +816,135 @@ async fn taint_outlives_the_session_and_the_daemon() {
 }
 
 #[tokio::test]
+async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted() {
+    let dir = scratch("new-chat");
+    let mut first = handshake("s-1");
+    first.extend([
+        prompt(2, "s-1", "<any>"),
+        Step::mcp(
+            "app_logs",
+            json!({"app": "nextcloud"}),
+            json!({"result": {"isError": false}}),
+        ),
+        text("s-1", "The logs look fine."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup_in(dir.clone(), vec![first], |_| {});
+    let (turn, since) = s.queen.send("Check the logs.").unwrap();
+    let events = turn_events(&s.queen, since, turn).await;
+    // The user is told once, in plain terms, what tainted the chat.
+    assert!(events.contains(&QueenEvent::Tainted {
+        tool: Some("app_logs".into()),
+        subject: Some("nextcloud".into()),
+    }));
+    drop(s);
+
+    // After a restart the chat is back (in memory only, renumbered, between markers).
+    let mut second = handshake("s-2");
+    second.extend([
+        prompt(2, "s-2", "<contains:Hello again.>"),
+        Step::mcp(
+            "create_bee",
+            json!({"name": "Ada"}),
+            json!({"result": {"isError": false}}),
+        ),
+        text("s-2", "Done."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup_in(dir.clone(), vec![second], |_| {});
+    let page = s.queen.events().since(0, 100);
+    let kinds: Vec<&QueenEvent> = page.events.iter().map(|r| &r.event).collect();
+    assert_eq!(kinds.first(), Some(&&QueenEvent::EarlierStart));
+    assert_eq!(kinds.last(), Some(&&QueenEvent::EarlierEnd));
+    assert!(kinds.contains(&&QueenEvent::UserMessage {
+        turn: 1,
+        text: "Check the logs.".into()
+    }));
+    assert!(kinds.contains(&&QueenEvent::AgentMessage {
+        turn: 1,
+        text: "The logs look fine.".into()
+    }));
+    assert!(kinds
+        .iter()
+        .any(|e| matches!(e, QueenEvent::Tainted { .. })));
+    assert_eq!(
+        page.events.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        (1..=page.events.len() as u64).collect::<Vec<_>>()
+    );
+    // Restored events are not written to the transcript again.
+    let transcript = std::fs::read_to_string(dir.join("queen/transcript.jsonl")).unwrap();
+    assert_eq!(transcript.matches("Check the logs.").count(), 1);
+    assert!(!transcript.contains("earlier_start"));
+
+    // A pending confirmation of the Queen is withdrawn by the new chat; a bee's stays.
+    let (mine, rx) =
+        s.queen
+            .confirmations()
+            .request(s.queen.task_id(), "uninstall_app", &json!({}), "test");
+    let (other, _rx) = s
+        .queen
+        .confirmations()
+        .request(999, "uninstall_app", &json!({}), "test");
+    let archived = s.queen.new_chat().await.unwrap().expect("archived");
+    assert!(rx.await.is_err(), "withdrawn without a decision");
+    let pending: Vec<u64> = s
+        .queen
+        .confirmations()
+        .pending()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(pending, [other.id]);
+    assert!(!pending.contains(&mine.id));
+    let audit = s.audit();
+    assert!(audit.contains("confirmation.withdrawn"), "{audit}");
+    assert!(audit.contains("queen.new_chat"), "{audit}");
+    assert!(!dir.join("queen/session.json").exists());
+    let past = s.queen.past_chats();
+    assert_eq!(past.len(), 1);
+    assert_eq!(past[0].id, archived);
+    assert_eq!(past[0].title, "Check the logs.");
+    assert_eq!(past[0].turns, 1);
+    let old = s.queen.past_chat(archived).unwrap();
+    assert!(old.iter().any(|r| matches!(&r.event,
+        QueenEvent::AgentMessage { text, .. } if text == "The logs look fine.")));
+    let mode = std::fs::metadata(dir.join(format!("queen/chats/{archived}.jsonl")))
+        .unwrap()
+        .permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+        0o600
+    );
+
+    // The next message opens a new session (no resume) with no earlier conversation in its
+    // preamble, and the chat is untainted: an attended Queen creates a bee without asking.
+    let since = s.queen.events().last_seq();
+    let (turn, _) = s.queen.send("Hello again.").unwrap();
+    assert_eq!(turn, 2, "turn ids continue after the restored ones");
+    let events = turn_events(&s.queen, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
+    assert!(events.contains(&QueenEvent::SessionOpened {
+        backend: "fake-acp".into(),
+        resumed: false
+    }));
+    assert_eq!(s.queen.bees().list().len(), 1);
+    assert!(!s.audit().contains("tool.confirm_requested"));
+    s.close().await;
+    let saved = std::fs::read_to_string(dir.join("queen/session.json")).unwrap();
+    assert!(saved.contains(r#""tainted":false"#), "{saved}");
+    assert!(saved.contains(r#""session_id":"s-2""#), "{saved}");
+
+    // Another restart restores only the new chat.
+    let s = setup_in(dir.clone(), vec![], |_| {});
+    let page = s.queen.events().since(0, 100);
+    assert!(page.events.iter().any(|r| matches!(&r.event,
+        QueenEvent::UserMessage { text, .. } if text == "Hello again.")));
+    assert!(!page.events.iter().any(|r| matches!(&r.event,
+        QueenEvent::UserMessage { text, .. } if text == "Check the logs.")));
+    s.close().await;
+}
+
+#[tokio::test]
 async fn agent_death_between_turns_is_noticed_before_the_next_message() {
     let mut first = handshake("s-1");
     first.extend([
@@ -964,19 +1092,19 @@ async fn the_queen_creates_a_named_bee_and_gives_it_a_job() {
             "create_bee",
             json!({"name": "Ada", "tools": ["comb_info"]}),
             json!({"result": {"isError": false, "structuredContent": {
-                "bee": ADA, "name": "Ada", "backend": "bee-acp", "status": "idle"}}}),
+                "bee": "Ada", "bee_id": ADA, "backend": "bee-acp", "status": "idle"}}}),
         ),
         Step::mcp(
             "give_bee_job",
             json!({"bee": "Ada", "goal": "Report the kernel version."}),
             json!({"result": {"isError": false, "structuredContent": {
-                "bee": ADA, "name": "Ada", "status": "working", "timeout_secs": 300}}}),
+                "bee": "Ada", "bee_id": ADA, "status": "working", "timeout_secs": 300}}}),
         ),
         Step::mcp(
             "bee_status",
             json!({"bee": "Ada", "wait_secs": 5}),
             json!({"result": {"isError": false, "structuredContent": {
-                "name": "Ada", "status": "idle", "job": "Report the kernel version.",
+                "bee": "Ada", "status": "idle", "job": "Report the kernel version.",
                 "result": "Kernel 6.1.0-test", "stop_reason": "end_turn",
                 "read_untrusted_content": false,
                 "activity": ["tool melissa__comb_info: pending", "tool melissa__comb_info: done"]}}}),
@@ -1397,7 +1525,7 @@ async fn reassigning_by_the_queen_needs_the_users_confirmation() {
     s.queen.confirmations().resolve(c.id, Verdict::Approved);
     let r = r.await.unwrap();
     assert_eq!(r["structuredContent"]["from"], ADA, "{r}");
-    assert_eq!(r["structuredContent"]["to_name"], "Bo");
+    assert_eq!(r["structuredContent"]["to"], "Bo");
     assert_eq!(s.cells.owner("nextcloud"), Some(Owner::Bee(BO.into())));
     assert_eq!(
         s.cells.assigned.lock().unwrap().last().unwrap().2,

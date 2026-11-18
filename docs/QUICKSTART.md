@@ -74,8 +74,8 @@ You can also talk to her from a second terminal in the same folder: `just chat`,
 
 Without k3s these work:
 
-1. **"Describe this machine."** The Queen calls Melissa's `bee_info` tool and tells you the OS, kernel,
-   CPU and memory.
+1. **"Describe this machine."** The Queen calls Melissa's `comb_info` tool and tells you the OS, kernel,
+   memory and disk space.
 2. **"Create a bee named Ada and have her check this machine, then tell me what she found."** The Queen
    creates a persistent bee, gives her a job and reports back (20-30 s). Talk to Ada directly afterwards:
    `just chat` then type, or `cargo run -q -p melissa-queen -- ask --bee Ada "what did you find?"`.

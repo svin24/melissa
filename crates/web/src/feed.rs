@@ -38,12 +38,14 @@ pub enum Item {
     },
     /// A confirmation the user decides on.
     Approval(Approval),
-    /// A short system line (session opened, turn stopped, errors).
+    /// A short system line (session opened, turn stopped, errors, taint).
     Note {
         text: String,
         detail: Option<String>,
         tone: NoteTone,
     },
+    /// A divider in the chat (e.g. where the restored earlier conversation ends).
+    Divider { text: String },
 }
 
 /// The plain-language view of a confirmation.
@@ -81,6 +83,8 @@ pub enum Change {
     Status,
     /// The set of pending confirmations changed.
     Waiting,
+    /// The user started a new chat: everything before is gone (clients reload).
+    Reset,
 }
 
 /// The folded chat.
@@ -103,6 +107,11 @@ pub struct Feed {
     busy: Option<TurnId>,
     backend: Option<String>,
     last_seq: u64,
+    /// Prefix of new keys: `e` inside the restored earlier conversation, whose confirmation
+    /// ids and agent tool-call ids may repeat after the restart.
+    prefix: &'static str,
+    /// A helper's conversation (words differ slightly from Melissa's).
+    helper: bool,
 }
 
 impl Feed {
@@ -110,16 +119,33 @@ impl Feed {
         Self::default()
     }
 
-    /// Fold a list of events (e.g. everything in the log).
-    pub fn from_events<'a>(
+    /// An empty feed for a helper's conversation (`true`) or Melissa's.
+    pub fn for_helper(helper: bool) -> Self {
+        Self {
+            helper,
+            ..Self::default()
+        }
+    }
+
+    /// An empty feed for an archived chat (read-only): confirmation ids in it may now
+    /// belong to other confirmations, so their arguments are not looked up.
+    pub fn archived() -> Self {
+        Self {
+            prefix: "e",
+            ..Self::default()
+        }
+    }
+
+    /// Fold events into this feed.
+    pub fn fold<'a>(
+        mut self,
         events: impl IntoIterator<Item = &'a EventRecord>,
         look: &dyn Lookup,
     ) -> Self {
-        let mut feed = Self::new();
         for e in events {
-            feed.apply(e, look);
+            self.apply(e, look);
         }
-        feed
+        self
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -185,13 +211,13 @@ impl Feed {
             QueenEvent::ConfirmationNeeded {
                 id, tool, reason, ..
             } => {
-                let approval = approval_words(
-                    *id,
-                    tool,
-                    reason,
-                    look.confirmation_args(*id).as_ref(),
-                    look,
-                );
+                // Restored confirmations are gone; a new one may have the same id.
+                let args = if self.prefix.is_empty() {
+                    look.confirmation_args(*id)
+                } else {
+                    None
+                };
+                let approval = approval_words(*id, tool, reason, args.as_ref(), look);
                 vec![
                     self.add(format!("c{id}"), Item::Approval(approval)),
                     Change::Waiting,
@@ -204,7 +230,7 @@ impl Feed {
                     _ => ApprovalState::Withdrawn,
                 };
                 let mut out = vec![Change::Waiting];
-                if let Some(&i) = self.by_key.get(&format!("c{id}")) {
+                if let Some(&i) = self.by_key.get(&self.full(&format!("c{id}"))) {
                     if let Item::Approval(a) = &mut self.entries[i].item {
                         a.state = state;
                         out.insert(0, Change::Updated(i));
@@ -356,6 +382,35 @@ impl Feed {
                 }
                 out
             }
+            QueenEvent::Tainted { tool, subject } => {
+                let text = self.taint_words(tool.as_deref(), subject.as_deref(), look);
+                vec![self.add(
+                    format!("n{}", rec.seq),
+                    Item::Note {
+                        text,
+                        detail: None,
+                        tone: NoteTone::Guard,
+                    },
+                )]
+            }
+            QueenEvent::NewChat => {
+                *self = Self {
+                    last_seq: self.last_seq,
+                    helper: self.helper,
+                    ..Self::default()
+                };
+                vec![Change::Reset, Change::Status, Change::Waiting]
+            }
+            QueenEvent::EarlierStart => {
+                self.prefix = "e";
+                vec![self.add(
+                    format!("n{}", rec.seq),
+                    Item::Divider {
+                        text: "Earlier".into(),
+                    },
+                )]
+            }
+            QueenEvent::EarlierEnd => self.end_earlier(rec.seq),
             QueenEvent::Error { turn, message } => {
                 if let Some(t) = turn {
                     self.errored_turns.insert(*t);
@@ -372,7 +427,13 @@ impl Feed {
         }
     }
 
+    /// A key as stored (with the current prefix).
+    fn full(&self, key: &str) -> String {
+        format!("{}{key}", self.prefix)
+    }
+
     fn add(&mut self, key: String, item: Item) -> Change {
+        let key = self.full(&key);
         let i = self.entries.len();
         self.by_key.insert(key.clone(), i);
         self.entries.push(Entry { key, item });
@@ -380,7 +441,7 @@ impl Feed {
     }
 
     fn upsert(&mut self, key: String, item: Item) -> Change {
-        match self.by_key.get(&key) {
+        match self.by_key.get(&self.full(&key)) {
             Some(&i) => {
                 self.entries[i].item = item;
                 Change::Updated(i)
@@ -390,9 +451,84 @@ impl Feed {
     }
 
     fn detail_of(&self, key: &str) -> Option<String> {
-        match &self.entries[*self.by_key.get(key)?].item {
+        match &self.entries[*self.by_key.get(&self.full(key))?].item {
             Item::Activity { detail, .. } => detail.clone(),
             _ => None,
+        }
+    }
+
+    /// The restored earlier conversation ends (the daemon restarted there): what was still
+    /// running or waiting then was stopped by the restart.
+    fn end_earlier(&mut self, seq: u64) -> Vec<Change> {
+        self.settle();
+        self.busy = None;
+        self.open_reply = None;
+        self.reply_break = false;
+        self.turns_with_reply.clear();
+        self.errored_turns.clear();
+        self.tool_keys.clear();
+        self.hidden_tools.clear();
+        self.open_jobs.clear();
+        let divider = self.add(
+            format!("n{seq}"),
+            Item::Divider {
+                text: "Melissa restarted".into(),
+            },
+        );
+        self.prefix = "";
+        vec![divider, Change::Status]
+    }
+
+    /// For a conversation that is over (restored or archived): nothing in it is still
+    /// running or waiting, and nothing is busy.
+    pub fn settle(&mut self) {
+        self.busy = None;
+        for e in &mut self.entries {
+            match &mut e.item {
+                Item::Activity { state, .. } if *state == ActivityState::Working => {
+                    *state = ActivityState::Stopped;
+                }
+                Item::Approval(a) if a.state == ApprovalState::Pending => {
+                    a.state = ApprovalState::Withdrawn;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The plain-language note when a conversation first reads untrusted content.
+    fn taint_words(&self, tool: Option<&str>, subject: Option<&str>, look: &dyn Lookup) -> String {
+        let who = if self.helper {
+            "This helper"
+        } else {
+            "Melissa"
+        };
+        let bee = |b: &str| look.bee_name(b).unwrap_or_else(|| b.to_string());
+        let what = match (tool, subject) {
+            (Some("app_logs"), Some(app)) => {
+                format!(
+                    "{who} read text from outside ({}'s logs).",
+                    display_app(app)
+                )
+            }
+            (Some("bee_status"), Some(b)) => format!(
+                "{who} read {}'s report, which includes text from outside.",
+                bee(b)
+            ),
+            (Some("queen"), Some(b)) => format!(
+                "{who} got a message from {}, which includes text from outside.",
+                bee(b)
+            ),
+            (Some("queen"), None) => {
+                format!("{who} got a job or message from Melissa that includes text from outside.")
+            }
+            (_, Some(app)) => format!("{who} read text from outside ({}).", display_app(app)),
+            _ => format!("{who} read text from outside."),
+        };
+        if self.helper {
+            format!("{what} Its changes now need your OK.")
+        } else {
+            format!("{what} Changes now need your OK until you start a new chat.")
         }
     }
 

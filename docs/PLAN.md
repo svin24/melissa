@@ -402,15 +402,17 @@ Roadmap (rough, phases may overlap):
 39. Nextcloud on SQLite is for M2; move to Postgres (second container or a shared DB service?) before
     real use, plus background jobs (cron) and `trusted_proxies`/`overwriteprotocol` once TLS exists.
 40. The Queen's taint is sticky for the whole conversation since 2026-11-18 (it survives session reopens
-    and restarts, because the agent keeps the content). How does the owner start a fresh, untainted
-    conversation (ties to 31, `/new`)? Show the taint in the UI? Old `session.json` files without the
-    flag resume untainted once.
+    and restarts, because the agent keeps the content). Decided 2026-11-18: "New chat" is how the owner
+    clears it (fresh agent session, old chat archived read-only), and the chat shows a quiet note when it
+    becomes tainted (no "trust again" button). Still open: should a bee's taint ever clear (bees keep their
+    memory, so no new chat for bees today)? Old `session.json` files without the flag resume untainted once.
 41. Confirmation waits vs the agents' MCP timeouts: Claude Code 2.1.327 abandons an HTTP MCP call at
     300 s (despite `MCP_TOOL_TIMEOUT`) without closing or cancelling it, so `confirm_timeout_secs`
     (default 240) withdraws confirmations first. Measure grok and opencode; per-backend limits? For
     owners who answer later (no notification channel yet, 17), should a waiting action become a
     durable request the Queen can pick up again instead of failing?
-42. Maintenance tools are missing (end-to-end test 2026-11-18): disk usage of `/var` and per app volume,
+42. Maintenance tools are missing (end-to-end test 2026-11-18): disk usage per app volume (free/total of `/`,
+    `/var` and the k3s data dir is in `comb_info` since 2026-11-18),
     list/prune unused images, restart an app, update an app to the catalog's current digest, app events
     (pull progress, probe failures), bootc update status/stage/rollback, journal usage/vacuum. Most need
     root on the bee (crictl, bootc, journald), not the k3s API: a narrow privileged helper with fixed
@@ -432,10 +434,11 @@ Roadmap (rough, phases may overlap):
     `comb_info` (was `bee_info`), renamed everywhere incl. replay fixtures; no alias (pre-alpha, nothing depends on it).
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
     Keep them, turn them into "ask a bee", or drop them when the chat UI lands?
-48. Web UI (2026-11-18): "New chat" and past conversations need the Queen to support several conversations (today
-    one session per daemon; the button is shown disabled). Should the chat reload its history from the transcript
-    after a daemon restart (the event log is in memory)? No tool reports disk usage yet, so the app strip has no
-    disk warning.
+48. Web UI (2026-11-18): done: history comes back after a daemon restart (last 30 turns from the transcript),
+    "New chat" archives the chat (past chats read-only under Conversations), `comb_info` reports disk space and
+    the app strip/device card warn at 85% of `/var`. Open: past chats are never pruned (size cap or age?);
+    restored history shows only what the transcript keeps (no streamed text pieces, no thoughts); dates in the
+    rail are UTC (no time zone setting yet).
 49. Pre-alpha "from source" (2026-11-18, docs/QUICKSTART.md, `just demo`): (a) the Ubuntu 23.10+ AppArmor
     workaround for bwrap is documented but untested on Ubuntu; check on a 24.04 VM before the release.
     (b) QUICKSTART has `<repo-url>` and "open an issue" without a link: fill in when the repo is public.

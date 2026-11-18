@@ -1,5 +1,5 @@
 //! What the UI shows about apps and devices, read with Melissa's read-only tools
-//! (`list_apps`, `cluster_health`, `bee_info`) through the same registry the agents use, so
+//! (`list_apps`, `cluster_health`, `comb_info`) through the same registry the agents use, so
 //! the calls are policy-checked and audited (`tool.call`, task 0, read-only scope). The answer is cached for
 //! [`HiveCache::TTL`] so open pages don't fill the audit log; a stale answer is served
 //! while a fresh one is fetched in the background.
@@ -94,6 +94,39 @@ pub struct Device {
     pub mem_total_kib: Option<u64>,
     pub mem_available_kib: Option<u64>,
     pub uptime_secs: Option<u64>,
+    /// Space where apps keep their data (`/var`, else `/`), from `comb_info`'s `disks`.
+    pub disk: Option<Disk>,
+}
+
+/// Space on one filesystem.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Disk {
+    pub path: String,
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+    pub used_percent: u64,
+}
+
+impl Disk {
+    /// Used at or above this percent: warn (the app strip and the device card).
+    pub const WARN_PERCENT: u64 = 85;
+
+    pub fn nearly_full(&self) -> bool {
+        self.used_percent >= Self::WARN_PERCENT
+    }
+}
+
+/// Where apps keep their data: `/var` if reported, else `/`.
+fn data_disk(info: &Value) -> Option<Disk> {
+    let disks = info["disks"].as_array()?;
+    let pick = |p: &str| disks.iter().find(|d| d["path"] == p);
+    let d = pick("/var").or_else(|| pick("/"))?;
+    Some(Disk {
+        path: d["path"].as_str()?.to_string(),
+        total_bytes: d["total_bytes"].as_u64()?,
+        available_bytes: d["available_bytes"].as_u64()?,
+        used_percent: d["used_percent"].as_u64()?,
+    })
 }
 
 /// Apps and devices at one moment.
@@ -169,7 +202,7 @@ impl HiveSnapshot {
             })
             .collect();
         if let Some(b) = bee {
-            // bee_info describes the device this daemon runs on. With one node that is it;
+            // comb_info describes the device this daemon runs on. With one node that is it;
             // with several we can't tell which, so it becomes its own entry.
             if devices.len() != 1 {
                 devices.insert(
@@ -186,6 +219,7 @@ impl HiveSnapshot {
             d.mem_total_kib = b["mem_total_kib"].as_u64();
             d.mem_available_kib = b["mem_available_kib"].as_u64();
             d.uptime_secs = b["uptime_secs"].as_u64();
+            d.disk = data_disk(b);
         }
         Self { apps, devices }
     }
@@ -265,7 +299,7 @@ impl HiveCache {
         let (apps, cluster, bee, cells) = tokio::join!(
             self.call("list_apps"),
             self.call("cluster_health"),
-            self.call("bee_info"),
+            self.call("comb_info"),
             self.cells(),
         );
         let snap = Arc::new(
@@ -322,6 +356,29 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_data_disk_is_var_and_warns_from_85_percent() {
+        let info = json!({"disks": [
+            {"path": "/", "total_bytes": 100, "available_bytes": 50, "used_percent": 50},
+            {"path": "/var", "total_bytes": 100, "available_bytes": 14, "used_percent": 86},
+        ]});
+        let snap = HiveSnapshot::from_tools(None, None, Some(&info));
+        let disk = snap.devices[0].disk.clone().unwrap();
+        assert_eq!(disk.path, "/var");
+        assert!(disk.nearly_full());
+        // Without /var, / counts; below 85% no warning.
+        let info = json!({"disks": [
+            {"path": "/", "total_bytes": 100, "available_bytes": 16, "used_percent": 84},
+        ]});
+        let snap = HiveSnapshot::from_tools(None, None, Some(&info));
+        let disk = snap.devices[0].disk.clone().unwrap();
+        assert_eq!(disk.path, "/");
+        assert!(!disk.nearly_full());
+        // Older comb_info without disks.
+        let snap = HiveSnapshot::from_tools(None, None, Some(&json!({})));
+        assert_eq!(snap.devices[0].disk, None);
+    }
 
     #[test]
     fn snapshot_from_tool_answers() {

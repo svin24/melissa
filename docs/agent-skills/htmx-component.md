@@ -9,24 +9,30 @@
   **every mapping from internal names to UI words** (tool names, event types, backend names, approval texts, how
   Melissa frames jobs/messages relayed into a bee's conversation). The UI says "helper" for a bee and "app" for a
   cell. Renames of tools/events only touch this module (and `state.rs` for `list_apps`/`cluster_health`/
-  `bee_info`). Both `bee_info` and `comb_info` are mapped while that rename lands. A `Lookup` trait gives the fold
-  confirmation arguments and bee names (implemented by `ui::Ui`).
+  `comb_info`). `bee_info` is still mapped for old transcripts. A `Lookup` trait gives the fold
+  confirmation arguments and bee names (implemented by `ui::Ui`). `Feed::for_helper(true)` words things for a
+  helper's chat; `Feed::archived()` folds a past chat (no confirmation lookups); `settle()` marks what was still
+  running as stopped and pending approvals as withdrawn.
 - `state.rs`: apps and devices for the UI, read through the tool registry (audited `tool.call`, task 0,
   `Scope::Nothing`, read-only tools) plus who looks after each cell (`queen.bees().cells()`, i.e. the
   `melissa.io/owner-bee` labels), cached 30 s; the first request waits, later ones refresh in the background.
-- `ui.rs`: the UI routes (`/`, `/hive`, `/approvals`, `/bees/{bee}`, `/ui/...`); `pages::Who` picks the
+- `ui.rs`: the UI routes (`/`, `/hive`, `/approvals`, `/bees/{bee}`, `/chats/{id}` (a past chat, read-only),
+  `/ui/...`, `POST /ui/new-chat`); `pages::Who` picks the
   conversation (Queen or a bee) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
   task pages, assets, security middleware.
 
 ## Components (2026-11-18)
 Shell: `app_page` (banner + rail + main), `page` (no rail: task pages, errors), `banner`, `mark`, `rail`
-(nav, conversations: Melissa and each helper, devices), `waiting_count`, `page_header`, `section`, `empty_state`.
-Chat: `feed` (live list), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `queen_message`,
+(nav, conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
+devices; a de-emphasised "Agent tasks" link), `waiting_count`, `page_header`, `section`, `empty_state`.
+Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
+"Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `queen_message`,
 `relayed_message` (a job or message Melissa passed into a helper's chat),
-`plain_text`, `activity_row`, `note`, `approval_card` (pending / approved / denied / withdrawn; destructive and
-"Can't be undone" variants), `composer`, `composer_status`.
+`plain_text`, `activity_row`, `note` (tones quiet, caution, guard: the honey "read text from outside" note),
+`approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
+"Can't be undone" variant), `composer`, `composer_status`.
 Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
-`device_card` (facts + `<meter>`).
+`device_card` (facts, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
 `select_field`, `textarea_field`, `post_form`, `action_button`.
 
@@ -49,7 +55,18 @@ Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `li
   tool call that finished, a decided approval), the composer status and the waiting count. One SSE event per
   batch of log events; its `id` is the last seq, so a reconnect (`Last-Event-ID`) resumes exactly.
 - The stream re-folds the log up to its cursor before streaming, so keys match the DOM the page rendered.
-  A cursor newer than the log (daemon restarted) gets a `reload` event; `melissa.js` reloads the page.
+  Cursors carry the log's epoch (page: `?since=<seq>&epoch=<epoch>`, SSE ids `<epoch>-<seq>`); a cursor from
+  another epoch (daemon restarted) or newer than the log gets a `reload` event, and so does every open page
+  when the user starts a new chat (`new_chat` event); `melissa.js` reloads the page.
+- History after a restart: each log starts with the last 30 turns of the current chat, restored from the
+  transcript between `earlier_start`/`earlier_end` (memory only). The feed shows them between "Earlier" and
+  "Melissa restarted" dividers under keys prefixed `e` (confirmation and agent tool-call ids repeat after a
+  restart); what was running then shows stopped, pending approvals withdrawn.
+- Taint: the first `tainted` event of a conversation becomes a `guard` note at that point ("Melissa read text
+  from outside (Nextcloud's logs). Changes now need your OK until you start a new chat."); no "trust again"
+  button. A new chat is the way to clear it.
+- Disk: `comb_info` reports `disks`; `state.rs` takes `/var` (else `/`) as the data disk; at 85% used or more
+  the app strip and the device card warn ("Storage almost full (1.7 GB left)").
 - Why SSE + the extension and not polling: one connection, low latency for streamed reply text, no
   re-rendering of the whole conversation (which would also steal focus from approval buttons).
 - Apps change slowly: `app_strip` and the hive's apps region poll (`/ui/strip`, `/ui/hive/apps`, 15 s).
@@ -80,7 +97,6 @@ Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `li
   `mcp__melissa__<tool>`. Check `feed.rs` tests when a backend changes its titles.
 - rust-embed reads assets from disk in debug builds (no rebuild needed for CSS/JS changes); release builds
   embed them. CSS/JS are `Cache-Control: no-cache` so a new binary's styles show at once; fonts are immutable.
-- The event log is in memory: after a daemon restart the chat starts empty (the transcript keeps history).
 - Screenshots without the T3 preview: `firefox --headless --profile <fresh dir> --no-remote
   --window-size=390,844 --screenshot out.png http://127.0.0.1:<port>/` (a fresh profile avoids cached CSS;
   `user_pref("ui.systemUsesDarkTheme", 1)` in its `user.js` for dark mode).
@@ -88,4 +104,5 @@ Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `li
 ## Testing
 - Router tests: `tower::ServiceExt::oneshot` + `http_body_util::BodyExt::collect` (dev-deps). For SSE, keep the
   response body and read frames with `body.frame()` under a timeout (`the_stream_sends_rendered_updates`).
-- The Queen test app registers fake read-only `list_apps`/`cluster_health`/`bee_info` tools (`Fixed`).
+- The Queen test app registers fake read-only `list_apps`/`cluster_health`/`comb_info` tools (`Fixed`; its
+  `/var` is 91% used, so the disk warning shows) and keeps a transcript (new chat archives it).

@@ -52,6 +52,20 @@ bee, `mod.rs` the Queen, `bees.rs` bee pool + Queen-only tools, `registry.rs` pe
   inside is escaped, audited `bee.brokered`); `reassign_cell {cell, to}` (always the user's confirmation).
   Labels: create/job/stop/message Reversible (attended Queen: allowed; tainted Queen: confirmation),
   status/list read-only, reassign `Effect::Ownership`.
+- **History after a restart:** `EventLog::with_history` starts the Queen's and each bee's log with the
+  last 30 turns of the current chat from the transcript (after the last `new_chat`; memory only, renumbered
+  seqs and turn ids, between `earlier_start`/`earlier_end`); new turn ids continue after them. Each log has an
+  `epoch()` so clients notice a cursor from before a restart.
+- **New chat** (`Queen::new_chat`, `POST /api/queen/new-chat`, `POST /ui/new-chat`, `melissa-queen new-chat`
+  or `chat --new`; audited `queen.new_chat`): withdraws the Queen's pending confirmations (audited
+  `confirmation.withdrawn`; bees' stay), stops a running turn (Busy if it doesn't stop within the cancel
+  grace), closes the agent session and deletes `session.json` (no resume, no transcript priming), archives
+  the transcript (+`.1`) to `queen/chats/<id>.jsonl` (0600; id = Unix seconds), clears the taint and pushes
+  `new_chat`. Past chats: `Queen::past_chats/past_chat`, `GET /api/queen/chats`, `/chats/<id>` in the UI.
+  This is the owner-approved way to clear taint. Bees have no new chat: they keep their memory by design.
+- Taint events: the first time a conversation reads untrusted content it pushes `tainted {tool, subject}`
+  (the MCP server remembers the first tainting tool and its `app`/`cell`/`bee` argument; `tool: "queen"` for
+  a job or message from a tainted Queen), right after the tool call.
 - Taint: a job or message from a tainted Queen (or from a tainted `from_bee`) taints the bee
   (`McpServer::taint_session` + its `session.json`); `bee_status` of a tainted bee taints the Queen.
 - The user talks to any bee directly (`/api/bees/{bee}/…`, `chat --bee`): same conversation, same
@@ -64,7 +78,7 @@ at turn end; was `queen_message`, still read from old transcripts), `tool_call` 
 pending/running/done/failed), `permission`, `confirmation_needed` (id, task, tool, reason),
 `confirmation_resolved` (approved/denied/withdrawn), `session_opened` (backend, resumed), `backend_failed`,
 `session_lost`, `turn_finished` (stop_reason: end_turn, cancelled, refusal, max_tokens, max_turn_requests,
-error), `error`. Only in the Queen's log: `bee_created` (bee, name, backend), `bee_started` (bee, name,
+error), `error`, `tainted` (tool, subject), `new_chat`, and in memory only `earlier_start`/`earlier_end`. Only in the Queen's log: `bee_created` (bee, name, backend), `bee_started` (bee, name,
 goal), `bee_finished` (bee, name, status succeeded/failed/cancelled, error), `cell_reassigned` (cell, from,
 to, by). Agent text is untrusted: render as plain text.
 - `GET /api/queen/events?since=<seq>&wait=<s≤30>&limit=<n>` → `{events, next, missed}`. Keep `next` as the
@@ -85,7 +99,11 @@ to, by). Agent text is untrusted: render as plain text.
   running turn, again quits; Ctrl-C/Ctrl-D at the prompt quits; events between turns are shown while
   waiting for input), `--bee <bee>` on both talks to a bee instead, `melissa-queen confirm [list|approve
   <id>|deny <id>]`, `melissa-queen bee list` (also `bees`; `workers` is a hidden alias for one release),
-  `bee rename <bee> <new name>`, `cell list`, `cell reassign <cell> --to <bee>`.
+  `bee rename <bee> <new name>`, `cell list`, `cell reassign <cell> --to <bee>`, `new-chat` (`chat --new`
+  starts one, then talks).
+- Bee tool results lead with the bee's name (`"bee": "Ada"`, id in `bee_id`; `reassign_cell`: `to` name,
+  `to_id`): agents echo what they read, and the prompts tell them to use names, "this device" and "apps",
+  never ids or internal terms. Tool arguments still take a name or an id.
   They use `listen` from the same `queen.toml` (`--config` works too).
 - `melissa-queen demo` (`just demo`): serve with a startup summary on stdout (URL, agents and why each is
   unusable, the Queen's backend, bwrap namespace probe, k3s) and only warnings in the log. Code:
@@ -108,6 +126,15 @@ read (aliases, one release).
 `session_store` on a session backend (built-in `grok-acp`: `.grok/sessions`, `claude-session`:
 `.claude/projects`, `opencode-acp`: `.local/share/opencode`) = where the agent keeps sessions, relative to
 `$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessions/<backend>/` (0700) there.
+
+## Verified: history, new chat, names (2026-11-18, dev laptop, grok-acp, temp XDG dirs, no k3s)
+- "Describe this device … how much disk space is free" → `comb_info` with `disks`, answer in plain words.
+  "Create a helper named Ada …" → "Ada reports the kernel version is …" (no ids in the reply).
+- Daemon restarted (SIGINT): the page showed both turns again between "Earlier" and "Melissa restarted";
+  `last_seq` 26 before any new event.
+- New chat (`POST /ui/new-chat`): 303 to an empty chat, `queen/chats/<id>.jsonl` (0600), transcript holds only
+  `new_chat`, `session.json` gone, audit `queen.new_chat`. Next message: `[session] grok-acp: new session`,
+  "This is the first message from you in this conversation.", `session.json` `tainted:false`.
 
 ## Verified with persistent bees (2026-11-18, dev laptop, grok-acp, temp XDG dirs, no k3s)
 - `ask "Create a bee named Ada with only the comb_info tool and give her a small job: check this comb with
