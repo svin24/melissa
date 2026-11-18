@@ -1150,6 +1150,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "melissa-agent",
+ "melissa-catalog",
  "serde_json",
  "thiserror",
  "tokio",
@@ -1164,7 +1165,10 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "k8s-openapi",
+ "kube",
  "melissa-agent",
+ "melissa-catalog",
  "melissa-hive",
  "melissa-web",
  "serde",
@@ -1188,6 +1192,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]

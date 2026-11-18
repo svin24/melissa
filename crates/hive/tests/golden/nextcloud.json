@@ -1,0 +1,311 @@
+{
+  "namespace": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "melissa.io/app": "nextcloud",
+        "melissa.io/managed": "true",
+        "pod-security.kubernetes.io/enforce": "baseline",
+        "pod-security.kubernetes.io/enforce-version": "latest"
+      },
+      "name": "app-nextcloud"
+    }
+  },
+  "role_binding": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "nextcloud",
+        "app.kubernetes.io/version": "34.0.6",
+        "melissa.io/app": "nextcloud"
+      },
+      "name": "melissa-apps",
+      "namespace": "app-nextcloud"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "ClusterRole",
+      "name": "melissa-app-workload"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "melissa-apps",
+        "namespace": "melissa"
+      }
+    ]
+  },
+  "secret": {
+    "namespace": "app-nextcloud",
+    "name": "nextcloud-secrets",
+    "keys": {
+      "admin_password": 32
+    },
+    "labels": {
+      "app.kubernetes.io/managed-by": "melissa",
+      "app.kubernetes.io/name": "nextcloud",
+      "app.kubernetes.io/version": "34.0.6",
+      "melissa.io/app": "nextcloud"
+    }
+  },
+  "volumes": [
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "app.kubernetes.io/name": "nextcloud",
+          "app.kubernetes.io/version": "34.0.6",
+          "melissa.io/app": "nextcloud"
+        },
+        "name": "nextcloud-data",
+        "namespace": "app-nextcloud"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "10Gi"
+          }
+        },
+        "storageClassName": "local-path"
+      }
+    }
+  ],
+  "deployment": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "annotations": {
+        "melissa.io/config": "{\"admin_user\":\"admin\",\"php_memory_limit\":\"512M\",\"upload_limit\":\"512M\"}"
+      },
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "nextcloud",
+        "app.kubernetes.io/version": "34.0.6",
+        "melissa.io/app": "nextcloud"
+      },
+      "name": "nextcloud",
+      "namespace": "app-nextcloud"
+    },
+    "spec": {
+      "replicas": 1,
+      "revisionHistoryLimit": 3,
+      "selector": {
+        "matchLabels": {
+          "melissa.io/app": "nextcloud"
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "melissa",
+            "app.kubernetes.io/name": "nextcloud",
+            "app.kubernetes.io/version": "34.0.6",
+            "melissa.io/app": "nextcloud"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "containers": [
+            {
+              "env": [
+                {
+                  "name": "NEXTCLOUD_ADMIN_PASSWORD",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "admin_password",
+                      "name": "nextcloud-secrets",
+                      "optional": false
+                    }
+                  }
+                },
+                {
+                  "name": "NEXTCLOUD_ADMIN_USER",
+                  "value": "admin"
+                },
+                {
+                  "name": "NEXTCLOUD_TRUSTED_DOMAINS",
+                  "value": "nextcloud.melissa.home.arpa"
+                },
+                {
+                  "name": "PHP_MEMORY_LIMIT",
+                  "value": "512M"
+                },
+                {
+                  "name": "PHP_UPLOAD_LIMIT",
+                  "value": "512M"
+                },
+                {
+                  "name": "SQLITE_DATABASE",
+                  "value": "nextcloud"
+                }
+              ],
+              "image": "docker.io/library/nextcloud:34.0.6-apache@sha256:3031e7f87baaceb863a755921ebf463bc26ea71855c07ad7858e2ae25a5a0ad7",
+              "imagePullPolicy": "IfNotPresent",
+              "livenessProbe": {
+                "failureThreshold": 4,
+                "httpGet": {
+                  "httpHeaders": [
+                    {
+                      "name": "Host",
+                      "value": "nextcloud.melissa.home.arpa"
+                    }
+                  ],
+                  "path": "/status.php",
+                  "port": "http"
+                },
+                "periodSeconds": 30,
+                "timeoutSeconds": 10
+              },
+              "name": "nextcloud",
+              "ports": [
+                {
+                  "containerPort": 80,
+                  "name": "http",
+                  "protocol": "TCP"
+                }
+              ],
+              "readinessProbe": {
+                "failureThreshold": 3,
+                "httpGet": {
+                  "httpHeaders": [
+                    {
+                      "name": "Host",
+                      "value": "nextcloud.melissa.home.arpa"
+                    }
+                  ],
+                  "path": "/status.php",
+                  "port": "http"
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 5
+              },
+              "resources": {
+                "limits": {
+                  "cpu": "1",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "256Mi"
+                }
+              },
+              "startupProbe": {
+                "failureThreshold": 90,
+                "httpGet": {
+                  "httpHeaders": [
+                    {
+                      "name": "Host",
+                      "value": "nextcloud.melissa.home.arpa"
+                    }
+                  ],
+                  "path": "/status.php",
+                  "port": "http"
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 5
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/var/www/html",
+                  "name": "data"
+                }
+              ]
+            }
+          ],
+          "enableServiceLinks": false,
+          "securityContext": {
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "volumes": [
+            {
+              "name": "data",
+              "persistentVolumeClaim": {
+                "claimName": "nextcloud-data"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "service": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "nextcloud",
+        "app.kubernetes.io/version": "34.0.6",
+        "melissa.io/app": "nextcloud"
+      },
+      "name": "nextcloud",
+      "namespace": "app-nextcloud"
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "http",
+          "port": 80,
+          "protocol": "TCP",
+          "targetPort": "http"
+        }
+      ],
+      "selector": {
+        "melissa.io/app": "nextcloud"
+      },
+      "type": "ClusterIP"
+    }
+  },
+  "ingress": {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "Ingress",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "nextcloud",
+        "app.kubernetes.io/version": "34.0.6",
+        "melissa.io/app": "nextcloud"
+      },
+      "name": "nextcloud",
+      "namespace": "app-nextcloud"
+    },
+    "spec": {
+      "ingressClassName": "traefik",
+      "rules": [
+        {
+          "host": "nextcloud.melissa.home.arpa",
+          "http": {
+            "paths": [
+              {
+                "backend": {
+                  "service": {
+                    "name": "nextcloud",
+                    "port": {
+                      "name": "http"
+                    }
+                  }
+                },
+                "path": "/",
+                "pathType": "Prefix"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

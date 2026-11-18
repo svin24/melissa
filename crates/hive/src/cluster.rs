@@ -31,6 +31,10 @@ pub const RUNTIME_DIR: &str = "/run/melissa-kube";
 /// File name of the kubeconfig inside [`RUNTIME_DIR`].
 pub const RUNTIME_FILE: &str = "queen.kubeconfig";
 
+/// File name of the write identity's kubeconfig (ServiceAccount `melissa/melissa-apps`) inside
+/// [`RUNTIME_DIR`]. Only the app tools use it; read-only tools stay on [`RUNTIME_FILE`].
+pub const APPS_RUNTIME_FILE: &str = "apps.kubeconfig";
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum ClusterError {
     /// No kubeconfig: k3s is not enabled on this bee (desktop) or its credentials are missing.
@@ -132,8 +136,19 @@ impl LazyCluster {
         Self::new(candidates, Some(runtime))
     }
 
+    /// The app tools' sources: configured path, then `RUNTIME_DIR/apps.kubeconfig`.
+    pub fn for_apps(configured: Option<&Path>) -> Self {
+        let runtime = PathBuf::from(RUNTIME_DIR);
+        let candidates = configured
+            .map(Path::to_path_buf)
+            .into_iter()
+            .chain([runtime.join(APPS_RUNTIME_FILE)])
+            .collect();
+        Self::new(candidates, Some(runtime))
+    }
+
     /// The client for the current kubeconfig, (re)built if the file appeared or changed.
-    async fn cluster(&self) -> Result<Arc<KubeCluster>, ClusterError> {
+    pub(crate) async fn cluster(&self) -> Result<Arc<KubeCluster>, ClusterError> {
         let found = self.candidates.iter().find(|p| p.is_file());
         let mut current = self.current.lock().await;
         let Some(path) = found else {
@@ -185,7 +200,7 @@ impl ClusterRead for LazyCluster {
     }
 }
 
-fn map_err(e: kube::Error) -> ClusterError {
+pub(crate) fn map_err(e: kube::Error) -> ClusterError {
     match e {
         kube::Error::Api(status) if status.code == 401 || status.code == 403 => {
             ClusterError::Forbidden(status.message.clone())
