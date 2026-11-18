@@ -5,8 +5,9 @@
 ## How it's built (image/Containerfile, stage `k3s`)
 - Versions and sha256 hashes are pinned in `image/k3s.lock` (sourced as shell). The fetch stage downloads the k3s
   binary, `k3s-airgap-images-amd64.tar.zst` and `k3s-selinux` from rpm.rancher.io (`coreos` build; there is no
-  Fedora build) and `sha256sum -c`s all three. No install script.
-- Final image: `/usr/bin/k3s` + `kubectl`/`crictl`/`ctr` symlinks, k3s-selinux installed with dnf, airgap tarball at
+  Fedora build), plus the k3s `LICENSE` from the release tag (raw.githubusercontent.com, `+` as `%2B`), and
+  `sha256sum -c`s all four. No install script. k3s has no NOTICE file.
+- Final image: `/usr/bin/k3s` + `kubectl`/`crictl`/`ctr` symlinks, `/usr/share/licenses/k3s/LICENSE`, k3s-selinux installed with dnf, airgap tarball at
   `/usr/lib/melissa/k3s/images/k3s-airgap-images-<ver>-amd64.tar.zst`, `/usr/lib/melissa/k3s.lock`.
 - `k3s.service` (ours, in `/usr/lib/systemd/system`) is enabled on headless only. `ExecStartPre=/usr/libexec/melissa/k3s-prepare`
   links the airgap tarball into `/var/lib/rancher/k3s/agent/images/` (version in the link name, because `/usr` mtimes
@@ -40,7 +41,7 @@
 
 ## Bumping k3s
 1. Never skip a Kubernetes minor version. 2. Edit `image/k3s.lock`: version, hashes from the release's
-`sha256sum-amd64.txt`. 3. Build, `just vm-dev deploy headless`, `just vm-k3s-smoke`.
+`sha256sum-amd64.txt`, `K3S_LICENSE_SHA256` as described in the lock file header. 3. Build, `just vm-dev deploy headless`, `just vm-k3s-smoke`.
 Channel versions: `curl -s https://update.k3s.io/v1-release/channels` (stable = v1.37.2+k3s1 on 2026-11-18).
 
 ## Verified (2026-11-18, headless VM, 3 GiB RAM)

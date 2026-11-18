@@ -9,13 +9,22 @@ ARG BUILDER=registry.fedoraproject.org/fedora:45
 # ---- stage 1: build the Melissa binaries --------------------------------------------
 FROM ${BUILDER} AS build
 RUN dnf -y install --setopt=install_weak_deps=False cargo rust gcc && dnf clean all
+# cargo-about writes the third-party license report (about.toml, `just licenses`). Same version as the
+# dev shell (devenv.nix); built once, then cached as this layer.
+ARG CARGO_ABOUT_VERSION=0.9.0
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    cargo install --locked --features cli --root /usr/local "cargo-about@${CARGO_ABOUT_VERSION}"
 WORKDIR /src
-COPY Cargo.toml Cargo.lock clippy.toml ./
+COPY Cargo.toml Cargo.lock clippy.toml about.toml about.hbs ./
 COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
     cargo build --release --locked -p melissa-queen -p melissa-bee \
- && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/
+ && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/bin/ \
+ && mkdir -p /out/licenses && cargo fetch --locked \
+ && cargo about generate --workspace --frozen --fail -o /out/licenses/THIRD-PARTY-LICENSES.md about.hbs
+# Melissa's own license (LICENSE*, once the project has one) and the acknowledgments ship with the report.
+COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 
 # ---- stage 2: fetch and verify k3s (versions and hashes pinned in image/k3s.lock) ---------
 FROM ${BUILDER} AS k3s
@@ -25,8 +34,10 @@ RUN set -eu; . /k3s.lock; mkdir -p /out; cd /out; \
     curl -fsSL --retry 3 -o k3s "$base/k3s"; \
     curl -fsSL --retry 3 -o airgap.tar.zst "$base/k3s-airgap-images-amd64.tar.zst"; \
     curl -fsSL --retry 3 -o k3s-selinux.rpm "$K3S_SELINUX_URL"; \
-    printf '%s  k3s\n%s  airgap.tar.zst\n%s  k3s-selinux.rpm\n' \
-        "$K3S_SHA256" "$K3S_AIRGAP_SHA256" "$K3S_SELINUX_SHA256" | sha256sum -c -
+    curl -fsSL --retry 3 -o LICENSE \
+        "https://raw.githubusercontent.com/k3s-io/k3s/$(printf %s "$K3S_VERSION" | sed 's/+/%2B/')/LICENSE"; \
+    printf '%s  k3s\n%s  airgap.tar.zst\n%s  k3s-selinux.rpm\n%s  LICENSE\n' \
+        "$K3S_SHA256" "$K3S_AIRGAP_SHA256" "$K3S_SELINUX_SHA256" "$K3S_LICENSE_SHA256" | sha256sum -c -
 
 # ---- stage 3: the OS image ------------------------------------------------------------
 FROM ${BASE}
@@ -39,13 +50,14 @@ RUN pkgs=$(cat /tmp/pkgs/*.txt | sed 's/#.*//' | xargs) \
  && if [ -n "$pkgs" ]; then dnf -y install $pkgs; fi \
  && dnf clean all && rm -rf /tmp/pkgs /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
 
-# k3s (rarely changes): binary + kubectl/crictl/ctr links, SELinux policy, airgap images in /usr.
+# k3s (rarely changes): binary + kubectl/crictl/ctr links, LICENSE, SELinux policy, airgap images in /usr.
 COPY --from=k3s /out/ /tmp/k3s/
 COPY image/k3s.lock /usr/lib/melissa/k3s.lock
 RUN set -eu; . /usr/lib/melissa/k3s.lock; \
     dnf -y install /tmp/k3s/k3s-selinux.rpm; \
     install -m 0755 /tmp/k3s/k3s /usr/bin/k3s; \
     for link in kubectl crictl ctr; do ln -sf k3s "/usr/bin/$link"; done; \
+    install -D -m 0644 /tmp/k3s/LICENSE /usr/share/licenses/k3s/LICENSE; \
     install -D -m 0644 /tmp/k3s/airgap.tar.zst \
         "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst"; \
     dnf clean all; rm -rf /tmp/k3s /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
@@ -69,8 +81,9 @@ RUN set -eu; \
         chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
     fi
 
-# Small, frequently changing layer last: binaries and version.
-COPY --from=build /out/ /usr/bin/
+# Small, frequently changing layer last: binaries, their license report and version.
+COPY --from=build /out/bin/ /usr/bin/
+COPY --from=build /out/licenses/ /usr/share/licenses/melissa/
 ARG MELISSA_VERSION=dev
 RUN mkdir -p /usr/lib/melissa && printf 'MELISSA_VERSION=%s\nMELISSA_VARIANT=%s\n' "$MELISSA_VERSION" "$VARIANT" > /usr/lib/melissa/release
 

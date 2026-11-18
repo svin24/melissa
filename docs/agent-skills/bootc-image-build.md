@@ -5,6 +5,11 @@
 ## Layout
 - `image/Containerfile`: one file, `--build-arg VARIANT=desktop|headless` and `BASE=...`.
   Stage 1 builds `melissa-queen`/`melissa-bee` on `fedora:45` (dnf `cargo rust gcc`); stage 2 is the OS.
+  Stage 1 also writes the crate license report (`/out/licenses/`, from `cargo about generate`); binaries are in
+  `/out/bin/`. cargo-about is `cargo install`ed there (needs `--features cli`, about 1m40s, cached as its own layer;
+  keep `CARGO_ABOUT_VERSION` equal to the dev shell's `cargo about --version`).
+- Licenses in the image: `/usr/share/licenses/melissa/` (report, ACKNOWLEDGMENTS.md, LICENSE once it exists) and
+  `/usr/share/licenses/k3s/LICENSE`. See ACKNOWLEDGMENTS.md.
 - `image/packages-{common,desktop,headless}.txt`: extra RPMs (owner wants extras in the image, not layered).
 - `image/rootfs/` (both) and `image/<variant>/` (variant only) are copied over `/`.
 - Bases (verified `containers.bootc=1` with `skopeo inspect`, 2026-11-18):

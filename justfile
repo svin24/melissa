@@ -10,7 +10,7 @@ lint:
 test:
     cargo nextest run
 
-check: fmt lint test
+check: fmt lint test licenses
 
 run-web:
     cargo run -p melissa-queen
@@ -59,3 +59,13 @@ vm-dev cmd variant="headless" *args="":
 # k3s smoke test on the running headless VM (node Ready, airgap images, SELinux, ingress via 127.0.0.1:18080)
 vm-k3s-smoke:
     scripts/vm-k3s-smoke.sh
+
+# --- third-party licenses -------------------------------------------------------------
+# License report for the Rust crates in melissa-queen/-bee (cargo-about, allowlist in about.toml).
+# Fails if a crate's license is not on the allowlist or cannot be identified. Needs the network
+# only for `cargo fetch` (crate sources); the image build runs the same command.
+licenses out="target/THIRD-PARTY-LICENSES.md":
+    cargo fetch --locked
+    mkdir -p "$(dirname {{out}})"
+    cargo about generate --workspace --frozen --fail -o {{out}} about.hbs
+    @echo "wrote {{out}}"

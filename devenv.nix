@@ -22,6 +22,8 @@ in
   };
 
   packages = [
+    # License report for the Rust dependencies shipped in the images (`just licenses`, about.toml).
+    pkgs.cargo-about
     pkgs.cargo-nextest
     pkgs.cargo-watch
     pkgs.just

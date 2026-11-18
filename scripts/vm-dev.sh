@@ -71,7 +71,7 @@ hotswap)
     podman build -q --network=host --target build -f image/Containerfile -t localhost/melissa-build:dev . >/dev/null
     tmp=$(mktemp -d)
     cid=$(podman create localhost/melissa-build:dev)
-    podman cp "$cid:/out/." "$tmp/"
+    podman cp "$cid:/out/bin/." "$tmp/"
     podman rm -f "$cid" >/dev/null
     scp "${opts[@]}" -P "$port" "$tmp"/melissa-* bee@127.0.0.1:/tmp/
     rm -rf "$tmp"
