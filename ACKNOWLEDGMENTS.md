@@ -17,6 +17,11 @@ and license notice must be kept with it and listed below under "Included third-p
   contributors. Inspired how Melissa builds and maintains its bootc images: Containerfile structure and layer order,
   image linting, signing and update practices, and the choice to stay on Fedora's signed kernel for Secure Boot.
 
+- **Hermes Agent** (Nous Research) — <https://github.com/NousResearch/hermes-agent>, MIT License, Copyright (c)
+  2025 Nous Research. Inspired how Melissa plans to delegate work to short-lived sub-agents: a child gets only its
+  goal and a subset of the parent's tools, cannot delegate further, and returns a size-capped summary, with "what was
+  done" derived by the harness rather than trusted from the model.
+
 ## Included third-party software
 
 Redistributed **in the Melissa binaries**:

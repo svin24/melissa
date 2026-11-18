@@ -204,6 +204,24 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   catalog apps), each in its own sandboxed environment; **Nix** is a candidate tool for those per-agent environments
   (reproducible toolchains). Agents also do cleanup and maintenance (prune images, logs, finished workspaces;
   updates), with destructive steps behind confirmations.
+- **After the demo: ephemeral worker bees and typed reports (owner idea, 2026-11-18; research: Hermes Agent study,
+  dual-LLM / plan-then-execute / CaMeL patterns).** Three tiers: Queen (talks to the user, stays clean) → persistent
+  Bee (owns cells, stays clean) → **ephemeral worker** (spawned by a Bee for one "dirty" job such as reading logs; a
+  leaf: can't spawn, can't ask the user, never resumed after reading untrusted content; read-only scope; its own
+  sandbox; destroyed afterwards, so its taint dies with it). Rules to adopt:
+  - Reports have two parts: a **harness part from the audit log** (tools called, targets, effects, egress hosts,
+    whether untrusted content was read; the only source of "what I did") and a **worker part validated against a
+    schema** (enums, numbers, ids that must match real cells). One retry, then the report is marked invalid.
+  - **Validated typed fields don't taint** the reader (Bee/Queen); free-text `notes` are capped, marked untrusted,
+    and taint whoever reads them (shown to the owner instead). Free text never becomes a tool argument.
+  - Workers never raise confirmations; they report `needs_action` and the clean Bee decides and asks.
+  - Limits: depth 2 (Queen → Bee → worker), 2–3 workers per Bee plus a hive-wide cap, per-worker budgets; scrub
+    secrets from worker output; summary size budget with overflow to a file.
+  - No memory/skill writes from a tainted context; memory loaded as a frozen snapshot per session, with provenance
+    per entry. No LLM-rated "smart" approvals (they can be injected).
+  - Open: should worker report schemas be a fixed, human-reviewed library (like UI components)? Leaning yes.
+    Should only the owner see a worker's `notes`? Later: chat-gateway pairing codes (outward-facing, needs the
+    owner's yes); a credential-injecting egress proxy (needs TLS interception, which our proxy avoids by design).
 - **Isolation with explicit links (owner, 2026-11-18):** apps and agents are isolated by default but may talk to each
   other when needed, or via the Queen. Design: agent to agent only through the Queen (brokered, audited, treated as
   data); app to app blocked by default, links declared in manifests and opened by the queen after approval
