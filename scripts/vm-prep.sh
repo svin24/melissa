@@ -13,6 +13,10 @@ name = "bee"
 password = "$(cat vm/test_password)"
 key = "$(cat vm/test_key.pub)"
 groups = ["wheel"]
+
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "40 GiB"
 TOML
 chmod 600 "$dir/config.toml" vm/test_password
 echo "prepared $dir (user: bee, password in vm/test_password, key vm/test_key)"

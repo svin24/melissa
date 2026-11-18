@@ -16,6 +16,19 @@ ssh -p 2222 -i vm/test_key bee@127.0.0.1      # desktop variant: port 2223, VM_D
   `echo system_powerdown | socat - unix-connect:vm/<variant>/monitor.sock` or kill `vm/<variant>/qemu.pid`.
 - QEMU comes from the dev shell (nixpkgs `qemu_kvm` 11.1, ships edk2 firmware under `share/qemu`).
 
+## Update + rollback test
+`devenv shell -- just vm-update-test headless` with the VM running: copies the current local image into the VM
+(`podman save` → scp → `sudo podman load`), `bootc switch --transport containers-storage`, reboots, checks
+`/usr/lib/melissa/release` and Secure Boot, then `bootc rollback`, reboots, checks the old release is back.
+
+## Verified (2026-11-18)
+- Headless VM boots with Secure Boot **enabled** (nixpkgs `OVMF.override { secureBoot = true; msVarsTemplate = true; }`,
+  `OVMF_CODE.ms.fd`/`OVMF_VARS.ms.fd`, `-machine q35,smm=on`, `-global driver=cfi.pflash01,property=secure,value=on`),
+  swtpm TPM 2.0 at `/dev/tpm0`, SSH ~30 s after start, ~430 MB RAM idle, queen + tailscaled active.
+- bib default disk is 10 GiB (8.6 GiB root); too small for the 7.8 GB desktop image, so `vm-prep.sh` sets
+  `[[customizations.filesystem]] mountpoint="/" minsize="40 GiB"`.
+- `bootc status` needs root even for reading.
+
 ## Gotchas
 - bootc-image-builder reads root's container storage, so images built rootless must be copied with
   `just image-to-root` first (reference lab: verified for bib).

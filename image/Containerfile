@@ -65,5 +65,10 @@ RUN set -eu; \
     gpg --homedir /tmp --with-colons --show-keys "$key" 2>/dev/null | grep '^fpr' | grep -qi "${keyid}:" \
         || { echo "kernel-core key $keyid is not $key"; exit 1; }; \
     rm -rf /tmp/*; \
-    if rpm -qa 'kmod-*' 'akmod-*' | grep -q .; then echo "out-of-tree kmods present"; exit 1; fi
+    kdir=/usr/lib/modules/$(ls /usr/lib/modules); \
+    if [ -n "$(find "$kdir/extra" "$kdir/updates" -name '*.ko*' 2>/dev/null)" ]; then \
+        echo "out-of-tree kernel modules present"; exit 1; fi; \
+    # kmod and kmod-libs are Fedora's module tools; kmod-<driver>/akmod-* are out-of-tree drivers.
+    if rpm -qa --qf '%{NAME}\n' | grep -E '^(akmod-|kmod-)' | grep -vxE 'kmod-libs|kmod-devel' | grep -q .; then \
+        echo "out-of-tree kmod packages present"; exit 1; fi
 RUN bootc container lint

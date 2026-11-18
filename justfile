@@ -47,3 +47,7 @@ vm-disk variant="headless":
 # Boot the VM disk in QEMU (UEFI, KVM). Uses a throwaway overlay so the built disk stays clean.
 vm-run variant="headless":
     scripts/vm-run.sh {{variant}}
+
+# Update + rollback test against the running VM (switch to the current local image, reboot, roll back).
+vm-update-test variant="headless":
+    scripts/vm-update-test.sh {{variant}}

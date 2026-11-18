@@ -47,6 +47,16 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
 - Inspect an image: `podman run --rm --network=host localhost/melissa-<v>:dev bash -c '...'`;
   initramfs content: `lsinitrd /usr/lib/modules/<kver>/initramfs.img <path>`.
 
+## Secure Boot guard (Containerfile, before lint)
+- One kernel dir under `/usr/lib/modules`; `kernel-core` signed by the Fedora release key; no `.ko` files in
+  `extra/` or `updates/`; no `akmod-*`/`kmod-<driver>` packages.
+- RPM signatures in these images are in `%{RSAHEADER:pgpsig}` (`%{SIGPGP}` is empty). Fedora keys are not imported
+  into the image's rpmdb (only Tailscale's is); compare against `/usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-<N>-primary`
+  with `gpg --show-keys`. `/etc/pki/rpm-gpg` is empty in fedora-bootc.
+- Don't match `rpm -qa 'kmod-*'`: it hits Fedora's own `kmod-libs` (false positive seen 2026-11-18).
+- This checks package metadata, not the PE signature Secure Boot verifies; the real test is a VM boot with
+  Secure Boot on (`scripts/vm-run.sh` default).
+
 ## Moving the laptop onto the desktop image (owner's explicit yes required; not done yet)
 ```
 rpm-ostree status                              # record layered pkgs, initramfs-etc, kargs
