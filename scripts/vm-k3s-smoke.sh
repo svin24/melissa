@@ -55,9 +55,11 @@ EOS
 echo "$args" | grep -q 'checkNewVersion=false' && pass "Traefik update check disabled" \
     || fail "Traefik still checks for new versions (args: $args)"
 
-denials=$(vm 'sudo ausearch -m avc -ts boot 2>/dev/null | grep -c "denied" || true')
-[ "${denials:-0}" -eq 0 ] && pass "no SELinux denials since boot" \
-    || { echo "WARN: $denials SELinux denials since boot:"; vm 'sudo ausearch -m avc -ts boot 2>/dev/null | grep denied | head -5'; }
+# The images have no ausearch (audit tools); AVCs land in the journal.
+[ "$(vm getenforce)" = Enforcing ] || fail "SELinux is not enforcing"
+denials=$(vm 'sudo journalctl -b --no-pager | grep -c "avc:  denied" || true')
+[ "${denials:-0}" -eq 0 ] && pass "no SELinux denials since boot (enforcing)" \
+    || { echo "WARN: $denials SELinux denials since boot:"; vm 'sudo journalctl -b --no-pager | grep "avc:  denied" | head -5'; }
 
 vm "sudo kubectl apply -f -" <<YAML >/dev/null
 apiVersion: v1
