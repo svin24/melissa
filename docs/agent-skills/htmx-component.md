@@ -5,18 +5,24 @@
 ## Layout of the crate
 - `components.rs`: the fixed component library, the only place with markup and CSS classes.
 - `pages.rs`: pages and fragments composed from components (no markup of its own).
-- `feed.rs`: folds the Queen's event log into chat items and holds **every mapping from internal names to UI
-  words** (tool names, event types, backend names, helper names, approval texts). Renames of tools/events
-  (worker → bee, app → cell) only touch this module (and `state.rs` for `list_apps`/`cluster_health`/`bee_info`).
-- `state.rs`: apps and devices for the UI, read through the tool registry (audited `tool.call`, task 0, owner
-  scope, read-only tools) and cached 30 s; the first request waits, later ones refresh in the background.
-- `ui.rs`: the Queen UI routes (`/`, `/hive`, `/approvals`, `/ui/...`); `api.rs`: the JSON API; `lib.rs`: router,
+- `feed.rs`: folds a conversation's event log (the Queen's or a bee's: same shape) into chat items and holds
+  **every mapping from internal names to UI words** (tool names, event types, backend names, approval texts, how
+  Melissa frames jobs/messages relayed into a bee's conversation). The UI says "helper" for a bee and "app" for a
+  cell. Renames of tools/events only touch this module (and `state.rs` for `list_apps`/`cluster_health`/
+  `bee_info`). Both `bee_info` and `comb_info` are mapped while that rename lands. A `Lookup` trait gives the fold
+  confirmation arguments and bee names (implemented by `ui::Ui`).
+- `state.rs`: apps and devices for the UI, read through the tool registry (audited `tool.call`, task 0,
+  `Scope::Nothing`, read-only tools) plus who looks after each cell (`queen.bees().cells()`, i.e. the
+  `melissa.io/owner-bee` labels), cached 30 s; the first request waits, later ones refresh in the background.
+- `ui.rs`: the UI routes (`/`, `/hive`, `/approvals`, `/bees/{bee}`, `/ui/...`); `pages::Who` picks the
+  conversation (Queen or a bee) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
   task pages, assets, security middleware.
 
 ## Components (2026-11-18)
 Shell: `app_page` (banner + rail + main), `page` (no rail: task pages, errors), `banner`, `mark`, `rail`
-(nav, conversations, devices), `waiting_count`, `page_header`, `section`, `empty_state`.
+(nav, conversations: Melissa and each helper, devices), `waiting_count`, `page_header`, `section`, `empty_state`.
 Chat: `feed` (live list), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `queen_message`,
+`relayed_message` (a job or message Melissa passed into a helper's chat),
 `plain_text`, `activity_row`, `note`, `approval_card` (pending / approved / denied / withdrawn; destructive and
 "Can't be undone" variants), `composer`, `composer_status`.
 Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
@@ -35,8 +41,9 @@ Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `li
   inline `style=`. Our only script is `assets/melissa.js` (Enter-to-send, scrolling, reload after a restart).
 
 ## Live updates (chat and approvals)
-- `GET /ui/stream?since=<seq>&view=chat|approvals` is SSE, fed by the Queen's `EventLog` (same log as the
-  long-poll API). The page renders the feed folded up to `last_seq` and connects with `since=last_seq`.
+- `GET /ui/stream?since=<seq>&view=chat|approvals` (the Queen) and `GET /ui/bees/{bee}/stream?since=` (a helper)
+  are SSE, fed by the conversation's `EventLog` (same logs as the long-poll API). Confirmations are only in the
+  Queen's log, so approvals show in her chat and on `/approvals`, not in a helper's chat. The page renders the feed folded up to `last_seq` and connects with `since=last_seq`.
 - Each SSE `feed` event is server-rendered HTML: new `feed_entry` items (the htmx SSE extension appends them,
   `sse-swap="feed" hx-swap="beforeend"`) plus `hx-swap-oob` replacements for changed entries (a growing reply, a
   tool call that finished, a decided approval), the composer status and the waiting count. One SSE event per

@@ -231,14 +231,15 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   resource bars), a worker's sandbox view (plan, live output, what it can reach, upkeep log). Concept mockups:
   claude.ai artifact "Melissa UI concepts" (private to the owner). The owner approved building them for the
   pre-alpha demo.
-- **Status (2026-11-18):** built in `crates/web` (branch `t3/chat-home-hive-ui`): home = chat with the Queen (app
-  strip, replies as escaped plain text, "what I did" rows, helper rows, inline approval cards, composer with
-  backend line and Stop), `/hive` (apps as honeycomb cells, "Add an app" into the chat, device cards), `/approvals`;
-  the task dashboard moved to `/tasks`. Live updates over SSE from the Queen's event log (htmx SSE extension,
-  vendored). Fonts Atkinson Hyperlegible Next and Bricolage Grotesque vendored (OFL). Details:
-  [htmx-component.md](agent-skills/htmx-component.md). Not yet: "looked after by <bee>" (needs the owner in
-  `list_apps` or named bees), disk usage, upkeep line, several conversations / New chat, chat history after a
-  daemon restart (the event log is in memory; the transcript has it).
+- **Status (2026-11-18):** built in `crates/web` (branch `t3/chat-home-hive-ui`, on top of the hive-model rename):
+  home = chat with the Queen (app strip, replies as escaped plain text, "what I did" rows, helper rows that link to
+  the helper, inline approval cards, composer with backend line and Stop), `/hive` (apps as honeycomb cells with
+  "Looked after by <bee>", "Add an app" into the chat, device cards), `/approvals`, and `/bees/{bee}` (chat with one
+  helper; listed under Conversations in the rail); the task dashboard moved to `/tasks`. Live updates over SSE from
+  the conversations' event logs (htmx SSE extension, vendored). Fonts Atkinson Hyperlegible Next and Bricolage
+  Grotesque vendored (OFL). The UI says "helper" for a bee and "app" for a cell. Details:
+  [htmx-component.md](agent-skills/htmx-component.md). Not yet: disk usage, upkeep line, several conversations with
+  the Queen / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
 
 ## 6b. Clients (later)
 
