@@ -8,6 +8,12 @@
 #   pin all of that to namespaces named app-<name> labelled melissa.io/app=<name> with Pod
 #   Security "baseline" (or "restricted") enforced, and to RoleBindings that grant exactly
 #   melissa-app-workload to exactly this ServiceAccount.
+# - App ownership (melissa.io/owner on the namespace: `owner` or `job-<key>`) is set when a
+#   namespace is created and can never be changed by this identity afterwards; only the
+#   owner's `sudo melissa-queen app-adopt <app>` (k3s admin, not matched here) changes it.
+#   Unlabelled namespaces (from before ownership) may only gain `owner`. Which agent may act
+#   on which app is enforced in the queen (agents hold no cluster credentials); see
+#   docs/agent-skills/ownership-and-scopes.md.
 # - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
 #   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
 #   generated credentials are for the owner); pods and logs read.
@@ -46,6 +52,19 @@ spec:
         ('pod-security.kubernetes.io/enforce' in object.metadata.labels &&
          object.metadata.labels['pod-security.kubernetes.io/enforce'] in ['baseline', 'restricted'])
       message: "app namespaces must enforce Pod Security baseline or restricted"
+    - expression: >-
+        request.operation != 'CREATE' ||
+        ('melissa.io/owner' in object.metadata.labels &&
+         object.metadata.labels['melissa.io/owner'].matches('^(owner|job-[a-z0-9]{1,40})$'))
+      message: "new app namespaces must carry melissa.io/owner=owner or job-<key>"
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        (has(oldObject.metadata.labels) && 'melissa.io/owner' in oldObject.metadata.labels ?
+          ('melissa.io/owner' in object.metadata.labels &&
+           object.metadata.labels['melissa.io/owner'] == oldObject.metadata.labels['melissa.io/owner']) :
+          (!('melissa.io/owner' in object.metadata.labels) ||
+           object.metadata.labels['melissa.io/owner'] == 'owner'))
+      message: "melissa-apps may not change an app's owner (the owner uses melissa-queen app-adopt)"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

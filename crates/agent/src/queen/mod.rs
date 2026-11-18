@@ -47,7 +47,8 @@ use crate::{
         SessionBackend, SessionEvent, ToolStatus,
     },
     tools::{
-        Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, TaskContext, Verdict,
+        Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Scope, TaskContext,
+        Verdict,
     },
     AgentError, AuditLog, AuditRecord, TaskBoard, TaskId, TaskSnapshot, MAX_PROMPT_BYTES,
 };
@@ -284,6 +285,10 @@ impl Queen {
             // The Queen acts only on a message from the user, who is in the chat.
             attended: true,
             delegate: true,
+            // Every app; the owner's apps only after a confirmation naming them.
+            scope: Scope::ForOwner {
+                agent: "the Queen".into(),
+            },
             ..TaskContext::default()
         };
         (ctx, self.inner.allow.clone())

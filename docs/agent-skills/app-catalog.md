@@ -96,10 +96,15 @@ so "keep data" and "delete data" are explicit, and `Recreate` never runs two pod
 | tool | labels | notes |
 |---|---|---|
 | `list_catalog` | read-only | works without k3s |
-| `install_app {app, config?}` | Reversible | attended Queen: allowed; unattended or tainted: confirmation. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
-| `app_status {app}` | read-only | phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
-| `app_logs {app, lines?, container?, previous?}` | reads_untrusted | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
-| `uninstall_app {app, delete_data?}` | Destructive | always a confirmation. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
+| `install_app {app, config?}` | Reversible, target `app` (Change) | attended Queen: allowed for a new app; over an owner's app: confirmation naming the owner; unattended or tainted: confirmation. Records `melissa.io/owner` (+ installed-by/at, origin) on a new namespace, keeps an existing record. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
+| `app_status {app}` | read-only, target `app` (Read) | reports `owner`, `installed_by`, `installed_at`; phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
+| `app_logs {app, lines?, container?, previous?}` | reads_untrusted, target `app` (ReadScoped: workers only for their apps) | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
+| `uninstall_app {app, delete_data?}` | Destructive, target `app` (Change) | always a confirmation (naming the owner for their apps); workers: refused outside their scope. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
+
+Before the labels, the registry checks the caller's scope against the app's owner (see
+[ownership-and-scopes.md](ownership-and-scopes.md)): a worker touching an app that isn't its job's or
+granted is refused outright (`tool.refused`), never asked. `melissa-queen tool` and `/api/tools` act as
+the owner.
 
 `melissa-queen tool --wait <name> [json]` runs a tool in the daemon (`POST /api/tools/{name}`) as
 an unattended operator call (task 0): reversible/destructive calls wait for `melissa-queen
@@ -119,6 +124,12 @@ and refuses anything that needs a confirmation.
 - PSA baseline in app namespaces is what keeps the write identity off the host (no privileged
   pods, hostPath, host namespaces).
 - `rotate [queen|apps]` in `melissa-kubeconfig` (default both).
+
+## Ownership (2026-11-18)
+Namespace label `melissa.io/owner` = `owner` | `job-<key>`; no label = the owner's. The namespaces
+admission policy requires it on create and freezes it on update (`melissa-apps` can never change an
+owner). The owner takes over a job's app with `sudo melissa-queen app-adopt <app>` (admin kubeconfig,
+merge patch, records `melissa.io/adopted-from`/`-at`). Details: [ownership-and-scopes.md](ownership-and-scopes.md).
 
 ## Owner credentials
 `sudo melissa-queen app-credentials nextcloud` reads `app-nextcloud/nextcloud-secrets` with k3s's

@@ -235,3 +235,17 @@ Format: date — decision. Why. Alternatives considered.
   environments (owner).** Agents also handle cleanup and maintenance behind confirmations.
 - **2026-11-18 — Isolation by default, communication by explicit, approved, audited links (owner).** Agent to agent via
   the Queen; app to app via manifest-declared NetworkPolicy links; agent to app via tools only.
+- **2026-11-18 — Agents change only what belongs to them: resource ownership + task scopes (owner).** Every app
+  records its owner on its namespace (`melissa.io/owner` = `owner` | `job-<key>`, plus installed-by/at and
+  origin); no label = the owner's. Every task has a scope (`Owner` for the operator CLI/API, `ForOwner` for the
+  attended Queen and UI tasks, `Job` for workers, `Nothing` by default). Tools declare their target argument;
+  the tool registry checks the scope once, before the label policy, for every tool. Out of scope is **refused**
+  (audited `tool.refused`), not a confirmation: a click-through prompt is not protection against an agent
+  shutting down someone else's app. The Queen changing the owner's apps gets a confirmation that names the
+  owner; workers get `apps` (granted by the Queen, owner apps only with the owner's yes) plus what they create.
+  Why in the queen and not RBAC: agents hold no cluster credentials (tools are their only path) and the cluster
+  sees one write identity; admission adds what it can see: the owner label is required on create and frozen on
+  update. Ownership changes only through `sudo melissa-queen app-adopt` (root, admin kubeconfig), never an agent
+  tool, not even behind a confirmation (persuasion/confirmation fatigue on the input every other check trusts).
+  Trade-offs: the Queen's reinstalls/config changes of owner apps now always ask; jobs' apps outlive their job
+  (Queen may still change them; the owner adopts them); without k3s the owner can't be checked → fail closed.

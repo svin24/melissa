@@ -3,11 +3,13 @@
 //! Agents never get a shell. They call named tools with JSON arguments; each tool carries
 //! [`Labels`] and the [`policy`] decides per call whether it runs now or waits for a human
 //! ([`ConfirmationStore`]). Every call, confirmation and refusal is audited with a hash of
-//! its arguments.
+//! its arguments. Before the policy, the registry checks the task's [`Scope`]: agents
+//! change only resources that belong to them ([`scope`]).
 
 mod builtin;
 mod confirm;
 pub mod policy;
+pub mod scope;
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -17,6 +19,9 @@ use sha2::{Digest, Sha256};
 pub use builtin::BeeInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext};
+pub use scope::{
+    Access, JobScope, Owner, ResourceKind, ResourceOwners, Scope, ScopeDecision, Target,
+};
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
 
@@ -38,6 +43,9 @@ pub enum ToolError {
     BadArgs(String),
     #[error("denied by a human")]
     Denied,
+    /// Out of the task's scope (not its resource): refused without asking anyone.
+    #[error("refused: {0}")]
+    Refused(String),
     #[error("confirmation timed out")]
     ConfirmationTimeout,
     #[error("tool failed: {0}")]
@@ -66,6 +74,13 @@ pub trait Tool: Send + Sync {
     fn queen_only(&self) -> bool {
         false
     }
+
+    /// The resource this tool works on, named by one of its arguments. The registry checks
+    /// the caller's [`Scope`] against it before the label policy (see [`scope`]). Every tool
+    /// that changes or reads into a resource with an owner must declare it. Default: none.
+    fn target(&self) -> Option<Target> {
+        None
+    }
 }
 
 /// All tools available on this bee, plus the confirmation inbox.
@@ -75,6 +90,8 @@ pub struct ToolRegistry {
     confirmations: ConfirmationStore,
     audit: Option<AuditLog>,
     confirm_timeout: Duration,
+    /// Who owns resources (None: every existing resource counts as the human's).
+    owners: Option<Arc<dyn ResourceOwners>>,
 }
 
 impl ToolRegistry {
@@ -85,6 +102,22 @@ impl ToolRegistry {
             confirmations: ConfirmationStore::new(),
             audit,
             confirm_timeout: Duration::from_secs(15 * 60),
+            owners: None,
+        }
+    }
+
+    /// Where the scope check learns who owns a resource. Without it, every resource is
+    /// treated as existing and owned by the human (the strictest answer).
+    pub fn with_owners(mut self, owners: Arc<dyn ResourceOwners>) -> Self {
+        self.owners = Some(owners);
+        self
+    }
+
+    /// Who owns resource `name` of `kind` now (`Ok(None)`: it does not exist).
+    pub async fn owner_of(&self, kind: ResourceKind, name: &str) -> Result<Option<Owner>, String> {
+        match &self.owners {
+            Some(o) => o.owner(kind, name).await,
+            None => Ok(Some(Owner::Human)),
         }
     }
 
@@ -115,11 +148,19 @@ impl ToolRegistry {
     /// Tool specs an agent with policy context `ctx` may see. `allow` limits the set
     /// (None = all); Queen-only tools need `ctx.delegate`. Hidden tools are not merely
     /// refused, the agent never learns they exist.
+    /// Tools that change resources outside `ctx.scope` are hidden too, and a targeted tool's
+    /// argument description lists the resources in scope.
     pub fn visible_to(&self, ctx: &TaskContext, allow: Option<&[&str]>) -> Vec<ToolSpec> {
         self.tools
             .values()
             .filter(|t| ctx.delegate || !t.queen_only())
-            .map(|t| t.spec())
+            .filter_map(|t| {
+                let mut spec = t.spec();
+                match t.target() {
+                    Some(target) if !scope::present(&ctx.scope, &target, &mut spec.params) => None,
+                    _ => Some(spec),
+                }
+            })
             .filter(|s| allow.is_none_or(|a| a.contains(&s.name)))
             .collect()
     }
@@ -158,8 +199,20 @@ impl ToolRegistry {
         let spec = tool.spec();
         let hash = args_hash(&args);
 
+        let mut reasons = Vec::new();
+        if let Some(target) = tool.target() {
+            if let Some(reason) = self
+                .check_scope(task, ctx, name, &target, &args, &hash)
+                .await?
+            {
+                reasons.push(reason);
+            }
+        }
         if let Decision::Confirm(reason) = decide(name, &spec.labels, ctx) {
-            self.confirm(task, name, &args, &reason).await?;
+            reasons.push(reason);
+        }
+        if !reasons.is_empty() {
+            self.confirm(task, name, &args, &reasons.join("; ")).await?;
         }
 
         let result = tool.call_in(task, ctx, args).await;
@@ -172,6 +225,49 @@ impl ToolRegistry {
         };
         self.audit(task, "tool.call", name, &hash, &outcome);
         result
+    }
+
+    /// The scope check for a targeted call: `Ok(Some(reason))` = needs a confirmation,
+    /// `Err(Refused)` = out of scope (audited `tool.refused`).
+    async fn check_scope(
+        &self,
+        task: TaskId,
+        ctx: &TaskContext,
+        name: &str,
+        target: &Target,
+        args: &Value,
+        hash: &str,
+    ) -> Result<Option<String>, ToolError> {
+        let resource = match args.get(target.arg) {
+            Some(Value::String(s)) => s.as_str(),
+            _ => {
+                return Err(ToolError::BadArgs(format!(
+                    "`{}` (string) is required",
+                    target.arg
+                )))
+            }
+        };
+        let owner = if ctx.scope.needs_owner(target.access, resource) {
+            match self.owner_of(target.kind, resource).await {
+                Ok(owner) => owner,
+                Err(e) => {
+                    // Fail closed: without knowing the owner, nothing is changed.
+                    let reason = format!("could not check who owns `{resource}`: {e}");
+                    self.audit(task, "tool.refused", name, hash, &reason);
+                    return Err(ToolError::Failed(reason));
+                }
+            }
+        } else {
+            None
+        };
+        match scope::check(&ctx.scope, target, resource, owner.as_ref()) {
+            ScopeDecision::Allow => Ok(None),
+            ScopeDecision::Confirm(reason) => Ok(Some(reason)),
+            ScopeDecision::Refuse(reason) => {
+                self.audit(task, "tool.refused", name, hash, &reason);
+                Err(ToolError::Refused(reason))
+            }
+        }
     }
 
     /// Ask a human to approve `name` with `args` for `task` and wait for the answer, at most

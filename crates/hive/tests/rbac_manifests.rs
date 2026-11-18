@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use melissa_hive::render::{APPS_SERVICE_ACCOUNT, MELISSA_NAMESPACE, WORKLOAD_ROLE};
+use melissa_hive::render::{APPS_SERVICE_ACCOUNT, MELISSA_NAMESPACE, OWNER_LABEL, WORKLOAD_ROLE};
 
 fn manifest(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -166,6 +166,12 @@ fn admission_policies_guard_the_write_identity() {
     );
     assert!(ns.contains("startsWith('app-')"));
     assert!(ns.contains("['baseline', 'restricted']"));
+    // Ownership: required on create, frozen on update (adopt goes through k3s admin).
+    assert!(ns.contains(&format!("'{OWNER_LABEL}' in object.metadata.labels")));
+    assert!(ns.contains(&format!(
+        "object.metadata.labels['{OWNER_LABEL}'] == oldObject.metadata.labels['{OWNER_LABEL}']"
+    )));
+    assert!(ns.contains("^(owner|job-[a-z0-9]{1,40})$"));
     let rb = doc(
         &docs,
         "ValidatingAdmissionPolicy",

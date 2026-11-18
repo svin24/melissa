@@ -21,6 +21,7 @@
 //! (written by root once k3s is up). They are looked up on every cluster call, so the queen
 //! never waits for k3s and attaches to it without a restart.
 
+mod adopt;
 mod client;
 mod config;
 mod credentials;
@@ -37,11 +38,11 @@ use melissa_agent::{
         Queen, QueenSettings,
     },
     session::SessionBackend,
-    tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
+    tools::{BeeInfo, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry},
     AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EgressProxy, McpLink,
     TaskBoard,
 };
-use melissa_hive::{app_tools, AppSettings, ClusterHealth, KubeApps, LazyCluster};
+use melissa_hive::{app_tools, AppOwners, AppSettings, ClusterHealth, KubeApps, LazyCluster};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
@@ -58,6 +59,7 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   tool --wait <name> [json]   run one tool in the running daemon; waits for a confirmation
                               (answer it with `confirm approve <id>` from another shell)
   app-credentials <app>       show an app's generated credentials (owner only, needs root)
+  app-adopt <app>             make an app a worker job created yours (owner only, needs root)
   chat                        talk to the Queen (Ctrl-C cancels a turn)
   ask <message>               send one message and stream the answer
   confirm list|approve <id>|deny <id>
@@ -76,6 +78,7 @@ enum Command {
         args: Value,
     },
     AppCredentials(String),
+    AppAdopt(String),
     Chat,
     Ask(String),
     Confirm(String, Option<u64>),
@@ -119,6 +122,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        Command::AppAdopt(app) => {
+            return adopt::adopt(app, std::path::Path::new(credentials::ADMIN_KUBECONFIG)).await
+        }
         Command::Serve | Command::Tool { .. } => {}
     }
 
@@ -131,18 +137,22 @@ async fn main() -> anyhow::Result<()> {
     ];
     // App tools use the separate write identity (melissa-apps); read-only tools above
     // never hold it.
-    let apps = KubeApps::new(LazyCluster::for_apps(config.apps.kubeconfig.as_deref()));
+    let apps = Arc::new(KubeApps::new(LazyCluster::for_apps(
+        config.apps.kubeconfig.as_deref(),
+    )));
     tools.extend(app_tools(
         AppSettings {
             catalog_dir: config.apps.catalog.clone(),
             domain: config.apps.domain.clone(),
         },
-        Some(Arc::new(apps)),
+        Some(apps.clone()),
     ));
+    // Who owns which app, for the scope check before every app-changing tool call.
+    let owners: Arc<dyn ResourceOwners> = Arc::new(AppOwners::new(Some(apps)));
 
     match command {
-        Command::Tool { name, args } => run_tool(audit, tools, &name, args).await,
-        _ => serve(config, dirs, audit, tools).await,
+        Command::Tool { name, args } => run_tool(audit, tools, owners, &name, args).await,
+        _ => serve(config, dirs, audit, tools, owners).await,
     }
 }
 
@@ -151,6 +161,7 @@ async fn serve(
     dirs: Dirs,
     audit: AuditLog,
     mut tools: Vec<Arc<dyn Tool>>,
+    owners: Arc<dyn ResourceOwners>,
 ) -> anyhow::Result<()> {
     let workdir = dirs.state.join("work");
     let queen_state = dirs.state.join("queen");
@@ -168,7 +179,7 @@ async fn serve(
         events.clone(),
     );
     tools.extend(pool.tools());
-    let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())));
+    let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())).with_owners(owners));
     // Sandboxed agents reach the network only through this (allowlist, audited) and
     // Melissa's MCP endpoint at the same address as outside (config.listen).
     let egress = EgressProxy::new(dirs.egress.clone(), Some(audit.clone()))
@@ -251,15 +262,26 @@ async fn serve(
 async fn run_tool(
     audit: AuditLog,
     tools: Vec<Arc<dyn Tool>>,
+    owners: Arc<dyn ResourceOwners>,
     name: &str,
     args: Value,
 ) -> anyhow::Result<()> {
     // The audit log may not be writable (e.g. a transient unit); the registry logs that and
     // still runs the call, which is acceptable for read-only operator queries.
-    let registry = ToolRegistry::new(tools, Some(audit)).with_confirm_timeout(Duration::ZERO);
+    let registry = ToolRegistry::new(tools, Some(audit))
+        .with_confirm_timeout(Duration::ZERO)
+        .with_owners(owners);
     let mcp = McpServer::new(registry);
     let token = mcp
-        .open_session(0, TaskContext::default(), None)
+        .open_session(
+            0,
+            // The operator is the owner: no ownership checks; the label policy still applies.
+            TaskContext {
+                scope: Scope::Owner,
+                ..TaskContext::default()
+            },
+            None,
+        )
         .context("opening a tool session")?;
     let request = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -311,6 +333,7 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
         [c, app] if c == "app-credentials" => Command::AppCredentials(app.clone()),
+        [c, app] if c == "app-adopt" => Command::AppAdopt(app.clone()),
         [tool, name] if tool == "tool" => Command::Tool {
             name: name.clone(),
             args: json!({}),
@@ -368,6 +391,10 @@ mod tests {
             matches!(parse(&["app-credentials", "nextcloud"]).unwrap().1, Command::AppCredentials(a) if a == "nextcloud")
         );
         assert!(parse(&["app-credentials"]).is_err());
+        assert!(
+            matches!(parse(&["app-adopt", "blog"]).unwrap().1, Command::AppAdopt(a) if a == "blog")
+        );
+        assert!(parse(&["app-adopt"]).is_err());
         assert!(parse(&["bogus"]).is_err());
         assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat));
         assert!(
@@ -387,10 +414,17 @@ mod tests {
     async fn tool_command_refuses_unknown_tools() {
         let audit = AuditLog::new(std::env::temp_dir().join("melissa-queen-tool-test.jsonl"));
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ClusterHealth::new(None))];
-        assert!(run_tool(audit.clone(), tools.clone(), "nope", json!({}))
-            .await
-            .is_err());
-        run_tool(audit, tools, "cluster_health", json!({}))
+        let owners: Arc<dyn ResourceOwners> = Arc::new(AppOwners::new::<KubeApps>(None));
+        assert!(run_tool(
+            audit.clone(),
+            tools.clone(),
+            owners.clone(),
+            "nope",
+            json!({})
+        )
+        .await
+        .is_err());
+        run_tool(audit, tools, owners, "cluster_health", json!({}))
             .await
             .unwrap();
     }

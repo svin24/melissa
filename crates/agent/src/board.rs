@@ -10,8 +10,10 @@ use std::{
 use tokio::{sync::Notify, task::AbortHandle};
 
 use crate::{
-    backend::McpEndpoint, mcp::McpServer, tools::TaskContext, AgentError, AuditLog, AuditRecord,
-    Backend, BackendInfo, EventSink, OutputLine, RunRequest,
+    backend::McpEndpoint,
+    mcp::McpServer,
+    tools::{Scope, TaskContext},
+    AgentError, AuditLog, AuditRecord, Backend, BackendInfo, EventSink, OutputLine, RunRequest,
 };
 
 pub type TaskId = u64;
@@ -81,6 +83,11 @@ impl Default for DispatchOptions {
         Self {
             ctx: TaskContext {
                 attended: true,
+                // Started and watched by the owner: acts for them; changing their apps
+                // still needs a confirmation that says so.
+                scope: Scope::ForOwner {
+                    agent: "an agent task".into(),
+                },
                 ..TaskContext::default()
             },
             allow: None,
