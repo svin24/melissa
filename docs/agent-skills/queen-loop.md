@@ -87,6 +87,10 @@ to, by). Agent text is untrusted: render as plain text.
   <id>|deny <id>]`, `melissa-queen bee list` (also `bees`; `workers` is a hidden alias for one release),
   `bee rename <bee> <new name>`, `cell list`, `cell reassign <cell> --to <bee>`.
   They use `listen` from the same `queen.toml` (`--config` works too).
+- `melissa-queen demo` (`just demo`): serve with a startup summary on stdout (URL, agents and why each is
+  unusable, the Queen's backend, bwrap namespace probe, k3s) and only warnings in the log. Code:
+  `crates/queen/src/preflight.rs`. `just build` also builds `melissa-netbridge` (`cargo run -p
+  melissa-queen` alone does not). From a checkout the catalog falls back to `./manifests`.
 
 ## Config (`[queen]` in `queen.toml`)
 ```toml

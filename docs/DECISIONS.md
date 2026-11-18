@@ -26,7 +26,7 @@ Format: date — decision. Why. Alternatives considered.
   enrollment; owner requirement at least through the first demo. The build enforces it (one kernel, kernel-core
   signed by the Fedora release key, no `kmod-*`/`akmod-*`), and VM tests boot with Secure Boot on.
   Alternatives: ublue bases (own kernel/kmods signed with their key, needs MOK), sealed images with our own key (later).
-- **2026-11-18 — Take ideas from Universal Blue (Apache-2.0), never code.** Notes: `~/.local/share/melissa/research/`.
+- **2026-11-18 — Take ideas from Universal Blue (Apache-2.0), never code.** Notes: `~/.local/share/melissa/research/` (the owner's local notes, not in the repo).
 - **2026-11-18 — Agents get tools only through MCP served by the queen, one session token per task.** Why: every agent
   CLI speaks MCP; per-task tokens tie each call to that task's policy context; Claude's built-in tools are removed
   (`--tools ""`) so Melissa's policy is the only path to act. Alternatives: a shell with an allowlist (rejected: too
