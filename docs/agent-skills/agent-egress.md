@@ -69,12 +69,14 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
 4. Check the CLI honours `HTTPS_PROXY`: if it does not, it gets no network at all (fails closed) and the audit
    shows nothing for it. Report that; do not switch it to `host`.
 
-## What each CLI contacts (dev laptop, 2026-11-18, learn mode then proxy mode)
+## What each CLI contacts (dev laptop, 2026-11-18, learn mode then proxy mode; per mode of the CLI)
 | CLI (version) | Allowed (built-in) | Seen and denied | Breaks when denied? |
 |---|---|---|---|
 | claude 2.1.327 (`-p`, MCP) | `api.anthropic.com` (~25 tunnels per prompt: a new CONNECT per request), `platform.claude.com` (OAuth token endpoint, from the binary; refresh not observed) | `http-intake.logs.us5.datadoghq.com` (Datadog logs) | No: bee_info + answer in ~6 s |
 | grok 1.0.89 (`-p` and `agent stdio`) | `cli-chat-proxy.grok.com` (chat model, subscription login), `api.x.ai` (used by ACP mode; API-key logins), `auth.x.ai` (issuer in `auth.json`; refresh not observed) | `grok.com` (~40 retries per prompt), `api.mixpanel.com` (analytics, ~40 retries) | No: one-shot even works without `api.x.ai`; ACP + Queen + worker fine |
 | opencode 2.3.2 (`run`, free default model) | `opencode.ai` (gateway), `models.opencode.ai` (model catalogue) | none | Without `models.opencode.ai`: works, ~3 s slower |
+| claude 2.1.327 (`claude-session`, stream-json, with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`) | `api.anthropic.com` only (3 tunnels for a bee_info task) | none (no Datadog intake any more) | No: learn mode then proxy, Queen + worker in 11.8 s |
+| opencode 2.3.2 (`opencode acp`, flavor opencode) | `opencode.ai`, `models.opencode.ai` (same as `run`) | none | No: learn mode then proxy, Queen + worker in 23.6 s |
 
 All three honour `HTTPS_PROXY` (no CLI needed DNS inside the sandbox). Proxy env also set: `HTTP_PROXY`,
 `ALL_PROXY` and lowercase forms; `NO_PROXY=localhost,127.0.0.1,::1` keeps MCP off the proxy.

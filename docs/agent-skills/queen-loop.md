@@ -6,9 +6,10 @@ Code: `crates/agent/src/queen/` (`mod.rs` session manager, `workers.rs`, `events
 `tests.rs`), `crates/web/src/api.rs`, `crates/queen/src/client.rs`, prompts in `crates/queen/prompts/`.
 
 ## Architecture
-- `Queen` (one per daemon) holds at most one agent session (`AgentSession`, ACP today). Opened lazily on the
-  first message from `[queen] backends` in order; a backend that fails to start emits `backend_failed` and
-  the next is tried. Its MCP session is attended (`attended = true`: the user is in the chat) and may
+- `Queen` (one per daemon) holds at most one agent session (`AgentSession`: ACP or Claude stream-json). Opened
+  lazily on the first message from `[queen] backends` in order (default `grok-acp`, `claude-session`,
+  `opencode-acp`); a backend that fails to start (missing CLI, not logged in, handshake error) emits
+  `backend_failed` and the next is tried. Workers default to the first Queen backend (`worker_backend`). Its MCP session is attended (`attended = true`: the user is in the chat) and may
   delegate (`TaskContext.delegate = true`), so it sees the worker tools.
 - One turn at a time: `send` while a turn runs → `QueenError::Busy` (HTTP 409). The event pump (one task
   per session, owns the session's event receiver) ends a turn when the agent's `TurnFinished` arrives, so
@@ -56,7 +57,7 @@ refusal, max_tokens, max_turn_requests, error), `error`. Agent text is untrusted
 ## Config (`[queen]` in `queen.toml`)
 ```toml
 [queen]
-backends = ["grok-acp"]      # kind = "acp" backends, tried in order
+backends = ["grok-acp", "claude-session", "opencode-acp"]   # session backends (acp or claude), in order
 # tools = ["bee_info", "cluster_health", "start_worker", "worker_status", "list_workers", "cancel_worker"]
 # worker_backend = "grok-acp" # default: first Queen backend
 max_workers = 2
@@ -64,8 +65,9 @@ worker_timeout_secs = 300
 worker_timeout_max_secs = 900
 transcript_max_kib = 4096
 ```
-`session_store` on an ACP backend (built-in `grok-acp`: `.grok/sessions`) = where the agent keeps sessions,
-relative to `$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessions/<backend>/` (0700) there.
+`session_store` on a session backend (built-in `grok-acp`: `.grok/sessions`, `claude-session`:
+`.claude/projects`, `opencode-acp`: `.local/share/opencode`) = where the agent keeps sessions, relative to
+`$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessions/<backend>/` (0700) there.
 
 ## Verified facts (2026-11-18, dev laptop, grok 1.0.89 via `grok-acp`, temp XDG dirs)
 - `melissa-queen ask "Check this bee with bee_info, then start a worker that reports the kernel version using
@@ -88,6 +90,19 @@ relative to `$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessio
 - Grok does not advertise ACP's `systemPrompt` capability, so the system prompt goes in as a preamble. Grok
   also reads `AGENTS.md` from its cwd (its README says so); not used, the Queen's cwd stays empty.
 
+## Verified with Claude and OpenCode (2026-11-18, dev laptop, temp XDG dirs, `network = "proxy"`)
+Queen backend forced per run with `[queen] backends = ["claude-session"]` / `["opencode-acp"]`; the same ask as
+above ("Check this bee with bee_info, then start a worker …"):
+- `claude-session` (claude 2.1.327): two-line answer in 11.8 s, worker on claude-session in 3 s. Every MCP call
+  is a `can_use_tool` prompt → `agent.permission allow_once … mcp__melissa__<tool>` then `tool.call`. Egress:
+  `api.anthropic.com` only. Context across messages ("teal"), cancel mid-answer (`turn ended: cancelled`, next
+  message fine in the same process), resume after a daemon restart and after `kill -9` of its sandbox
+  (`queen.session lost … opened claude-session (resumed)`).
+- `opencode-acp` (opencode 2.3.2, free model): answer in 23.6 s, worker on opencode-acp in 6 s; permissions
+  `allow_once … melissa_<tool>`; egress `opencode.ai`, `models.opencode.ai`. Cancel, next message and resume
+  after a daemon restart verified. The Queen prompt keeps it off its own shell ("I can't run uname -r …");
+  a board task asking for the shell put `agent:execute` into the inbox, `confirm deny` → `reject_once`.
+
 ## Gotchas
 - The Queen's and the workers' agents run behind the egress proxy like every sandboxed agent (`network =
   "proxy"`, [agent-egress.md](agent-egress.md)); their `egress.*` audit records carry the Queen's task id or the
@@ -106,5 +121,5 @@ relative to `$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessio
 
 ## Not done yet / ideas
 - Web UI chat (owner's design), SSE instead of long-poll (same `EventLog`), per-worker token/tool-call budgets,
-  showing `thought`/`plan` events, a `confirm` that shows the full argument JSON, Claude as Queen backend
-  (PLAN open question 26).
+  showing `thought`/`plan` events, a `confirm` that shows the full argument JSON, Claude's
+  `--append-system-prompt` instead of the preamble.
