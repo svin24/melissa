@@ -33,3 +33,7 @@ Format: date — decision. Why. Alternatives considered.
   broad), per-CLI tool plugins (more code per vendor).
 - **2026-11-18 — Tool policy keys off labels (private / untrusted / egress / effect), not tool names.** Why: new tools are
   safe by construction if labelled honestly; labels are reviewed with the tool. Destructive always confirms.
+- **2026-11-18 — k3s from pinned, sha256-verified release artifacts (binary, airgap images) plus k3s-selinux 1.6 (coreos
+  build), all baked into the image; SQLite datastore; bundled Traefik with telemetry off.** Why: reproducible, offline
+  first boot, SELinux enforcing, version moves with the image. Alternatives: the install script (mutates /etc and
+  /usr/local, unpinned), k3s-selinux 1.7 testing builds (not stable), cert-manager now (later, for ACME in M4).

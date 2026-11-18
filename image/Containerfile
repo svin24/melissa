@@ -17,7 +17,18 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cargo build --release --locked -p melissa-queen -p melissa-bee \
  && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/
 
-# ---- stage 2: the OS image ------------------------------------------------------------
+# ---- stage 2: fetch and verify k3s (versions and hashes pinned in image/k3s.lock) ---------
+FROM ${BUILDER} AS k3s
+COPY image/k3s.lock /k3s.lock
+RUN set -eu; . /k3s.lock; mkdir -p /out; cd /out; \
+    base="https://github.com/k3s-io/k3s/releases/download/$(printf %s "$K3S_VERSION" | sed 's/+/%2B/')"; \
+    curl -fsSL --retry 3 -o k3s "$base/k3s"; \
+    curl -fsSL --retry 3 -o airgap.tar.zst "$base/k3s-airgap-images-amd64.tar.zst"; \
+    curl -fsSL --retry 3 -o k3s-selinux.rpm "$K3S_SELINUX_URL"; \
+    printf '%s  k3s\n%s  airgap.tar.zst\n%s  k3s-selinux.rpm\n' \
+        "$K3S_SHA256" "$K3S_AIRGAP_SHA256" "$K3S_SELINUX_SHA256" | sha256sum -c -
+
+# ---- stage 3: the OS image ------------------------------------------------------------
 FROM ${BASE}
 ARG VARIANT=headless
 
@@ -28,6 +39,17 @@ RUN pkgs=$(cat /tmp/pkgs/*.txt | sed 's/#.*//' | xargs) \
  && if [ -n "$pkgs" ]; then dnf -y install $pkgs; fi \
  && dnf clean all && rm -rf /tmp/pkgs /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
 
+# k3s (rarely changes): binary + kubectl/crictl/ctr links, SELinux policy, airgap images in /usr.
+COPY --from=k3s /out/ /tmp/k3s/
+COPY image/k3s.lock /usr/lib/melissa/k3s.lock
+RUN set -eu; . /usr/lib/melissa/k3s.lock; \
+    dnf -y install /tmp/k3s/k3s-selinux.rpm; \
+    install -m 0755 /tmp/k3s/k3s /usr/bin/k3s; \
+    for link in kubectl crictl ctr; do ln -sf k3s "/usr/bin/$link"; done; \
+    install -D -m 0644 /tmp/k3s/airgap.tar.zst \
+        "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst"; \
+    dnf clean all; rm -rf /tmp/k3s /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
+
 # Static config. Defaults go under /usr/lib so the /etc 3-way merge never strands them.
 COPY image/rootfs/ /
 COPY image/${VARIANT}/ /
@@ -36,7 +58,7 @@ RUN set -eu; \
     # Melissa drives updates itself; don't let the stock timer download and reboot.
     systemctl mask bootc-fetch-apply-updates.timer 2>/dev/null || true; \
     if [ "$VARIANT" = headless ]; then \
-        systemctl enable melissa-queen.service; \
+        systemctl enable melissa-queen.service k3s.service; \
     else \
         # Desktop: the queen runs per user so it can use that user's agent CLI logins.
         systemctl --global enable melissa-queen.service; \

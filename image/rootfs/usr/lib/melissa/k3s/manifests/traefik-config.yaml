@@ -1,0 +1,12 @@
+# Melissa: no phoning home from the bundled Traefik. Chart 41.x (k3s v1.37) uses these keys and
+# defaults checkNewVersion to true; the old `globalArguments` key is gone (verified 2026-11-18).
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false

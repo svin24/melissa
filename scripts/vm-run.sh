@@ -33,6 +33,11 @@ else
     extra+=(-machine q35)
 fi
 port=${VM_SSH_PORT:-$([ "$variant" = desktop ] && echo 2223 || echo 2222)}
+# Headless: also forward the k3s API and the ingress (HTTP/HTTPS) to host loopback ports.
+fwd=""
+if [ "$variant" = headless ]; then
+    fwd=",hostfwd=tcp:127.0.0.1:16443-:6443,hostfwd=tcp:127.0.0.1:18080-:80,hostfwd=tcp:127.0.0.1:18443-:443"
+fi
 display=${VM_DISPLAY:-none}
 mem=${VM_MEM:-$([ "$variant" = desktop ] && echo 6144 || echo 3072)}
 exec qemu-system-x86_64 \
@@ -40,7 +45,7 @@ exec qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$code" \
     -drive if=pflash,format=raw,file="$dir/efivars.fd" \
     -drive file="$overlay",if=virtio,format=qcow2 \
-    -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:"$port"-:22 \
+    -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:"$port"-:22"$fwd" \
     -device virtio-vga -display "$display" \
     -serial file:"$dir/serial.log" \
     -monitor unix:"$dir/monitor.sock",server,nowait \

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Runs before k3s starts. Links the airgap images shipped in /usr into k3s's /var directory,
+# installs Melissa's deploy-on-start manifests, and relabels k3s paths once (SELinux).
+set -eu
+. /usr/lib/melissa/k3s.lock
+images=/var/lib/rancher/k3s/agent/images
+manifests=/var/lib/rancher/k3s/server/manifests
+mkdir -p "$images" "$manifests"
+# Links to airgap tarballs of earlier k3s versions dangle after an image update; drop them.
+for link in "$images"/k3s-airgap-*.tar.zst; do
+    if [ -L "$link" ] && [ ! -e "$link" ]; then rm -f "$link"; fi
+done
+# The version is in the link name: /usr files all have mtime 0, so k3s can't spot changes by time.
+ln -sfn "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst" \
+    "$images/k3s-airgap-${K3S_VERSION}.tar.zst"
+for m in /usr/lib/melissa/k3s/manifests/*.yaml; do
+    [ -e "$m" ] && install -m 0600 "$m" "$manifests/melissa-$(basename "$m")"
+done
+stamp=/var/lib/rancher/.melissa-relabeled
+if [ ! -e "$stamp" ]; then
+    restorecon -R /var/lib/rancher /etc/rancher 2>/dev/null || true
+    [ -d /var/lib/kubelet ] && restorecon -R /var/lib/kubelet || true
+    touch "$stamp"
+fi

@@ -55,3 +55,7 @@ vm-update-test variant="headless":
 # Fast dev loop against a running test VM (see scripts/vm-dev.sh): setup | registry | deploy | hotswap | ssh
 vm-dev cmd variant="headless" *args="":
     scripts/vm-dev.sh {{cmd}} {{variant}} {{args}}
+
+# k3s smoke test on the running headless VM (node Ready, airgap images, SELinux, ingress via 127.0.0.1:18080)
+vm-k3s-smoke:
+    scripts/vm-k3s-smoke.sh
