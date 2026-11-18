@@ -250,6 +250,39 @@ async fn install_refuses_while_the_namespace_is_being_deleted() {
 }
 
 #[tokio::test]
+async fn list_apps_shows_installed_apps_and_kept_data() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    let out = call(&t, "list_apps", json!({})).await.unwrap();
+    assert_eq!(out["apps"], json!([]));
+    assert_eq!(out["not_installed"], json!(["nextcloud"]));
+    call(&t, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    let out = call(&t, "list_apps", json!({})).await.unwrap();
+    assert_eq!(out["apps"][0]["app"], "nextcloud");
+    assert_eq!(out["apps"][0]["phase"], "starting");
+    assert_eq!(out["apps"][0]["url"], "http://nextcloud.melissa.home.arpa");
+    assert_eq!(out["not_installed"], json!([]));
+    call(&t, "uninstall_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    let out = call(&t, "list_apps", json!({})).await.unwrap();
+    assert_eq!(out["apps"][0]["phase"], "uninstalled_data_kept");
+    assert_eq!(out["apps"][0]["volumes"][0]["name"], "nextcloud-data");
+    assert!(matches!(
+        call(&t, "list_apps", json!({"app": "x"})).await,
+        Err(ToolError::BadArgs(_))
+    ));
+    let down = tools(Some(Arc::new(Fake {
+        down: true,
+        ..Fake::default()
+    })));
+    let out = call(&down, "list_apps", json!({})).await.unwrap();
+    assert_eq!(out["k3s_reachable"], false);
+}
+
+#[tokio::test]
 async fn uninstall_keeps_data_by_default_and_deletes_it_only_when_asked() {
     let fake = Arc::new(Fake::default());
     let t = tools(Some(fake.clone()));
@@ -485,6 +518,7 @@ fn labels_are_honest() {
     let labels = |n: &str| t[n].spec().labels;
     assert_eq!(labels("list_catalog"), Labels::READ_ONLY);
     assert_eq!(labels("app_status"), Labels::READ_ONLY);
+    assert_eq!(labels("list_apps"), Labels::READ_ONLY);
     assert!(labels("app_logs").reads_untrusted);
     assert_eq!(labels("app_logs").effect, Effect::None);
     assert_eq!(labels("install_app").effect, Effect::Reversible);
@@ -514,6 +548,7 @@ fn labels_are_honest() {
         "app_logs",
         "uninstall_app",
         "list_catalog",
+        "list_apps",
     ] {
         let params = t[name].spec().params;
         assert_eq!(params["additionalProperties"], false, "{name}");
