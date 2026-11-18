@@ -21,10 +21,19 @@ ssh -p 2222 -i vm/test_key bee@127.0.0.1      # desktop variant: port 2223, VM_D
 (`podman save` → scp → `sudo podman load`), `bootc switch --transport containers-storage`, reboots, checks
 `/usr/lib/melissa/release` and Secure Boot, then `bootc rollback`, reboots, checks the old release is back.
 
+Improvement (todo): `vm-update-test.sh` copies the whole image (7.8 GB for desktop) even when one layer changed.
+Run a local registry (`registry:2` bound to 127.0.0.1:5000, reachable from the VM as `10.0.2.2:5000` under QEMU
+user networking, marked insecure in a `registries.conf.d` drop-in in the test VM only) and `bootc switch` to it,
+so only changed layers move, like real updates.
+
 ## Verified (2026-11-18)
 - Headless VM boots with Secure Boot **enabled** (nixpkgs `OVMF.override { secureBoot = true; msVarsTemplate = true; }`,
   `OVMF_CODE.ms.fd`/`OVMF_VARS.ms.fd`, `-machine q35,smm=on`, `-global driver=cfi.pflash01,property=secure,value=on`),
   swtpm TPM 2.0 at `/dev/tpm0`, SSH ~30 s after start, ~430 MB RAM idle, queen + tailscaled active.
+- Desktop VM (6 GiB RAM): Secure Boot enabled, transient root active (`upperdir=/run/ostree/.private/root/upper`),
+  Plasma 6.8.3, ~1.9 GB used after boot. `vm-update-test desktop` passed: switch + reboot + rollback + reboot, Secure
+  Boot and transient root kept; 6.5 min total, mostly copying the 7.8 GB image into the VM.
+- Check results by reading the VM state, not a truncated log: `bootc status --format=json` (booted/rollback/staged).
 - bib default disk is 10 GiB (8.6 GiB root); too small for the 7.8 GB desktop image, so `vm-prep.sh` sets
   `[[customizations.filesystem]] mountpoint="/" minsize="40 GiB"`.
 - `bootc status` needs root even for reading.
