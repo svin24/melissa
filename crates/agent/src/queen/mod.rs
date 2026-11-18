@@ -480,6 +480,7 @@ impl Queen {
                 Arc::new(permissions),
             );
             open.state_dir = Some(inner.settings.state_dir.join("agent-sessions").join(name));
+            open.task = Some(inner.task);
             open.resume = saved
                 .as_ref()
                 .filter(|s| s.backend == *name)

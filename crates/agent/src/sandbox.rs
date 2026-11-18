@@ -2,11 +2,16 @@
 //!
 //! Inside the sandbox the CLI sees: `/usr` and `/etc` read-only, a private `/tmp`, an
 //! empty, read-only `$HOME` with only the paths its [`SandboxSpec`] names, the CLI binary
-//! (read-only), and the per-task working directory (the only writable host path). It
-//! shares the host network (it must reach its model API and the queen's MCP endpoint on
-//! loopback) but gets its own user, PID, IPC, UTS and cgroup namespaces, no capabilities
-//! and `no_new_privs`, and dies with its parent, so killing `bwrap` kills every process
-//! inside, grandchildren included.
+//! (read-only), and the per-task working directory (the only writable host path). It gets
+//! its own user, PID, IPC, UTS, cgroup and (unless `network = "host"`) network namespaces,
+//! no capabilities and `no_new_privs`, and dies with its parent, so killing `bwrap` kills
+//! every process inside, grandchildren included.
+//!
+//! Network ([`NetworkMode`]): by default the sandbox has only loopback. A [`Bridge`]
+//! (`melissa-netbridge`, started first inside the sandbox) forwards loopback ports to Unix
+//! sockets served by the queen's egress proxy ([`crate::egress`]): an allowlisting HTTPS
+//! proxy (`HTTPS_PROXY` etc. point at it) and Melissa's MCP endpoint. No resolver is
+//! reachable inside; the proxy resolves names itself.
 //!
 //! The command line is built by the pure [`command`] function from a [`SandboxPlan`];
 //! [`SandboxPlan::resolve`] does the host lookups (HOME, binary path, which files exist).
@@ -17,6 +22,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+
+use crate::egress::HostRule;
+pub use crate::egress::NetworkMode;
 
 /// Where bubblewrap is expected on Fedora (and the Melissa images).
 pub const BWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -29,7 +37,23 @@ const SANDBOX_HOSTNAME: &str = "melissa-agent";
 const BASE_ENV: &[&str] = &["USER", "LOGNAME", "LANG", "LC_ALL", "TZ"];
 
 /// Environment variables the sandbox always sets itself; [`SandboxSpec::env`] may not name them.
-const RESERVED_ENV: &[&str] = &["HOME", "PATH", "NO_COLOR", "TERM"];
+const RESERVED_ENV: &[&str] = &[
+    "HOME",
+    "PATH",
+    "NO_COLOR",
+    "TERM",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// Where the bridge's socket directory appears inside the sandbox.
+pub const BRIDGE_DIR: &str = "/run/melissa-net";
 
 /// Per-backend sandbox settings (`[backend.sandbox]` in the queen config).
 ///
@@ -55,6 +79,12 @@ pub struct SandboxSpec {
     /// Names of extra host environment variables to pass through (e.g. an API key variable).
     #[serde(default)]
     pub env: Vec<String>,
+    /// Network access (set from the backend's `network` key, not from this table).
+    #[serde(skip)]
+    pub network: NetworkMode,
+    /// Egress allowlist (set from the backend's `allow` key, not from this table).
+    #[serde(skip)]
+    pub allow: Option<Vec<String>>,
 }
 
 fn enabled_by_default() -> bool {
@@ -69,6 +99,8 @@ impl Default for SandboxSpec {
             ro: Vec::new(),
             rw: Vec::new(),
             env: Vec::new(),
+            network: NetworkMode::default(),
+            allow: None,
         }
     }
 }
@@ -134,6 +166,9 @@ impl SandboxSpec {
                 return Err(SandboxError::BadPath(path.clone()));
             }
         }
+        for rule in self.allow.iter().flatten() {
+            HostRule::parse(rule)?;
+        }
         for name in &self.env {
             let valid = !name.is_empty()
                 && !name.starts_with(|c: char| c.is_ascii_digit())
@@ -143,6 +178,17 @@ impl SandboxSpec {
             }
         }
         Ok(())
+    }
+
+    /// The egress allowlist for `command`: the configured one, else the built-in default.
+    pub fn egress_allow(&self, command: &str) -> Result<Vec<HostRule>, SandboxError> {
+        let list = match &self.allow {
+            Some(list) => list.clone(),
+            None => crate::egress::default_allow(command),
+        };
+        list.iter()
+            .map(|r| HostRule::parse(r).map_err(SandboxError::from))
+            .collect()
     }
 }
 
@@ -155,6 +201,8 @@ pub enum SandboxError {
     BadPath(String),
     #[error("sandbox env `{0}` is not a valid, non-reserved variable name")]
     BadEnv(String),
+    #[error(transparent)]
+    BadRule(#[from] crate::egress::BadRule),
     #[error("HOME is not set or not absolute; cannot build the sandbox")]
     NoHome,
     #[error("cannot resolve the CLI binary {path}: {source}")]
@@ -188,6 +236,32 @@ impl Mount {
     }
 }
 
+/// The network bridge inside a sandbox: `melissa-netbridge` listens on loopback `ports`
+/// and forwards each to a socket in `socket_dir` (bound at [`BRIDGE_DIR`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bridge {
+    /// The `melissa-netbridge` binary on the host (bound read-only unless under `/usr`).
+    pub netbridge: PathBuf,
+    /// Host directory with the queen-side sockets of this sandbox.
+    pub socket_dir: PathBuf,
+    /// In-sandbox listen address → socket file name in `socket_dir`.
+    pub ports: Vec<(std::net::SocketAddr, String)>,
+    /// The egress proxy's in-sandbox address; sets `HTTPS_PROXY` and friends.
+    pub proxy: Option<std::net::SocketAddr>,
+    /// Host directories the bridge binary needs to run (its dynamic loader outside `/usr`,
+    /// e.g. `/nix/store` for a dev-shell build), bound read-only.
+    pub runtime: Vec<PathBuf>,
+}
+
+/// The sandbox's network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Network {
+    /// The host's network namespace (and its resolver).
+    Host,
+    /// Own network namespace with loopback only, plus an optional bridge.
+    Isolated(Option<Bridge>),
+}
+
 /// Everything [`command`] needs, resolved from the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxPlan {
@@ -201,6 +275,8 @@ pub struct SandboxPlan {
     pub mounts: Vec<Mount>,
     /// Environment inside the sandbox (besides HOME, PATH, NO_COLOR and TERM).
     pub env: Vec<(String, OsString)>,
+    /// Network namespace and bridge.
+    pub network: Network,
 }
 
 impl SandboxPlan {
@@ -252,13 +328,27 @@ impl SandboxPlan {
             .chain(spec.env.iter().cloned())
             .filter_map(|name| std::env::var_os(&name).map(|value| (name, value)))
             .collect();
+        // Without a bridge (added by the caller), a non-host sandbox has no network at all.
+        let network = match spec.network {
+            NetworkMode::Host => Network::Host,
+            _ => Network::Isolated(None),
+        };
         Ok(Self {
             bwrap: bwrap.to_path_buf(),
             home,
             program,
             mounts,
             env,
+            network,
         })
+    }
+
+    /// Run the CLI behind `bridge` (ignored for `network = "host"`).
+    pub fn with_bridge(mut self, bridge: Option<Bridge>) -> Self {
+        if let Network::Isolated(_) = self.network {
+            self.network = Network::Isolated(bridge);
+        }
+        self
     }
 
     /// Add host directories bound read-write at home-relative paths (`(host dir, path
@@ -294,9 +384,16 @@ pub fn command(
     };
 
     // Namespaces and privileges. bwrap always sets no_new_privs for unprivileged users.
+    // `--unshare-all` includes the network namespace (bwrap brings up its loopback).
+    push(&[&"--unshare-all"]);
+    let bridge = match &plan.network {
+        Network::Host => {
+            push(&[&"--share-net"]);
+            None
+        }
+        Network::Isolated(bridge) => bridge.as_ref(),
+    };
     push(&[
-        &"--unshare-all",
-        &"--share-net",
         &"--die-with-parent",
         &"--new-session",
         &"--cap-drop",
@@ -322,6 +419,23 @@ pub fn command(
     for (name, value) in &plan.env {
         push(&[&"--setenv", name, value]);
     }
+    if let Some(proxy) = bridge.and_then(|b| b.proxy) {
+        let url = format!("http://{proxy}");
+        for name in [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            push(&[&"--setenv", &name, &url]);
+        }
+        // MCP is on loopback (through the bridge), never through the proxy.
+        for name in ["NO_PROXY", "no_proxy"] {
+            push(&[&"--setenv", &name, &"localhost,127.0.0.1,::1"]);
+        }
+    }
 
     // System: read-only /usr and /etc (Fedora is usr-merged), the resolver's runtime dir
     // (/etc/resolv.conf links there on Fedora), fresh /proc, minimal /dev, private /tmp.
@@ -330,11 +444,13 @@ pub fn command(
         push(&[&"--symlink", &format!("usr/{dir}"), &format!("/{dir}")]);
     }
     push(&[&"--ro-bind", &"/etc", &"/etc"]);
-    push(&[
-        &"--ro-bind-try",
-        &"/run/systemd/resolve",
-        &"/run/systemd/resolve",
-    ]);
+    if plan.network == Network::Host {
+        push(&[
+            &"--ro-bind-try",
+            &"/run/systemd/resolve",
+            &"/run/systemd/resolve",
+        ]);
+    }
     push(&[&"--proc", &"/proc", &"--dev", &"/dev"]);
     push(&[&"--tmpfs", &"/tmp", &"--tmpfs", &"/var/tmp"]);
 
@@ -365,6 +481,16 @@ pub fn command(
             push(&[&"--ro-bind", file, file]);
         }
     }
+    if let Some(b) = bridge {
+        if !bound(&b.netbridge) {
+            push(&[&"--ro-bind", &b.netbridge, &b.netbridge]);
+        }
+        for dir in &b.runtime {
+            push(&[&"--ro-bind", dir, dir]);
+        }
+        // Read-only is enough: connecting to a socket needs no write access to its mount.
+        push(&[&"--ro-bind", &b.socket_dir, &BRIDGE_DIR]);
+    }
 
     // The task's working directory: the only writable host path. Then freeze the rest.
     push(&[&"--bind", &workdir, &workdir]);
@@ -373,7 +499,16 @@ pub fn command(
     push(&[&"--remount-ro", &"/"]);
     push(&[&"--chdir", &workdir]);
 
-    push(&[&"--", &plan.program]);
+    push(&[&"--"]);
+    if let Some(b) = bridge {
+        // The bridge starts first, then runs the CLI as its child.
+        push(&[&b.netbridge]);
+        for (addr, socket) in &b.ports {
+            push(&[&"--tcp", &format!("{addr}={BRIDGE_DIR}/{socket}")]);
+        }
+        push(&[&"--"]);
+    }
+    push(&[&plan.program]);
     argv.extend(args.iter().map(OsString::from));
     (plan.bwrap.clone(), argv)
 }
@@ -402,6 +537,20 @@ mod tests {
             program: program.into(),
             mounts,
             env: vec![("LANG".into(), "C.UTF-8".into())],
+            network: Network::Host,
+        }
+    }
+
+    fn bridge() -> Bridge {
+        Bridge {
+            netbridge: "/opt/melissa/melissa-netbridge".into(),
+            socket_dir: "/run/user/1/melissa/egress/abcd".into(),
+            ports: vec![
+                ("127.0.0.1:3128".parse().unwrap(), "egress.sock".into()),
+                ("127.0.0.1:8080".parse().unwrap(), "mcp.sock".into()),
+            ],
+            proxy: Some("127.0.0.1:3128".parse().unwrap()),
+            runtime: vec!["/nix/store".into()],
         }
     }
 
@@ -470,6 +619,130 @@ mod tests {
         let last_bind = a.iter().rposition(|x| x.starts_with("--bind")).unwrap();
         assert!(remount > last_bind);
         assert_eq!(&a[a.len() - 4..], ["--", bin, "-p", prompt]);
+    }
+
+    #[test]
+    fn isolated_network_runs_the_cli_behind_the_bridge() {
+        let mut p = plan(vec![], "/home/u/bin/cli");
+        p.network = Network::Isolated(None);
+        let p = p.with_bridge(Some(bridge()));
+        let (_, argv) = command(&p, Path::new("/w"), &[], &["-p".into(), "hi".into()]);
+        let a = strs(&argv);
+        assert!(a.contains(&"--unshare-all"));
+        assert!(!a.contains(&"--share-net"), "{a:?}");
+        // No host resolver inside: names are resolved by the proxy.
+        assert!(!a.contains(&"/run/systemd/resolve"));
+        let nb = "/opt/melissa/melissa-netbridge";
+        assert!(has(&a, &["--ro-bind", nb, nb]));
+        assert!(has(&a, &["--ro-bind", "/nix/store", "/nix/store"]));
+        assert!(has(
+            &a,
+            &["--ro-bind", "/run/user/1/melissa/egress/abcd", BRIDGE_DIR]
+        ));
+        for name in [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            assert!(
+                has(&a, &["--setenv", name, "http://127.0.0.1:3128"]),
+                "{name}"
+            );
+        }
+        assert!(has(
+            &a,
+            &["--setenv", "NO_PROXY", "localhost,127.0.0.1,::1"]
+        ));
+        // bwrap runs the bridge, which runs the CLI with its untouched arguments.
+        let dashdash = a.iter().position(|x| *x == "--").unwrap();
+        assert_eq!(
+            &a[dashdash..],
+            [
+                "--",
+                nb,
+                "--tcp",
+                "127.0.0.1:3128=/run/melissa-net/egress.sock",
+                "--tcp",
+                "127.0.0.1:8080=/run/melissa-net/mcp.sock",
+                "--",
+                "/home/u/bin/cli",
+                "-p",
+                "hi"
+            ]
+        );
+    }
+
+    #[test]
+    fn isolated_without_a_bridge_has_no_network_and_host_ignores_bridges() {
+        let mut p = plan(vec![], "/usr/bin/x");
+        p.network = Network::Isolated(None);
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(a.contains(&"--unshare-all") && !a.contains(&"--share-net"));
+        assert!(!a
+            .iter()
+            .any(|x| x.contains("PROXY") || x.contains("netbridge")));
+        assert_eq!(&a[a.len() - 2..], ["--", "/usr/bin/x"]);
+
+        // `network = "host"`: the bridge is ignored, the host resolver is visible.
+        let p = plan(vec![], "/usr/bin/x").with_bridge(Some(bridge()));
+        assert_eq!(p.network, Network::Host);
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(a.contains(&"--share-net"));
+        assert!(a.contains(&"/run/systemd/resolve"));
+        assert!(!a.iter().any(|x| x.contains("PROXY")));
+    }
+
+    #[test]
+    fn network_modes_and_allowlists_from_config() {
+        let spec = SandboxSpec::default();
+        assert_eq!(spec.network, NetworkMode::Proxy);
+        let rules = spec.egress_allow("/usr/local/bin/claude").unwrap();
+        assert!(rules.iter().any(|r| r.matches("api.anthropic.com", 443)));
+        assert!(spec.egress_allow("unknown-cli").unwrap().is_empty());
+        let custom = SandboxSpec {
+            allow: Some(vec!["api.example.com".into(), "*.example.net:8443".into()]),
+            ..SandboxSpec::default()
+        };
+        custom.validate().unwrap();
+        let rules = custom.egress_allow("claude").unwrap();
+        assert!(!rules.iter().any(|r| r.matches("api.anthropic.com", 443)));
+        assert!(rules.iter().any(|r| r.matches("a.example.net", 8443)));
+        let bad = SandboxSpec {
+            allow: Some(vec!["*".into()]),
+            ..SandboxSpec::default()
+        };
+        assert!(bad.validate().is_err());
+        for name in ["HTTPS_PROXY", "no_proxy", "ALL_PROXY"] {
+            let spec = SandboxSpec {
+                env: vec![name.into()],
+                ..SandboxSpec::default()
+            };
+            assert!(spec.validate().is_err(), "{name} accepted");
+        }
+        // `resolve` maps the mode to a namespace: only `host` shares the host's.
+        for (mode, host) in [
+            (NetworkMode::Proxy, false),
+            (NetworkMode::Learn, false),
+            (NetworkMode::None, false),
+            (NetworkMode::Host, true),
+        ] {
+            let spec = SandboxSpec {
+                network: mode,
+                ..SandboxSpec::default()
+            };
+            let plan = SandboxPlan::resolve(
+                &spec,
+                Path::new(BWRAP_PATH),
+                Some(Path::new("/home/u")),
+                Path::new("/usr/bin/sh"),
+            )
+            .unwrap();
+            assert_eq!(plan.network == Network::Host, host, "{mode:?}");
+        }
     }
 
     #[test]

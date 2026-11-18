@@ -78,6 +78,8 @@ pub struct OpenSession {
     pub state_dir: Option<PathBuf>,
     /// Session id to resume (where the agent supports it); a new session if that fails.
     pub resume: Option<String>,
+    /// The task this session works for (audit records, e.g. of its network egress).
+    pub task: Option<crate::TaskId>,
 }
 
 impl OpenSession {
@@ -93,6 +95,7 @@ impl OpenSession {
             permissions,
             state_dir: None,
             resume: None,
+            task: None,
         }
     }
 }

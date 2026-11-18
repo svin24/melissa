@@ -9,12 +9,22 @@ description = "Melissa agent layer: pluggable backends, task dispatch, audit log
 [dependencies]
 agent-client-protocol = { workspace = true }
 futures = { workspace = true }
+# Egress: MCP served on each sandbox's Unix socket (hyper's HTTP/1 server, already in the
+# build through axum and kube-rs; no new crates).
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
+hyper-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+# Runs inside each agent sandbox: forwards loopback ports to the queen's egress sockets.
+[[bin]]
+name = "melissa-netbridge"
+path = "src/bin/melissa-netbridge.rs"
 
 [lints]
 workspace = true

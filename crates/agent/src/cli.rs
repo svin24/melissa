@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::{
-    sandbox::{self, SandboxError, SandboxPlan, SandboxSpec},
-    AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream,
+    egress::{EgressLease, EgressProxy, EgressRequest, NetworkMode},
+    sandbox::{self, Bridge, SandboxError, SandboxPlan, SandboxSpec},
+    AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream, TaskId,
 };
 
 /// Placeholder in [`CliSpec::args`] that is replaced by the prompt.
@@ -44,6 +45,16 @@ pub struct CliSpec {
     /// ([`SandboxSpec::preset`]), which is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxSpec>,
+    /// Network access of the sandboxed agent: `proxy` (default: only the allowlisted hosts,
+    /// through Melissa's egress proxy, plus Melissa's MCP endpoint), `learn` (every public
+    /// host, logged), `none` (MCP only) or `host` (the unfiltered host network).
+    #[serde(default)]
+    pub network: crate::egress::NetworkMode,
+    /// Hosts the agent may reach with `network = "proxy"`: `host` or `*.domain`, optionally
+    /// `:port` (default 443). Absent: the built-in list for the command
+    /// ([`crate::egress::default_allow`]); given: replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
 }
 
 impl CliSpec {
@@ -54,12 +65,26 @@ impl CliSpec {
             args: args.iter().map(|a| (*a).to_string()).collect(),
             mcp_args: Vec::new(),
             sandbox: None,
+            network: crate::egress::NetworkMode::default(),
+            allow: None,
         }
     }
 
     /// Use `spec` instead of the built-in sandbox preset.
     pub fn with_sandbox(mut self, spec: SandboxSpec) -> Self {
         self.sandbox = Some(spec);
+        self
+    }
+
+    /// Set the sandbox's network access.
+    pub fn with_network(mut self, mode: crate::egress::NetworkMode) -> Self {
+        self.network = mode;
+        self
+    }
+
+    /// Replace the built-in egress allowlist.
+    pub fn with_allow(mut self, hosts: Vec<String>) -> Self {
+        self.allow = Some(hosts);
         self
     }
 
@@ -70,9 +95,13 @@ impl CliSpec {
 
     /// The sandbox that applies: the configured one, else the preset for the command.
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        self.sandbox
+        let mut spec = self
+            .sandbox
             .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command))
+            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
+        spec.network = self.network;
+        spec.allow = self.allow.clone();
+        spec
     }
 
     /// Check the configuration (currently: the sandbox paths and env names).
@@ -116,6 +145,7 @@ pub struct CliBackend {
     bwrap: Option<PathBuf>,
     home: Option<PathBuf>,
     workdir: PathBuf,
+    egress: Option<EgressProxy>,
 }
 
 impl CliBackend {
@@ -128,6 +158,7 @@ impl CliBackend {
         } else {
             None
         };
+        warn_host_network(&spec.name, &sandbox);
         Self {
             spec,
             sandbox,
@@ -135,6 +166,7 @@ impl CliBackend {
             bwrap,
             home: std::env::var_os("HOME").map(PathBuf::from),
             workdir,
+            egress: None,
         }
     }
 
@@ -144,12 +176,19 @@ impl CliBackend {
         self
     }
 
+    /// The egress proxy that gives sandboxes (`network = "proxy"`) their network.
+    pub fn with_egress(mut self, egress: EgressProxy) -> Self {
+        self.egress = Some(egress);
+        self
+    }
+
     /// Program and argv for one run: the CLI itself, or `bwrap` wrapping it.
     fn command_line(
         &self,
         program: &Path,
         workdir: &Path,
         req: &RunRequest,
+        bridge: Option<Bridge>,
         args: Vec<String>,
     ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
         let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
@@ -161,9 +200,86 @@ impl CliBackend {
             workdir,
             &extra,
             &[],
+            bridge,
             args,
         )
     }
+}
+
+/// Log once per backend that it runs on the unfiltered host network.
+pub(crate) fn warn_host_network(name: &str, sandbox: &SandboxSpec) {
+    if sandbox.enabled && sandbox.network == NetworkMode::Host {
+        tracing::warn!(
+            backend = name,
+            "network = \"host\": this agent can reach the whole network (LAN included) unfiltered"
+        );
+    } else if !sandbox.enabled {
+        tracing::warn!(
+            backend = name,
+            "sandbox disabled: this agent runs with the queen's files and network"
+        );
+    }
+}
+
+/// Whether the backend's network can be set up (the egress proxy and the bridge exist
+/// where the mode needs them).
+pub(crate) fn network_ready(sandbox: &SandboxSpec, egress: Option<&EgressProxy>) -> bool {
+    match sandbox.network {
+        _ if !sandbox.enabled => true,
+        NetworkMode::Host | NetworkMode::None => true,
+        NetworkMode::Proxy | NetworkMode::Learn => egress.is_some_and(|e| e.netbridge().is_some()),
+    }
+}
+
+/// Short network description for backend details.
+pub(crate) fn network_label(sandbox: &SandboxSpec) -> String {
+    if sandbox.enabled {
+        format!("sandbox: bwrap, net: {}", sandbox.network.as_str())
+    } else {
+        "no sandbox".into()
+    }
+}
+
+/// Open the egress sockets for one sandboxed run. `None`: no bridge needed (host network,
+/// no sandbox, or `network = "none"` without MCP). Fails closed: a mode that needs the
+/// proxy and has none is an error, never a fallback to the host network.
+pub(crate) fn open_egress(
+    sandbox: &SandboxSpec,
+    egress: Option<&EgressProxy>,
+    command: &str,
+    backend: &str,
+    task: TaskId,
+    mcp_tokens: Vec<String>,
+) -> Result<Option<EgressLease>, AgentError> {
+    if !sandbox.enabled || sandbox.network == NetworkMode::Host {
+        return Ok(None);
+    }
+    if sandbox.network == NetworkMode::None && mcp_tokens.is_empty() {
+        return Ok(None);
+    }
+    let Some(egress) = egress else {
+        if sandbox.network == NetworkMode::None {
+            return Ok(None);
+        }
+        return Err(AgentError::Unavailable(format!(
+            "network = \"{}\" needs Melissa's egress proxy, which is not set up",
+            sandbox.network.as_str()
+        )));
+    };
+    let allow = match sandbox.network {
+        NetworkMode::None => Vec::new(),
+        _ => sandbox.egress_allow(command)?,
+    };
+    let lease = egress
+        .open(EgressRequest {
+            backend: backend.to_string(),
+            task,
+            mode: sandbox.network,
+            allow,
+            mcp_tokens,
+        })
+        .map_err(|e| AgentError::Unavailable(e.to_string()))?;
+    Ok(Some(lease))
 }
 
 /// Program and argv that run `program args` in `workdir`: directly if the sandbox is
@@ -178,6 +294,7 @@ pub(crate) fn sandboxed_command(
     workdir: &Path,
     extra_ro: &[PathBuf],
     binds: &[(PathBuf, String)],
+    bridge: Option<Bridge>,
     args: Vec<String>,
 ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
     if !sandbox.enabled {
@@ -190,7 +307,9 @@ pub(crate) fn sandboxed_command(
         AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
     })?;
     // Resolved per run: the CLI may have updated itself (new binary path) since startup.
-    let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?.with_binds(binds)?;
+    let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?
+        .with_binds(binds)?
+        .with_bridge(bridge);
     Ok(sandbox::command(&plan, workdir, extra_ro, &args))
 }
 
@@ -201,16 +320,14 @@ impl Backend for CliBackend {
             detail.push(' ');
             detail.push_str(arg);
         }
-        detail.push_str(if self.sandbox.enabled {
-            " [sandbox: bwrap]"
-        } else {
-            " [no sandbox]"
-        });
+        detail.push_str(&format!(" [{}]", network_label(&self.sandbox)));
         BackendInfo {
             name: self.spec.name.clone(),
             kind: "cli",
             detail,
-            available: self.program.is_some() && (!self.sandbox.enabled || self.bwrap.is_some()),
+            available: self.program.is_some()
+                && (!self.sandbox.enabled || self.bwrap.is_some())
+                && network_ready(&self.sandbox, self.egress.as_ref()),
             tools: !self.spec.mcp_args.is_empty(),
         }
     }
@@ -243,7 +360,17 @@ impl Backend for CliBackend {
 
             // bwrap needs an absolute workdir for its binds.
             let workdir = std::path::absolute(workdir)?;
-            let (program, args) = self.command_line(program, &workdir, req, args)?;
+            // Held until the CLI has exited: dropping it closes the sandbox's sockets.
+            let lease = open_egress(
+                &self.sandbox,
+                self.egress.as_ref(),
+                &self.spec.command,
+                &self.spec.name,
+                req.task.unwrap_or_default(),
+                req.mcp.iter().map(|m| m.token.clone()).collect(),
+            )?;
+            let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
+            let (program, args) = self.command_line(program, &workdir, req, bridge, args)?;
 
             let mut child = tokio::process::Command::new(&program)
                 .args(args)
@@ -273,6 +400,7 @@ impl Backend for CliBackend {
             out?;
             err?;
             let status = status?;
+            drop(lease);
             if status.success() {
                 Ok(())
             } else {
