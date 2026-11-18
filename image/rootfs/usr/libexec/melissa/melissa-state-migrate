@@ -1,0 +1,24 @@
+#!/bin/sh
+# Moves the headless queen's state out of the old DynamicUser layout (/var/lib/melissa ->
+# private/melissa) into a plain directory owned by the fixed `melissa` user. Runs once, before
+# melissa-queen.service, only while /var/lib/melissa is still that symlink.
+#
+# systemd would migrate this itself when DynamicUser= is turned off, but on Fedora's SELinux
+# policy PID 1 (init_t) may not unlink the var_lib_t symlink (AVC seen 2026-11-18), so the queen
+# failed with status=238/STATE_DIRECTORY. This script runs as a normal root service instead.
+set -eu
+old=/var/lib/private/melissa
+new=/var/lib/melissa
+[ -L "$new" ] || exit 0
+if [ -d "$old" ]; then
+    rm -f "$new"
+    mv "$old" "$new"
+else
+    rm -f "$new"
+    mkdir -p "$new"
+fi
+chown -R melissa:melissa "$new"
+chmod 0750 "$new"
+install -d -o melissa -g melissa -m 0700 "$new/home"
+restorecon -R "$new" 2>/dev/null || true
+echo "moved the queen's state to $new (owner melissa)"

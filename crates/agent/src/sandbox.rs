@@ -144,8 +144,12 @@ impl SandboxSpec {
             // OpenCode: its config files read-only (not the whole directory: it also holds
             // `service.json`, a local server password, and plugins), provider logins
             // (`auth.json`) if any; the session database and caches are fresh per run.
+            // `~/.opencode` (the official installer's directory) is scratch too: OpenCode
+            // 1.19 writes `~/.opencode/.gitignore` on start (verified 2026-11-18); the binary
+            // in `~/.opencode/bin` is still bound read-only inside it.
             "opencode" => Self {
                 tmpfs: strings(&[
+                    ".opencode",
                     ".local/share/opencode",
                     ".local/state/opencode",
                     ".cache/opencode",
@@ -865,6 +869,7 @@ mod tests {
             ]
         );
         assert!(opencode.tmpfs.contains(&".config/opencode".to_string()));
+        assert!(opencode.tmpfs.contains(&".opencode".to_string()));
         // Managed (ACP flavor): none of the user's config.
         let managed = SandboxSpec::preset_opencode_managed();
         assert!(managed.ro.is_empty());

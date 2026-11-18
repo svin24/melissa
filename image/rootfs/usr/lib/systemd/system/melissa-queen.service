@@ -1,7 +1,9 @@
 [Unit]
 Description=Melissa queen bee (system)
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target melissa-state-migrate.service
+# One-time move from the old DynamicUser state layout (skipped once done).
+After=melissa-state-migrate.service
 # Deliberately not ordered after k3s or melissa-kubeconfig.service: the web UI and agents start
 # at once. The queen reads /run/melissa-kube/queen.kubeconfig on each cluster call, so it attaches
 # to k3s when the credentials appear (and follows rotations) without a restart.

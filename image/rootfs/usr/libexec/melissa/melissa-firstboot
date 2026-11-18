@@ -28,6 +28,12 @@ fi
 version=unknown
 [ -r "$release" ] && version=$(sed -n 's/^MELISSA_VERSION=//p' "$release")
 
+# Kernel and audit messages would print over the prompts on the console; hold them back
+# until the account exists (they stay in the journal).
+if [ -t 0 ]; then
+    dmesg --console-off 2>/dev/null || true
+    trap 'dmesg --console-on 2>/dev/null || true' EXIT
+fi
 clear 2>/dev/null || true
 cat <<EOF
 
@@ -119,4 +125,5 @@ cat <<EOF
     ssh -L 8080:127.0.0.1:8080 $name@<this machine>   then open http://127.0.0.1:8080
 
 EOF
-if [ "${MELISSA_FIRSTBOOT_FORCE:-0}" != 1 ]; then sleep 3; fi
+# The console login prompt clears the screen when it starts; let the admin read this first.
+if [ -t 0 ]; then read -r -p "  Press Enter to continue to the login prompt. " _ || true; fi
