@@ -1,9 +1,13 @@
 # k3s pinned for the Melissa images. Sourced as shell by the image build and by k3s-prepare.
 # Update: bump the version, fetch sha256sum-amd64.txt from the release, take the hashes for `k3s` and
 # `k3s-airgap-images-amd64.tar.zst`; k3s-selinux hash from rpm.rancher.io coreos repodata (primary.xml).
+# K3S_LICENSE_SHA256: the LICENSE at the release tag (shipped as /usr/share/licenses/k3s/LICENSE):
+#   curl -fsSL "https://raw.githubusercontent.com/k3s-io/k3s/<version with + as %2B>/LICENSE" | sha256sum
+# It rarely changes; if the hash differs, read the diff before updating it. k3s has no NOTICE file (checked v1.37.2+k3s1).
 # Never skip a Kubernetes minor version between images (k3s upgrade rule).
 K3S_VERSION=v1.37.2+k3s1
 K3S_SHA256=265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+K3S_LICENSE_SHA256=0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594
 K3S_AIRGAP_SHA256=35a5af1e69b57b8b627a4f6b1c29ea104209b661067b8c97fd40dc3f860bfcd2
 K3S_SELINUX_URL=https://rpm.rancher.io/k3s/stable/common/coreos/noarch/k3s-selinux-1.6-1.coreos.noarch.rpm
 K3S_SELINUX_SHA256=e34a0151904d162b19a69b1e214a8c77765c9ce27c2f76cc148bd84df8c9cebc
