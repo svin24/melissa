@@ -45,3 +45,16 @@ Format: date — decision. Why. Alternatives considered.
   Owner decision. k3s stays in the image (it's the platform agents act on; installing it would need host root).
 - **2026-11-18 — The Queen is the head agent; workers are sandboxed agents it starts.** Owner decision. Queen backend is a
   configurable list of subscription backends; no local LLMs on weak hardware.
+- **2026-11-18 — The queen reaches k3s as ServiceAccount `melissa/melissa-queen` with a non-expiring Secret-based token,
+  minted into `/run/credstore/melissa.kubeconfig` by a root oneshot and imported with `ImportCredential=`.** Why:
+  systemd credentials are copied once at service start, so a short-lived bound token (`kubectl create token`) would
+  force queen restarts (killing agent tasks) on every refresh; the token is root-only on disk, scoped by read-only
+  RBAC, and revocable by recreating the ServiceAccount (`melissa-kubeconfig rotate`; recreating only the Secret
+  yields the same token). `ImportCredential=` (not `LoadCredential=`
+  with a path) because a missing credential is fine: the queen starts without k3s (desktop, k3s down) and
+  `cluster_health` says so. Alternatives: bound tokens + timer + restart (rejected: restarts), reading k3s.yaml
+  (rejected: cluster-admin), a group-readable token file refreshed in place (possible later).
+- **2026-11-18 — Cluster code lives in a new `crates/hive` (kube-rs 5.1 + k8s-openapi 0.29 `v1_37`, rustls + ring),
+  behind narrow traits (`ClusterRead` now, a separate write trait later).** Why: keeps the large kube dependency tree out
+  of `melissa-agent`, tools are unit-tested against a fake, and read-only tools can't reach write methods.
+  Alternatives: a module in `crates/agent` (heavier builds for every agent test), shelling out to kubectl (rejected).
