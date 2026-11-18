@@ -428,8 +428,29 @@ pub fn plain_text(text: &str) -> Markup {
     html! {
         @for block in &blocks {
             @match block {
-                Block::Para(lines) => p { @for (i, l) in lines.iter().enumerate() { @if i > 0 { br; } (l) } },
-                Block::List(items) => ul { @for it in items { li { (it) } } },
+                Block::Para(lines) => p { @for (i, l) in lines.iter().enumerate() { @if i > 0 { br; } (inline(l)) } },
+                Block::List(items) => ul { @for it in items { li { (inline(it)) } } },
+            }
+        }
+    }
+}
+
+/// One line: text between a pair of backticks becomes inline code (still escaped text).
+fn inline(line: &str) -> Markup {
+    let parts: Vec<&str> = line.split('`').collect();
+    // `split` yields at least one part, so this can't underflow.
+    let last = parts.len() - 1;
+    html! {
+        @for (i, part) in parts.iter().enumerate() {
+            @if i % 2 == 0 {
+                (part)
+            } @else if i == last {
+                // A backtick without a partner stays as written.
+                "`" (part)
+            } @else if part.is_empty() {
+                "``"
+            } @else {
+                code { (part) }
             }
         }
     }
@@ -798,6 +819,8 @@ mod tests {
         assert!(out.contains("<li>one</li><li>&lt;b&gt;two&lt;/b&gt;</li>"));
         let out = user_message("a\nb\n\nc").into_string();
         assert!(out.contains("<p>a<br>b</p><p>c</p>"));
+        let out = queen_message("run `<ls>` and `x").into_string();
+        assert!(out.contains("run <code>&lt;ls&gt;</code> and `x"), "{out}");
     }
 
     #[test]

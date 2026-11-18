@@ -89,6 +89,8 @@ pub struct Feed {
     errored_turns: HashSet<TurnId>,
     /// Agent tool-call ids → our own keys (agent ids never reach DOM ids or selectors).
     tool_keys: HashMap<String, String>,
+    /// Agent tool-call ids not shown.
+    hidden_tools: HashSet<String>,
     busy: Option<TurnId>,
     backend: Option<String>,
     last_seq: u64,
@@ -376,7 +378,12 @@ impl Feed {
 
     fn tool_call(&mut self, id: &str, title: &str, status: &str) -> Vec<Change> {
         let words = tool_words(title);
-        if words.hidden {
+        // A call first reported under a hidden title stays hidden when its title changes
+        // (Grok: `search_tool`, then `Search tools: "..."`).
+        if words.hidden || self.hidden_tools.contains(id) {
+            if !self.tool_keys.contains_key(id) {
+                self.hidden_tools.insert(id.to_string());
+            }
             return Vec::new();
         }
         let state = match status {
@@ -389,8 +396,11 @@ impl Feed {
             ActivityState::Failed => format!("Couldn't finish: {}", lower_first(words.doing)),
             _ => words.doing.to_string(),
         };
-        // Unknown tools: the agent's own title as the detail (escaped text).
-        let detail = words.unknown.then(|| shorten(title, 80));
+        // Unknown tools: the agent's own title as the detail (escaped text), except for an
+        // agent's wrapper tool, which says nothing (Grok: `use_tool`, renamed to the real
+        // tool when it finishes).
+        let detail =
+            (words.unknown && !WRAPPER_TOOLS.contains(&title.trim())).then(|| shorten(title, 80));
         let next = self.tool_keys.len() + 1;
         let key = self
             .tool_keys
@@ -452,14 +462,18 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ("start_worker", "Asking a helper", "Asked a helper"),
 ];
 
-/// Tool calls not shown as rows.
-const HIDDEN_TOOLS: &[&str] = &["start_worker", "search_tool"];
+/// Agents' own tool calls not shown as rows: looking up their tool list.
+const HIDDEN_TOOLS: &[&str] = &["search_tool"];
+/// Agents' wrapper tools that call one of Melissa's tools (the real name comes later).
+const WRAPPER_TOOLS: &[&str] = &["use_tool"];
 
 /// Map an agent's tool title (`melissa__bee_info`, `mcp__melissa__bee_info`, `bee_info`,
 /// or an agent's own tool such as `Read`) to plain words.
 pub fn tool_words(title: &str) -> ToolWords {
     let name = tool_name(title);
-    if HIDDEN_TOOLS.contains(&name) {
+    // Grok's finished tool search is titled `Search tools: "<query>"`; the query may name
+    // Melissa's tools, so check this before the name.
+    if HIDDEN_TOOLS.contains(&name) || title.trim_start().starts_with("Search tools") {
         return ToolWords {
             doing: "",
             done: "",
@@ -659,7 +673,9 @@ mod tests {
             tool_words("use_tool: melissa__list_apps").done,
             "Listed your apps"
         );
-        assert!(tool_words("melissa__start_worker").hidden);
+        assert!(!tool_words("melissa__start_worker").hidden);
+        assert!(tool_words("search_tool").hidden);
+        assert!(tool_words("Search tools: \"melissa start_worker bee_info\"").hidden);
         let other = tool_words("Read");
         assert!(other.unknown);
         assert_eq!(other.done, "Used a tool");
@@ -831,6 +847,47 @@ mod tests {
             Item::Activity {
                 label: format!("{name} finished"),
                 detail: Some("Wait until ready".into()),
+                state: ActivityState::Done
+            }
+        );
+    }
+
+    #[test]
+    fn grok_tool_titles_change_while_running() {
+        let call = |seq, id: &str, title: &str, status: &str| {
+            rec(
+                seq,
+                QueenEvent::ToolCall {
+                    turn: Some(1),
+                    id: id.into(),
+                    title: title.into(),
+                    status: status.into(),
+                },
+            )
+        };
+        let mut feed = Feed::new();
+        feed.apply(&call(1, "a", "search_tool", "pending"), &none);
+        feed.apply(
+            &call(2, "a", "Search tools: \"melissa start_worker\"", "done"),
+            &none,
+        );
+        assert!(feed.entries().is_empty());
+        feed.apply(&call(3, "b", "use_tool", "pending"), &none);
+        assert_eq!(
+            feed.entries()[0].item,
+            Item::Activity {
+                label: "Using a tool".into(),
+                detail: None,
+                state: ActivityState::Working
+            }
+        );
+        let c = feed.apply(&call(4, "b", "melissa__start_worker", "done"), &none);
+        assert_eq!(c, [Change::Updated(0)]);
+        assert_eq!(
+            feed.entries()[0].item,
+            Item::Activity {
+                label: "Asked a helper".into(),
+                detail: None,
                 state: ActivityState::Done
             }
         );
