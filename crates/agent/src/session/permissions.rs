@@ -197,15 +197,16 @@ fn labels_for(kind: ToolKind) -> Option<Labels> {
 
 /// Does `label` name tool `tool` of MCP server `server`? Agents spell MCP tool names in
 /// different ways (`melissa__bee_info`, `mcp__melissa__bee_info`, `melissa/bee_info`,
-/// `bee_info (melissa)`), so accept the server name and the exact tool name as separate
-/// words of the label.
+/// `bee_info (melissa)`, OpenCode's `melissa_bee_info`), so accept the server name and the
+/// exact tool name as separate words of the label, or one word `<server>_<tool>`.
 fn names_mcp_tool(label: &str, server: &str, tool: &str) -> bool {
     let words: Vec<&str> = label
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
         .flat_map(|w| w.split("__"))
         .filter(|w| !w.is_empty())
         .collect();
-    words.contains(&server) && words.contains(&tool)
+    let joined = format!("{server}_{tool}");
+    (words.contains(&server) && words.contains(&tool)) || words.contains(&joined.as_str())
 }
 
 #[cfg(test)]
@@ -258,13 +259,20 @@ mod tests {
             "melissa/bee_info",
             "bee_info (melissa)",
             "MCP: melissa.bee_info",
+            "melissa_bee_info",
         ] {
             assert!(
                 names_mcp_tool(&label.to_lowercase(), "melissa", "bee_info"),
                 "{label}"
             );
         }
-        for label in ["bee_info", "melissa__bee_infox", "other__bee_info"] {
+        for label in [
+            "bee_info",
+            "melissa__bee_infox",
+            "other__bee_info",
+            "melissa_bee_infox",
+            "xmelissa_bee_info",
+        ] {
             assert!(!names_mcp_tool(label, "melissa", "bee_info"), "{label}");
         }
     }

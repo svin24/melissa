@@ -39,6 +39,31 @@ fn yes() -> bool {
     true
 }
 
+/// Agent-specific setup on top of plain ACP.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpFlavor {
+    /// Plain ACP: Melissa's MCP server goes into `session/new`.
+    #[default]
+    Generic,
+    /// OpenCode (`opencode acp`): Melissa writes the agent's whole config into
+    /// `OPENCODE_CONFIG_CONTENT`: every tool asks (`permission: {"*": "ask"}`), Melissa's MCP
+    /// server is configured there with Code Mode off (else OpenCode hides MCP tools behind
+    /// its JavaScript `execute` tool), project config and auto-update are off.
+    Opencode,
+}
+
+/// The ACP flavor for a command (chosen by its file name), used by the built-in backends.
+pub fn flavor_for(command: &str) -> AcpFlavor {
+    match std::path::Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+    {
+        Some("opencode") => AcpFlavor::Opencode,
+        _ => AcpFlavor::Generic,
+    }
+}
+
 /// Configuration of one ACP backend (`kind = "acp"` in the queen config).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +101,12 @@ pub struct AcpSpec {
     /// directory is bound here inside the sandbox so the session can be resumed later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_store: Option<String>,
+    /// Agent-specific setup (`generic` or `opencode`).
+    #[serde(default)]
+    pub flavor: AcpFlavor,
+    /// Model to use, where the flavor sets the agent's config (`opencode`: `provider/model`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl AcpSpec {
@@ -90,7 +121,14 @@ impl AcpSpec {
             allow: None,
             record_dir: None,
             session_store: None,
+            flavor: AcpFlavor::Generic,
+            model: None,
         }
+    }
+
+    pub fn with_flavor(mut self, flavor: AcpFlavor) -> Self {
+        self.flavor = flavor;
+        self
     }
 
     pub fn with_session_store(mut self, path: &str) -> Self {
@@ -120,16 +158,29 @@ impl AcpSpec {
     }
 
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        let mut spec = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
+        let mut spec = self.sandbox.clone().unwrap_or_else(|| match self.flavor {
+            // Melissa writes OpenCode's whole config; the user's own (which may allow
+            // tools without asking) stays hidden.
+            AcpFlavor::Opencode => SandboxSpec::preset_opencode_managed(),
+            AcpFlavor::Generic => SandboxSpec::preset(&self.command),
+        });
         spec.network = self.network;
         spec.allow = self.allow.clone();
         spec
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {
+        if let Some(model) = &self.model {
+            let ok = self.flavor == AcpFlavor::Opencode
+                && !model.is_empty()
+                && model.len() <= 200
+                && model
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | ':'));
+            if !ok {
+                return Err(SandboxError::BadModel(model.clone()));
+            }
+        }
         if let Some(store) = &self.session_store {
             let p = std::path::Path::new(store);
             if store.is_empty()
@@ -202,24 +253,7 @@ impl AcpBackend {
 
     /// Permission handler for one task.
     fn permissions(&self, req: &RunRequest) -> PolicyPermissions {
-        let registry = match &self.mcp {
-            Some(server) => server.registry().clone(),
-            // No inbox anyone watches: anything that needs a human is refused at once.
-            None => ToolRegistry::new(Vec::new(), None).with_confirm_timeout(Duration::ZERO),
-        };
-        let mcp = match (&self.mcp, &req.mcp) {
-            (Some(server), Some(endpoint)) => Some((server.clone(), endpoint.token.clone())),
-            _ => None,
-        };
-        PolicyPermissions::new(
-            registry,
-            PermissionContext {
-                task: req.task.unwrap_or_default(),
-                backend: self.spec.name.clone(),
-                mcp_name: MCP_SERVER_NAME.into(),
-                mcp,
-            },
-        )
+        task_permissions(self.mcp.as_ref(), req, &self.spec.name)
     }
 
     async fn spawn(&self, open: OpenSession) -> Result<OpenedSession, AgentError> {
@@ -256,6 +290,14 @@ impl AcpBackend {
             tokens,
         )?;
         let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
+        // OpenCode gets Melissa's MCP server through its config, not `session/new`.
+        let (env, session_servers) = match self.spec.flavor {
+            AcpFlavor::Generic => (Vec::new(), open.mcp_servers.clone()),
+            AcpFlavor::Opencode => (
+                opencode_env(&open.mcp_servers, self.spec.model.as_deref()),
+                Vec::new(),
+            ),
+        };
         let (program_path, argv) = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
@@ -264,10 +306,15 @@ impl AcpBackend {
             &cwd,
             &[],
             &binds,
+            &env,
             bridge,
             self.spec.args.clone(),
         )?;
-        let mut child = tokio::process::Command::new(&program_path)
+        let mut command = tokio::process::Command::new(&program_path);
+        if !self.sandbox.enabled {
+            command.envs(env.iter().map(|(k, v)| (k, v)));
+        }
+        let mut child = command
             .args(argv)
             .current_dir(&cwd)
             .env("NO_COLOR", "1")
@@ -333,7 +380,11 @@ impl AcpBackend {
         };
 
         let transport = transport::lines(stdout, stdin, recorder);
-        let open = OpenSession { cwd, ..open };
+        let open = OpenSession {
+            cwd,
+            mcp_servers: session_servers,
+            ..open
+        };
         let stop = client::process_shutdown(child);
         // The egress sockets close after the agent has stopped (or when the session task is
         // aborted, which drops this hook, the lease and the agent process together).
@@ -411,8 +462,75 @@ impl Backend for AcpBackend {
     }
 }
 
+/// Environment for an OpenCode agent whose config Melissa owns ([`AcpFlavor::Opencode`]):
+/// every tool (built-in or MCP) asks for permission, Melissa's MCP servers with Code Mode
+/// off (each tool is its own tool call, named `<server>_<tool>`), no project config, no
+/// auto-update, no Claude Code compatibility (reading `~/.claude`).
+pub fn opencode_env(servers: &[McpServerSpec], model: Option<&str>) -> Vec<(String, String)> {
+    let mut mcp = serde_json::Map::new();
+    for s in servers {
+        let headers: serde_json::Map<String, serde_json::Value> = s
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect();
+        mcp.insert(
+            s.name.clone(),
+            serde_json::json!({
+                "type": "remote",
+                "url": s.url,
+                "headers": headers,
+                "codemode": false,
+            }),
+        );
+    }
+    let mut config = serde_json::json!({
+        "permission": {"*": "ask"},
+        "mcp": mcp,
+    });
+    if let Some(model) = model {
+        config["model"] = serde_json::Value::String(model.into());
+    }
+    [
+        ("OPENCODE_CONFIG_CONTENT", config.to_string()),
+        ("OPENCODE_DISABLE_PROJECT_CONFIG", "1".into()),
+        ("OPENCODE_DISABLE_AUTOUPDATE", "1".into()),
+        ("OPENCODE_DISABLE_CLAUDE_CODE", "1".into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// Permission handler for one board task of `backend`: Melissa's policy over the task's MCP
+/// session. Without an MCP server there is no inbox anyone watches, so anything that needs
+/// a human is refused at once.
+pub(crate) fn task_permissions(
+    server: Option<&McpServer>,
+    req: &RunRequest,
+    backend: &str,
+) -> PolicyPermissions {
+    let registry = match server {
+        Some(server) => server.registry().clone(),
+        None => ToolRegistry::new(Vec::new(), None).with_confirm_timeout(Duration::ZERO),
+    };
+    let mcp = match (server, &req.mcp) {
+        (Some(server), Some(endpoint)) => Some((server.clone(), endpoint.token.clone())),
+        _ => None,
+    };
+    PolicyPermissions::new(
+        registry,
+        PermissionContext {
+            task: req.task.unwrap_or_default(),
+            backend: backend.to_string(),
+            mcp_name: MCP_SERVER_NAME.into(),
+            mcp,
+        },
+    )
+}
+
 /// Create `dir` (and parents) with mode 0700: it holds an agent's conversation history.
-fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)

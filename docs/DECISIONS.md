@@ -200,3 +200,32 @@ Format: date — decision. Why. Alternatives considered.
   `confirm approve`; Queen-only tools are unreachable; audited (`operator.tool` + the usual
   `tool.*` lines). Why: the in-process `tool` command has its own inbox no one can answer. Exposure: same
   as the existing loopback API (same-origin check, no auth yet; see PLAN open question 28).
+- **2026-11-18 — Claude Code as a session backend: Melissa drives Claude's own stream-json protocol natively
+  (`claude-session`, `crates/agent/src/claude`), not a third-party ACP adapter.** One `claude -p
+  --input-format stream-json --output-format stream-json --include-partial-messages` process per session, built-in
+  tools removed (`--tools ""`), `--permission-mode manual` (the CLI's default "ask" mode, set explicitly),
+  `--permission-prompt-tool stdio` so every permission prompt is a `can_use_tool` control request answered by
+  Melissa's policy (never "always" rules), no `--allowedTools` (MCP calls ask too), `interrupt` control requests
+  for cancel, `--session-id`/`--resume` with a Melissa-owned `~/.claude/projects` for the Queen. Why: everything
+  needed (many turns per process, partial messages, permission prompts, interrupt, resume) is in the CLI and was
+  verified live; it maps onto the existing `AgentSession` API with ~600 lines of Rust and no new crates; same
+  sandbox and egress proxy as every agent. The ACP adapter would need Node (not on the host, not in the image),
+  a network install of a third-party package (supply chain, version drift) and one more process translating
+  permissions we must trust. Trade-off: the stream-json/control protocol is Claude Code's own and less
+  documented than ACP; new CLI versions can change it (replay fixture + live checks catch that). Resolves PLAN
+  open question 26.
+- **2026-11-18 — OpenCode over ACP with a Melissa-owned config (`opencode-acp`, ACP flavor `opencode`).**
+  Melissa writes OpenCode's whole config into `OPENCODE_CONFIG_CONTENT`: `permission: {"*": "ask"}` (its strictest
+  setting: every built-in and MCP tool asks over `session/request_permission`; by default it ran MCP tools
+  without asking), Melissa's MCP server with `codemode: false`, project config/auto-update/Claude-compat off; the
+  sandbox does not bind the user's `~/.config/opencode`. Why: with Code Mode on (default) MCP tools are only
+  reachable through OpenCode's JavaScript `execute` tool, so the permission request shows code, not a tool name,
+  and Melissa could not tell a bee_info call from anything else; `codemode` can only be set in config, not in
+  ACP's `session/new`. Hiding the user's config keeps their `allow` rules from merging into Melissa's. Trade-off:
+  the user's model/provider choice does not apply (set `model = "provider/model"` on the backend); an OpenCode
+  policy reject ends the turn (`cancelled`) rather than letting the agent continue. Also: the `opencode` preset
+  now binds only `opencode.json{,c}` instead of the whole config directory, which held a local server password
+  (`service.json`).
+- **2026-11-18 — Queen backend order: `grok-acp`, then `claude-session`, then `opencode-acp`** (config
+  `[queen] backends`). Each is tried when the previous one fails to start (missing CLI, login, handshake).
+  Workers default to the first Queen backend and may use any session backend.

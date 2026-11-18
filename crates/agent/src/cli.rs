@@ -200,6 +200,7 @@ impl CliBackend {
             workdir,
             &extra,
             &[],
+            &[],
             bridge,
             args,
         )
@@ -284,7 +285,8 @@ pub(crate) fn open_egress(
 
 /// Program and argv that run `program args` in `workdir`: directly if the sandbox is
 /// disabled, else `bwrap` wrapping it. `extra_ro` are further files bound read-only;
-/// `binds` are host directories bound read-write at paths under `$HOME`.
+/// `binds` are host directories bound read-write at paths under `$HOME`; `env` are fixed
+/// variables set inside the sandbox (without a sandbox the caller sets them on the process).
 #[allow(clippy::too_many_arguments)] // internal helper; each argument is a distinct input
 pub(crate) fn sandboxed_command(
     sandbox: &SandboxSpec,
@@ -294,6 +296,7 @@ pub(crate) fn sandboxed_command(
     workdir: &Path,
     extra_ro: &[PathBuf],
     binds: &[(PathBuf, String)],
+    env: &[(String, String)],
     bridge: Option<Bridge>,
     args: Vec<String>,
 ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
@@ -309,6 +312,7 @@ pub(crate) fn sandboxed_command(
     // Resolved per run: the CLI may have updated itself (new binary path) since startup.
     let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?
         .with_binds(binds)?
+        .with_env(env)?
         .with_bridge(bridge);
     Ok(sandbox::command(&plan, workdir, extra_ro, &args))
 }

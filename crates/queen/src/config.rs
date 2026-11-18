@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use melissa_agent::{AcpSpec, CliSpec};
+use melissa_agent::{AcpSpec, ClaudeSpec, CliSpec};
 use serde::{de::Error as _, Deserialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -18,8 +18,9 @@ pub struct QueenConfig {
     pub listen: SocketAddr,
     /// Maximum run time for one agent task, in seconds.
     pub task_timeout_secs: u64,
-    /// Agent backends: one-shot CLIs (`kind = "cli"`, the default) and ACP agents
-    /// (`kind = "acp"`). The built-in `echo` backend is always present in addition.
+    /// Agent backends: one-shot CLIs (`kind = "cli"`, the default), ACP agents
+    /// (`kind = "acp"`) and Claude Code sessions over stream-json (`kind = "claude"`). The
+    /// built-in `echo` backend is always present in addition.
     #[serde(rename = "backend")]
     pub backends: Vec<BackendSpec>,
     /// Kubeconfig for the local k3s API, used when no `melissa.kubeconfig` systemd credential
@@ -86,8 +87,8 @@ impl Default for QueenConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct QueenSection {
-    /// Session backends (`kind = "acp"`) to try in order; the next is used if one fails
-    /// to start.
+    /// Session backends (`kind = "acp"` or `"claude"`) to try in order; the next is used
+    /// if one fails to start.
     pub backends: Vec<String>,
     /// Tools the Queen may use (default: all). Include the worker tools (`start_worker`,
     /// `worker_status`, `list_workers`, `cancel_worker`) to let it start workers. Workers
@@ -108,7 +109,11 @@ pub struct QueenSection {
 impl Default for QueenSection {
     fn default() -> Self {
         Self {
-            backends: vec!["grok-acp".into()],
+            backends: vec![
+                "grok-acp".into(),
+                "claude-session".into(),
+                "opencode-acp".into(),
+            ],
             tools: None,
             worker_backend: None,
             max_workers: 2,
@@ -126,6 +131,8 @@ pub enum BackendSpec {
     Cli(CliSpec),
     /// An agent speaking ACP on stdio (`grok agent stdio`).
     Acp(AcpSpec),
+    /// Claude Code over its stream-json protocol (one process per session).
+    Claude(ClaudeSpec),
 }
 
 impl BackendSpec {
@@ -133,7 +140,13 @@ impl BackendSpec {
         match self {
             Self::Cli(s) => &s.name,
             Self::Acp(s) => &s.name,
+            Self::Claude(s) => &s.name,
         }
+    }
+
+    /// Can hold a long-lived session (the Queen's).
+    pub fn is_session(&self) -> bool {
+        matches!(self, Self::Acp(_) | Self::Claude(_))
     }
 
     #[cfg(test)]
@@ -141,6 +154,7 @@ impl BackendSpec {
         match self {
             Self::Cli(s) => s.effective_sandbox(),
             Self::Acp(s) => s.effective_sandbox(),
+            Self::Claude(s) => s.effective_sandbox(),
         }
     }
 
@@ -148,6 +162,7 @@ impl BackendSpec {
         match self {
             Self::Cli(s) => s.validate(),
             Self::Acp(s) => s.validate(),
+            Self::Claude(s) => s.validate(),
         }
     }
 }
@@ -169,8 +184,9 @@ impl<'de> Deserialize<'de> for BackendSpec {
         match kind.as_str() {
             "cli" => value.try_into().map(Self::Cli).map_err(D::Error::custom),
             "acp" => value.try_into().map(Self::Acp).map_err(D::Error::custom),
+            "claude" => value.try_into().map(Self::Claude).map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
-                "unknown backend kind `{other}` (expected `cli` or `acp`)"
+                "unknown backend kind `{other}` (expected `cli`, `acp` or `claude`)"
             ))),
         }
     }
@@ -212,10 +228,22 @@ pub fn default_backends() -> Vec<BackendSpec> {
             ],
         )
         .with_session_store(".grok/sessions"),
+        // OpenCode over ACP. Melissa writes its whole config (flavor `opencode`): every tool
+        // asks (`permission: {"*": "ask"}`), Melissa's MCP server without Code Mode, the
+        // user's own config hidden. Sessions live in its database under
+        // `~/.local/share/opencode`; for the Queen that directory is Melissa's own.
+        AcpSpec::new("opencode-acp", "opencode", &["acp"])
+            .with_flavor(melissa_agent::acp::AcpFlavor::Opencode)
+            .with_session_store(".local/share/opencode"),
     ];
+    // Claude Code as a session: stream-json in and out, no built-in tools, every permission
+    // prompt answered by Melissa (`--permission-prompt-tool stdio`); sessions in
+    // `~/.claude/projects` (the Queen's: a Melissa-owned directory bound there).
+    let claude = ClaudeSpec::new("claude-session", "claude");
     cli.into_iter()
         .map(BackendSpec::Cli)
         .chain(acp.into_iter().map(BackendSpec::Acp))
+        .chain(std::iter::once(BackendSpec::Claude(claude)))
         .collect()
 }
 
@@ -265,10 +293,10 @@ impl QueenConfig {
         }
         for name in &q.backends {
             match self.backends.iter().find(|b| b.name() == name) {
-                Some(BackendSpec::Acp(_)) => {}
-                Some(BackendSpec::Cli(_)) => bail!(
+                Some(b) if b.is_session() => {}
+                Some(_) => bail!(
                     "[queen] backend `{name}` is a one-shot CLI backend; the Queen needs a \
-                     session backend (`kind = \"acp\"`)"
+                     session backend (`kind = \"acp\"` or `\"claude\"`)"
                 ),
                 // Not fatal: a config that replaces the built-in backends still serves the UI;
                 // the Queen reports the backend as unavailable when someone talks to it.
@@ -554,9 +582,81 @@ mod tests {
     }
 
     #[test]
+    fn claude_and_opencode_session_backends_are_built_in() {
+        let backends = default_backends();
+        let claude = backends
+            .iter()
+            .find_map(|b| match b {
+                BackendSpec::Claude(s) if s.name == "claude-session" => Some(s),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(claude.session_store, ".claude/projects");
+        assert!(claude.args.is_empty() && claude.tools);
+        let opencode = backends
+            .iter()
+            .find_map(|b| match b {
+                BackendSpec::Acp(s) if s.name == "opencode-acp" => Some(s),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(opencode.flavor, melissa_agent::acp::AcpFlavor::Opencode);
+        assert_eq!(opencode.args, ["acp"]);
+        assert_eq!(
+            opencode.session_store.as_deref(),
+            Some(".local/share/opencode")
+        );
+        // The user's own OpenCode config (which may allow tools) is not bound.
+        assert!(opencode.effective_sandbox().ro.is_empty());
+
+        let config: QueenConfig = toml::from_str(
+            r#"
+            [[backend]]
+            kind = "claude"
+            name = "c"
+            command = "claude"
+            args = ["--model", "sonnet"]
+            network = "learn"
+            [[backend]]
+            kind = "acp"
+            name = "o"
+            command = "opencode"
+            args = ["acp"]
+            flavor = "opencode"
+            model = "opencode/big-pickle"
+            [queen]
+            backends = ["c", "o"]
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(config.backends.iter().all(BackendSpec::is_session));
+        for bad in [
+            "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nargs = [\"--dangerously-skip-permissions\"]",
+            "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nmcp_args = []",
+            "[[backend]]\nkind = \"acp\"\nname = \"o\"\ncommand = \"opencode\"\nflavor = \"other\"",
+            "[[backend]]\nkind = \"acp\"\nname = \"g\"\ncommand = \"grok\"\nmodel = \"a/b\"",
+        ] {
+            let parsed = toml::from_str::<QueenConfig>(bad);
+            assert!(
+                parsed.is_err() || parsed.unwrap().validate().is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn queen_section_defaults_and_checks() {
         let config = QueenConfig::default();
-        assert_eq!(config.queen.backends, ["grok-acp"]);
+        assert_eq!(
+            config.queen.backends,
+            ["grok-acp", "claude-session", "opencode-acp"]
+        );
+        // Every default Queen backend is a built-in session backend.
+        for name in &config.queen.backends {
+            let b = config.backends.iter().find(|b| b.name() == name).unwrap();
+            assert!(b.is_session(), "{name}");
+        }
         assert_eq!(config.queen.max_workers, 2);
         let grok = config
             .backends

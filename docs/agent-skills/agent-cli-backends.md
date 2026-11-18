@@ -40,9 +40,13 @@ args = ["run", "-m", "<provider>/<gemma-model>", "{prompt}"]
 - Grok: no per-run MCP option for `grok -p` (only `grok mcp add`, persistent user config). Use the ACP backend
   `grok-acp` instead: it passes Melissa's MCP endpoint per session (verified 2026-11-18, see
   [acp-sessions.md](acp-sessions.md)).
-- OpenCode: reads `opencode.json` (with an `mcp` section) from its working directory — next to wire.
+- OpenCode: session backend `opencode-acp` (ACP flavor `opencode`) gets Melissa's MCP server through
+  `OPENCODE_CONFIG_CONTENT` with `codemode: false` (verified 2026-11-18, see [acp-sessions.md](acp-sessions.md)).
+  The one-shot `opencode run` backend still has no tools.
+- Claude as a session: `claude-session` (`kind = "claude"`, stream-json, `--permission-prompt-tool stdio`, no
+  `--allowedTools`: every MCP call is a permission prompt Melissa answers). See [acp-sessions.md](acp-sessions.md).
 - Tool calls wait for confirmations inside the HTTP request; check each CLI's MCP tool-call timeout before
-  relying on long waits (Claude: `MCP_TOOL_TIMEOUT` env, unverified).
+  relying on long waits (Claude: `claude-session` sets `MCP_TOOL_TIMEOUT=960000`, not measured).
 
 ## Sandbox (bubblewrap) — verified 2026-11-18 on the dev laptop (Kinoite 45, SELinux enforcing, bwrap 0.13.1)
 Code: `crates/agent/src/sandbox.rs` (pure `command()` builds the argv; `SandboxPlan::resolve` does host lookups).
@@ -67,7 +71,7 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 |----------|----------------------------------------------------|------------------------------------------------------------------|
 | Claude   | `~/.local/share/claude/versions/<ver>` (via `~/.local/bin/claude`) | tmpfs `~/.claude`; rw `~/.claude/.credentials.json`. Not needed: `~/.claude.json`, sessions, history. |
 | Grok     | `~/.grok/downloads/grok-<ver>-linux-x86_64` (via `~/.grok/bin/grok`, static) | tmpfs `~/.grok`; rw `~/.grok/auth.json`; ro `~/.grok/config.toml`. |
-| OpenCode | `~/.opencode/bin/opencode`                         | ro `~/.config/opencode`; tmpfs `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode`; rw `~/.local/share/opencode/auth.json` if present (not present on the laptop: free default model). |
+| OpenCode | `~/.opencode/bin/opencode`                         | ro `~/.config/opencode/opencode.json{,c}` (since 2026-11-18 not the whole dir: it also holds `service.json`, a local server password, and plugins; tmpfs `~/.config/opencode` around them); tmpfs `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode`; rw `~/.local/share/opencode/auth.json` if present (not present on the laptop: free default model). `opencode-acp`: same without the user's config files (Melissa writes the config). |
 
 - Config: `[backend.sandbox]` with `enabled`, `tmpfs`, `ro`, `rw` (paths relative to `$HOME`, no `..`), `env`
   (names to pass through). Absent table = preset for the command's file name; a given table replaces the preset.
@@ -98,9 +102,20 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   works, ~3 s slower).
 - All three honour `HTTPS_PROXY`; none needed DNS inside the sandbox.
 
+## Session backends (verified 2026-11-18 through the queen, sandboxed, `network = "proxy"`)
+| Backend | Command | bee_info task | Queen ask + worker | Cancel | Resume |
+|---|---|---|---|---|---|
+| `grok-acp` | `grok --permission-mode default agent --no-leader stdio` | ~11 s | 23 s | yes | yes |
+| `claude-session` | `claude -p --input-format stream-json … --tools "" --permission-prompt-tool stdio` | 3.1 s | 11.8 s | yes (interrupt) | yes (`--resume`) |
+| `opencode-acp` | `opencode acp` + Melissa's config in env | 9.2 s | 23.6 s | yes | yes |
+Queen default order: `grok-acp`, `claude-session`, `opencode-acp` (`[queen] backends`).
+`kind = "claude"` config: `name`, `command`, `args` (only `--model`, `--fallback-model`, `--effort` + value),
+`tools`, `sandbox`, `network`, `allow`, `record_dir`, `session_store` (default `.claude/projects`). Env set by
+Melissa: `MCP_TOOL_TIMEOUT=960000`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`.
+ACP opencode: `flavor = "opencode"`, optional `model = "provider/model"`.
+
 ## Next (ideas, unverified)
-- Typed events: done for ACP agents (`crate::session`). For Claude (no ACP mode) use
-  `--input-format stream-json --output-format stream-json`; OpenCode has `opencode acp` (ACP v1, HTTP MCP).
+- Typed events: done for session backends (`crate::session`: ACP and Claude stream-json).
 - seccomp filter (bwrap `--seccomp`) to drop rarely needed syscalls (ptrace, keyctl, mount APIs).
 - Melissa-owned CLI logins (e.g. `CLAUDE_CONFIG_DIR` under `~/.local/share/melissa`) instead of binding the
   user's credential files.
