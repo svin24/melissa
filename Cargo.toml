@@ -1,14 +1,32 @@
 [workspace]
 resolver = "2"
-members = ["crates/queen", "crates/bee", "crates/web"]
+members = ["crates/agent", "crates/queen", "crates/bee", "crates/web"]
 
 [workspace.package]
 edition = "2021"
 license = "AGPL-3.0-or-later"   # candidate, see docs/PLAN.md section 8
 publish = false
 
+[workspace.dependencies]
+melissa-agent = { path = "crates/agent" }
+melissa-web = { path = "crates/web" }
+anyhow = "1"
+axum = "0.8"
+http-body-util = "0.1"
+maud = { version = "0.27", features = ["axum"] }
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "time", "sync", "fs"] }
+toml = "0.9"
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 unwrap_used = "warn"
+expect_used = "warn"
