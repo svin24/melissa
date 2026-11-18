@@ -37,3 +37,7 @@ Format: date — decision. Why. Alternatives considered.
   build), all baked into the image; SQLite datastore; bundled Traefik with telemetry off.** Why: reproducible, offline
   first boot, SELinux enforcing, version moves with the image. Alternatives: the install script (mutates /etc and
   /usr/local, unpinned), k3s-selinux 1.7 testing builds (not stable), cert-manager now (later, for ACME in M4).
+- **2026-11-18 — Apps are pulled live at runtime, driven by sandboxed agents (owner).** The agent decides and calls tools;
+  the queen validates against catalog manifests and applies them to k3s; containerd pulls the images. Agents never hold
+  cluster credentials or general egress. Alternatives: shipping app images in the OS image or sysexts (rejected for the
+  catalog: too big, slow to update), agents running containers themselves (rejected: bypasses policy and audit).
