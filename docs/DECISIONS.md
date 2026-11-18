@@ -16,8 +16,8 @@ Format: date — decision. Why. Alternatives considered.
   Why: owner wants both; the laptop moves to the desktop one. Shared build stage keeps them in sync.
 - **2026-11-18 — Extra packages are baked into the images (package list files), not layered on hosts.** Why: owner
   preference, reproducible bees.
-- **2026-11-18 — Desktop queen runs as a per-user systemd unit; headless as a system unit with DynamicUser.** Why: the
-  agent CLIs and their logins are per user on desktops; servers need no login session.
+- ~~**2026-11-18 — Desktop queen runs as a per-user systemd unit; headless as a system unit with DynamicUser.**~~
+  Superseded the same day: both images run the system queen as the fixed `melissa` user (see below).
 - **2026-11-18 — VM testing with QEMU from the Nix dev shell + bootc-image-builder.** Why: no host packages needed on an
   immutable OS. Alternative: libvirt/virt-install on the host (not installed).
 - **2026-11-18 — Code hosted in a private GitHub repo.** Owner approved; public release needs an explicit yes.
@@ -258,6 +258,16 @@ Format: date — decision. Why. Alternatives considered.
   in the tool registry) is the foundation and gets adapted to Bee/Cell ownership next.
 - **2026-11-18 — Desktop variant = KDE plus the full server running by default (owner).** Same server setup as headless
   (k3s, system queen, web UI at boot); built after the headless demo. Supersedes "k3s disabled, per-user queen on desktop".
+  Implemented 2026-11-18: desktop enables `melissa-queen.service` (User=melissa, state `/var/lib/melissa`, UI on
+  127.0.0.1:8080), `k3s.service` and `melissa-kubeconfig.service` exactly like headless. The per-user unit
+  (`/usr/lib/systemd/user/melissa-queen.service`) is deleted, not just disabled: a user starting it would fight the
+  system queen for port 8080 and split state. The system queen's agent logins come from `sudo melissa-setup agent
+  <name>` (melissa's home); a human's own CLI logins in their home stay theirs. Desktop also ships a firewalld zone
+  (`melissa-k3s`) accepting k3s's pod/service networks, because Kinoite runs firewalld and fedora-bootc does not.
+- **2026-11-18 — No first-boot account prompt on the desktop image.** `melissa-firstboot` (unit + script) ships only
+  in the headless image. Why: a desktop either has a human user already (the laptop) or Plasma's own first-run setup;
+  a console prompt on tty1 (and its kmscon ordering) has no place in front of the graphical login. Headless keeps the
+  guard that it exits at once when a human user exists.
 - **2026-11-18 — Code terms follow the hive model.** `crates/bee` (the per-device daemon stub) is
   `crates/comb` (`melissa-comb`); "worker" is "bee" everywhere (events, API, CLI, config keys with one-release
   aliases, prompts). Agent-facing tool names: `create_bee`, `give_bee_job`, `bee_status`, `list_bees`,

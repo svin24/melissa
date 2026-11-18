@@ -81,6 +81,12 @@ preflight() {
     if ss -ltnH 'sport = :8080' 2>/dev/null | grep -q .; then
         warn "something listens on :8080 now; after the switch the system queen owns 127.0.0.1:8080 (dev daemons: listen = \"127.0.0.1:8090\")"
     else ok "port 8080 free"; fi
+    # Plasma's first-run wizard runs before the login screen unless this flag exists (/etc carries over).
+    if [ -e /etc/plasma-setup-done ] || ! systemctl is-enabled --quiet plasma-setup.service 2>/dev/null; then
+        ok "Plasma first-run setup will not show (flag present or wizard not enabled)"
+    else
+        warn "/etc/plasma-setup-done missing: Plasma's setup wizard may show at boot (sudo touch /etc/plasma-setup-done)"
+    fi
     getent passwd melissa >/dev/null && warn "a 'melissa' user already exists: $(getent passwd melissa)" \
         || ok "no 'melissa' user yet (systemd-sysusers creates it at boot)"
 

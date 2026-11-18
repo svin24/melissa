@@ -40,7 +40,8 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   shares a Rust build stage and the Melissa layer (binaries, units, Tailscale, config under `/usr/lib`):
   - **desktop**: `FROM quay.io/fedora-ostree-desktops/kinoite:45` (KDE). For the dev laptop and desktop bees.
     Ships the transient-root `prepare-root.conf` (needed for Nix) and Tailscale, which the laptop currently has as
-    host-side rpm-ostree changes. The queen runs as a per-user service so it can use that user's agent CLI logins.
+    host-side rpm-ostree changes. Runs the full server like headless (system queen as `melissa`, k3s, web UI on
+    127.0.0.1:8080 at boot, whoever is logged in); no first-boot account prompt (KDE has its own setup).
   - **headless**: `FROM quay.io/fedora/fedora-bootc:45`. For servers, mini PCs and VPS bees. The queen runs as a
     system service as the fixed system user `melissa` (config in `/etc/melissa`, state in `/var/lib/melissa`, agent CLIs
     and their logins in `/var/lib/melissa/home`, set up with `sudo melissa-setup agent <name>`; DynamicUser until 2026-11-18).
@@ -311,8 +312,8 @@ two ways in (run from source; a ready VM image: [TRY-THE-VM.md](TRY-THE-VM.md), 
 `just release-pack`; first-boot account prompt, `melissa-setup agent <name>`, UI over an SSH tunnel; VM-verified
 2026-11-18 except the bib build of the release disk itself). **Headless first; then the desktop variant (owner, 2026-11-18):** a Fedora
 KDE (Kinoite) image that also runs the full server by default, the same as headless (k3s enabled, the system
-queen and web UI at boot, independent of who is logged in), with KDE on top. Today the desktop image has k3s
-installed but disabled and runs the queen per user; that changes after the headless demo works. Further security hardening (throwaway worker bees, taint UX,
+queen and web UI at boot, independent of who is logged in), with KDE on top. Done 2026-11-18 (VM-verified, see
+bootc-image-build skill); the laptop switch is `scripts/laptop-switch.sh` (owner runs it). Further security hardening (throwaway worker bees, taint UX,
 escape test suite) is parked until after the demo; the existing basics stay on.
 Run from source: [QUICKSTART.md](QUICKSTART.md) and `just demo` (startup summary of agents, sandbox, k3s; fresh
 clone to running in ~70 s on the dev laptop, 2026-11-18).
