@@ -41,3 +41,7 @@ Format: date — decision. Why. Alternatives considered.
   the queen validates against catalog manifests and applies them to k3s; containerd pulls the images. Agents never hold
   cluster credentials or general egress. Alternatives: shipping app images in the OS image or sysexts (rejected for the
   catalog: too big, slow to update), agents running containers themselves (rejected: bypasses policy and audit).
+- **2026-11-18 — Image = bare necessities for web UI + agents, plus k3s; the box ships empty and agents set up the rest.**
+  Owner decision. k3s stays in the image (it's the platform agents act on; installing it would need host root).
+- **2026-11-18 — The Queen is the head agent; workers are sandboxed agents it starts.** Owner decision. Queen backend is a
+  configurable list of subscription backends; no local LLMs on weak hardware.
