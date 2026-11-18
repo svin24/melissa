@@ -137,3 +137,44 @@ Format: date — decision. Why. Alternatives considered.
   needs no streaming client in the CLI and works through the existing middleware; SSE can be added on the same
   `EventLog`. Same-origin check applies; JSON bodies need `application/json`. The CLI (`melissa-queen chat|ask|
   confirm|workers`) uses hyper's HTTP/1 client, already in the build via kube-rs (no new crates).
+- **2026-11-18 — App manifests are Melissa's own small TOML format (`crates/catalog`, `manifests/*.toml`,
+  shipped in `/usr/share/melissa/catalog/`), strictly parsed (`deny_unknown_fields`) and validated.**
+  Images must be pinned by digest from the manifest's registry allowlist; config fields are typed
+  (string/integer/boolean/choice with defaults, `secret` generated at install); every container
+  declares requests and limits. Agents may only pick an app and override declared, non-secret fields.
+  Why TOML: same as `queen.toml`, no YAML implicit typing, `toml` already a dependency (`serde_yaml` is
+  unmaintained). Why not Helm/Compose: a tiny reviewed surface the queen fully validates (no templating,
+  no privileged/hostPath knobs), rendered by a pure, golden-tested function. Alternatives: Helm charts
+  (huge surface, templating agents could steer), Compose (no ingress/volume/probe semantics for k3s).
+- **2026-11-18 — Apps run as a single-replica Deployment (`Recreate`) with separately managed PVCs, not
+  a StatefulSet.** Why: one replica on one RWO volume needs no stable identity; separate PVCs make "keep
+  data" vs "delete data" explicit in `uninstall_app`; `Recreate` never runs two pods on the data.
+  Revisit for apps that scale out.
+- **2026-11-18 — App writes use a second ServiceAccount, `melissa/melissa-apps`, separate from the
+  read-only `melissa-queen`; admission policies pin it to `app-*` namespaces.** Cluster-wide it may only
+  create/patch/delete Namespaces, create/patch RoleBindings and `bind` ClusterRole `melissa-app-workload`.
+  ValidatingAdmissionPolicies (fail closed, matched on its username) allow only namespaces named
+  `app-<name>` labelled `melissa.io/app=<name>` with Pod Security baseline/restricted, RoleBindings
+  only there and only granting `melissa-app-workload` to itself, and ClusterIP Services without
+  externalIPs. The installer binds `melissa-app-workload` per app namespace (workloads, Services,
+  Ingresses, PVCs, ConfigMaps; Secrets create/delete only; pods and logs read). Why: RBAC alone can't
+  say "namespaces matching app-*"; namespaced Roles give per-app scope without cluster-wide workload or
+  Secret access; PSA baseline keeps the identity off the host (no privileged pods/hostPath); a separate
+  identity keeps read-only tools on read-only credentials, shows up separately in the API audit and
+  rotates on its own (`melissa-kubeconfig rotate apps`). Alternatives: widening `melissa-queen` (one
+  token for everything), cluster-wide write ClusterRole (could touch kube-system), a root helper doing
+  the applies (more code, same trust question). Verified in the VM, including the denials.
+- **2026-11-18 — Generated app secrets live only in the app's Secret; neither queen identity can read
+  Secrets; the owner reads them with `sudo melissa-queen app-credentials <app>` (k3s's root-only admin
+  kubeconfig).** The installer creates the Secret once (POST; 409 = keep, so reinstalls keep the
+  credentials that match the data) and never returns values to agents. Why: agents run as the queen's
+  unprivileged user, so anything the queen can read an escaped agent could too; root + the admin
+  kubeconfig is a boundary agents don't cross. Alternatives: a daemon API route (the loopback API has no
+  auth yet and sandboxed agents share the host network), a copy in the queen's state dir (readable by
+  the queen's user, can drift from the cluster).
+- **2026-11-18 — Operator tool calls through the daemon: `POST /api/tools/{name}`, used by
+  `melissa-queen tool --wait`.** Runs the tool through the daemon's registry as an unattended task 0
+  with the normal policy, so confirmations land in the same inbox and the call waits for
+  `confirm approve`; Queen-only tools are unreachable; audited (`operator.tool` + the usual
+  `tool.*` lines). Why: the in-process `tool` command has its own inbox no one can answer. Exposure: same
+  as the existing loopback API (same-origin check, no auth yet; see PLAN open question 28).

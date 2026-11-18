@@ -13,6 +13,9 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
+- [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app), rendering, the
+  app tools and their labels, the `melissa-apps` write identity + admission policies, owner-only
+  `app-credentials`, Nextcloud verified in the VM.
 
 ## Claude Code plugins and project skills (2026-11-18)
 - Project skill `.claude/skills/melissa-ui/SKILL.md`: binding UI rules; overrides third-party design skills.

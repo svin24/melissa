@@ -11,8 +11,14 @@
   `/run/melissa-kube` exists without a file). Never cache a `KubeCluster` at startup: k3s may come up much later.
 - Tools (`health.rs`) take `Option<Arc<dyn ClusterRead>>`; `None` = no cluster on this bee. Unit tests use a fake
   that returns hand-built `Node`/`Pod` objects (all k8s-openapi structs implement `Default`).
-- Writes: add a separate trait (e.g. `ClusterWrite`) and matching RBAC in
-  `image/rootfs/usr/lib/melissa/k3s/manifests/queen-rbac.yaml`, so read-only tools never hold write methods.
+- Writes (2026-11-18): `apps.rs` has `AppRead` + `AppDeployer`, implemented by `KubeApps` over a second
+  identity (`LazyCluster::for_apps`, `/run/melissa-kube/apps.kubeconfig`, RBAC in `apps-rbac.yaml`). Only
+  the app tools hold them; read-only tools keep `ClusterRead`. See [app-catalog.md](app-catalog.md).
+- Server-side apply: `Api::patch(name, &PatchParams::apply("melissa").force(), &Patch::Apply(&obj))`;
+  k8s-openapi types serialize `apiVersion`/`kind` themselves. Create-once: `Api::create` and treat 409
+  as "exists". 404 from get/delete: `kube::Error::Api(s) if s.code == 404`. A fresh RoleBinding may take
+  a moment to reach the authorizer: `apps.rs` retries 403s for a few seconds.
+- k8s-openapi 0.29: `Deployment.spec` is not an `Option`; `RoleRef.api_group` is.
 
 ## Steps for a new cluster tool
 1. Add the read method to `ClusterRead` + `KubeCluster` (`Api::<T>::all(client).list(&ListParams::default())`).

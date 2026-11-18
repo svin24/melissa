@@ -16,6 +16,13 @@
 - Config: k3s only reads `/etc/rancher/k3s/config.yaml(.d)`, so the image ships `config.yaml.d/10-melissa.yaml`
   (`selinux: true`, kubeconfig 0600, `melissa.io/managed=true` label). Queen writes `50-*.yaml`; local: `90-local.yaml`.
 
+## App installs: second identity (2026-11-18)
+- `apps-rbac.yaml` (installed as `melissa-apps-rbac.yaml`): ServiceAccount `melissa/melissa-apps` with
+  admission policies that pin it to `app-*` namespaces; `melissa-kubeconfig` also writes
+  `/run/melissa-kube/apps.kubeconfig`. Details and verified results: [app-catalog.md](app-catalog.md).
+- `k3s-prepare` reinstalls every manifest from `/usr` on each k3s start, so live edits under
+  `/var/lib/rancher/k3s/server/manifests` don't survive a k3s restart.
+
 ## Queen access to the API (read-only, 2026-11-18)
 - Manifest `image/rootfs/usr/lib/melissa/k3s/manifests/queen-rbac.yaml` (installed by `k3s-prepare` as
   `melissa-queen-rbac.yaml`): namespace `melissa`, ServiceAccount `melissa-queen`, Secret `melissa-queen-token`
