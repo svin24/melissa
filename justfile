@@ -27,7 +27,7 @@ image-build variant="headless":
 
 # Lint the built image (the Containerfile also lints as its last step).
 image-lint variant="headless":
-    podman run --rm localhost/melissa-{{variant}}:dev bootc container lint
+    podman run --rm --network=none localhost/melissa-{{variant}}:dev bootc container lint
 
 # Copy the image into root's storage (bootc-image-builder and `bootc switch` read it there).
 image-to-root variant="headless":
