@@ -110,3 +110,16 @@ Tester guide: [../TRY-THE-VM.md](../TRY-THE-VM.md). Pieces in the headless image
   denies PID 1 (`init_t`) unlinking the `var_lib_t` symlink → `status=238/STATE_DIRECTORY`. Do it in a root oneshot.
 - Testing console input: `sendkey` per character over `vm/<variant>/monitor.sock` (QEMU monitor), then
   `scripts/vm-screenshot.py`.
+
+## Testing the published release disk (verified 2026-11-18, release 2f30550)
+- `just release-disk headless` (sudo) + `just release-pack headless` gave `dist/melissa-headless-2f30550-x86_64.qcow2`:
+  1.6 GB compressed, 41.5 GiB virtual, packing took 134 s; `.sha256` next to it.
+- Boot a copy with the tester's QEMU command (docs/TRY-THE-VM.md). First boot shows "Welcome to Melissa (<version>)",
+  the pre-alpha notice and the account prompt. To drive it unattended, type through the QEMU monitor:
+  `scripts/vm-type.py <monitor.sock> "<text>" --enter` (user, password twice, then a public key line). Then SSH in,
+  `melissa-setup` prints the next steps; the UI answered 200 through `ssh -L`.
+- With plain (non-Secure-Boot) UEFI firmware, as in the tester command, `mokutil` says "doesn't support Secure Boot";
+  that's the firmware, not the image (Secure Boot boots were verified separately with `scripts/vm-run.sh`).
+- Gotcha (again): `pkill -f <pattern>` inside a tool call kills the calling shell when the pattern is in its own
+  command line. Stop helper processes by PID.
+
