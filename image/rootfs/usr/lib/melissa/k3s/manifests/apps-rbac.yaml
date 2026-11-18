@@ -85,7 +85,7 @@ spec:
         request.operation == 'DELETE' ||
         (has(object.subjects) && object.subjects.size() == 1 &&
          object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'melissa-apps' &&
-                                has(s.__namespace__) && s.__namespace__ == 'melissa'))
+                                has(s.namespace) && s.namespace == 'melissa'))
       message: "melissa-apps may only bind the role to itself"
 ---
 apiVersion: admissionregistration.k8s.io/v1
