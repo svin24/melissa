@@ -20,6 +20,9 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app), rendering, the
   app tools and their labels, the `melissa-apps` write identity + admission policies, owner-only
   `app-credentials`, Nextcloud verified in the VM.
+- [ownership-and-scopes.md](ownership-and-scopes.md) — who owns which app (`melissa.io/owner`), task scopes
+  (Owner/ForOwner/Job), the one scope check in the registry (refused vs confirmation), worker grants,
+  declaring a tool's target, `app-adopt`, the owner-label admission rules.
 
 ## Claude Code plugins and project skills (2026-11-18)
 - Project skill `.claude/skills/melissa-ui/SKILL.md`: binding UI rules; overrides third-party design skills.

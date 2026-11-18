@@ -30,6 +30,13 @@ Code: `crates/agent/src/queen/` (`mod.rs` session manager, `workers.rs`, `events
   without `delegate` (depth 1); tool list ⊆ the Queen's own minus worker tools; `check_tool_set` for an
   unattended task; `max_workers` running at once (checked under a lock with the dispatch); timeout
   ≤ `worker_timeout_max_secs`. `worker_status` taints the Queen if the worker read untrusted content.
+- Scopes (2026-11-18, [ownership-and-scopes.md](ownership-and-scopes.md)): the Queen's session has
+  `Scope::ForOwner { agent: "the Queen" }` (all apps; the owner's apps after a confirmation naming them).
+  `start_worker {apps?, create_apps? (default true), for_owner? (default false)}` gives the worker
+  `Scope::Job` with a fresh random job key; granting an owner's app or `for_owner` asks the owner once
+  (confirmation on the Queen's task, tool `start_worker`). The result carries `scope`. Worker tools reach only
+  the caller's own workers (`parent` check), so no agent reads another's output except the Queen via
+  `worker_status`.
 - Labels: `start_worker`, `cancel_worker` Reversible (attended Queen: allowed; tainted Queen: needs a
   confirmation); `worker_status`, `list_workers` read-only.
 
