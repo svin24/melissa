@@ -339,6 +339,25 @@ main:focus {
   padding: 0 0.7rem 0.3rem;
 }
 
+.with-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.with-dot .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity .label a {
+  color: inherit;
+  text-decoration-color: var(--honey);
+  text-decoration-thickness: 2px;
+}
+
 .devices li {
   display: flex;
   align-items: center;

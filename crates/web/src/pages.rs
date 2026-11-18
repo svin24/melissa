@@ -14,9 +14,11 @@ use crate::{
         waiting_count, AppCell, ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav,
         RailDevice, StripCell, Tone, APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
-    feed::{Approval, Change, Entry, Feed, Item},
-    state::{phase_words, Apps, Device, HiveSnapshot},
+    components::{ComposerTarget, RailHelper},
+    feed::{display_app, Approval, Change, Entry, Feed, Item},
+    state::{phase_words, Apps, Device, HiveSnapshot, Keeper},
 };
+use melissa_agent::queen::bees::BeeView;
 
 pub const TASKS_ID: &str = "tasks";
 pub const TASK_ID: &str = "task";
@@ -34,9 +36,30 @@ fn device_health(d: &Device) -> (Health, &'static str) {
     }
 }
 
-/// The rail with devices from `snap`.
-pub fn rail_for(nav: Nav, waiting: usize, snap: &HiveSnapshot) -> Markup {
-    let devices: Vec<RailDevice<'_>> = snap
+/// What every page with the rail needs.
+pub struct Frame<'a> {
+    pub waiting: usize,
+    pub snap: &'a HiveSnapshot,
+    pub bees: &'a [BeeView],
+}
+
+/// A helper's page.
+pub fn bee_href(id: &str) -> String {
+    format!("/bees/{id}")
+}
+
+fn bee_health(status: &str) -> (Health, &'static str) {
+    match status {
+        "working" => (Health::Busy, "working"),
+        "stopped" => (Health::Idle, "stopped"),
+        _ => (Health::Ok, "idle"),
+    }
+}
+
+/// The rail. `current_bee`: the helper whose conversation is open.
+pub fn rail_for(nav: Nav, f: &Frame<'_>, current_bee: Option<&str>) -> Markup {
+    let devices: Vec<RailDevice<'_>> = f
+        .snap
         .devices
         .iter()
         .map(|d| {
@@ -48,7 +71,54 @@ pub fn rail_for(nav: Nav, waiting: usize, snap: &HiveSnapshot) -> Markup {
             }
         })
         .collect();
-    rail(nav, waiting, &devices)
+    let hrefs: Vec<String> = f.bees.iter().map(|b| bee_href(&b.id)).collect();
+    let helpers: Vec<RailHelper<'_>> = f
+        .bees
+        .iter()
+        .zip(&hrefs)
+        .map(|(b, href)| {
+            let (health, status) = bee_health(b.status);
+            RailHelper {
+                href,
+                name: &b.name,
+                health,
+                status,
+                current: current_bee == Some(b.id.as_str()),
+            }
+        })
+        .collect();
+    rail(nav, f.waiting, &devices, &helpers)
+}
+
+/// Whose conversation a chat page or stream shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Who<'a> {
+    Queen,
+    /// A helper (bee) by id.
+    Bee(&'a str),
+}
+
+impl Who<'_> {
+    pub fn send_url(self) -> String {
+        match self {
+            Self::Queen => "/ui/messages".into(),
+            Self::Bee(id) => format!("/ui/bees/{id}/messages"),
+        }
+    }
+
+    pub fn cancel_url(self) -> String {
+        match self {
+            Self::Queen => "/ui/cancel".into(),
+            Self::Bee(id) => format!("/ui/bees/{id}/cancel"),
+        }
+    }
+
+    fn stream_url(self, since: u64) -> String {
+        match self {
+            Self::Queen => format!("/ui/stream?since={since}"),
+            Self::Bee(id) => format!("/ui/bees/{id}/stream?since={since}"),
+        }
+    }
 }
 
 /// DOM id of a feed entry.
@@ -65,7 +135,13 @@ pub fn entry_content(entry: &Entry) -> Markup {
             label,
             detail,
             state,
-        } => activity_row(label, detail.as_deref(), *state),
+            bee,
+        } => activity_row(
+            label,
+            detail.as_deref(),
+            *state,
+            bee.as_deref().map(bee_href).as_deref(),
+        ),
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
         Item::Note { text, detail, tone } => note(text, detail.as_deref(), *tone),
     }
@@ -127,6 +203,7 @@ pub fn stream_update(
     feed: &Feed,
     changes: &[Change],
     view: View,
+    who: Who<'_>,
     backend: Option<&str>,
     waiting: usize,
 ) -> String {
@@ -153,7 +230,7 @@ pub fn stream_update(
             (oob_inner(&entry_id(&list[*i].key), entry_content(&list[*i])))
         }
         @if status && view == View::Chat {
-            (oob_inner(COMPOSER_STATUS_ID, composer_status(backend, feed.busy())))
+            (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), backend, feed.busy())))
         }
         @if count { (waiting_count(waiting, true)) }
     };
@@ -197,44 +274,93 @@ pub fn strip(snap: &HiveSnapshot) -> Markup {
     app_strip(STRIP_URL, &cells, &summary, None)
 }
 
-/// Everything the home page shows.
-pub struct HomeView<'a> {
+/// Everything a chat page shows.
+pub struct ChatView<'a> {
+    pub who: Who<'a>,
     pub feed: &'a Feed,
-    pub snap: &'a HiveSnapshot,
-    pub waiting: usize,
     pub backend: Option<&'a str>,
     pub busy: bool,
     pub draft: &'a str,
     pub error: Option<&'a str>,
 }
 
-pub fn home(v: &HomeView<'_>) -> Markup {
-    let stream = format!("/ui/stream?since={}", v.feed.last_seq());
+/// The chat with Melissa (the Queen): home.
+pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
     app_page(
         "Chat",
-        rail_for(Nav::Chat, v.waiting, v.snap),
+        rail_for(Nav::Chat, f, None),
         html! {
             div.chat {
-                (strip(v.snap))
+                (strip(f.snap))
                 (feed(
                     FEED_ID,
                     "Conversation",
-                    &stream,
+                    &v.who.stream_url(v.feed.last_seq()),
                     entries(v.feed.entries()),
                     empty_state(
                         "Hi, I'm Melissa.",
                         "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
                     ),
                 ))
-                (composer_box(v.draft, v.error, v.backend, v.busy))
+                (composer_box(v))
+            }
+        },
+    )
+}
+
+/// The chat with one helper.
+pub fn bee_chat(f: &Frame<'_>, bee: &BeeView, v: &ChatView<'_>) -> Markup {
+    let cells: Vec<String> = match &f.snap.apps {
+        Apps::Known { installed, .. } => installed
+            .iter()
+            .filter(|a| matches!(&a.keeper, Some(Keeper::Bee { id, .. }) if *id == bee.id))
+            .map(|a| a.display_name())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let lead = match cells.len() {
+        0 => "A helper on this device. Melissa gives it jobs; you can talk to it here.".to_string(),
+        _ => format!("A helper on this device. Looks after {}.", cells.join(", ")),
+    };
+    app_page(
+        &bee.name,
+        rail_for(Nav::Helper, f, Some(&bee.id)),
+        html! {
+            div.chat {
+                (page_header(&bee.name, Some(&lead)))
+                (feed(
+                    FEED_ID,
+                    &format!("Conversation with {}", bee.name),
+                    &v.who.stream_url(v.feed.last_seq()),
+                    entries(v.feed.entries()),
+                    empty_state(
+                        &format!("Nothing here yet with {}.", bee.name),
+                        "Its jobs from Melissa and your messages show up here.",
+                    ),
+                ))
+                (composer_box(v))
             }
         },
     )
 }
 
 /// The composer (also the response to sending a message).
-pub fn composer_box(draft: &str, error: Option<&str>, backend: Option<&str>, busy: bool) -> Markup {
-    composer(draft, error, composer_status(backend, busy))
+pub fn composer_box(v: &ChatView<'_>) -> Markup {
+    let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
+    let placeholder = match v.who {
+        Who::Queen => "Ask Melissa to install, check or fix something",
+        Who::Bee(_) => "Message this helper",
+    };
+    composer(
+        &ComposerTarget {
+            send: &send,
+            cancel: &cancel,
+            placeholder,
+        },
+        v.draft,
+        v.error,
+        composer_status(&cancel, v.backend, v.busy),
+    )
 }
 
 // --- The hive: apps and devices ---------------------------------------------------------
@@ -318,11 +444,19 @@ pub fn hive_apps(snap: &HiveSnapshot) -> Markup {
             available,
         } => {
             let names: Vec<String> = installed.iter().map(|a| a.display_name()).collect();
+            let keepers: Vec<Option<String>> = installed
+                .iter()
+                .map(|a| match &a.keeper {
+                    Some(Keeper::Bee { name, .. }) => Some(format!("Looked after by {name}")),
+                    Some(Keeper::Owner) => Some("Looked after by you".to_string()),
+                    None => None,
+                })
+                .collect();
             html! {
                 (honeycomb("Apps", html! {
-                    @for (a, name) in installed.iter().zip(&names) {
+                    @for ((a, name), keeper) in installed.iter().zip(&names).zip(&keepers) {
                         @let (health, status) = phase_words(&a.phase);
-                        (app_cell(&AppCell { name, health, status, detail: None, url: a.url.as_deref() }))
+                        (app_cell(&AppCell { name, health, status, detail: keeper.as_deref(), url: a.url.as_deref() }))
                     }
                     (add_app_cell("/?draft=Install%20"))
                 }))
@@ -331,7 +465,7 @@ pub fn hive_apps(snap: &HiveSnapshot) -> Markup {
                         "Ready to install: "
                         @for (i, n) in available.iter().enumerate() {
                             @if i > 0 { ", " }
-                            (link(&format!("/?draft=Install%20{n}"), &crate::feed::display_app(n)))
+                            (link(&format!("/?draft=Install%20{n}"), &display_app(n)))
                         }
                     }
                 }
@@ -341,10 +475,11 @@ pub fn hive_apps(snap: &HiveSnapshot) -> Markup {
     live_region("hive-apps", "/ui/hive/apps", 15, true, content)
 }
 
-pub fn hive(snap: &HiveSnapshot, waiting: usize) -> Markup {
+pub fn hive(f: &Frame<'_>) -> Markup {
+    let snap = f.snap;
     app_page(
         "Apps and devices",
-        rail_for(Nav::Hive, waiting, snap),
+        rail_for(Nav::Hive, f, None),
         html! {
             div.wide {
                 (page_header("Apps and devices", Some("What runs where. Ask in the chat to change anything.")))
@@ -363,11 +498,11 @@ pub fn hive(snap: &HiveSnapshot, waiting: usize) -> Markup {
 
 // --- Waiting for you ---------------------------------------------------------------------------
 
-pub fn approvals(list: &[Approval], since: u64, snap: &HiveSnapshot) -> Markup {
+pub fn approvals(f: &Frame<'_>, list: &[Approval], since: u64) -> Markup {
     let stream = format!("/ui/stream?since={since}&view=approvals");
     app_page(
         "Waiting for you",
-        rail_for(Nav::Waiting, list.len(), snap),
+        rail_for(Nav::Waiting, f, None),
         html! {
             div.chat {
                 (page_header("Waiting for you", Some("Things Melissa won't do without your yes.")))
@@ -572,11 +707,13 @@ mod tests {
                         name: "nextcloud".into(),
                         phase: "ready".into(),
                         url: None,
+                        keeper: None,
                     },
                     App {
                         name: "immich".into(),
                         phase: "starting".into(),
                         url: None,
+                        keeper: None,
                     },
                 ],
                 available: vec![],

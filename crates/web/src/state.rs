@@ -1,8 +1,11 @@
 //! What the UI shows about apps and devices, read with Melissa's read-only tools
 //! (`list_apps`, `cluster_health`, `bee_info`) through the same registry the agents use, so
-//! the calls are policy-checked and audited (`tool.call`, task 0). The answer is cached for
+//! the calls are policy-checked and audited (`tool.call`, task 0, read-only scope). The answer is cached for
 //! [`HiveCache::TTL`] so open pages don't fill the audit log; a stale answer is served
 //! while a fresh one is fetched in the background.
+//!
+//! Who looks after each app (cell) comes from the Queen's bee pool (`cells()`: the
+//! `melissa.io/owner-bee` labels with the bees' names).
 //!
 //! Like `feed.rs`, this module holds the names of tools and phases the UI depends on.
 
@@ -13,6 +16,7 @@ use std::{
 
 use melissa_agent::{
     mcp::McpServer,
+    queen::{bees::CellView, Queen},
     tools::{Scope, TaskContext},
 };
 use serde_json::{json, Value};
@@ -27,6 +31,35 @@ pub struct App {
     /// Phase as `app_status` reports it.
     pub phase: String,
     pub url: Option<String>,
+    /// Who looks after it.
+    pub keeper: Option<Keeper>,
+}
+
+/// Who looks after an app (cell).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Keeper {
+    /// A bee: id and display name.
+    Bee { id: String, name: String },
+    /// The owner (a cell from before bees, `melissa.io/owner=owner`).
+    Owner,
+}
+
+/// Who looks after each cell, from the bee pool's cell list.
+pub fn keepers(cells: &[CellView]) -> Vec<(String, Keeper)> {
+    cells
+        .iter()
+        .filter_map(|c| {
+            let keeper = match (&c.bee, &c.bee_name, c.legacy_owner.as_deref()) {
+                (Some(id), name, _) => Keeper::Bee {
+                    id: id.clone(),
+                    name: name.clone().unwrap_or_else(|| id.clone()),
+                },
+                (None, _, Some("owner")) => Keeper::Owner,
+                _ => return None,
+            };
+            Some((c.cell.clone(), keeper))
+        })
+        .collect()
 }
 
 impl App {
@@ -111,6 +144,7 @@ impl HiveSnapshot {
                             name: a["app"].as_str()?.to_string(),
                             phase: a["phase"].as_str().unwrap_or("unknown").to_string(),
                             url: a["url"].as_str().map(str::to_string),
+                            keeper: None,
                         })
                     })
                     .collect(),
@@ -155,6 +189,19 @@ impl HiveSnapshot {
         }
         Self { apps, devices }
     }
+
+    /// Fill in who looks after each app.
+    pub fn with_keepers(mut self, keepers: Vec<(String, Keeper)>) -> Self {
+        if let Apps::Known { installed, .. } = &mut self.apps {
+            for app in installed {
+                app.keeper = keepers
+                    .iter()
+                    .find(|(cell, _)| *cell == app.name)
+                    .map(|(_, k)| k.clone());
+            }
+        }
+        self
+    }
 }
 
 struct Cached {
@@ -167,6 +214,7 @@ struct Cached {
 #[derive(Clone)]
 pub struct HiveCache {
     mcp: McpServer,
+    queen: Option<Queen>,
     cached: Arc<Mutex<Cached>>,
 }
 
@@ -176,9 +224,11 @@ impl HiveCache {
     /// Longest wait for one tool.
     const CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
-    pub fn new(mcp: McpServer) -> Self {
+    /// `queen`: for who looks after which app (None: not shown).
+    pub fn new(mcp: McpServer, queen: Option<Queen>) -> Self {
         Self {
             mcp,
+            queen,
             cached: Arc::new(Mutex::new(Cached {
                 snap: None,
                 at: None,
@@ -212,16 +262,16 @@ impl HiveCache {
     }
 
     async fn refresh(&self) -> Arc<HiveSnapshot> {
-        let (apps, cluster, bee) = tokio::join!(
+        let (apps, cluster, bee, cells) = tokio::join!(
             self.call("list_apps"),
             self.call("cluster_health"),
             self.call("bee_info"),
+            self.cells(),
         );
-        let snap = Arc::new(HiveSnapshot::from_tools(
-            apps.as_ref(),
-            cluster.as_ref(),
-            bee.as_ref(),
-        ));
+        let snap = Arc::new(
+            HiveSnapshot::from_tools(apps.as_ref(), cluster.as_ref(), bee.as_ref())
+                .with_keepers(keepers(&cells)),
+        );
         let mut c = lock(&self.cached);
         c.snap = Some(snap.clone());
         c.at = Some(Instant::now());
@@ -229,10 +279,24 @@ impl HiveCache {
         snap
     }
 
+    async fn cells(&self) -> Vec<CellView> {
+        let Some(queen) = &self.queen else {
+            return Vec::new();
+        };
+        match tokio::time::timeout(Self::CALL_TIMEOUT, queen.bees().cells()).await {
+            Ok(Ok(cells)) => cells,
+            Ok(Err(e)) => {
+                tracing::debug!("UI cell read failed: {e}");
+                Vec::new()
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
     async fn call(&self, tool: &str) -> Option<Value> {
-        // The owner looking at their own UI: owner scope, unattended (read-only tools only).
+        // The UI only reads: no scope (reads only), unattended, read-only tools.
         let mut ctx = TaskContext {
-            scope: Scope::Owner,
+            scope: Scope::Nothing,
             ..TaskContext::default()
         };
         let call = self.mcp.registry().call(0, &mut ctx, tool, json!({}));
@@ -294,5 +358,32 @@ mod tests {
             HiveSnapshot::from_tools(None, None, None),
             HiveSnapshot::default()
         );
+
+        let cell = |name: &str, bee: Option<&str>, legacy: Option<&str>| CellView {
+            cell: name.into(),
+            bee: bee.map(str::to_string),
+            bee_name: bee.map(|_| "Ada".to_string()),
+            comb: None,
+            assigned_by: None,
+            assigned_at: None,
+            legacy_owner: legacy.map(str::to_string),
+        };
+        let k = keepers(&[
+            cell("nextcloud", Some("c.b1"), None),
+            cell("immich", None, Some("owner")),
+            cell("old", None, Some("job-1")),
+        ]);
+        let s = HiveSnapshot::from_tools(Some(&apps), None, None).with_keepers(k);
+        let Apps::Known { installed, .. } = &s.apps else {
+            panic!()
+        };
+        assert_eq!(
+            installed[0].keeper,
+            Some(Keeper::Bee {
+                id: "c.b1".into(),
+                name: "Ada".into()
+            })
+        );
+        assert_eq!(installed[1].keeper, Some(Keeper::Owner));
     }
 }

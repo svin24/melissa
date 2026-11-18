@@ -1,9 +1,9 @@
 //! The chat feed: folds the Queen's event log into the items the chat shows, and maps
 //! internal names (event types, tool names, backend names) to plain words.
 //!
-//! **All naming lives here.** Tool names (`start_worker`, `install_app`, ...), event names
-//! and backend names are internal and may be renamed (worker → bee, app → cell); when they
-//! change, only the tables and the `match` in [`Feed::apply`] need updating. Nothing in
+//! **All naming lives here.** Tool names (`give_bee_job`, `install_app`, ...), event names
+//! and backend names are internal; the UI says "helper" for a bee and "app" for a cell. When
+//! they change, only the tables and the `match` in [`Feed::apply`] need updating. Nothing in
 //! this module renders markup: `pages.rs` turns [`Item`]s into components.
 //!
 //! The fold is deterministic: folding the same events gives the same items with the same
@@ -30,6 +30,8 @@ pub enum Item {
         label: String,
         detail: Option<String>,
         state: ActivityState,
+        /// The helper (bee id) this is about, for a link to its conversation.
+        bee: Option<String>,
     },
     /// A confirmation the user decides on.
     Approval(Approval),
@@ -91,6 +93,8 @@ pub struct Feed {
     tool_keys: HashMap<String, String>,
     /// Agent tool-call ids not shown.
     hidden_tools: HashSet<String>,
+    /// Bee id → key of its running job's row.
+    open_jobs: HashMap<String, String>,
     busy: Option<TurnId>,
     backend: Option<String>,
     last_seq: u64,
@@ -101,15 +105,14 @@ impl Feed {
         Self::default()
     }
 
-    /// Fold a list of events (e.g. everything in the log). `args` looks up a pending
-    /// confirmation's arguments (agent-supplied, used only as escaped text).
+    /// Fold a list of events (e.g. everything in the log).
     pub fn from_events<'a>(
         events: impl IntoIterator<Item = &'a EventRecord>,
-        args: &dyn Fn(u64) -> Option<Value>,
+        look: &dyn Lookup,
     ) -> Self {
         let mut feed = Self::new();
         for e in events {
-            feed.apply(e, args);
+            feed.apply(e, look);
         }
         feed
     }
@@ -134,7 +137,7 @@ impl Feed {
     }
 
     /// Fold one event in and say what changed.
-    pub fn apply(&mut self, rec: &EventRecord, args: &dyn Fn(u64) -> Option<Value>) -> Vec<Change> {
+    pub fn apply(&mut self, rec: &EventRecord, look: &dyn Lookup) -> Vec<Change> {
         if rec.seq <= self.last_seq {
             return Vec::new();
         }
@@ -146,7 +149,7 @@ impl Feed {
                 vec![added, Change::Status]
             }
             QueenEvent::Text { turn, text } => self.reply_text(rec.seq, *turn, text),
-            QueenEvent::QueenMessage { turn, text } => {
+            QueenEvent::AgentMessage { turn, text } => {
                 if self.turns_with_reply.contains(turn) || text.trim().is_empty() {
                     return Vec::new();
                 }
@@ -169,13 +172,20 @@ impl Feed {
                         label: format!("Not allowed: {}", lower_first(tool.doing)),
                         detail: None,
                         state: ActivityState::Failed,
+                        bee: None,
                     },
                 )]
             }
             QueenEvent::ConfirmationNeeded {
                 id, tool, reason, ..
             } => {
-                let approval = approval_words(*id, tool, reason, args(*id).as_ref());
+                let approval = approval_words(
+                    *id,
+                    tool,
+                    reason,
+                    look.confirmation_args(*id).as_ref(),
+                    look,
+                );
                 vec![
                     self.add(format!("c{id}"), Item::Approval(approval)),
                     Change::Waiting,
@@ -196,37 +206,65 @@ impl Feed {
                 }
                 out
             }
-            QueenEvent::WorkerStarted { worker, goal, .. } => {
-                let name = helper_name(*worker);
-                vec![self.upsert(
-                    format!("w{worker}"),
+            QueenEvent::BeeCreated { bee, name, .. } => vec![self.add(
+                format!("n{}", rec.seq),
+                Item::Activity {
+                    label: format!("New helper: {name}"),
+                    detail: None,
+                    state: ActivityState::Done,
+                    bee: Some(bee.clone()),
+                },
+            )],
+            QueenEvent::BeeStarted { bee, name, goal } => {
+                let key = format!("j{}", rec.seq);
+                self.open_jobs.insert(bee.clone(), key.clone());
+                vec![self.add(
+                    key,
                     Item::Activity {
                         label: format!("{name} is looking into it"),
                         detail: Some(goal.clone()),
                         state: ActivityState::Working,
+                        bee: Some(bee.clone()),
                     },
                 )]
             }
-            QueenEvent::WorkerFinished {
-                worker,
+            QueenEvent::BeeFinished {
+                bee,
+                name,
                 status,
                 error,
             } => {
-                let name = helper_name(*worker);
                 let (label, state) = match status.as_str() {
                     "succeeded" => (format!("{name} finished"), ActivityState::Done),
                     "cancelled" => (format!("{name} was stopped"), ActivityState::Stopped),
                     _ => (format!("{name} couldn't finish"), ActivityState::Failed),
                 };
-                let detail = error
-                    .clone()
-                    .or_else(|| self.detail_of(&format!("w{worker}")));
+                // The job's row is updated; a finish without a start (e.g. older than the
+                // log) gets its own row.
+                let key = self
+                    .open_jobs
+                    .remove(bee)
+                    .unwrap_or_else(|| format!("j{}", rec.seq));
+                let detail = error.clone().or_else(|| self.detail_of(&key));
                 vec![self.upsert(
-                    format!("w{worker}"),
+                    key,
                     Item::Activity {
                         label,
                         detail,
                         state,
+                        bee: Some(bee.clone()),
+                    },
+                )]
+            }
+            QueenEvent::CellReassigned { cell, to, .. } => {
+                let who = look.bee_name(to).unwrap_or_else(|| to.clone());
+                vec![self.add(
+                    format!("n{}", rec.seq),
+                    Item::Activity {
+                        label: format!("{who} looks after {} now", display_app(cell)),
+                        detail: None,
+                        state: ActivityState::Done,
+                        bee: Some(to.clone()),
                     },
                 )]
             }
@@ -413,10 +451,31 @@ impl Feed {
                 label,
                 detail,
                 state,
+                bee: None,
             },
         )]
     }
 }
+
+/// What the fold needs to know besides the events. Everything returned is shown only as
+/// escaped text.
+pub trait Lookup {
+    /// A pending confirmation's arguments (agent-supplied).
+    fn confirmation_args(&self, _id: u64) -> Option<Value> {
+        None
+    }
+    /// A bee's display name by id.
+    fn bee_name(&self, _bee: &str) -> Option<String> {
+        None
+    }
+}
+
+/// No extra knowledge.
+#[cfg(test)]
+pub struct NoLookup;
+
+#[cfg(test)]
+impl Lookup for NoLookup {}
 
 /// Plain words for a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,14 +511,25 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ("app_status", "Checking an app", "Checked an app"),
     ("app_logs", "Reading an app's logs", "Read an app's logs"),
     ("uninstall_app", "Removing an app", "Removed an app"),
+    ("create_bee", "Setting up a helper", "Set up a helper"),
     (
-        "worker_status",
-        "Checking on a helper",
-        "Checked on a helper",
+        "give_bee_job",
+        "Giving a helper a job",
+        "Gave a helper a job",
     ),
-    ("list_workers", "Listing helpers", "Listed helpers"),
-    ("cancel_worker", "Stopping a helper", "Stopped a helper"),
-    ("start_worker", "Asking a helper", "Asked a helper"),
+    ("bee_status", "Checking on a helper", "Checked on a helper"),
+    ("list_bees", "Listing helpers", "Listed helpers"),
+    ("stop_bee", "Stopping a helper", "Stopped a helper"),
+    (
+        "message_bee",
+        "Passing a helper a message",
+        "Passed a helper a message",
+    ),
+    (
+        "reassign_cell",
+        "Handing an app to a helper",
+        "Handed an app to a helper",
+    ),
 ];
 
 /// Agents' own tool calls not shown as rows: looking up their tool list.
@@ -518,9 +588,17 @@ fn tool_name(title: &str) -> &str {
 }
 
 /// The plain-language confirmation card for `tool` (see [`TOOLS`] for names).
-pub fn approval_words(id: u64, tool: &str, reason: &str, args: Option<&Value>) -> Approval {
+pub fn approval_words(
+    id: u64,
+    tool: &str,
+    reason: &str,
+    args: Option<&Value>,
+    look: &dyn Lookup,
+) -> Approval {
     let arg = |k: &str| args.and_then(|a| a.get(k)).and_then(Value::as_str);
-    let app = arg("app").map(display_app);
+    let app = arg("app").or_else(|| arg("cell")).map(display_app);
+    // A bee argument may be an id or a name; show the name when we know it.
+    let bee = |k: &str| arg(k).map(|b| look.bee_name(b).unwrap_or_else(|| b.to_string()));
     let destructive_reason = reason.contains("destructive");
     let mut a = Approval {
         id,
@@ -566,12 +644,57 @@ pub fn approval_words(id: u64, tool: &str, reason: &str, args: Option<&Value>) -
             };
             a.no = "Keep it";
         }
-        "start_worker" => {
-            a.title = "Let a helper work on your apps?".into();
-            a.consequence = match arg("goal") {
-                Some(goal) => format!("The helper's job: {}", shorten(goal, 160)),
-                None => "A helper works on its own, in its own sandbox.".into(),
+        "create_bee" => {
+            a.title = match arg("name") {
+                Some(n) => format!("Set up a new helper, {}?", shorten(n, 40)),
+                None => "Set up a new helper?".into(),
             };
+            a.consequence = "A helper is an assistant that works on its own, in its own sandbox, and looks after the apps it is given.".into();
+        }
+        "give_bee_job" => {
+            a.title = match bee("bee") {
+                Some(b) => format!("Give {b} a job?"),
+                None => "Give a helper a job?".into(),
+            };
+            a.consequence = match arg("goal") {
+                Some(goal) => format!("The job: {}", shorten(goal, 160)),
+                None => "The helper works on its own, in its own sandbox.".into(),
+            };
+        }
+        "message_bee" => {
+            a.title = match bee("bee") {
+                Some(b) => format!("Pass {b} a message?"),
+                None => "Pass a helper a message?".into(),
+            };
+            a.consequence = match arg("text") {
+                Some(t) => format!("The message: {}", shorten(t, 160)),
+                None => "The helper reads it as information, not as orders.".into(),
+            };
+        }
+        "stop_bee" => {
+            a.title = match bee("bee") {
+                Some(b) => format!("Stop {b}?"),
+                None => "Stop a helper?".into(),
+            };
+            a.consequence =
+                "Cancels its current job. It starts again with its next job or message.".into();
+            a.yes = "Stop";
+            a.no = "Let it work";
+        }
+        "reassign_cell" => {
+            let to = bee("to");
+            a.title = match (&app, &to) {
+                (Some(app), Some(to)) => format!("Hand {app} to {to}?"),
+                _ => "Hand an app to another helper?".into(),
+            };
+            a.consequence = match &to {
+                Some(to) => format!(
+                    "{to} looks after it from now on; the helper before can't change it any more."
+                ),
+                None => "Another helper looks after it from now on.".into(),
+            };
+            a.yes = "Hand it over";
+            a.no = "Keep as is";
         }
         "agent:execute" => {
             a.title = "Run a command?".into();
@@ -620,16 +743,6 @@ pub fn backend_label(backend: &str) -> &str {
     }
 }
 
-/// Helpers (workers) get a friendly name from their id until bees have real display names.
-const HELPER_NAMES: &[&str] = &[
-    "Ada", "Bram", "Cleo", "Dara", "Eli", "Fen", "Gus", "Hana", "Ivo", "Juno", "Kai", "Lina",
-];
-
-pub fn helper_name(worker: u64) -> &'static str {
-    // The modulo keeps the index in range, so this indexing cannot panic.
-    HELPER_NAMES[(worker % HELPER_NAMES.len() as u64) as usize]
-}
-
 fn lower_first(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -658,8 +771,15 @@ mod tests {
         EventRecord { seq, ts: 0, event }
     }
 
-    fn none(_: u64) -> Option<Value> {
-        None
+    /// Test knowledge: confirmation 4 removes Nextcloud with its data; bee `c.b1` is Ada.
+    struct Known;
+    impl Lookup for Known {
+        fn confirmation_args(&self, id: u64) -> Option<Value> {
+            (id == 4).then(|| json!({"app": "nextcloud", "delete_data": true}))
+        }
+        fn bee_name(&self, bee: &str) -> Option<String> {
+            (bee == "c.b1").then(|| "Ada".to_string())
+        }
     }
 
     #[test]
@@ -673,7 +793,8 @@ mod tests {
             tool_words("use_tool: melissa__list_apps").done,
             "Listed your apps"
         );
-        assert!(!tool_words("melissa__start_worker").hidden);
+        assert!(!tool_words("melissa__give_bee_job").hidden);
+        assert_eq!(tool_words("mcp__melissa__list_bees").done, "Listed helpers");
         assert!(tool_words("search_tool").hidden);
         assert!(tool_words("Search tools: \"melissa start_worker bee_info\"").hidden);
         let other = tool_words("Read");
@@ -740,7 +861,7 @@ mod tests {
             ),
             rec(
                 8,
-                QueenEvent::QueenMessage {
+                QueenEvent::AgentMessage {
                     turn: 1,
                     text: "Sure, checking.Done.".into(),
                 },
@@ -755,7 +876,7 @@ mod tests {
         ];
         let mut changes = Vec::new();
         for e in &events {
-            changes.push(feed.apply(e, &none));
+            changes.push(feed.apply(e, &NoLookup));
             if e.seq == 1 {
                 assert!(feed.busy());
             }
@@ -779,19 +900,19 @@ mod tests {
         // The whole message at the end is not shown twice.
         assert!(changes[7].is_empty());
         // Replaying the same events is a no-op.
-        assert!(feed.apply(&events[0], &none).is_empty());
+        assert!(feed.apply(&events[0], &NoLookup).is_empty());
     }
 
     #[test]
     fn confirmations_and_helpers() {
-        let args = |id: u64| (id == 4).then(|| json!({"app": "nextcloud", "delete_data": true}));
+        let args = Known;
         let mut feed = Feed::new();
         feed.apply(
             &rec(
                 1,
-                QueenEvent::WorkerStarted {
-                    worker: 2,
-                    backend: "grok-acp".into(),
+                QueenEvent::BeeStarted {
+                    bee: "c.b1".into(),
+                    name: "Ada".into(),
                     goal: "Wait until ready".into(),
                 },
             ),
@@ -833,23 +954,48 @@ mod tests {
         feed.apply(
             &rec(
                 4,
-                QueenEvent::WorkerFinished {
-                    worker: 2,
+                QueenEvent::BeeFinished {
+                    bee: "c.b1".into(),
+                    name: "Ada".into(),
                     status: "succeeded".into(),
                     error: None,
                 },
             ),
             &args,
         );
-        let name = helper_name(2);
         assert_eq!(
             feed.entries()[0].item,
             Item::Activity {
-                label: format!("{name} finished"),
+                label: "Ada finished".into(),
                 detail: Some("Wait until ready".into()),
-                state: ActivityState::Done
+                state: ActivityState::Done,
+                bee: Some("c.b1".into()),
             }
         );
+        feed.apply(
+            &rec(
+                5,
+                QueenEvent::CellReassigned {
+                    cell: "nextcloud".into(),
+                    from: None,
+                    to: "c.b1".into(),
+                    by: "the user".into(),
+                },
+            ),
+            &args,
+        );
+        assert!(matches!(
+            &feed.entries()[2].item,
+            Item::Activity { label, bee: Some(b), .. } if label == "Ada looks after Nextcloud now" && b == "c.b1"
+        ));
+        let a = approval_words(
+            9,
+            "reassign_cell",
+            "x",
+            Some(&json!({"cell": "immich", "to": "c.b1"})),
+            &args,
+        );
+        assert_eq!(a.title, "Hand Immich to Ada?");
     }
 
     #[test]
@@ -866,29 +1012,31 @@ mod tests {
             )
         };
         let mut feed = Feed::new();
-        feed.apply(&call(1, "a", "search_tool", "pending"), &none);
+        feed.apply(&call(1, "a", "search_tool", "pending"), &NoLookup);
         feed.apply(
-            &call(2, "a", "Search tools: \"melissa start_worker\"", "done"),
-            &none,
+            &call(2, "a", "Search tools: \"melissa give_bee_job\"", "done"),
+            &NoLookup,
         );
         assert!(feed.entries().is_empty());
-        feed.apply(&call(3, "b", "use_tool", "pending"), &none);
+        feed.apply(&call(3, "b", "use_tool", "pending"), &NoLookup);
         assert_eq!(
             feed.entries()[0].item,
             Item::Activity {
                 label: "Using a tool".into(),
                 detail: None,
-                state: ActivityState::Working
+                state: ActivityState::Working,
+                bee: None,
             }
         );
-        let c = feed.apply(&call(4, "b", "melissa__start_worker", "done"), &none);
+        let c = feed.apply(&call(4, "b", "melissa__give_bee_job", "done"), &NoLookup);
         assert_eq!(c, [Change::Updated(0)]);
         assert_eq!(
             feed.entries()[0].item,
             Item::Activity {
-                label: "Asked a helper".into(),
+                label: "Gave a helper a job".into(),
                 detail: None,
-                state: ActivityState::Done
+                state: ActivityState::Done,
+                bee: None,
             }
         );
     }
@@ -904,7 +1052,7 @@ mod tests {
                     text: "hi".into(),
                 },
             ),
-            &none,
+            &NoLookup,
         );
         feed.apply(
             &rec(
@@ -914,7 +1062,7 @@ mod tests {
                     message: "no backend".into(),
                 },
             ),
-            &none,
+            &NoLookup,
         );
         feed.apply(
             &rec(
@@ -924,7 +1072,7 @@ mod tests {
                     stop_reason: "error".into(),
                 },
             ),
-            &none,
+            &NoLookup,
         );
         // One note for the error, none for the error stop.
         assert_eq!(feed.entries().len(), 2);
@@ -936,7 +1084,7 @@ mod tests {
                     text: "again".into(),
                 },
             ),
-            &none,
+            &NoLookup,
         );
         feed.apply(
             &rec(
@@ -946,17 +1094,29 @@ mod tests {
                     stop_reason: "cancelled".into(),
                 },
             ),
-            &none,
+            &NoLookup,
         );
         assert!(matches!(&feed.entries()[3].item, Item::Note { text, .. } if text == "Stopped."));
     }
 
     #[test]
     fn approval_words_fall_back_for_unknown_tools() {
-        let a = approval_words(1, "touch", "changes state while nobody is watching", None);
+        let a = approval_words(
+            1,
+            "touch",
+            "changes state while nobody is watching",
+            None,
+            &NoLookup,
+        );
         assert_eq!(a.title, "Allow touch?");
         assert!(!a.destructive);
-        let a = approval_words(2, "install_app", "x", Some(&json!({"app": "immich"})));
+        let a = approval_words(
+            2,
+            "install_app",
+            "x",
+            Some(&json!({"app": "immich"})),
+            &NoLookup,
+        );
         assert_eq!(a.title, "Install Immich?");
         assert_eq!(a.yes, "Install");
     }

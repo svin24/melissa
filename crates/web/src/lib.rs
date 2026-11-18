@@ -64,7 +64,7 @@ pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Rout
     ui_routes(board)
         .merge(ui::routes(
             queen.clone(),
-            state::HiveCache::new(mcp.clone()),
+            state::HiveCache::new(mcp.clone(), Some(queen.clone())),
         ))
         .merge(api::tool_routes(mcp.clone()))
         .merge(
@@ -1006,7 +1006,7 @@ mod tests {
 
             // Busy: the text stays and the reason is shown.
             let (_, _, html) = send(&app, htmx_post("/ui/messages", "text=Second")).await;
-            assert!(html.contains("still working on your last message"));
+            assert!(html.contains("Still working on your last message"));
             assert!(html.contains(">Second</textarea>"));
 
             // Stop.
@@ -1022,6 +1022,67 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn chatting_with_a_helper() {
+            let (app, queen) = app();
+            let ada = queen
+                .bees()
+                .registry()
+                .create("Ada", "stuck", None, "the Queen (task 1)")
+                .unwrap();
+            // The rail lists her; her page is a chat.
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains(&format!("href=\"/bees/{}\"", ada.id)));
+            assert!(home.contains(">Ada<"));
+            for uri in [format!("/bees/{}", ada.id), "/bees/ada".to_string()] {
+                let (status, _, body) = get_html(&app, &uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(body.contains("Nothing here yet with Ada."));
+                assert!(body.contains(&format!(
+                    "sse-connect=\"/ui/bees/{}/stream?since=0\"",
+                    ada.id
+                )));
+                assert!(body.contains(&format!("hx-post=\"/ui/bees/{}/messages\"", ada.id)));
+                assert!(body.contains("aria-current=\"page\""));
+            }
+            assert_eq!(
+                get_html(&app, "/bees/nobody").await.0,
+                StatusCode::NOT_FOUND
+            );
+
+            // A message goes to her conversation, not the Queen's.
+            let res = app
+                .clone()
+                .oneshot(get(&format!("/ui/bees/{}/stream?since=0", ada.id)))
+                .await
+                .unwrap();
+            let mut body = res.into_body();
+            let uri = format!("/ui/bees/{}/messages", ada.id);
+            let (status, _, html) = send(&app, htmx_post(&uri, "text=Hello+Ada")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Working on it"));
+            assert!(html.contains(&format!("hx-post=\"/ui/bees/{}/cancel\"", ada.id)));
+            let frame = next_frame(&mut body).await;
+            assert!(frame.contains("Hello Ada"), "{frame}");
+            assert_eq!(queen.status().turn, None);
+            let (status, _, _) =
+                send(&app, htmx_post(&format!("/ui/bees/{}/cancel", ada.id), "")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+
+            // The Queen's feed links a helper's job to her conversation.
+            queen.events().push(QueenEvent::BeeStarted {
+                bee: ada.id.clone(),
+                name: "Ada".into(),
+                goal: "Check <the> device".into(),
+            });
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains(&format!(
+                "<a href=\"/bees/{}\">Ada is looking into it</a>",
+                ada.id
+            )));
+            assert!(home.contains("Check &lt;the&gt; device"));
+        }
+
+        #[tokio::test]
         async fn ui_posts_need_the_same_origin() {
             let (app, queen) = app();
             let (c, _rx) =
@@ -1032,6 +1093,8 @@ mod tests {
                 "/ui/messages".to_string(),
                 "/ui/cancel".to_string(),
                 format!("/ui/confirmations/{}/approve", c.id),
+                "/ui/bees/ada/messages".to_string(),
+                "/ui/bees/ada/cancel".to_string(),
             ] {
                 let req = post(&uri)
                     .header("sec-fetch-site", "cross-site")

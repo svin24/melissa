@@ -87,6 +87,8 @@ impl Health {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
     Chat,
+    /// A conversation with a helper (bee).
+    Helper,
     Hive,
     Waiting,
     Tasks,
@@ -181,9 +183,23 @@ pub struct RailDevice<'a> {
     pub status: &'a str,
 }
 
-/// The side rail: brand, navigation, conversations, devices. On phones it collapses to
-/// a top bar with the navigation only.
-pub fn rail(current: Nav, waiting: usize, devices: &[RailDevice<'_>]) -> Markup {
+/// A conversation with a helper in the rail.
+pub struct RailHelper<'a> {
+    pub href: &'a str,
+    pub name: &'a str,
+    pub health: Health,
+    pub status: &'a str,
+    pub current: bool,
+}
+
+/// The side rail: brand, navigation, conversations (Melissa and each helper), devices. On
+/// phones it collapses to a top bar with the navigation only.
+pub fn rail(
+    current: Nav,
+    waiting: usize,
+    devices: &[RailDevice<'_>],
+    helpers: &[RailHelper<'_>],
+) -> Markup {
     let item = |nav: Nav, href: &str, label: &str, extra: Markup| {
         html! {
             li {
@@ -204,7 +220,18 @@ pub fn rail(current: Nav, waiting: usize, devices: &[RailDevice<'_>]) -> Markup 
             section.rail-section aria-labelledby="conv-h" {
                 h2 #conv-h { "Conversations" }
                 ul.conversations {
-                    li { a href="/" aria-current=[(current == Nav::Chat).then_some("page")] { "Current chat" } }
+                    li { a href="/" aria-current=[(current == Nav::Chat).then_some("page")] { "Melissa" } }
+                    @for h in helpers {
+                        li {
+                            a href=(h.href) aria-current=[h.current.then_some("page")] {
+                                span.with-dot {
+                                    span class={ "dot " (h.health.class()) } aria-hidden="true" {}
+                                    span.name { (h.name) }
+                                }
+                                span.visually-hidden { ", helper: " (h.status) }
+                            }
+                        }
+                    }
                 }
                 button.ghost type="button" disabled title="One conversation for now" { "New chat" }
             }
@@ -529,8 +556,14 @@ fn activity_icon(state: ActivityState) -> Markup {
     }
 }
 
-/// A compact "what I did" row: icon, plain label, short detail.
-pub fn activity_row(label: &str, detail: Option<&str>, state: ActivityState) -> Markup {
+/// A compact "what I did" row: icon, plain label (a link when `href` is given, e.g. to a
+/// helper's conversation), short detail.
+pub fn activity_row(
+    label: &str,
+    detail: Option<&str>,
+    state: ActivityState,
+    href: Option<&str>,
+) -> Markup {
     let state_text = match state {
         ActivityState::Working => "in progress",
         ActivityState::Done => "done",
@@ -540,7 +573,10 @@ pub fn activity_row(label: &str, detail: Option<&str>, state: ActivityState) -> 
     html! {
         div.activity {
             (activity_icon(state))
-            span.label { (label) span.visually-hidden { " (" (state_text) ")" } }
+            span.label {
+                @if let Some(href) = href { a href=(href) { (label) } } @else { (label) }
+                span.visually-hidden { " (" (state_text) ")" }
+            }
             @if let Some(d) = detail { span.detail { (d) } }
         }
     }
@@ -610,17 +646,31 @@ pub fn approval_card(c: &ApprovalCard<'_>) -> Markup {
     }
 }
 
+/// Where a composer sends to: the Queen or one helper.
+pub struct ComposerTarget<'a> {
+    /// POST URL for a message (form field `text`).
+    pub send: &'a str,
+    /// POST URL that stops the running turn.
+    pub cancel: &'a str,
+    pub placeholder: &'a str,
+}
+
 /// The message box at the bottom of the chat. `draft` pre-fills it, `error` explains why
 /// the last message was not sent.
-pub fn composer(draft: &str, error: Option<&str>, status: Markup) -> Markup {
+pub fn composer(
+    to: &ComposerTarget<'_>,
+    draft: &str,
+    error: Option<&str>,
+    status: Markup,
+) -> Markup {
     html! {
-        form.composer id=(COMPOSER_ID) method="post" action="/ui/messages" hx-post="/ui/messages"
+        form.composer id=(COMPOSER_ID) method="post" action=(to.send) hx-post=(to.send)
             hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
             @if let Some(e) = error { p.composer-error role="alert" { (e) } }
             div.composer-box {
                 label.visually-hidden for="message" { "Message" }
                 textarea #message name="text" rows="2" maxlength="16384" required
-                    placeholder="Ask Melissa to install, check or fix something"
+                    placeholder=(to.placeholder)
                     autofocus[draft.is_empty() && error.is_none()] { (draft) }
                 button.send type="submit" {
                     svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M2.5 8h10M8.5 3.5L13 8l-4.5 4.5" {} }
@@ -633,12 +683,12 @@ pub fn composer(draft: &str, error: Option<&str>, status: Markup) -> Markup {
 }
 
 /// The line under the composer: which backend, everything is logged, and a stop button
-/// while a turn runs.
-pub fn composer_status(backend: Option<&str>, busy: bool) -> Markup {
+/// (posting to `cancel`) while a turn runs.
+pub fn composer_status(cancel: &str, backend: Option<&str>, busy: bool) -> Markup {
     html! {
         @if busy {
             span.working { span.icon.spin aria-hidden="true" {} "Working on it" }
-            button.link type="submit" formaction="/ui/cancel" hx-post="/ui/cancel" hx-swap="none" formnovalidate { "Stop" }
+            button.link type="submit" formaction=(cancel) hx-post=(cancel) hx-swap="none" formnovalidate { "Stop" }
             span.sep aria-hidden="true" { "·" }
         }
         span {
