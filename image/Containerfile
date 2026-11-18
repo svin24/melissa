@@ -19,8 +19,10 @@ COPY Cargo.toml Cargo.lock clippy.toml about.toml about.hbs ./
 COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
-    cargo build --release --locked -p melissa-queen -p melissa-bee \
- && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/bin/ \
+    # melissa-agent's only binary is melissa-netbridge (runs inside every agent sandbox).
+    cargo build --release --locked -p melissa-queen -p melissa-bee -p melissa-agent \
+ && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee \
+        target/release/melissa-netbridge -t /out/bin/ \
  && mkdir -p /out/licenses && cargo fetch --locked \
  && cargo about generate --workspace --frozen --fail -o /out/licenses/THIRD-PARTY-LICENSES.md about.hbs
 # Melissa's own license (LICENSE*, once the project has one) and the acknowledgments ship with the report.

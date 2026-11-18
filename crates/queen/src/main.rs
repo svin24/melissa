@@ -33,7 +33,7 @@ use melissa_agent::{
     },
     session::SessionBackend,
     tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
-    AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, McpLink, TaskBoard,
+    AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, EgressProxy, McpLink, TaskBoard,
 };
 use melissa_hive::{ClusterHealth, LazyCluster};
 use serde_json::{json, Value};
@@ -133,20 +133,39 @@ async fn serve(
     );
     tools.extend(pool.tools());
     let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())));
+    // Sandboxed agents reach the network only through this (allowlist, audited) and
+    // Melissa's MCP endpoint at the same address as outside (config.listen).
+    let egress = EgressProxy::new(dirs.egress.clone(), Some(audit.clone()))
+        .with_context(|| format!("setting up egress sockets in {}", dirs.egress.display()))?
+        .with_mcp(mcp.clone(), config.listen);
+    match egress.netbridge() {
+        Some(path) => {
+            tracing::info!(netbridge = %path.display(), sockets = %dirs.egress.display(), "egress proxy ready")
+        }
+        None => tracing::warn!(
+            "melissa-netbridge not found (next to melissa-queen, /usr/bin or PATH): backends \
+             with network = \"proxy\" are unavailable"
+        ),
+    }
     let mut backends: Vec<Arc<dyn Backend>> = vec![Arc::new(EchoBackend::new())];
     let mut sessions: Vec<Arc<dyn SessionBackend>> = Vec::new();
     for spec in &config.backends {
         let backend: Arc<dyn Backend> = match spec {
-            BackendSpec::Cli(spec) => Arc::new(CliBackend::new(spec.clone(), workdir.clone())),
+            BackendSpec::Cli(spec) => {
+                Arc::new(CliBackend::new(spec.clone(), workdir.clone()).with_egress(egress.clone()))
+            }
             BackendSpec::Acp(spec) => {
-                let acp =
-                    Arc::new(AcpBackend::new(spec.clone(), workdir.clone()).with_mcp(mcp.clone()));
+                let acp = Arc::new(
+                    AcpBackend::new(spec.clone(), workdir.clone())
+                        .with_mcp(mcp.clone())
+                        .with_egress(egress.clone()),
+                );
                 sessions.push(acp.clone());
                 acp
             }
         };
         let info = backend.info();
-        tracing::info!(name = %info.name, kind = info.kind, available = info.available, "agent backend");
+        tracing::info!(name = %info.name, kind = info.kind, available = info.available, detail = %info.detail, "agent backend");
         backends.push(backend);
     }
     tracing::info!(path = %audit.path().display(), "audit log");
