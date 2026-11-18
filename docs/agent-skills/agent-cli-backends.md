@@ -51,9 +51,15 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   (Fedora's `/etc/resolv.conf` points there), fresh `/proc`, minimal `/dev`, private `/tmp` and `/var/tmp`,
   `$HOME` an empty read-only tmpfs plus the preset's paths, the CLI binary (symlinks resolved, bound read-only,
   executed by its real path), and the task workdir (the only writable host path; `--chdir` into it).
-- `--unshare-all --share-net --die-with-parent --new-session --cap-drop ALL --hostname melissa-agent --clearenv`.
+- `--unshare-all --die-with-parent --new-session --cap-drop ALL --hostname melissa-agent --clearenv`.
   Env: HOME, PATH (`<binary dir>:/usr/bin`), NO_COLOR, TERM, plus USER/LOGNAME/LANG/LC_ALL/TZ if set and the
-  names in `sandbox.env`. Host network is shared (model API + queen MCP on 127.0.0.1).
+  names in `sandbox.env`.
+- **Network (since 2026-11-18): own namespace, deny-by-default.** `melissa-netbridge` runs first and gives the
+  CLI an HTTPS proxy on 127.0.0.1:3128 (allowlisted hosts only) and Melissa's MCP endpoint at the queen's own
+  address; no resolver inside. Per-backend `network = "proxy"|"learn"|"none"|"host"` and `allow = [...]`.
+  Details, verified host lists and how to add hosts: [agent-egress.md](agent-egress.md). (Before: `--share-net`
+  and `/run/systemd/resolve` bound, so an agent could reach the LAN, the queen's whole HTTP API and host
+  abstract Unix sockets.)
 - What each CLI needed (all three verified through the queen; Claude also called `bee_info` and the audit log
   shows `tool.call`):
 
@@ -81,12 +87,20 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 - Lock files next to credentials (`~/.grok/auth.json.lock`) are on the sandbox tmpfs, so a sandboxed and an
   interactive grok do not coordinate refreshes.
 
+## What each CLI contacts (verified 2026-11-18, dev laptop; full table in [agent-egress.md](agent-egress.md))
+- Claude 2.1.327: `api.anthropic.com` (model, also its own event/metrics endpoints, so not separable by host),
+  OAuth refresh at `platform.claude.com/v1/oauth/token` (from the binary). Telemetry `http-intake.logs.us5.
+  datadoghq.com` denied without effect. Opens a new CONNECT per HTTP request (~25 per short prompt).
+- Grok 1.0.89: `cli-chat-proxy.grok.com` (the chat model with a subscription login), `api.x.ai` (ACP mode),
+  login issuer `auth.x.ai` (key in `auth.json`). Denied without effect: `grok.com`, `api.mixpanel.com`; both
+  are retried ~40 times per prompt (collapsed in the audit).
+- OpenCode 2.3.2 (free model `big-pickle`): `opencode.ai`, `models.opencode.ai` (catalogue; denied: still
+  works, ~3 s slower).
+- All three honour `HTTPS_PROXY`; none needed DNS inside the sandbox.
+
 ## Next (ideas, unverified)
 - Typed events: done for ACP agents (`crate::session`). For Claude (no ACP mode) use
   `--input-format stream-json --output-format stream-json`; OpenCode has `opencode acp` (ACP v1, HTTP MCP).
-- Deny-by-default egress: run the sandbox with `--unshare-net` and give it only a Unix socket to an egress proxy
-  in the queen that allows the CLI's model API host(s) and forwards MCP. Needs per-CLI proxy support
-  (`HTTPS_PROXY`) checks; not built yet.
 - seccomp filter (bwrap `--seccomp`) to drop rarely needed syscalls (ptrace, keyctl, mount APIs).
 - Melissa-owned CLI logins (e.g. `CLAUDE_CONFIG_DIR` under `~/.local/share/melissa`) instead of binding the
   user's credential files.

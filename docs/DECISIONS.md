@@ -137,3 +137,25 @@ Format: date — decision. Why. Alternatives considered.
   needs no streaming client in the CLI and works through the existing middleware; SSE can be added on the same
   `EventLog`. Same-origin check applies; JSON bodies need `application/json`. The CLI (`melissa-queen chat|ask|
   confirm|workers`) uses hyper's HTTP/1 client, already in the build via kube-rs (no new crates).
+- **2026-11-18 — Deny-by-default egress for sandboxed agents: own network namespace + a bridge binary + a
+  queen-side CONNECT proxy over per-sandbox Unix sockets.** bwrap unshares the network (loopback only, no
+  resolver); `melissa-netbridge` (a binary of `melissa-agent`, safe Rust) starts first, listens on loopback and
+  forwards each connection to `egress.sock` (HTTPS `CONNECT` proxy: per-backend host allowlist, port 443 by
+  default, DNS by the queen, non-public addresses refused after resolution, limits, every decision audited) or
+  `mcp.sock` (only `POST /mcp/<token>` for that sandbox's tokens), then runs the CLI as its child. The socket
+  directory is per sandbox, so the socket identifies the agent. Config per backend: `network =
+  "proxy"|"learn"|"none"|"host"`, `allow = [...]` (absent: built-in list from learn-mode runs). Fails closed.
+  Why: works rootless and with SELinux enforcing on the laptop (no pasta/slirp4netns, iptables or root helper)
+  and under DynamicUser; CLIs already honour `HTTPS_PROXY` (verified: claude, grok, opencode); no TLS
+  interception means no CA to install and no secrets in Melissa's memory. It also closes the queen's own HTTP API
+  (Queen chat, confirmation approval) and host abstract Unix sockets to agents. Alternatives: pasta/slirp4netns
+  with a filtering netns (broken on the laptop, needs nftables for the policy), a SOCKS proxy (fewer CLIs
+  support it), transparent interception (needs root/nftables), filtering by IP (provider IPs change; CDNs), TLS
+  interception (CA trust per CLI, sees payloads), seccomp/Landlock network rules (Landlock TCP rules cannot
+  name hosts; `unsafe` or a new crate). Trade-offs: host-level only (telemetry on the API host, e.g.
+  Anthropic's event endpoints, cannot be separated), and a CLI that ignores the proxy gets no network at all.
+- **2026-11-18 — `network` and `allow` are backend keys, not part of `[backend.sandbox]`.** Why: a sandbox table
+  replaces the whole preset (paths), so changing only the network would mean copying the preset. Repeated
+  identical denials (grok retries telemetry ~40 times per prompt) are counted within 60 s and written as
+  `(+N repeats)` with the next record or when the sandbox ends, so the audit stays readable and every attempt
+  is still counted.
