@@ -33,6 +33,7 @@
   --action-ink: #ffffff;
   --caution: #a8430f;
   --caution-soft: #fbece4;
+  --caution-ink: #ffffff;
   --ok: #2e7d4f;
   --idle: #9aa5b4;
   --bubble: #1b2533;
@@ -58,6 +59,7 @@
     --action-ink: #0b1220;
     --caution: #f39a70;
     --caution-soft: #2d1d16;
+    --caution-ink: #1f0e05;
     --ok: #6cc893;
     --idle: #5d6878;
     --bubble: #2d3a4e;
@@ -177,6 +179,7 @@ button.primary {
 
 button.primary.danger {
   background: var(--caution);
+  color: var(--caution-ink);
 }
 
 button.secondary,
@@ -881,7 +884,9 @@ button.send svg {
   font-weight: 650;
   font-size: 1.02rem;
   color: var(--ink);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  hyphens: auto;
+  max-width: 100%;
 }
 
 a.hex-name {
@@ -1220,6 +1225,14 @@ form.inline {
   .honeycomb {
     --n: 2;
     --w: 128px;
+  }
+
+  .hex-inner {
+    padding: 0 0.45rem;
+  }
+
+  .hex-name {
+    font-size: 0.92rem;
   }
 
   .hex:nth-child(8n + 5) {

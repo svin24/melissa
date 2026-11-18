@@ -186,13 +186,14 @@ async fn asset(Path(path): Path<String>) -> Response {
         Some(file) => (
             [
                 (header::CONTENT_TYPE, mime_for(&path)),
-                // Fonts never change under the same name; the rest may with a new binary.
+                // Fonts never change under the same name. CSS and scripts change with a new
+                // binary, so browsers revalidate them every time (small, served on the LAN).
                 (
                     header::CACHE_CONTROL,
                     if path.starts_with("fonts/") {
                         "public, max-age=31536000, immutable"
                     } else {
-                        "public, max-age=3600"
+                        "no-cache"
                     },
                 ),
             ],
