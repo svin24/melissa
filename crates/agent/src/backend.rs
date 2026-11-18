@@ -30,6 +30,24 @@ pub struct RunRequest {
     pub workdir: Option<PathBuf>,
     /// MCP client config file that gives the agent Melissa's tools for this task.
     pub mcp_config: Option<PathBuf>,
+    /// The task this run belongs to (for audit records and confirmations).
+    pub task: Option<crate::TaskId>,
+    /// Melissa's MCP endpoint for this task, for backends that take it directly (ACP).
+    pub mcp: Option<McpEndpoint>,
+}
+
+/// The per-task MCP endpoint: URL (with the session token as its last path segment).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct McpEndpoint {
+    pub url: String,
+    pub token: String,
+}
+
+impl std::fmt::Debug for McpEndpoint {
+    // Both fields carry the session token; keep it out of logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("McpEndpoint(..)")
+    }
 }
 
 impl RunRequest {
@@ -62,6 +80,12 @@ pub enum AgentError {
     Sandbox(#[from] crate::sandbox::SandboxError),
     #[error("backend timed out after {0:?}")]
     Timeout(Duration),
+    #[error("agent protocol error: {0}")]
+    Protocol(String),
+    #[error("a turn is already running in this session")]
+    Busy,
+    #[error("the session is closed")]
+    SessionClosed,
 }
 
 /// Which output stream a line came from.

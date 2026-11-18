@@ -10,8 +10,8 @@ use std::{
 use tokio::task::AbortHandle;
 
 use crate::{
-    mcp::McpServer, tools::TaskContext, AgentError, AuditLog, AuditRecord, Backend, BackendInfo,
-    EventSink, OutputLine, RunRequest,
+    backend::McpEndpoint, mcp::McpServer, tools::TaskContext, AgentError, AuditLog, AuditRecord,
+    Backend, BackendInfo, EventSink, OutputLine, RunRequest,
 };
 
 pub type TaskId = u64;
@@ -200,14 +200,19 @@ impl TaskBoard {
         self.audit(AuditRecord::now("task.dispatch", id, backend, prompt));
 
         let mut req = RunRequest::prompt(prompt);
+        req.task = Some(id);
         if let (Some(link), true) = (&self.inner.mcp, info.tools) {
             match self.prepare_tools(link, id) {
                 Ok((token, workdir, config)) => {
                     if let Some(task) = lock(&self.inner.tasks).get_mut(&id) {
-                        task.mcp_token = Some(token);
+                        task.mcp_token = Some(token.clone());
                     }
                     req.workdir = Some(workdir);
                     req.mcp_config = Some(config);
+                    req.mcp = Some(McpEndpoint {
+                        url: format!("{}{token}", link.base_url),
+                        token,
+                    });
                 }
                 Err(e) => {
                     let err = DispatchError::Setup(e.to_string());
