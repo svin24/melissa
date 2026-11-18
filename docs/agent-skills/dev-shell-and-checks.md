@@ -4,7 +4,9 @@
 
 ## Steps
 - Enter the shell: `direnv allow` (once) or prefix commands: `devenv shell -- <cmd>`.
-- Full gate: `devenv shell -- just check` (fmt, clippy `-D warnings`, nextest, `just licenses`).
+- Full gate: `devenv shell -- just check` (fmt, clippy `-D warnings`, nextest).
+- After adding or updating a dependency, also run `devenv shell -- just licenses` (~2.5 min CPU, so not part of
+  `just check` on the low-power dev laptop; the image build enforces the same allowlist).
 - `just licenses`: cargo-about report into `target/THIRD-PARTY-LICENSES.md`; fails on a crate license not in the
   `about.toml` allowlist. Network only for `cargo fetch` (first run); about 10 s wall, but ~2.5 CPU-min of text
   matching. Adding a license to the allowlist needs review and a note in ACKNOWLEDGMENTS.md.

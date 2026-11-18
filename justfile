@@ -10,7 +10,7 @@ lint:
 test:
     cargo nextest run
 
-check: fmt lint test licenses
+check: fmt lint test
 
 run-web:
     cargo run -p melissa-queen
