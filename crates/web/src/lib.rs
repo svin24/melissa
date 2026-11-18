@@ -6,7 +6,10 @@
 
 mod api;
 pub mod components;
+mod feed;
 mod pages;
+mod state;
+mod ui;
 
 use axum::{
     extract::{Form, Path, Request, State},
@@ -36,14 +39,17 @@ struct Assets;
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
-/// The UI router, without agent tools.
+/// The task UI, without agent tools or the Queen (`/` goes to the task list).
 pub fn router(board: TaskBoard) -> Router {
-    ui_routes(board).layer(middleware::from_fn(security))
+    ui_routes(board)
+        .route("/", get(|| async { Redirect::to("/tasks") }))
+        .layer(middleware::from_fn(security))
 }
 
-/// The UI router plus the MCP endpoint (`POST /mcp/{token}`) agent CLIs use to call tools.
+/// The task UI plus the MCP endpoint (`POST /mcp/{token}`) agent CLIs use to call tools.
 pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
     ui_routes(board)
+        .route("/", get(|| async { Redirect::to("/tasks") }))
         .merge(
             Router::new()
                 .route("/mcp/{token}", post(mcp_post).get(mcp_get))
@@ -52,9 +58,14 @@ pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
         .layer(middleware::from_fn(security))
 }
 
-/// The UI router, the MCP endpoint and the Queen's JSON API (`/api/...`, see [`api`]).
+/// The full UI: the chat with the Queen as home (see [`ui`]), the task pages, the MCP
+/// endpoint and the Queen's JSON API (`/api/...`, see [`api`]).
 pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Router {
     ui_routes(board)
+        .merge(ui::routes(
+            queen.clone(),
+            state::HiveCache::new(mcp.clone(), Some(queen.clone())),
+        ))
         .merge(api::tool_routes(mcp.clone()))
         .merge(
             Router::new()
@@ -67,9 +78,9 @@ pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Rout
 
 fn ui_routes(board: TaskBoard) -> Router {
     Router::new()
-        .route("/", get(dashboard))
         .route("/healthz", get(|| async { "ok" }))
-        .route("/tasks", get(tasks_fragment).post(create_task))
+        .route("/tasks", get(dashboard).post(create_task))
+        .route("/tasks/fragment", get(tasks_fragment))
         .route("/tasks/{id}", get(task_page))
         .route("/tasks/{id}/fragment", get(task_fragment))
         .route("/tasks/{id}/cancel", post(cancel_task))
@@ -175,7 +186,16 @@ async fn asset(Path(path): Path<String>) -> Response {
         Some(file) => (
             [
                 (header::CONTENT_TYPE, mime_for(&path)),
-                (header::CACHE_CONTROL, "public, max-age=3600"),
+                // Fonts never change under the same name. CSS and scripts change with a new
+                // binary, so browsers revalidate them every time (small, served on the LAN).
+                (
+                    header::CACHE_CONTROL,
+                    if path.starts_with("fonts/") {
+                        "public, max-age=31536000, immutable"
+                    } else {
+                        "no-cache"
+                    },
+                ),
             ],
             file.data.into_owned(),
         )
@@ -190,11 +210,13 @@ fn mime_for(path: &str) -> &'static str {
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
+        Some("woff2") => "font/woff2",
+        Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
 
-fn is_htmx(headers: &HeaderMap) -> bool {
+pub(crate) fn is_htmx(headers: &HeaderMap) -> bool {
     headers.get("hx-request").is_some_and(|v| v == "true")
 }
 
@@ -268,7 +290,7 @@ mod tests {
         let status = res.status();
         let headers = res.headers().clone();
         let body = res.into_body().collect().await.unwrap().to_bytes();
-        (status, headers, String::from_utf8(body.to_vec()).unwrap())
+        (status, headers, String::from_utf8_lossy(&body).into_owned())
     }
 
     fn post(uri: &str) -> axum::http::request::Builder {
@@ -280,9 +302,19 @@ mod tests {
     #[tokio::test]
     async fn dashboard_lists_backends_and_sets_csp() {
         let (app, _) = app();
-        let (status, headers, body) = send(
+        // Without a Queen, home is the task list.
+        let (status, headers, _) = send(
             &app,
             axum::http::Request::get("/").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(headers[header::LOCATION], "/tasks");
+        let (status, headers, body) = send(
+            &app,
+            axum::http::Request::get("/tasks")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -299,7 +331,22 @@ mod tests {
         let (app, _) = app();
         for (path, mime) in [
             ("/assets/htmx.min.js", "text/javascript"),
+            ("/assets/htmx-ext-sse.min.js", "text/javascript"),
+            ("/assets/melissa.js", "text/javascript"),
             ("/assets/melissa.css", "text/css"),
+            ("/assets/mark.svg", "image/svg+xml"),
+            (
+                "/assets/fonts/AtkinsonHyperlegibleNext-Variable.woff2",
+                "font/woff2",
+            ),
+            (
+                "/assets/fonts/BricolageGrotesque-Variable.woff2",
+                "font/woff2",
+            ),
+            (
+                "/assets/fonts/AtkinsonHyperlegibleNext-OFL.txt",
+                "text/plain",
+            ),
         ] {
             let (status, headers, body) = send(
                 &app,
@@ -406,7 +453,7 @@ mod tests {
         use melissa_agent::{
             queen::{
                 bees::{BeeLimits, BeePool},
-                events::EventLog,
+                events::{EventLog, QueenEvent},
                 registry::BeeRegistry,
                 QueenSettings,
             },
@@ -457,6 +504,48 @@ mod tests {
             }
         }
 
+        /// A read-only tool with a fixed answer (stands in for the hive's tools).
+        struct Fixed(&'static str, Value);
+        impl Tool for Fixed {
+            fn spec(&self) -> melissa_agent::tools::ToolSpec {
+                melissa_agent::tools::ToolSpec {
+                    name: self.0,
+                    description: "test",
+                    labels: melissa_agent::tools::Labels::READ_ONLY,
+                    params: serde_json::json!({"type": "object"}),
+                }
+            }
+            fn call<'a>(
+                &'a self,
+                _: Value,
+            ) -> BoxFuture<'a, Result<Value, melissa_agent::tools::ToolError>> {
+                Box::pin(async move { Ok(self.1.clone()) })
+            }
+        }
+
+        fn hive_tools() -> Vec<Arc<dyn Tool>> {
+            vec![
+                Arc::new(Fixed(
+                    "list_apps",
+                    serde_json::json!({
+                        "apps": [
+                            {"app": "nextcloud", "phase": "ready", "url": "http://nextcloud.example.com"},
+                            {"app": "immich", "phase": "starting"},
+                        ],
+                        "not_installed": ["jellyfin"],
+                    }),
+                )),
+                Arc::new(Fixed(
+                    "cluster_health",
+                    serde_json::json!({"nodes": [{"name": "comb-1", "ready": true, "allocatable": {"cpu": "4"}}]}),
+                )),
+                Arc::new(Fixed(
+                    "bee_info",
+                    serde_json::json!({"os": "Fedora Linux 45", "mem_total_kib": 8_388_608, "mem_available_kib": 4_194_304}),
+                )),
+            ]
+        }
+
         fn app() -> (Router, Queen) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
@@ -470,6 +559,7 @@ mod tests {
             let pool = BeePool::new(BeeLimits::default(), events.clone(), registry, None);
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
             tools.push(Arc::new(Touch));
+            tools.extend(hive_tools());
             let mcp = McpServer::new(ToolRegistry::new(tools, None));
             let board = TaskBoard::with_tools(
                 vec![Arc::new(EchoBackend::new())],
@@ -757,6 +847,355 @@ mod tests {
                 .body(Body::from("text=hi"))
                 .unwrap();
             assert_eq!(send(&app, req).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        }
+
+        fn htmx_post(uri: &str, body: &str) -> axum::http::Request<Body> {
+            post(uri)
+                .header("hx-request", "true")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        }
+
+        async fn get_html(app: &Router, uri: &str) -> (StatusCode, HeaderMap, String) {
+            send(app, get(uri)).await
+        }
+
+        /// The next SSE frame of a streaming response, as text.
+        async fn next_frame(body: &mut Body) -> String {
+            let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
+                .await
+                .expect("an SSE frame within 5 s")
+                .expect("stream still open")
+                .unwrap();
+            String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn home_is_the_chat_with_the_app_strip() {
+            let (app, queen) = app();
+            let (status, headers, body) = get_html(&app, "/").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(headers[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .contains("script-src 'self'"));
+            assert!(body.contains("Pre-alpha."));
+            assert!(body.contains("Hi, I'm Melissa."));
+            assert!(body.contains("sse-connect=\"/ui/stream?since=0\""));
+            assert!(body.contains("/assets/htmx-ext-sse.min.js"));
+            assert!(body.contains("Nextcloud running, Immich installing"));
+            assert!(body.contains("comb-1"));
+            assert!(body.contains("Starts when you send a message."));
+            assert!(!body.contains("style="), "no inline styles");
+            assert!(!body.contains("<script>"), "no inline scripts");
+
+            // A conversation with a tool call and a pending confirmation.
+            queen.events().push(QueenEvent::UserMessage {
+                turn: 1,
+                text: "Install <b>Immich</b>".into(),
+            });
+            queen.events().push(QueenEvent::ToolCall {
+                turn: Some(1),
+                id: "x\" onclick=\"alert(1)".into(),
+                title: "melissa__list_apps".into(),
+                status: "done".into(),
+            });
+            let (c, _rx) = queen.confirmations().request(
+                1,
+                "install_app",
+                &serde_json::json!({"app": "immich"}),
+                "this task has read untrusted content",
+            );
+            queen.events().push(QueenEvent::ConfirmationNeeded {
+                id: c.id,
+                task: 1,
+                tool: "install_app".into(),
+                reason: c.reason.clone(),
+            });
+            let (_, _, body) = get_html(&app, "/?draft=Install%20jellyfin").await;
+            assert!(body.contains("Install &lt;b&gt;Immich&lt;/b&gt;"));
+            assert!(body.contains("Listed your apps"));
+            assert!(
+                body.contains("id=\"f-t1\""),
+                "agent ids never reach the DOM"
+            );
+            assert!(!body.contains("onclick"));
+            assert!(body.contains("Install Immich?"));
+            assert!(body.contains(&format!("hx-post=\"/ui/confirmations/{}/approve\"", c.id)));
+            assert!(body.contains(">Install jellyfin</textarea>"));
+            assert!(body.contains("sse-connect=\"/ui/stream?since=3\""));
+            // One waiting in the rail.
+            assert!(body.contains("<span class=\"count\">1"));
+        }
+
+        #[tokio::test]
+        async fn hive_and_strip_show_apps_and_devices() {
+            let (app, _) = app();
+            let (status, _, body) = get_html(&app, "/hive").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("class=\"hex h-ok\""));
+            assert!(body.contains("class=\"hex h-busy\""));
+            assert!(body.contains("href=\"http://nextcloud.example.com\""));
+            assert!(body.contains("Add an app"));
+            assert!(body.contains("href=\"/?draft=Install%20jellyfin\""));
+            assert!(body.contains("Fedora Linux 45"));
+            assert!(body.contains("4.0 GB of 8.0 GB used"));
+            let (status, _, body) = get_html(&app, "/ui/strip").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.starts_with("<section class=\"strip\""));
+            let (_, _, body) = get_html(&app, "/ui/hive/apps").await;
+            assert!(body.starts_with("<div id=\"hive-apps\""));
+        }
+
+        #[tokio::test]
+        async fn approvals_page_and_approve_deny() {
+            let (app, queen) = app();
+            let (_, _, body) = get_html(&app, "/approvals").await;
+            assert!(body.contains("Nothing waiting."));
+
+            let (a, rx_a) = queen.confirmations().request(
+                1,
+                "uninstall_app",
+                &serde_json::json!({"app": "nextcloud", "delete_data": true}),
+                "destructive action",
+            );
+            let (b, rx_b) =
+                queen
+                    .confirmations()
+                    .request(1, "touch", &serde_json::json!({}), "because");
+            let (_, _, body) = get_html(&app, "/approvals").await;
+            assert!(body.contains("Remove Nextcloud?"));
+            assert!(body.contains("Can't be undone."));
+            assert!(body.contains("approval destructive"));
+            assert!(body.contains("Allow touch?"));
+            assert!(body.contains("view=approvals"));
+
+            // htmx: the card is replaced by its decided state.
+            let uri = format!("/ui/confirmations/{}/approve", a.id);
+            let (status, _, html) = send(&app, htmx_post(&uri, "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("You allowed this."));
+            assert!(!html.contains("<button"));
+            assert_eq!(rx_a.await.unwrap(), melissa_agent::tools::Verdict::Approved);
+            // Again: already gone.
+            let (status, _, html) = send(&app, htmx_post(&uri, "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Already decided"));
+
+            // Without htmx: a redirect back to the list.
+            let uri = format!("/ui/confirmations/{}/deny", b.id);
+            let (status, headers, _) = send(&app, post(&uri).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/approvals");
+            assert_eq!(rx_b.await.unwrap(), melissa_agent::tools::Verdict::Denied);
+
+            let (status, _, _) = send(&app, htmx_post("/ui/confirmations/1/maybe", "")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn sending_a_message_from_the_composer() {
+            let (app, queen) = app();
+            let (status, _, html) = send(&app, htmx_post("/ui/messages", "text=Hello+there")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.starts_with("<form class=\"composer\" id=\"composer\""));
+            assert!(html.contains("Working on it"));
+            assert!(html.contains("></textarea>"), "box is cleared");
+            assert_eq!(queen.status().turn, Some(1));
+
+            // Busy: the text stays and the reason is shown.
+            let (_, _, html) = send(&app, htmx_post("/ui/messages", "text=Second")).await;
+            assert!(html.contains("Still working on your last message"));
+            assert!(html.contains(">Second</textarea>"));
+
+            // Stop.
+            let (status, _, _) = send(&app, htmx_post("/ui/cancel", "")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            assert_eq!(queen.status().turn, None);
+
+            // Plain form post: redirect home.
+            let req = post("/ui/messages").body(Body::from("text=Hi")).unwrap();
+            let (status, headers, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/");
+        }
+
+        #[tokio::test]
+        async fn chatting_with_a_helper() {
+            let (app, queen) = app();
+            let ada = queen
+                .bees()
+                .registry()
+                .create("Ada", "stuck", None, "the Queen (task 1)")
+                .unwrap();
+            // The rail lists her; her page is a chat.
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains(&format!("href=\"/bees/{}\"", ada.id)));
+            assert!(home.contains(">Ada<"));
+            for uri in [format!("/bees/{}", ada.id), "/bees/ada".to_string()] {
+                let (status, _, body) = get_html(&app, &uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(body.contains("Nothing here yet with Ada."));
+                assert!(body.contains(&format!(
+                    "sse-connect=\"/ui/bees/{}/stream?since=0\"",
+                    ada.id
+                )));
+                assert!(body.contains(&format!("hx-post=\"/ui/bees/{}/messages\"", ada.id)));
+                assert!(body.contains("aria-current=\"page\""));
+            }
+            assert_eq!(
+                get_html(&app, "/bees/nobody").await.0,
+                StatusCode::NOT_FOUND
+            );
+
+            // A message goes to her conversation, not the Queen's.
+            let res = app
+                .clone()
+                .oneshot(get(&format!("/ui/bees/{}/stream?since=0", ada.id)))
+                .await
+                .unwrap();
+            let mut body = res.into_body();
+            let uri = format!("/ui/bees/{}/messages", ada.id);
+            let (status, _, html) = send(&app, htmx_post(&uri, "text=Hello+Ada")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Working on it"));
+            assert!(html.contains(&format!("hx-post=\"/ui/bees/{}/cancel\"", ada.id)));
+            let frame = next_frame(&mut body).await;
+            assert!(frame.contains("Hello Ada"), "{frame}");
+            assert_eq!(queen.status().turn, None);
+            let (status, _, _) =
+                send(&app, htmx_post(&format!("/ui/bees/{}/cancel", ada.id), "")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+
+            // The Queen's feed links a helper's job to her conversation.
+            queen.events().push(QueenEvent::BeeStarted {
+                bee: ada.id.clone(),
+                name: "Ada".into(),
+                goal: "Check <the> device".into(),
+            });
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains(&format!(
+                "<a href=\"/bees/{}\">Ada is looking into it</a>",
+                ada.id
+            )));
+            assert!(home.contains("Check &lt;the&gt; device"));
+        }
+
+        #[tokio::test]
+        async fn ui_posts_need_the_same_origin() {
+            let (app, queen) = app();
+            let (c, _rx) =
+                queen
+                    .confirmations()
+                    .request(1, "touch", &serde_json::json!({}), "because");
+            for uri in [
+                "/ui/messages".to_string(),
+                "/ui/cancel".to_string(),
+                format!("/ui/confirmations/{}/approve", c.id),
+                "/ui/bees/ada/messages".to_string(),
+                "/ui/bees/ada/cancel".to_string(),
+            ] {
+                let req = post(&uri)
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::from("text=hi"))
+                    .unwrap();
+                assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN, "{uri}");
+            }
+            assert_eq!(queen.status().turn, None);
+            assert_eq!(queen.confirmations().pending().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn the_stream_sends_rendered_updates() {
+            let (app, queen) = app();
+            queen.events().push(QueenEvent::UserMessage {
+                turn: 1,
+                text: "Hi".into(),
+            });
+            queen.events().push(QueenEvent::Text {
+                turn: 1,
+                text: "Hello".into(),
+            });
+            let res = app
+                .clone()
+                .oneshot(get("/ui/stream?since=2"))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            assert!(res.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream"));
+            let mut body = res.into_body();
+
+            // More reply text updates the existing bubble out of band.
+            queen.events().push(QueenEvent::Text {
+                turn: 1,
+                text: " <there>".into(),
+            });
+            let frame = next_frame(&mut body).await;
+            assert!(frame.starts_with("event: feed\n"), "{frame}");
+            assert!(frame.contains("id: 3\n"));
+            assert!(frame.contains("hx-swap-oob=\"innerHTML:#f-r2\""));
+            assert!(frame.contains("Hello &lt;there&gt;"));
+
+            // A new entry is appended; the turn's end updates the composer status.
+            queen.events().push(QueenEvent::ToolCall {
+                turn: Some(1),
+                id: "1".into(),
+                title: "melissa__bee_info".into(),
+                status: "running".into(),
+            });
+            let frame = next_frame(&mut body).await;
+            assert!(frame.contains("<li class=\"entry\" id=\"f-t1\">"));
+            assert!(frame.contains("Checking this device"));
+            queen.events().push(QueenEvent::TurnFinished {
+                turn: 1,
+                stop_reason: "end_turn".into(),
+            });
+            let frame = next_frame(&mut body).await;
+            assert!(frame.contains("innerHTML:#composer-status"));
+            assert!(frame.contains("Everything is logged."));
+
+            // A reconnect (Last-Event-ID) from the future asks the page to reload.
+            let req = axum::http::Request::get("/ui/stream")
+                .header("last-event-id", "999")
+                .body(Body::empty())
+                .unwrap();
+            let mut body = app.clone().oneshot(req).await.unwrap().into_body();
+            assert!(next_frame(&mut body).await.starts_with("event: reload"));
+        }
+
+        #[tokio::test]
+        async fn the_approvals_stream_only_sends_approvals() {
+            let (app, queen) = app();
+            let res = app
+                .clone()
+                .oneshot(get("/ui/stream?since=0&view=approvals"))
+                .await
+                .unwrap();
+            let mut body = res.into_body();
+            queen.events().push(QueenEvent::UserMessage {
+                turn: 1,
+                text: "Hi".into(),
+            });
+            let (c, _rx) = queen.confirmations().request(
+                1,
+                "install_app",
+                &serde_json::json!({"app": "immich"}),
+                "because",
+            );
+            queen.events().push(QueenEvent::ConfirmationNeeded {
+                id: c.id,
+                task: 1,
+                tool: "install_app".into(),
+                reason: "because".into(),
+            });
+            let frame = next_frame(&mut body).await;
+            assert!(!frame.contains("Hi"), "{frame}");
+            assert!(frame.contains("Install Immich?"));
+            assert!(frame.contains("hx-swap-oob=\"true\""), "waiting count");
         }
     }
 

@@ -191,6 +191,6 @@ Install → ready (cold 513 MB pull) 6 m 18 s with a grok worker polling `app_st
   event stream) open until the next request; that is how between-turn deaths went unnoticed at first.
 
 ## Not done yet / ideas
-- Web UI chat (owner's design), SSE instead of long-poll (same `EventLog`), per-bee token/tool-call budgets,
+- Web UI chat: done 2026-11-18 (SSE from the same `EventLog`, see [htmx-component.md](htmx-component.md)). Per-bee token/tool-call budgets,
   showing `thought`/`plan` events, a `confirm` that shows the full argument JSON, Claude's
   `--append-system-prompt` instead of the preamble.

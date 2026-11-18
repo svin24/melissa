@@ -24,6 +24,9 @@ Redistributed **in the Melissa binaries**:
 | Component | License | Notes |
 |---|---|---|
 | htmx 2.0.4 | BSD Zero Clause (0BSD) | Vendored in `crates/web/assets/`, embedded in the binary |
+| htmx SSE extension (htmx-ext-sse) 2.2.4 | BSD Zero Clause (0BSD), Copyright (c) 2023 Alexander Petros | `crates/web/assets/htmx-ext-sse.min.js` from the npm package (integrity checked); license in `htmx-ext-sse.LICENSE.txt` |
+| Atkinson Hyperlegible Next (font) | SIL Open Font License 1.1, Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (Braille Institute) | `crates/web/assets/fonts/`, from google/fonts, Latin subset as WOFF2; license in `AtkinsonHyperlegibleNext-OFL.txt` |
+| Bricolage Grotesque (font) | SIL Open Font License 1.1, Copyright 2022 The Bricolage Grotesque Project Authors | `crates/web/assets/fonts/`, from google/fonts, instanced (wdth 100, opsz 32), Latin subset as WOFF2; license in `BricolageGrotesque-OFL.txt` |
 | Rust crates (tokio, axum, maud, serde, kube, k8s-openapi, agent-client-protocol, ...) | Various, see below | Full report with license texts: `THIRD-PARTY-LICENSES.md` (generated, see below) |
 
 Redistributed **in the Melissa OS images** (besides the Fedora base image and its packages, which carry their own
