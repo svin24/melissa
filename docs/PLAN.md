@@ -42,7 +42,8 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
     Ships the transient-root `prepare-root.conf` (needed for Nix) and Tailscale, which the laptop currently has as
     host-side rpm-ostree changes. The queen runs as a per-user service so it can use that user's agent CLI logins.
   - **headless**: `FROM quay.io/fedora/fedora-bootc:45`. For servers, mini PCs and VPS bees. The queen runs as a
-    system service (`DynamicUser`, config in `/etc/melissa`, state in `/var/lib/melissa`).
+    system service as the fixed system user `melissa` (config in `/etc/melissa`, state in `/var/lib/melissa`, agent CLIs
+    and their logins in `/var/lib/melissa/home`, set up with `sudo melissa-setup agent <name>`; DynamicUser until 2026-11-18).
   - Both bases carry `containers.bootc=1` (verified with skopeo, 2026-11-18).
 - **Dev laptop:** currently stock Kinoite 45 from the ostree remote. **Switch deferred (owner, 2026-11-18):** develop on
   the headless image in a QEMU VM until there's much more to it; the desktop image is built and VM-tested meanwhile. It moves onto the desktop image with
@@ -63,7 +64,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
 - **Queen ↔ k3s (2026-11-18):** the queen talks to the API as ServiceAccount `melissa/melissa-queen` with read-only
   RBAC (get/list/watch on nodes, namespaces, pods; no Secrets, no writes). A root oneshot
   (`melissa-kubeconfig.service`) writes its kubeconfig to `/run/melissa-kube` (root:`melissa-kube` 0640); the
-  DynamicUser queen has that group, does not wait for k3s at boot and re-reads the file on each cluster call.
+  queen service has that group, does not wait for k3s at boot and re-reads the file on each cluster call.
   Client: kube-rs over rustls in `crates/hive`.
 - **App installs (2026-11-18, M2 core):** catalog of reviewed TOML manifests (`manifests/`, shipped in
   `/usr/share/melissa/catalog/`; `crates/catalog`), rendered to Namespace `app-<name>` + RoleBinding +
@@ -278,7 +279,9 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 **Pre-alpha demo (owner, weekend of 2026-11-21/22):** the owner publishes a pre-alpha online for people to try.
 Focus: easy to try, honest about being pre-alpha (notice in README and UI), the chat-first web UI from the concepts,
-two ways in (run from source; a ready VM image). **Headless first; then the desktop variant (owner, 2026-11-18):** a Fedora
+two ways in (run from source; a ready VM image: [TRY-THE-VM.md](TRY-THE-VM.md), `just release-disk` +
+`just release-pack`; first-boot account prompt, `melissa-setup agent <name>`, UI over an SSH tunnel; VM-verified
+2026-11-18 except the bib build of the release disk itself). **Headless first; then the desktop variant (owner, 2026-11-18):** a Fedora
 KDE (Kinoite) image that also runs the full server by default, the same as headless (k3s enabled, the system
 queen and web UI at boot, independent of who is logged in), with KDE on top. Today the desktop image has k3s
 installed but disabled and runs the queen per user; that changes after the headless demo works. Further security hardening (throwaway worker bees, taint UX,
@@ -338,6 +341,10 @@ Roadmap (rough, phases may overlap):
 24. Agent CLI logins under the sandbox: the user's credential file is bind-mounted read-write. Does OAuth token
     refresh work there (rename onto a bind mount fails with EBUSY)? Or should Melissa keep its own CLI logins
     (e.g. `CLAUDE_CONFIG_DIR`), and on headless bees (DynamicUser) where do those logins come from?
+    (Headless answered for the demo, 2026-11-18: the queen runs as a fixed system user `melissa`; `sudo melissa-setup
+    agent <name>` runs the vendor's installer and login as that user, so the CLI and its credential file live in
+    `/var/lib/melissa/home` at the paths the sandbox presets bind. Still open: token refresh under the bind mount,
+    and whether Melissa should own per-bee logins instead of one per comb.)
 25. Queen k3s token: non-expiring ServiceAccount Secret token today (rotate with `melissa-kubeconfig rotate`). Move to
     short-lived bound tokens? Since 2026-11-18 the queen re-reads the group-readable kubeconfig on every call, so a
     root timer re-minting `kubectl create token` into the same file would work without restarts; open: refresh
@@ -420,3 +427,17 @@ Roadmap (rough, phases may overlap):
     prompts use it). Rename to `comb_info` with an alias?
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
     Keep them, turn them into "ask a bee", or drop them when the chat UI lands?
+48. Demo VM image (2026-11-18): the published qcow2's bootc origin is `localhost/melissa-headless:dev`, so testers
+    get no updates (`bootc upgrade` has nothing to pull). Publish to a registry (ghcr.io, signed) and build the disk
+    with `--target-imgref`? Needs the owner's yes (publishing).
+49. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
+    services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
+    Consumer Terms. Is "the user installs the official CLI and logs in with their own account on their own box"
+    fine for Claude, Grok and OpenCode's free models? Owner/legal check before a wider release (ties to 15).
+50. GNOME Boxes runs VMs in user-mode networking without port forwards in its UI, so the host cannot SSH into the
+    VM (needed for the UI tunnel). Document a libvirt `portForward`, offer a console-only path, or ship a browser?
+51. `melissa-setup agent` trusts the vendor's installer over HTTPS (curl | bash style, as the vendor documents) and
+    installs the latest release, so versions differ between testers and from what was verified (OpenCode 1.19.6
+    in the VM vs 2.3.2 on the laptop needed a sandbox change). Pin versions or checksums per Melissa release?
+52. Agent logins on the headless box: Grok tokens expire after 7 days; Claude's OAuth refresh under the sandbox's
+    bind mount is unverified (24). How does a tester learn a login expired (UI notice, `melissa-setup` status)?

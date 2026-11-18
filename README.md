@@ -31,6 +31,11 @@ scripts/       VM helpers (QEMU)
 docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
 ```
 
+## Try it
+
+- **Ready VM image:** download, boot in QEMU or virt-manager, chat with the Queen. Step by step:
+  [docs/TRY-THE-VM.md](docs/TRY-THE-VM.md).
+
 ## Quick start (dev)
 
 With Nix + devenv + direnv available (see [docs/DEV-ENV.md](docs/DEV-ENV.md)):

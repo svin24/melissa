@@ -32,7 +32,7 @@
   runs `/usr/libexec/melissa/melissa-kubeconfig`: waits ≤300 s for the token, writes
   `/run/melissa-kube/queen.kubeconfig` (root:`melissa-kube` 0640; dir 0750 from `tmpfiles.d/melissa-kube.conf`,
   headless only; group from `sysusers.d/melissa.conf`; server `https://127.0.0.1:6443`, CA + token from the Secret).
-- `melissa-queen.service` is **not** ordered after k3s or the oneshot (since 2026-11-18): DynamicUser +
+- `melissa-queen.service` is **not** ordered after k3s or the oneshot (since 2026-11-18): system user `melissa` +
   `SupplementaryGroups=melissa-kube`. The queen (`hive::LazyCluster`) looks for the file on every cluster call and
   rebuilds its client when the contents change, so it starts at once, attaches when k3s is up and follows rotations
   without a restart. `cluster_health`: no dir → "k3s is not running on this bee"; dir but no file → "k3s is
@@ -42,7 +42,7 @@
 - Rotate/revoke: `sudo /usr/libexec/melissa/melissa-kubeconfig rotate` (recreates the ServiceAccount, rewrites the
   kubeconfig; the queen picks it up on its next cluster call).
 - Run a tool as the queen would (same file and group):
-  `sudo systemd-run --quiet --wait --pipe --collect -p DynamicUser=yes -p SupplementaryGroups=melissa-kube
+  `sudo systemd-run --quiet --wait --pipe --collect -p User=melissa -p SupplementaryGroups=melissa-kube
   -p PrivateTmp=yes -E XDG_STATE_HOME=/tmp -E XDG_CONFIG_HOME=/etc /usr/bin/melissa-queen tool cluster_health`.
   Client details: [kube-rs-client.md](kube-rs-client.md).
 

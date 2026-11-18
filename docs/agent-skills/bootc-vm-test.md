@@ -66,3 +66,47 @@ Secure Boot on (kernel logs `Lockdown: ... hibernation is restricted`).
   the disk (reference lab finding).
 - Queen binds to loopback inside the VM; test it over SSH (`curl -s localhost:8080/healthz`).
 - No TPM/Secure Boot in `vm-run.sh` yet (add swtpm + secboot firmware when sealed boot is on the table).
+
+## Published tester image (pre-alpha demo) — 2026-11-18
+Tester guide: [../TRY-THE-VM.md](../TRY-THE-VM.md). Pieces in the headless image:
+- **No account in the image.** `image/release/config.toml` (bib) has only the 40 GiB root size. Never add users,
+  passwords or keys there; testers create theirs on first boot.
+- **`melissa-firstboot.service`** (headless, `/usr/libexec/melissa/melissa-firstboot`): on tty1, ordered before
+  `getty-pre.target`, `getty@tty1` **and `kmsconvt@tty1`**: asks user name, password (≥ 8), optional SSH key
+  (validated with `ssh-keygen -l`), else offers SSH password login (`/etc/ssh/sshd_config.d/30-melissa-password-login.conf`,
+  read before `40-melissa.conf`; first value wins). User goes in `wheel`. Stamp `/var/lib/melissa-firstboot.done`;
+  exits at once if a human user (UID 1000-59999, login shell) exists, e.g. from a bib config.
+- **Welcome texts:** `/etc/issue.d/50-melissa.issue` (console, before login), `/usr/lib/motd.d/50-melissa` (SSH:
+  only `/etc/pam.d/sshd` has `pam_motd` in fedora-bootc), `melissa-setup` (status, address, next steps).
+- **`melissa-setup agent <claude|grok|opencode>`**: vendor installer (claude.ai/install.sh, x.ai/cli/install.sh,
+  opencode.ai/install) downloaded with curl as user `melissa`, run with `runuser` + clean env, `HOME=/var/lib/melissa/home`;
+  then `claude auth login`, `grok login --device-auth`, or OpenCode free models (optional `opencode auth login`);
+  then restarts the queen (it detects CLIs at start). `melissa-setup login <name>` repeats the login.
+- **Build:** `just image-build headless` → `just image-to-root headless` (sudo) → `just release-disk headless`
+  (sudo, bib → `dist/headless/qcow2/disk.qcow2`) → `just release-pack headless` (rootless: `qemu-img convert -c`,
+  `dist/melissa-headless-<version>-x86_64.qcow2` + `.sha256`). `dist/` is gitignored.
+
+### Verified in the dev VM (2026-11-18, deploy of this image onto the existing test VM, 3 GiB RAM)
+- Old DynamicUser state migrated by `melissa-state-migrate.service`; queen `active`, `NRestarts=0`, 0 AVC denials.
+- First boot for real (stamp removed + `MELISSA_FIRSTBOOT_FORCE=1` drop-in, reboot): prompt on tty1, console login
+  held back; answers typed through the QEMU monitor (`sendkey`) → user in `wheel`, stamp written, login prompt,
+  console login with the new password, `melissa-setup` output correct.
+- `sudo melissa-setup agent opencode --yes`: 33 s, OpenCode 1.19.6; the Queen (opencode-acp, sandboxed, system
+  service) answered a bee_info question in 13 s, created two bees, and installed Nextcloud (cached image, kept data)
+  in 32 s by chat. Web UI through `ssh -L 18088:127.0.0.1:8080`: `/` 200, `/healthz` ok. Nextcloud through
+  `ssh -L 18081:127.0.0.1:80` + Host `nextcloud.melissa.home.arpa:18081`: login page 200, OCS as admin 200.
+- Not verified: the bib build of `release-disk` and a boot of that exact disk (needs sudo); `claude`/`grok` logins
+  (need accounts); virt-manager/Boxes; the tester's QEMU command (the dev VM uses `scripts/vm-run.sh` with Secure Boot).
+
+### Gotchas
+- **kmscon owns tty1 on Fedora 45** (`kmsconvt@tty1`, the `autovt@` alias), not agetty, and it is not ordered after
+  `getty-pre.target`. Without `Before=kmsconvt@tty1.service` it drew over the prompt and its `TTYVHangup` killed the
+  script (`status=1/HUP`). Starting the unit by hand on a running system races logind's autovt: test with a reboot.
+- **agetty's `\4`** in issue files picked k3s's `cni0` (10.42.0.1) once k3s was up. Don't use it; `melissa-setup`
+  prints the default-route source address.
+- `read -p` prompts go to stderr: the unit needs `StandardError=inherit` (tty), not `journal`.
+- Kernel/audit messages print over console prompts; the script runs `dmesg --console-off` while prompting.
+- Switching a unit from `DynamicUser=yes` to `User=` makes systemd migrate `/var/lib/private/<dir>`, but SELinux
+  denies PID 1 (`init_t`) unlinking the `var_lib_t` symlink → `status=238/STATE_DIRECTORY`. Do it in a root oneshot.
+- Testing console input: `sendkey` per character over `vm/<variant>/monitor.sock` (QEMU monitor), then
+  `scripts/vm-screenshot.py`.

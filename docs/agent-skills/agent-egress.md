@@ -77,6 +77,7 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
 | opencode 2.3.2 (`run`, free default model) | `opencode.ai` (gateway), `models.opencode.ai` (model catalogue) | none | Without `models.opencode.ai`: works, ~3 s slower |
 | claude 2.1.327 (`claude-session`, stream-json, with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`) | `api.anthropic.com` only (3 tunnels for a bee_info task) | none (no Datadog intake any more) | No: learn mode then proxy, Queen + worker in 11.8 s |
 | opencode 2.3.2 (`opencode acp`, flavor opencode) | `opencode.ai`, `models.opencode.ai` (same as `run`) | none | No: learn mode then proxy, Queen + worker in 23.6 s |
+| opencode 1.19.6 (`opencode acp`, official installer's release on 2026-11-18, in the headless VM's system service) | `opencode.ai`, `models.opencode.ai` | `registry.npmjs.org` | No: Queen + bee_info in 13 s |
 
 All three honour `HTTPS_PROXY` (no CLI needed DNS inside the sandbox). Proxy env also set: `HTTP_PROXY`,
 `ALL_PROXY` and lowercase forms; `NO_PROXY=localhost,127.0.0.1,::1` keeps MCP off the proxy.
