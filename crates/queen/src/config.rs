@@ -26,6 +26,8 @@ pub struct QueenConfig {
     /// is present (e.g. a desktop queen pointed at a cluster); checked before the headless
     /// default `/run/melissa-kube/queen.kubeconfig`. Re-read on every cluster call.
     pub kubeconfig: Option<PathBuf>,
+    /// The Queen (head agent) and its workers.
+    pub queen: QueenSection,
 }
 
 impl Default for QueenConfig {
@@ -35,6 +37,44 @@ impl Default for QueenConfig {
             task_timeout_secs: 300,
             backends: default_backends(),
             kubeconfig: None,
+            queen: QueenSection::default(),
+        }
+    }
+}
+
+/// `[queen]`: the head agent's session backends, tools and worker limits.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct QueenSection {
+    /// Session backends (`kind = "acp"`) to try in order; the next is used if one fails
+    /// to start.
+    pub backends: Vec<String>,
+    /// Tools the Queen may use (default: all). Include the worker tools (`start_worker`,
+    /// `worker_status`, `list_workers`, `cancel_worker`) to let it start workers. Workers
+    /// never get more than this.
+    pub tools: Option<Vec<String>>,
+    /// Backend for workers when the Queen names none (default: the first Queen backend).
+    pub worker_backend: Option<String>,
+    /// Workers running at the same time.
+    pub max_workers: usize,
+    /// Worker time limit when the Queen gives none, in seconds.
+    pub worker_timeout_secs: u64,
+    /// Largest worker time limit the Queen may ask for, in seconds.
+    pub worker_timeout_max_secs: u64,
+    /// Size at which the transcript is rotated (one old file is kept), in KiB.
+    pub transcript_max_kib: u64,
+}
+
+impl Default for QueenSection {
+    fn default() -> Self {
+        Self {
+            backends: vec!["grok-acp".into()],
+            tools: None,
+            worker_backend: None,
+            max_workers: 2,
+            worker_timeout_secs: 300,
+            worker_timeout_max_secs: 900,
+            transcript_max_kib: 4096,
         }
     }
 }
@@ -118,6 +158,8 @@ pub fn default_backends() -> Vec<BackendSpec> {
         // with auto-approve (`permission_mode = "always-approve"`) cannot apply: every
         // built-in tool call comes to Melissa as a permission request. `--no-leader`: one
         // agent process per session, inside our sandbox (no shared leader socket).
+        // Its sessions live in `~/.grok/sessions`; for the Queen, Melissa binds its own
+        // directory there so a session can be resumed after a restart.
         AcpSpec::new(
             "grok-acp",
             "grok",
@@ -128,7 +170,8 @@ pub fn default_backends() -> Vec<BackendSpec> {
                 "--no-leader",
                 "stdio",
             ],
-        ),
+        )
+        .with_session_store(".grok/sessions"),
     ];
     cli.into_iter()
         .map(BackendSpec::Cli)
@@ -169,6 +212,32 @@ impl QueenConfig {
             names.push(b.name());
             b.validate()
                 .with_context(|| format!("backend `{}`", b.name()))?;
+        }
+        let q = &self.queen;
+        if q.backends.is_empty() {
+            bail!("[queen] backends must name at least one session backend");
+        }
+        for name in &q.backends {
+            match self.backends.iter().find(|b| b.name() == name) {
+                Some(BackendSpec::Acp(_)) => {}
+                Some(BackendSpec::Cli(_)) => bail!(
+                    "[queen] backend `{name}` is a one-shot CLI backend; the Queen needs a \
+                     session backend (`kind = \"acp\"`)"
+                ),
+                // Not fatal: a config that replaces the built-in backends still serves the UI;
+                // the Queen reports the backend as unavailable when someone talks to it.
+                None => tracing::warn!(
+                    "[queen] backend `{name}` is not configured; the Queen cannot use it"
+                ),
+            }
+        }
+        if let Some(w) = &q.worker_backend {
+            if !names.contains(&w.as_str()) {
+                bail!("[queen] worker_backend `{w}` is not a configured backend");
+            }
+        }
+        if q.worker_timeout_secs == 0 || q.worker_timeout_secs > q.worker_timeout_max_secs {
+            bail!("[queen] worker_timeout_secs must be between 1 and worker_timeout_max_secs");
         }
         Ok(())
     }
@@ -353,6 +422,47 @@ mod tests {
         assert!(grok.tools);
         // The one-shot `grok` backend stays.
         assert!(backends.iter().any(|b| b.name() == "grok"));
+    }
+
+    #[test]
+    fn queen_section_defaults_and_checks() {
+        let config = QueenConfig::default();
+        assert_eq!(config.queen.backends, ["grok-acp"]);
+        assert_eq!(config.queen.max_workers, 2);
+        let grok = config
+            .backends
+            .iter()
+            .find_map(|b| match b {
+                BackendSpec::Acp(s) if s.name == "grok-acp" => Some(s),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(grok.session_store.as_deref(), Some(".grok/sessions"));
+
+        let config: QueenConfig = toml::from_str(
+            r#"
+            [queen]
+            backends = ["grok-acp"]
+            tools = ["bee_info", "start_worker", "worker_status"]
+            worker_backend = "echo"
+            max_workers = 1
+            worker_timeout_secs = 60
+            worker_timeout_max_secs = 120
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.queen.worker_backend.as_deref(), Some("echo"));
+        for bad in [
+            "[queen]\nbackends = []",
+            "[queen]\nbackends = [\"claude\"]",
+            "[queen]\nworker_backend = \"nope\"",
+            "[queen]\nworker_timeout_secs = 1000",
+        ] {
+            let c: QueenConfig = toml::from_str(bad).unwrap();
+            assert!(c.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<QueenConfig>("[queen]\nbogus = 1").is_err());
     }
 
     #[test]

@@ -71,12 +71,38 @@ pub struct OpenSession {
     pub mcp_servers: Vec<McpServerSpec>,
     /// Answers the agent's permission requests.
     pub permissions: Arc<dyn PermissionHandler>,
+    /// A persistent, Melissa-owned host directory for the agent's own session store (the
+    /// Queen's). Backends that know where their agent keeps sessions bind it there inside
+    /// the sandbox, so a later [`OpenSession::resume`] can find the session. None: the
+    /// agent's session store is throw-away (workers).
+    pub state_dir: Option<PathBuf>,
+    /// Session id to resume (where the agent supports it); a new session if that fails.
+    pub resume: Option<String>,
+}
+
+impl OpenSession {
+    /// A new session in `cwd` with no persistent state.
+    pub fn new(
+        cwd: PathBuf,
+        mcp_servers: Vec<McpServerSpec>,
+        permissions: Arc<dyn PermissionHandler>,
+    ) -> Self {
+        Self {
+            cwd,
+            mcp_servers,
+            permissions,
+            state_dir: None,
+            resume: None,
+        }
+    }
 }
 
 /// An open session and the stream of its events. The stream ends when the session closes.
 pub struct OpenedSession {
     pub session: Box<dyn AgentSession>,
     pub events: mpsc::UnboundedReceiver<SessionEvent>,
+    /// The session is the one asked for in [`OpenSession::resume`] (with its history).
+    pub resumed: bool,
 }
 
 /// Why a turn ended.

@@ -16,9 +16,9 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
 - Board task: dispatch to backend `grok-acp` (built in). One task = open session, one prompt, close. Output: reply
   text on stdout lines; `[tool] <title> → pending|running|done|failed`, `[permission] <title> → allow_once|…`,
   `[plan] a | b` on stderr.
-- Queen loop (next): `SessionBackend::open(OpenSession { cwd, mcp_servers, permissions })` → `AgentSession` +
-  event receiver; `prompt()` per user message (one turn at a time, `Busy` otherwise), `cancel()` from another task,
-  `close()`. Hold it as `Arc<dyn AgentSession>`.
+- Queen loop: built, see [queen-loop.md](queen-loop.md). `SessionBackend::open(OpenSession::new(cwd,
+  mcp_servers, permissions))` → `AgentSession` + event receiver; `prompt()` per user message (one turn at a
+  time, `Busy` otherwise), `cancel()` from another task, `close()`. Hold it as `Arc<dyn AgentSession>`.
 - Config: `[[backend]] kind = "acp"`, `name`, `command`, `args`, `tools` (default true), `[backend.sandbox]`,
   `record_dir` (debug transcripts, see below).
 - Live test (needs logged-in grok): `cargo nextest run -p melissa-agent --run-ignored only -E 'binary(acp_live)'`.
@@ -82,8 +82,19 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
   `SessionEvent::Other(kind)` instead of erroring.
 - `fork` is behind the crate's unstable `unstable_session_fork` feature; we report `fork: false` on v1.
 
+- A dead agent does not end the crate's connection while our `connect_with` closure waits for commands; the
+  command loop also selects on `cx.incoming_closed()` (stdout EOF) so the event stream ends and the owner
+  notices between turns. Pending requests fail with an error for which
+  `agent_client_protocol::is_incoming_transport_closed` is true → `AgentError::AgentExited`.
+
+## Resume (verified 2026-11-18, grok 1.0.89)
+- `OpenSession { state_dir, resume }`: with `AcpSpec.session_store = ".grok/sessions"` (built-in grok-acp),
+  the Melissa-owned `state_dir` (0700) is bound read-write there inside the sandbox (rest of `~/.grok` stays
+  tmpfs). `resume` → `session/resume` (if `sessionCapabilities.resume`), falling back to `session/new`;
+  `OpenedSession.resumed` says which. Only the Queen passes a `state_dir`; workers stay throw-away.
+- Grok writes `<url-encoded cwd>/<session-id>/` (chat history, events, system prompt), `prompt_history.jsonl`
+  and `session_search.sqlite` into the store; resume after a process restart keeps the conversation.
+- `session/load` (replays history as updates) is not used.
+
 ## Open
-- Grok session persistence: `~/.grok` is a tmpfs in the sandbox, so `session/load`/`resume` after the process
-  exits cannot work yet. The Queen needs a persistent, Melissa-owned grok session dir (bind a dir under
-  `~/.local/share/melissa` over `~/.grok/sessions`?) — check what else Grok writes there first.
 - Ask a logged-out agent: `authenticate` is not implemented (we rely on the CLI's cached login).

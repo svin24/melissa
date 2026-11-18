@@ -79,9 +79,9 @@ async fn open_replay(
 }
 
 fn open_with(perms: Arc<dyn PermissionHandler>, mcp: bool) -> OpenSession {
-    OpenSession {
-        cwd: "/work".into(),
-        mcp_servers: if mcp {
+    OpenSession::new(
+        "/work".into(),
+        if mcp {
             vec![McpServerSpec {
                 name: "melissa".into(),
                 url: "http://127.0.0.1:8080/mcp/0123456789abcdef".into(),
@@ -90,8 +90,8 @@ fn open_with(perms: Arc<dyn PermissionHandler>, mcp: bool) -> OpenSession {
         } else {
             Vec::new()
         },
-        permissions: perms,
-    }
+        perms,
+    )
 }
 
 const BEE_PROMPT: &str = "Use the bee_info tool, then reply with the kernel version.";
@@ -105,6 +105,7 @@ async fn tool_turn_streams_events_and_allows_once() {
     let OpenedSession {
         session,
         mut events,
+        ..
     } = opened;
     assert_eq!(session.id(), "s-1");
     let caps = session.capabilities();
@@ -175,6 +176,7 @@ async fn one_turn_renders_concise_output() {
     let OpenedSession {
         session,
         mut events,
+        ..
     } = opened;
     let (sink, mut rx) = EventSink::channel();
     let stop = one_turn(session.as_ref(), &mut events, BEE_PROMPT, &sink)
@@ -212,6 +214,7 @@ async fn cancel_answers_pending_permission_and_ends_turn() {
     let OpenedSession {
         session,
         mut events,
+        ..
     } = opened;
     let session: Arc<dyn crate::session::AgentSession> = Arc::from(session);
     let turn = {
@@ -319,6 +322,7 @@ async fn real_grok_transcript_replays() {
     let OpenedSession {
         session,
         mut events,
+        ..
     } = opened;
     let caps = session.capabilities().clone();
     assert!(caps.load && caps.resume && caps.close && caps.mcp_http);
@@ -353,4 +357,129 @@ async fn real_grok_transcript_replays() {
     );
     let log = std::fs::read_to_string(&audit_path).unwrap();
     assert!(log.contains(r#""action":"agent.permission""#) && log.contains("allow_once"));
+}
+
+fn init_steps(resume: bool) -> Vec<agent::Step> {
+    use serde_json::json;
+    let caps = if resume {
+        json!({"loadSession": true, "mcpCapabilities": {"http": true}, "sessionCapabilities": {"resume": {}}})
+    } else {
+        json!({"loadSession": false, "mcpCapabilities": {"http": true}})
+    };
+    vec![
+        agent::Step::send(
+            json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": "<any>"}),
+        ),
+        agent::Step::recv(
+            json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": []}}),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn resume_reuses_the_session_or_falls_back_to_new() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    let perms: Arc<dyn PermissionHandler> = Arc::new(perms);
+
+    // The agent knows the session: `session/resume` with the same cwd and fresh MCP servers.
+    let mut steps = init_steps(true);
+    steps.push(agent::Step::send(json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume",
+        "params": {"sessionId": "s-old", "cwd": "/work", "mcpServers": [{"type": "http", "name": "melissa", "url": "<any>", "headers": "<any>"}]}})));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+    ));
+    let mut open = open_with(perms.clone(), true);
+    open.resume = Some("s-old".into());
+    let (opened, agent) = open_replay(steps, open.clone(), None).await;
+    assert!(opened.resumed);
+    assert_eq!(opened.session.id(), "s-old");
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+
+    // It does not: a new session.
+    let mut steps = init_steps(true);
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32002, "message": "session not found"}})));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s-new"}}),
+    ));
+    let (opened, agent) = open_replay(steps, open.clone(), None).await;
+    assert!(!opened.resumed);
+    assert_eq!(opened.session.id(), "s-new");
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+
+    // An agent without resume support is not asked.
+    let mut steps = init_steps(false);
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-3"}}),
+    ));
+    let (opened, agent) = open_replay(steps, open, None).await;
+    assert!(!opened.resumed);
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn agent_death_fails_the_turn_with_agent_exited() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    let mut steps = init_steps(false);
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1"}}),
+    ));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::exit());
+    let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), false), None).await;
+    let err = tokio::time::timeout(Duration::from_secs(5), opened.session.prompt("hi"))
+        .await
+        .expect("a dead agent must end the turn")
+        .unwrap_err();
+    assert!(matches!(err, crate::AgentError::AgentExited(_)), "{err:?}");
+    agent.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn agent_death_between_turns_ends_the_event_stream() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    let mut steps = init_steps(false);
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1"}}),
+    ));
+    steps.push(agent::Step::exit());
+    let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), false), None).await;
+    let OpenedSession {
+        session,
+        mut events,
+        ..
+    } = opened;
+    // No prompt is running; the stream still ends when the agent goes away.
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.is_some() {}
+    })
+    .await;
+    assert!(end.is_ok(), "event stream did not end");
+    assert!(matches!(
+        session.prompt("hi").await,
+        Err(crate::AgentError::AgentExited(_))
+    ));
+    agent.await.unwrap().unwrap();
 }

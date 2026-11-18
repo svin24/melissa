@@ -21,8 +21,8 @@ use agent_client_protocol::{
             CancelNotification, ClientCapabilities, ContentBlock, HttpHeader, Implementation,
             InitializeRequest, McpServer, McpServerHttp, NewSessionRequest, PermissionOption,
             PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-            RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-            SessionNotification, SessionUpdate, TextContent,
+            RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+            SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
         },
         ConnectionTo, Responder,
     },
@@ -123,7 +123,7 @@ where
     let abort = AbortOnDrop(task);
 
     let ready = tokio::time::timeout(OPEN_TIMEOUT, ready_rx).await;
-    let (id, caps) = match ready {
+    let (id, caps, resumed) = match ready {
         Ok(Ok(Ok(ready))) => ready,
         Ok(Ok(Err(e))) => return Err(AgentError::Protocol(format!("{e}{}", stderr.summary()))),
         Ok(Err(_)) => {
@@ -146,9 +146,11 @@ where
             cmd_tx,
             done: done_rx,
             stderr,
+            closing: AtomicBool::new(false),
             _task: abort,
         }),
         events: events_rx,
+        resumed,
     })
 }
 
@@ -158,7 +160,7 @@ async fn run<T>(
     open: OpenSession,
     events: mpsc::UnboundedSender<SessionEvent>,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    ready: oneshot::Sender<Result<(String, SessionCapabilities), String>>,
+    ready: oneshot::Sender<Result<(String, SessionCapabilities, bool), String>>,
 ) -> Result<(), agent_client_protocol::Error>
 where
     T: ConnectTo<Client> + Send + 'static,
@@ -206,16 +208,23 @@ where
             agent_client_protocol::on_receive_notification!(),
         )
         .connect_with(transport, async move |cx: ConnectionTo<Agent>| {
-            let (session_id, caps) = match handshake(&cx, &open).await {
+            let (session_id, caps, resumed) = match handshake(&cx, &open).await {
                 Ok(ok) => ok,
                 Err(e) => {
                     let _ = ready.send(Err(e.to_string()));
                     return Err(e);
                 }
             };
-            let _ = ready.send(Ok((session_id.clone(), caps)));
+            let _ = ready.send(Ok((session_id.clone(), caps, resumed)));
             let busy = Arc::new(AtomicBool::new(false));
-            while let Some(cmd) = commands.recv().await {
+            loop {
+                let cmd = tokio::select! {
+                    cmd = commands.recv() => cmd,
+                    // The agent closed its stdout (it exited): end the connection now, so the
+                    // event stream ends and the owner learns it even between turns.
+                    () = cx.incoming_closed() => None,
+                };
+                let Some(cmd) = cmd else { break };
                 match cmd {
                     Command::Prompt { text, reply } => {
                         if busy.swap(true, Ordering::SeqCst) {
@@ -232,9 +241,15 @@ where
                         cx.spawn(async move {
                             let result = cx2.send_request(request).block_task().await;
                             busy.store(false, Ordering::SeqCst);
-                            let result = result
-                                .map(|r| stop_reason(r.stop_reason))
-                                .map_err(|e| AgentError::Protocol(e.to_string()));
+                            let result = result.map(|r| stop_reason(r.stop_reason)).map_err(|e| {
+                                if agent_client_protocol::is_incoming_transport_closed(&e)
+                                    || agent_client_protocol::is_connection_terminated(&e)
+                                {
+                                    AgentError::AgentExited(String::new())
+                                } else {
+                                    AgentError::Protocol(e.to_string())
+                                }
+                            });
                             if let Ok(stop) = &result {
                                 let _ = events.send(SessionEvent::TurnFinished(*stop));
                             }
@@ -259,11 +274,13 @@ where
         .await
 }
 
-/// `initialize` (v1, no client fs/terminal capabilities) and `session/new`.
+/// `initialize` (v1, no client fs/terminal capabilities), then `session/resume` if asked
+/// for and supported, else (or if resuming fails) `session/new`. Returns the session id,
+/// the capabilities and whether the session was resumed.
 async fn handshake(
     cx: &ConnectionTo<Agent>,
     open: &OpenSession,
-) -> Result<(String, SessionCapabilities), agent_client_protocol::Error> {
+) -> Result<(String, SessionCapabilities, bool), agent_client_protocol::Error> {
     let init = InitializeRequest::new(ProtocolVersion::V1)
         .client_capabilities(ClientCapabilities::new())
         .client_info(Implementation::new("melissa", env!("CARGO_PKG_VERSION")));
@@ -307,9 +324,17 @@ async fn handshake(
             )
         })
         .collect();
+    if let (Some(id), true) = (&open.resume, caps.resume) {
+        let resume =
+            ResumeSessionRequest::new(id.clone(), open.cwd.clone()).mcp_servers(servers.clone());
+        match cx.send_request(resume).block_task().await {
+            Ok(_) => return Ok((id.clone(), caps, true)),
+            Err(e) => tracing::info!("cannot resume agent session {id}: {e}; starting a new one"),
+        }
+    }
     let new = NewSessionRequest::new(open.cwd.clone()).mcp_servers(servers);
     let new = cx.send_request(new).block_task().await?;
-    Ok((new.session_id.to_string(), caps))
+    Ok((new.session_id.to_string(), caps, false))
 }
 
 /// Decide one permission request and answer it; a cancel answers `cancelled` instead.
@@ -568,16 +593,17 @@ struct AcpSession {
     cmd_tx: mpsc::UnboundedSender<Command>,
     done: watch::Receiver<bool>,
     stderr: StderrTail,
+    /// `close` was called: later failures are "closed", not "the agent died".
+    closing: AtomicBool,
     _task: AbortOnDrop,
 }
 
 impl AcpSession {
     fn closed(&self) -> AgentError {
-        let tail = self.stderr.summary();
-        if tail.is_empty() {
+        if self.closing.load(Ordering::SeqCst) {
             AgentError::SessionClosed
         } else {
-            AgentError::Protocol(format!("agent connection closed{tail}"))
+            AgentError::AgentExited(self.stderr.summary())
         }
     }
 }
@@ -600,7 +626,11 @@ impl AgentSession for AcpSession {
                     reply,
                 })
                 .map_err(|_| self.closed())?;
-            rx.await.map_err(|_| self.closed())?
+            match rx.await {
+                // The agent died mid-turn: say so, with its last words, unless we closed it.
+                Ok(Err(AgentError::AgentExited(_))) | Err(_) => Err(self.closed()),
+                Ok(result) => result,
+            }
         })
     }
 
@@ -618,6 +648,7 @@ impl AgentSession for AcpSession {
         Box::pin(async move {
             // Ends the command loop; the connection closes the agent's stdin and the
             // shutdown hook stops the process.
+            self.closing.store(true, Ordering::SeqCst);
             let _ = self.cmd_tx.send(Command::Close);
             let mut done = self.done.clone();
             let _ = tokio::time::timeout(CLOSE_GRACE * 2, done.wait_for(|d| *d)).await;

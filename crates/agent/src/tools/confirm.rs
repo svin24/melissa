@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::TaskId;
 
@@ -31,6 +31,27 @@ pub enum Verdict {
     Denied,
 }
 
+impl Verdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+/// A change in the inbox, for live views (the Queen's event stream, a future UI).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmationEvent {
+    Requested(Confirmation),
+    /// Decided by a human (`Some`) or withdrawn without a decision (`None`: timeout,
+    /// cancelled task).
+    Resolved {
+        id: ConfirmationId,
+        verdict: Option<Verdict>,
+    },
+}
+
 struct Pending {
     info: Confirmation,
     tx: oneshot::Sender<Verdict>,
@@ -43,14 +64,30 @@ struct Inner {
 }
 
 /// Shared store of pending confirmations. Cheap to clone.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ConfirmationStore {
     inner: Arc<Mutex<Inner>>,
+    events: broadcast::Sender<ConfirmationEvent>,
+}
+
+impl Default for ConfirmationStore {
+    fn default() -> Self {
+        Self {
+            inner: Arc::default(),
+            // Slow subscribers lose old events (they see `Lagged`), the store never blocks.
+            events: broadcast::channel(256).0,
+        }
+    }
 }
 
 impl ConfirmationStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Live inbox changes from now on.
+    pub fn subscribe(&self) -> broadcast::Receiver<ConfirmationEvent> {
+        self.events.subscribe()
     }
 
     /// Register a confirmation; the receiver resolves when a human decides.
@@ -79,6 +116,9 @@ impl ConfirmationStore {
                 tx,
             },
         );
+        drop(inner);
+        // No subscribers is fine.
+        let _ = self.events.send(ConfirmationEvent::Requested(info.clone()));
         (info, rx)
     }
 
@@ -96,12 +136,25 @@ impl ConfirmationStore {
         let pending = lock(&self.inner).pending.remove(&id)?;
         // The waiting call may have timed out or been cancelled; then nobody listens.
         let _ = pending.tx.send(verdict);
+        let _ = self.events.send(ConfirmationEvent::Resolved {
+            id,
+            verdict: Some(verdict),
+        });
         Some(pending.info)
     }
 
     /// Drop a confirmation without a decision (timeout or cancelled task).
     pub fn withdraw(&self, id: ConfirmationId) {
-        lock(&self.inner).pending.remove(&id);
+        let removed = lock(&self.inner).pending.remove(&id).is_some();
+        if removed {
+            let _ = self
+                .events
+                .send(ConfirmationEvent::Resolved { id, verdict: None });
+        }
+    }
+
+    pub fn get(&self, id: ConfirmationId) -> Option<Confirmation> {
+        lock(&self.inner).pending.get(&id).map(|p| p.info.clone())
     }
 }
 
@@ -135,8 +188,23 @@ mod tests {
     #[test]
     fn withdraw_removes_without_decision() {
         let store = ConfirmationStore::new();
+        let mut events = store.subscribe();
         let (info, _rx) = store.request(1, "t", &Value::Null, "r");
         store.withdraw(info.id);
         assert!(store.pending().is_empty());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(ConfirmationEvent::Requested(c)) if c.id == info.id
+        ));
+        assert_eq!(
+            events.try_recv(),
+            Ok(ConfirmationEvent::Resolved {
+                id: info.id,
+                verdict: None
+            })
+        );
+        // Withdrawing twice says nothing more.
+        store.withdraw(info.id);
+        assert!(events.try_recv().is_err());
     }
 }

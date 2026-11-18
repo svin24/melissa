@@ -86,6 +86,8 @@ pub enum AgentError {
     Busy,
     #[error("the session is closed")]
     SessionClosed,
+    #[error("the agent process ended unexpectedly{0}")]
+    AgentExited(String),
 }
 
 /// Which output stream a line came from.

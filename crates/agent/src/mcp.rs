@@ -72,6 +72,11 @@ impl McpServer {
         lock(&self.sessions).get(token).map(|s| s.ctx.clone())
     }
 
+    /// The tool allowlist of a session (None = no limit beyond the policy context).
+    pub fn session_allow(&self, token: &str) -> Option<Option<Vec<&'static str>>> {
+        lock(&self.sessions).get(token).map(|s| s.allow.clone())
+    }
+
     /// Handle one JSON-RPC message (or batch). Returns `None` when there is nothing to send
     /// back (notifications only), and `Err(UnknownSession)` for an unknown session token.
     pub async fn handle(
@@ -125,12 +130,13 @@ impl McpServer {
     }
 
     fn tools_list(&self, token: &str) -> Value {
-        let allow = lock(&self.sessions)
-            .get(token)
-            .and_then(|s| s.allow.clone());
+        let (ctx, allow) = match lock(&self.sessions).get(token) {
+            Some(s) => (s.ctx.clone(), s.allow.clone()),
+            None => (TaskContext::default(), Some(Vec::new())),
+        };
         let tools: Vec<Value> = self
             .registry
-            .visible(allow.as_deref())
+            .visible_to(&ctx, allow.as_deref())
             .into_iter()
             .map(|s| json!({"name": s.name, "description": s.description, "inputSchema": s.params}))
             .collect();

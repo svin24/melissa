@@ -160,13 +160,16 @@ impl CliBackend {
             program,
             workdir,
             &extra,
+            &[],
             args,
         )
     }
 }
 
 /// Program and argv that run `program args` in `workdir`: directly if the sandbox is
-/// disabled, else `bwrap` wrapping it. `extra_ro` are further files bound read-only.
+/// disabled, else `bwrap` wrapping it. `extra_ro` are further files bound read-only;
+/// `binds` are host directories bound read-write at paths under `$HOME`.
+#[allow(clippy::too_many_arguments)] // internal helper; each argument is a distinct input
 pub(crate) fn sandboxed_command(
     sandbox: &SandboxSpec,
     bwrap: Option<&Path>,
@@ -174,6 +177,7 @@ pub(crate) fn sandboxed_command(
     program: &Path,
     workdir: &Path,
     extra_ro: &[PathBuf],
+    binds: &[(PathBuf, String)],
     args: Vec<String>,
 ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
     if !sandbox.enabled {
@@ -186,7 +190,7 @@ pub(crate) fn sandboxed_command(
         AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
     })?;
     // Resolved per run: the CLI may have updated itself (new binary path) since startup.
-    let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?;
+    let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?.with_binds(binds)?;
     Ok(sandbox::command(&plan, workdir, extra_ro, &args))
 }
 

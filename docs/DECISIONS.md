@@ -98,3 +98,42 @@ Format: date — decision. Why. Alternatives considered.
   ourselves (`Lines` transport).** Why: reuse the existing bwrap sandbox command and add a recorder tee for replay
   transcripts. Gotcha accepted: the crate enables serde_json `preserve_order` workspace-wide (canonical hashes now
   sort keys explicitly).
+- **2026-11-18 — The Queen loop: one lazily opened agent session per daemon, one turn at a time (a second message
+  is refused, not queued).** Code in `melissa_agent::queen`. Backends are tried in the configured order; a
+  backend that fails to start is reported (`backend_failed`) and the next one tried. Why refuse instead of
+  queue: a queued instruction can go stale while the Queen acts (the user may have changed their mind after
+  seeing the first answer), the client already knows when a turn ends (`turn_finished`), and refusing keeps
+  "nothing runs that the user did not just ask for" simple; a client may still queue on its side. Cancel sends
+  `session/cancel`; after 10 s without the turn ending, Melissa kills the session. Alternatives: a server-side
+  queue (rejected for the reasons above), interrupt-and-replace (surprising mid-tool-call).
+- **2026-11-18 — Worker guards.** Workers are board tasks with the Queen as `parent`, started only through the
+  Queen-only tools (`start_worker`, `worker_status`, `list_workers`, `cancel_worker`; hidden from and refused
+  for every session without `TaskContext.delegate`, so depth is 1). A worker runs unattended, with at most the
+  Queen's own tools minus the worker tools (an allowlist must be a subset), passes `check_tool_set`, inherits
+  the Queen's taint (and taints the Queen when it reads untrusted content), has a timeout ≤
+  `worker_timeout_max_secs` (default 300 s, max 900 s), and at most `max_workers` (default 2) run at once.
+  `start_worker`/`cancel_worker` are labelled Reversible: an attended Queen (the user is in the chat) may start
+  workers without a confirmation, a tainted Queen needs one. Everything is audited (`tool.call`,
+  `task.dispatch` with `parent` and actor `queen`, `task.finish`). Alternatives: workers as separate ACP
+  sessions inside the Queen (no board visibility, no reuse of timeouts/cancel), letting workers delegate
+  (unbounded fan-out and cost).
+- **2026-11-18 — Queen context survives restarts by resuming the agent's own session, with Melissa's transcript
+  as fallback.** The Queen's Grok runs with a Melissa-owned session store (`$XDG_STATE_HOME/melissa/queen/
+  agent-sessions/<backend>`, 0700) bound at `~/.grok/sessions` inside the sandbox (only that directory, not
+  `~/.grok`); the session id is saved and the next session tries `session/resume` (verified: context kept
+  across a daemon restart and a killed agent). If resuming fails, the new session gets the last messages from
+  Melissa's JSONL transcript (`queen/transcript.jsonl`, every event but text pieces, rotated at 4 MiB, 0600).
+  A message whose turn died with the agent is not re-sent automatically (it may have had side effects).
+  Alternatives: `session/load` (replays the whole history as events), transcript only (loses tool context),
+  binding all of `~/.grok` (exposes the user's own sessions and memory).
+- **2026-11-18 — The Queen's system prompt is a reviewed file shipped in the binary
+  (`crates/queen/prompts/queen.md`, `worker.md` for workers), sent as a delimited preamble of the first message
+  of every new (not resumed) session.** Why: ACP's `systemPrompt` field needs a capability Grok does not
+  advertise; a preamble works with any agent and is visible in the protocol (testable). Trade-off: a long
+  session may compact it away; revisit with an agent that supports `systemPrompt` (or Grok's `AGENTS.md`).
+- **2026-11-18 — Queen API: JSON under `/api/` with a numbered event stream and long-poll (`GET
+  /api/queen/events?since=&wait=`), not SSE yet.** One event model (`QueenEvent`) for the CLI now and the web UI
+  later; clients keep a cursor (`next`) and learn when they fell behind (`missed`, 2000 events kept). Long-poll
+  needs no streaming client in the CLI and works through the existing middleware; SSE can be added on the same
+  `EventLog`. Same-origin check applies; JSON bodies need `application/json`. The CLI (`melissa-queen chat|ask|
+  confirm|workers`) uses hyper's HTTP/1 client, already in the build via kube-rs (no new crates).

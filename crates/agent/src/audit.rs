@@ -30,6 +30,9 @@ pub struct AuditRecord {
     /// SHA-256 of the tool's canonical JSON arguments (arguments themselves are not logged).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args_sha256: Option<String>,
+    /// The task that started this one (a worker's Queen).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u64>,
 }
 
 impl AuditRecord {
@@ -47,7 +50,13 @@ impl AuditRecord {
             detail: detail.into(),
             tool: None,
             args_sha256: None,
+            parent: None,
         }
+    }
+
+    pub fn by(mut self, actor: &str) -> Self {
+        self.actor = actor.into();
+        self
     }
 
     pub fn with_tool(mut self, tool: &str, args_sha256: &str) -> Self {

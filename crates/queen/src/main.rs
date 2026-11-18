@@ -4,6 +4,12 @@
 //! Usage:
 //!   `melissa-queen [--config <path>]`                         serve the web UI and agents
 //!   `melissa-queen [--config <path>] tool <name> [json-args]` run one tool and print its JSON
+//!   `melissa-queen [--config <path>] chat`                    talk to the Queen (line based)
+//!   `melissa-queen [--config <path>] ask <message>`           one message, stream the answer
+//!   `melissa-queen [--config <path>] confirm list|approve <id>|deny <id>`
+//!   `melissa-queen [--config <path>] workers`                 the Queen's worker agents
+//!
+//! The client commands talk to the running daemon on its configured `listen` address.
 //!
 //! Config: `$XDG_CONFIG_HOME/melissa/queen.toml` (optional). Audit log and agent working
 //! directory: `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
@@ -11,6 +17,7 @@
 //! (written by root once k3s is up). They are looked up on every cluster call, so the queen
 //! never waits for k3s and attaches to it without a restart.
 
+mod client;
 mod config;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -18,6 +25,13 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{bail, Context};
 use melissa_agent::{
     mcp::McpServer,
+    queen::{
+        events::EventLog,
+        transcript::Transcript,
+        workers::{WorkerLimits, WorkerPool},
+        Queen, QueenSettings,
+    },
+    session::SessionBackend,
     tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
     AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, McpLink, TaskBoard,
 };
@@ -27,7 +41,17 @@ use tracing_subscriber::EnvFilter;
 
 use config::{BackendSpec, Dirs, QueenConfig};
 
-const USAGE: &str = "usage: melissa-queen [--config <path>] [tool <name> [json-args]]";
+/// The Queen's system prompt and the instructions every worker gets (reviewed text files).
+const QUEEN_PROMPT: &str = include_str!("../prompts/queen.md");
+const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
+
+const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
+  (none)                      serve the web UI, the Queen and agents
+  tool <name> [json-args]     run one tool and print its JSON result
+  chat                        talk to the Queen (Ctrl-C cancels a turn)
+  ask <message>               send one message and stream the answer
+  confirm list|approve <id>|deny <id>
+  workers                     list the Queen's worker agents";
 
 enum Command {
     Serve,
@@ -36,23 +60,41 @@ enum Command {
         name: String,
         args: Value,
     },
+    Chat,
+    Ask(String),
+    Confirm(String, Option<u64>),
+    Workers,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Logs go to stderr so `tool` output on stdout stays clean JSON.
+    let (config_path, command) = parse_args(std::env::args().skip(1).collect())?;
+    // Logs go to stderr so `tool` output on stdout stays clean JSON; client commands only
+    // show warnings.
+    let default_level = match command {
+        Command::Serve | Command::Tool { .. } => "info",
+        _ => "warn",
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level)),
         )
         .init();
 
     let dirs = Dirs::from_env()?;
-    let (config_path, command) = parse_args(std::env::args().skip(1).collect())?;
     let config_path = config_path.unwrap_or_else(|| dirs.config.join("queen.toml"));
     let config = QueenConfig::load(&config_path)?;
     config.validate()?;
+
+    let api = client::Client::new(config.listen);
+    match &command {
+        Command::Chat => return client::chat(&api).await,
+        Command::Ask(message) => return client::ask(&api, message).await,
+        Command::Confirm(action, id) => return client::confirm(&api, action, *id).await,
+        Command::Workers => return client::workers(&api).await,
+        Command::Serve | Command::Tool { .. } => {}
+    }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
     let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
@@ -63,8 +105,8 @@ async fn main() -> anyhow::Result<()> {
     ];
 
     match command {
-        Command::Serve => serve(config, dirs, audit, tools).await,
         Command::Tool { name, args } => run_tool(audit, tools, &name, args).await,
+        _ => serve(config, dirs, audit, tools).await,
     }
 }
 
@@ -72,16 +114,35 @@ async fn serve(
     config: QueenConfig,
     dirs: Dirs,
     audit: AuditLog,
-    tools: Vec<Arc<dyn Tool>>,
+    mut tools: Vec<Arc<dyn Tool>>,
 ) -> anyhow::Result<()> {
     let workdir = dirs.state.join("work");
+    let queen_state = dirs.state.join("queen");
+    let q = &config.queen;
+    let events = EventLog::new(Some(Transcript::new(
+        queen_state.join("transcript.jsonl"),
+        q.transcript_max_kib.saturating_mul(1024),
+    )));
+    let pool = WorkerPool::new(
+        WorkerLimits {
+            max_concurrent: q.max_workers,
+            default_timeout: Duration::from_secs(q.worker_timeout_secs),
+            max_timeout: Duration::from_secs(q.worker_timeout_max_secs),
+        },
+        events.clone(),
+    );
+    tools.extend(pool.tools());
     let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())));
     let mut backends: Vec<Arc<dyn Backend>> = vec![Arc::new(EchoBackend::new())];
+    let mut sessions: Vec<Arc<dyn SessionBackend>> = Vec::new();
     for spec in &config.backends {
         let backend: Arc<dyn Backend> = match spec {
             BackendSpec::Cli(spec) => Arc::new(CliBackend::new(spec.clone(), workdir.clone())),
             BackendSpec::Acp(spec) => {
-                Arc::new(AcpBackend::new(spec.clone(), workdir.clone()).with_mcp(mcp.clone()))
+                let acp =
+                    Arc::new(AcpBackend::new(spec.clone(), workdir.clone()).with_mcp(mcp.clone()));
+                sessions.push(acp.clone());
+                acp
             }
         };
         let info = backend.info();
@@ -92,15 +153,32 @@ async fn serve(
     let link = McpLink {
         server: mcp.clone(),
         base_url: format!("http://{}/mcp/", config.listen),
-        workroot: workdir,
+        workroot: workdir.clone(),
     };
     let board = TaskBoard::with_tools(backends, config.task_timeout(), Some(audit), link);
+    let settings = QueenSettings {
+        backends: q.backends.clone(),
+        system_prompt: QUEEN_PROMPT.into(),
+        worker_prompt: WORKER_PROMPT.into(),
+        worker_backend: q.worker_backend.clone(),
+        state_dir: queen_state,
+        workdir: workdir.join("queen"),
+        tools: q.tools.clone(),
+    };
+    let queen = Queen::new(settings, sessions, board.clone(), events, &pool)
+        .context("setting up the Queen")?;
+    tracing::info!(backends = ?q.backends, "queen agent ready (opens on the first message)");
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("binding {}", config.listen))?;
     tracing::info!("melissa queen listening on http://{}", config.listen);
-    melissa_web::serve(listener, melissa_web::router_with_mcp(board, mcp)).await?;
+    melissa_web::serve(
+        listener,
+        melissa_web::router_with_queen(board, mcp, queen.clone()),
+    )
+    .await?;
+    queen.close().await;
     Ok(())
 }
 
@@ -168,6 +246,19 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             name: name.clone(),
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
+        [c] if c == "chat" => Command::Chat,
+        [c, words @ ..] if c == "ask" && !words.is_empty() => Command::Ask(words.join(" ")),
+        [c] if c == "workers" => Command::Workers,
+        [c] if c == "confirm" => Command::Confirm("list".into(), None),
+        [c, a] if c == "confirm" && a == "list" => Command::Confirm("list".into(), None),
+        [c, a, id] if c == "confirm" && (a == "approve" || a == "deny") => Command::Confirm(
+            a.clone(),
+            Some(
+                id.trim_start_matches('#')
+                    .parse()
+                    .context("confirmation id must be a number")?,
+            ),
+        ),
         _ => bail!("{USAGE}"),
     };
     Ok((config, command))
@@ -193,6 +284,18 @@ mod tests {
         assert!(matches!(cmd, Command::Tool { args, .. } if args["a"] == 1));
         assert!(parse(&["tool", "x", "not json"]).is_err());
         assert!(parse(&["bogus"]).is_err());
+        assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat));
+        assert!(
+            matches!(parse(&["ask", "how", "are you?"]).unwrap().1, Command::Ask(m) if m == "how are you?")
+        );
+        assert!(parse(&["ask"]).is_err());
+        assert!(matches!(parse(&["workers"]).unwrap().1, Command::Workers));
+        assert!(matches!(parse(&["confirm"]).unwrap().1, Command::Confirm(a, None) if a == "list"));
+        assert!(
+            matches!(parse(&["confirm", "approve", "#3"]).unwrap().1, Command::Confirm(a, Some(3)) if a == "approve")
+        );
+        assert!(parse(&["confirm", "deny", "x"]).is_err());
+        assert!(parse(&["confirm", "maybe", "1"]).is_err());
     }
 
     #[tokio::test]

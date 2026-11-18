@@ -4,6 +4,7 @@
 //! UI rule: only components defined in `components` may be rendered. Agents never
 //! generate markup; they select components and fill manifests.
 
+mod api;
 pub mod components;
 mod pages;
 
@@ -17,6 +18,7 @@ use axum::{
 use maud::Markup;
 use melissa_agent::{
     mcp::{McpServer, UnknownSession},
+    queen::Queen,
     TaskBoard, TaskId,
 };
 use rust_embed::RustEmbed;
@@ -47,6 +49,18 @@ pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
                 .route("/mcp/{token}", post(mcp_post).get(mcp_get))
                 .with_state(mcp),
         )
+        .layer(middleware::from_fn(security))
+}
+
+/// The UI router, the MCP endpoint and the Queen's JSON API (`/api/...`, see [`api`]).
+pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Router {
+    ui_routes(board)
+        .merge(
+            Router::new()
+                .route("/mcp/{token}", post(mcp_post).get(mcp_get))
+                .with_state(mcp),
+        )
+        .merge(api::routes(queen))
         .layer(middleware::from_fn(security))
 }
 
@@ -385,6 +399,198 @@ mod tests {
             send(&app, call(format!("/mcp/{token}"), "{oops")).await.0,
             StatusCode::BAD_REQUEST
         );
+    }
+
+    mod queen_api {
+        use melissa_agent::{
+            queen::{
+                events::EventLog,
+                workers::{WorkerLimits, WorkerPool},
+                QueenSettings,
+            },
+            session::{OpenSession, OpenedSession, SessionBackend},
+            tools::{Tool, ToolRegistry},
+            AgentError, BackendInfo, BoxFuture, McpLink,
+        };
+        use serde_json::Value;
+
+        use super::*;
+
+        /// A Queen backend whose session never finishes opening.
+        struct Stuck;
+        impl SessionBackend for Stuck {
+            fn info(&self) -> BackendInfo {
+                BackendInfo {
+                    name: "stuck".into(),
+                    kind: "test",
+                    detail: String::new(),
+                    available: true,
+                    tools: true,
+                }
+            }
+            fn open(&self, _: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {
+                Box::pin(std::future::pending())
+            }
+        }
+
+        fn app() -> (Router, Queen) {
+            let dir =
+                std::env::temp_dir().join(format!("melissa-web-queen-{}", std::process::id()));
+            let events = EventLog::new(None);
+            let pool = WorkerPool::new(WorkerLimits::default(), events.clone());
+            let tools: Vec<Arc<dyn Tool>> = pool.tools();
+            let mcp = McpServer::new(ToolRegistry::new(tools, None));
+            let board = TaskBoard::with_tools(
+                vec![Arc::new(EchoBackend::new())],
+                Duration::from_secs(5),
+                None,
+                McpLink {
+                    server: mcp.clone(),
+                    base_url: "http://127.0.0.1:9/mcp/".into(),
+                    workroot: dir.join("work"),
+                },
+            );
+            let settings = QueenSettings {
+                backends: vec!["stuck".into()],
+                system_prompt: "test".into(),
+                worker_prompt: "test".into(),
+                worker_backend: Some("echo".into()),
+                state_dir: dir.join("queen"),
+                workdir: dir.join("work/queen"),
+                tools: None,
+            };
+            let queen = Queen::new(
+                settings,
+                vec![Arc::new(Stuck)],
+                board.clone(),
+                events,
+                &pool,
+            )
+            .unwrap();
+            (router_with_queen(board, mcp, queen.clone()), queen)
+        }
+
+        fn json_post(uri: &str, body: &str) -> axum::http::Request<Body> {
+            axum::http::Request::post(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        }
+
+        fn get(uri: &str) -> axum::http::Request<Body> {
+            axum::http::Request::get(uri).body(Body::empty()).unwrap()
+        }
+
+        async fn send_json(app: &Router, req: axum::http::Request<Body>) -> (StatusCode, Value) {
+            let (status, _, body) = send(app, req).await;
+            (status, serde_json::from_str(&body).unwrap_or(Value::Null))
+        }
+
+        #[tokio::test]
+        async fn messages_events_busy_and_cancel() {
+            let (app, _) = app();
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/queen/messages", r#"{"text":"Hello"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            assert_eq!(body["turn"], 1);
+            let since = body["since"].as_u64().unwrap();
+
+            // One turn at a time.
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/queen/messages", r#"{"text":"Again"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(body["error"].as_str().unwrap().contains("previous message"));
+            let (status, _) =
+                send_json(&app, json_post("/api/queen/messages", r#"{"text":"  "}"#)).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            let (_, st) = send_json(&app, get("/api/queen/status")).await;
+            assert_eq!(st["turn"], 1);
+
+            let (status, body) = send_json(&app, json_post("/api/queen/cancel", "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["cancelled"], true);
+
+            let (status, page) = send_json(
+                &app,
+                get(&format!("/api/queen/events?since={since}&wait=1")),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let types: Vec<&str> = page["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["type"].as_str().unwrap())
+                .collect();
+            assert_eq!(types, ["user_message", "turn_finished"]);
+            assert_eq!(page["events"][1]["stop_reason"], "cancelled");
+            assert_eq!(page["missed"], false);
+            let next = page["next"].as_u64().unwrap();
+            let (_, page) = send_json(&app, get(&format!("/api/queen/events?since={next}"))).await;
+            assert_eq!(page["events"], serde_json::json!([]));
+            let (_, body) = send_json(&app, json_post("/api/queen/cancel", "")).await;
+            assert_eq!(body["cancelled"], false);
+            let (_, body) = send_json(&app, get("/api/workers")).await;
+            assert_eq!(body["workers"], serde_json::json!([]));
+        }
+
+        #[tokio::test]
+        async fn confirmations_can_be_listed_and_resolved() {
+            let (app, queen) = app();
+            let (c, rx) = queen.confirmations().request(
+                7,
+                "agent:execute",
+                &serde_json::json!({"title": "Execute `ls`"}),
+                "destructive action",
+            );
+            let (status, body) = send_json(&app, get("/api/confirmations")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["confirmations"][0]["id"], c.id);
+            assert_eq!(body["confirmations"][0]["tool"], "agent:execute");
+            let uri = format!("/api/confirmations/{}/approve", c.id);
+            let (status, body) = send_json(&app, json_post(&uri, "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["verdict"], "approved");
+            assert_eq!(rx.await.unwrap(), melissa_agent::tools::Verdict::Approved);
+            let (status, _) = send_json(&app, json_post(&uri, "")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let bad = format!("/api/confirmations/{}/maybe", c.id);
+            assert_eq!(
+                send_json(&app, json_post(&bad, "")).await.0,
+                StatusCode::NOT_FOUND
+            );
+        }
+
+        #[tokio::test]
+        async fn cross_site_api_calls_are_rejected() {
+            let (app, queen) = app();
+            for uri in [
+                "/api/queen/messages",
+                "/api/queen/cancel",
+                "/api/confirmations/1/approve",
+            ] {
+                let req = axum::http::Request::post(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://evil.example.com")
+                    .header(header::HOST, "127.0.0.1:8080")
+                    .body(Body::from(r#"{"text":"hi"}"#))
+                    .unwrap();
+                assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN, "{uri}");
+            }
+            assert_eq!(queen.status().turn, None);
+            // A form post (no JSON content type) is not a message either.
+            let req = post("/api/queen/messages")
+                .body(Body::from("text=hi"))
+                .unwrap();
+            assert_eq!(send(&app, req).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        }
     }
 
     #[tokio::test]
