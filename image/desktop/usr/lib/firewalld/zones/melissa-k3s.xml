@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Melissa (desktop image): Kinoite runs firewalld, fedora-bootc does not. Traffic from k3s's pod
+     (10.42.0.0/16) and service (10.43.0.0/16) networks must not be filtered by the host zone, as
+     the k3s docs advise. Sources only: this opens nothing to the LAN. -->
+<zone target="ACCEPT">
+  <short>Melissa k3s</short>
+  <description>k3s pod and service networks (Melissa).</description>
+  <source address="10.42.0.0/16"/>
+  <source address="10.43.0.0/16"/>
+</zone>
