@@ -229,7 +229,16 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   preview of the apps' state** (honeycomb strip: what runs, what's installing, disk warnings). Approvals appear inline
   in the chat and in a "Waiting for you" list. Secondary screens: the Hive (apps as honeycomb cells, bees with
   resource bars), a worker's sandbox view (plan, live output, what it can reach, upkeep log). Concept mockups:
-  claude.ai artifact "Melissa UI concepts" (private to the owner). Still concepts: building them needs the owner's go.
+  claude.ai artifact "Melissa UI concepts" (private to the owner). The owner approved building them for the
+  pre-alpha demo.
+- **Status (2026-11-18):** built in `crates/web` (branch `t3/chat-home-hive-ui`): home = chat with the Queen (app
+  strip, replies as escaped plain text, "what I did" rows, helper rows, inline approval cards, composer with
+  backend line and Stop), `/hive` (apps as honeycomb cells, "Add an app" into the chat, device cards), `/approvals`;
+  the task dashboard moved to `/tasks`. Live updates over SSE from the Queen's event log (htmx SSE extension,
+  vendored). Fonts Atkinson Hyperlegible Next and Bricolage Grotesque vendored (OFL). Details:
+  [htmx-component.md](agent-skills/htmx-component.md). Not yet: "looked after by <bee>" (needs the owner in
+  `list_apps` or named bees), disk usage, upkeep line, several conversations / New chat, chat history after a
+  daemon restart (the event log is in memory; the transcript has it).
 
 ## 6b. Clients (later)
 
@@ -420,3 +429,7 @@ Roadmap (rough, phases may overlap):
     prompts use it). Rename to `comb_info` with an alias?
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
     Keep them, turn them into "ask a bee", or drop them when the chat UI lands?
+48. Web UI (2026-11-18): "New chat" and past conversations need the Queen to support several conversations (today
+    one session per daemon; the button is shown disabled). Should the chat reload its history from the transcript
+    after a daemon restart (the event log is in memory)? No tool reports disk usage yet, so the app strip has no
+    disk warning.
