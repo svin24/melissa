@@ -1,7 +1,7 @@
 # App catalog and app installs (M2)
 
 **When:** adding or changing an app manifest, bumping an app's image, touching the app tools
-(`list_catalog`, `install_app`, `app_status`, `app_logs`, `uninstall_app`), the write identity
+(`list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `uninstall_app`), the write identity
 `melissa-apps` or its admission policies, or the owner's `app-credentials` command.
 Code: `crates/catalog` (schema, validation), `crates/hive/src/{render,apps,app_tools}.rs`,
 `crates/queen/src/credentials.rs`, `image/rootfs/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`,
@@ -96,6 +96,7 @@ so "keep data" and "delete data" are explicit, and `Recreate` never runs two pod
 | tool | labels | notes |
 |---|---|---|
 | `list_catalog` | read-only | works without k3s |
+| `list_apps` | read-only | catalog apps present on the bee (any phase but `not_installed`, incl. `uninstalled_data_kept`) + the rest as `not_installed`; per-app reads (the write identity can get but not list namespaces), so apps outside the catalog are invisible |
 | `install_app {app, config?}` | Reversible | attended Queen: allowed; unattended or tainted: confirmation. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
 | `app_status {app}` | read-only | phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
 | `app_logs {app, lines?, container?, previous?}` | reads_untrusted | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
@@ -120,11 +121,20 @@ and refuses anything that needs a confirmation.
   pods, hostPath, host namespaces).
 - `rotate [queen|apps]` in `melissa-kubeconfig` (default both).
 
+Policy decision (2026-11-18, end-to-end test): `install_app` asked for in the Queen chat runs without
+a confirmation while the Queen is untainted (the owner asked; reversible; uninstall keeps data). Once
+the conversation has read untrusted content (`app_logs`, a worker that did) it needs approval, and
+since 2026-11-18 that taint survives session reopens and daemon restarts. Confirmations wait at most
+`confirm_timeout_secs` (default 240 s) and are then withdrawn. Walkthrough:
+[e2e-queen-app-install.md](e2e-queen-app-install.md).
+
 ## Owner credentials
 `sudo melissa-queen app-credentials nextcloud` reads `app-nextcloud/nextcloud-secrets` with k3s's
 admin kubeconfig (`/etc/rancher/k3s/k3s.yaml`, 0600 root). Not a tool, not an API route; neither
 queen identity can read Secrets; the queen and its agents run as an unprivileged DynamicUser.
 Without root: "needs root". The Secret is the single source of truth (no copy in the queen's state).
+With a Queen elsewhere (dev laptop against the VM), run it on the bee over SSH; the admin kubeconfig
+stays there.
 
 ## VM test (headless, from the main checkout)
 ```

@@ -20,6 +20,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app), rendering, the
   app tools and their labels, the `melissa-apps` write identity + admission policies, owner-only
   `app-credentials`, Nextcloud verified in the VM.
+- [e2e-queen-app-install.md](e2e-queen-app-install.md) — the owner installs/checks/uninstalls Nextcloud by
+  chatting with the Queen: laptop Queen + VM k3s setup, verified run with timings, taint and confirmation gotchas.
 
 ## Claude Code plugins and project skills (2026-11-18)
 - Project skill `.claude/skills/melissa-ui/SKILL.md`: binding UI rules; overrides third-party design skills.

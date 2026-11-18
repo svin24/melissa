@@ -103,7 +103,23 @@ above ("Check this bee with bee_info, then start a worker …"):
   after a daemon restart verified. The Queen prompt keeps it off its own shell ("I can't run uname -r …");
   a board task asking for the shell put `agent:execute` into the inbox, `confirm deny` → `reject_once`.
 
+## End-to-end app install through the chat (2026-11-18)
+Full walkthrough, timings and transcript summary: [e2e-queen-app-install.md](e2e-queen-app-install.md).
+Install → ready (cold 513 MB pull) 6 m 18 s with a grok worker polling `app_status`; health + logs
+14.5 s; uninstall keeping data 13–24 s incl. the approval. Findings that changed the Queen:
+- **Taint is sticky for the conversation** (`Inner.tainted`, `session.json` `tainted`): noted at every
+  turn end and when a session is lost/closed, applied to every new MCP session of the Queen. Before,
+  a reopened session (resume or transcript-primed) started untainted although the agent still had
+  the untrusted content. No reset yet (open question).
+- **Confirmation waits are capped** by `confirm_timeout_secs` (default 240): Claude Code abandons an
+  MCP call at 300 s without closing or cancelling it, which left approvable "ghost" confirmations.
+  The MCP server also handles `notifications/cancelled` (audited `tool.cancelled`).
+- Grok's Queen started a worker to wait for readiness and still polled `app_status` itself between
+  `worker_status` waits; Claude's Queen read `app_logs` on its own while waiting (tainting itself).
+
 ## Gotchas
+- A Queen tool call that waits for a confirmation blocks the turn (up to `confirm_timeout_secs`). If
+  nobody watches the inbox the agent gets a withdrawal error and should say so (verified with claude).
 - The Queen's and the workers' agents run behind the egress proxy like every sandboxed agent (`network =
   "proxy"`, [agent-egress.md](agent-egress.md)); their `egress.*` audit records carry the Queen's task id or the
   worker's. Verified 2026-11-18: the bee_info + worker run above still takes ~23 s with grok.com and Mixpanel
