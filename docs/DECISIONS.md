@@ -293,3 +293,26 @@ Format: date — decision. Why. Alternatives considered.
   protection (only the Queen with the user's approval, or the user). Old jobs' apps lose their job's rights
   (jobs no longer exist). One-off UI tasks get no scope (read-only on cells): they are neither Queen nor bee.
 
+- **2026-11-18 — Headless queen runs as a fixed system user `melissa`, not DynamicUser.** Agent CLIs and their logins
+  live in its home `/var/lib/melissa/home` (on the service's PATH), at the paths the sandbox presets already bind.
+  Why: the demo VM must run agents in the system service, and DynamicUser has no stable owner or home for vendor
+  installs and credential files. Each agent still runs in its own bwrap sandbox seeing only its own credential file.
+  Existing state moves once (`melissa-state-migrate.service`; systemd's own migration is blocked by SELinux).
+  Alternatives: DynamicUser + credentials as systemd credentials (no place to install CLIs, logins can't refresh),
+  the admin's own user (couples the server to a login user).
+- **2026-11-18 — Agent CLIs are never baked into images; `sudo melissa-setup agent <claude|grok|opencode>` installs
+  the vendor's CLI with the vendor's official installer, as the `melissa` user, then runs its login.** Why: Claude
+  Code is proprietary ("All rights reserved", use under Anthropic's terms; no redistribution grant); Grok's CLI
+  source is Apache-2.0 but the official binary and service are under xAI's terms; OpenCode is MIT (could be
+  shipped, but kept consistent and current via the vendor's installer; the box ships empty). The installer and
+  login run outside the agent sandbox, started by root: they need download and login hosts that the agents'
+  egress allowlists deliberately exclude, and only the admin can start them. Alternatives: mirror the binaries
+  (licence), npm installs (adds Node to the image), API keys only (no subscription use).
+- **2026-11-18 — Published VM image ships with no account; the tester creates one on first boot**
+  (`melissa-firstboot.service` on tty1, before the console login; optional SSH key, or SSH password login on
+  request). Why: never bake credentials into a downloadable image. Alternatives: a well-known password with forced
+  change (still a published credential), cloud-init seed ISO (too fiddly for testers).
+- **2026-11-18 — The web UI stays on loopback in the demo VM; testers reach it with `ssh -L 8080:127.0.0.1:8080`.**
+  Why: there is no login yet and any API client can approve confirmations (PLAN Q37); SSH adds authentication and
+  encryption at no cost. Alternative: bind the VM's host-only address with a warning (rejected: anything on that
+  network gets full control).

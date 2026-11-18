@@ -147,7 +147,7 @@ since 2026-11-18 that taint survives session reopens and daemon restarts. Confir
 ## Owner credentials
 `sudo melissa-queen app-credentials nextcloud` reads `app-nextcloud/nextcloud-secrets` with k3s's
 admin kubeconfig (`/etc/rancher/k3s/k3s.yaml`, 0600 root). Not a tool, not an API route; neither
-queen identity can read Secrets; the queen and its agents run as an unprivileged DynamicUser.
+queen identity can read Secrets; the queen and its agents run as the unprivileged system user `melissa`.
 Without root: "needs root". The Secret is the single source of truth (no copy in the queen's state).
 With a Queen elsewhere (dev laptop against the VM), run it on the bee over SSH; the admin kubeconfig
 stays there.

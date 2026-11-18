@@ -1,0 +1,129 @@
+#!/bin/bash
+# First boot of a downloaded Melissa image: create the admin account on the console.
+#
+# The published VM image ships with no user and no password (never bake credentials into an
+# image). On the first boot this runs on tty1 before the login prompt (melissa-firstboot.service)
+# and asks for a user name, a password and, optionally, an SSH public key. The new user is in
+# `wheel` (sudo). If an admin user already exists (e.g. bootc-image-builder created one from a
+# config.toml), it only records that and exits.
+#
+# Test hook (dev VM only): MELISSA_FIRSTBOOT_FORCE=1 runs even when users exist, reading answers
+# from stdin; MELISSA_FIRSTBOOT_STAMP overrides the stamp path.
+set -euo pipefail
+
+stamp=${MELISSA_FIRSTBOOT_STAMP:-/var/lib/melissa-firstboot.done}
+release=/usr/lib/melissa/release
+
+# Regular (human) users: UID 1000-59999 with a login shell.
+human_users() {
+    getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /(nologin|false)$/ {print $1}'
+}
+
+if [ "${MELISSA_FIRSTBOOT_FORCE:-0}" != 1 ] && [ -n "$(human_users)" ]; then
+    echo "melissa-firstboot: admin user present ($(human_users | paste -sd, -)); nothing to do"
+    touch "$stamp"
+    exit 0
+fi
+
+version=unknown
+[ -r "$release" ] && version=$(sed -n 's/^MELISSA_VERSION=//p' "$release")
+
+# Kernel and audit messages would print over the prompts on the console; hold them back
+# until the account exists (they stay in the journal).
+if [ -t 0 ]; then
+    dmesg --console-off 2>/dev/null || true
+    trap 'dmesg --console-on 2>/dev/null || true' EXIT
+fi
+clear 2>/dev/null || true
+cat <<EOF
+
+  Welcome to Melissa ($version)
+
+  PRE-ALPHA: this is an early demo for trying out. Expect bugs. Don't keep data you care
+  about on it and don't expose it to the internet.
+
+  First, create your admin account. You will use it to log in here and over SSH, and it
+  can run commands as root with sudo.
+
+EOF
+
+name=
+while :; do
+    read -r -p "  User name (lowercase, e.g. alex): " name || exit 1
+    if ! [[ $name =~ ^[a-z_][a-z0-9_-]{0,30}$ ]]; then
+        echo "  Use lowercase letters, digits, - and _ (start with a letter)."
+    elif getent passwd "$name" >/dev/null; then
+        echo "  '$name' already exists here (a system account); pick another name."
+    else
+        break
+    fi
+done
+
+pw=
+while :; do
+    read -r -s -p "  Password (at least 8 characters): " pw || exit 1; echo
+    if [ "${#pw}" -lt 8 ]; then echo "  Too short."; continue; fi
+    read -r -s -p "  Password again: " pw2 || exit 1; echo
+    if [ "$pw" != "$pw2" ]; then echo "  They don't match; try again."; continue; fi
+    break
+done
+unset pw2
+
+cat <<EOF
+
+  SSH: to open the web UI you connect to this machine with SSH from your own computer.
+  Paste your SSH public key (one line starting with ssh-ed25519, ssh-rsa or ecdsa-...),
+  or just press Enter to skip.
+EOF
+key=
+while :; do
+    read -r -p "  Public key: " key || key=
+    [ -z "$key" ] && break
+    if printf '%s\n' "$key" | ssh-keygen -l -f /dev/stdin >/dev/null 2>&1; then break; fi
+    echo "  That is not an SSH public key (paste the .pub file's single line), or press Enter."
+done
+
+allow_pw_ssh=no
+if [ -z "$key" ]; then
+    echo
+    echo "  Without a key, SSH needs password login. It is off by default on Melissa."
+    read -r -p "  Turn on SSH password login? (fine for a VM only your computer can reach) [y/N] " a || a=
+    case $a in y|Y|yes) allow_pw_ssh=yes ;; esac
+fi
+
+useradd -m -G wheel -s /bin/bash -c "Melissa admin" "$name"
+printf '%s:%s\n' "$name" "$pw" | chpasswd
+unset pw
+if [ -n "$key" ]; then
+    install -d -m 0700 -o "$name" -g "$name" "/home/$name/.ssh"
+    printf '%s\n' "$key" > "/home/$name/.ssh/authorized_keys"
+    chown "$name:$name" "/home/$name/.ssh/authorized_keys"
+    chmod 0600 "/home/$name/.ssh/authorized_keys"
+    restorecon -R "/home/$name/.ssh" 2>/dev/null || true
+fi
+if [ "$allow_pw_ssh" = yes ]; then
+    # Read before 40-melissa.conf (first value wins in sshd_config). Delete this file to
+    # turn password login off again.
+    cat > /etc/ssh/sshd_config.d/30-melissa-password-login.conf <<'EOF'
+# Written by melissa-firstboot because the admin chose SSH password login (no key given).
+# Delete this file and run `sudo systemctl reload sshd` to go back to keys only.
+PasswordAuthentication yes
+EOF
+    systemctl try-reload-or-restart sshd.service || true
+fi
+touch "$stamp"
+
+ip4=$(ip -4 -o route get 203.0.113.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+cat <<EOF
+
+  Done. Log in below as '$name'. Then:
+
+    melissa-setup                        what's running and what to do next
+    sudo melissa-setup agent opencode    set up an agent (or: claude, grok)
+
+  This machine's address: ${ip4:-unknown} (SSH port 22). Web UI from your own computer:
+    ssh -L 8080:127.0.0.1:8080 $name@<this machine>   then open http://127.0.0.1:8080
+
+EOF
+# The console login prompt clears the screen when it starts; let the admin read this first.
+if [ -t 0 ]; then read -r -p "  Press Enter to continue to the login prompt. " _ || true; fi

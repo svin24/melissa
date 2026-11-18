@@ -41,7 +41,9 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
 - Changing `prepare-root.conf` needs an initramfs rebuild inside the image (`dracut --force --no-hostonly`).
 - The stock `bootc-fetch-apply-updates.timer` downloads and reboots on its own; Melissa images mask it.
 - Desktop queen = user unit (`systemctl --global enable`), so it sees the user's `claude`/`grok`/`opencode`
-  logins. Headless queen = system unit with `DynamicUser`, `XDG_CONFIG_HOME=/etc`, `XDG_STATE_HOME=/var/lib`.
+  logins. Headless queen = system unit as the fixed system user `melissa` (DynamicUser until 2026-11-18;
+  `melissa-state-migrate.service` moves old state), `XDG_CONFIG_HOME=/etc`, `XDG_STATE_HOME=/var/lib`, `HOME=/var/lib/melissa/home`
+  (agent CLIs + logins, installed with `sudo melissa-setup agent <name>`).
 
 ## Verified results (2026-11-18)
 - Headless image 2.13 GB, desktop 7.8 GB (rootless build). `bootc container lint`: 14 passed, 0 warnings after

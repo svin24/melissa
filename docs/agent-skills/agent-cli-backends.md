@@ -79,6 +79,11 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 - Integration test `crates/agent/tests/sandbox.rs`: fake HOME secret unreadable, writes outside the workdir fail,
   inside succeed, host env not leaked, cancel kills a `setsid` background grandchild. Skips if bwrap is missing.
 
+- Headless box (since 2026-11-18): the CLIs live in the queen user's home `/var/lib/melissa/home`, installed by
+  `sudo melissa-setup agent <name>` with the vendors' installers; same paths as above relative to that home.
+  OpenCode 1.19.6 (the installer's current release) writes `~/.opencode/.gitignore` at start, so the preset makes
+  `~/.opencode` a tmpfs (the binary is still bound read-only inside it).
+
 ### Gotchas
 - `--remount-ro /` freezes only the root mount. A `$HOME` that is merely a directory inside another mount (e.g.
   under the `/tmp` tmpfs) stays writable. Make `$HOME` its own tmpfs and `--remount-ro` it too (found by the test).

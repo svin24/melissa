@@ -1,0 +1,26 @@
+[Unit]
+Description=Melissa first boot: create the admin account
+Documentation=file:///usr/libexec/melissa/melissa-firstboot
+# Once per machine. The script also exits at once if an admin user already exists.
+ConditionPathExists=!/var/lib/melissa-firstboot.done
+After=systemd-sysusers.service systemd-user-sessions.service plymouth-quit-wait.service
+# Hold back the login prompts until the account exists. Fedora 45 runs kmscon on tty1
+# (kmsconvt@, the autovt alias), which is not ordered after getty-pre.target and would draw over
+# the prompts and hang up this tty (verified 2026-11-18), so order before it explicitly.
+Before=getty-pre.target getty@tty1.service kmsconvt@tty1.service
+Wants=getty-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/melissa/melissa-firstboot
+StandardInput=tty
+StandardOutput=tty
+StandardError=inherit
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

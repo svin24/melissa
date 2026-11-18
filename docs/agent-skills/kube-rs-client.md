@@ -25,7 +25,7 @@
 2. Add the verbs/resources to the ClusterRole (get/list/watch only unless the tool is labelled with an effect).
 3. Label honestly: anything returning free text from apps (logs, events, container messages) is `reads_untrusted`.
    `cluster_health` returns only names, counts and sanitized reason codes, so it stays `READ_ONLY`.
-4. Fake-based unit tests; then in the VM: `sudo systemd-run --wait --pipe -p DynamicUser=yes
+4. Fake-based unit tests; then in the VM: `sudo systemd-run --wait --pipe -p User=melissa
    -p SupplementaryGroups=melissa-kube -E XDG_STATE_HOME=/tmp -E XDG_CONFIG_HOME=/etc -p PrivateTmp=yes
    /usr/bin/melissa-queen tool <name>` (same kubeconfig file and group as the service).
 

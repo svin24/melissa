@@ -36,7 +36,8 @@ docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
 - **From source** on any Linux (x86_64): [docs/QUICKSTART.md](docs/QUICKSTART.md). In short: install
   bubblewrap and one agent CLI (Claude Code, Grok CLI or OpenCode) and log in, then
   `devenv shell -- just demo` and open http://127.0.0.1:8080. No k3s, so no app installs.
-- **VM image** with k3s: coming with the pre-alpha release.
+- **Ready VM image:** download, boot in QEMU or virt-manager, chat with the Queen. Step by step:
+  [docs/TRY-THE-VM.md](docs/TRY-THE-VM.md).
 
 ## Quick start (dev)
 

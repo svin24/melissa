@@ -6,7 +6,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [agent-cli-backends.md](agent-cli-backends.md) — driving claude/grok/opencode headlessly, safety rules, config.
 - [htmx-component.md](htmx-component.md) — the fixed component library, htmx patterns, CSP/CSRF, router tests.
 - [bootc-image-build.md](bootc-image-build.md) — building desktop/headless images, layer order, laptop switch.
-- [bootc-vm-test.md](bootc-vm-test.md) — qcow2 with bootc-image-builder, booting in QEMU, SSH into test VMs.
+- [bootc-vm-test.md](bootc-vm-test.md) — qcow2 with bootc-image-builder, booting in QEMU, SSH into test VMs;
+  the published tester image (`release-disk`/`release-pack`), first boot, `melissa-setup`, testing the console.
 - [acp-sessions.md](acp-sessions.md) — agent sessions: ACP (`grok-acp`, `opencode-acp`) and Claude's stream-json
   (`claude-session`): session API, verified protocol facts per agent, permission mapping, cancel, resume,
   recording/replay transcripts, gotchas.
