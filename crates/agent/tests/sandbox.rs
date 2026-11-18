@@ -84,7 +84,7 @@ async fn sandbox_hides_home_and_confines_writes() {
     let req = RunRequest {
         prompt: "hello".into(),
         workdir: Some(workdir.clone()),
-        mcp_config: None,
+        ..RunRequest::default()
     };
     let result = backend.run(&req, sink).await;
     let mut lines = Vec::new();
@@ -132,7 +132,7 @@ async fn cancelling_kills_background_grandchildren() {
     let req = RunRequest {
         prompt: "x".into(),
         workdir: Some(workdir.clone()),
-        mcp_config: None,
+        ..RunRequest::default()
     };
     // Dropping the run future (as the board does on cancel/timeout) must kill everything.
     let run = tokio::time::timeout(Duration::from_millis(1500), backend.run(&req, sink)).await;

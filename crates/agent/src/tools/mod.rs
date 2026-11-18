@@ -115,23 +115,7 @@ impl ToolRegistry {
         let hash = args_hash(&args);
 
         if let Decision::Confirm(reason) = decide(name, &spec.labels, ctx) {
-            let (info, rx) = self.confirmations.request(task, name, &args, &reason);
-            self.audit(task, "tool.confirm_requested", name, &hash, &reason);
-            let verdict = match tokio::time::timeout(self.confirm_timeout, rx).await {
-                Ok(Ok(v)) => v,
-                // Store dropped the sender (shouldn't happen) or timed out: treat as no.
-                Ok(Err(_)) => Verdict::Denied,
-                Err(_) => {
-                    self.confirmations.withdraw(info.id);
-                    self.audit(task, "tool.confirm_timeout", name, &hash, "");
-                    return Err(ToolError::ConfirmationTimeout);
-                }
-            };
-            if verdict == Verdict::Denied {
-                self.audit(task, "tool.denied", name, &hash, &reason);
-                return Err(ToolError::Denied);
-            }
-            self.audit(task, "tool.approved", name, &hash, &reason);
+            self.confirm(task, name, &args, &reason).await?;
         }
 
         let result = tool.call(args).await;
@@ -146,9 +130,69 @@ impl ToolRegistry {
         result
     }
 
+    /// Ask a human to approve `name` with `args` for `task` and wait for the answer, at most
+    /// the confirmation timeout. Audited (`tool.confirm_requested`, then `tool.approved`,
+    /// `tool.denied` or `tool.confirm_timeout`). If the returned future is dropped (task
+    /// cancelled), the confirmation is withdrawn from the inbox.
+    pub async fn confirm(
+        &self,
+        task: TaskId,
+        name: &str,
+        args: &Value,
+        reason: &str,
+    ) -> Result<(), ToolError> {
+        let hash = args_hash(args);
+        let (info, rx) = self.confirmations.request(task, name, args, reason);
+        let _withdraw = Withdraw {
+            store: &self.confirmations,
+            id: info.id,
+        };
+        self.audit(task, "tool.confirm_requested", name, &hash, reason);
+        let verdict = match tokio::time::timeout(self.confirm_timeout, rx).await {
+            Ok(Ok(v)) => v,
+            // Store dropped the sender (shouldn't happen): treat as no.
+            Ok(Err(_)) => Verdict::Denied,
+            Err(_) => {
+                self.audit(task, "tool.confirm_timeout", name, &hash, "");
+                return Err(ToolError::ConfirmationTimeout);
+            }
+        };
+        if verdict == Verdict::Denied {
+            self.audit(task, "tool.denied", name, &hash, reason);
+            return Err(ToolError::Denied);
+        }
+        self.audit(task, "tool.approved", name, &hash, reason);
+        Ok(())
+    }
+
+    /// Write an agent action to the audit log (actor `agent`, arguments hashed, not logged).
+    pub fn audit_agent(
+        &self,
+        task: TaskId,
+        backend: &str,
+        action: &str,
+        tool: &str,
+        args: &Value,
+        detail: &str,
+    ) {
+        self.write_audit(task, backend, action, tool, &args_hash(args), detail);
+    }
+
     fn audit(&self, task: TaskId, action: &str, tool: &str, hash: &str, detail: &str) {
+        self.write_audit(task, "", action, tool, hash, detail);
+    }
+
+    fn write_audit(
+        &self,
+        task: TaskId,
+        backend: &str,
+        action: &str,
+        tool: &str,
+        hash: &str,
+        detail: &str,
+    ) {
         if let Some(log) = &self.audit {
-            let mut record = AuditRecord::now(action, task, "", detail).with_tool(tool, hash);
+            let mut record = AuditRecord::now(action, task, backend, detail).with_tool(tool, hash);
             // Tool calls are made by the task's agent; the person who started the task is
             // recorded on the `task.dispatch` line.
             record.actor = "agent".into();
@@ -159,14 +203,45 @@ impl ToolRegistry {
     }
 }
 
+/// Removes a confirmation from the inbox when its waiter goes away (answered, timed out or
+/// dropped). Removing an already resolved one is a no-op.
+struct Withdraw<'a> {
+    store: &'a ConfirmationStore,
+    id: ConfirmationId,
+}
+
+impl Drop for Withdraw<'_> {
+    fn drop(&mut self) {
+        self.store.withdraw(self.id);
+    }
+}
+
 /// SHA-256 of the canonical (compact, key-sorted) JSON arguments.
 fn args_hash(args: &Value) -> String {
-    // serde_json's default Map is a BTreeMap, so serialization is key-sorted.
-    let bytes = serde_json::to_vec(args).unwrap_or_default();
+    // Sort explicitly: serde_json's `preserve_order` feature (enabled by a dependency
+    // anywhere in the build) makes `Map` keep insertion order instead of sorting.
+    let bytes = serde_json::to_vec(&canonical(args)).unwrap_or_default();
     Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// `value` with every object's keys in sorted order.
+fn canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), canonical(&map[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -346,6 +421,16 @@ mod tests {
         assert_eq!(line["actor"], "agent");
         assert_eq!(line["tool"], "status");
         assert_eq!(line["args_sha256"], args_hash(&json!({"a": 1, "b": 2})));
+        // Canonical form is sorted keys, whatever serde_json's map ordering feature says.
+        let expected: String = Sha256::digest(br#"{"a":1,"b":2}"#)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(line["args_sha256"], expected.as_str());
+        assert_eq!(
+            args_hash(&json!({"z": {"y": 1, "x": [{"b": 1, "a": 2}]}})),
+            args_hash(&json!({"z": {"x": [{"a": 2, "b": 1}], "y": 1}}))
+        );
         std::fs::remove_file(&path).unwrap();
     }
 }

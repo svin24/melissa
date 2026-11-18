@@ -67,6 +67,11 @@ impl McpServer {
         lock(&self.sessions).contains_key(token)
     }
 
+    /// The current policy context of a session (it changes, e.g. once the task is tainted).
+    pub fn session_context(&self, token: &str) -> Option<TaskContext> {
+        lock(&self.sessions).get(token).map(|s| s.ctx.clone())
+    }
+
     /// Handle one JSON-RPC message (or batch). Returns `None` when there is nothing to send
     /// back (notifications only), and `Err(UnknownSession)` for an unknown session token.
     pub async fn handle(

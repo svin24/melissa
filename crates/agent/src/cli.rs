@@ -152,20 +152,42 @@ impl CliBackend {
         req: &RunRequest,
         args: Vec<String>,
     ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
-        if !self.sandbox.enabled {
-            return Ok((
-                program.to_path_buf(),
-                args.into_iter().map(Into::into).collect(),
-            ));
-        }
-        let bwrap = self.bwrap.as_ref().ok_or_else(|| {
-            AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
-        })?;
-        // Resolved per run: the CLI may have updated itself (new binary path) since startup.
-        let plan = SandboxPlan::resolve(&self.sandbox, bwrap, self.home.as_deref(), program)?;
         let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
-        Ok(sandbox::command(&plan, workdir, &extra, &args))
+        sandboxed_command(
+            &self.sandbox,
+            self.bwrap.as_deref(),
+            self.home.as_deref(),
+            program,
+            workdir,
+            &extra,
+            args,
+        )
     }
+}
+
+/// Program and argv that run `program args` in `workdir`: directly if the sandbox is
+/// disabled, else `bwrap` wrapping it. `extra_ro` are further files bound read-only.
+pub(crate) fn sandboxed_command(
+    sandbox: &SandboxSpec,
+    bwrap: Option<&Path>,
+    home: Option<&Path>,
+    program: &Path,
+    workdir: &Path,
+    extra_ro: &[PathBuf],
+    args: Vec<String>,
+) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
+    if !sandbox.enabled {
+        return Ok((
+            program.to_path_buf(),
+            args.into_iter().map(Into::into).collect(),
+        ));
+    }
+    let bwrap = bwrap.ok_or_else(|| {
+        AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
+    })?;
+    // Resolved per run: the CLI may have updated itself (new binary path) since startup.
+    let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?;
+    Ok(sandbox::command(&plan, workdir, extra_ro, &args))
 }
 
 impl Backend for CliBackend {
@@ -319,7 +341,7 @@ fn strip_ansi(input: &str) -> String {
 }
 
 /// Find a program: paths are used as given, bare names are looked up on `PATH`.
-fn resolve_program(command: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_program(command: &str) -> Option<PathBuf> {
     let path = Path::new(command);
     if path.components().count() > 1 {
         return path.is_file().then(|| path.to_path_buf());
@@ -376,6 +398,7 @@ mod tests {
             prompt: "hi".into(),
             workdir: None,
             mcp_config: Some("/tmp/x/mcp.json".into()),
+            ..RunRequest::default()
         };
         backend.run(&req, sink).await.unwrap();
         assert_eq!(

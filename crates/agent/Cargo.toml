@@ -7,6 +7,8 @@ publish.workspace = true
 description = "Melissa agent layer: pluggable backends, task dispatch, audit log"
 
 [dependencies]
+agent-client-protocol = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

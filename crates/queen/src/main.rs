@@ -17,13 +17,13 @@ use anyhow::{bail, Context};
 use melissa_agent::{
     mcp::McpServer,
     tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
-    AuditLog, Backend, CliBackend, EchoBackend, McpLink, TaskBoard,
+    AcpBackend, AuditLog, Backend, CliBackend, EchoBackend, McpLink, TaskBoard,
 };
 use melissa_hive::{ClusterHealth, ClusterRead, KubeCluster};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
-use config::{Dirs, QueenConfig};
+use config::{BackendSpec, Dirs, QueenConfig};
 
 const USAGE: &str = "usage: melissa-queen [--config <path>] [tool <name> [json-args]]";
 
@@ -93,15 +93,20 @@ async fn serve(
     tools: Vec<Arc<dyn Tool>>,
 ) -> anyhow::Result<()> {
     let workdir = dirs.state.join("work");
+    let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())));
     let mut backends: Vec<Arc<dyn Backend>> = vec![Arc::new(EchoBackend::new())];
     for spec in &config.backends {
-        let backend = CliBackend::new(spec.clone(), workdir.clone());
+        let backend: Arc<dyn Backend> = match spec {
+            BackendSpec::Cli(spec) => Arc::new(CliBackend::new(spec.clone(), workdir.clone())),
+            BackendSpec::Acp(spec) => {
+                Arc::new(AcpBackend::new(spec.clone(), workdir.clone()).with_mcp(mcp.clone()))
+            }
+        };
         let info = backend.info();
-        tracing::info!(name = %info.name, available = info.available, "agent backend");
-        backends.push(Arc::new(backend));
+        tracing::info!(name = %info.name, kind = info.kind, available = info.available, "agent backend");
+        backends.push(backend);
     }
     tracing::info!(path = %audit.path().display(), "audit log");
-    let mcp = McpServer::new(ToolRegistry::new(tools, Some(audit.clone())));
     let link = McpLink {
         server: mcp.clone(),
         base_url: format!("http://{}/mcp/", config.listen),
