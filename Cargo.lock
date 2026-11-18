@@ -1151,6 +1151,9 @@ name = "melissa-queen"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "melissa-agent",
  "melissa-hive",
  "melissa-web",
