@@ -524,6 +524,13 @@ main:focus {
   font-weight: 650;
 }
 
+.device-warn {
+  margin: 0;
+  color: var(--caution);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
 .strip-link {
   flex: none;
   display: inline-flex;

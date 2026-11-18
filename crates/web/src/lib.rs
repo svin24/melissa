@@ -541,8 +541,10 @@ mod tests {
                     serde_json::json!({"nodes": [{"name": "comb-1", "ready": true, "allocatable": {"cpu": "4"}}]}),
                 )),
                 Arc::new(Fixed(
-                    "bee_info",
-                    serde_json::json!({"os": "Fedora Linux 45", "mem_total_kib": 8_388_608, "mem_available_kib": 4_194_304}),
+                    "comb_info",
+                    serde_json::json!({"os": "Fedora Linux 45", "mem_total_kib": 8_388_608, "mem_available_kib": 4_194_304,
+                        "disks": [{"path": "/", "total_bytes": 10_000_000_000u64, "available_bytes": 5_000_000_000u64, "used_percent": 50},
+                                  {"path": "/var", "total_bytes": 20_000_000_000u64, "available_bytes": 1_800_000_000u64, "used_percent": 91}]}),
                 )),
             ]
         }
@@ -948,9 +950,15 @@ mod tests {
             assert!(body.contains("href=\"/?draft=Install%20jellyfin\""));
             assert!(body.contains("Fedora Linux 45"));
             assert!(body.contains("4.0 GB of 8.0 GB used"));
+            // comb_info's /var is 91% used: a storage meter and a warning on the card.
+            assert!(body.contains("<span>Storage</span>"));
+            assert!(body.contains("value=\"91\""));
+            assert!(body.contains("Storage is almost full: 1.7 GB left."));
             let (status, _, body) = get_html(&app, "/ui/strip").await;
             assert_eq!(status, StatusCode::OK);
             assert!(body.starts_with("<section class=\"strip\""));
+            assert!(body
+                .contains("<span class=\"strip-warn\">Storage almost full (1.7 GB left)</span>"));
             let (_, _, body) = get_html(&app, "/ui/hive/apps").await;
             assert!(body.starts_with("<div id=\"hive-apps\""));
         }

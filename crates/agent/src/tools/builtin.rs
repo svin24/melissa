@@ -7,7 +7,12 @@ use serde_json::{json, Value};
 use super::{Labels, Tool, ToolError, ToolSpec};
 use crate::BoxFuture;
 
-/// `comb_info`: OS, kernel, Melissa release, uptime and memory of this comb. Read-only.
+/// Filesystems whose space `comb_info` reports, relative to the root: `/`, `/var` (apps'
+/// data and images) and k3s's data directory when it exists.
+const DISKS: &[&str] = &["", "var", "var/lib/rancher/k3s"];
+
+/// `comb_info`: OS, kernel, Melissa release, uptime, memory and disk space of this comb.
+/// Read-only; disk space comes from `statvfs` (no privileges, no shelling out).
 #[derive(Debug, Clone)]
 pub struct CombInfo {
     /// Filesystem root to read from (`/` in production; a fixture dir in tests).
@@ -30,6 +35,37 @@ impl CombInfo {
     }
 }
 
+impl CombInfo {
+    /// Space on the filesystem holding `rel` (None if it does not exist or can't be read).
+    fn disk(&self, rel: &str) -> Option<Value> {
+        let path = self.root.join(rel);
+        if !path.is_dir() {
+            return None;
+        }
+        let st = rustix::fs::statvfs(&path).ok()?;
+        let unit = st.f_frsize;
+        let total = st.f_blocks.saturating_mul(unit);
+        let free = st.f_bfree.saturating_mul(unit);
+        let available = st.f_bavail.saturating_mul(unit);
+        Some(json!({
+            "path": format!("/{rel}"),
+            "total_bytes": total,
+            "available_bytes": available,
+            "used_percent": used_percent(total, free, available),
+        }))
+    }
+}
+
+/// Percent used as `df` shows it: used / (used + available to users), rounded up.
+fn used_percent(total: u64, free: u64, available: u64) -> u64 {
+    let used = total.saturating_sub(free);
+    let usable = used.saturating_add(available);
+    if usable == 0 {
+        return 0;
+    }
+    (used.saturating_mul(100)).div_ceil(usable)
+}
+
 impl Default for CombInfo {
     fn default() -> Self {
         Self::new()
@@ -40,7 +76,7 @@ impl Tool for CombInfo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "comb_info",
-            description: "Describe this comb (the device Melissa runs on): OS, kernel, Melissa release, uptime and memory.",
+            description: "Describe this comb (the device Melissa runs on): OS, kernel, Melissa release, uptime, memory and disk space (`disks`: total/available bytes and percent used of /, /var and the k3s data directory).",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         }
@@ -64,6 +100,7 @@ impl Tool for CombInfo {
                 })
                 .map(|s| s as u64);
             let meminfo = self.read("proc/meminfo").unwrap_or_default();
+            let disks: Vec<Value> = DISKS.iter().filter_map(|rel| self.disk(rel)).collect();
             Ok(json!({
                 "os": os,
                 "kernel": kernel,
@@ -72,6 +109,7 @@ impl Tool for CombInfo {
                 "uptime_secs": uptime_secs,
                 "mem_total_kib": meminfo_kib(&meminfo, "MemTotal"),
                 "mem_available_kib": meminfo_kib(&meminfo, "MemAvailable"),
+                "disks": disks,
             }))
         })
     }
@@ -125,7 +163,32 @@ mod tests {
         assert_eq!(out["kernel"], "7.3.4");
         assert_eq!(out["uptime_secs"], 123);
         assert_eq!(out["mem_available_kib"], 2_400_000);
+        // Disk space of the fixture's / and /var (a real filesystem under the temp dir); no
+        // k3s data directory, so no entry for it.
+        std::fs::create_dir_all(dir.join("var")).unwrap();
+        let out = CombInfo::with_root(&dir).call(Value::Null).await.unwrap();
+        let disks = out["disks"].as_array().unwrap();
+        let paths: Vec<&str> = disks.iter().map(|d| d["path"].as_str().unwrap()).collect();
+        assert_eq!(paths, ["/", "/var"]);
+        for d in disks {
+            let total = d["total_bytes"].as_u64().unwrap();
+            assert!(total > 0);
+            assert!(d["available_bytes"].as_u64().unwrap() <= total);
+            assert!(d["used_percent"].as_u64().unwrap() <= 100);
+        }
+        std::fs::create_dir_all(dir.join("var/lib/rancher/k3s")).unwrap();
+        let out = CombInfo::with_root(&dir).call(Value::Null).await.unwrap();
+        assert_eq!(out["disks"][2]["path"], "/var/lib/rancher/k3s");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn used_percent_matches_df() {
+        // 100 blocks, 20 free, 15 available to users (5 reserved): 80 / 95 used.
+        assert_eq!(used_percent(100, 20, 15), 85);
+        assert_eq!(used_percent(100, 100, 100), 0);
+        assert_eq!(used_percent(0, 0, 0), 0);
+        assert_eq!(used_percent(100, 0, 0), 100);
     }
 
     #[tokio::test]
@@ -135,5 +198,6 @@ mod tests {
             .await
             .unwrap();
         assert!(out["os"].is_null());
+        assert_eq!(out["disks"], serde_json::json!([]));
     }
 }

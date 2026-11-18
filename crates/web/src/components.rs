@@ -427,6 +427,8 @@ pub struct DeviceCard<'a> {
     /// Facts such as "Fedora Linux 45", "4 CPUs".
     pub facts: &'a [String],
     pub meters: &'a [Meter<'a>],
+    /// Something the owner should know (e.g. the disk is nearly full).
+    pub warning: Option<&'a str>,
 }
 
 pub fn device_card(d: &DeviceCard<'_>) -> Markup {
@@ -447,6 +449,7 @@ pub fn device_card(d: &DeviceCard<'_>) -> Markup {
                     meter min="0" max="100" value=(pct) high="85" optimum="0" { (pct) "%" }
                 }
             }
+            @if let Some(w) = d.warning { p.device-warn { (w) } }
         }
     }
 }

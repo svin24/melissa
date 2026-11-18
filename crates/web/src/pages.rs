@@ -17,7 +17,7 @@ use crate::{
     },
     components::{feed_archive, ComposerTarget, RailHelper, RailPastChat},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
-    state::{phase_words, Apps, Device, HiveSnapshot, Keeper},
+    state::{phase_words, Apps, Device, Disk, HiveSnapshot, Keeper},
 };
 use melissa_agent::queen::{bees::BeeView, transcript::PastChat};
 
@@ -334,8 +334,27 @@ pub fn strip(snap: &HiveSnapshot) -> Markup {
             health: *health,
         })
         .collect();
-    // Disk usage is not reported by any tool yet, so there is no warning to show.
-    app_strip(STRIP_URL, &cells, &summary, None)
+    let warning = disk_warning(snap);
+    app_strip(STRIP_URL, &cells, &summary, warning.as_deref())
+}
+
+/// "Storage almost full" when a device's data disk is above [`Disk::WARN_PERCENT`].
+fn disk_warning(snap: &HiveSnapshot) -> Option<String> {
+    let d = snap
+        .devices
+        .iter()
+        .find(|d| d.disk.as_ref().is_some_and(Disk::nearly_full))?;
+    let disk = d.disk.as_ref()?;
+    let left = format_bytes(disk.available_bytes);
+    Some(if snap.devices.len() > 1 {
+        format!("{}: storage almost full ({left} left)", d.name)
+    } else {
+        format!("Storage almost full ({left} left)")
+    })
+}
+
+fn format_bytes(bytes: u64) -> String {
+    format_kib(bytes / 1024)
 }
 
 /// Everything a chat page shows.
@@ -502,6 +521,17 @@ fn device(d: &Device) -> Markup {
         }
         _ => None,
     };
+    let disk = d.disk.as_ref().map(|k| {
+        let used = k.total_bytes.saturating_sub(k.available_bytes);
+        (
+            k.used_percent as f64 / 100.0,
+            format!(
+                "{} of {} used",
+                format_bytes(used),
+                format_bytes(k.total_bytes)
+            ),
+        )
+    });
     let meters: Vec<Meter<'_>> = mem
         .iter()
         .map(|(fraction, text)| Meter {
@@ -509,13 +539,25 @@ fn device(d: &Device) -> Markup {
             fraction: *fraction,
             text,
         })
+        .chain(disk.iter().map(|(fraction, text)| Meter {
+            label: "Storage",
+            fraction: *fraction,
+            text,
+        }))
         .collect();
+    let warning = d.disk.as_ref().filter(|k| k.nearly_full()).map(|k| {
+        format!(
+            "Storage is almost full: {} left. New apps may not fit; ask Melissa what to clean up.",
+            format_bytes(k.available_bytes)
+        )
+    });
     device_card(&DeviceCard {
         name: &d.name,
         health,
         status,
         facts: &facts,
         meters: &meters,
+        warning: warning.as_deref(),
     })
 }
 
