@@ -89,6 +89,10 @@ relative to `$HOME`; the Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessio
   also reads `AGENTS.md` from its cwd (its README says so); not used, the Queen's cwd stays empty.
 
 ## Gotchas
+- The Queen's and the workers' agents run behind the egress proxy like every sandboxed agent (`network =
+  "proxy"`, [agent-egress.md](agent-egress.md)); their `egress.*` audit records carry the Queen's task id or the
+  worker's. Verified 2026-11-18: the bee_info + worker run above still takes ~23 s with grok.com and Mixpanel
+  denied. A long-lived Queen keeps many tunnels open: the per-sandbox cap is 64.
 - Tests: a polling loop must advance its cursor; `wait_since` returns at once when events exist, and a loop
   that never awaits starves the single-threaded test runtime (looked like a deadlock; `eu-stack -p` showed
   the runtime parked in epoll, i.e. idle, which pointed at the test, not the code).

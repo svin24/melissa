@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
-    cli::{resolve_program, sandboxed_command},
+    cli::{network_label, network_ready, open_egress, resolve_program, sandboxed_command},
+    egress::EgressProxy,
     mcp::McpServer,
     sandbox::{self, SandboxError, SandboxSpec},
     session::{
@@ -56,6 +57,16 @@ pub struct AcpSpec {
     /// Sandbox settings. Absent: the built-in preset for this command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxSpec>,
+    /// Network access of the sandboxed agent: `proxy` (default: only the allowlisted hosts,
+    /// through Melissa's egress proxy, plus Melissa's MCP endpoint), `learn` (every public
+    /// host, logged), `none` (MCP only) or `host` (the unfiltered host network).
+    #[serde(default)]
+    pub network: crate::egress::NetworkMode,
+    /// Hosts the agent may reach with `network = "proxy"`: `host` or `*.domain`, optionally
+    /// `:port` (default 443). Absent: the built-in list for the command
+    /// ([`crate::egress::default_allow`]); given: replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
     /// Debugging aid: write a scrubbed transcript of every session into this directory
     /// ([`replay`] format). Transcripts hold prompts and replies; off by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +86,8 @@ impl AcpSpec {
             args: args.iter().map(|a| (*a).to_string()).collect(),
             tools: true,
             sandbox: None,
+            network: crate::egress::NetworkMode::default(),
+            allow: None,
             record_dir: None,
             session_store: None,
         }
@@ -90,14 +103,30 @@ impl AcpSpec {
         self
     }
 
+    /// Set the sandbox's network access.
+    pub fn with_network(mut self, mode: crate::egress::NetworkMode) -> Self {
+        self.network = mode;
+        self
+    }
+
+    /// Replace the built-in egress allowlist.
+    pub fn with_allow(mut self, hosts: Vec<String>) -> Self {
+        self.allow = Some(hosts);
+        self
+    }
+
     pub fn without_sandbox(self) -> Self {
         self.with_sandbox(SandboxSpec::disabled())
     }
 
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        self.sandbox
+        let mut spec = self
+            .sandbox
             .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command))
+            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
+        spec.network = self.network;
+        spec.allow = self.allow.clone();
+        spec
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {
@@ -127,6 +156,7 @@ pub struct AcpBackend {
     /// Melissa's MCP server: its registry decides permissions, its sessions hold the
     /// per-task policy context. `None`: no tools, and requests that need a human are refused.
     mcp: Option<McpServer>,
+    egress: Option<EgressProxy>,
 }
 
 impl AcpBackend {
@@ -139,6 +169,7 @@ impl AcpBackend {
         } else {
             None
         };
+        crate::cli::warn_host_network(&spec.name, &sandbox);
         Self {
             spec,
             sandbox,
@@ -147,7 +178,14 @@ impl AcpBackend {
             home: std::env::var_os("HOME").map(PathBuf::from),
             workdir,
             mcp: None,
+            egress: None,
         }
+    }
+
+    /// The egress proxy that gives sandboxes (`network = "proxy"`) their network.
+    pub fn with_egress(mut self, egress: EgressProxy) -> Self {
+        self.egress = Some(egress);
+        self
     }
 
     /// Use Melissa's MCP server for tools and permission decisions.
@@ -201,6 +239,23 @@ impl AcpBackend {
             create_private_dir(&dir)?;
             binds.push((dir, store.clone()));
         }
+        // Lives as long as the agent process (moved into the shutdown hook below).
+        let tokens = open
+            .mcp_servers
+            .iter()
+            .filter_map(|s| s.url.rsplit('/').next())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        let lease = open_egress(
+            &self.sandbox,
+            self.egress.as_ref(),
+            &self.spec.command,
+            &self.spec.name,
+            open.task.unwrap_or_default(),
+            tokens,
+        )?;
+        let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
         let (program_path, argv) = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
@@ -209,6 +264,7 @@ impl AcpBackend {
             &cwd,
             &[],
             &binds,
+            bridge,
             self.spec.args.clone(),
         )?;
         let mut child = tokio::process::Command::new(&program_path)
@@ -278,7 +334,16 @@ impl AcpBackend {
 
         let transport = transport::lines(stdout, stdin, recorder);
         let open = OpenSession { cwd, ..open };
-        client::start(transport, open, Some(client::process_shutdown(child)), tail).await
+        let stop = client::process_shutdown(child);
+        // The egress sockets close after the agent has stopped (or when the session task is
+        // aborted, which drops this hook, the lease and the agent process together).
+        let shutdown: client::Shutdown = Box::new(move || {
+            Box::pin(async move {
+                stop().await;
+                drop(lease);
+            })
+        });
+        client::start(transport, open, Some(shutdown), tail).await
     }
 }
 
@@ -299,16 +364,14 @@ impl Backend for AcpBackend {
             detail.push(' ');
             detail.push_str(arg);
         }
-        detail.push_str(if self.sandbox.enabled {
-            " [acp, sandbox: bwrap]"
-        } else {
-            " [acp, no sandbox]"
-        });
+        detail.push_str(&format!(" [acp, {}]", network_label(&self.sandbox)));
         BackendInfo {
             name: self.spec.name.clone(),
             kind: "acp",
             detail,
-            available: self.program.is_some() && (!self.sandbox.enabled || self.bwrap.is_some()),
+            available: self.program.is_some()
+                && (!self.sandbox.enabled || self.bwrap.is_some())
+                && network_ready(&self.sandbox, self.egress.as_ref()),
             tools: self.spec.tools,
         }
     }
@@ -327,11 +390,12 @@ impl Backend for AcpBackend {
                 }],
                 _ => Vec::new(),
             };
-            let open = OpenSession::new(
+            let mut open = OpenSession::new(
                 req.workdir.clone().unwrap_or_else(|| self.workdir.clone()),
                 mcp_servers,
                 Arc::new(self.permissions(req)),
             );
+            open.task = req.task;
             let OpenedSession {
                 session,
                 mut events,

@@ -9,7 +9,9 @@ use std::{
     time::Duration,
 };
 
-use melissa_agent::{sandbox, Backend, CliBackend, CliSpec, EventSink, RunRequest, SandboxSpec};
+use melissa_agent::{
+    sandbox, Backend, CliBackend, CliSpec, EventSink, NetworkMode, RunRequest, SandboxSpec,
+};
 
 /// A fresh directory under the system temp dir.
 fn scratch(name: &str) -> PathBuf {
@@ -44,7 +46,9 @@ fn backend(script: &str, home: &Path, workdir: &Path) -> CliBackend {
         .with_sandbox(SandboxSpec {
             ro: vec![".fakecli".into()],
             ..SandboxSpec::default()
-        });
+        })
+        // These tests are about files and processes; tests/egress.rs covers the network.
+        .with_network(NetworkMode::None);
     let backend = CliBackend::new(spec, workdir.to_path_buf()).with_home(home.to_path_buf());
     assert!(backend.info().available, "{:?}", backend.info());
     backend

@@ -10,8 +10,11 @@ Wants=network-online.target
 DynamicUser=yes
 StateDirectory=melissa
 ConfigurationDirectory=melissa
-# Maps the XDG paths used by the queen to /etc/melissa and /var/lib/melissa.
-Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib
+# Per-sandbox egress sockets (crates/agent/src/egress) live in /run/melissa/egress.
+RuntimeDirectory=melissa
+RuntimeDirectoryMode=0700
+# Maps the XDG paths used by the queen to /etc/melissa, /var/lib/melissa and /run/melissa.
+Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib XDG_RUNTIME_DIR=/run
 # Read access to the read-only k3s kubeconfig (root:melissa-kube 0640 in /run/melissa-kube).
 SupplementaryGroups=melissa-kube
 ExecStart=/usr/bin/melissa-queen

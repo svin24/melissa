@@ -12,7 +12,7 @@ use melissa_agent::{
         OpenSession, PermissionDecision, PermissionHandler, PermissionRequest, SessionBackend,
         SessionEvent, StopReason,
     },
-    AcpBackend, AcpSpec, BoxFuture,
+    AcpBackend, AcpSpec, BoxFuture, EgressProxy,
 };
 
 /// Refuses everything: these checks need no tools.
@@ -36,7 +36,12 @@ fn grok() -> AcpBackend {
         ],
     );
     let workdir = std::env::temp_dir().join(format!("melissa-acp-live-{}", std::process::id()));
-    AcpBackend::new(spec, workdir)
+    // Deny-by-default network, like the queen: the built-in grok allowlist through the proxy.
+    let sockets = std::env::temp_dir().join(format!("melissa-acp-live-net-{}", std::process::id()));
+    let egress = EgressProxy::new(sockets, None)
+        .unwrap()
+        .with_netbridge(env!("CARGO_BIN_EXE_melissa-netbridge").into());
+    AcpBackend::new(spec, workdir).with_egress(egress)
 }
 
 #[tokio::test]

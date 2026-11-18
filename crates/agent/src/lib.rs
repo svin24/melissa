@@ -16,6 +16,7 @@ mod backend;
 mod board;
 mod cli;
 mod echo;
+pub mod egress;
 pub mod mcp;
 pub mod queen;
 pub mod sandbox;
@@ -34,4 +35,5 @@ pub use board::{
 };
 pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
 pub use echo::EchoBackend;
+pub use egress::{EgressProxy, NetworkMode};
 pub use sandbox::SandboxSpec;

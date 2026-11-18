@@ -4,7 +4,9 @@
 
 ## Layout
 - `image/Containerfile`: one file, `--build-arg VARIANT=desktop|headless` and `BASE=...`.
-  Stage 1 builds `melissa-queen`/`melissa-bee` on `fedora:45` (dnf `cargo rust gcc`); stage 2 is the OS.
+  Stage 1 builds `melissa-queen`/`melissa-bee` and `melissa-netbridge` (the agent sandboxes' network bridge, a
+  binary of `melissa-agent`; must sit next to `melissa-queen`) on `fedora:45` (dnf `cargo rust gcc`); stage 2 is
+  the OS. Verified 2026-11-18: headless image builds, lint passes, `/usr/bin/melissa-netbridge` links Fedora libc.
   Stage 1 also writes the crate license report (`/out/licenses/`, from `cargo about generate`); binaries are in
   `/out/bin/`. cargo-about is `cargo install`ed there (needs `--features cli`, about 1m40s, cached as its own layer;
   keep `CARGO_ABOUT_VERSION` equal to the dev shell's `cargo about --version`).

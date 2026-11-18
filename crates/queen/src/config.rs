@@ -251,6 +251,8 @@ impl QueenConfig {
 pub struct Dirs {
     pub config: PathBuf,
     pub state: PathBuf,
+    /// Per-sandbox egress sockets: `$XDG_RUNTIME_DIR/melissa/egress`, else under `state`.
+    pub egress: PathBuf,
 }
 
 impl Dirs {
@@ -265,9 +267,15 @@ impl Dirs {
                     .with_context(|| format!("neither {var} nor HOME is set")),
             }
         };
+        let state = base("XDG_STATE_HOME", ".local/state")?.join("melissa");
+        let egress = match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+            Some(p) if p.is_absolute() => p.join("melissa").join("egress"),
+            _ => state.join("egress"),
+        };
         Ok(Self {
             config: base("XDG_CONFIG_HOME", ".config")?.join("melissa"),
-            state: base("XDG_STATE_HOME", ".local/state")?.join("melissa"),
+            state,
+            egress,
         })
     }
 }
@@ -366,6 +374,63 @@ mod tests {
         )
         .unwrap();
         assert!(escape.validate().is_err());
+    }
+
+    #[test]
+    fn network_and_allowlist_are_backend_keys() {
+        use melissa_agent::NetworkMode;
+        // Default: deny-by-default proxy with the built-in allowlist for each CLI.
+        for b in default_backends() {
+            assert_eq!(
+                b.effective_sandbox().network,
+                NetworkMode::Proxy,
+                "{}",
+                b.name()
+            );
+        }
+        let config: QueenConfig = toml::from_str(
+            r#"
+            [[backend]]
+            name = "claude"
+            command = "claude"
+            network = "learn"
+            [[backend]]
+            kind = "acp"
+            name = "g"
+            command = "grok"
+            allow = ["api.example.com", "*.example.net:8443"]
+            [backend.sandbox]
+            rw = [".grok/auth.json"]
+            [[backend]]
+            name = "h"
+            command = "x"
+            network = "host"
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let s = config.backends[0].effective_sandbox();
+        assert_eq!(s.network, NetworkMode::Learn);
+        // The preset's paths stay when only the network is changed.
+        assert_eq!(s.rw, [".claude/.credentials.json"]);
+        let s = config.backends[1].effective_sandbox();
+        assert_eq!(s.network, NetworkMode::Proxy);
+        assert_eq!(s.allow.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            config.backends[2].effective_sandbox().network,
+            NetworkMode::Host
+        );
+        for bad in [
+            "[[backend]]\nname = \"x\"\ncommand = \"x\"\nnetwork = \"open\"",
+            "[[backend]]\nname = \"x\"\ncommand = \"x\"\nallow = [\"*\"]",
+            "[[backend]]\nname = \"x\"\ncommand = \"x\"\nsandbox = { network = \"host\" }",
+        ] {
+            let parsed = toml::from_str::<QueenConfig>(bad);
+            assert!(
+                parsed.is_err() || parsed.unwrap().validate().is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

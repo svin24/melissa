@@ -8,6 +8,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [bootc-image-build.md](bootc-image-build.md) — building desktop/headless images, layer order, laptop switch.
 - [bootc-vm-test.md](bootc-vm-test.md) — qcow2 with bootc-image-builder, booting in QEMU, SSH into test VMs.
 - [acp-sessions.md](acp-sessions.md) — ACP sessions (`grok-acp`): session API, verified Grok facts, permission mapping, recording/replay transcripts, crate gotchas.
+- [agent-egress.md](agent-egress.md) — deny-by-default network for sandboxed agents: netns + `melissa-netbridge`,
+  CONNECT proxy with per-backend allowlists, MCP-only socket, `network = proxy|learn|none|host`, what each CLI contacts.
 - [queen-loop.md](queen-loop.md) — the Queen (head agent): session manager, worker tools and guards, event
   stream + transcript, resume via a Melissa-owned Grok session store, `/api/queen`, `melissa-queen chat|ask`.
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
