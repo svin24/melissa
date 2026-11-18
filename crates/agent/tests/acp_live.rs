@@ -46,11 +46,11 @@ async fn grok_cancel_then_second_prompt_in_one_session() {
     assert!(SessionBackend::info(&backend).available, "grok not found");
     let cwd = std::env::temp_dir().join(format!("melissa-acp-live-{}", std::process::id()));
     let opened = backend
-        .open(OpenSession {
-            cwd: cwd.clone(),
-            mcp_servers: Vec::new(),
-            permissions: Arc::new(RejectAll),
-        })
+        .open(OpenSession::new(
+            cwd.clone(),
+            Vec::new(),
+            Arc::new(RejectAll),
+        ))
         .await
         .unwrap();
     let session: Arc<dyn melissa_agent::session::AgentSession> = Arc::from(opened.session);

@@ -60,6 +60,11 @@ pub struct AcpSpec {
     /// ([`replay`] format). Transcripts hold prompts and replies; off by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_dir: Option<PathBuf>,
+    /// Where the agent keeps its sessions, relative to `$HOME` (e.g. `.grok/sessions`).
+    /// For sessions opened with a [`OpenSession::state_dir`] (the Queen), that Melissa-owned
+    /// directory is bound here inside the sandbox so the session can be resumed later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_store: Option<String>,
 }
 
 impl AcpSpec {
@@ -71,7 +76,13 @@ impl AcpSpec {
             tools: true,
             sandbox: None,
             record_dir: None,
+            session_store: None,
         }
+    }
+
+    pub fn with_session_store(mut self, path: &str) -> Self {
+        self.session_store = Some(path.into());
+        self
     }
 
     pub fn with_sandbox(mut self, spec: SandboxSpec) -> Self {
@@ -90,6 +101,16 @@ impl AcpSpec {
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {
+        if let Some(store) = &self.session_store {
+            let p = std::path::Path::new(store);
+            if store.is_empty()
+                || !p
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err(SandboxError::BadPath(store.clone()));
+            }
+        }
         self.effective_sandbox().validate()
     }
 }
@@ -170,6 +191,16 @@ impl AcpBackend {
             .ok_or_else(|| AgentError::Unavailable(format!("`{}` not found", self.spec.command)))?;
         let cwd = std::path::absolute(&open.cwd)?;
         tokio::fs::create_dir_all(&cwd).await?;
+        let mut binds = Vec::new();
+        if let (Some(dir), Some(store), true) = (
+            &open.state_dir,
+            &self.spec.session_store,
+            self.sandbox.enabled,
+        ) {
+            let dir = std::path::absolute(dir)?;
+            create_private_dir(&dir)?;
+            binds.push((dir, store.clone()));
+        }
         let (program_path, argv) = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
@@ -177,6 +208,7 @@ impl AcpBackend {
             program,
             &cwd,
             &[],
+            &binds,
             self.spec.args.clone(),
         )?;
         let mut child = tokio::process::Command::new(&program_path)
@@ -295,14 +327,15 @@ impl Backend for AcpBackend {
                 }],
                 _ => Vec::new(),
             };
-            let open = OpenSession {
-                cwd: req.workdir.clone().unwrap_or_else(|| self.workdir.clone()),
+            let open = OpenSession::new(
+                req.workdir.clone().unwrap_or_else(|| self.workdir.clone()),
                 mcp_servers,
-                permissions: Arc::new(self.permissions(req)),
-            };
+                Arc::new(self.permissions(req)),
+            );
             let OpenedSession {
                 session,
                 mut events,
+                ..
             } = self.spawn(open).await?;
             let stop = one_turn(session.as_ref(), &mut events, &req.prompt, &sink).await;
             let _ = session.close().await;
@@ -312,6 +345,16 @@ impl Backend for AcpBackend {
             }
         })
     }
+}
+
+/// Create `dir` (and parents) with mode 0700: it holds an agent's conversation history.
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
 /// Run one prompt, rendering its events into `sink` until the turn ends.

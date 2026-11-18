@@ -12,8 +12,11 @@
 //! committing it** (prompts and replies can contain anything).
 //!
 //! In tests, a replay agent plays the agent's side: it expects each `send` message (matched
-//! structurally; the string `"<any>"` matches any value, request ids are mapped) and emits
-//! each `recv` message.
+//! structurally; the string `"<any>"` matches any value, `"<contains:text>"` any string
+//! containing `text`, request ids are mapped) and emits each `recv` message. Test-only steps:
+//! `{"dir":"mcp","msg":{"call":{"name":…,"arguments":…},"expect":…}}` makes the agent call
+//! one of Melissa's tools through the MCP session it was given (as a real agent would), and
+//! `{"dir":"exit"}` makes it die (both pipes closed).
 
 use std::{
     collections::HashMap,
@@ -223,6 +226,9 @@ fn replace_word(text: &str, word: &str, replacement: &str) -> String {
 pub fn matches(expected: &Value, actual: &Value) -> bool {
     match (expected, actual) {
         (Value::String(s), _) if s == "<any>" => true,
+        (Value::String(s), Value::String(a)) if s.starts_with("<contains:") && s.ends_with('>') => {
+            a.contains(&s["<contains:".len()..s.len() - 1])
+        }
         (Value::Object(e), Value::Object(a)) => e
             .iter()
             .all(|(k, v)| a.get(k).is_some_and(|av| matches(v, av))),
@@ -239,16 +245,59 @@ pub(crate) mod agent {
 
     use std::collections::HashMap;
 
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::matches;
+    use crate::mcp::McpServer;
+
+    /// Which way a step goes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Dir {
+        /// The client sends this (expected).
+        Send,
+        /// The agent sends this.
+        Recv,
+        /// The agent calls a Melissa tool over MCP (test only).
+        Mcp,
+        /// The agent dies (test only).
+        Exit,
+    }
 
     /// One step of a transcript.
     #[derive(Debug, Clone)]
     pub struct Step {
-        pub send: bool,
+        pub dir: Dir,
         pub msg: Value,
+    }
+
+    impl Step {
+        pub fn send(msg: Value) -> Self {
+            Self {
+                dir: Dir::Send,
+                msg,
+            }
+        }
+        pub fn recv(msg: Value) -> Self {
+            Self {
+                dir: Dir::Recv,
+                msg,
+            }
+        }
+        /// Call tool `name`; the result must match `expect`.
+        #[allow(dead_code)] // used by the Queen tests (next commit)
+        pub fn mcp(name: &str, arguments: Value, expect: Value) -> Self {
+            Self {
+                dir: Dir::Mcp,
+                msg: json!({"call": {"name": name, "arguments": arguments}, "expect": expect}),
+            }
+        }
+        pub fn exit() -> Self {
+            Self {
+                dir: Dir::Exit,
+                msg: Value::Null,
+            }
+        }
     }
 
     /// Parse a transcript (header line skipped).
@@ -258,7 +307,12 @@ pub(crate) mod agent {
             .map(|l| serde_json::from_str::<Value>(l).expect("transcript line is JSON"))
             .filter(|v| v.get("type").is_none())
             .map(|v| Step {
-                send: v["dir"] == "send",
+                dir: match v["dir"].as_str() {
+                    Some("send") => Dir::Send,
+                    Some("mcp") => Dir::Mcp,
+                    Some("exit") => Dir::Exit,
+                    _ => Dir::Recv,
+                },
                 msg: v["msg"].clone(),
             })
             .collect()
@@ -266,7 +320,22 @@ pub(crate) mod agent {
 
     /// Play the agent's side of `steps` over the given streams. Returns an error describing
     /// the first mismatch, or extra messages after the transcript ended.
-    pub async fn run<R, W>(steps: Vec<Step>, reader: R, mut writer: W) -> Result<(), String>
+    pub async fn run<R, W>(steps: Vec<Step>, reader: R, writer: W) -> Result<(), String>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        run_with(steps, reader, writer, None).await
+    }
+
+    /// Like [`run`]; `mcp` serves the agent's `mcp` steps (the session token comes from the
+    /// MCP URL the client passed in `session/new` or `session/resume`).
+    pub async fn run_with<R, W>(
+        steps: Vec<Step>,
+        reader: R,
+        mut writer: W,
+        mcp: Option<McpServer>,
+    ) -> Result<(), String>
     where
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
@@ -274,8 +343,30 @@ pub(crate) mod agent {
         let mut lines = BufReader::new(reader).lines();
         // Transcript request id → id the client actually used.
         let mut ids: HashMap<String, Value> = HashMap::new();
+        let mut token = None;
         for (n, step) in steps.into_iter().enumerate() {
-            if step.send {
+            if step.dir == Dir::Exit {
+                return Ok(());
+            }
+            if step.dir == Dir::Mcp {
+                let server = mcp.as_ref().ok_or(format!("step {n}: no MCP server"))?;
+                let token: &String = token.as_ref().ok_or(format!("step {n}: no MCP session"))?;
+                let request = json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                                     "params": step.msg["call"]});
+                let reply = server
+                    .handle(token, request)
+                    .await
+                    .map_err(|_| format!("step {n}: unknown MCP session"))?
+                    .ok_or(format!("step {n}: no MCP reply"))?;
+                if !matches(&step.msg["expect"], &reply) {
+                    return Err(format!(
+                        "step {n}: MCP reply {reply}\n         expected {}",
+                        step.msg["expect"]
+                    ));
+                }
+                continue;
+            }
+            if step.dir == Dir::Send {
                 let line = lines
                     .next_line()
                     .await
@@ -294,6 +385,15 @@ pub(crate) mod agent {
                     return Err(format!(
                         "step {n}: expected {expected}\n         got      {actual}"
                     ));
+                }
+                if matches!(
+                    actual["method"].as_str(),
+                    Some("session/new" | "session/resume")
+                ) {
+                    token = actual["params"]["mcpServers"][0]["url"]
+                        .as_str()
+                        .and_then(|u| u.rsplit('/').next())
+                        .map(str::to_string);
                 }
             } else {
                 let mut msg = step.msg;
@@ -368,5 +468,8 @@ mod tests {
             &pat,
             &json!({"method": "initialize", "params": {"clientInfo": 1, "v": [1]}})
         ));
+        assert!(matches(&json!("<contains:lo w>"), &json!("hello world")));
+        assert!(!matches(&json!("<contains:xyz>"), &json!("hello world")));
+        assert!(!matches(&json!("<contains:1>"), &json!(1)));
     }
 }

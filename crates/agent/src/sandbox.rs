@@ -171,12 +171,19 @@ pub enum Mount {
     Tmpfs(PathBuf),
     ReadOnly(PathBuf),
     ReadWrite(PathBuf),
+    /// A host directory bound read-write at another path (e.g. a Melissa-owned session
+    /// store at the agent's `~/.grok/sessions`).
+    BindAt {
+        src: PathBuf,
+        dst: PathBuf,
+    },
 }
 
 impl Mount {
     fn path(&self) -> &Path {
         match self {
             Mount::Tmpfs(p) | Mount::ReadOnly(p) | Mount::ReadWrite(p) => p,
+            Mount::BindAt { dst, .. } => dst,
         }
     }
 }
@@ -253,6 +260,23 @@ impl SandboxPlan {
             env,
         })
     }
+
+    /// Add host directories bound read-write at home-relative paths (`(host dir, path
+    /// under $HOME)`); paths must pass the same checks as [`SandboxSpec`] paths.
+    pub fn with_binds(mut self, binds: &[(PathBuf, String)]) -> Result<Self, SandboxError> {
+        for (src, rel) in binds {
+            let p = Path::new(rel);
+            if rel.is_empty() || !p.components().all(|c| matches!(c, Component::Normal(_))) {
+                return Err(SandboxError::BadPath(rel.clone()));
+            }
+            self.mounts.push(Mount::BindAt {
+                src: src.clone(),
+                dst: self.home.join(p),
+            });
+        }
+        self.mounts.sort_by_key(|m| m.path().components().count());
+        Ok(self)
+    }
 }
 
 /// Build the `bwrap` program and argv that run `args` under the sandbox in `workdir`.
@@ -321,6 +345,7 @@ pub fn command(
             Mount::Tmpfs(p) => push(&[&"--tmpfs", p]),
             Mount::ReadOnly(p) => push(&[&"--ro-bind", p, p]),
             Mount::ReadWrite(p) => push(&[&"--bind", p, p]),
+            Mount::BindAt { src, dst } => push(&[&"--bind", src, dst]),
         }
     }
 
@@ -329,7 +354,7 @@ pub fn command(
         path.starts_with("/usr")
             || plan.mounts.iter().any(|m| match m {
                 Mount::ReadOnly(p) | Mount::ReadWrite(p) => path.starts_with(p),
-                Mount::Tmpfs(_) => false,
+                Mount::Tmpfs(_) | Mount::BindAt { .. } => false,
             })
     };
     if !bound(&plan.program) {
@@ -491,6 +516,28 @@ mod tests {
             &["--ro-bind", "/elsewhere/mcp.json", "/elsewhere/mcp.json"]
         ));
         assert!(!a.contains(&"/w/mcp.json"));
+    }
+
+    #[test]
+    fn session_store_binds_land_inside_the_home_tmpfs() {
+        let p = plan(vec![Mount::Tmpfs("/home/u/.grok".into())], "/usr/bin/x")
+            .with_binds(&[("/state/queen/store".into(), ".grok/sessions".into())])
+            .unwrap();
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(has(
+            &a,
+            &["--bind", "/state/queen/store", "/home/u/.grok/sessions"]
+        ));
+        // After the tmpfs it lives in, so the tmpfs does not hide it.
+        let tmpfs = a.iter().position(|x| *x == "/home/u/.grok").unwrap();
+        let bind = a.iter().position(|x| *x == "/state/queen/store").unwrap();
+        assert!(bind > tmpfs);
+        for bad in ["", "../x", "/abs", ".grok/../.."] {
+            assert!(plan(vec![], "/usr/bin/x")
+                .with_binds(&[("/s".into(), bad.into())])
+                .is_err());
+        }
     }
 
     #[test]
