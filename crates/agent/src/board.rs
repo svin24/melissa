@@ -2,13 +2,17 @@
 
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
 use tokio::task::AbortHandle;
 
-use crate::{AgentError, AuditLog, AuditRecord, Backend, BackendInfo, EventSink, OutputLine};
+use crate::{
+    mcp::McpServer, tools::TaskContext, AgentError, AuditLog, AuditRecord, Backend, BackendInfo,
+    EventSink, OutputLine, RunRequest,
+};
 
 pub type TaskId = u64;
 
@@ -65,6 +69,18 @@ pub enum DispatchError {
     PromptTooLong,
     #[error("no such task")]
     NoSuchTask,
+    #[error("could not prepare the task: {0}")]
+    Setup(String),
+}
+
+/// Gives tool-capable backends Melissa's tools through the MCP endpoint.
+#[derive(Clone)]
+pub struct McpLink {
+    pub server: McpServer,
+    /// URL prefix of the MCP endpoint; the session token is appended (e.g. `http://127.0.0.1:8080/mcp/`).
+    pub base_url: String,
+    /// Directory under which each task gets its own working directory (`task-<id>`).
+    pub workroot: PathBuf,
 }
 
 struct Task {
@@ -78,6 +94,8 @@ struct Task {
     started: Instant,
     finished: Option<Instant>,
     abort: Option<AbortHandle>,
+    /// Open MCP session for this task, closed when it finishes or is cancelled.
+    mcp_token: Option<String>,
 }
 
 struct Inner {
@@ -86,6 +104,7 @@ struct Inner {
     next_id: Mutex<TaskId>,
     timeout: Duration,
     audit: Option<AuditLog>,
+    mcp: Option<McpLink>,
 }
 
 /// Shared handle to the task board. Cheap to clone.
@@ -107,6 +126,26 @@ impl TaskBoard {
                 next_id: Mutex::new(1),
                 timeout,
                 audit,
+                mcp: None,
+            }),
+        }
+    }
+
+    /// Like [`TaskBoard::new`], with Melissa's tools for backends that support them.
+    pub fn with_tools(
+        backends: Vec<Arc<dyn Backend>>,
+        timeout: Duration,
+        audit: Option<AuditLog>,
+        mcp: McpLink,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                backends,
+                tasks: Mutex::new(BTreeMap::new()),
+                next_id: Mutex::new(1),
+                timeout,
+                audit,
+                mcp: Some(mcp),
             }),
         }
     }
@@ -131,7 +170,8 @@ impl TaskBoard {
             .find(|b| b.info().name == backend)
             .cloned()
             .ok_or_else(|| DispatchError::UnknownBackend(backend.to_string()))?;
-        if !backend_impl.info().available {
+        let info = backend_impl.info();
+        if !info.available {
             return Err(DispatchError::Unavailable(backend.to_string()));
         }
 
@@ -154,19 +194,37 @@ impl TaskBoard {
                 started: Instant::now(),
                 finished: None,
                 abort: None,
+                mcp_token: None,
             },
         );
         self.audit(AuditRecord::now("task.dispatch", id, backend, prompt));
 
+        let mut req = RunRequest::prompt(prompt);
+        if let (Some(link), true) = (&self.inner.mcp, info.tools) {
+            match self.prepare_tools(link, id) {
+                Ok((token, workdir, config)) => {
+                    if let Some(task) = lock(&self.inner.tasks).get_mut(&id) {
+                        task.mcp_token = Some(token);
+                    }
+                    req.workdir = Some(workdir);
+                    req.mcp_config = Some(config);
+                }
+                Err(e) => {
+                    let err = DispatchError::Setup(e.to_string());
+                    self.finish(id, Err(AgentError::Io(e)));
+                    return Err(err);
+                }
+            }
+        }
+
         let board = self.clone();
-        let prompt = prompt.to_string();
         let timeout = self.inner.timeout;
         let handle = tokio::spawn(async move {
             let (sink, mut rx) = EventSink::channel();
             let run = async {
                 // The sink is moved in so the channel closes when the backend finishes.
                 let sink = sink;
-                tokio::time::timeout(timeout, backend_impl.run(&prompt, sink))
+                tokio::time::timeout(timeout, backend_impl.run(&req, sink))
                     .await
                     .unwrap_or(Err(AgentError::Timeout(timeout)))
             };
@@ -199,6 +257,7 @@ impl TaskBoard {
             }
             task.status = TaskStatus::Cancelled;
             task.finished = Some(Instant::now());
+            self.close_tools(task);
             task.backend.clone()
         };
         self.audit(AuditRecord::now("task.cancel", id, &backend, ""));
@@ -253,6 +312,7 @@ impl TaskBoard {
             task.error = result.as_ref().err().map(ToString::to_string);
             task.finished = Some(Instant::now());
             task.abort = None;
+            self.close_tools(task);
             (task.backend.clone(), task.status)
         };
         let detail = match &result {
@@ -260,6 +320,43 @@ impl TaskBoard {
             Err(e) => format!("{}: {e}", status.as_str()),
         };
         self.audit(AuditRecord::now("task.finish", id, &backend, detail));
+    }
+
+    /// Open an MCP session for task `id` and write its per-task workdir and MCP config.
+    /// The config holds the session token, so it is created mode 0600.
+    fn prepare_tools(
+        &self,
+        link: &McpLink,
+        id: TaskId,
+    ) -> std::io::Result<(String, PathBuf, PathBuf)> {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let workdir = link.workroot.join(format!("task-{id}"));
+        std::fs::create_dir_all(&workdir)?;
+        // Tasks dispatched from the UI are watched by the person who started them.
+        let ctx = TaskContext {
+            attended: true,
+            ..TaskContext::default()
+        };
+        let token = link.server.open_session(id, ctx, None)?;
+        let config = workdir.join("mcp.json");
+        let body = serde_json::json!({
+            "mcpServers": {"melissa": {"type": "http", "url": format!("{}{token}", link.base_url)}}
+        });
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&config)?;
+        file.write_all(body.to_string().as_bytes())?;
+        Ok((token, workdir, config))
+    }
+
+    /// Close the task's MCP session (its token stops working). Caller holds the tasks lock.
+    fn close_tools(&self, task: &mut Task) {
+        if let (Some(link), Some(token)) = (&self.inner.mcp, task.mcp_token.take()) {
+            link.server.close_session(&token);
+        }
     }
 
     fn audit(&self, record: AuditRecord) {
@@ -308,9 +405,14 @@ mod tests {
                 kind: "test",
                 detail: String::new(),
                 available: true,
+                tools: true,
             }
         }
-        fn run<'a>(&'a self, _: &'a str, sink: EventSink) -> BoxFuture<'a, Result<(), AgentError>> {
+        fn run<'a>(
+            &'a self,
+            _: &'a RunRequest,
+            sink: EventSink,
+        ) -> BoxFuture<'a, Result<(), AgentError>> {
             Box::pin(async move {
                 sink.stdout("started");
                 std::future::pending().await
@@ -380,6 +482,48 @@ mod tests {
         let snap = board.get(id).unwrap();
         assert_eq!(snap.status, TaskStatus::Cancelled);
         assert_eq!(board.cancel(999), Err(DispatchError::NoSuchTask));
+    }
+
+    #[tokio::test]
+    async fn tool_capable_tasks_get_an_mcp_session_until_cancelled() {
+        use std::os::unix::fs::PermissionsExt;
+        let workroot =
+            std::env::temp_dir().join(format!("melissa-board-mcp-{}", std::process::id()));
+        let server = McpServer::new(crate::tools::ToolRegistry::builtin(None));
+        let board = TaskBoard::with_tools(
+            vec![Arc::new(Hang), Arc::new(EchoBackend::new())],
+            Duration::from_secs(60),
+            None,
+            McpLink {
+                server: server.clone(),
+                base_url: "http://127.0.0.1:8080/mcp/".into(),
+                workroot: workroot.clone(),
+            },
+        );
+        let id = board.dispatch("hang", "use tools").unwrap();
+        let config = workroot.join(format!("task-{id}/mcp.json"));
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let url = body["mcpServers"]["melissa"]["url"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let token = url.strip_prefix("http://127.0.0.1:8080/mcp/").unwrap();
+        assert!(server.has_session(token));
+        assert_eq!(
+            std::fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        board.cancel(id).unwrap();
+        assert!(
+            !server.has_session(token),
+            "cancel must close the MCP session"
+        );
+
+        // Backends without tool support get no session or per-task dir.
+        let echo = board.dispatch("echo", "plain").unwrap();
+        assert!(!workroot.join(format!("task-{echo}")).exists());
+        std::fs::remove_dir_all(workroot).unwrap();
     }
 
     #[tokio::test]

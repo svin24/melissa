@@ -15,7 +15,10 @@ use axum::{
     routing::{get, post},
 };
 use maud::Markup;
-use melissa_agent::{TaskBoard, TaskId};
+use melissa_agent::{
+    mcp::{McpServer, UnknownSession},
+    TaskBoard, TaskId,
+};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 
@@ -31,7 +34,23 @@ struct Assets;
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
+/// The UI router, without agent tools.
 pub fn router(board: TaskBoard) -> Router {
+    ui_routes(board).layer(middleware::from_fn(security))
+}
+
+/// The UI router plus the MCP endpoint (`POST /mcp/{token}`) agent CLIs use to call tools.
+pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
+    ui_routes(board)
+        .merge(
+            Router::new()
+                .route("/mcp/{token}", post(mcp_post).get(mcp_get))
+                .with_state(mcp),
+        )
+        .layer(middleware::from_fn(security))
+}
+
+fn ui_routes(board: TaskBoard) -> Router {
     Router::new()
         .route("/", get(dashboard))
         .route("/healthz", get(|| async { "ok" }))
@@ -41,8 +60,30 @@ pub fn router(board: TaskBoard) -> Router {
         .route("/tasks/{id}/cancel", post(cancel_task))
         .route("/assets/{*path}", get(asset))
         .fallback(|| async { (StatusCode::NOT_FOUND, pages::not_found()) })
-        .layer(middleware::from_fn(security))
         .with_state(board)
+}
+
+/// MCP streamable-HTTP endpoint, JSON responses only. The token in the path selects the
+/// task's session; unknown or closed tokens get 404.
+async fn mcp_post(
+    State(mcp): State<McpServer>,
+    Path(token): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Ok(message) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        let err = serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}});
+        return (StatusCode::BAD_REQUEST, axum::Json(err)).into_response();
+    };
+    match mcp.handle(&token, message).await {
+        Ok(Some(reply)) => axum::Json(reply).into_response(),
+        Ok(None) => StatusCode::ACCEPTED.into_response(),
+        Err(UnknownSession) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// No server-initiated event stream is offered.
+async fn mcp_get() -> StatusCode {
+    StatusCode::METHOD_NOT_ALLOWED
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
@@ -308,6 +349,42 @@ mod tests {
             .unwrap();
         assert_eq!(send(&app, req).await.0, StatusCode::SEE_OTHER);
         assert_eq!(board.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_endpoint_serves_tools_per_session() {
+        use melissa_agent::tools::{TaskContext, ToolRegistry};
+        let board = TaskBoard::new(
+            vec![Arc::new(EchoBackend::new())],
+            Duration::from_secs(5),
+            None,
+        );
+        let mcp = McpServer::new(ToolRegistry::builtin(None));
+        let token = mcp.open_session(1, TaskContext::default(), None).unwrap();
+        let app = router_with_mcp(board, mcp);
+        let call = |path: String, body: &'static str| {
+            axum::http::Request::post(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let (status, _, body) = send(&app, call(format!("/mcp/{token}"), list)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("bee_info"));
+        let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert_eq!(
+            send(&app, call(format!("/mcp/{token}"), note)).await.0,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            send(&app, call("/mcp/nope".into(), list)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send(&app, call(format!("/mcp/{token}"), "{oops")).await.0,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]

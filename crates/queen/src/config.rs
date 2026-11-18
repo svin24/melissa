@@ -37,7 +37,15 @@ impl Default for QueenConfig {
 /// missing show up as "not installed" and cannot be selected.
 pub fn default_backends() -> Vec<CliSpec> {
     vec![
-        CliSpec::new("claude", "claude", &["-p", "{prompt}"]),
+        // `--tools ""` removes Claude's built-in tools (shell, file access); it acts only
+        // through Melissa's tools, offered via a per-task MCP config.
+        CliSpec::new("claude", "claude", &["-p", "{prompt}", "--tools", ""]).with_mcp_args(&[
+            "--mcp-config",
+            "{mcp_config}",
+            "--strict-mcp-config",
+            "--allowedTools",
+            "mcp__melissa",
+        ]),
         CliSpec::new("grok", "grok", &["-p", "{prompt}"]),
         CliSpec::new("opencode", "opencode", &["run", "{prompt}"]),
     ]

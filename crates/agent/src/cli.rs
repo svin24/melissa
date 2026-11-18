@@ -12,10 +12,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
-use crate::{AgentError, Backend, BackendInfo, BoxFuture, EventSink, Stream};
+use crate::{AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream};
 
 /// Placeholder in [`CliSpec::args`] that is replaced by the prompt.
 pub const PROMPT_PLACEHOLDER: &str = "{prompt}";
+/// Placeholder in [`CliSpec::mcp_args`] that is replaced by the MCP config file path.
+pub const MCP_CONFIG_PLACEHOLDER: &str = "{mcp_config}";
 
 /// Configuration for one CLI backend (deserialized from the queen config file).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +31,11 @@ pub struct CliSpec {
     /// the prompt is appended as the last argument.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Extra arguments that give the agent Melissa's tools, appended only when the task
+    /// has an MCP config. `{mcp_config}` is replaced by the config file path. Empty means
+    /// the backend cannot use tools.
+    #[serde(default)]
+    pub mcp_args: Vec<String>,
 }
 
 impl CliSpec {
@@ -37,7 +44,13 @@ impl CliSpec {
             name: name.into(),
             command: command.into(),
             args: args.iter().map(|a| (*a).to_string()).collect(),
+            mcp_args: Vec::new(),
         }
+    }
+
+    pub fn with_mcp_args(mut self, args: &[&str]) -> Self {
+        self.mcp_args = args.iter().map(|a| (*a).to_string()).collect();
+        self
     }
 
     /// Build the argument list for a prompt.
@@ -94,27 +107,39 @@ impl Backend for CliBackend {
             kind: "cli",
             detail,
             available: self.program.is_some(),
+            tools: !self.spec.mcp_args.is_empty(),
         }
     }
 
     fn run<'a>(
         &'a self,
-        prompt: &'a str,
+        req: &'a RunRequest,
         sink: EventSink,
     ) -> BoxFuture<'a, Result<(), AgentError>> {
         Box::pin(async move {
             let program = self.program.as_ref().ok_or_else(|| {
                 AgentError::Unavailable(format!("`{}` not found", self.spec.command))
             })?;
-            let prompt = prompt.trim();
+            let prompt = req.prompt.trim();
             if prompt.starts_with('-') {
                 return Err(AgentError::BadPrompt("prompts may not start with '-'"));
             }
-            tokio::fs::create_dir_all(&self.workdir).await?;
+            let workdir = req.workdir.as_ref().unwrap_or(&self.workdir);
+            tokio::fs::create_dir_all(workdir).await?;
+            let mut args = self.spec.render_args(prompt);
+            if let Some(config) = &req.mcp_config {
+                let config = config.to_string_lossy();
+                args.extend(
+                    self.spec
+                        .mcp_args
+                        .iter()
+                        .map(|a| a.replace(MCP_CONFIG_PLACEHOLDER, &config)),
+                );
+            }
 
             let mut child = tokio::process::Command::new(program)
-                .args(self.spec.render_args(prompt))
-                .current_dir(&self.workdir)
+                .args(args)
+                .current_dir(workdir)
                 // Ask CLIs for plain text; any remaining escape codes are stripped in `pump`.
                 .env("NO_COLOR", "1")
                 .env("TERM", "dumb")
@@ -239,7 +264,7 @@ mod tests {
         prompt: &str,
     ) -> (Result<(), AgentError>, Vec<OutputLine>) {
         let (sink, mut rx) = EventSink::channel();
-        let result = backend.run(prompt, sink).await;
+        let result = backend.run(&RunRequest::prompt(prompt), sink).await;
         let mut lines = Vec::new();
         while let Ok(line) = rx.try_recv() {
             lines.push(line);
@@ -253,6 +278,28 @@ mod tests {
         assert_eq!(spec.render_args("hi"), ["-p", "hi"]);
         let spec = CliSpec::new("o", "opencode", &["run"]);
         assert_eq!(spec.render_args("hi there"), ["run", "hi there"]);
+    }
+
+    #[tokio::test]
+    async fn mcp_args_are_appended_only_with_a_config() {
+        let spec = CliSpec::new("sh", "sh", &["-c", r#"echo "$@""#, "melissa", "{prompt}"])
+            .with_mcp_args(&["--mcp-config", "{mcp_config}"]);
+        let backend = CliBackend::new(spec, std::env::temp_dir());
+        assert!(backend.info().tools);
+        let (sink, mut rx) = EventSink::channel();
+        let req = RunRequest {
+            prompt: "hi".into(),
+            workdir: None,
+            mcp_config: Some("/tmp/x/mcp.json".into()),
+        };
+        backend.run(&req, sink).await.unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().text,
+            "hi --mcp-config /tmp/x/mcp.json"
+        );
+        let (sink, mut rx) = EventSink::channel();
+        backend.run(&RunRequest::prompt("hi"), sink).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap().text, "hi");
     }
 
     #[test]

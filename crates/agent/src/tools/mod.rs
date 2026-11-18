@@ -148,7 +148,10 @@ impl ToolRegistry {
 
     fn audit(&self, task: TaskId, action: &str, tool: &str, hash: &str, detail: &str) {
         if let Some(log) = &self.audit {
-            let record = AuditRecord::now(action, task, "", detail).with_tool(tool, hash);
+            let mut record = AuditRecord::now(action, task, "", detail).with_tool(tool, hash);
+            // Tool calls are made by the task's agent; the person who started the task is
+            // recorded on the `task.dispatch` line.
+            record.actor = "agent".into();
             if let Err(e) = log.append(&record) {
                 tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
             }
@@ -340,6 +343,7 @@ mod tests {
         let line: Value =
             serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
         assert_eq!(line["action"], "tool.call");
+        assert_eq!(line["actor"], "agent");
         assert_eq!(line["tool"], "status");
         assert_eq!(line["args_sha256"], args_hash(&json!({"a": 1, "b": 2})));
         std::fs::remove_file(&path).unwrap();

@@ -28,6 +28,20 @@ args = ["run", "-m", "<provider>/<gemma-model>", "{prompt}"]
   may survive (TODO: process group or a podman sandbox).
 - Working directory: `~/.local/state/melissa/work`, never the repo.
 
+## Giving agents Melissa's tools (MCP) — verified with Claude, 2026-11-18
+- The queen serves MCP (JSON-RPC over HTTP POST, JSON responses only) at `POST /mcp/<token>` on loopback.
+  One session per task; the token is random (128-bit), written into `<workroot>/task-<id>/mcp.json` (mode 0600)
+  and closed when the task finishes or is cancelled (old token → 404).
+- `CliSpec.mcp_args` are appended only when the task has a config; `{mcp_config}` = path of that file.
+- Claude: `claude -p <prompt> --tools "" --mcp-config <file> --strict-mcp-config --allowedTools mcp__melissa`.
+  `--tools ""` removes all built-in tools (no Bash/Read); `--strict-mcp-config` ignores the user's own MCP
+  servers. Verified: Claude calls `bee_info`, and reports it has no shell or file tools.
+  Order matters: `--tools` and `--mcp-config` are variadic, so the prompt goes before them.
+- Grok: MCP via `grok mcp add` (persistent user config, not per run) — find a per-run option before wiring.
+- OpenCode: reads `opencode.json` (with an `mcp` section) from its working directory — next to wire.
+- Tool calls wait for confirmations inside the HTTP request; check each CLI's MCP tool-call timeout before
+  relying on long waits (Claude: `MCP_TOOL_TIMEOUT` env, unverified).
+
 ## Next (ideas, unverified)
 - Use each CLI's JSON streaming mode to get typed events (text, tool call, usage) instead of lines.
 - Run each CLI in a rootless podman sandbox: `--network=none`, read-only root, `/workspace` only,

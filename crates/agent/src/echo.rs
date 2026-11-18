@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use crate::{AgentError, Backend, BackendInfo, BoxFuture, EventSink};
+use crate::{AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest};
 
 #[derive(Debug, Clone, Default)]
 pub struct EchoBackend {
@@ -28,16 +28,17 @@ impl Backend for EchoBackend {
             kind: "echo",
             detail: "built-in, no LLM: repeats the prompt".into(),
             available: true,
+            tools: false,
         }
     }
 
     fn run<'a>(
         &'a self,
-        prompt: &'a str,
+        req: &'a RunRequest,
         sink: EventSink,
     ) -> BoxFuture<'a, Result<(), AgentError>> {
         Box::pin(async move {
-            for line in prompt.lines() {
+            for line in req.prompt.lines() {
                 if !self.delay.is_zero() {
                     tokio::time::sleep(self.delay).await;
                 }

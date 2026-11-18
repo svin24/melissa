@@ -10,7 +10,10 @@ mod config;
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{bail, Context};
-use melissa_agent::{AuditLog, Backend, CliBackend, EchoBackend, TaskBoard};
+use melissa_agent::{
+    mcp::McpServer, tools::ToolRegistry, AuditLog, Backend, CliBackend, EchoBackend, McpLink,
+    TaskBoard,
+};
 use tracing_subscriber::EnvFilter;
 
 use config::{Dirs, QueenConfig};
@@ -38,13 +41,19 @@ async fn main() -> anyhow::Result<()> {
     }
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
     tracing::info!(path = %audit.path().display(), "audit log");
-    let board = TaskBoard::new(backends, config.task_timeout(), Some(audit));
+    let mcp = McpServer::new(ToolRegistry::builtin(Some(audit.clone())));
+    let link = McpLink {
+        server: mcp.clone(),
+        base_url: format!("http://{}/mcp/", config.listen),
+        workroot: workdir,
+    };
+    let board = TaskBoard::with_tools(backends, config.task_timeout(), Some(audit), link);
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("binding {}", config.listen))?;
     tracing::info!("melissa queen listening on http://{}", config.listen);
-    melissa_web::serve(listener, melissa_web::router(board)).await?;
+    melissa_web::serve(listener, melissa_web::router_with_mcp(board, mcp)).await?;
     Ok(())
 }
 

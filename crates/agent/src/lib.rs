@@ -13,10 +13,15 @@ mod backend;
 mod board;
 mod cli;
 mod echo;
+pub mod mcp;
 pub mod tools;
 
 pub use audit::{AuditLog, AuditRecord};
-pub use backend::{AgentError, Backend, BackendInfo, BoxFuture, EventSink, OutputLine, Stream};
-pub use board::{DispatchError, TaskBoard, TaskId, TaskSnapshot, TaskStatus, MAX_PROMPT_BYTES};
-pub use cli::{CliBackend, CliSpec};
+pub use backend::{
+    AgentError, Backend, BackendInfo, BoxFuture, EventSink, OutputLine, RunRequest, Stream,
+};
+pub use board::{
+    DispatchError, McpLink, TaskBoard, TaskId, TaskSnapshot, TaskStatus, MAX_PROMPT_BYTES,
+};
+pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
 pub use echo::EchoBackend;

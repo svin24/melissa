@@ -1,6 +1,6 @@
 //! The backend trait and the types backends use to report output.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{future::Future, path::PathBuf, pin::Pin, time::Duration};
 
 use tokio::sync::mpsc;
 
@@ -18,6 +18,27 @@ pub struct BackendInfo {
     pub detail: String,
     /// Whether the backend can run on this bee right now (e.g. its binary was found).
     pub available: bool,
+    /// Whether the backend can use Melissa's tools (via an MCP config).
+    pub tools: bool,
+}
+
+/// Everything a backend needs for one run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunRequest {
+    pub prompt: String,
+    /// Per-task working directory prepared by the board. `None`: the backend's default.
+    pub workdir: Option<PathBuf>,
+    /// MCP client config file that gives the agent Melissa's tools for this task.
+    pub mcp_config: Option<PathBuf>,
+}
+
+impl RunRequest {
+    pub fn prompt(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            ..Self::default()
+        }
+    }
 }
 
 /// Errors a backend can report while running a task.
@@ -87,7 +108,10 @@ impl EventSink {
 pub trait Backend: Send + Sync {
     fn info(&self) -> BackendInfo;
 
-    /// Run one prompt to completion, streaming output into `sink`.
-    fn run<'a>(&'a self, prompt: &'a str, sink: EventSink)
-        -> BoxFuture<'a, Result<(), AgentError>>;
+    /// Run one request to completion, streaming output into `sink`.
+    fn run<'a>(
+        &'a self,
+        req: &'a RunRequest,
+        sink: EventSink,
+    ) -> BoxFuture<'a, Result<(), AgentError>>;
 }
