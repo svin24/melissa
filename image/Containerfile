@@ -58,7 +58,7 @@ RUN set -eu; \
     # Melissa drives updates itself; don't let the stock timer download and reboot.
     systemctl mask bootc-fetch-apply-updates.timer 2>/dev/null || true; \
     if [ "$VARIANT" = headless ]; then \
-        systemctl enable melissa-queen.service k3s.service; \
+        systemctl enable melissa-queen.service k3s.service melissa-kubeconfig.service; \
     else \
         # Desktop: the queen runs per user so it can use that user's agent CLI logins.
         systemctl --global enable melissa-queen.service; \

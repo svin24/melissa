@@ -21,6 +21,9 @@ pub struct QueenConfig {
     /// Agent CLI backends. The built-in `echo` backend is always present in addition.
     #[serde(rename = "backend")]
     pub backends: Vec<CliSpec>,
+    /// Kubeconfig for the local k3s API, used when no `melissa.kubeconfig` systemd credential
+    /// is present (e.g. a desktop queen pointed at a cluster). Unset = no cluster access.
+    pub kubeconfig: Option<PathBuf>,
 }
 
 impl Default for QueenConfig {
@@ -29,6 +32,7 @@ impl Default for QueenConfig {
             listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             task_timeout_secs: 300,
             backends: default_backends(),
+            kubeconfig: None,
         }
     }
 }
@@ -136,6 +140,7 @@ mod tests {
             r#"
             listen = "127.0.0.1:9000"
             task_timeout_secs = 60
+            kubeconfig = "/run/example/kubeconfig"
             [[backend]]
             name = "gemma"
             command = "opencode"
@@ -146,6 +151,10 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.listen.port(), 9000);
         assert_eq!(config.backends.len(), 1);
+        assert_eq!(
+            config.kubeconfig.as_deref(),
+            Some(Path::new("/run/example/kubeconfig"))
+        );
         assert_eq!(
             config.backends[0].render_args("hi"),
             ["run", "-m", "ollama/gemma3", "hi"]

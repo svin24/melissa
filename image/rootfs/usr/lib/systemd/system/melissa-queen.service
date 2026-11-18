@@ -2,6 +2,9 @@
 Description=Melissa queen bee (system)
 After=network-online.target
 Wants=network-online.target
+# Start with cluster credentials when k3s is enabled (headless). Ordering only: without k3s the
+# queen starts at once and cluster tools report that k3s isn't running.
+After=melissa-kubeconfig.service
 
 [Service]
 DynamicUser=yes
@@ -9,6 +12,9 @@ StateDirectory=melissa
 ConfigurationDirectory=melissa
 # Maps the XDG paths used by the queen to /etc/melissa and /var/lib/melissa.
 Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib
+# Read-only k3s kubeconfig from /run/credstore (written by melissa-kubeconfig.service). Unlike
+# LoadCredential= with a path, a missing credential is not an error.
+ImportCredential=melissa.kubeconfig
 ExecStart=/usr/bin/melissa-queen
 Restart=on-failure
 NoNewPrivileges=yes
