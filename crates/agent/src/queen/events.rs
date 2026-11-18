@@ -100,6 +100,21 @@ pub enum QueenEvent {
         turn: Option<TurnId>,
         message: String,
     },
+    /// The conversation read untrusted content for the first time: from now on its changes
+    /// need the user's OK. `tool`: what brought it in (`app_logs`, `bee_status`, `queen` for
+    /// a job or message from a tainted Queen), `subject`: the app or bee it was about.
+    Tainted {
+        tool: Option<String>,
+        subject: Option<String>,
+    },
+    /// The user started a new chat: what came before is archived, the agent starts a fresh
+    /// session and the conversation is untainted again.
+    NewChat,
+    /// Only in memory: the events up to [`QueenEvent::EarlierEnd`] were restored from the
+    /// transcript after a daemon restart (the earlier conversation).
+    EarlierStart,
+    /// Only in memory: the end of the restored events.
+    EarlierEnd,
 }
 
 impl QueenEvent {
@@ -114,6 +129,22 @@ impl QueenEvent {
             | Self::Permission { turn, .. }
             | Self::Error { turn, .. } => *turn,
             _ => None,
+        }
+    }
+}
+
+impl QueenEvent {
+    /// Change this event's turn id (restored events get new ones).
+    pub(crate) fn map_turn(&mut self, f: impl FnOnce(TurnId) -> Option<TurnId>) {
+        match self {
+            Self::UserMessage { turn, .. }
+            | Self::Text { turn, .. }
+            | Self::AgentMessage { turn, .. }
+            | Self::TurnFinished { turn, .. } => *turn = f(*turn).unwrap_or(0),
+            Self::ToolCall { turn, .. }
+            | Self::Permission { turn, .. }
+            | Self::Error { turn, .. } => *turn = turn.and_then(f),
+            _ => {}
         }
     }
 }
@@ -142,6 +173,10 @@ struct Inner {
     next_seq: Mutex<u64>,
     notify: Notify,
     transcript: Option<Transcript>,
+    /// Identifies this log (one daemon run): a client's cursor from another log is stale.
+    epoch: u64,
+    /// The highest turn id among restored events (new turns continue after it).
+    restored_turns: TurnId,
 }
 
 /// The Queen's event log. Cheap to clone.
@@ -154,29 +189,94 @@ impl EventLog {
     /// Events kept in memory for clients.
     pub const CAPACITY: usize = 2000;
 
+    /// Turns of the earlier conversation restored by [`EventLog::with_history`].
+    pub const RESTORED_TURNS: usize = 30;
+
     /// A log that also records events in `transcript` (all but text pieces).
     pub fn new(transcript: Option<Transcript>) -> Self {
+        Self::build(transcript, 0)
+    }
+
+    fn build(transcript: Option<Transcript>, restored_turns: TurnId) -> Self {
+        // Nanoseconds since the epoch: different for every log a daemon makes in practice.
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
         Self {
             inner: Arc::new(Inner {
                 buf: Mutex::new(VecDeque::new()),
                 next_seq: Mutex::new(1),
                 notify: Notify::new(),
                 transcript,
+                epoch,
+                restored_turns,
             }),
         }
+    }
+
+    /// A log that starts with the last [`EventLog::RESTORED_TURNS`] turns of the current
+    /// chat from `transcript` (after a daemon restart), between `earlier_start` and
+    /// `earlier_end` markers. Restored events get new sequence numbers (and turn ids) and
+    /// are not written to the transcript again.
+    pub fn with_history(transcript: Transcript) -> Self {
+        let earlier = transcript.load_chat(Self::RESTORED_TURNS);
+        let turns = earlier
+            .iter()
+            .filter_map(|r| r.event.turn())
+            .max()
+            .unwrap_or(0);
+        let log = Self::build(Some(transcript), turns);
+        if !earlier.is_empty() {
+            log.push_memory(QueenEvent::EarlierStart, None);
+            for r in earlier {
+                log.push_memory(r.event, Some(r.ts));
+            }
+            log.push_memory(QueenEvent::EarlierEnd, None);
+        }
+        log
     }
 
     pub fn transcript(&self) -> Option<&Transcript> {
         self.inner.transcript.as_ref()
     }
 
+    /// Identifies this log; a client cursor taken from a log with another epoch (before a
+    /// daemon restart) does not point into this one.
+    pub fn epoch(&self) -> u64 {
+        self.inner.epoch
+    }
+
+    /// The highest turn id of the restored earlier conversation (0: none).
+    pub fn restored_turns(&self) -> TurnId {
+        self.inner.restored_turns
+    }
+
     /// Append an event; returns its sequence number.
     pub fn push(&self, event: QueenEvent) -> u64 {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let record = {
+        let record = self.push_memory(event, None);
+        if let (Some(t), false) = (
+            &self.inner.transcript,
+            matches!(
+                record.event,
+                QueenEvent::Text { .. } | QueenEvent::EarlierStart | QueenEvent::EarlierEnd
+            ),
+        ) {
+            t.append(&record);
+        }
+        self.inner.notify.notify_waiters();
+        record.seq
+    }
+
+    /// Append an event to memory only (`ts`: keep this time instead of now).
+    fn push_memory(&self, event: QueenEvent, ts: Option<u64>) -> EventRecord {
+        let ts = ts.unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+        {
             // Number and append under one lock so the buffer stays in seq order.
             let mut buf = lock(&self.inner.buf);
             let mut next = lock(&self.inner.next_seq);
@@ -191,15 +291,7 @@ impl EventLog {
             }
             buf.push_back(record.clone());
             record
-        };
-        if let (Some(t), false) = (
-            &self.inner.transcript,
-            matches!(record.event, QueenEvent::Text { .. }),
-        ) {
-            t.append(&record);
         }
-        self.inner.notify.notify_waiters();
-        record.seq
     }
 
     /// The newest sequence number handed out (0: none yet).

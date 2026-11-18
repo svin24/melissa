@@ -239,6 +239,18 @@ impl Printer {
                 ));
             }
             QueenEvent::Error { message, .. } => self.line(&format!("[error] {message}")),
+            QueenEvent::Tainted { tool, subject } => {
+                let from = match (tool, subject) {
+                    (Some(t), Some(s)) => format!(" ({t}: {s})"),
+                    (Some(t), None) => format!(" ({t})"),
+                    _ => String::new(),
+                };
+                self.line(&format!(
+                    "[taint] read untrusted content{from}; changes now need your OK until a new chat"
+                ));
+            }
+            QueenEvent::NewChat => self.line("[new chat] the earlier chat was archived"),
+            QueenEvent::EarlierStart | QueenEvent::EarlierEnd => {}
             QueenEvent::TurnFinished { stop_reason, .. } => {
                 if stop_reason == "end_turn" {
                     if self.mid_line {
@@ -310,6 +322,19 @@ pub async fn ask(client: &Client, message: &str) -> anyhow::Result<()> {
     let (_, stop) = follow_turn(client, &mut printer, since, turn).await?;
     if stop == "error" {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `new-chat` (and `chat --new`): archive the Queen's chat and start a fresh one.
+pub async fn new_chat(client: &Client) -> anyhow::Result<()> {
+    let (status, body) = client.post("/api/queen/new-chat", json!({})).await?;
+    let body = ok(status, body)?;
+    match body["archived"].as_u64() {
+        Some(id) => println!(
+            "Started a new chat. The earlier one is kept read-only (past chat {id}, in the web UI)."
+        ),
+        None => println!("Started a new chat (the earlier one was empty)."),
     }
     Ok(())
 }

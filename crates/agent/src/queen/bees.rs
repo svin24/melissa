@@ -242,10 +242,11 @@ impl BeePool {
                 .collect(),
         };
         let state_dir = self.inner.registry.bee_dir(&bee.id);
-        let events = EventLog::new(Some(Transcript::new(
+        // The bee's earlier chat comes back after a daemon restart.
+        let events = EventLog::with_history(Transcript::new(
             state_dir.join("transcript.jsonl"),
             self.inner.limits.transcript_max_bytes,
-        )));
+        ));
         let comb = self.inner.registry.comb();
         let system_prompt = format!(
             "{}\n\nYou are bee {} (id {}) on comb {comb}. Your scope: the cells you look after \
@@ -575,8 +576,9 @@ impl BeePool {
             backend: bee.backend.clone(),
         });
         Ok(json!({
-            "bee": bee.id,
-            "name": bee.name,
+            // The name is what the agent says (and may pass back); the id is for reference.
+            "bee": bee.name,
+            "bee_id": bee.id,
             "backend": bee.backend,
             "tools": bee.tools,
             "status": "idle",
@@ -626,7 +628,10 @@ impl BeePool {
         };
         if ctx.tainted {
             // The job text may carry what the Queen read; so does the bee now.
-            conv.taint();
+            conv.taint(crate::mcp::TaintSource {
+                tool: Some("queen".into()),
+                subject: None,
+            });
         }
         if let Err(e) = self.inner.registry.set_stopped(&bee.id, false) {
             tracing::warn!("bee registry: {e}");
@@ -674,8 +679,9 @@ impl BeePool {
             });
         });
         Ok(json!({
-            "bee": bee.id,
-            "name": bee.name,
+            // The name is what the agent says (and may pass back); the id is for reference.
+            "bee": bee.name,
+            "bee_id": bee.id,
             "turn": turn,
             "timeout_secs": timeout.as_secs(),
             "status": "working",
@@ -734,8 +740,9 @@ impl BeePool {
         });
         let view = self.view(&bee);
         Ok(json!({
-            "bee": bee.id,
-            "name": bee.name,
+            // The name is what the agent says (and may pass back); the id is for reference.
+            "bee": bee.name,
+            "bee_id": bee.id,
             "backend": bee.backend,
             "status": view.status,
             "job": job.map(|j| j.goal),
@@ -775,8 +782,8 @@ impl BeePool {
             .map(|b| {
                 let cells = owned.remove(&b.id).unwrap_or_default();
                 json!({
-                    "bee": b.id,
-                    "name": b.name,
+                    "bee": b.name,
+                    "bee_id": b.id,
                     "backend": b.backend,
                     "status": b.status,
                     "job": b.job.map(|g| shorten(&g, 200)),
@@ -808,7 +815,7 @@ impl BeePool {
             .set_stopped(&bee.id, true)
             .map_err(|e| ToolError::Failed(e.to_string()))?;
         self.audit("bee.stop", "queen", &bee.id);
-        Ok(json!({"bee": bee.id, "name": bee.name, "status": "stopped"}))
+        Ok(json!({"bee": bee.name, "bee_id": bee.id, "status": "stopped"}))
     }
 
     /// Bee-to-bee talk, brokered by the Queen: the text reaches the bee as data, never as
@@ -847,7 +854,13 @@ impl BeePool {
             other => ToolError::BadArgs(other.to_string()),
         })?;
         if ctx.tainted || source_tainted {
-            conv.taint();
+            conv.taint(crate::mcp::TaintSource {
+                tool: Some("queen".into()),
+                subject: from
+                    .as_ref()
+                    .filter(|_| source_tainted)
+                    .map(|f| f.name.clone()),
+            });
         }
         if let Err(e) = self.inner.registry.set_stopped(&bee.id, false) {
             tracing::warn!("bee registry: {e}");
@@ -865,8 +878,9 @@ impl BeePool {
             }
         }
         Ok(json!({
-            "bee": bee.id,
-            "name": bee.name,
+            // The name is what the agent says (and may pass back); the id is for reference.
+            "bee": bee.name,
+            "bee_id": bee.id,
             "turn": turn,
             "from": source,
             "delivered_as": "data",
@@ -885,8 +899,8 @@ impl BeePool {
         Ok(json!({
             "cell": cell,
             "from": from.label_value(),
-            "to": to.id,
-            "to_name": to.name,
+            "to": to.name,
+            "to_id": to.id,
         }))
     }
 }

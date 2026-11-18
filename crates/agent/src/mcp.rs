@@ -30,6 +30,16 @@ struct Session {
     ctx: TaskContext,
     /// Tools this task may see (None = all).
     allow: Option<Vec<&'static str>>,
+    /// What first brought untrusted content into the session (tool, app or bee).
+    taint_source: Option<TaintSource>,
+}
+
+/// What first brought untrusted content into a session: the tool and what it was about
+/// (its `app`, `cell` or `bee` argument), for a plain-language note to the user.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TaintSource {
+    pub tool: Option<String>,
+    pub subject: Option<String>,
 }
 
 /// Shared MCP server state. Cheap to clone.
@@ -81,7 +91,15 @@ impl McpServer {
         allow: Option<Vec<&'static str>>,
     ) -> std::io::Result<String> {
         let token = random_token()?;
-        lock(&self.sessions).insert(token.clone(), Session { task, ctx, allow });
+        lock(&self.sessions).insert(
+            token.clone(),
+            Session {
+                task,
+                ctx,
+                allow,
+                taint_source: None,
+            },
+        );
         Ok(token)
     }
 
@@ -108,6 +126,13 @@ impl McpServer {
             }
             None => false,
         }
+    }
+
+    /// What first tainted a session (None: not tainted by a tool call, or unknown session).
+    pub fn taint_source(&self, token: &str) -> Option<TaintSource> {
+        lock(&self.sessions)
+            .get(token)
+            .and_then(|s| s.taint_source.clone())
     }
 
     /// The tool allowlist of a session (None = no limit beyond the policy context).
@@ -250,10 +275,21 @@ impl McpServer {
             // Same answer as for a nonexistent tool: hidden tools stay invisible.
             return Ok(tool_error(&format!("unknown tool `{name}`")));
         }
+        let was_tainted = ctx.tainted;
+        let subject = ["app", "cell", "bee"]
+            .iter()
+            .find_map(|k| args.get(k).and_then(Value::as_str))
+            .map(str::to_string);
         let result = self.registry.call(task, &mut ctx, name, args).await;
         if ctx.tainted {
             if let Some(s) = lock(&self.sessions).get_mut(token) {
                 s.ctx.tainted = true;
+                if !was_tainted && s.taint_source.is_none() {
+                    s.taint_source = Some(TaintSource {
+                        tool: Some(name.to_string()),
+                        subject,
+                    });
+                }
             }
         }
         Ok(match result {

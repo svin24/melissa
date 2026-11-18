@@ -11,6 +11,7 @@
 //!   `sudo melissa-queen app-credentials <app>`                the owner's view of an app's
 //!                                                            generated credentials
 //!   `melissa-queen [--config <path>] chat [--bee <bee>]`      talk to the Queen or a bee
+//!   `melissa-queen [--config <path>] new-chat` (`chat --new`) start a new chat with the Queen
 //!   `melissa-queen [--config <path>] ask [--bee <bee>] <message>`  one message, stream it
 //!   `melissa-queen [--config <path>] confirm list|approve <id>|deny <id>`
 //!   `melissa-queen [--config <path>] bee list|rename <bee> <name>`  this comb's bees
@@ -69,6 +70,8 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
                               (answer it with `confirm approve <id>` from another shell)
   app-credentials <app>       show an app's generated credentials (owner only, needs root)
   chat [--bee <bee>]          talk to the Queen, or directly to a bee (Ctrl-C cancels a turn)
+  chat --new                  start a new chat with the Queen, then talk (also: new-chat)
+  new-chat                    archive the Queen's chat and start a fresh one (clears its taint)
   ask [--bee <bee>] <message> send one message and stream the answer
   confirm list|approve <id>|deny <id>
   bee list                    this comb's bees (also: bees)
@@ -95,6 +98,8 @@ enum Command {
     AppCredentials(String),
     /// Talk to the Queen (None) or a bee.
     Chat(Option<String>),
+    /// Start a new chat with the Queen (`true`: then talk).
+    NewChat(bool),
     Ask(Option<String>, String),
     Confirm(String, Option<u64>),
     Bees,
@@ -135,6 +140,13 @@ async fn main() -> anyhow::Result<()> {
     };
     match &command {
         Command::Chat(bee) => return client::chat(&to(bee)).await,
+        Command::NewChat(talk) => {
+            client::new_chat(&api).await?;
+            if *talk {
+                return client::chat(&api).await;
+            }
+            return Ok(());
+        }
         Command::Ask(bee, message) => return client::ask(&to(bee), message).await,
         Command::Confirm(action, id) => return client::confirm(&api, action, *id).await,
         Command::Bees => return client::bees(&api).await,
@@ -253,10 +265,11 @@ async fn serve(
     let workdir = dirs.state.join("work");
     let queen_state = dirs.state.join("queen");
     let q = &config.queen;
-    let events = EventLog::new(Some(Transcript::new(
+    // The earlier chat comes back after a restart (the agent's session resumes too).
+    let events = EventLog::with_history(Transcript::new(
         queen_state.join("transcript.jsonl"),
         q.transcript_max_kib.saturating_mul(1024),
-    )));
+    ));
     let pool = BeePool::new(
         BeeLimits {
             max_concurrent: q.max_bees,
@@ -467,6 +480,8 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
         [c] if c == "chat" => Command::Chat(None),
+        [c, flag] if c == "chat" && flag == "--new" => Command::NewChat(true),
+        [c] if c == "new-chat" => Command::NewChat(false),
         [c, flag, bee] if c == "chat" && flag == "--bee" => Command::Chat(Some(bee.clone())),
         [c, flag, bee, words @ ..] if c == "ask" && flag == "--bee" && !words.is_empty() => {
             Command::Ask(Some(bee.clone()), words.join(" "))
@@ -545,6 +560,14 @@ mod tests {
         assert!(parse(&["app-adopt", "blog"]).is_err());
         assert!(parse(&["bogus"]).is_err());
         assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat(None)));
+        assert!(matches!(
+            parse(&["chat", "--new"]).unwrap().1,
+            Command::NewChat(true)
+        ));
+        assert!(matches!(
+            parse(&["new-chat"]).unwrap().1,
+            Command::NewChat(false)
+        ));
         assert!(
             matches!(parse(&["chat", "--bee", "Ada"]).unwrap().1, Command::Chat(Some(b)) if b == "Ada")
         );

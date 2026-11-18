@@ -397,10 +397,39 @@ main:focus {
   font-size: 0.9rem;
 }
 
+/* A developer page: kept, but out of the way. */
 .rail-foot {
   margin-top: auto;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   color: var(--muted);
+  opacity: 0.8;
+}
+
+.rail-sub {
+  margin: 1rem 0 0.25rem;
+  padding: 0 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.conversations.past a {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.conversations.past .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversations.past .when {
+  flex: none;
+  font-size: 0.8rem;
 }
 
 /* --- Page header and blocks ------------------------------------------------------------- */
@@ -698,13 +727,37 @@ svg.icon.stopped {
   font-weight: 600;
 }
 
+/* The conversation read text from outside: a calm, honey-tinted line, not an alarm. */
+.note.guard {
+  color: var(--honey-text);
+  background: var(--honey-soft);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.75rem;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
 /* --- Approval cards --------------------------------------------------------------------- */
 
 .approval {
   margin-left: 40px;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--honey);
+  border: 2px solid var(--honey);
   border-radius: var(--radius);
   padding: 0.9rem 1rem;
   display: grid;
@@ -712,11 +765,11 @@ svg.icon.stopped {
 }
 
 .approval.destructive {
-  border-left-color: var(--caution);
+  border-color: var(--caution);
 }
 
 .approval.decided {
-  border-left-color: var(--border);
+  border: 1px solid var(--border);
 }
 
 .approval .consequence {

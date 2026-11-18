@@ -244,6 +244,50 @@ impl Queen {
         self.inner.conv.cancel(None, "ui").await
     }
 
+    /// Start a new chat with the Queen (the owner-approved way to clear her taint): withdraw
+    /// her pending confirmations (audited `confirmation.withdrawn`), stop a running turn,
+    /// close her agent session for good (the next message starts a new one, no resume),
+    /// archive the transcript (readable under [`Queen::past_chats`]) and clear the taint.
+    /// Audited `queen.new_chat`. Bees keep their sessions and memory. Returns the old chat's
+    /// archive id, if it had anything in it.
+    pub async fn new_chat(&self) -> Result<Option<u64>, QueenError> {
+        let task = self.task_id();
+        for c in self.confirmations().pending() {
+            if c.task != task {
+                continue;
+            }
+            self.confirmations().withdraw(c.id);
+            if let Some(log) = self.inner.board.audit_log() {
+                let record = AuditRecord::now(
+                    "confirmation.withdrawn",
+                    c.task,
+                    "",
+                    format!("confirmation {}: the user started a new chat", c.id),
+                )
+                .by("ui");
+                if let Err(e) =
+                    log.append(&record.with_tool(&c.tool, &crate::tools::args_hash(&c.args)))
+                {
+                    tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
+                }
+            }
+        }
+        self.inner.conv.new_chat("ui").await
+    }
+
+    /// Chats archived by [`Queen::new_chat`], newest first.
+    pub fn past_chats(&self) -> Vec<transcript::PastChat> {
+        self.events()
+            .transcript()
+            .map(|t| t.past_chats())
+            .unwrap_or_default()
+    }
+
+    /// The events of an archived chat (read-only), None if there is no such chat.
+    pub fn past_chat(&self, id: u64) -> Option<Vec<events::EventRecord>> {
+        self.events().transcript()?.past_chat(id)
+    }
+
     /// Close the agent sessions of the Queen and every bee (daemon shutdown).
     pub async fn close(&self) {
         self.inner.pool.close_all().await;

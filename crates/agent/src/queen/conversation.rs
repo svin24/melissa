@@ -43,7 +43,7 @@ use super::{
 };
 use crate::{
     acp::MCP_SERVER_NAME,
-    mcp::McpServer,
+    mcp::{McpServer, TaintSource},
     session::{
         AgentSession, McpServerSpec, OpenSession, PermissionContext, PolicyPermissions,
         SessionBackend, SessionEvent, ToolStatus,
@@ -169,6 +169,11 @@ impl Conversation {
         audit: Option<AuditLog>,
     ) -> Self {
         let tainted = load_session(&spec.state_dir.join("session.json")).is_some_and(|s| s.tainted);
+        // Turn ids continue after the restored earlier conversation.
+        let turn = TurnState {
+            last: events.restored_turns(),
+            ..TurnState::default()
+        };
         Self {
             inner: Arc::new(Inner {
                 spec,
@@ -177,7 +182,7 @@ impl Conversation {
                 base_url,
                 events,
                 audit,
-                turn: Mutex::new(TurnState::default()),
+                turn: Mutex::new(turn),
                 text: Mutex::new(String::new()),
                 live: Mutex::new(None),
                 gen: AtomicU64::new(0),
@@ -239,12 +244,60 @@ impl Conversation {
 
     /// The conversation was handed untrusted content outside a tool call (e.g. by a tainted
     /// Queen): it is tainted from now on, in this session and every later one.
-    pub(crate) fn taint(&self) {
+    pub(crate) fn taint(&self, source: TaintSource) {
         let token = lock(&self.inner.live).as_ref().map(|l| l.token.clone());
         if let Some(t) = token {
             self.inner.server.taint_session(&t);
         }
-        self.remember_taint();
+        self.remember_taint(source);
+    }
+
+    /// Start a new chat: withdraw nothing here (the Queen does that), stop a running turn,
+    /// close the agent session without keeping its id (no resume), archive the transcript,
+    /// clear the taint and tell clients (`new_chat`). Returns the archive's id, if the old
+    /// chat had anything in it. `Busy` if a running turn does not stop in time.
+    pub(crate) async fn new_chat(&self, actor: &str) -> Result<Option<u64>, QueenError> {
+        if let Some(turn) = self.busy() {
+            self.cancel(Some(turn), actor).await;
+            if !self
+                .wait_turn(turn, CANCEL_GRACE + Duration::from_secs(2))
+                .await
+            {
+                return Err(QueenError::Busy);
+            }
+        }
+        self.close().await;
+        let spec = &self.inner.spec;
+        let saved = spec.state_dir.join("session.json");
+        if let Err(e) = std::fs::remove_file(&saved) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(QueenError::Failed(format!(
+                    "cannot forget the old session ({}): {e}",
+                    saved.display()
+                )));
+            }
+        }
+        let archived = match self.inner.events.transcript() {
+            Some(t) => t
+                .archive()
+                .map_err(|e| QueenError::Failed(format!("cannot archive the chat: {e}")))?,
+            None => None,
+        };
+        // Only now: closing the session above may still have noted its taint.
+        self.inner.tainted.store(false, Ordering::SeqCst);
+        lock(&self.inner.text).clear();
+        *lock(&self.inner.last) = None;
+        self.inner.events.push(QueenEvent::NewChat);
+        let was = match archived {
+            Some(id) => format!("old chat archived as {id}"),
+            None => "old chat was empty".into(),
+        };
+        self.audit(
+            "new_chat",
+            actor,
+            &format!("{was}; taint cleared; new agent session on the next message"),
+        );
+        Ok(archived)
     }
 
     /// Send a message: starts a turn and returns its id and the event sequence number to
@@ -567,14 +620,20 @@ impl Conversation {
             .session_context(token)
             .is_some_and(|c| c.tainted);
         if tainted {
-            self.remember_taint();
+            let source = self.inner.server.taint_source(token).unwrap_or_default();
+            self.remember_taint(source);
         }
     }
 
-    fn remember_taint(&self) {
+    /// The first time: tell the user (`tainted` event) and save the flag.
+    fn remember_taint(&self, source: TaintSource) {
         if self.inner.tainted.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.inner.events.push(QueenEvent::Tainted {
+            tool: source.tool,
+            subject: source.subject,
+        });
         let path = self.inner.spec.state_dir.join("session.json");
         if let Some(mut saved) = load_session(&path) {
             saved.tainted = true;
@@ -653,6 +712,11 @@ impl Conversation {
                     title: title.unwrap_or_else(|| "tool call".into()),
                     status: status.as_str().into(),
                 });
+                // A tool that read untrusted content: say so right after it.
+                let token = lock(&self.inner.live).as_ref().map(|l| l.token.clone());
+                if let Some(token) = token {
+                    self.keep_taint(&token);
+                }
             }
             SessionEvent::Permission {
                 title, decision, ..

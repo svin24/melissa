@@ -14,6 +14,10 @@
 //! - `POST /ui/messages` / `POST /ui/bees/{bee}/messages` (form `text`), `POST /ui/cancel` /
 //!   `POST /ui/bees/{bee}/cancel`, `POST /ui/confirmations/{id}/approve|deny`: the same calls
 //!   as the JSON API. htmx gets a fragment; a plain form post gets a redirect.
+//! - `POST /ui/new-chat`: a new chat with Melissa (plain form, redirects to `/`);
+//!   `GET /chats/{id}`: an archived chat, read-only.
+//! - Stream cursors carry the log's epoch (`?epoch=`, SSE ids `<epoch>-<seq>`): a page from
+//!   before a daemon restart gets `reload`, and so does every page when a new chat starts.
 
 use std::{convert::Infallible, time::Duration};
 
@@ -38,7 +42,7 @@ use serde_json::Value;
 
 use crate::{
     components::ApprovalState,
-    feed::{approval_words, backend_label, Feed, Lookup},
+    feed::{approval_words, backend_label, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, Frame, View, Who},
     state::HiveCache,
@@ -65,6 +69,8 @@ pub(crate) fn routes(queen: Queen, hive: HiveCache) -> Router {
         .route("/ui/cancel", post(queen_cancel))
         .route("/ui/bees/{bee}/cancel", post(bee_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
+        .route("/ui/new-chat", post(new_chat))
+        .route("/chats/{id}", get(past_chat_page))
         .with_state(Ui { queen, hive })
 }
 
@@ -95,9 +101,9 @@ impl Ui {
     }
 
     /// A conversation folded from every event in its log.
-    fn feed(&self, log: &EventLog) -> Feed {
+    fn feed(&self, who: Who<'_>, log: &EventLog) -> Feed {
         let page = log.since(0, EventLog::CAPACITY);
-        Feed::from_events(&page.events, self)
+        Feed::for_helper(matches!(who, Who::Bee(_))).fold(&page.events, self)
     }
 
     fn backend(&self, who: Who<'_>, feed: &Feed) -> Option<String> {
@@ -120,10 +126,12 @@ impl Ui {
     async fn framed(&self, page: impl FnOnce(&Frame<'_>) -> Markup) -> Markup {
         let snap = self.hive.get().await;
         let bees = self.queen.bees().list();
+        let past = self.queen.past_chats();
         page(&Frame {
             waiting: self.waiting(),
             snap: &snap,
             bees: &bees,
+            past: &past,
         })
     }
 
@@ -135,10 +143,12 @@ impl Ui {
         draft: &str,
         error: Option<&str>,
     ) -> Result<Markup, QueenError> {
-        let feed = self.feed(&self.log(who)?);
+        let log = self.log(who)?;
+        let feed = self.feed(who, &log);
         let backend = self.backend(who, &feed);
         let view = ChatView {
             who,
+            epoch: log.epoch(),
             feed: &feed,
             backend: backend.as_deref(),
             busy: self.status(who).is_some_and(|s| s.turn.is_some()),
@@ -208,7 +218,9 @@ async fn approvals_page(State(ui): State<Ui>) -> Markup {
         .into_iter()
         .map(|c| approval_words(c.id, &c.tool, &c.reason, Some(&c.args), &ui))
         .collect();
-    ui.framed(|f| pages::approvals(f, &list, since)).await
+    let epoch = ui.queen.events().epoch();
+    ui.framed(|f| pages::approvals(f, &list, since, epoch))
+        .await
 }
 
 #[derive(Deserialize)]
@@ -217,6 +229,9 @@ struct StreamQuery {
     since: u64,
     #[serde(default)]
     view: Option<String>,
+    /// The epoch of the log the page was rendered from.
+    #[serde(default)]
+    epoch: Option<u64>,
 }
 
 /// How long one wait for new events lasts before it is started again.
@@ -252,7 +267,8 @@ async fn queen_stream(
         _ => View::Chat,
     };
     let log = ui.queen.events().clone();
-    stream(ui, log, None, view, cursor(&headers, q.since)).into_response()
+    let at = cursor(&headers, &q, log.epoch());
+    stream(ui, log, None, view, at).into_response()
 }
 
 async fn bee_stream(
@@ -268,16 +284,28 @@ async fn bee_stream(
         Ok(log) => log,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    stream(ui, log, Some(bee.id), View::Chat, cursor(&headers, q.since)).into_response()
+    let at = cursor(&headers, &q, log.epoch());
+    stream(ui, log, Some(bee.id), View::Chat, at).into_response()
 }
 
-/// Where a stream starts: a reconnecting browser says where it got to.
-fn cursor(headers: &HeaderMap, since: u64) -> u64 {
-    headers
+/// Where a stream starts: a reconnecting browser says where it got to (`<epoch>-<seq>`).
+/// None: the page came from another log (before a daemon restart), so it must reload.
+fn cursor(headers: &HeaderMap, q: &StreamQuery, epoch: u64) -> Option<u64> {
+    let last = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(since)
+        .and_then(|v| match v.split_once('-') {
+            Some((e, s)) => Some((Some(e.parse::<u64>().ok()?), s.parse::<u64>().ok()?)),
+            // Ids from before epochs.
+            None => Some((None, v.parse::<u64>().ok()?)),
+        });
+    match (last, q.epoch) {
+        (Some((Some(e), seq)), _) => (e == epoch).then_some(seq),
+        (Some((None, seq)), _) => Some(seq),
+        (None, Some(e)) => (e == epoch).then_some(q.since),
+        // Pages from before epochs: only the sequence number to go by.
+        (None, None) => Some(q.since),
+    }
 }
 
 fn stream(
@@ -285,13 +313,16 @@ fn stream(
     log: EventLog,
     bee: Option<String>,
     view: View,
-    cursor: u64,
+    cursor: Option<u64>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    // The page is newer than this log (the daemon restarted): its DOM can't be updated.
-    let reload = cursor > log.last_seq();
+    // The page is from another log or newer than this one (the daemon restarted): its DOM
+    // can't be updated.
+    let reload = cursor.is_none_or(|c| c > log.last_seq());
+    let cursor = cursor.unwrap_or(0);
+    let helper = bee.is_some();
     let feed = {
         let page = log.since(0, EventLog::CAPACITY);
-        Feed::from_events(page.events.iter().filter(|r| r.seq <= cursor), &ui)
+        Feed::for_helper(helper).fold(page.events.iter().filter(|r| r.seq <= cursor), &ui)
     };
     let state = StreamState {
         ui,
@@ -320,6 +351,12 @@ fn stream(
                 changes.extend(st.feed.apply(rec, &st.ui));
             }
             st.cursor = page.next;
+            if changes.contains(&Change::Reset) {
+                // A new chat: the page starts over.
+                st.reload = true;
+                st.cursor = u64::MAX;
+                return Some((Ok(Event::default().event("reload").data("")), st));
+            }
             let backend = st.ui.backend(st.who(), &st.feed);
             let html = pages::stream_update(
                 &st.feed,
@@ -334,7 +371,7 @@ fn stream(
             }
             let event = Event::default()
                 .event("feed")
-                .id(st.cursor.to_string())
+                .id(format!("{}-{}", st.log.epoch(), st.cursor))
                 .data(html);
             return Some((Ok(event), st));
         }
@@ -407,6 +444,7 @@ async fn message_reply(
         let feed = Feed::new();
         return pages::composer_box(&ChatView {
             who,
+            epoch: 0,
             feed: &feed,
             backend,
             busy,
@@ -477,4 +515,29 @@ async fn resolve(
         }
         None => pages::approval_gone().into_response(),
     }
+}
+
+async fn new_chat(State(ui): State<Ui>) -> Response {
+    match ui.queen.new_chat().await {
+        Ok(_) => Redirect::to("/").into_response(),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            pages::error_page("Couldn't start a new chat", &e.to_string()),
+        )
+            .into_response(),
+    }
+}
+
+async fn past_chat_page(State(ui): State<Ui>, Path(id): Path<u64>) -> Response {
+    let (Some(chat), Some(events)) = (
+        ui.queen.past_chats().into_iter().find(|c| c.id == id),
+        ui.queen.past_chat(id),
+    ) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    let mut feed = Feed::archived().fold(&events, &ui);
+    feed.settle();
+    ui.framed(|f| pages::past_chat(f, &chat, &feed))
+        .await
+        .into_response()
 }

@@ -8,18 +8,18 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 use crate::{
     components::{
         action_button, activity_row, add_app_cell, app_cell, app_page, app_strip, approval_card,
-        badge, card, code, composer, composer_status, device_card, empty_state, feed, feed_entry,
-        honeycomb, link, live_region, log_view, note, oob_inner, page, page_header, post_form,
-        queen_message, rail, relayed_message, section, select_field, table, textarea_field,
-        truncated, user_message, waiting_count, AppCell, ApprovalCard, Choice, DeviceCard, Health,
-        LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
-        FEED_ID,
+        badge, card, chat_divider, code, composer, composer_status, device_card, empty_state, feed,
+        feed_entry, honeycomb, link, live_region, log_view, note, oob_inner, page, page_header,
+        post_form, queen_message, rail, relayed_message, section, select_field, table,
+        textarea_field, truncated, user_message, waiting_count, AppCell, ApprovalCard, Choice,
+        DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID,
+        COMPOSER_STATUS_ID, FEED_ID,
     },
-    components::{ComposerTarget, RailHelper},
+    components::{feed_archive, ComposerTarget, RailHelper, RailPastChat},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, Device, HiveSnapshot, Keeper},
 };
-use melissa_agent::queen::bees::BeeView;
+use melissa_agent::queen::{bees::BeeView, transcript::PastChat};
 
 pub const TASKS_ID: &str = "tasks";
 pub const TASK_ID: &str = "task";
@@ -42,6 +42,35 @@ pub struct Frame<'a> {
     pub waiting: usize,
     pub snap: &'a HiveSnapshot,
     pub bees: &'a [BeeView],
+    /// Archived chats with Melissa, newest first.
+    pub past: &'a [PastChat],
+}
+
+/// An archived chat's page.
+pub fn past_chat_href(id: u64) -> String {
+    format!("/chats/{id}")
+}
+
+/// Past chats shown in the rail.
+const RAIL_PAST_CHATS: usize = 5;
+
+/// A short date ("18 Nov") for Unix seconds, in UTC (no time zone data on the box yet).
+pub fn short_date(secs: u64) -> String {
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let days = (secs / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let _year = era * 400 + yoe + i64::from(month <= 2);
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let name = MONTHS.get((month - 1) as usize).copied().unwrap_or("");
+    format!("{day} {name}")
 }
 
 /// A helper's page.
@@ -59,6 +88,16 @@ fn bee_health(status: &str) -> (Health, &'static str) {
 
 /// The rail. `current_bee`: the helper whose conversation is open.
 pub fn rail_for(nav: Nav, f: &Frame<'_>, current_bee: Option<&str>) -> Markup {
+    rail_with(nav, f, current_bee, None)
+}
+
+/// The rail; `current_past`: the archived chat that is open.
+fn rail_with(
+    nav: Nav,
+    f: &Frame<'_>,
+    current_bee: Option<&str>,
+    current_past: Option<u64>,
+) -> Markup {
     let devices: Vec<RailDevice<'_>> = f
         .snap
         .devices
@@ -88,7 +127,29 @@ pub fn rail_for(nav: Nav, f: &Frame<'_>, current_bee: Option<&str>) -> Markup {
             }
         })
         .collect();
-    rail(nav, f.waiting, &devices, &helpers)
+    let shown = &f.past[..f.past.len().min(RAIL_PAST_CHATS)];
+    let past_words: Vec<(String, String, String)> = shown
+        .iter()
+        .map(|p| {
+            let title = if p.title.is_empty() {
+                "A chat".to_string()
+            } else {
+                p.title.clone()
+            };
+            (past_chat_href(p.id), title, short_date(p.ended))
+        })
+        .collect();
+    let past: Vec<RailPastChat<'_>> = shown
+        .iter()
+        .zip(&past_words)
+        .map(|(p, (href, title, when))| RailPastChat {
+            href,
+            title,
+            when,
+            current: current_past == Some(p.id),
+        })
+        .collect();
+    rail(nav, f.waiting, &devices, &helpers, &past)
 }
 
 /// Whose conversation a chat page or stream shows.
@@ -114,10 +175,10 @@ impl Who<'_> {
         }
     }
 
-    fn stream_url(self, since: u64) -> String {
+    fn stream_url(self, since: u64, epoch: u64) -> String {
         match self {
-            Self::Queen => format!("/ui/stream?since={since}"),
-            Self::Bee(id) => format!("/ui/bees/{id}/stream?since={since}"),
+            Self::Queen => format!("/ui/stream?since={since}&epoch={epoch}"),
+            Self::Bee(id) => format!("/ui/bees/{id}/stream?since={since}&epoch={epoch}"),
         }
     }
 }
@@ -146,6 +207,7 @@ pub fn entry_content(entry: &Entry) -> Markup {
         ),
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
         Item::Note { text, detail, tone } => note(text, detail.as_deref(), *tone),
+        Item::Divider { text } => chat_divider(text),
     }
 }
 
@@ -279,6 +341,8 @@ pub fn strip(snap: &HiveSnapshot) -> Markup {
 /// Everything a chat page shows.
 pub struct ChatView<'a> {
     pub who: Who<'a>,
+    /// The event log's epoch (the stream reloads the page if the log changed).
+    pub epoch: u64,
     pub feed: &'a Feed,
     pub backend: Option<&'a str>,
     pub busy: bool,
@@ -297,7 +361,7 @@ pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
                 (feed(
                     FEED_ID,
                     "Conversation",
-                    &v.who.stream_url(v.feed.last_seq()),
+                    &v.who.stream_url(v.feed.last_seq(), v.epoch),
                     entries(v.feed.entries()),
                     empty_state(
                         "Hi, I'm Melissa.",
@@ -333,7 +397,7 @@ pub fn bee_chat(f: &Frame<'_>, bee: &BeeView, v: &ChatView<'_>) -> Markup {
                 (feed(
                     FEED_ID,
                     &format!("Conversation with {}", bee.name),
-                    &v.who.stream_url(v.feed.last_seq()),
+                    &v.who.stream_url(v.feed.last_seq(), v.epoch),
                     entries(v.feed.entries()),
                     empty_state(
                         &format!("Nothing here yet with {}.", bee.name),
@@ -362,6 +426,31 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
         v.draft,
         v.error,
         composer_status(&cancel, v.backend, v.busy),
+    )
+}
+
+/// An archived chat with Melissa: read-only, no composer.
+pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed) -> Markup {
+    let lead = format!(
+        "An earlier chat with Melissa, kept read-only. Started {}, closed {}.",
+        short_date(chat.started),
+        short_date(chat.ended)
+    );
+    app_page(
+        "Past chat",
+        rail_with(Nav::PastChat, f, None, Some(chat.id)),
+        html! {
+            div.chat {
+                (page_header("Past chat", Some(&lead)))
+                (feed_archive(
+                    FEED_ID,
+                    "Past chat",
+                    entries(feed.entries()),
+                    empty_state("Nothing in this chat.", "It was closed before anything was said."),
+                ))
+                p.quiet { (link("/", "Back to the current chat")) }
+            }
+        },
     )
 }
 
@@ -500,8 +589,8 @@ pub fn hive(f: &Frame<'_>) -> Markup {
 
 // --- Waiting for you ---------------------------------------------------------------------------
 
-pub fn approvals(f: &Frame<'_>, list: &[Approval], since: u64) -> Markup {
-    let stream = format!("/ui/stream?since={since}&view=approvals");
+pub fn approvals(f: &Frame<'_>, list: &[Approval], since: u64, epoch: u64) -> Markup {
+    let stream = format!("/ui/stream?since={since}&epoch={epoch}&view=approvals");
     app_page(
         "Waiting for you",
         rail_for(Nav::Waiting, f, None),

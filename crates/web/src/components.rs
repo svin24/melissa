@@ -57,6 +57,8 @@ pub enum ApprovalState {
 pub enum NoteTone {
     Quiet,
     Caution,
+    /// The conversation read text from outside; its changes need the user's OK.
+    Guard,
 }
 
 /// Status colour of an app cell or a device dot.
@@ -92,6 +94,8 @@ pub enum Nav {
     Hive,
     Waiting,
     Tasks,
+    /// An archived chat with Melissa.
+    PastChat,
 }
 
 /// DOM id of the pending-confirmations count in the rail (updated live).
@@ -192,13 +196,27 @@ pub struct RailHelper<'a> {
     pub current: bool,
 }
 
-/// The side rail: brand, navigation, conversations (Melissa and each helper), devices. On
-/// phones it collapses to a top bar with the navigation only.
+/// An archived chat with Melissa in the rail (read-only).
+pub struct RailPastChat<'a> {
+    pub href: &'a str,
+    /// The first message, shortened (escaped text).
+    pub title: &'a str,
+    /// When, e.g. "18 Nov".
+    pub when: &'a str,
+    pub current: bool,
+}
+
+/// URL the "New chat" button posts to.
+pub const NEW_CHAT_URL: &str = "/ui/new-chat";
+
+/// The side rail: brand, navigation, conversations (Melissa, each helper, past chats with
+/// Melissa), devices. On phones it collapses to a top bar with the navigation only.
 pub fn rail(
     current: Nav,
     waiting: usize,
     devices: &[RailDevice<'_>],
     helpers: &[RailHelper<'_>],
+    past: &[RailPastChat<'_>],
 ) -> Markup {
     let item = |nav: Nav, href: &str, label: &str, extra: Markup| {
         html! {
@@ -233,7 +251,23 @@ pub fn rail(
                         }
                     }
                 }
-                button.ghost type="button" disabled title="One conversation for now" { "New chat" }
+                // A plain form: works without JS; the server redirects to the empty chat.
+                form method="post" action=(NEW_CHAT_URL) {
+                    button.ghost type="submit" title="Start over with Melissa. This chat is kept under Past chats." { "New chat" }
+                }
+                @if !past.is_empty() {
+                    h3.rail-sub #past-h { "Past chats" }
+                    ul.conversations.past aria-labelledby="past-h" {
+                        @for p in past {
+                            li {
+                                a href=(p.href) aria-current=[p.current.then_some("page")] {
+                                    span.name { (p.title) }
+                                    span.when { (p.when) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             section.rail-section aria-labelledby="dev-h" {
                 h2 #dev-h { "Devices" }
@@ -436,6 +470,19 @@ pub fn feed(id: &str, label: &str, stream_url: &str, entries: Markup, empty: Mar
     }
 }
 
+/// A finished conversation (an archived chat): the same entries as [`feed`], read-only and
+/// without live updates.
+pub fn feed_archive(id: &str, label: &str, entries: Markup, empty: Markup) -> Markup {
+    html! {
+        div.feed-wrap {
+            ol.feed id=(id) aria-label=(label) {
+                li.feed-empty { (empty) }
+                (entries)
+            }
+        }
+    }
+}
+
 /// One item of the feed (or of the approvals list) with a stable id, so updates can
 /// replace its content.
 pub fn feed_entry(id: &str, content: Markup) -> Markup {
@@ -598,12 +645,20 @@ pub fn note(text: &str, detail: Option<&str>, tone: NoteTone) -> Markup {
     let class = match tone {
         NoteTone::Quiet => "note",
         NoteTone::Caution => "note caution",
+        NoteTone::Guard => "note guard",
     };
     html! {
         p class=(class) {
             span { (text) }
             @if let Some(d) = detail { " " span.detail { (d) } }
         }
+    }
+}
+
+/// A quiet divider across the chat with a short label (e.g. "Earlier").
+pub fn chat_divider(text: &str) -> Markup {
+    html! {
+        div.divider role="separator" { span { (text) } }
     }
 }
 
