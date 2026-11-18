@@ -3,6 +3,8 @@
 //!
 //! Usage:
 //!   `melissa-queen [--config <path>]`                         serve the web UI and agents
+//!   `melissa-queen [--config <path>] demo`                    the same, for a first run from
+//!                                                            source (summary, quieter log)
 //!   `melissa-queen [--config <path>] tool <name> [json-args]` run one tool and print its JSON
 //!   `melissa-queen [--config <path>] tool --wait <name> [json]` same, in the running daemon,
 //!                                                            waiting for confirmations
@@ -25,6 +27,7 @@
 mod client;
 mod config;
 mod credentials;
+mod preflight;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -58,6 +61,8 @@ const BEE_PROMPT: &str = include_str!("../prompts/bee.md");
 
 const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   (none)                      serve the web UI, the Queen and agents
+  demo                        the same for a first run from source: a short summary
+                              and only warnings in the log
   tool <name> [json-args]     run one tool here and print its JSON result (unattended:
                               anything that needs a confirmation is refused)
   tool --wait <name> [json]   run one tool in the running daemon; waits for a confirmation
@@ -73,7 +78,10 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
                               give a cell to another bee (your decision, no confirmation)";
 
 enum Command {
-    Serve,
+    /// `demo` = true: first run from a source checkout (quieter log, repo catalog).
+    Serve {
+        demo: bool,
+    },
     /// Run one tool through the MCP layer with an unattended policy context, print the result.
     Tool {
         name: String,
@@ -104,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     // Logs go to stderr so `tool` output on stdout stays clean JSON; client commands only
     // show warnings.
     let default_level = match command {
-        Command::Serve | Command::Tool { .. } => "info",
+        Command::Serve { demo: false } | Command::Tool { .. } => "info",
         _ => "warn",
     };
     tracing_subscriber::fmt()
@@ -116,8 +124,9 @@ async fn main() -> anyhow::Result<()> {
 
     let dirs = Dirs::from_env()?;
     let config_path = config_path.unwrap_or_else(|| dirs.config.join("queen.toml"));
-    let config = QueenConfig::load(&config_path)?;
+    let mut config = QueenConfig::load(&config_path)?;
     config.validate()?;
+    use_repo_catalog(&mut config.apps);
 
     let api = client::Client::new(config.listen);
     let to = |bee: &Option<String>| match bee {
@@ -142,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Serve | Command::Tool { .. } => {}
+        Command::Serve { .. } | Command::Tool { .. } => {}
     }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
@@ -151,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
     let registry = BeeRegistry::open(&dirs.state.join("bees"), &comb.id)?;
     let names: Arc<dyn BeeNames> = Arc::new(registry.clone());
     let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
+    let kubeconfigs = kubeconfig_candidates(creds.as_deref(), config.kubeconfig.as_deref());
     let cluster = LazyCluster::for_queen(creds.as_deref(), config.kubeconfig.as_deref());
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(CombInfo::new()),
@@ -181,7 +191,45 @@ async fn main() -> anyhow::Result<()> {
 
     match command {
         Command::Tool { name, args } => run_tool(audit, tools, &wiring, &name, args).await,
-        _ => serve(config, dirs, audit, tools, wiring).await,
+        _ => {
+            let start = Startup {
+                config_path,
+                kubeconfigs,
+            };
+            serve(config, dirs, audit, tools, wiring, start).await
+        }
+    }
+}
+
+/// What the startup summary needs beyond the config.
+struct Startup {
+    config_path: PathBuf,
+    /// Where the queen looks for cluster credentials (any present = k3s is there).
+    kubeconfigs: Vec<PathBuf>,
+}
+
+/// The same candidates `LazyCluster::for_queen` checks, for the startup summary.
+fn kubeconfig_candidates(
+    creds: Option<&std::path::Path>,
+    configured: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
+    creds
+        .map(|d| d.join(melissa_hive::CREDENTIAL_NAME))
+        .into_iter()
+        .chain(configured.map(std::path::Path::to_path_buf))
+        .chain([PathBuf::from(melissa_hive::RUNTIME_DIR).join(melissa_hive::RUNTIME_FILE)])
+        .collect()
+}
+
+/// Run from a source checkout, the installed catalog (`/usr/share/melissa/catalog`) is usually
+/// missing; use the repo's `manifests/` instead, unless the config names a catalog.
+fn use_repo_catalog(apps: &mut config::AppsSection) {
+    let default = std::path::Path::new(melissa_catalog::DEFAULT_CATALOG_DIR);
+    let repo = std::path::Path::new("manifests");
+    if apps.catalog == default && !default.is_dir() && repo.is_dir() {
+        if let Ok(abs) = repo.canonicalize() {
+            apps.catalog = abs;
+        }
     }
 }
 
@@ -200,6 +248,7 @@ async fn serve(
     audit: AuditLog,
     mut tools: Vec<Arc<dyn Tool>>,
     wiring: Wiring,
+    start: Startup,
 ) -> anyhow::Result<()> {
     let workdir = dirs.state.join("work");
     let queen_state = dirs.state.join("queen");
@@ -243,6 +292,7 @@ async fn serve(
     }
     let mut backends: Vec<Arc<dyn Backend>> = vec![Arc::new(EchoBackend::new())];
     let mut sessions: Vec<Arc<dyn SessionBackend>> = Vec::new();
+    let mut infos = Vec::new();
     for spec in &config.backends {
         let backend: Arc<dyn Backend> = match spec {
             BackendSpec::Cli(spec) => {
@@ -269,6 +319,7 @@ async fn serve(
         };
         let info = backend.info();
         tracing::info!(name = %info.name, kind = info.kind, available = info.available, detail = %info.detail, "agent backend");
+        infos.push(info);
         backends.push(backend);
     }
     tracing::info!(path = %audit.path().display(), "audit log");
@@ -294,8 +345,28 @@ async fn serve(
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
-        .with_context(|| format!("binding {}", config.listen))?;
+        .with_context(|| {
+            format!(
+                "cannot listen on {}: is Melissa (or another program) already using it? \
+                 Stop it, or set e.g. `listen = \"127.0.0.1:8090\"` in {}",
+                config.listen,
+                start.config_path.display()
+            )
+        })?;
     tracing::info!("melissa queen listening on http://{}", config.listen);
+    let report = preflight::gather(preflight::Inputs {
+        listen: config.listen,
+        state: &dirs.state,
+        config_path: &start.config_path,
+        specs: &config.backends,
+        infos: &infos,
+        queen_order: &q.backends,
+        kubeconfigs: &start.kubeconfigs,
+        catalog: &config.apps.catalog,
+    })
+    .await;
+    // The summary is for the person who started the daemon; stdout keeps it apart from the log.
+    print!("{}", report.render());
     melissa_web::serve(
         listener,
         melissa_web::router_with_queen(board, mcp, queen.clone()),
@@ -368,7 +439,8 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
         }
     }
     let command = match rest {
-        [] => Command::Serve,
+        [] => Command::Serve { demo: false },
+        [c] if c == "demo" => Command::Serve { demo: true },
         [h] if h == "-h" || h == "--help" => {
             println!("{USAGE}");
             std::process::exit(0);
@@ -441,7 +513,14 @@ mod tests {
 
     #[test]
     fn parses_serve_and_tool_commands() {
-        assert!(matches!(parse(&[]).unwrap(), (None, Command::Serve)));
+        assert!(matches!(
+            parse(&[]).unwrap(),
+            (None, Command::Serve { demo: false })
+        ));
+        assert!(matches!(
+            parse(&["demo"]).unwrap().1,
+            Command::Serve { demo: true }
+        ));
         let (cfg, cmd) = parse(&["--config", "/x.toml", "tool", "cluster_health"]).unwrap();
         assert_eq!(cfg, Some(PathBuf::from("/x.toml")));
         assert!(

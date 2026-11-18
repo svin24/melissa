@@ -5,7 +5,7 @@ session protocol.
 Code: `crates/agent/src/session/` (protocol-neutral API + policy permissions), `crates/agent/src/acp/` (client,
 transport, replay; `grok-acp`, `opencode-acp`), `crates/agent/src/claude/` (Claude Code over stream-json,
 `claude-session`), queen config `kind = "acp"` / `kind = "claude"`. Background study of T3 Code (MIT, design reference only):
-`~/.local/share/melissa/research/t3code-backends-acp.md`.
+`~/.local/share/melissa/research/t3code-backends-acp.md` (the owner's local notes, not in the repo).
 
 ## Protocol in one paragraph
 Newline-delimited JSON-RPC over the agent process's stdin/stdout. Client sends `initialize` (capabilities), then

@@ -12,8 +12,25 @@ test:
 
 check: fmt lint test
 
-run-web:
-    cargo run -p melissa-queen
+# The queen plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
+# `cargo run -p melissa-queen` alone does not build it, and sandboxed agents then have no network).
+build:
+    cargo build --bins -p melissa-queen -p melissa-agent
+
+run-web: build
+    cargo run -q -p melissa-queen
+
+# First run from source (docs/QUICKSTART.md): builds, prints a short summary (URL, agents found,
+# sandbox, k3s) and serves http://127.0.0.1:8080 until Ctrl-C.
+demo: build
+    cargo run -q -p melissa-queen -- demo
+
+# Talk to the running Queen from a terminal (second shell): `just chat`, `just ask "describe this machine"`.
+chat:
+    cargo run -q -p melissa-queen -- chat
+
+ask +message:
+    cargo run -q -p melissa-queen -- ask {{quote(message)}}
 
 # --- bootc images (variant: desktop | headless) -------------------------------------
 # Rootless build into the user's container storage.

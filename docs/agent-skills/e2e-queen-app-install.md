@@ -18,7 +18,7 @@ needed: `kubeconfig` (read-only identity) and `[apps] kubeconfig` (write identit
 
 ```
 # 1. VM, from the MAIN checkout (owns vm/), detached so tool time limits don't kill it
-cd ~/dev/melissa
+cd <main checkout>
 setsid -f nohup devenv shell -- scripts/vm-run.sh headless > <scratch>/vm-run.log 2>&1 < /dev/null
 # 2. image from the worktree, deploy from the main checkout
 (cd <worktree> && devenv shell -- just image-build headless)

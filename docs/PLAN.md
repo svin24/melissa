@@ -270,7 +270,7 @@ docs/
 
 ## 7b. Dev environment
 
-Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`): Rust stable toolchain with clippy, rustfmt, rust-analyzer; cargo-nextest, cargo-watch, just; pre-commit hooks for rustfmt and clippy. podman, buildah and bootc come from the host. Setup, including **Nix on Kinoite 45** (transient root overlay + reboot, then the ostree installer with persistence at `/var/home/nix`), is in [DEV-ENV.md](DEV-ENV.md). Nix is not installed on the dev laptop yet (on hold until the first rpm-ostree update finishes).
+Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`): Rust stable toolchain with clippy, rustfmt, rust-analyzer; cargo-nextest, cargo-watch, just; pre-commit hooks for rustfmt and clippy. podman, buildah and bootc come from the host. Setup, including **Nix on Kinoite 45** (transient root overlay + reboot, then the ostree installer with persistence at `/var/home/nix`), is in [DEV-ENV.md](DEV-ENV.md). Nix runs on the dev laptop (store at `/var/home/nix`, 2026-11-18). People trying Melissa from source: [QUICKSTART.md](QUICKSTART.md).
 
 ## 8. Licensing and legal
 
@@ -293,6 +293,8 @@ KDE (Kinoite) image that also runs the full server by default, the same as headl
 queen and web UI at boot, independent of who is logged in), with KDE on top. Today the desktop image has k3s
 installed but disabled and runs the queen per user; that changes after the headless demo works. Further security hardening (throwaway worker bees, taint UX,
 escape test suite) is parked until after the demo; the existing basics stay on.
+Run from source: [QUICKSTART.md](QUICKSTART.md) and `just demo` (startup summary of agents, sandbox, k3s; fresh
+clone to running in ~70 s on the dev laptop, 2026-11-18).
 
 
 **Demo (target: end of the current week):** multi-agent demo on the laptop showing Claude, Grok and OpenCode (Gemma) as backends behind the same agent interface, coordinated by a minimal queen bee, with a minimal web UI that lists agents and lets one install/inspect something. Scripted and repeatable.
@@ -434,3 +436,11 @@ Roadmap (rough, phases may overlap):
     one session per daemon; the button is shown disabled). Should the chat reload its history from the transcript
     after a daemon restart (the event log is in memory)? No tool reports disk usage yet, so the app strip has no
     disk warning.
+49. Pre-alpha "from source" (2026-11-18, docs/QUICKSTART.md, `just demo`): (a) the Ubuntu 23.10+ AppArmor
+    workaround for bwrap is documented but untested on Ubuntu; check on a 24.04 VM before the release.
+    (b) QUICKSTART has `<repo-url>` and "open an issue" without a link: fill in when the repo is public.
+    (c) The dev shell pulls QEMU/OVMF/cargo-about for everyone; split a light "try it" shell from the
+    image/VM tooling? (d) A user's `tool --wait install_app` asks for confirmation before finding out that
+    k3s is missing (the Queen's path fails first, through the owner lookup). (e) Asked to install without
+    k3s, the Queen (grok) created a bee before the install failed; the prompt could say "check
+    cluster_health first".

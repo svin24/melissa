@@ -12,6 +12,15 @@ nix develop --no-pure-eval   # flake alternative
 just check            # fmt + clippy + tests
 ```
 
+Just want to try Melissa? See [QUICKSTART.md](QUICKSTART.md) (also covers a rustup setup without Nix).
+
+## Installing Nix (any Linux)
+
+Use the Determinate installer (flakes on by default): https://determinate.systems/nix-installer/, or the
+official one (https://nixos.org/download) with `experimental-features = nix-command flakes` in
+`~/.config/nix/nix.conf`. Fedora Atomic (Kinoite, Silverblue, bootc) needs the extra steps further down.
+The first `devenv shell` downloads the Rust toolchain plus QEMU/OVMF for the VM tooling; later starts are fast.
+
 ## Installing devenv and direnv
 
 Once Nix works (below), either:
@@ -23,8 +32,8 @@ if you manage bash by hand.
 
 ## Nix on Fedora Kinoite 45 (immutable `/`)
 
-Status: **not applied on the dev laptop yet.** The owner decided to wait until the first rpm-ostree update
-finishes. Do not change `/etc/ostree` or reboot without the owner's explicit yes.
+Status: applied on the dev laptop (Nix store at `/var/home/nix`, bind-mounted at `/nix`; dev shell in use
+since 2026-11-18). On someone else's machine: do not change `/etc/ostree` or reboot without its owner's yes.
 
 Why it needs extra steps: Kinoite 42+ uses composefs with a read-only `/`, so installers cannot create
 `/nix` (the Determinate installer's `nix-directory.service` fails on `chattr -i /`). The known fix is a
