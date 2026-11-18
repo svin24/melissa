@@ -57,12 +57,19 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
 - This checks package metadata, not the PE signature Secure Boot verifies; the real test is a VM boot with
   Secure Boot on (`scripts/vm-run.sh` default).
 
-## Moving the laptop onto the desktop image (owner's explicit yes required; not done yet)
+## Moving the laptop onto the desktop image (owner's explicit yes required; deferred, see PLAN)
+The laptop has host-side rpm-ostree changes (layered `tailscale`, `initramfs-etc`). `bootc switch` is expected to
+refuse local rpm-ostree modifications (unverified), so use rpm-ostree to drop them and rebase in one go:
 ```
-rpm-ostree status                              # record layered pkgs, initramfs-etc, kargs
-just image-build desktop && just image-to-root desktop
-sudo bootc switch --transport containers-storage localhost/melissa-desktop:dev
-sudo bootc status; systemctl reboot
-cat /usr/lib/melissa/release; findmnt /nix; tailscale status
-sudo bootc rollback && systemctl reboot        # verify rollback, then switch again
+devenv shell -- just image-build desktop
+podman save -o /var/tmp/melissa-desktop.tar localhost/melissa-desktop:dev
+sudo podman load -i /var/tmp/melissa-desktop.tar && rm /var/tmp/melissa-desktop.tar
+rpm-ostree status
+sudo rpm-ostree rebase --uninstall=tailscale ostree-unverified-image:containers-storage:localhost/melissa-desktop:dev
+sudo rpm-ostree initramfs-etc --untrack=/etc/ostree/prepare-root.conf   # image ships it in /usr/lib now
+systemctl reboot
+# verify: /usr/lib/melissa/release, mokutil --sb-state, findmnt /nix, tailscale status, sudo bootc status
+# rollback: sudo rpm-ostree rollback && systemctl reboot (or pick the old GRUB entry)
 ```
+If `--uninstall` is refused: `sudo rpm-ostree reset`, then rebase without it. Later updates: `bootc switch
+--transport containers-storage localhost/melissa-desktop:dev`.

@@ -51,3 +51,7 @@ vm-run variant="headless":
 # Update + rollback test against the running VM (switch to the current local image, reboot, roll back).
 vm-update-test variant="headless":
     scripts/vm-update-test.sh {{variant}}
+
+# Fast dev loop against a running test VM (see scripts/vm-dev.sh): setup | registry | deploy | hotswap | ssh
+vm-dev cmd variant="headless" *args="":
+    scripts/vm-dev.sh {{cmd}} {{variant}} {{args}}

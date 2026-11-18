@@ -21,7 +21,21 @@ ssh -p 2222 -i vm/test_key bee@127.0.0.1      # desktop variant: port 2223, VM_D
 (`podman save` → scp → `sudo podman load`), `bootc switch --transport containers-storage`, reboots, checks
 `/usr/lib/melissa/release` and Secure Boot, then `bootc rollback`, reboots, checks the old release is back.
 
-Improvement (todo): `vm-update-test.sh` copies the whole image (7.8 GB for desktop) even when one layer changed.
+## Fast dev loop (use this day to day) — verified 2026-11-18
+```
+devenv shell -- just vm-run headless &        # or run it in the background
+just vm-dev setup headless                    # once per fresh VM: passwordless sudo + trust 10.0.2.2:5000
+just vm-dev registry                          # rootless registry:2 on 127.0.0.1:5000 (data in vm/registry)
+just image-build headless && just vm-dev deploy headless   # push + bootc switch/upgrade --apply + reboot + check
+just vm-dev hotswap headless                  # Rust-only change: build stage -> bootc usr-overlay -> restart queen
+just vm-dev ssh headless 'journalctl -u melissa-queen -n 20'
+```
+- deploy moved 5 layers / 1.7 MB and took 67 s including reboot (vs 6.5 min copying a full image).
+- hotswap takes seconds; `/usr` becomes a transient overlay until the next reboot (`bootc usr-overlay`).
+- QEMU user networking: the guest reaches the host's loopback as `10.0.2.2`, so the registry stays on 127.0.0.1.
+- `setup` makes the test VM weaker (NOPASSWD sudo, insecure registry). Never on a real bee.
+
+Older approach: `vm-update-test.sh` copies the whole image (7.8 GB for desktop) even when one layer changed.
 Run a local registry (`registry:2` bound to 127.0.0.1:5000, reachable from the VM as `10.0.2.2:5000` under QEMU
 user networking, marked insecure in a `registries.conf.d` drop-in in the test VM only) and `bootc switch` to it,
 so only changed layers move, like real updates.
