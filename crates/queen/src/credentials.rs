@@ -18,20 +18,21 @@ use serde_json::Value;
 /// k3s's admin kubeconfig (mode 0600, root), see `config.yaml.d/10-melissa.yaml`.
 pub const ADMIN_KUBECONFIG: &str = "/etc/rancher/k3s/k3s.yaml";
 
-pub async fn show(
+/// A client with k3s's admin kubeconfig, for owner-only commands (`sudo melissa-queen
+/// <command> <app>`). Fails with a hint when not run as root.
+pub async fn admin_client(
     app: &str,
-    catalog_dir: &Path,
-    domain: &str,
     kubeconfig: &Path,
-) -> anyhow::Result<()> {
+    command: &str,
+) -> anyhow::Result<kube::Client> {
     if !valid_app_name(app) {
         bail!("`{app}` is not an app name");
     }
     match std::fs::File::open(kubeconfig) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => bail!(
-            "reading app credentials needs root (k3s's admin kubeconfig): \
-             sudo melissa-queen app-credentials {app}"
+            "{command} is for the owner and needs root (k3s's admin kubeconfig): \
+             sudo melissa-queen {command} {app}"
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!("no k3s on this bee ({} is missing)", kubeconfig.display())
@@ -39,7 +40,16 @@ pub async fn show(
         Err(e) => return Err(e).with_context(|| format!("opening {}", kubeconfig.display())),
     }
     let cluster = KubeCluster::from_kubeconfig(kubeconfig).await?;
-    let client = cluster.client().clone();
+    Ok(cluster.client().clone())
+}
+
+pub async fn show(
+    app: &str,
+    catalog_dir: &Path,
+    domain: &str,
+    kubeconfig: &Path,
+) -> anyhow::Result<()> {
+    let client = admin_client(app, kubeconfig, "app-credentials").await?;
     let ns = namespace_of(app);
     let manifest = Catalog::load_dir(catalog_dir).apps.remove(app);
     let secret_name = format!("{app}-secrets");

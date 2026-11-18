@@ -41,6 +41,20 @@ pub const APPS_SERVICE_ACCOUNT: &str = "melissa-apps";
 pub const MELISSA_NAMESPACE: &str = "melissa";
 /// ClusterRole bound per app namespace for [`APPS_SERVICE_ACCOUNT`].
 pub const WORKLOAD_ROLE: &str = "melissa-app-workload";
+/// Label on the app's namespace: who owns the app (`owner` or `job-<key>`, see
+/// `melissa_agent::tools::scope`). Set at the first install, never changed by the queen
+/// afterwards (admission policy `melissa-apps-namespaces`); only the owner's
+/// `melissa-queen app-adopt` changes it.
+pub const OWNER_LABEL: &str = "melissa.io/owner";
+/// Annotations on the app's namespace, set at the first install and kept: who installed it
+/// (`owner`, `the Queen (task 3)`, `worker task 7, job <key>`), when (RFC 3339), and from
+/// where (`catalog`).
+pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
+pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
+pub const ORIGIN_ANNOTATION: &str = "melissa.io/origin";
+/// Set by `app-adopt`: when the owner took the app over, and from whom.
+pub const ADOPTED_AT_ANNOTATION: &str = "melissa.io/adopted-at";
+pub const ADOPTED_FROM_ANNOTATION: &str = "melissa.io/adopted-from";
 /// Annotation on the Deployment: the resolved, non-secret config as JSON.
 pub const CONFIG_ANNOTATION: &str = "melissa.io/config";
 /// Pod Security Standard enforced in app namespaces. `baseline` forbids privileged pods,
@@ -105,6 +119,58 @@ fn meta(m: &Manifest, name: &str) -> ObjectMeta {
         namespace: Some(m.namespace()),
         labels: Some(labels(m)),
         ..ObjectMeta::default()
+    }
+}
+
+/// Who owns an app and how it got here, for its namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ownership {
+    /// `melissa.io/owner` label value.
+    pub owner: String,
+    pub installed_by: String,
+    pub installed_at: String,
+    pub origin: String,
+}
+
+impl Ownership {
+    /// The record on an existing namespace. Namespaces from before ownership existed have
+    /// none: they get `owner` (the safe default), the rest stays unknown.
+    pub fn of(ns: &Namespace) -> Self {
+        let label = ns
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(OWNER_LABEL))
+            .map(String::as_str);
+        let ann = |k: &str| {
+            ns.metadata
+                .annotations
+                .as_ref()
+                .and_then(|a| a.get(k))
+                .cloned()
+                .unwrap_or_else(|| "unknown".into())
+        };
+        Self {
+            owner: label.map_or_else(
+                || melissa_agent::tools::Owner::Human.label_value(),
+                str::to_string,
+            ),
+            installed_by: ann(INSTALLED_BY_ANNOTATION),
+            installed_at: ann(INSTALLED_AT_ANNOTATION),
+            origin: ann(ORIGIN_ANNOTATION),
+        }
+    }
+
+    /// Put the record on a rendered namespace.
+    pub fn apply_to(&self, ns: &mut Namespace) {
+        ns.metadata
+            .labels
+            .get_or_insert_with(BTreeMap::new)
+            .insert(OWNER_LABEL.into(), self.owner.clone());
+        let annotations = ns.metadata.annotations.get_or_insert_with(BTreeMap::new);
+        annotations.insert(INSTALLED_BY_ANNOTATION.into(), self.installed_by.clone());
+        annotations.insert(INSTALLED_AT_ANNOTATION.into(), self.installed_at.clone());
+        annotations.insert(ORIGIN_ANNOTATION.into(), self.origin.clone());
     }
 }
 

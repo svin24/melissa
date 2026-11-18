@@ -8,7 +8,10 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::Time,
 };
 use kube::api::ObjectMeta;
-use melissa_agent::tools::{Decision, TaskContext, ToolRegistry, Verdict};
+use melissa_agent::{
+    tools::{Decision, JobScope, Scope, TaskContext, ToolRegistry, Verdict},
+    AuditLog,
+};
 
 use super::*;
 
@@ -523,12 +526,8 @@ fn labels_are_honest() {
 #[tokio::test]
 async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     let fake = Arc::new(Fake::default());
-    let reg = ToolRegistry::new(app_tools(settings(), Some(fake.clone())), None)
-        .with_confirm_timeout(Duration::from_secs(5));
-    let mut ctx = TaskContext {
-        attended: true,
-        ..TaskContext::default()
-    };
+    let reg = registry(&fake, None).with_confirm_timeout(Duration::from_secs(5));
+    let mut ctx = queen();
     reg.call(1, &mut ctx, "install_app", json!({"app": "nextcloud"}))
         .await
         .unwrap();
@@ -542,10 +541,7 @@ async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     let waiter = {
         let reg = reg.clone();
         tokio::spawn(async move {
-            let mut ctx = TaskContext {
-                attended: true,
-                ..TaskContext::default()
-            };
+            let mut ctx = queen();
             reg.call(
                 2,
                 &mut ctx,
@@ -570,4 +566,385 @@ async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     reg.confirmations().resolve(pending.id, Verdict::Approved);
     waiter.await.unwrap().unwrap();
     assert!(fake.state().namespace.is_none());
+}
+
+// ---- ownership and scopes ------------------------------------------------------------------
+
+fn registry(fake: &Arc<Fake>, audit: Option<AuditLog>) -> ToolRegistry {
+    ToolRegistry::new(app_tools(settings(), Some(fake.clone())), audit)
+        .with_owners(Arc::new(AppOwners::new(Some(fake.clone()))))
+        .with_confirm_timeout(Duration::from_millis(300))
+}
+
+/// The attended Queen.
+fn queen() -> TaskContext {
+    TaskContext {
+        attended: true,
+        delegate: true,
+        scope: Scope::ForOwner {
+            agent: "the Queen".into(),
+        },
+        ..TaskContext::default()
+    }
+}
+
+/// An unattended worker of job `key` that may create apps and was given `apps`.
+fn worker(key: &str, apps: &[&str]) -> TaskContext {
+    TaskContext {
+        scope: Scope::Job(JobScope {
+            key: key.into(),
+            apps: apps.iter().map(|a| a.to_string()).collect(),
+            create: true,
+            for_owner: false,
+        }),
+        ..TaskContext::default()
+    }
+}
+
+/// Nextcloud as installed before ownership existed: a namespace without an owner label.
+fn legacy_nextcloud(fake: &Fake) {
+    fake.state().namespace = Some(Namespace {
+        metadata: ObjectMeta {
+            name: Some("app-nextcloud".into()),
+            labels: Some(BTreeMap::from([(
+                "melissa.io/app".to_string(),
+                "nextcloud".to_string(),
+            )])),
+            ..ObjectMeta::default()
+        },
+        ..Namespace::default()
+    });
+    fake.state().deployment = Some(Deployment::default());
+}
+
+fn ns_label(fake: &Fake, key: &str) -> Option<String> {
+    fake.state()
+        .namespace
+        .as_ref()?
+        .metadata
+        .labels
+        .as_ref()?
+        .get(key)
+        .cloned()
+}
+
+fn ns_annotation(fake: &Fake, key: &str) -> Option<String> {
+    fake.state()
+        .namespace
+        .as_ref()?
+        .metadata
+        .annotations
+        .as_ref()?
+        .get(key)
+        .cloned()
+}
+
+fn audit_lines(path: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_worker_cannot_touch_the_owners_nextcloud_and_nobody_is_asked() {
+    let path =
+        std::env::temp_dir().join(format!("melissa-scope-audit-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let fake = Arc::new(Fake::default());
+    legacy_nextcloud(&fake);
+    let reg = registry(&fake, Some(AuditLog::new(&path)));
+    let mut ctx = worker("k1", &[]);
+    // Even pre-approval for the tools does not open someone else's app.
+    ctx.preapproved.insert("install_app".into());
+
+    for (tool, args) in [
+        (
+            "uninstall_app",
+            json!({"app": "nextcloud", "delete_data": true}),
+        ),
+        ("uninstall_app", json!({"app": "nextcloud"})),
+        ("install_app", json!({"app": "nextcloud"})),
+        ("app_logs", json!({"app": "nextcloud"})),
+    ] {
+        let r = reg.call(7, &mut ctx, tool, args).await;
+        match r {
+            Err(ToolError::Refused(reason)) => {
+                assert!(reason.contains("not yours"), "{reason}");
+                assert!(reason.contains("belongs to the owner"), "{reason}");
+            }
+            other => panic!("{tool}: {other:?}"),
+        }
+        assert!(
+            reg.confirmations().pending().is_empty(),
+            "{tool}: a refusal never becomes a confirmation"
+        );
+    }
+    // Nothing changed; unlabelled (legacy) Nextcloud counted as the owner's.
+    assert!(fake.state().applied.is_empty());
+    assert!(fake.state().namespace.is_some() && fake.state().deployment.is_some());
+    // Names and phases stay readable.
+    let status = reg
+        .call(7, &mut ctx, "app_status", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(status["owner"], "owner");
+
+    let lines = audit_lines(&path);
+    let refused: Vec<&Value> = lines
+        .iter()
+        .filter(|l| l["action"] == "tool.refused")
+        .collect();
+    assert_eq!(refused.len(), 4);
+    assert_eq!(refused[0]["tool"], "uninstall_app");
+    assert_eq!(refused[0]["task"], 7);
+    assert_eq!(refused[0]["actor"], "agent");
+    assert!(refused[0]["detail"]
+        .as_str()
+        .unwrap()
+        .starts_with("not yours: the app `nextcloud` belongs to the owner"));
+    assert!(!lines
+        .iter()
+        .any(|l| l["action"] == "tool.confirm_requested"));
+    for l in &refused {
+        eprintln!("{l}");
+    }
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[tokio::test]
+async fn a_worker_owns_and_may_change_the_app_its_job_created() {
+    let fake = Arc::new(Fake::default());
+    let reg = registry(&fake, None);
+    let mut ctx = worker("k1", &[]);
+    ctx.preapproved.insert("install_app".into());
+    let out = reg
+        .call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["owner"], "job-k1");
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner").as_deref(),
+        Some("job-k1")
+    );
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
+        Some("worker task 7, job k1")
+    );
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/origin").as_deref(),
+        Some("catalog")
+    );
+
+    // Reinstalling its own app: in scope, no ownership question.
+    reg.call(8, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    // Uninstalling is destructive: the usual confirmation, but nothing about ownership.
+    let waiter = {
+        let reg = reg.clone();
+        let mut ctx = ctx.clone();
+        tokio::spawn(async move {
+            reg.call(7, &mut ctx, "uninstall_app", json!({"app": "nextcloud"}))
+                .await
+        })
+    };
+    let pending = loop {
+        if let Some(c) = reg.confirmations().pending().first().cloned() {
+            break c;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(pending.reason, "destructive action");
+    reg.confirmations().resolve(pending.id, Verdict::Approved);
+    waiter.await.unwrap().unwrap();
+
+    // Another job may not touch it.
+    let mut other = worker("k2", &[]);
+    let r = reg
+        .call(9, &mut other, "install_app", json!({"app": "nextcloud"}))
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::Refused(m)) if m.contains("belongs to worker job k1")),
+        "{r:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_queen_changing_an_owner_app_gets_a_confirmation_naming_the_owner() {
+    let fake = Arc::new(Fake::default());
+    legacy_nextcloud(&fake);
+    let reg = registry(&fake, None);
+    for (tool, reason) in [
+        (
+            "uninstall_app",
+            "`nextcloud` belongs to you; the Queen wants to uninstall it; destructive action",
+        ),
+        (
+            "install_app",
+            "`nextcloud` belongs to you; the Queen wants to install over it",
+        ),
+    ] {
+        let waiter = {
+            let reg = reg.clone();
+            tokio::spawn(async move {
+                reg.call(1, &mut queen(), tool, json!({"app": "nextcloud"}))
+                    .await
+            })
+        };
+        let pending = loop {
+            if let Some(c) = reg.confirmations().pending().first().cloned() {
+                break c;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(pending.tool, tool);
+        assert_eq!(pending.reason, reason);
+        reg.confirmations().resolve(pending.id, Verdict::Denied);
+        assert_eq!(waiter.await.unwrap(), Err(ToolError::Denied));
+    }
+    assert!(fake.state().applied.is_empty());
+    // Reading the owner's app logs is fine for the Queen (no confirmation, but taints).
+    fake.state().pods = vec![pod("p", 1, true, None)];
+    let mut ctx = queen();
+    reg.call(1, &mut ctx, "app_logs", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert!(ctx.tainted);
+}
+
+#[tokio::test]
+async fn installs_record_the_owner_and_reinstalls_keep_it() {
+    let fake = Arc::new(Fake::default());
+    let reg = registry(&fake, None);
+    // A new app from the attended Queen: no question, and it belongs to the owner.
+    let out = reg
+        .call(3, &mut queen(), "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["owner"], "owner");
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner").as_deref(),
+        Some("owner")
+    );
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
+        Some("the Queen (task 3)")
+    );
+    let at = ns_annotation(&fake, "melissa.io/installed-at").unwrap();
+    assert!(at.ends_with('Z') && at.len() == 20, "{at}");
+
+    // The operator (owner scope) reinstalls: no ownership question, record unchanged.
+    let mut operator = TaskContext {
+        attended: true,
+        scope: Scope::Owner,
+        ..TaskContext::default()
+    };
+    reg.call(0, &mut operator, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner").as_deref(),
+        Some("owner")
+    );
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
+        Some("the Queen (task 3)")
+    );
+    assert_eq!(ns_annotation(&fake, "melissa.io/installed-at"), Some(at));
+
+    // A worker created for the owner (approved at start_worker) records the owner.
+    fake.state().namespace = None;
+    let mut ctx = worker("k3", &[]);
+    if let Scope::Job(j) = &mut ctx.scope {
+        j.for_owner = true;
+    }
+    ctx.preapproved.insert("install_app".into());
+    reg.call(5, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner").as_deref(),
+        Some("owner")
+    );
+
+    // A session without a scope may not create anything.
+    fake.state().namespace = None;
+    let r = reg
+        .call(
+            6,
+            &mut TaskContext::default(),
+            "install_app",
+            json!({"app": "nextcloud"}),
+        )
+        .await;
+    assert!(matches!(r, Err(ToolError::Refused(_))), "{r:?}");
+}
+
+#[tokio::test]
+async fn a_granted_app_is_in_scope_and_unknown_owners_fail_closed() {
+    let fake = Arc::new(Fake::default());
+    legacy_nextcloud(&fake);
+    let reg = registry(&fake, None);
+    // Granted (the Queen asked the owner when it started the worker): in scope.
+    let mut ctx = worker("k1", &["nextcloud"]);
+    ctx.attended = true;
+    reg.call(7, &mut ctx, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner").as_deref(),
+        Some("owner"),
+        "a reinstall never changes the owner"
+    );
+
+    // k3s unreachable: the owner can't be checked, so nothing is changed.
+    let down = Arc::new(Fake {
+        down: true,
+        ..Fake::default()
+    });
+    let reg = registry(&down, None);
+    let r = reg
+        .call(
+            7,
+            &mut worker("k1", &[]),
+            "uninstall_app",
+            json!({"app": "nextcloud"}),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("could not check who owns")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn workers_see_only_the_app_tools_their_scope_allows() {
+    let fake = Arc::new(Fake::default());
+    let reg = registry(&fake, None);
+    let names = |ctx: &TaskContext| -> Vec<&'static str> {
+        reg.visible_to(ctx, None).iter().map(|s| s.name).collect()
+    };
+    // No apps, no create right: nothing to change, nothing to read logs from.
+    let mut closed = worker("k1", &[]);
+    if let Scope::Job(j) = &mut closed.scope {
+        j.create = false;
+    }
+    assert_eq!(names(&closed), ["app_status", "list_catalog"]);
+    // Given one app only: the tools show exactly that app.
+    if let Scope::Job(j) = &mut closed.scope {
+        j.apps.insert("nextcloud".into());
+    }
+    let specs = reg.visible_to(&closed, None);
+    let uninstall = specs.iter().find(|s| s.name == "uninstall_app").unwrap();
+    assert_eq!(
+        uninstall.params["properties"]["app"]["enum"],
+        json!(["nextcloud"])
+    );
+    // The Queen sees everything unchanged.
+    let all = reg.visible_to(&queen(), None);
+    assert_eq!(all.len(), 5);
+    let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
+    assert!(uninstall.params["properties"]["app"].get("enum").is_none());
 }

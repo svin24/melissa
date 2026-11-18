@@ -4,6 +4,12 @@
 //! reads untrusted content (app output is attacker-influenced); `install_app` Reversible;
 //! `uninstall_app` Destructive (always confirmed, even when the data is kept). Generated
 //! secrets never appear in any tool's output.
+//!
+//! Ownership: every tool declares its `app` argument as its target (`Tool::target`), so the
+//! registry checks the caller's scope first (`melissa_agent::tools::scope`): `install_app`
+//! and `uninstall_app` change the app, `app_logs` reads into it (scoped), `app_status` only
+//! reads names and phases. `install_app` records the owner on a new app's namespace
+//! ([`Ownership`]) and keeps an existing record; [`AppOwners`] reads it back.
 
 use std::{collections::BTreeMap, io::Read, path::PathBuf, sync::Arc};
 
@@ -13,8 +19,11 @@ use k8s_openapi::api::{
     networking::v1::Ingress,
 };
 use melissa_agent::{
-    tools::{Effect, Labels, Tool, ToolError, ToolSpec},
-    BoxFuture,
+    tools::{
+        Access, Effect, Labels, Owner, ResourceKind, ResourceOwners, Target, TaskContext, Tool,
+        ToolError, ToolSpec,
+    },
+    BoxFuture, TaskId,
 };
 use melissa_catalog::{namespace_of, valid_app_name, Catalog, Manifest};
 use serde_json::{json, Map, Value};
@@ -22,7 +31,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     apps::{AppDeployer, AppObject, AppRead, LogRequest},
     health::reason_code,
-    render::{render, secret_object, CONFIG_ANNOTATION},
+    render::{render, secret_object, Ownership, CONFIG_ANNOTATION, OWNER_LABEL},
     ClusterError,
 };
 
@@ -83,6 +92,60 @@ where
         Arc::new(AppLogs { read: read.clone() }),
         Arc::new(UninstallApp { read, deploy }),
     ]
+}
+
+/// The `app` argument as a scope target.
+const fn app_target(access: Access, verb: &'static str) -> Target {
+    Target {
+        kind: ResourceKind::App,
+        arg: "app",
+        access,
+        verb,
+    }
+}
+
+/// Reads app owners from the `melissa.io/owner` label on their namespaces, for the
+/// registry's scope check (`ToolRegistry::with_owners`). A namespace without the label
+/// (installed before ownership existed) is the owner's.
+pub struct AppOwners {
+    read: Option<Arc<dyn AppRead>>,
+}
+
+impl AppOwners {
+    pub fn new<C: AppRead + 'static>(cluster: Option<Arc<C>>) -> Self {
+        Self {
+            read: cluster.map(|c| c as Arc<dyn AppRead>),
+        }
+    }
+}
+
+impl ResourceOwners for AppOwners {
+    fn owner<'a>(
+        &'a self,
+        kind: ResourceKind,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Owner>, String>> {
+        Box::pin(async move {
+            match kind {
+                ResourceKind::App => {}
+            }
+            if !valid_app_name(name) {
+                // The tool rejects the name itself; nothing by that name can exist.
+                return Ok(None);
+            }
+            let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+            let ns = read.namespace(name).await.map_err(|e| e.to_string())?;
+            Ok(ns.map(|ns| {
+                Owner::from_label(
+                    ns.metadata
+                        .labels
+                        .as_ref()
+                        .and_then(|l| l.get(OWNER_LABEL))
+                        .map(String::as_str),
+                )
+            }))
+        })
+    }
 }
 
 fn no_cluster() -> ToolError {
@@ -194,7 +257,9 @@ struct InstallApp {
 }
 
 impl InstallApp {
-    async fn install(&self, args: Value) -> Result<Value, ToolError> {
+    /// `who`: owner label for a new app and the "installed by" text (from the caller's
+    /// scope). An existing app keeps its record: reinstalling never changes the owner.
+    async fn install(&self, args: Value, who: Option<(Owner, String)>) -> Result<Value, ToolError> {
         let args = arg_object(&args)?;
         reject_unknown(args, &["app", "config"])?;
         let app = app_arg(args)?;
@@ -210,15 +275,31 @@ impl InstallApp {
         let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
             return Err(no_cluster());
         };
-        if let Some(ns) = read.namespace(&app).await.map_err(failed)? {
-            if is_terminating(&ns) {
+        let existing = read.namespace(&app).await.map_err(failed)?;
+        if let Some(ns) = &existing {
+            if is_terminating(ns) {
                 return Err(ToolError::Failed(format!(
                     "{} is still being deleted; try again in a minute",
                     namespace_of(&app)
                 )));
             }
         }
-        let objects = render(&manifest, &config, &self.settings.domain);
+        let ownership = match (&existing, who) {
+            (Some(ns), _) => Ownership::of(ns),
+            (None, Some((owner, actor))) => Ownership {
+                owner: owner.label_value(),
+                installed_by: actor,
+                installed_at: now_rfc3339(),
+                origin: "catalog".into(),
+            },
+            (None, None) => {
+                return Err(ToolError::Refused(
+                    "not yours: this session may not create apps".into(),
+                ))
+            }
+        };
+        let mut objects = render(&manifest, &config, &self.settings.domain);
+        ownership.apply_to(&mut objects.namespace);
 
         let mut applied = Vec::new();
         for object in [
@@ -268,6 +349,8 @@ impl InstallApp {
             "namespace": manifest.namespace(),
             "url": manifest.ingress.as_ref().map(|_| self.settings.url(&app)),
             "applied": applied,
+            "owner": ownership.owner,
+            "installed_by": ownership.installed_by,
             "config": config.values,
             "secrets": secrets.map(|state| json!({
                 "fields": secret_fields,
@@ -306,8 +389,35 @@ impl Tool for InstallApp {
     }
 
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(self.install(args))
+        // Without a caller (direct use, tests): the owner.
+        Box::pin(self.install(args, Some((Owner::Human, "owner".into()))))
     }
+
+    fn call_in<'a>(
+        &'a self,
+        task: TaskId,
+        ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        let who = ctx.scope.creator().map(|o| (o, ctx.scope.actor(task)));
+        Box::pin(self.install(args, who))
+    }
+
+    fn target(&self) -> Option<Target> {
+        // Over an existing app: a change to it. A new name: creating (needs the create right).
+        Some(app_target(Access::Change, "install over"))
+    }
+}
+
+/// Now, RFC 3339, whole seconds.
+fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    k8s_openapi::jiff::Timestamp::from_second(i64::try_from(secs).unwrap_or(0))
+        .map(|t| t.to_string())
+        .unwrap_or_default()
 }
 
 /// `len` characters from `[A-Za-z0-9]` from the kernel's CSPRNG (rejection sampling, so no
@@ -403,6 +513,10 @@ impl Tool for AppStatus {
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(self.status(args))
     }
+
+    fn target(&self) -> Option<Target> {
+        Some(app_target(Access::Read, "check"))
+    }
 }
 
 fn unreachable(e: &ClusterError) -> Value {
@@ -471,11 +585,15 @@ pub(crate) fn status_report(
         .and_then(|d| d.metadata.labels.as_ref())
         .and_then(|l| l.get("app.kubernetes.io/version"))
         .cloned();
+    let ownership = ns.map(Ownership::of);
     json!({
         "k3s_reachable": true,
         "app": app,
         "namespace": namespace_of(app),
         "phase": phase,
+        "owner": ownership.as_ref().map(|o| &o.owner),
+        "installed_by": ownership.as_ref().map(|o| &o.installed_by),
+        "installed_at": ownership.as_ref().map(|o| &o.installed_at),
         "installed": deployment.is_some(),
         "version": version,
         "replicas": replicas,
@@ -652,6 +770,10 @@ impl Tool for AppLogs {
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(self.logs(args))
     }
+
+    fn target(&self) -> Option<Target> {
+        Some(app_target(Access::ReadScoped, "read the logs of"))
+    }
 }
 
 /// Keep the last `max_lines` lines, strip ANSI escapes and control characters, cut long
@@ -802,6 +924,10 @@ impl Tool for UninstallApp {
 
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(self.uninstall(args))
+    }
+
+    fn target(&self) -> Option<Target> {
+        Some(app_target(Access::Change, "uninstall"))
     }
 }
 
