@@ -856,8 +856,10 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "melissa-agent",
+ "melissa-hive",
  "melissa-web",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
