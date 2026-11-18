@@ -8,6 +8,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [bootc-image-build.md](bootc-image-build.md) — building desktop/headless images, layer order, laptop switch.
 - [bootc-vm-test.md](bootc-vm-test.md) — qcow2 with bootc-image-builder, booting in QEMU, SSH into test VMs.
 - [acp-sessions.md](acp-sessions.md) — ACP sessions (`grok-acp`): session API, verified Grok facts, permission mapping, recording/replay transcripts, crate gotchas.
+- [queen-loop.md](queen-loop.md) — the Queen (head agent): session manager, worker tools and guards, event
+  stream + transcript, resume via a Melissa-owned Grok session store, `/api/queen`, `melissa-queen chat|ask`.
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
