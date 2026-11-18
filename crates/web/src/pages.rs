@@ -10,9 +10,10 @@ use crate::{
         action_button, activity_row, add_app_cell, app_cell, app_page, app_strip, approval_card,
         badge, card, code, composer, composer_status, device_card, empty_state, feed, feed_entry,
         honeycomb, link, live_region, log_view, note, oob_inner, page, page_header, post_form,
-        queen_message, rail, section, select_field, table, textarea_field, truncated, user_message,
-        waiting_count, AppCell, ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav,
-        RailDevice, StripCell, Tone, APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
+        queen_message, rail, relayed_message, section, select_field, table, textarea_field,
+        truncated, user_message, waiting_count, AppCell, ApprovalCard, Choice, DeviceCard, Health,
+        LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
+        FEED_ID,
     },
     components::{ComposerTarget, RailHelper},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
@@ -130,6 +131,7 @@ pub fn entry_id(key: &str) -> String {
 pub fn entry_content(entry: &Entry) -> Markup {
     match &entry.item {
         Item::User { text } => user_message(text),
+        Item::Relayed { from, text } => relayed_message(from, text),
         Item::Reply { text } => queen_message(text),
         Item::Activity {
             label,

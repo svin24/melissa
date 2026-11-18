@@ -567,6 +567,23 @@ main:focus {
   overflow-wrap: anywhere;
 }
 
+.msg-relayed {
+  margin-left: 40px;
+  padding: 0.6rem 0.9rem;
+  border-left: 3px solid var(--honey);
+  background: var(--surface);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  overflow-wrap: anywhere;
+}
+
+.msg-relayed .from {
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 650;
+  color: var(--honey-text);
+  margin-bottom: 0.25rem;
+}
+
 .msg-queen {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
@@ -1237,7 +1254,8 @@ form.inline {
 
   .activity,
   .note,
-  .approval {
+  .approval,
+  .msg-relayed {
     margin-left: 0;
   }
 

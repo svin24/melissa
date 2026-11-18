@@ -522,6 +522,17 @@ pub fn user_message(text: &str) -> Markup {
     }
 }
 
+/// Something Melissa passed into a helper's conversation (a job or a message): a quiet
+/// block with who it is from. `text` is untrusted.
+pub fn relayed_message(from: &str, text: &str) -> Markup {
+    html! {
+        div.msg.msg-relayed {
+            h3.from { (from) }
+            div.body { (plain_text(text)) }
+        }
+    }
+}
+
 /// A message from the Queen (left, honey hexagon avatar, no bubble).
 pub fn queen_message(text: &str) -> Markup {
     html! {
@@ -867,6 +878,9 @@ mod tests {
         assert!(out.contains("&lt;img src=x onerror=alert(1)&gt;"));
         assert!(out.contains("**bold** [link](http://example.com)"));
         assert!(out.contains("<li>one</li><li>&lt;b&gt;two&lt;/b&gt;</li>"));
+        let out = relayed_message("A job from Melissa", "<b>x</b>").into_string();
+        assert!(out.contains("&lt;b&gt;x&lt;/b&gt;"));
+        assert!(out.contains("A job from Melissa"));
         let out = user_message("a\nb\n\nc").into_string();
         assert!(out.contains("<p>a<br>b</p><p>c</p>"));
         let out = queen_message("run `<ls>` and `x").into_string();
