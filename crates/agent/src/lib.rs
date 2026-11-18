@@ -28,7 +28,8 @@ pub use backend::{
     Stream,
 };
 pub use board::{
-    DispatchError, McpLink, TaskBoard, TaskId, TaskSnapshot, TaskStatus, MAX_PROMPT_BYTES,
+    DispatchError, DispatchOptions, McpLink, TaskBoard, TaskId, TaskSnapshot, TaskStatus,
+    MAX_PROMPT_BYTES,
 };
 pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
 pub use echo::EchoBackend;

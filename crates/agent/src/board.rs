@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::task::AbortHandle;
+use tokio::{sync::Notify, task::AbortHandle};
 
 use crate::{
     backend::McpEndpoint, mcp::McpServer, tools::TaskContext, AgentError, AuditLog, AuditRecord,
@@ -55,6 +55,40 @@ pub struct TaskSnapshot {
     pub truncated: bool,
     pub error: Option<String>,
     pub elapsed: Duration,
+    /// The task that started this one (workers: the Queen).
+    pub parent: Option<TaskId>,
+    /// The task's MCP session read untrusted content (known once the task finished).
+    pub tainted: bool,
+}
+
+/// How to run a task. [`Default`]: started by a person in the UI, who watches it.
+#[derive(Debug, Clone)]
+pub struct DispatchOptions {
+    /// Policy context of the task's MCP session.
+    pub ctx: TaskContext,
+    /// Tools the task may see (None = every tool its context allows).
+    pub allow: Option<Vec<&'static str>>,
+    /// Run time limit; None = the board's default.
+    pub timeout: Option<Duration>,
+    /// The task that started this one.
+    pub parent: Option<TaskId>,
+    /// Who started it, for the audit log (`ui`, `queen`).
+    pub actor: String,
+}
+
+impl Default for DispatchOptions {
+    fn default() -> Self {
+        Self {
+            ctx: TaskContext {
+                attended: true,
+                ..TaskContext::default()
+            },
+            allow: None,
+            timeout: None,
+            parent: None,
+            actor: "ui".into(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -96,6 +130,8 @@ struct Task {
     abort: Option<AbortHandle>,
     /// Open MCP session for this task, closed when it finishes or is cancelled.
     mcp_token: Option<String>,
+    parent: Option<TaskId>,
+    tainted: bool,
 }
 
 struct Inner {
@@ -105,6 +141,8 @@ struct Inner {
     timeout: Duration,
     audit: Option<AuditLog>,
     mcp: Option<McpLink>,
+    /// Woken whenever a task finishes or is cancelled.
+    finished: Notify,
 }
 
 /// Shared handle to the task board. Cheap to clone.
@@ -127,6 +165,7 @@ impl TaskBoard {
                 timeout,
                 audit,
                 mcp: None,
+                finished: Notify::new(),
             }),
         }
     }
@@ -146,6 +185,7 @@ impl TaskBoard {
                 timeout,
                 audit,
                 mcp: Some(mcp),
+                finished: Notify::new(),
             }),
         }
     }
@@ -154,8 +194,44 @@ impl TaskBoard {
         self.inner.backends.iter().map(|b| b.info()).collect()
     }
 
-    /// Start a task. Must be called from within a Tokio runtime.
+    pub fn backend(&self, name: &str) -> Option<BackendInfo> {
+        self.inner
+            .backends
+            .iter()
+            .map(|b| b.info())
+            .find(|i| i.name == name)
+    }
+
+    /// Melissa's MCP endpoint, if this board gives backends tools.
+    pub fn mcp_link(&self) -> Option<&McpLink> {
+        self.inner.mcp.as_ref()
+    }
+
+    pub fn audit_log(&self) -> Option<&AuditLog> {
+        self.inner.audit.as_ref()
+    }
+
+    /// Take a task id without starting a task (e.g. for the Queen's session, so its audit
+    /// records and confirmations have an id no board task shares).
+    pub fn reserve_id(&self) -> TaskId {
+        let mut next = lock(&self.inner.next_id);
+        let id = *next;
+        *next += 1;
+        id
+    }
+
+    /// Start a task started by a person in the UI. Must be called from within a Tokio runtime.
     pub fn dispatch(&self, backend: &str, prompt: &str) -> Result<TaskId, DispatchError> {
+        self.dispatch_with(backend, prompt, DispatchOptions::default())
+    }
+
+    /// Start a task with explicit options. Must be called from within a Tokio runtime.
+    pub fn dispatch_with(
+        &self,
+        backend: &str,
+        prompt: &str,
+        opts: DispatchOptions,
+    ) -> Result<TaskId, DispatchError> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             return Err(DispatchError::EmptyPrompt);
@@ -175,12 +251,7 @@ impl TaskBoard {
             return Err(DispatchError::Unavailable(backend.to_string()));
         }
 
-        let id = {
-            let mut next = lock(&self.inner.next_id);
-            let id = *next;
-            *next += 1;
-            id
-        };
+        let id = self.reserve_id();
         lock(&self.inner.tasks).insert(
             id,
             Task {
@@ -195,14 +266,18 @@ impl TaskBoard {
                 finished: None,
                 abort: None,
                 mcp_token: None,
+                parent: opts.parent,
+                tainted: false,
             },
         );
-        self.audit(AuditRecord::now("task.dispatch", id, backend, prompt));
+        let mut record = AuditRecord::now("task.dispatch", id, backend, prompt).by(&opts.actor);
+        record.parent = opts.parent;
+        self.audit(record);
 
         let mut req = RunRequest::prompt(prompt);
         req.task = Some(id);
         if let (Some(link), true) = (&self.inner.mcp, info.tools) {
-            match self.prepare_tools(link, id) {
+            match self.prepare_tools(link, id, opts.ctx, opts.allow) {
                 Ok((token, workdir, config)) => {
                     if let Some(task) = lock(&self.inner.tasks).get_mut(&id) {
                         task.mcp_token = Some(token.clone());
@@ -223,7 +298,7 @@ impl TaskBoard {
         }
 
         let board = self.clone();
-        let timeout = self.inner.timeout;
+        let timeout = opts.timeout.unwrap_or(self.inner.timeout);
         let handle = tokio::spawn(async move {
             let (sink, mut rx) = EventSink::channel();
             let run = async {
@@ -265,8 +340,29 @@ impl TaskBoard {
             self.close_tools(task);
             task.backend.clone()
         };
+        self.inner.finished.notify_waiters();
         self.audit(AuditRecord::now("task.cancel", id, &backend, ""));
         Ok(())
+    }
+
+    /// Wait until task `id` has finished, at most `timeout`. Returns its snapshot (with
+    /// output) either way, or `None` for an unknown task.
+    pub async fn wait(&self, id: TaskId, timeout: Duration) -> Option<TaskSnapshot> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            // Register for the wake-up before checking, so a finish in between is not missed.
+            let notified = self.inner.finished.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let snap = self.get(id)?;
+            if snap.status.is_finished() {
+                return Some(snap);
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => return self.get(id),
+            }
+        }
     }
 
     /// All tasks, newest first, without their output.
@@ -320,6 +416,7 @@ impl TaskBoard {
             self.close_tools(task);
             (task.backend.clone(), task.status)
         };
+        self.inner.finished.notify_waiters();
         let detail = match &result {
             Ok(()) => status.as_str().to_string(),
             Err(e) => format!("{}: {e}", status.as_str()),
@@ -333,16 +430,13 @@ impl TaskBoard {
         &self,
         link: &McpLink,
         id: TaskId,
+        ctx: TaskContext,
+        allow: Option<Vec<&'static str>>,
     ) -> std::io::Result<(String, PathBuf, PathBuf)> {
         use std::{io::Write, os::unix::fs::OpenOptionsExt};
         let workdir = link.workroot.join(format!("task-{id}"));
         std::fs::create_dir_all(&workdir)?;
-        // Tasks dispatched from the UI are watched by the person who started them.
-        let ctx = TaskContext {
-            attended: true,
-            ..TaskContext::default()
-        };
-        let token = link.server.open_session(id, ctx, None)?;
+        let token = link.server.open_session(id, ctx, allow)?;
         let config = workdir.join("mcp.json");
         let body = serde_json::json!({
             "mcpServers": {"melissa": {"type": "http", "url": format!("{}{token}", link.base_url)}}
@@ -360,6 +454,10 @@ impl TaskBoard {
     /// Close the task's MCP session (its token stops working). Caller holds the tasks lock.
     fn close_tools(&self, task: &mut Task) {
         if let (Some(link), Some(token)) = (&self.inner.mcp, task.mcp_token.take()) {
+            task.tainted |= link
+                .server
+                .session_context(&token)
+                .is_some_and(|c| c.tainted);
             link.server.close_session(&token);
         }
     }
@@ -393,6 +491,8 @@ fn snapshot(id: TaskId, t: &Task, with_output: bool) -> TaskSnapshot {
         truncated: t.truncated,
         error: t.error.clone(),
         elapsed: end.saturating_duration_since(t.started),
+        parent: t.parent,
+        tainted: t.tainted,
     }
 }
 
@@ -529,6 +629,40 @@ mod tests {
         let echo = board.dispatch("echo", "plain").unwrap();
         assert!(!workroot.join(format!("task-{echo}")).exists());
         std::fs::remove_dir_all(workroot).unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_options_and_wait() {
+        let path =
+            std::env::temp_dir().join(format!("melissa-board-opts-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let board = TaskBoard::new(
+            vec![Arc::new(EchoBackend::new()), Arc::new(Hang)],
+            Duration::from_secs(60),
+            Some(AuditLog::new(&path)),
+        );
+        let queen = board.reserve_id();
+        let opts = DispatchOptions {
+            timeout: Some(Duration::from_millis(50)),
+            parent: Some(queen),
+            actor: "queen".into(),
+            ..DispatchOptions::default()
+        };
+        let id = board.dispatch_with("hang", "wait", opts).unwrap();
+        assert!(id > queen);
+        // Not finished within 1 ms; then the per-task timeout (50 ms) ends it.
+        let snap = board.wait(id, Duration::from_millis(1)).await.unwrap();
+        assert_eq!(snap.status, TaskStatus::Running);
+        let snap = board.wait(id, Duration::from_secs(5)).await.unwrap();
+        assert_eq!(snap.status, TaskStatus::Failed);
+        assert_eq!(snap.parent, Some(queen));
+        assert!(board.wait(999, Duration::ZERO).await.is_none());
+        let audit = std::fs::read_to_string(&path).unwrap();
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["action"], "task.dispatch");
+        assert_eq!(line["actor"], "queen");
+        assert_eq!(line["parent"], queen);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[tokio::test]

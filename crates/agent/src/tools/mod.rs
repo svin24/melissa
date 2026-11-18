@@ -15,7 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub use builtin::BeeInfo;
-pub use confirm::{Confirmation, ConfirmationId, ConfirmationStore, Verdict};
+pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext};
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
@@ -48,6 +48,24 @@ pub enum ToolError {
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>>;
+
+    /// Like [`Tool::call`], for tools that need to know who is calling: the task and its
+    /// policy context. A tool may set `ctx.tainted` when it hands back untrusted content
+    /// (e.g. the output of a tainted worker). Default: [`Tool::call`].
+    fn call_in<'a>(
+        &'a self,
+        _task: TaskId,
+        _ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        self.call(args)
+    }
+
+    /// Only sessions that may delegate ([`TaskContext::delegate`], the Queen) see and may
+    /// call this tool (e.g. `start_worker`). Default: false.
+    fn queen_only(&self) -> bool {
+        false
+    }
 }
 
 /// All tools available on this bee, plus the confirmation inbox.
@@ -84,14 +102,36 @@ impl ToolRegistry {
         &self.confirmations
     }
 
-    /// Tool specs an agent may see. `allow` limits the set (None = all); hidden tools are
-    /// not merely refused, the agent never learns they exist.
+    /// Every tool spec, including Queen-only tools, limited by `allow` (None = all). For
+    /// recognising Melissa's tool names; what an agent sees is [`ToolRegistry::visible_to`].
     pub fn visible(&self, allow: Option<&[&str]>) -> Vec<ToolSpec> {
         self.tools
             .values()
             .map(|t| t.spec())
             .filter(|s| allow.is_none_or(|a| a.contains(&s.name)))
             .collect()
+    }
+
+    /// Tool specs an agent with policy context `ctx` may see. `allow` limits the set
+    /// (None = all); Queen-only tools need `ctx.delegate`. Hidden tools are not merely
+    /// refused, the agent never learns they exist.
+    pub fn visible_to(&self, ctx: &TaskContext, allow: Option<&[&str]>) -> Vec<ToolSpec> {
+        self.tools
+            .values()
+            .filter(|t| ctx.delegate || !t.queen_only())
+            .map(|t| t.spec())
+            .filter(|s| allow.is_none_or(|a| a.contains(&s.name)))
+            .collect()
+    }
+
+    /// The registry's own `&'static` name for `name`, if such a tool exists.
+    pub fn name(&self, name: &str) -> Option<&'static str> {
+        self.tools.get_key_value(name).map(|(k, _)| *k)
+    }
+
+    /// Is `name` a Queen-only tool?
+    pub fn is_queen_only(&self, name: &str) -> bool {
+        self.tools.get(name).is_some_and(|t| t.queen_only())
     }
 
     /// Call a tool for `task`, applying the policy. May wait for a human confirmation.
@@ -108,6 +148,10 @@ impl ToolRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
+        if tool.queen_only() && !ctx.delegate {
+            // Same answer as for a nonexistent tool: workers never learn these exist.
+            return Err(ToolError::UnknownTool(name.to_string()));
+        }
         if !args.is_object() && !args.is_null() {
             return Err(ToolError::BadArgs("arguments must be a JSON object".into()));
         }
@@ -118,7 +162,7 @@ impl ToolRegistry {
             self.confirm(task, name, &args, &reason).await?;
         }
 
-        let result = tool.call(args).await;
+        let result = tool.call_in(task, ctx, args).await;
         if spec.labels.reads_untrusted && result.is_ok() {
             ctx.tainted = true;
         }
@@ -176,6 +220,11 @@ impl ToolRegistry {
         detail: &str,
     ) {
         self.write_audit(task, backend, action, tool, &args_hash(args), detail);
+    }
+
+    /// The audit log, if any (shared with the task board and the Queen).
+    pub fn audit_log(&self) -> Option<&AuditLog> {
+        self.audit.as_ref()
     }
 
     fn audit(&self, task: TaskId, action: &str, tool: &str, hash: &str, detail: &str) {
@@ -392,6 +441,47 @@ mod tests {
             reg.call(1, &mut ctx, "scale", json!({})).await,
             Err(ToolError::ConfirmationTimeout)
         );
+    }
+
+    struct QueenOnly;
+    impl Tool for QueenOnly {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "start_worker",
+                description: "test",
+                labels: Labels::READ_ONLY,
+                params: json!({"type": "object"}),
+            }
+        }
+        fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+            Box::pin(async { Ok(json!("started")) })
+        }
+        fn queen_only(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn queen_only_tools_need_delegation() {
+        let reg = ToolRegistry::new(vec![Arc::new(QueenOnly)], None);
+        let mut worker = attended();
+        assert!(reg.visible_to(&worker, None).is_empty());
+        assert_eq!(
+            reg.call(1, &mut worker, "start_worker", json!({})).await,
+            Err(ToolError::UnknownTool("start_worker".into()))
+        );
+        let mut queen = TaskContext {
+            delegate: true,
+            ..attended()
+        };
+        assert_eq!(reg.visible_to(&queen, None).len(), 1);
+        assert_eq!(
+            reg.call(1, &mut queen, "start_worker", json!({})).await,
+            Ok(json!("started"))
+        );
+        // Name matching for permission requests still knows the tool.
+        assert_eq!(reg.visible(None).len(), 1);
+        assert!(reg.is_queen_only("start_worker"));
     }
 
     #[test]

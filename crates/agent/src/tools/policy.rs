@@ -46,6 +46,9 @@ pub struct TaskContext {
     pub tainted: bool,
     /// Tools the owner pre-approved for this task (reversible effects only).
     pub preapproved: BTreeSet<String>,
+    /// May start worker agents (the Queen only). Tools marked [`crate::tools::Tool::queen_only`]
+    /// are hidden from, and refused for, every other session: workers cannot start workers.
+    pub delegate: bool,
 }
 
 /// The outcome for one tool call.
