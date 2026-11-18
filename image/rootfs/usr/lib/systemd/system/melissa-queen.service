@@ -1,0 +1,20 @@
+[Unit]
+Description=Melissa queen bee (system)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=melissa
+ConfigurationDirectory=melissa
+# Maps the XDG paths used by the queen to /etc/melissa and /var/lib/melissa.
+Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib
+ExecStart=/usr/bin/melissa-queen
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

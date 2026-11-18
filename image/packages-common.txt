@@ -1,0 +1,2 @@
+# Installed into both variants. One package per line; '#' starts a comment.
+tailscale       # mesh (PLAN section 4); repo in rootfs/etc/yum.repos.d/tailscale.repo

@@ -1,4 +1,11 @@
 { pkgs, ... }:
+let
+  # UEFI firmware with Secure Boot and the Microsoft keys pre-enrolled (Fedora's shim is MS-signed).
+  ovmfSecure = pkgs.OVMF.override {
+    secureBoot = true;
+    msVarsTemplate = true;
+  };
+in
 {
   # Rust toolchain from rust-overlay (see devenv.yaml): rustc, cargo, clippy, rustfmt, rust-analyzer.
   languages.rust = {
@@ -19,9 +26,15 @@
     pkgs.cargo-watch
     pkgs.just
     pkgs.pkg-config
+    # VM testing of bootc images (KVM from the host). QEMU ships the edk2 UEFI firmware.
+    pkgs.qemu_kvm
+    pkgs.swtpm
   ];
 
-  # Containers and bootc come from the host (Kinoite ships podman, buildah and bootc);
+  # Used by scripts/vm-run.sh (VM_SECUREBOOT=1).
+  env.MELISSA_OVMF_DIR = "${ovmfSecure.fd}/FV";
+
+  # Containers, bootc and skopeo come from the host (Kinoite ships podman, buildah and bootc);
   # rootless podman from Nix lacks the setuid helpers. `just image-*` calls the host tools.
 
   # Pre-commit hooks, installed into .git/hooks on shell entry.

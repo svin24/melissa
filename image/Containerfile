@@ -1,8 +1,69 @@
-# Placeholder bootc image. Not built or tested yet (milestone M0).
-# Base: Fedora Kinoite (dogfooding on the dev laptop). A headless variant based on
-# quay.io/fedora/fedora-bootc comes later.
-FROM quay.io/fedora-ostree-desktops/kinoite:45
+# Melissa bootc image. One file, two variants:
+#   desktop  : FROM Fedora Kinoite (KDE), for the dev laptop and desktop bees
+#   headless : FROM fedora-bootc, for servers, mini PCs and VPS bees
+# Build: `just image-build desktop` or `just image-build headless` (see docs/agent-skills/bootc-image-build.md).
 
-# Melissa binaries and units will be added here.
+ARG BASE=quay.io/fedora/fedora-bootc:45
+ARG BUILDER=registry.fedoraproject.org/fedora:45
+
+# ---- stage 1: build the Melissa binaries --------------------------------------------
+FROM ${BUILDER} AS build
+RUN dnf -y install --setopt=install_weak_deps=False cargo rust gcc && dnf clean all
+WORKDIR /src
+COPY Cargo.toml Cargo.lock clippy.toml ./
+COPY crates ./crates
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target,id=melissa-target \
+    cargo build --release --locked -p melissa-queen -p melissa-bee \
+ && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/
+
+# ---- stage 2: the OS image ------------------------------------------------------------
+FROM ${BASE}
+ARG VARIANT=headless
+
+# Packages (big, rarely changing layer first). Lists live in image/packages-*.txt.
+COPY image/packages-common.txt image/packages-${VARIANT}.txt /tmp/pkgs/
+COPY image/rootfs/etc/yum.repos.d/ /etc/yum.repos.d/
+RUN pkgs=$(cat /tmp/pkgs/*.txt | sed 's/#.*//' | xargs) \
+ && if [ -n "$pkgs" ]; then dnf -y install $pkgs; fi \
+ && dnf clean all && rm -rf /tmp/pkgs /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
+
+# Static config. Defaults go under /usr/lib so the /etc 3-way merge never strands them.
+COPY image/rootfs/ /
+COPY image/${VARIANT}/ /
+RUN set -eu; \
+    systemctl enable tailscaled.service; \
+    # Melissa drives updates itself; don't let the stock timer download and reboot.
+    systemctl mask bootc-fetch-apply-updates.timer 2>/dev/null || true; \
+    if [ "$VARIANT" = headless ]; then \
+        systemctl enable melissa-queen.service; \
+    else \
+        # Desktop: the queen runs per user so it can use that user's agent CLI logins.
+        systemctl --global enable melissa-queen.service; \
+        # prepare-root.conf changed (transient root for Nix on the dev laptop): rebuild initramfs.
+        kver=$(basename /usr/lib/modules/*); \
+        DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --add ostree \
+            "/usr/lib/modules/$kver/initramfs.img" "$kver"; \
+        chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
+    fi
+
+# Small, frequently changing layer last: binaries and version.
+COPY --from=build /out/ /usr/bin/
+ARG MELISSA_VERSION=dev
+RUN mkdir -p /usr/lib/melissa && printf 'MELISSA_VERSION=%s\nMELISSA_VARIANT=%s\n' "$MELISSA_VERSION" "$VARIANT" > /usr/lib/melissa/release
+
 LABEL org.opencontainers.image.title="melissa" \
-      org.opencontainers.image.description="Melissa bee image (work in progress)"
+      org.opencontainers.image.description="Melissa bee image" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+# Secure Boot guard: keep Fedora's signed kernel and modules. Exactly one kernel, signed with
+# a Fedora key, and no out-of-tree kmods (they would need MOK enrollment).
+RUN set -eu; \
+    test "$(ls /usr/lib/modules | wc -l)" = 1 || { echo "more than one kernel"; exit 1; }; \
+    keyid=$(rpm -q --qf '%{RSAHEADER:pgpsig}' kernel-core | sed -n 's/.*Key ID \([0-9a-f]*\).*/\1/p'); \
+    test -n "$keyid" || { echo "kernel-core is unsigned"; exit 1; }; \
+    key=/usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-$(rpm -E %fedora)-primary; \
+    gpg --homedir /tmp --with-colons --show-keys "$key" 2>/dev/null | grep '^fpr' | grep -qi "${keyid}:" \
+        || { echo "kernel-core key $keyid is not $key"; exit 1; }; \
+    rm -rf /tmp/*; \
+    if rpm -qa 'kmod-*' 'akmod-*' | grep -q .; then echo "out-of-tree kmods present"; exit 1; fi
+RUN bootc container lint
