@@ -553,7 +553,7 @@ impl Tool for CancelWorker {
             let id = worker_id(&args)?;
             self.0.worker(a, task, id)?;
             a.board
-                .cancel(id)
+                .cancel_by(id, "queen")
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             let status = a
                 .board

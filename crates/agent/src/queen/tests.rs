@@ -499,6 +499,10 @@ async fn queen_starts_a_worker_and_reads_its_result() {
     assert_eq!(dispatch["actor"], "queen");
     assert_eq!(dispatch["parent"], s.queen.task_id());
     assert_eq!(dispatch["task"], 2);
+    assert!(
+        audit.contains(r#""actor":"queen","action":"task.finish""#),
+        "{audit}"
+    );
     for needle in [
         r#""tool":"start_worker""#,
         r#""tool":"worker_status""#,
@@ -892,6 +896,63 @@ async fn a_restarted_daemon_resumes_the_agent_session() {
     let s = setup_in(dir, vec![second], |_| {});
     let (turn, since) = s.queen.send("Still there?").unwrap();
     let events = turn_events(&s.queen, since, turn).await;
+    assert!(events.contains(&QueenEvent::SessionOpened {
+        backend: "fake-acp".into(),
+        resumed: true
+    }));
+    s.queen.close().await;
+    s.replay.check().await;
+}
+
+#[tokio::test]
+async fn agent_death_between_turns_is_noticed_before_the_next_message() {
+    let mut first = handshake("s-1");
+    first.extend([
+        prompt(2, "s-1", "<any>"),
+        text("s-1", "Hi."),
+        done(2, "end_turn"),
+        Step::exit(),
+    ]);
+    let mut second = handshake("s-2");
+    second.splice(
+        2..2,
+        [
+            Step::send(
+                json!({"jsonrpc": "2.0", "id": 5, "method": "session/resume", "params": "<any>"}),
+            ),
+            Step::recv(json!({"jsonrpc": "2.0", "id": 5, "result": {}})),
+        ],
+    );
+    // Resumed: the id stays s-1 and the message goes as is.
+    second.truncate(4);
+    second.extend([
+        prompt(2, "s-1", "Hello again."),
+        text("s-1", "Hi again."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup("between", vec![first, second]);
+    let (turn, since) = s.queen.send("Hello.").unwrap();
+    turn_events(&s.queen, since, turn).await;
+    // The agent exits after the turn; the Queen notices without a new message.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while s.queen.status().backend.is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "session loss not noticed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(s
+        .queen
+        .events()
+        .since(0, 100)
+        .events
+        .iter()
+        .any(|r| matches!(r.event, QueenEvent::SessionLost { .. })));
+    // The next message works: a resumed session, no error.
+    let (turn, since) = s.queen.send("Hello again.").unwrap();
+    let events = turn_events(&s.queen, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
     assert!(events.contains(&QueenEvent::SessionOpened {
         backend: "fake-acp".into(),
         resumed: true

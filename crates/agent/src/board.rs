@@ -132,6 +132,8 @@ struct Task {
     mcp_token: Option<String>,
     parent: Option<TaskId>,
     tainted: bool,
+    /// Who started the task (audit actor of its records).
+    actor: String,
 }
 
 struct Inner {
@@ -268,6 +270,7 @@ impl TaskBoard {
                 mcp_token: None,
                 parent: opts.parent,
                 tainted: false,
+                actor: opts.actor.clone(),
             },
         );
         let mut record = AuditRecord::now("task.dispatch", id, backend, prompt).by(&opts.actor);
@@ -324,8 +327,13 @@ impl TaskBoard {
         Ok(id)
     }
 
-    /// Cancel a running task. Cancelling a finished task is a no-op.
+    /// Cancel a running task (from the UI). Cancelling a finished task is a no-op.
     pub fn cancel(&self, id: TaskId) -> Result<(), DispatchError> {
+        self.cancel_by(id, "ui")
+    }
+
+    /// Cancel a running task on behalf of `actor` (audited as such).
+    pub fn cancel_by(&self, id: TaskId, actor: &str) -> Result<(), DispatchError> {
         let backend = {
             let mut tasks = lock(&self.inner.tasks);
             let task = tasks.get_mut(&id).ok_or(DispatchError::NoSuchTask)?;
@@ -341,7 +349,7 @@ impl TaskBoard {
             task.backend.clone()
         };
         self.inner.finished.notify_waiters();
-        self.audit(AuditRecord::now("task.cancel", id, &backend, ""));
+        self.audit(AuditRecord::now("task.cancel", id, &backend, "").by(actor));
         Ok(())
     }
 
@@ -398,7 +406,7 @@ impl TaskBoard {
     }
 
     fn finish(&self, id: TaskId, result: Result<(), AgentError>) {
-        let (backend, status) = {
+        let (backend, status, actor) = {
             let mut tasks = lock(&self.inner.tasks);
             let Some(task) = tasks.get_mut(&id) else {
                 return;
@@ -414,14 +422,14 @@ impl TaskBoard {
             task.finished = Some(Instant::now());
             task.abort = None;
             self.close_tools(task);
-            (task.backend.clone(), task.status)
+            (task.backend.clone(), task.status, task.actor.clone())
         };
         self.inner.finished.notify_waiters();
         let detail = match &result {
             Ok(()) => status.as_str().to_string(),
             Err(e) => format!("{}: {e}", status.as_str()),
         };
-        self.audit(AuditRecord::now("task.finish", id, &backend, detail));
+        self.audit(AuditRecord::now("task.finish", id, &backend, detail).by(&actor));
     }
 
     /// Open an MCP session for task `id` and write its per-task workdir and MCP config.

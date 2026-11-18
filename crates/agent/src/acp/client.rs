@@ -217,7 +217,14 @@ where
             };
             let _ = ready.send(Ok((session_id.clone(), caps, resumed)));
             let busy = Arc::new(AtomicBool::new(false));
-            while let Some(cmd) = commands.recv().await {
+            loop {
+                let cmd = tokio::select! {
+                    cmd = commands.recv() => cmd,
+                    // The agent closed its stdout (it exited): end the connection now, so the
+                    // event stream ends and the owner learns it even between turns.
+                    () = cx.incoming_closed() => None,
+                };
+                let Some(cmd) = cmd else { break };
                 match cmd {
                     Command::Prompt { text, reply } => {
                         if busy.swap(true, Ordering::SeqCst) {

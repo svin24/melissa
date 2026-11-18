@@ -452,3 +452,34 @@ async fn agent_death_fails_the_turn_with_agent_exited() {
     assert!(matches!(err, crate::AgentError::AgentExited(_)), "{err:?}");
     agent.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn agent_death_between_turns_ends_the_event_stream() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    let mut steps = init_steps(false);
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1"}}),
+    ));
+    steps.push(agent::Step::exit());
+    let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), false), None).await;
+    let OpenedSession {
+        session,
+        mut events,
+        ..
+    } = opened;
+    // No prompt is running; the stream still ends when the agent goes away.
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.is_some() {}
+    })
+    .await;
+    assert!(end.is_ok(), "event stream did not end");
+    assert!(matches!(
+        session.prompt("hi").await,
+        Err(crate::AgentError::AgentExited(_))
+    ));
+    agent.await.unwrap().unwrap();
+}
