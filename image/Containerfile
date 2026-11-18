@@ -9,13 +9,22 @@ ARG BUILDER=registry.fedoraproject.org/fedora:45
 # ---- stage 1: build the Melissa binaries --------------------------------------------
 FROM ${BUILDER} AS build
 RUN dnf -y install --setopt=install_weak_deps=False cargo rust gcc && dnf clean all
+# cargo-about writes the third-party license report (about.toml, `just licenses`). Same version as the
+# dev shell (devenv.nix); built once, then cached as this layer.
+ARG CARGO_ABOUT_VERSION=0.9.0
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    cargo install --locked --features cli --root /usr/local "cargo-about@${CARGO_ABOUT_VERSION}"
 WORKDIR /src
-COPY Cargo.toml Cargo.lock clippy.toml ./
+COPY Cargo.toml Cargo.lock clippy.toml about.toml about.hbs ./
 COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
     cargo build --release --locked -p melissa-queen -p melissa-bee \
- && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/
+ && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee -t /out/bin/ \
+ && mkdir -p /out/licenses && cargo fetch --locked \
+ && cargo about generate --workspace --frozen --fail -o /out/licenses/THIRD-PARTY-LICENSES.md about.hbs
+# Melissa's own license (LICENSE*, once the project has one) and the acknowledgments ship with the report.
+COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 
 # ---- stage 2: fetch and verify k3s (versions and hashes pinned in image/k3s.lock) ---------
 FROM ${BUILDER} AS k3s
@@ -72,8 +81,9 @@ RUN set -eu; \
         chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
     fi
 
-# Small, frequently changing layer last: binaries and version.
-COPY --from=build /out/ /usr/bin/
+# Small, frequently changing layer last: binaries, their license report and version.
+COPY --from=build /out/bin/ /usr/bin/
+COPY --from=build /out/licenses/ /usr/share/licenses/melissa/
 ARG MELISSA_VERSION=dev
 RUN mkdir -p /usr/lib/melissa && printf 'MELISSA_VERSION=%s\nMELISSA_VARIANT=%s\n' "$MELISSA_VERSION" "$VARIANT" > /usr/lib/melissa/release
 

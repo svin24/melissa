@@ -1,0 +1,26 @@
+# cargo-about config: license report for the Rust crates compiled into melissa-queen and melissa-bee.
+# Run `just licenses`. The image build generates the same report (image/Containerfile, stage "licenses").
+#
+# `accepted` is an allowlist. A crate whose license expression cannot be satisfied by it fails the report.
+# Adding a license here is a reviewed decision: check it is compatible with shipping in the images and note
+# notable ones in ACKNOWLEDGMENTS.md.
+accepted = [
+    # Common permissive licenses.
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    # Needed by the current tree (see ACKNOWLEDGMENTS.md): Unicode data tables (unicode-ident) and
+    # Apache-2.0 with the LLVM exception (wasi/rustix family).
+    "Unicode-3.0",
+    "Apache-2.0 WITH LLVM-exception",
+]
+
+# Only what ships: the Linux x86_64 images. Test-only crates are not redistributed.
+targets = ["x86_64-unknown-linux-gnu"]
+ignore-dev-dependencies = true
+# Melissa's own crates (publish = false) are not third-party; Melissa's license ships next to the report.
+private = { ignore = true }
