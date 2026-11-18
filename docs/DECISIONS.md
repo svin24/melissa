@@ -68,3 +68,23 @@ Format: date — decision. Why. Alternatives considered.
   behind narrow traits (`ClusterRead` now, a separate write trait later).** Why: keeps the large kube dependency tree out
   of `melissa-agent`, tools are unit-tested against a fake, and read-only tools can't reach write methods.
   Alternatives: a module in `crates/agent` (heavier builds for every agent test), shelling out to kubectl (rejected).
+- **2026-11-18 — Session API: `SessionBackend::open` → `AgentSession` (+ an event receiver), protocol-neutral, in
+  `crates/agent/src/session`.** Methods `prompt`/`cancel`/`close` take `&self` and return `BoxFuture`, so the API
+  stays object safe (`Arc<dyn AgentSession>`) and a turn can be cancelled from another task; one turn at a time.
+  Events are typed (`Text`, `Thought`, `ToolStarted/Updated/Finished`, `Plan`, `Usage`, `Permission`,
+  `TurnFinished`, `Other`); permission requests go to a `PermissionHandler` given at open. Why: the Queen keeps one
+  session across many prompts; worker tasks reuse the same code through `AcpBackend`'s `Backend` impl (one prompt
+  per session). Alternatives: a `Stream`-returning trait (not object safe without boxing anyway), callbacks per
+  event (harder to test), exposing the ACP crate's types (ties the Queen to one protocol; Claude has none).
+- **2026-11-18 — ACP permission mapping.** Melissa's own MCP tools: allow once at the ACP layer (the MCP server
+  enforces policy, confirmations and audit on the call itself; asking twice would double prompts). The agent's
+  built-in tools: ACP kind → policy labels (read/search/think read-only; edit/move reversible; delete/execute/
+  unknown destructive; fetch untrusted + egress; switch_mode always rejected), then `policy::decide` and the
+  confirmation inbox: allowed → `allow_once`, approved → `allow_once`, denied → `reject_once`, timeout or cancelled
+  turn → `cancelled`. Never an "always" option, even if it is the only allow option offered. Every answer is
+  audited as `agent.permission` (actor `agent`, input hashed). The agent's strictest permission mode is passed on
+  its command line (`grok --permission-mode default`) because user configs can enable auto-approve.
+- **2026-11-18 — `agent-client-protocol` 5.3.0 with default features off; we spawn the agent and frame lines
+  ourselves (`Lines` transport).** Why: reuse the existing bwrap sandbox command and add a recorder tee for replay
+  transcripts. Gotcha accepted: the crate enables serde_json `preserve_order` workspace-wide (canonical hashes now
+  sort keys explicitly).

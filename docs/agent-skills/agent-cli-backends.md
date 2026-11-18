@@ -37,7 +37,9 @@ args = ["run", "-m", "<provider>/<gemma-model>", "{prompt}"]
   `--tools ""` removes all built-in tools (no Bash/Read); `--strict-mcp-config` ignores the user's own MCP
   servers. Verified: Claude calls `bee_info`, and reports it has no shell or file tools.
   Order matters: `--tools` and `--mcp-config` are variadic, so the prompt goes before them.
-- Grok: MCP via `grok mcp add` (persistent user config, not per run) — find a per-run option before wiring.
+- Grok: no per-run MCP option for `grok -p` (only `grok mcp add`, persistent user config). Use the ACP backend
+  `grok-acp` instead: it passes Melissa's MCP endpoint per session (verified 2026-11-18, see
+  [acp-sessions.md](acp-sessions.md)).
 - OpenCode: reads `opencode.json` (with an `mcp` section) from its working directory — next to wire.
 - Tool calls wait for confirmations inside the HTTP request; check each CLI's MCP tool-call timeout before
   relying on long waits (Claude: `MCP_TOOL_TIMEOUT` env, unverified).
@@ -80,7 +82,8 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   interactive grok do not coordinate refreshes.
 
 ## Next (ideas, unverified)
-- Use each CLI's JSON streaming mode to get typed events (text, tool call, usage) instead of lines.
+- Typed events: done for ACP agents (`crate::session`). For Claude (no ACP mode) use
+  `--input-format stream-json --output-format stream-json`; OpenCode has `opencode acp` (ACP v1, HTTP MCP).
 - Deny-by-default egress: run the sandbox with `--unshare-net` and give it only a Unix socket to an egress proxy
   in the queen that allows the CLI's model API host(s) and forwards MCP. Needs per-CLI proxy support
   (`HTTPS_PROXY`) checks; not built yet.
