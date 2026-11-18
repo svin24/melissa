@@ -96,15 +96,14 @@ so "keep data" and "delete data" are explicit, and `Recreate` never runs two pod
 | tool | labels | notes |
 |---|---|---|
 | `list_catalog` | read-only | works without k3s |
-| `install_app {app, config?}` | Reversible, target `app` (Change) | attended Queen: allowed for a new app; over an owner's app: confirmation naming the owner; unattended or tainted: confirmation. Records `melissa.io/owner` (+ installed-by/at, origin) on a new namespace, keeps an existing record. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
-| `app_status {app}` | read-only, target `app` (Read) | reports `owner`, `installed_by`, `installed_at`; phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
-| `app_logs {app, lines?, container?, previous?}` | reads_untrusted, target `app` (ReadScoped: workers only for their apps) | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
-| `uninstall_app {app, delete_data?}` | Destructive, target `app` (Change) | always a confirmation (naming the owner for their apps); workers: refused outside their scope. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
+| `install_app {app, config?, bee?}` | Reversible, target `app` (Change) | attended Queen: allowed for a new cell (she must name the `bee` that looks after it) and over a bee's cell; over an unassigned cell: confirmation; a bee: its own/new cells only; unattended or tainted: confirmation. Records `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` (+ assigned-by/at, installed-by/at, origin) on a new namespace, keeps an existing record. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
+| `app_status {app}` | read-only, target `app` (Read) | reports `bee`, `bee_name`, `comb`, `assigned_by`, `installed_by`, `installed_at`, `legacy_owner`; phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
+| `app_logs {app, lines?, container?, previous?}` | reads_untrusted, target `app` (ReadScoped: a bee only for its own cells) | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
+| `uninstall_app {app, delete_data?}` | Destructive, target `app` (Change) | always a confirmation (the Queen's names the owning bee); a bee: refused on cells that are not its own. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
 
-Before the labels, the registry checks the caller's scope against the app's owner (see
-[ownership-and-scopes.md](ownership-and-scopes.md)): a worker touching an app that isn't its job's or
-granted is refused outright (`tool.refused`), never asked. `melissa-queen tool` and `/api/tools` act as
-the owner.
+Before the labels, the registry checks the caller's scope against the cell's owning bee (see
+[cells-and-ownership.md](cells-and-ownership.md)): a bee touching a cell that isn't its own is refused
+outright (`tool.refused`), never asked. `melissa-queen tool` and `/api/tools` act as the user.
 | `list_apps` | read-only | catalog apps present on the bee (any phase but `not_installed`, incl. `uninstalled_data_kept`) + the rest as `not_installed`; per-app reads (the write identity can get but not list namespaces), so apps outside the catalog are invisible |
 | `install_app {app, config?}` | Reversible | attended Queen: allowed; unattended or tainted: confirmation. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
 | `app_status {app}` | read-only | phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
@@ -130,11 +129,14 @@ and refuses anything that needs a confirmation.
   pods, hostPath, host namespaces).
 - `rotate [queen|apps]` in `melissa-kubeconfig` (default both).
 
-## Ownership (2026-11-18)
-Namespace label `melissa.io/owner` = `owner` | `job-<key>`; no label = the owner's. The namespaces
-admission policy requires it on create and freezes it on update (`melissa-apps` can never change an
-owner). The owner takes over a job's app with `sudo melissa-queen app-adopt <app>` (admin kubeconfig,
-merge patch, records `melissa.io/adopted-from`/`-at`). Details: [ownership-and-scopes.md](ownership-and-scopes.md).
+## Cells and ownership (2026-11-18, hive model)
+An installed app is a cell owned by a bee: namespace labels `melissa.io/cell`, `melissa.io/comb`,
+`melissa.io/owner-bee` (absent = unassigned) + `melissa.io/assigned-by|at`. The namespaces admission policy
+requires cell + comb on create, freezes the comb, and lets the owner bee change only together with a new
+`assigned-at` (the reassign path: the Queen's `reassign_cell` after the user's approval, or
+`melissa-queen cell reassign <cell> --to <bee>`). Old `melissa.io/owner` labels count as unassigned and
+are dropped at the next install/reassign. `app-adopt` is gone. Details:
+[cells-and-ownership.md](cells-and-ownership.md).
 Policy decision (2026-11-18, end-to-end test): `install_app` asked for in the Queen chat runs without
 a confirmation while the Queen is untainted (the owner asked; reversible; uninstall keeps data). Once
 the conversation has read untrusted content (`app_logs`, a worker that did) it needs approval, and

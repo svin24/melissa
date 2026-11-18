@@ -12,17 +12,19 @@ Read this at the start of every session. One file per skill; update the skill wh
   recording/replay transcripts, gotchas.
 - [agent-egress.md](agent-egress.md) — deny-by-default network for sandboxed agents: netns + `melissa-netbridge`,
   CONNECT proxy with per-backend allowlists, MCP-only socket, `network = proxy|learn|none|host`, what each CLI contacts.
-- [queen-loop.md](queen-loop.md) — the Queen (head agent): session manager, worker tools and guards, event
-  stream + transcript, resume via a Melissa-owned Grok session store, `/api/queen`, `melissa-queen chat|ask`.
+- [queen-loop.md](queen-loop.md) — the Queen (head agent) and her persistent, named bees: the shared
+  conversation machinery, bee registry, bee tools and guards, event stream + transcript, resume via a
+  Melissa-owned session store, `/api/queen`, `/api/bees`, `melissa-queen chat|ask [--bee]`, `bee`, `cell`.
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
 - [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app), rendering, the
   app tools and their labels, the `melissa-apps` write identity + admission policies, owner-only
   `app-credentials`, Nextcloud verified in the VM.
-- [ownership-and-scopes.md](ownership-and-scopes.md) — who owns which app (`melissa.io/owner`), task scopes
-  (Owner/ForOwner/Job), the one scope check in the registry (refused vs confirmation), worker grants,
-  declaring a tool's target, `app-adopt`, the owner-label admission rules.
+- [cells-and-ownership.md](cells-and-ownership.md) — the hive model in code: comb/bee ids, cells owned by
+  bees (`melissa.io/owner-bee`), scopes (User/Queen/Bee/Nothing), the one scope check in the registry
+  (refused vs confirmation naming the bee), reassign path (Queen + user's yes, or the user's CLI),
+  migration of old owner labels, admission rules, declaring a tool's target.
 - [e2e-queen-app-install.md](e2e-queen-app-install.md) — the owner installs/checks/uninstalls Nextcloud by
   chatting with the Queen: laptop Queen + VM k3s setup, verified run with timings, taint and confirmation gotchas.
 

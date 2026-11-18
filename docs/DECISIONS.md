@@ -106,7 +106,8 @@ Format: date — decision. Why. Alternatives considered.
   "nothing runs that the user did not just ask for" simple; a client may still queue on its side. Cancel sends
   `session/cancel`; after 10 s without the turn ending, Melissa kills the session. Alternatives: a server-side
   queue (rejected for the reasons above), interrupt-and-replace (surprising mid-tool-call).
-- **2026-11-18 — Worker guards.** Workers are board tasks with the Queen as `parent`, started only through the
+- **2026-11-18 — Worker guards** (superseded the same day by persistent bees, below; the limits, depth 1,
+  allowlist ⊆ the Queen's and taint rules carry over). Workers were board tasks with the Queen as `parent`, started only through the
   Queen-only tools (`start_worker`, `worker_status`, `list_workers`, `cancel_worker`; hidden from and refused
   for every session without `TaskContext.delegate`, so depth is 1). A worker runs unattended, with at most the
   Queen's own tools minus the worker tools (an allowlist must be a subset), passes `check_tool_set`, inherits
@@ -235,7 +236,9 @@ Format: date — decision. Why. Alternatives considered.
   environments (owner).** Agents also handle cleanup and maintenance behind confirmations.
 - **2026-11-18 — Isolation by default, communication by explicit, approved, audited links (owner).** Agent to agent via
   the Queen; app to app via manifest-declared NetworkPolicy links; agent to app via tools only.
-- **2026-11-18 — Agents change only what belongs to them: resource ownership + task scopes (owner).** Every app
+- **2026-11-18 — Agents change only what belongs to them: resource ownership + task scopes (owner).**
+  (Superseded the same day by "Cells owned by bees", below: same single check, refused-not-asked and fail-closed
+  rules; owner/job labels and `app-adopt` replaced.) Every app
   records its owner on its namespace (`melissa.io/owner` = `owner` | `job-<key>`, plus installed-by/at and
   origin); no label = the owner's. Every task has a scope (`Owner` for the operator CLI/API, `ForOwner` for the
   attended Queen and UI tasks, `Job` for workers, `Nothing` by default). Tools declare their target argument;
@@ -253,3 +256,38 @@ Format: date — decision. Why. Alternatives considered.
   Queen has the final say; Bees are worker agents that own Cells; Cells host Services; only a Queen or the User
   reassigns Cells; cross-comb takeovers only on the User's say. The merged ownership work (owner/job labels, scope check
   in the tool registry) is the foundation and gets adapted to Bee/Cell ownership next.
+- **2026-11-18 — Code terms follow the hive model.** `crates/bee` (the per-device daemon stub) is
+  `crates/comb` (`melissa-comb`); "worker" is "bee" everywhere (events, API, CLI, config keys with one-release
+  aliases, prompts). Agent-facing tool names: `create_bee`, `give_bee_job`, `bee_status`, `list_bees`,
+  `stop_bee`, `message_bee`, `reassign_cell`: verb-first plain words an LLM picks correctly (Grok found them by
+  searching "create bee"); "job" for a unit of work because a bee is long-lived and gets many. `bee_info` keeps
+  its name although it describes the comb (open question 46).
+- **2026-11-18 — Bees are persistent conversations; their registry lives in Melissa's state directory.**
+  `$XDG_STATE_HOME/melissa/bees/registry.json` (0600, atomic rename) + `bees/<id>/` (agent session store,
+  `session.json`, transcript). Why there and not in k3s: bees are this comb's agents, not workloads; they exist
+  on combs without k3s; transcripts are private; the Queen's state already lives there. Ids `<comb>.b<n>` with
+  a persisted, only-growing counter: never reused (an old audit line or label never points at a new bee), and the
+  comb part makes ids hive-unique for cross-comb takeovers. Comb id: random `c-<8 hex>` made once
+  (`comb.json`), so two combs that join later don't collide. Each bee runs the Queen's conversation machinery
+  (extracted to `queen/conversation.rs`) instead of one-shot board tasks: it keeps context between jobs and
+  resumes after restarts, and the user can chat with it directly. A job is a message into that conversation
+  ("A job from the Queen: …"); time limit = cancel the turn. Alternatives: board tasks that resume a session
+  per job (no direct chat, two code paths), a registry in a ConfigMap (needs k3s, leaks names into the cluster).
+- **2026-11-18 — Cells owned by bees; the reassign path (owner's hive model).** Labels on the app namespace:
+  `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` (absent = unassigned) + `assigned-by/at`.
+  Scopes: `User`, `Queen{comb}`, `Bee{id}`, `Nothing`. A bee changes only its own cells and new ones (refused
+  otherwise, audited "not yours", no confirmation); the Queen acts on any cell of her comb, destructive
+  confirmations name the owning bee, unassigned cells need the user's yes; another comb's cell is refused.
+  Reassign: the Queen's `reassign_cell` has `Effect::Ownership` (always confirmed: ownership is the user's
+  decision) or the user's `cell reassign` (local API, no confirmation). Both patch with the melissa-apps
+  identity; admission lets `owner-bee` change only with a new `assigned-at` and never back to unassigned. This
+  replaces `sudo app-adopt` (root, admin kubeconfig): the root path could not read the user's bee registry, and
+  the local API already carries the user's authority (`confirm approve`, `/api/tools`); a buggy or compromised
+  queen daemon could already uninstall anything. The Queen must name a bee when she installs ("Ada looks after
+  Nextcloud"), so no new cell is unowned by accident.
+- **2026-11-18 — Migration: cells from before bees are unassigned.** `melissa.io/owner=owner|job-<key>` (or no
+  label) reads as unassigned; the label is dropped at the next install or reassignment. Why not a default bee:
+  it would get rights over the user's apps that the user never gave; "unassigned" keeps exactly the old
+  protection (only the Queen with the user's approval, or the user). Old jobs' apps lose their job's rights
+  (jobs no longer exist). One-off UI tasks get no scope (read-only on cells): they are neither Queen nor bee.
+

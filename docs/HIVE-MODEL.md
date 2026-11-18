@@ -41,14 +41,15 @@ whatever they like, and a queen names the bees and cells she creates. The UI sho
 - The user can rename anything; a queen names what she creates (bees, cells) and may suggest names for new combs.
 - Ids include the comb, so the model works unchanged when a hive grows from one comb to many.
 
-## Mapping to today's code (2026-11-18)
+## Mapping to today's code (2026-11-18, after the hive-model rename)
 
-| Model | Code today | Planned |
+| Model | Code today | Still to do |
 |---|---|---|
-| Comb | `crates/bee` (node daemon stub); the queen daemon runs per device | rename to comb |
-| Queen | the Queen session in `melissa-queen` (one per daemon) | one per comb; main-comb queen coordination in M3 |
-| Bee | "worker": a short-lived task started with `start_worker` | persistent, named bees that own cells |
-| Cell | an installed app (`app-<name>` namespace) with `melissa.io/owner` = `owner` or `job-<key>` | owned by a bee: `melissa.io/owner-bee`, `melissa.io/comb` |
+| Comb | `crates/comb` (`melissa-comb`, per-device daemon stub); comb id `c-<8 hex>` made once in `$XDG_STATE_HOME/melissa/comb.json` (`melissa_agent::comb`); the Queen daemon runs per device | the comb daemon itself; user-chosen comb names |
+| Queen | the Queen conversation in `melissa-queen` (`melissa_agent::queen`), `Scope::Queen { comb }`: any cell of her comb, destructive actions name the owning bee | main-comb Queen coordination (M3) |
+| Bee | persistent, named agent (`queen::registry`, `queen::bees`): id `<comb>.b<n>` (never reused), name (the Queen chooses, the user renames), backend, tools; its own resumable agent session, sandbox, MCP session (`Scope::Bee`), transcript; Queen tools `create_bee`, `give_bee_job`, `bee_status`, `list_bees`, `stop_bee` | budgets per bee; bee UI (owner's design) |
+| Cell | an installed app (`app-<name>` namespace) with `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` (+ `assigned-by/at`); every install names its bee; old `melissa.io/owner` labels count as unassigned | more cell kinds (agent-built apps, backups) |
 | Service | the app's pods/containers | same |
-| Reassign | `sudo melissa-queen app-adopt` (moves an app to the user) | reassign a cell between bees: queen (with the user's approval) or user only |
+| Reassign | Queen: `reassign_cell` (always the user's confirmation); user: `melissa-queen cell reassign <cell> --to <bee>`; admission lets the owner change only with a new `assigned-at` | cross-comb takeover (ids and `CellStore::assign` already take any bee id) |
+| Talking | user ↔ Queen (`/api/queen`, `chat`), user ↔ any bee (`/api/bees/{bee}/…`, `chat --bee`); bee ↔ bee only via the Queen (`message_bee`: tagged as data, audited `bee.brokered`) | Queen ↔ main Queen (M3) |
 | Apiary | none | later |

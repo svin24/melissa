@@ -1,6 +1,6 @@
 # Long-lived agent sessions (ACP, and Claude's stream-json)
 
-**When:** building the Queen (head agent) and worker sessions, or wiring a backend that speaks ACP or another
+**When:** building the Queen (head agent) and bee sessions, or wiring a backend that speaks ACP or another
 session protocol.
 Code: `crates/agent/src/session/` (protocol-neutral API + policy permissions), `crates/agent/src/acp/` (client,
 transport, replay; `grok-acp`, `opencode-acp`), `crates/agent/src/claude/` (Claude Code over stream-json,
@@ -154,7 +154,7 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
 - `OpenSession { state_dir, resume }`: with `AcpSpec.session_store = ".grok/sessions"` (built-in grok-acp),
   the Melissa-owned `state_dir` (0700) is bound read-write there inside the sandbox (rest of `~/.grok` stays
   tmpfs). `resume` → `session/resume` (if `sessionCapabilities.resume`), falling back to `session/new`;
-  `OpenedSession.resumed` says which. Only the Queen passes a `state_dir`; workers stay throw-away.
+  `OpenedSession.resumed` says which. The Queen and every bee pass a `state_dir` (their own resumable session store); one-shot board tasks stay throw-away.
 - Grok writes `<url-encoded cwd>/<session-id>/` (chat history, events, system prompt), `prompt_history.jsonl`
   and `session_search.sqlite` into the store; resume after a process restart keeps the conversation.
 - `session/load` (replays history as updates) is not used.
@@ -168,7 +168,7 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
   handshake. Its answer carries the account's e-mail: never log it.
 - Claude puts its auto-memory under the session store (`<project>/memory/`) and its system prompt mentions it;
   with no file tools it cannot write there ("Noted, but only for this conversation").
-- Claude passed `mcp__melissa__bee_info` as a tool name in `start_worker`'s `tools` once; the tool's error
+- Claude passed `mcp__melissa__bee_info` as a tool name in `start_worker`'s (now `create_bee`'s) `tools` once; the tool's error
   listed the plain names and Claude retried correctly. The description now asks for plain names.
 - OpenCode on a policy reject ends the whole turn (`cancelled`), unlike Grok and Claude, which continue.
 - OpenCode's `$/cancel_request` notification (after `session/cancel`) is handled by the catch-all handler.
