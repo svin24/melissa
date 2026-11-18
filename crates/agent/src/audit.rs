@@ -5,7 +5,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -24,6 +24,12 @@ pub struct AuditRecord {
     pub backend: String,
     /// Free-form detail (prompt on dispatch, outcome on finish).
     pub detail: String,
+    /// Tool name, for `tool.*` actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// SHA-256 of the tool's canonical JSON arguments (arguments themselves are not logged).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args_sha256: Option<String>,
 }
 
 impl AuditRecord {
@@ -39,22 +45,31 @@ impl AuditRecord {
             task,
             backend: backend.into(),
             detail: detail.into(),
+            tool: None,
+            args_sha256: None,
         }
+    }
+
+    pub fn with_tool(mut self, tool: &str, args_sha256: &str) -> Self {
+        self.tool = Some(tool.into());
+        self.args_sha256 = Some(args_sha256.into());
+        self
     }
 }
 
 /// Appends [`AuditRecord`]s to a file, creating parent directories as needed.
-#[derive(Debug)]
+/// Clones share one lock, so writers never interleave lines.
+#[derive(Debug, Clone)]
 pub struct AuditLog {
     path: PathBuf,
-    lock: Mutex<()>,
+    lock: Arc<Mutex<()>>,
 }
 
 impl AuditLog {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
-            lock: Mutex::new(()),
+            lock: Arc::new(Mutex::new(())),
         }
     }
 
