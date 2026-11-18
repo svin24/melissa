@@ -176,6 +176,9 @@ status() {
     echo "This machine's address: ${ip4:-unknown} (SSH on port 22)"
     echo
     echo "Web UI (no login yet, so it only listens inside this machine on $listen)."
+    if [ -r "$release" ] && grep -qx 'MELISSA_VARIANT=desktop' "$release"; then
+        echo "On this machine: open http://$listen in the browser."
+    fi
     echo "From your own computer, tunnel it over SSH and open http://127.0.0.1:8080 :"
     echo "  ssh -L 8080:$listen ${SUDO_USER:-${USER:-you}}@<this machine>"
     echo "  (QEMU with port forwarding: ssh -p 2222 -L 8080:$listen ${SUDO_USER:-${USER:-you}}@127.0.0.1)"

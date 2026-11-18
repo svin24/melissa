@@ -40,10 +40,16 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
   `root.transient = true`, and rebuilds the initramfs with dracut. Verify `/nix` still mounts after a switch.
 - Changing `prepare-root.conf` needs an initramfs rebuild inside the image (`dracut --force --no-hostonly`).
 - The stock `bootc-fetch-apply-updates.timer` downloads and reboots on its own; Melissa images mask it.
-- Desktop queen = user unit (`systemctl --global enable`), so it sees the user's `claude`/`grok`/`opencode`
-  logins. Headless queen = system unit as the fixed system user `melissa` (DynamicUser until 2026-11-18;
-  `melissa-state-migrate.service` moves old state), `XDG_CONFIG_HOME=/etc`, `XDG_STATE_HOME=/var/lib`, `HOME=/var/lib/melissa/home`
-  (agent CLIs + logins, installed with `sudo melissa-setup agent <name>`).
+- Both images run the same server (since 2026-11-18): system `melissa-queen.service` as the fixed system user
+  `melissa` (DynamicUser until 2026-11-18; `melissa-state-migrate.service` moves old state), `XDG_CONFIG_HOME=/etc`,
+  `XDG_STATE_HOME=/var/lib`, `HOME=/var/lib/melissa/home` (agent CLIs + logins, `sudo melissa-setup agent <name>`),
+  UI on 127.0.0.1:8080, plus `k3s.service` and `melissa-kubeconfig.service`. There is no per-user queen unit any
+  more (it would fight the system queen for port 8080). Headless-only: `melissa-firstboot` (in `image/headless/`).
+- Desktop-only: `/usr/lib/firewalld/zones/melissa-k3s.xml` (Kinoite runs firewalld; the zone accepts k3s's pod
+  10.42.0.0/16 and service 10.43.0.0/16 sources so pods reach CoreDNS/API; nothing opens to the LAN).
+- **Plasma Setup** (Kinoite's first-run wizard, `plasma-setup.service`) runs before the login screen unless
+  `/etc/plasma-setup-done` exists; it does not look at existing users. A bib disk with a user (the test VM) shows it;
+  `sudo touch /etc/plasma-setup-done` to get the login screen. A laptop already set up keeps its `/etc` flag.
 
 ## Verified results (2026-11-18)
 - Headless image 2.13 GB, desktop 7.8 GB (rootless build). `bootc container lint`: 14 passed, 0 warnings after
@@ -66,19 +72,52 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
 - This checks package metadata, not the PE signature Secure Boot verifies; the real test is a VM boot with
   Secure Boot on (`scripts/vm-run.sh` default).
 
-## Moving the laptop onto the desktop image (owner's explicit yes required; deferred, see PLAN)
-The laptop has host-side rpm-ostree changes (layered `tailscale`, `initramfs-etc`). `bootc switch` is expected to
-refuse local rpm-ostree modifications (unverified), so use rpm-ostree to drop them and rebase in one go:
+## Desktop image verified in the VM (2026-11-18, image c5631dc, 6 GiB RAM, Secure Boot on)
+Simulated the laptop: VM on the previous desktop image with `rpm-ostree initramfs-etc --track=/etc/ostree/prepare-root.conf`
+(a layered package could not be simulated: the RPM tried was already in the base). Then exactly the owner's steps,
+with the registry transport instead of containers-storage: `sudo rpm-ostree rebase
+ostree-unverified-registry:10.0.2.2:5000/melissa-desktop:dev` + `sudo rpm-ostree initramfs-etc --untrack=...` (both
+stack on the staged deployment), reboot. Results:
+- Secure Boot enabled; SELinux enforcing; transient root active (`upperdir=/run/ostree/.private/root/upper`) from
+  the image's own initramfs (InitramfsEtc gone).
+- `melissa-queen` active as `melissa` (`NRestarts=0`), `/healthz` ok; `k3s` active, node Ready ~1 min after boot,
+  all kube-system pods Running (coredns, traefik, svclb, metrics-server) with firewalld active (`melissa-k3s` zone),
+  ingress on :80 answers 404 for an unknown host; `/run/melissa-kube/{queen,apps}.kubeconfig` root:melissa-kube 0640.
+- `tailscaled`, `sshd`, `plasmalogin` active; `melissa-firstboot` not present, no stamp; `sudo melissa-setup` and
+  plain `melissa-setup` work (desktop line "On this machine: open http://127.0.0.1:8080").
+- AVC denials: 9, all stock Fedora (`tuned`/`tuned-ppd`/`fedora-third-party` writing `__pycache__` on the transient
+  root, `tuned` chcon); none from k3s or Melissa.
+- `rpm-ostree rollback` + reboot: old image (InitramfsEtc tracked again), Secure Boot + transient root kept; rollback
+  again + reboot: new image, k3s node Ready, queen ok, login greeter on screen.
+- Only failed unit: `mcelog.service` (no MCE in a VM; stock).
+
+## Moving the laptop onto the desktop image (owner runs it; explicit yes)
+`scripts/laptop-switch.sh` prints every command and asks before running it; nothing reboots on its own.
 ```
-devenv shell -- just image-build desktop
-podman save -o /var/tmp/melissa-desktop.tar localhost/melissa-desktop:dev
-sudo podman load -i /var/tmp/melissa-desktop.tar && rm /var/tmp/melissa-desktop.tar
-rpm-ostree status
-sudo rpm-ostree rebase --uninstall=tailscale ostree-unverified-image:containers-storage:localhost/melissa-desktop:dev
-sudo rpm-ostree initramfs-etc --untrack=/etc/ostree/prepare-root.conf   # image ships it in /usr/lib now
+devenv shell -- just image-build desktop          # rootless, ~7.8 GB; lint must pass
+scripts/laptop-switch.sh preflight                # read-only (sudo only to look at root's storage)
+scripts/laptop-switch.sh switch                   # does the three steps below, each after a "y"
+#   podman save localhost/melissa-desktop:dev | sudo podman load      (or: just image-to-root desktop)
+#   sudo rpm-ostree rebase --uninstall=tailscale ostree-unverified-image:containers-storage:localhost/melissa-desktop:dev
+#   sudo rpm-ostree initramfs-etc --untrack=/etc/ostree/prepare-root.conf
 systemctl reboot
-# verify: /usr/lib/melissa/release, mokutil --sb-state, findmnt /nix, tailscale status, sudo bootc status
-# rollback: sudo rpm-ostree rollback && systemctl reboot (or pick the old GRUB entry)
+scripts/laptop-switch.sh verify                   # release, Secure Boot, transient root, /nix, nix, tailscale,
+                                                  # queen/k3s/kubeconfig, healthz, node, AVCs
 ```
-If `--uninstall` is refused: `sudo rpm-ostree reset`, then rebase without it. Later updates: `bootc switch
---transport containers-storage localhost/melissa-desktop:dev`.
+- Why rpm-ostree, not `bootc switch`: bootc refuses deployments with local rpm-ostree changes (layered `tailscale`,
+  `initramfs-etc`). Untrack after the rebase, not before: if the rebase failed, an untracked stock Kinoite would boot
+  without transient root and `/nix` would not mount. If `--uninstall` is refused: `sudo rpm-ostree reset`, then rebase.
+- `/var` is kept: Tailscale state (`/var/lib/tailscale`), `/var/home` (KDE, flatpaks, Nix store via `/nix` →
+  `/var/home/nix`, agent CLI logins in the owner's home) all stay. The `/nix` mount units live in `/etc`, which is
+  3-way merged and kept.
+- Agent logins: the system queen uses only the `melissa` user's home: `sudo melissa-setup agent claude|grok|opencode`.
+  The owner's own CLI logins in their home are untouched and keep working for their own use (and for `just demo`).
+- Port 8080 belongs to the system queen now: for `just demo` put `listen = "127.0.0.1:8090"` in
+  `~/.config/melissa/queen.toml` (the queen already fails with "cannot listen on 127.0.0.1:8080 ..." otherwise).
+- **Rollback:** `scripts/laptop-switch.sh rollback` (= `sudo rpm-ostree rollback`) then `systemctl reboot`, or pick
+  the older entry in the GRUB menu. `/var` changes (k3s data in `/var/lib/rancher`, `/var/lib/melissa`) stay.
+- Later updates: `just image-build desktop`, copy to root storage again, `sudo rpm-ostree upgrade` (or `bootc
+  upgrade` once no local rpm-ostree changes remain), reboot.
+- Laptop risk (unverified): `k3s-prepare` pins the node IP to the default route's IPv4 when k3s starts. After a
+  network change k3s keeps the old IP until it restarts (`sudo systemctl restart k3s` re-pins); local apps on the
+  laptop are not affected in the meantime as far as known. k3s also adds RAM/CPU load on the laptop (not measured).

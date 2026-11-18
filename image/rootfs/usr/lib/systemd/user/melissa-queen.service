@@ -1,9 +1,0 @@
-[Unit]
-Description=Melissa queen bee (per user)
-
-[Service]
-ExecStart=/usr/bin/melissa-queen
-Restart=on-failure
-
-[Install]
-WantedBy=default.target

@@ -55,7 +55,8 @@ so only changed layers move, like real updates.
 ## Seeing the screen (desktop VM)
 `scripts/vm-screenshot.py desktop` → `vm/desktop/screen.png` via the QEMU monitor `screendump` (stdlib only), then
 read the PNG. Verified 2026-11-18: desktop image boots to Plasma's first-run "Welcome to Plasma Desktop" setup with
-Secure Boot on (kernel logs `Lockdown: ... hibernation is restricted`).
+Secure Boot on (kernel logs `Lockdown: ... hibernation is restricted`). That wizard (`plasma-setup.service`) is skipped once
+`/etc/plasma-setup-done` exists; with it the VM shows the Plasma login greeter (verified 2026-11-18).
 
 ## Gotchas
 - Kinoite ships `sshd` **disabled**; fedora-bootc enables it. The images enable `sshd.service` and ship

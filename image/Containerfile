@@ -74,12 +74,14 @@ RUN set -eu; \
     systemctl enable tailscaled.service sshd.service; \
     # Melissa drives updates itself; don't let the stock timer download and reboot.
     systemctl mask bootc-fetch-apply-updates.timer 2>/dev/null || true; \
+    # Both variants run the full server at boot, whoever is logged in (DECISIONS 2026-11-18): the
+    # system queen as the fixed `melissa` user (web UI on 127.0.0.1:8080), k3s, its kubeconfig.
+    systemctl enable melissa-queen.service k3s.service melissa-kubeconfig.service; \
     if [ "$VARIANT" = headless ]; then \
-        systemctl enable melissa-queen.service k3s.service melissa-kubeconfig.service \
-            melissa-firstboot.service; \
+        # Console account prompt for downloaded VM disks (no user in the image). Not on desktop:
+        # a desktop has a human user already or Plasma's own first-run setup.
+        systemctl enable melissa-firstboot.service; \
     else \
-        # Desktop: the queen runs per user so it can use that user's agent CLI logins.
-        systemctl --global enable melissa-queen.service; \
         # prepare-root.conf changed (transient root for Nix on the dev laptop): rebuild initramfs.
         kver=$(basename /usr/lib/modules/*); \
         DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --add ostree \
