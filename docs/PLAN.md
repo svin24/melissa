@@ -102,7 +102,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   cancel/timeout/output cap, and a JSONL audit log.
 - **Tools (2026-11-18):** narrow tool API with label-based policy, confirmation store and audited calls
   (`crates/agent/src/tools`), served to agent CLIs over MCP (`crates/agent/src/mcp.rs`, `POST /mcp/<token>`).
-  Claude runs with no built-in tools and only Melissa's (verified). First tool: `bee_info`. The confirmation
+  Claude runs with no built-in tools and only Melissa's (verified). First tool: `comb_info`. The confirmation
   inbox needs UI (waiting for the owner's UI ideas); Grok and OpenCode get tools via ACP, Claude sessions via
   stream-json (below).
 - **Sandbox (2026-11-18):** every agent CLI runs under bubblewrap by default (`crates/agent/src/sandbox.rs`):
@@ -116,7 +116,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   non-public addresses refused, limits, every decision audited as `egress.allow|deny|error`) and an MCP-only
   endpoint (the rest of the queen's API is unreachable from agents). `network = "proxy"` (default) | `"learn"` |
   `"none"` | `"host"`, `allow = [...]` per backend; built-in allowlists found with learn mode. Verified live on
-  the laptop: claude + bee_info, grok-acp + bee_info, opencode, and the Queen with a worker, all under
+  the laptop: claude + comb_info, grok-acp + comb_info, opencode, and the Queen with a worker, all under
   `proxy`, with telemetry (Datadog, Mixpanel, grok.com) denied; `curl https://example.com` from a sandbox gets
   403. In both images (`/usr/bin/melissa-netbridge`). Details: `docs/agent-skills/agent-egress.md`.
 - **App tools (2026-11-18):** `list_catalog`, `app_status` (read-only), `app_logs` (untrusted), `install_app`
@@ -124,14 +124,14 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   traits. Generated secrets are never returned to agents; the owner reads them with
   `sudo melissa-queen app-credentials <app>`. `melissa-queen tool --wait <tool> [json]` runs a tool in the
   daemon and waits for its confirmation (`POST /api/tools/{name}`).
-- **Cluster tools (2026-11-18):** `cluster_health` (read-only) in `crates/hive`, registered next to `bee_info`;
+- **Cluster tools (2026-11-18):** `cluster_health` (read-only) in `crates/hive`, registered next to `comb_info`;
   verified in the headless VM through the queen's own credentials. `melissa-queen tool <name> [json]` runs one tool
   through the MCP session path (unattended policy, no waiting for confirmations) for operators and tests.
 - **ACP sessions (2026-11-18):** long-lived agent sessions behind a protocol-neutral API (`crates/agent/src/session`:
   open, prompt, cancel, close, typed events, permission handler) implemented over ACP with the official Rust crate
   (`crates/agent/src/acp`). Built-in backend `grok-acp` (`grok --permission-mode default agent --no-leader stdio`,
   sandboxed) gets Melissa's MCP endpoint per session; its permission requests go through the tool policy and the
-  confirmation inbox (never "always"). Verified on the laptop: bee_info through MCP, streaming answer, audit,
+  confirmation inbox (never "always"). Verified on the laptop: comb_info through MCP, streaming answer, audit,
   graceful cancel and a second prompt in one session, and board cancel killing the sandbox. Replay tests with a
   recorded, scrubbed Grok transcript.
 - **More session backends (2026-11-18):** `opencode-acp` (`opencode acp`, ACP flavor `opencode`: Melissa writes
@@ -139,7 +139,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   driven natively over its stream-json protocol: no built-in tools, every permission prompt answered by
   Melissa's policy over `--permission-prompt-tool stdio`, interrupt for cancel, `--resume` with a Melissa-owned
   `~/.claude/projects`). Both sandboxed behind the egress proxy (learn mode: no new hosts; Claude now contacts
-  only `api.anthropic.com`). Verified on the laptop for each: bee_info task, Queen + worker, policy-answered
+  only `api.anthropic.com`). Verified on the laptop for each: comb_info task, Queen + worker, policy-answered
   permissions (OpenCode shell → inbox → denied), cancel, second prompt, resume after a daemon restart. Replay
   tests from recorded, scrubbed transcripts. Queen default order: `grok-acp`, `claude-session`, `opencode-acp`.
   Details: `docs/agent-skills/acp-sessions.md`.
@@ -153,7 +153,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   Typed event stream + JSONL transcript; JSON API `/api/queen/*`, `/api/bees/*`, `/api/cells/*`,
   `/api/confirmations`; CLI `melissa-queen chat|ask [--bee]|confirm|bee|cell`. Context
   survives daemon restarts and agent crashes through `session/resume` with a Melissa-owned Grok session store
-  (verified), else a transcript summary. Verified live on the laptop (bee_info + a grok worker in 23 s, chat
+  (verified), else a transcript summary. Verified live on the laptop (comb_info + a grok worker in 23 s, chat
   context, cancel, resume). Details: `docs/agent-skills/queen-loop.md`. Since 2026-11-18 also on
   `claude-session` and `opencode-acp` (see above). Next: chat UI (owner's design), per-bee budgets.
 - **Cells and ownership (2026-11-18, owner: "agents change only what belongs to them"; hive model):** every
@@ -165,7 +165,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   Reassign: the Queen's `reassign_cell` (always the user's confirmation) or the user's
   `melissa-queen cell reassign`; admission lets the owner change only with a new assignment record. Old
   owner labels count as unassigned. Verified with unit tests (fake cluster, replay agents) and a live laptop
-  run (Queen creates bee Ada, gives her a bee_info job, the user chats with Ada, resume after restart); the
+  run (Queen creates bee Ada, gives her a comb_info job, the user chats with Ada, resume after restart); the
   CEL rules still need a VM run. Details: `docs/agent-skills/cells-and-ownership.md`. Next: the same
   `target()` on update/restart/scale/stop tools as they land; agent-built apps and backups as cell kinds.
 - **Next steps (ideas reviewed against the earlier draft, adopt now):**
@@ -416,7 +416,7 @@ Roadmap (rough, phases may overlap):
     session per agent session); should direct user chats count as attended (needs a per-turn context)? User
     chats are not limited by `max_bees`. A renamed bee keeps its old name in a resumed agent session's system
     prompt. Per-bee budgets (tokens, tool calls, wall time per day) are still missing.
-46. `bee_info` describes the comb (device); the agent-facing name stays for now (recorded transcripts and
-    prompts use it). Rename to `comb_info` with an alias?
+46. ~~Tool name for the device description~~ Decided 2026-11-18: the tool that describes the comb (device) is
+    `comb_info` (was `bee_info`), renamed everywhere incl. replay fixtures; no alias (pre-alpha, nothing depends on it).
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
     Keep them, turn them into "ask a bee", or drop them when the chat UI lands?

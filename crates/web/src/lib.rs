@@ -386,7 +386,7 @@ mod tests {
         let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let (status, _, body) = send(&app, call(format!("/mcp/{token}"), list)).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("bee_info"));
+        assert!(body.contains("comb_info"));
         let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         assert_eq!(
             send(&app, call(format!("/mcp/{token}"), note)).await.0,

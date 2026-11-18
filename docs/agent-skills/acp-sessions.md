@@ -37,12 +37,12 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
 
 ## OpenCode over ACP (verified 2026-11-18, opencode 2.3.2, free default model `opencode/big-pickle`)
 - **Code Mode:** by default OpenCode exposes MCP tools only through its own `execute` tool, which runs
-  JavaScript (`await tools.melissa.bee_info()`): the permission request is for `execute` (`kind: other`,
+  JavaScript (`await tools.melissa.comb_info()`): the permission request is for `execute` (`kind: other`,
   `rawInput.code`), so Melissa could not tell a tool call from arbitrary code. With `codemode: false` on the MCP
-  server each tool is its own call named `melissa_bee_info` (`<server>_<tool>`, recognised by the policy).
+  server each tool is its own call named `melissa_comb_info` (`<server>_<tool>`, recognised by the policy).
   `codemode` is a per-server config key; ACP's `session/new` cannot set it, so Melissa puts its MCP server into
   OpenCode's config and sends `mcpServers: []`.
-- **Permissions:** by default OpenCode ran `melissa_bee_info` without asking (verified). `permission: {"*":
+- **Permissions:** by default OpenCode ran `melissa_comb_info` without asking (verified). `permission: {"*":
   "ask"}` makes every tool (MCP and built-in) ask via `session/request_permission`; options `once` /
   `always` / `reject` (allow_once / allow_always / reject_once). Shell: `name: "shell"`, `kind: "execute"`,
   title = the command (`uname -r`) → Melissa's inbox; denied → `reject_once`. **A reject ends OpenCode's turn
@@ -94,13 +94,13 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
 - Grok does not send `agentInfo`; its version is in `initialize` `_meta.agentVersion`.
 - MCP: `session/new` with `{"type":"http","name":"melissa","url":"http://127.0.0.1:<port>/mcp/<token>"}` works.
   Grok loads MCP tools lazily: it calls its own `search_tool` (no permission asked), then `use_tool`, which asks
-  `session/request_permission` with `kind: "other"`, `title: "melissa__bee_info"`, `rawInput.tool_name:
-  "melissa__bee_info"` (no `name` field). Options offered: always-allow / allow-once / reject-once.
+  `session/request_permission` with `kind: "other"`, `title: "melissa__comb_info"`, `rawInput.tool_name:
+  "melissa__comb_info"` (no `name` field). Options offered: always-allow / allow-once / reject-once.
 - `--permission-mode default` (before `agent`) overrides a user config `permission_mode = "always-approve"`:
   `run_terminal_command` still came as a permission request (`kind: "execute"`, title "Execute `uname -r`").
 - Graceful cancel: `session/cancel` → the prompt returned `stopReason: cancelled` in ~40 ms; a second prompt in the
   same session then worked. Board cancel (dropping the session) kills bwrap and grok (no leftovers).
-- A bee_info task through the queen took ~11 s; audit shows `agent.permission` then `tool.call`.
+- A comb_info task through the queen took ~11 s; audit shows `agent.permission` then `tool.call`.
 
 ## Melissa design (see DECISIONS.md)
 - Permission requests → `PolicyPermissions`: Melissa MCP tools → allow_once (the MCP server applies policy, waits
@@ -113,8 +113,8 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
 - No client fs/terminal capabilities. Sandbox: the `grok` preset (tmpfs `~/.grok`, rw `auth.json`, ro
   `config.toml`) works unchanged for `agent stdio`; `claude` preset unchanged for stream-json; OpenCode ACP uses
   the managed preset (no user config).
-- Replay tests: transcripts in `crates/agent/tests/fixtures/acp/*.jsonl` (`grok_bee_info`, `opencode_bee_info`)
-  and `crates/agent/tests/fixtures/claude/claude_bee_info.jsonl`, header line + `{"dir":"send"|"recv",
+- Replay tests: transcripts in `crates/agent/tests/fixtures/acp/*.jsonl` (`grok_comb_info`, `opencode_comb_info`)
+  and `crates/agent/tests/fixtures/claude/claude_comb_info.jsonl`, header line + `{"dir":"send"|"recv",
   "msg":…}`. The replay agent matches sends structurally (`"<any>"` wildcard, request ids mapped); the Claude
   client uses the same replay agent (its request ids are fixed strings, Claude's are echoed).
 
@@ -168,7 +168,7 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
   handshake. Its answer carries the account's e-mail: never log it.
 - Claude puts its auto-memory under the session store (`<project>/memory/`) and its system prompt mentions it;
   with no file tools it cannot write there ("Noted, but only for this conversation").
-- Claude passed `mcp__melissa__bee_info` as a tool name in `start_worker`'s (now `create_bee`'s) `tools` once; the tool's error
+- Claude passed `mcp__melissa__comb_info` as a tool name in `start_worker`'s (now `create_bee`'s) `tools` once; the tool's error
   listed the plain names and Claude retried correctly. The description now asks for plain names.
 - OpenCode on a policy reject ends the whole turn (`cancelled`), unlike Grok and Claude, which continue.
 - OpenCode's `$/cancel_request` notification (after `session/cancel`) is handled by the catch-all handler.

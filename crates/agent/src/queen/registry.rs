@@ -319,7 +319,7 @@ mod tests {
             .create(
                 "Bo",
                 "claude-session",
-                Some(vec!["bee_info".into()]),
+                Some(vec!["comb_info".into()]),
                 "the user",
             )
             .unwrap();

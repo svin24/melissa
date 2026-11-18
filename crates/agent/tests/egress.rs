@@ -18,7 +18,7 @@ use melissa_agent::{
     egress::EgressProxy,
     mcp::McpServer,
     sandbox,
-    tools::{BeeInfo, TaskContext, Tool, ToolRegistry},
+    tools::{CombInfo, TaskContext, Tool, ToolRegistry},
     AuditLog, Backend, CliBackend, CliSpec, EventSink, McpEndpoint, NetworkMode, RunRequest,
     SandboxSpec,
 };
@@ -88,7 +88,7 @@ async fn sandboxed_agent_reaches_only_allowlisted_hosts_and_mcp() {
     let server = http_server("allowed-body").await;
     let port = server.port();
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(BeeInfo::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CombInfo::new())];
     let mcp = McpServer::new(ToolRegistry::new(tools, None));
     let token = mcp.open_session(42, TaskContext::default(), None).unwrap();
     // The MCP address inside the sandbox; nothing listens there on the host.
@@ -160,7 +160,7 @@ async fn sandboxed_agent_reaches_only_allowlisted_hosts_and_mcp() {
         "{lines:?}"
     );
     let mcp_line = lines.iter().find(|l| l.starts_with("mcp=")).unwrap();
-    assert!(mcp_line.contains("bee_info"), "{mcp_line}");
+    assert!(mcp_line.contains("comb_info"), "{mcp_line}");
     assert!(lines.contains(&"api=404".to_string()), "{lines:?}");
 
     let audit_text = std::fs::read_to_string(audit.path()).unwrap();

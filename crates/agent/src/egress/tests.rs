@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use super::*;
-use crate::tools::{BeeInfo, TaskContext, Tool, ToolRegistry};
+use crate::tools::{CombInfo, TaskContext, Tool, ToolRegistry};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("melissa-egress-{name}-{}", std::process::id()));
@@ -278,7 +278,7 @@ async fn http(dir: &Path, method: &str, path: &str, body: &str) -> (u16, String)
 #[tokio::test]
 async fn mcp_socket_serves_only_its_own_tokens() {
     let root = scratch("mcp");
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(BeeInfo::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CombInfo::new())];
     let server = McpServer::new(ToolRegistry::new(tools, None));
     let mine = server
         .open_session(7, TaskContext::default(), None)
@@ -307,7 +307,7 @@ async fn mcp_socket_serves_only_its_own_tokens() {
     let (status, body) = http(&dir, "POST", &format!("/mcp/{mine}"), &list).await;
     assert_eq!(status, 200);
     let reply: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(reply["result"]["tools"][0]["name"], "bee_info");
+    assert_eq!(reply["result"]["tools"][0]["name"], "comb_info");
     // Another task's token, the rest of the queen's API, other methods: refused.
     assert_eq!(
         http(&dir, "POST", &format!("/mcp/{other}"), &list).await.0,

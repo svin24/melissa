@@ -40,7 +40,9 @@ use melissa_agent::{
         Queen, QueenSettings,
     },
     session::SessionBackend,
-    tools::{BeeInfo, BeeNames, CellStore, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry},
+    tools::{
+        BeeNames, CellStore, CombInfo, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry,
+    },
     AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EgressProxy, McpLink,
     TaskBoard,
 };
@@ -151,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
     let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
     let cluster = LazyCluster::for_queen(creds.as_deref(), config.kubeconfig.as_deref());
     let mut tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(BeeInfo::new()),
+        Arc::new(CombInfo::new()),
         Arc::new(ClusterHealth::new(Some(Arc::new(cluster)))),
     ];
     // App tools use the separate write identity (melissa-apps); read-only tools above
@@ -445,7 +447,7 @@ mod tests {
         assert!(
             matches!(cmd, Command::Tool { name, args } if name == "cluster_health" && args == json!({}))
         );
-        let (_, cmd) = parse(&["tool", "bee_info", r#"{"a":1}"#]).unwrap();
+        let (_, cmd) = parse(&["tool", "comb_info", r#"{"a":1}"#]).unwrap();
         assert!(matches!(cmd, Command::Tool { args, .. } if args["a"] == 1));
         assert!(parse(&["tool", "x", "not json"]).is_err());
         let (_, cmd) = parse(&["tool", "--wait", "install_app", r#"{"app":"nextcloud"}"#]).unwrap();
