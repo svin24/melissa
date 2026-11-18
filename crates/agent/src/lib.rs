@@ -14,6 +14,7 @@ mod board;
 mod cli;
 mod echo;
 pub mod mcp;
+pub mod sandbox;
 pub mod tools;
 
 pub use audit::{AuditLog, AuditRecord};
@@ -25,3 +26,4 @@ pub use board::{
 };
 pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
 pub use echo::EchoBackend;
+pub use sandbox::SandboxSpec;

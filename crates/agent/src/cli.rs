@@ -2,7 +2,8 @@
 //!
 //! The prompt is passed as a process argument, never through a shell, so it cannot be
 //! interpreted as shell syntax. Prompts starting with `-` are rejected so they cannot be
-//! mistaken for CLI flags (e.g. an auto-approve flag).
+//! mistaken for CLI flags (e.g. an auto-approve flag). By default the CLI runs inside a
+//! bubblewrap sandbox ([`crate::sandbox`]).
 
 use std::{
     path::{Path, PathBuf},
@@ -12,7 +13,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
-use crate::{AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream};
+use crate::{
+    sandbox::{self, SandboxError, SandboxPlan, SandboxSpec},
+    AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream,
+};
 
 /// Placeholder in [`CliSpec::args`] that is replaced by the prompt.
 pub const PROMPT_PLACEHOLDER: &str = "{prompt}";
@@ -36,6 +40,10 @@ pub struct CliSpec {
     /// the backend cannot use tools.
     #[serde(default)]
     pub mcp_args: Vec<String>,
+    /// Sandbox settings. Absent: the built-in preset for this command
+    /// ([`SandboxSpec::preset`]), which is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxSpec>,
 }
 
 impl CliSpec {
@@ -45,7 +53,31 @@ impl CliSpec {
             command: command.into(),
             args: args.iter().map(|a| (*a).to_string()).collect(),
             mcp_args: Vec::new(),
+            sandbox: None,
         }
+    }
+
+    /// Use `spec` instead of the built-in sandbox preset.
+    pub fn with_sandbox(mut self, spec: SandboxSpec) -> Self {
+        self.sandbox = Some(spec);
+        self
+    }
+
+    /// Run the CLI as a plain process (no sandbox).
+    pub fn without_sandbox(self) -> Self {
+        self.with_sandbox(SandboxSpec::disabled())
+    }
+
+    /// The sandbox that applies: the configured one, else the preset for the command.
+    pub fn effective_sandbox(&self) -> SandboxSpec {
+        self.sandbox
+            .clone()
+            .unwrap_or_else(|| SandboxSpec::preset(&self.command))
+    }
+
+    /// Check the configuration (currently: the sandbox paths and env names).
+    pub fn validate(&self) -> Result<(), SandboxError> {
+        self.effective_sandbox().validate()
     }
 
     pub fn with_mcp_args(mut self, args: &[&str]) -> Self {
@@ -79,7 +111,10 @@ impl CliSpec {
 #[derive(Debug, Clone)]
 pub struct CliBackend {
     spec: CliSpec,
+    sandbox: SandboxSpec,
     program: Option<PathBuf>,
+    bwrap: Option<PathBuf>,
+    home: Option<PathBuf>,
     workdir: PathBuf,
 }
 
@@ -87,11 +122,49 @@ impl CliBackend {
     /// `workdir` is the working directory for the child process (created if missing).
     pub fn new(spec: CliSpec, workdir: PathBuf) -> Self {
         let program = resolve_program(&spec.command);
+        let sandbox = spec.effective_sandbox();
+        let bwrap = if sandbox.enabled {
+            sandbox::find_bwrap()
+        } else {
+            None
+        };
         Self {
             spec,
+            sandbox,
             program,
+            bwrap,
+            home: std::env::var_os("HOME").map(PathBuf::from),
             workdir,
         }
+    }
+
+    /// Use `home` instead of `$HOME` for the sandbox (tests, service users).
+    pub fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    /// Program and argv for one run: the CLI itself, or `bwrap` wrapping it.
+    fn command_line(
+        &self,
+        program: &Path,
+        workdir: &Path,
+        req: &RunRequest,
+        args: Vec<String>,
+    ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
+        if !self.sandbox.enabled {
+            return Ok((
+                program.to_path_buf(),
+                args.into_iter().map(Into::into).collect(),
+            ));
+        }
+        let bwrap = self.bwrap.as_ref().ok_or_else(|| {
+            AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
+        })?;
+        // Resolved per run: the CLI may have updated itself (new binary path) since startup.
+        let plan = SandboxPlan::resolve(&self.sandbox, bwrap, self.home.as_deref(), program)?;
+        let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
+        Ok(sandbox::command(&plan, workdir, &extra, &args))
     }
 }
 
@@ -102,11 +175,16 @@ impl Backend for CliBackend {
             detail.push(' ');
             detail.push_str(arg);
         }
+        detail.push_str(if self.sandbox.enabled {
+            " [sandbox: bwrap]"
+        } else {
+            " [no sandbox]"
+        });
         BackendInfo {
             name: self.spec.name.clone(),
             kind: "cli",
             detail,
-            available: self.program.is_some(),
+            available: self.program.is_some() && (!self.sandbox.enabled || self.bwrap.is_some()),
             tools: !self.spec.mcp_args.is_empty(),
         }
     }
@@ -137,9 +215,13 @@ impl Backend for CliBackend {
                 );
             }
 
-            let mut child = tokio::process::Command::new(program)
+            // bwrap needs an absolute workdir for its binds.
+            let workdir = std::path::absolute(workdir)?;
+            let (program, args) = self.command_line(program, &workdir, req, args)?;
+
+            let mut child = tokio::process::Command::new(&program)
                 .args(args)
-                .current_dir(workdir)
+                .current_dir(&workdir)
                 // Ask CLIs for plain text; any remaining escape codes are stripped in `pump`.
                 .env("NO_COLOR", "1")
                 .env("TERM", "dumb")
@@ -147,6 +229,7 @@ impl Backend for CliBackend {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 // Cancellation and timeouts drop this future; make sure the child dies too.
+                // Under bwrap that takes the whole sandbox (PID namespace) with it.
                 .kill_on_drop(true)
                 .spawn()
                 .map_err(|source| AgentError::Spawn {
@@ -255,7 +338,8 @@ mod tests {
 
     fn sh_backend(script: &str) -> CliBackend {
         // `sh -c <script> melissa <prompt>`: the prompt becomes $1, never part of the script.
-        let spec = CliSpec::new("sh", "sh", &["-c", script, "melissa", "{prompt}"]);
+        let spec =
+            CliSpec::new("sh", "sh", &["-c", script, "melissa", "{prompt}"]).without_sandbox();
         CliBackend::new(spec, std::env::temp_dir())
     }
 
@@ -283,7 +367,8 @@ mod tests {
     #[tokio::test]
     async fn mcp_args_are_appended_only_with_a_config() {
         let spec = CliSpec::new("sh", "sh", &["-c", r#"echo "$@""#, "melissa", "{prompt}"])
-            .with_mcp_args(&["--mcp-config", "{mcp_config}"]);
+            .with_mcp_args(&["--mcp-config", "{mcp_config}"])
+            .without_sandbox();
         let backend = CliBackend::new(spec, std::env::temp_dir());
         assert!(backend.info().tools);
         let (sink, mut rx) = EventSink::channel();

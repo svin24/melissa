@@ -58,6 +58,8 @@ pub enum AgentError {
     Io(#[from] std::io::Error),
     #[error("backend exited unsuccessfully ({0})")]
     Exit(String),
+    #[error("sandbox setup failed: {0}")]
+    Sandbox(#[from] crate::sandbox::SandboxError),
     #[error("backend timed out after {0:?}")]
     Timeout(Duration),
 }
