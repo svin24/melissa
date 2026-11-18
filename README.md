@@ -31,6 +31,13 @@ scripts/       VM helpers (QEMU)
 docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
 ```
 
+## Try it
+
+- **From source** on any Linux (x86_64): [docs/QUICKSTART.md](docs/QUICKSTART.md). In short: install
+  bubblewrap and one agent CLI (Claude Code, Grok CLI or OpenCode) and log in, then
+  `devenv shell -- just demo` and open http://127.0.0.1:8080. No k3s, so no app installs.
+- **VM image** with k3s: coming with the pre-alpha release.
+
 ## Quick start (dev)
 
 With Nix + devenv + direnv available (see [docs/DEV-ENV.md](docs/DEV-ENV.md)):
@@ -40,7 +47,7 @@ direnv allow      # or: devenv shell
 just check        # fmt, clippy, tests
 ```
 
-Run the queen and open http://127.0.0.1:8080: `devenv shell -- just run-web`. Agents found on `PATH`
+Run the queen and open http://127.0.0.1:8080: `devenv shell -- just run-web` (full log) or `just demo` (short summary). Agents found on `PATH`
 (`claude`, `grok`, `opencode`) show up as backends; a built-in `echo` backend always works.
 
 Images: `just image-build desktop|headless`, VM tests with `just vm-disk` / `just vm-run` (see docs/agent-skills).
