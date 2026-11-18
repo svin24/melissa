@@ -361,7 +361,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
         done(3, "end_turn"),
     ]);
     let s = setup("turn", vec![script]);
-    let (turn, since) = s.queen.send("What kernel does this bee run?").unwrap();
+    let (turn, since) = s.queen.send("What kernel does this comb run?").unwrap();
     assert_eq!(s.queen.send("too soon"), Err(QueenError::Busy));
     assert_eq!(s.queen.send("  "), Err(QueenError::Empty));
     let events = turn_events(&s.queen, since, turn).await;
@@ -369,7 +369,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
     let expect = [
         QueenEvent::UserMessage {
             turn,
-            text: "What kernel does this bee run?".into(),
+            text: "What kernel does this comb run?".into(),
         },
         QueenEvent::BackendFailed {
             backend: "broken-acp".into(),

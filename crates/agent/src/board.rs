@@ -102,7 +102,7 @@ impl Default for DispatchOptions {
 pub enum DispatchError {
     #[error("unknown backend `{0}`")]
     UnknownBackend(String),
-    #[error("backend `{0}` is not available on this bee")]
+    #[error("backend `{0}` is not available on this comb")]
     Unavailable(String),
     #[error("prompt is empty")]
     EmptyPrompt,

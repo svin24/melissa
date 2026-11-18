@@ -240,7 +240,7 @@ Cargo workspace (skeleton exists, not yet built):
 ```
 Cargo.toml          # workspace, lints (forbid unsafe, warn on unwrap)
 crates/queen        # queen bee: coordinator, agent layer entrypoint
-crates/bee          # per-node daemon
+crates/comb         # per-device daemon (comb)
 crates/web          # axum + maud UI, embedded htmx (rust-embed)
 crates/agent        # backend trait, echo + CLI backends (claude, grok, opencode), task board, audit log
 crates/hive         # k3s client (kube-rs, rustls) behind small traits, cluster + app tools, rendering

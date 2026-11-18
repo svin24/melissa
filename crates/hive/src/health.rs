@@ -21,7 +21,7 @@ pub struct ClusterHealth {
 }
 
 impl ClusterHealth {
-    /// `None` = no kubeconfig on this bee (desktop, or k3s credentials missing).
+    /// `None` = no kubeconfig on this comb (desktop, or k3s credentials missing).
     pub fn new(cluster: Option<Arc<dyn ClusterRead>>) -> Self {
         Self { cluster }
     }

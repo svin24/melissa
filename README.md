@@ -19,7 +19,7 @@ without internet, and open source so others can build on top.
 ```
 crates/agent   agent layer: backend trait, echo + CLI backends, task board, audit log
 crates/queen   queen bee (coordinator + agent layer entrypoint)
-crates/bee     per-node daemon
+crates/comb    per-device daemon (a comb = one device)
 crates/web     web UI (axum + maud + embedded htmx)
 image/         bootc Containerfile with desktop (Kinoite/KDE) and headless (fedora-bootc) variants
 scripts/       VM helpers (QEMU)

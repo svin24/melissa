@@ -64,7 +64,7 @@ pub struct Target {
 /// Who owns a resource.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owner {
-    /// The human who owns this bee.
+    /// The human who owns this comb.
     Human,
     /// The worker job with this key (a worker created it for its job).
     Job(String),

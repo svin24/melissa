@@ -2,7 +2,7 @@
 //! Agent layer for Melissa.
 //!
 //! One interface ([`Backend`]) over pluggable agent backends: a built-in [`EchoBackend`]
-//! (no LLM, for "dumb box" bees and tests) and a generic [`CliBackend`] that drives
+//! (no LLM, for "dumb box" combs and tests) and a generic [`CliBackend`] that drives
 //! headless agent CLIs such as Claude Code, Grok or OpenCode. The [`TaskBoard`]
 //! dispatches prompts to backends, collects their output, supports cancellation and
 //! timeouts, and writes every mutating action to an [`AuditLog`]. Long-lived agent sessions

@@ -75,8 +75,8 @@ hotswap)
     podman rm -f "$cid" >/dev/null
     scp "${opts[@]}" -P "$port" "$tmp"/melissa-* bee@127.0.0.1:/tmp/
     rm -rf "$tmp"
-    vm 'sudo bootc usr-overlay 2>/dev/null || true; sudo install -m 0755 /tmp/melissa-queen /tmp/melissa-bee /usr/bin/ \
-        && rm -f /tmp/melissa-queen /tmp/melissa-bee \
+    vm 'sudo bootc usr-overlay 2>/dev/null || true; sudo install -m 0755 /tmp/melissa-queen /tmp/melissa-comb /usr/bin/ \
+        && rm -f /tmp/melissa-queen /tmp/melissa-comb \
         && (sudo systemctl try-restart melissa-queen.service; systemctl is-active melissa-queen.service || true)'
     echo "hot-swapped binaries (transient until reboot)"
     ;;

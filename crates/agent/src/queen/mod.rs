@@ -471,7 +471,7 @@ impl Queen {
             tried.push(name.as_str());
             let backend = inner.backends.iter().find(|b| b.info().name == *name);
             let Some(backend) = backend.filter(|b| b.info().available) else {
-                self.backend_failed(name, "not available on this bee");
+                self.backend_failed(name, "not available on this comb");
                 continue;
             };
             let token = match inner

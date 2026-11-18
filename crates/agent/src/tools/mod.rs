@@ -83,7 +83,7 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// All tools available on this bee, plus the confirmation inbox.
+/// All tools available on this comb, plus the confirmation inbox.
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<BTreeMap<&'static str, Arc<dyn Tool>>>,

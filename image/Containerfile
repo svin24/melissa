@@ -20,8 +20,8 @@ COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
     # melissa-agent's only binary is melissa-netbridge (runs inside every agent sandbox).
-    cargo build --release --locked -p melissa-queen -p melissa-bee -p melissa-agent \
- && install -D -m 0755 target/release/melissa-queen target/release/melissa-bee \
+    cargo build --release --locked -p melissa-queen -p melissa-comb -p melissa-agent \
+ && install -D -m 0755 target/release/melissa-queen target/release/melissa-comb \
         target/release/melissa-netbridge -t /out/bin/ \
  && mkdir -p /out/licenses && cargo fetch --locked \
  && cargo about generate --workspace --frozen --fail -o /out/licenses/THIRD-PARTY-LICENSES.md about.hbs
@@ -93,7 +93,7 @@ ARG MELISSA_VERSION=dev
 RUN mkdir -p /usr/lib/melissa && printf 'MELISSA_VERSION=%s\nMELISSA_VARIANT=%s\n' "$MELISSA_VERSION" "$VARIANT" > /usr/lib/melissa/release
 
 LABEL org.opencontainers.image.title="melissa" \
-      org.opencontainers.image.description="Melissa bee image" \
+      org.opencontainers.image.description="Melissa comb image" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later"
 # Secure Boot guard: keep Fedora's signed kernel and modules. Exactly one kernel, signed with
 # a Fedora key, and no out-of-tree kmods (they would need MOK enrollment).

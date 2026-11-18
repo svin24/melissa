@@ -1133,10 +1133,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "melissa-bee"
-version = "0.0.1"
-
-[[package]]
 name = "melissa-catalog"
 version = "0.0.1"
 dependencies = [
@@ -1145,6 +1141,10 @@ dependencies = [
  "thiserror",
  "toml",
 ]
+
+[[package]]
+name = "melissa-comb"
+version = "0.0.1"
 
 [[package]]
 name = "melissa-hive"

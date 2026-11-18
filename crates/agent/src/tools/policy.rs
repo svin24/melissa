@@ -25,7 +25,7 @@ pub struct Labels {
     pub reads_private: bool,
     /// Returns content an outsider can influence (web pages, app logs, mail).
     pub reads_untrusted: bool,
-    /// Can send data off the bee (network requests, notifications, uploads).
+    /// Can send data off the comb (network requests, notifications, uploads).
     pub egress: bool,
     pub effect: Effect,
 }
@@ -74,7 +74,7 @@ pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
         );
     }
     if labels.egress && labels.reads_private && !ctx.attended {
-        return Decision::Confirm("can send private data off the bee".into());
+        return Decision::Confirm("can send private data off the comb".into());
     }
     if labels.effect == Effect::Reversible && !ctx.attended && !ctx.preapproved.contains(tool) {
         return Decision::Confirm("changes state while nobody is watching".into());

@@ -69,7 +69,7 @@ impl AppSettings {
     }
 }
 
-/// All six tools over one cluster connection (`None` = no k3s on this bee).
+/// All six tools over one cluster connection (`None` = no k3s on this comb).
 pub fn app_tools<C>(settings: AppSettings, cluster: Option<Arc<C>>) -> Vec<Arc<dyn Tool>>
 where
     C: AppRead + AppDeployer + 'static,
@@ -199,7 +199,7 @@ impl Tool for ListCatalog {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_catalog",
-            description: "Apps this bee can install (Melissa's reviewed catalog): name, version, \
+            description: "Apps this comb can install (Melissa's reviewed catalog): name, version, \
                 description, URL it would get, volumes, and the config fields install_app \
                 accepts (type, default, allowed values). Secret fields are generated at \
                 install and can't be set or read by agents.",
@@ -527,7 +527,7 @@ impl Tool for AppStatus {
 
 // ---- list_apps ---------------------------------------------------------------------------
 
-/// Every catalog app that is on the bee in some form (running, starting, failing, data kept
+/// Every catalog app that is on the comb in some form (running, starting, failing, data kept
 /// after an uninstall, being deleted), with the same phases as `app_status`. Built from
 /// per-app reads, because the write identity may get namespaces but not list them.
 struct ListApps(AppStatus);
@@ -567,7 +567,7 @@ impl Tool for ListApps {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_apps",
-            description: "Catalog apps present on this bee: running, starting, failing, \
+            description: "Catalog apps present on this comb: running, starting, failing, \
                 uninstalled with data kept, or being deleted (phase as in app_status), with \
                 ready replicas, URL, volumes and problem pods; plus the catalog apps that are \
                 not installed. Use it to find leftovers such as kept data.",

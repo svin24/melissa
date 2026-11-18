@@ -136,7 +136,7 @@ impl WorkerPool {
         self.inner
             .attached
             .get()
-            .ok_or_else(|| ToolError::Failed("workers are not available on this bee".into()))
+            .ok_or_else(|| ToolError::Failed("workers are not available on this comb".into()))
     }
 
     /// Tools a worker may get: the Queen's own, without the Queen-only ones. (What a worker
@@ -211,7 +211,9 @@ impl WorkerPool {
                 .board
                 .mcp_link()
                 .map(|l| l.server.registry().clone())
-                .ok_or_else(|| ToolError::Failed("workers are not available on this bee".into()))?;
+                .ok_or_else(|| {
+                    ToolError::Failed("workers are not available on this comb".into())
+                })?;
             let mut owners_apps = Vec::new();
             for app in &apps {
                 match registry.owner_of(ResourceKind::App, app).await {
@@ -369,7 +371,7 @@ impl WorkerPool {
             .ok_or_else(|| ToolError::BadArgs(format!("unknown backend `{backend}`")))?;
         if !info.available {
             return Err(ToolError::Failed(format!(
-                "backend `{backend}` is not available on this bee"
+                "backend `{backend}` is not available on this comb"
             )));
         }
 
