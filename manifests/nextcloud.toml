@@ -1,0 +1,78 @@
+# Melissa app manifest (schema: docs/agent-skills/app-catalog.md). Human-reviewed; agents
+# can only pick this app and override the non-secret config fields below.
+schema = 1
+name = "nextcloud"
+version = "34.0.6"
+description = "Nextcloud: files, calendar and contacts. Single pod with SQLite (fine for one to a few users; Postgres comes later)."
+registries = ["docker.io"]
+
+[[config]]
+name = "admin_user"
+type = "string"
+description = "Login name of the Nextcloud admin created at first start."
+default = "admin"
+max_len = 64
+
+[[config]]
+name = "admin_password"
+type = "secret"
+description = "Password of the admin user. Generated at install; only the owner can read it (`sudo melissa-queen app-credentials nextcloud`)."
+length = 32
+
+[[config]]
+name = "php_memory_limit"
+type = "choice"
+description = "PHP memory limit per request."
+default = "512M"
+options = ["256M", "512M", "1G"]
+
+[[config]]
+name = "upload_limit"
+type = "choice"
+description = "Largest single upload through the web UI."
+default = "512M"
+options = ["512M", "2G", "10G"]
+
+# The image keeps the Nextcloud install and the user data under /var/www/html.
+[[volumes]]
+name = "data"
+size = "10Gi"
+
+[[containers]]
+name = "nextcloud"
+# Official image, Apache variant. Multi-arch index digest of tag 34.0.6-apache (2026-11-18):
+#   skopeo inspect docker://docker.io/library/nextcloud:34.0.6-apache | jq -r .Digest
+image = "docker.io/library/nextcloud:34.0.6-apache@sha256:3031e7f87baaceb863a755921ebf463bc26ea71855c07ad7858e2ae25a5a0ad7"
+ports = [{ name = "http", port = 80 }]
+mounts = [{ volume = "data", path = "/var/www/html" }]
+
+[containers.env]
+# SQLite for M2 simplicity; the image installs Nextcloud on first start when these are set.
+SQLITE_DATABASE = { value = "nextcloud" }
+NEXTCLOUD_ADMIN_USER = { config = "admin_user" }
+NEXTCLOUD_ADMIN_PASSWORD = { secret = "admin_password" }
+NEXTCLOUD_TRUSTED_DOMAINS = { builtin = "ingress_host" }
+PHP_MEMORY_LIMIT = { config = "php_memory_limit" }
+PHP_UPLOAD_LIMIT = { config = "upload_limit" }
+
+[containers.resources]
+cpu_request = "100m"
+cpu_limit = "1"
+memory_request = "256Mi"
+memory_limit = "1Gi"
+
+[containers.probe]
+path = "/status.php"
+port = "http"
+# status.php answers for trusted domains; probes come from the kubelet with the pod IP.
+ingress_host_header = true
+# The first start copies Nextcloud into the volume and runs the installer.
+startup_timeout_secs = 900
+period_secs = 10
+
+[ingress]
+port = "http"
+
+[credentials]
+user = "admin_user"
+password = "admin_password"
