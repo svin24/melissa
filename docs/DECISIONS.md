@@ -414,3 +414,6 @@ Format: date — decision. Why. Alternatives considered.
   and automatic detection finds it). Why not a code change for host ports that differ from 30000+n
   (`APP_PORT_BASE`): it only matters next to another k3s; the default maps ports 1:1. Base image unchanged.
 
+- **2026-11-19 — The agent menu offers every model the agent lists (q55b).** No curation: Melissa shows the
+  list exactly as the agent reports it (Claude also lists older ids). Why: a curated list goes stale with every
+  agent release and would mean Melissa picking models for the owner; the agent knows what it can run.

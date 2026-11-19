@@ -497,8 +497,9 @@ Roadmap (rough, phases may overlap):
 54. Agent logins on the headless box: Grok tokens expire after 7 days; Claude's OAuth refresh under the sandbox's
     bind mount is unverified (24). How does a tester learn a login expired (UI notice, `melissa-setup` status)?
 55. Backend switch (2026-11-19): (a) model lists appear only after a backend has had a session (Grok's list is
-    still unverified live); should Melissa probe a CLI's models on demand (a short handshake, no prompt)? (b) The
-    UI offers every model the agent lists (Claude also lists older ids); curate or keep the agent's list? (c) Should
+    still unverified live); should Melissa probe a CLI's models on demand (a short handshake, no prompt)? (b) ~~The
+    UI offers every model the agent lists (Claude also lists older ids); curate or keep the agent's list?~~ Decided
+    2026-11-19: keep the agent's whole list, no curation. (c) Should
     a bee follow the Queen's switch, or the Queen's switch also change `bee_backend` for new bees? (today: no, each
     is separate). (d) A tool for the Queen to change a bee's backend (today only the user can).
 56. App ports (2026-11-19): apps are plain HTTP on `http://<device>:<port>` (30000-30079), open to the LAN and the
