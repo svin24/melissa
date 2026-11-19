@@ -675,15 +675,11 @@ fn offered(b: &BackendInfo) -> bool {
     !(b.kind == "echo" && b.name == "echo")
 }
 
-/// A task page: inside the app (with the rail) when `f` is given, else the bare page (the
-/// task UI without a Queen).
-fn tasks_page(f: Option<&Frame<'_>>, title: &str, content: Markup) -> Markup {
+/// A task page: in Settings → Developer when `f` is given (the app with a Queen), else the
+/// bare page (the task UI without a Queen). `sub`: the page below the section (a task).
+fn tasks_page(f: Option<&Frame<'_>>, title: &str, sub: bool, content: Markup) -> Markup {
     match f {
-        Some(f) => app_page(
-            title,
-            rail_for(Nav::Tasks, f, None),
-            html! { div.wide { (content) } },
-        ),
+        Some(f) => crate::settings::pages::frame_at(f, "Developer", sub.then_some(title), content),
         None => page(title, content),
     }
 }
@@ -694,19 +690,23 @@ pub fn dashboard(
     tasks: &[TaskSnapshot],
 ) -> Markup {
     let offered: Vec<&BackendInfo> = backends.iter().filter(|b| offered(b)).collect();
-    tasks_page(
-        f,
-        "Agent tasks",
+    let lead = "Give one agent one prompt and see its reply, outside the chat. For trying out \
+                agents: they can look but not change apps, and the list is cleared when Melissa \
+                restarts.";
+    let content = if f.is_some() {
         html! {
-            (page_header("Agent tasks", Some(
-                "Give one agent one prompt and see its reply, outside the chat. For trying out \
-                 agents: they can look but not change apps, and the list is cleared when Melissa \
-                 restarts."
-            )))
+            (page_header("Developer", Some(&format!("Agent tasks. {lead}"))))
+            (card("New agent task", new_task_form(&offered)))
+            (card("Agent tasks", tasks_region(tasks, None)))
+        }
+    } else {
+        html! {
+            (page_header("Agent tasks", Some(lead)))
             (card("New task", new_task_form(&offered)))
             (card("Tasks", tasks_region(tasks, None)))
-        },
-    )
+        }
+    };
+    tasks_page(f, "Agent tasks", false, content)
 }
 
 fn new_task_form(backends: &[&BackendInfo]) -> Markup {
@@ -782,15 +782,12 @@ pub fn tasks_region(tasks: &[TaskSnapshot], message: Option<(&str, Tone)>) -> Ma
 
 pub fn task_page(f: Option<&Frame<'_>>, task: &TaskSnapshot) -> Markup {
     let title = format!("Task #{}", task.id);
-    tasks_page(
-        f,
-        &title,
-        html! {
-            (crumbs(&[("/tasks", "Agent tasks")], &title))
-            (page_header(&title, None))
-            (task_region(task))
-        },
-    )
+    let content = html! {
+        @if f.is_none() { (crumbs(&[("/tasks", "Agent tasks")], &title)) }
+        (page_header(&title, None))
+        (task_region(task))
+    };
+    tasks_page(f, &title, true, content)
 }
 
 /// The task detail region; polls itself until the task finishes.

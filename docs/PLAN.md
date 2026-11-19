@@ -532,8 +532,9 @@ Roadmap (rough, phases may overlap):
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
     Keep them, turn them into "ask a bee", or drop them when the chat UI lands? 2026-11-19: the pages now sit
     in the app (rail, breadcrumb, reply as Markdown, stderr as "Agent log") and no longer offer the built-in
-    `echo`. Recommendation: move them under Settings as a "Developer" section (the rail link is hidden on
-    phones anyway) once the Providers work has landed; owner to decide.
+    `echo`. Done 2026-11-19 (owner accepted): moved under Settings as a "Developer" section
+    (`/settings/developer`; `GET /tasks` redirects there; the rail link is gone, so phones reach it too).
+    Still open: keep, turn into "ask a bee", or drop.
 48. Web UI (2026-11-18): done: history comes back after a daemon restart (last 30 turns from the transcript),
     "New chat" archives the chat (past chats read-only under Conversations), `comb_info` reports disk space and
     the app strip/device card warn at 85% of `/var`. Open: past chats are never pruned (size cap or age?);
@@ -611,8 +612,8 @@ Roadmap (rough, phases may overlap):
     (Quadlet `IP=` on a dedicated podman network) would avoid it; needs a subnet choice that can't clash on
     testers' hosts. (b) The host's request directory gets the container's `melissa` GID; on a host where that GID
     is another group (on the dev laptop: `kube`), members of it can also create request files (fixed actions only,
-    still worth a dedicated GID via sysusers?). (c) The chat's agent hints say `sudo melissa-setup ...`; in the
-    container it is `sudo podman exec -it melissa melissa-setup ...` (Settings → Providers already says so).
+    still worth a dedicated GID via sysusers?). (c) Done 2026-11-19: the chat's agent hints follow `HostKind` (container:
+    Settings → Providers or `sudo podman exec -it melissa melissa-setup ...`; Nix: the Nix note).
     (d) `--privileged` lets root inside mknod and open any host device even with `/dev/input` hidden; the
     logind/sleep masking is the real protection against power handling. Narrower than `--privileged`
     (explicit caps + device list) is worth a spike.
@@ -624,3 +625,20 @@ Roadmap (rough, phases may overlap):
     from the agent session; verify it in a Fedora/Kinoite VM, incl. SELinux labels on `/nix/store` binaries
     run by systemd. (d) k3s on NixOS is nixpkgs' 1.37.x, not the sha256-pinned `k3s.lock` binary; pin through
     the flake lock only. (e) Publishing the flake (a public input URL) needs the owner's yes.
+63. Providers: install and sign in from the page (2026-11-19; DECISIONS). Done: Install button through
+    `melissa-agent-install@{claude,grok,opencode}` (polkit start-only), progress + log tail, retry, audit; Grok's
+    device-code sign-in through `melissa-agent-login@grok`; Claude/OpenCode keys as write-only variables; Echo
+    hidden; Nix note. Verified in a rootful test container 2026-11-19 (OpenCode install → chat turn; Claude and
+    Grok installed, guidance shown, Grok URL + code shown; polkit negatives). (a) Done (integration with 62):
+    install detection uses `HostKind` (Nix from `MELISSA_RUNTIME=nix` via `$MELISSA_RELEASE_FILE`); the two units,
+    their tmpfiles and their polkit rule (`51-melissa-agent-install.rules`) are container-only
+    (`packaging/container/rootfs`), so the Nix packaging neither installs them nor grants the rights. Open:
+    (b) Claude's `claude auth login` prints a URL but wants the code pasted back on stdin: a page flow would need
+    the code passed into the unit (a credential or socket, never an argument); for now `claude setup-token` on
+    the owner's computer → `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`. (c) OpenCode's `auth login` is
+    interactive; provider keys work as variables. (d) After an install Melissa needs a restart (backends resolve
+    programs at start); live re-detection would avoid it (60b). (e) No update/reinstall/uninstall button for an
+    installed CLI yet (re-running the unit reinstalls; the vendor CLIs self-update). (f) The audit records the
+    request, not the outcome (the unit's result is in its log and `systemctl show`). (g) The device code is
+    shown to anyone who reaches the UI (same trust as the UI itself, 28). (h) `melissa-queen provider install`
+    CLI verb not added (the API exists: `POST /api/settings/providers/<id>/install|login`).

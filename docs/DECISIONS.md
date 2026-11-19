@@ -572,3 +572,39 @@ Format: date — decision. Why. Alternatives considered.
   the shared `k3s-node-ip`, which the NixOS module also runs. Alternatives: detect NixOS by `/etc/NIXOS` alone
   (misses `melissa-host` on other distributions), a symlink at `/usr/lib/melissa/release` (NixOS has no /usr
   to put it in declaratively).
+- **2026-11-19 — Settings → Providers installs agent CLIs through a polkit-limited systemd template unit.**
+  `melissa-agent-install@.service` (container image) runs `melissa-setup agent %i --yes --no-login --no-restart`
+  as root; its output goes to `/run/melissa-agent-install/<id>.log` (root:melissa 0750 directory). The polkit rule
+  (now `51-melissa-agent-install.rules`) lets user `melissa` **start** only `melissa-agent-install@{claude,grok,opencode}.service`
+  (exact names; besides restarting the queen). The queen checks the id against the fixed list and the configured
+  providers before calling `systemctl start --no-block <fixed unit name>`; nothing from the web becomes an
+  argument, and `melissa-setup` checks the name a third time. Progress: `systemctl show` (read-only) and the log
+  tail, polled by the Providers region (`live_region`, every 2 s) while an install runs. Every request is audited
+  (`settings.provider.install`, also refusals). No login and no queen restart in the unit: the page then shows
+  "Installed · after a restart" with the Restart button, and sign-in guidance (API key / token as write-only
+  variables; Melissa never handles passwords). Grok's device-code login (`grok login --device-auth`: prints a URL
+  and a code, needs no input) runs the same way: `melissa-agent-login@.service` (`melissa-setup login %i
+  --no-restart`), polkit allows only `melissa-agent-login@grok.service`; the page shows the URL (only on
+  `https://accounts.x.ai/`) and the code from its log. Claude's login wants a code pasted back, so Claude gets
+  `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token` on the owner's computer). The way to install depends on the packaging (see the container-only entry below): the
+  container image with the unit and rule present → Install button; `HostKind::Nix` → only the note "This requires you add
+  <Provider> via your Nix configuration." (Nix never uses the unit; agent CLIs come from
+  `services.melissa.agents.packages`); otherwise a host command (older image) or a note (from source).
+  Alternatives: the queen as root (no), a root daemon with an API (more code), a request-file path unit like the
+  updates (works, but systemd + polkit already give a fixed, auditable verb), keeping the copy-command only
+  (owner asked for a button).
+- **2026-11-19 — Echo is not a provider people see.** The built-in echo stays in code (tests, VM/dev checks) but is
+  never listed in Settings → Providers or its API (`/api/settings/providers/echo` → 404) and not on the Agent
+  tasks page. Echo session backends someone configures in `queen.toml` (other names) still show in the chat's
+  agent menu.
+- **2026-11-19 — Agent installs from Settings are container-only; one host detection.** Integrating the
+  Providers install work with the Nix service: `InstallWay` follows `HostKind` (the Nix service's
+  `MELISSA_RUNTIME=nix` through `$MELISSA_RELEASE_FILE`), no second runtime check. The Install button needs
+  `HostKind::Container` and the unit and its rule on disk; Nix → the Nix note; anything else → a manual
+  command or note. The polkit rule is split: `packaging/common/…/50-melissa.rules` again only lets `melissa`
+  restart the queen (shared with Nix), and `packaging/container/rootfs/…/51-melissa-agent-install.rules` adds
+  the start rights for the four agent units. The two units and their tmpfiles rule moved to
+  `packaging/container/rootfs` too, so the NixOS module and `melissa-host` never install them. Why: packaging
+  decides what is installed, not a runtime check inside a shared rule; the Nix side copies only
+  `50-melissa.rules` already. Alternative: one rule that checks for a container marker (polkit JS can't read
+  files; would rely on a unit's presence).

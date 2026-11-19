@@ -6,19 +6,24 @@ use maud::{html, Markup};
 use crate::{
     components::{
         actions, app_page, badge, card, code, command_block, confirm_card, detail_head, facts,
-        group, lines_field, link, notice, pick_list, plain_action, provider_mark, region,
-        settings_form, settings_frame, settings_head, split_card, text_field, toggle, var_list,
-        ConfirmCard, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
+        group, lines_field, link, live_region, log_view, notice, pick_list, plain_action,
+        provider_mark, settings_form, settings_frame_at, settings_head, split_card, text_field,
+        toggle, var_list, ConfirmCard, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone,
+        VarRow,
     },
     pages::{rail_for, Frame},
 };
-use melissa_settings::providers::EnvVarView;
+use melissa_settings::{install::InstallState, providers::EnvVarView};
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 2] = [
+pub const SECTIONS: [(&str, &str); 3] = [
     ("/settings/providers", "Providers"),
     ("/settings/updates", "Updates"),
+    (DEVELOPER_URL, "Developer"),
 ];
+
+/// The Developer section: Agent tasks (`/tasks` redirects here when the Queen is present).
+pub const DEVELOPER_URL: &str = "/settings/developer";
 
 /// DOM id of the Providers region (forms swap it).
 pub const PROVIDERS_ID: &str = "providers";
@@ -26,6 +31,16 @@ pub const PROVIDERS_ID: &str = "providers";
 pub const UPDATES_ID: &str = "updates";
 
 fn frame(f: &Frame<'_>, current: &str, content: Markup) -> Markup {
+    frame_at(f, current, None, content)
+}
+
+/// A Settings page: `current` is the section, `page` a page below it (its breadcrumb).
+pub(crate) fn frame_at(
+    f: &Frame<'_>,
+    current: &str,
+    page: Option<&str>,
+    content: Markup,
+) -> Markup {
     let sections: Vec<SettingsSection<'_>> = SECTIONS
         .iter()
         .map(|(href, label)| SettingsSection {
@@ -34,10 +49,14 @@ fn frame(f: &Frame<'_>, current: &str, content: Markup) -> Markup {
             current: *label == current,
         })
         .collect();
+    let title = match page {
+        Some(p) => format!("{p} · {current} · Settings"),
+        None => format!("{current} · Settings"),
+    };
     app_page(
-        &format!("{current} · Settings"),
+        &title,
         rail_for(Nav::Settings, f, None),
-        settings_frame(&sections, current, content),
+        settings_frame_at(&sections, current, page, content),
     )
 }
 
@@ -49,6 +68,8 @@ pub struct Flash {
 
 /// Whether saved settings wait for a restart, and how to do it.
 pub struct RestartHint {
+    /// Why a restart is needed.
+    pub text: &'static str,
     /// The UI can restart Melissa (root helper installed).
     pub button: bool,
     /// Else: what to type.
@@ -72,7 +93,6 @@ pub struct ProviderCard {
     pub id: String,
     pub label: String,
     pub version: Option<String>,
-    pub builtin: bool,
     /// The saved setting.
     pub enabled: bool,
     pub status: String,
@@ -90,8 +110,47 @@ pub struct ProviderCard {
     pub default_command: String,
     pub args: Vec<String>,
     pub env: Vec<EnvVarView>,
-    /// `sudo melissa-setup agent <id>` where that is how it is installed.
-    pub setup: Option<String>,
+    /// How to install it, while it isn't installed.
+    pub install: Option<InstallView>,
+    /// How to sign in, once it is installed and not signed in.
+    pub sign_in: Option<SignIn>,
+    /// Example variable name for the Environment form.
+    pub var_example: &'static str,
+}
+
+/// The Install section of a provider that isn't installed.
+pub enum InstallView {
+    /// The Install button and the install's progress (the install unit is there).
+    Button {
+        vendor: &'static str,
+        state: InstallState,
+        detail: Option<String>,
+        log: Vec<String>,
+    },
+    /// A Nix install: the agent comes from the Nix configuration.
+    Nix,
+    /// No install mechanism here: a note and maybe a command to run on the host.
+    Manual {
+        text: String,
+        command: Option<String>,
+    },
+}
+
+/// How to sign in to an installed agent: guidance, and a command for the device if there is one.
+pub struct SignIn {
+    pub text: &'static str,
+    pub command: Option<String>,
+    /// A device-code sign-in from the page (Grok, where the login unit is there).
+    pub device: Option<DeviceLogin>,
+}
+
+/// A device-code sign-in: its state and, once printed, the vendor's URL and code.
+pub struct DeviceLogin {
+    pub state: InstallState,
+    pub url: Option<String>,
+    pub code: Option<String>,
+    pub detail: Option<String>,
+    pub log: Vec<String>,
 }
 
 pub struct ProvidersView {
@@ -105,6 +164,8 @@ pub struct ProvidersView {
     pub home: Option<String>,
     /// The settings file.
     pub file: Option<String>,
+    /// An install is running: the region refreshes itself from this URL.
+    pub poll: Option<String>,
 }
 
 fn letter(label: &str) -> String {
@@ -176,8 +237,11 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
         Some(c) => provider_detail(c, v),
         None => html! { p.quiet { "No agents are configured." } },
     };
-    region(
+    live_region(
         PROVIDERS_ID,
+        v.poll.as_deref().unwrap_or(""),
+        2,
+        v.poll.is_some(),
         html! {
             (settings_head(
                 "Providers",
@@ -196,7 +260,7 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
 
 fn restart_note(r: &RestartHint, target: &str) -> Markup {
     html! {
-        (notice("Saved. Melissa uses the new provider settings after a restart.", Tone::Info))
+        (notice(r.text, Tone::Info))
         @if r.button {
             (actions(plain_action("/ui/settings/restart", target, "Restart Melissa now", false)))
         } @else {
@@ -210,13 +274,9 @@ fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
     let badges = html! {
         @if c.enabled { (badge("Enabled", Tone::Ok)) } @else { (badge("Disabled", Tone::Muted)) }
     };
-    let sub = if c.builtin {
-        "Built into Melissa".to_string()
-    } else {
-        match &c.version {
-            Some(ver) => format!("{} · version {ver}", c.id),
-            None => c.id.clone(),
-        }
+    let sub = match &c.version {
+        Some(ver) => format!("{} · version {ver}", c.id),
+        None => c.id.clone(),
     };
     let used = if c.used_by.is_empty() {
         html! { span.quiet { "Nothing right now" } }
@@ -264,34 +324,146 @@ fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
     html! {
         (detail_head(provider_mark(&letter(&c.label), !c.enabled), &c.label, &sub, badges))
         (facts(&rows))
-        @if let Some(cmd) = &c.setup {
-            (group("Set up", Some("This agent isn't installed. Installing needs an administrator (root), so Melissa can't do it from here. Run this on the device, then press Check again:"), command_block(cmd)))
-        }
-        @if !c.builtin {
-            (settings_form(&url, PROVIDERS_ID, "Save", html! {
-                (group("Name", None, text_field("display_name", "Display name", &c.display_name, melissa_settings::providers::default_label(&c.id), "text", None)))
-                (group("Runtime", Some("Used after Melissa restarts."), html! {
-                    (text_field("command", "Program path", &c.command, &c.default_command, "text",
-                        Some("Leave empty for the installed one. The file must be named like the provider.")))
-                    (facts(&[("Program found", html! { (c.program.as_deref().unwrap_or("not found")) }),
-                             ("Home and config folder", html! { (code(home)) })]))
-                    (lines_field("args", "Extra launch arguments", &c.args.join("\n"),
-                        Some("One per line. They come before Melissa's own; options that change permissions or tools are refused.")))
-                }))
-            }))
-            (group("Environment", Some("Variables set for this agent inside its sandbox, such as an API key or a base URL. Values of names with KEY, TOKEN, SECRET or PASSWORD are never shown again."), html! {
-                (var_list(&var_rows, PROVIDERS_ID, "No variables set."))
-                (settings_form(&format!("{url}/env"), PROVIDERS_ID, "Add variable", html! {
-                    div.field-row {
-                        (text_field("name", "Name", "", "e.g. API_BASE_URL", "text", None))
-                        (text_field("value", "Value", "", "", "password", None))
-                    }
-                }))
+        @if let Some(i) = &c.install { (install_section(c, i, &url)) }
+        @if let Some(si) = &c.sign_in {
+            (group("Sign in", Some(si.text), html! {
+                @if let Some(d) = &si.device { (device_login(d, &url)) }
+                @if let Some(cmd) = &si.command {
+                    p.quiet { "Or sign in with your account on the device (run on the host):" }
+                    (command_block(cmd))
+                }
             }))
         }
+        (settings_form(&url, PROVIDERS_ID, "Save", html! {
+            (group("Name", None, text_field("display_name", "Display name", &c.display_name, melissa_settings::providers::default_label(&c.id), "text", None)))
+            (group("Runtime", Some("Used after Melissa restarts."), html! {
+                (text_field("command", "Program path", &c.command, &c.default_command, "text",
+                    Some("Leave empty for the installed one. The file must be named like the provider.")))
+                (facts(&[("Program found", html! { (c.program.as_deref().unwrap_or("not found")) }),
+                         ("Home and config folder", html! { (code(home)) })]))
+                (lines_field("args", "Extra launch arguments", &c.args.join("\n"),
+                    Some("One per line. They come before Melissa's own; options that change permissions or tools are refused.")))
+            }))
+        }))
+        (group("Environment", Some("Variables set for this agent inside its sandbox, such as an API key or a base URL. Values of names with KEY, TOKEN, SECRET or PASSWORD are never shown again."), html! {
+            (var_list(&var_rows, PROVIDERS_ID, "No variables set."))
+            (settings_form(&format!("{url}/env"), PROVIDERS_ID, "Add variable", html! {
+                div.field-row {
+                    (text_field("name", "Name", "", c.var_example, "text", None))
+                    (text_field("value", "Value", "", "", "password", None))
+                }
+            }))
+        }))
         @if let Some(file) = &v.file {
             p.quiet.small { "Saved in " (code(file)) ", over " (code("queen.toml")) "." }
         }
+    }
+}
+
+fn device_login(d: &DeviceLogin, url: &str) -> Markup {
+    let action = format!("{url}/login");
+    let lines = |log: &[String]| {
+        log_view(log.iter().map(|l| LogLine {
+            text: l,
+            is_error: l.starts_with("melissa-setup:"),
+        }))
+    };
+    match d.state {
+        InstallState::Idle => actions(plain_action(
+            &action,
+            PROVIDERS_ID,
+            "Sign in with a code",
+            true,
+        )),
+        InstallState::Running => match (&d.url, &d.code) {
+            (Some(u), Some(c)) => html! {
+                (facts(&[("Open", link(u, u)), ("Code", code(c))]))
+                (notice("Waiting for you to confirm the code. This page updates by itself.", Tone::Info))
+            },
+            _ => html! {
+                (notice("Starting the sign-in…", Tone::Info))
+                @if !d.log.is_empty() { (lines(&d.log)) }
+            },
+        },
+        InstallState::Done => notice("Signed in.", Tone::Ok),
+        InstallState::Failed => html! {
+            (notice(&match &d.detail {
+                Some(x) => format!("The sign-in didn't finish ({x})."),
+                None => "The sign-in didn't finish.".to_string(),
+            }, Tone::Error))
+            // Not the log: it holds the expired code.
+            (actions(plain_action(&action, PROVIDERS_ID, "Try again", true)))
+        },
+    }
+}
+
+fn install_section(c: &ProviderCard, i: &InstallView, url: &str) -> Markup {
+    let action = format!("{url}/install");
+    let lines = |log: &[String]| {
+        log_view(log.iter().map(|l| LogLine {
+            text: l,
+            is_error: l.starts_with("melissa-setup:"),
+        }))
+    };
+    match i {
+        InstallView::Button {
+            vendor,
+            state,
+            detail,
+            log,
+        } => match state {
+            InstallState::Running => group(
+                "Install",
+                Some(&format!(
+                    "Installing {}… This usually takes a minute.",
+                    c.label
+                )),
+                lines(log),
+            ),
+            InstallState::Failed | InstallState::Done => {
+                let text = match (state, detail) {
+                    (InstallState::Failed, Some(d)) => format!("The install failed ({d})."),
+                    (InstallState::Failed, None) => "The install failed.".to_string(),
+                    _ => "The installer finished, but Melissa can't find the program.".to_string(),
+                };
+                group(
+                    "Install",
+                    None,
+                    html! {
+                        (notice(&text, Tone::Error))
+                        @if !log.is_empty() { (lines(log)) }
+                        (actions(plain_action(&action, PROVIDERS_ID, "Try again", true)))
+                    },
+                )
+            }
+            InstallState::Idle => group(
+                "Install",
+                Some(&format!(
+                    "Melissa downloads {vendor}'s official installer and installs {} on this \
+                     device. By installing it you accept {vendor}'s terms.",
+                    c.label
+                )),
+                actions(plain_action(
+                    &action,
+                    PROVIDERS_ID,
+                    &format!("Install {}", c.label),
+                    true,
+                )),
+            ),
+        },
+        InstallView::Nix => group(
+            "Install",
+            Some(&format!(
+                "This requires you add {} via your Nix configuration.",
+                c.label
+            )),
+            html! {},
+        ),
+        InstallView::Manual { text, command } => group(
+            "Install",
+            Some(text),
+            html! { @if let Some(cmd) = command { (command_block(cmd)) } },
+        ),
     }
 }
 

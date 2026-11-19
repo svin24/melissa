@@ -8,6 +8,7 @@
 //! - [`updates`]: this device's Melissa release and its container image state, read from what
 //!   the host helper writes; the fixed list of actions the queen may ask it for.
 
+pub mod install;
 pub mod providers;
 pub mod updates;
 pub mod version;

@@ -96,7 +96,6 @@ pub enum Nav {
     Helper,
     Hive,
     Waiting,
-    Tasks,
     /// An archived chat with Melissa.
     PastChat,
     /// The Settings pages.
@@ -291,7 +290,6 @@ pub fn rail(
                     }
                 }
             }
-            a.rail-foot href="/tasks" aria-current=[(current == Nav::Tasks).then_some("page")] { "Agent tasks" }
         }
     }
 }
@@ -446,7 +444,7 @@ pub fn device_card(d: &DeviceCard<'_>) -> Markup {
                 span.device-status { (d.status) }
             }
             @if !d.facts.is_empty() {
-                ul.facts { @for f in d.facts { li { (f) } } }
+                ul.device-facts { @for f in d.facts { li { (f) } } }
             }
             @for m in d.meters {
                 @let pct = (m.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
@@ -1148,6 +1146,18 @@ pub struct SettingsSection<'a> {
 
 /// The Settings frame: section navigation, breadcrumb ("Settings / Providers") and content.
 pub fn settings_frame(sections: &[SettingsSection<'_>], current: &str, content: Markup) -> Markup {
+    settings_frame_at(sections, current, None, content)
+}
+
+/// [`settings_frame`] for a page below a section (e.g. one task under Developer): the
+/// breadcrumb reads Settings / <section, a link> / `page`.
+pub fn settings_frame_at(
+    sections: &[SettingsSection<'_>],
+    current: &str,
+    page: Option<&str>,
+    content: Markup,
+) -> Markup {
+    let section_href = sections.iter().find(|s| s.label == current).map(|s| s.href);
     html! {
         div.settings {
             nav.settings-nav aria-label="Settings sections" {
@@ -1162,7 +1172,13 @@ pub fn settings_frame(sections: &[SettingsSection<'_>], current: &str, content: 
                 nav.crumbs aria-label="Breadcrumb" {
                     ol {
                         li { a href="/settings" { "Settings" } }
-                        li aria-current="page" { (current) }
+                        @match (page, section_href) {
+                            (Some(page), Some(href)) => {
+                                li { a href=(href) { (current) } }
+                                li aria-current="page" { (page) }
+                            }
+                            _ => { li aria-current="page" { (current) } }
+                        }
                     }
                 }
                 (content)

@@ -141,7 +141,8 @@ impl Ui {
                 format!("/ui/bees/{id}/backend"),
             ),
         };
-        (!views.is_empty()).then(|| agents::menu(&views, action, error))
+        let host = self.settings.host();
+        (!views.is_empty()).then(|| agents::menu(&views, action, error, host))
     }
 
     fn waiting(&self) -> usize {

@@ -1,9 +1,11 @@
 //! The agent menu of a chat: which backend (and model) the Queen or a helper runs on, and
 //! the choices the user has. Builds the fixed [`AgentMenu`] component from the API's
-//! [`BackendView`]s and holds the UI words for a backend that cannot be used yet (with the
-//! `melissa-setup` command that fixes it).
+//! [`BackendView`]s and holds the UI words for a backend that cannot be used yet (what fixes it
+//! depends on the host: Settings → Providers and `melissa-setup` in the container, the Nix
+//! configuration on Nix, `melissa-setup` on the host otherwise).
 
 use melissa_agent::queen::backends::BackendView;
+use melissa_settings::updates::HostKind;
 
 use crate::{
     components::{AgentGroup, AgentHint, AgentMenu, AgentOption},
@@ -51,8 +53,46 @@ fn model_label(view: &BackendView, model: &str) -> Option<String> {
     Some(label.to_string())
 }
 
-/// The menu for `views`, posting to `action`.
-pub(crate) fn menu(views: &[BackendView], action: String, error: Option<String>) -> AgentMenu {
+/// What to tell the user about an agent that isn't installed (`login`: it is, but isn't logged
+/// in), and the command that fixes it, for this kind of host.
+fn setup_hint(label: &str, backend: &str, login: bool, host: HostKind) -> (String, Option<String>) {
+    let name = setup_name(backend);
+    let verb = if login { "login" } else { "agent" };
+    match (host, login) {
+        (HostKind::Container, false) => (
+            format!("{label} isn't set up on this device. Install it in Settings → Providers."),
+            name.map(|a| format!("sudo podman exec -it melissa melissa-setup agent {a}")),
+        ),
+        (HostKind::Container, true) => (
+            format!("{label} isn't logged in. Settings → Providers shows how to sign in."),
+            name.map(|a| format!("sudo podman exec -it melissa melissa-setup login {a}")),
+        ),
+        (HostKind::Nix, false) => (
+            format!("This requires you add {label} via your Nix configuration."),
+            None,
+        ),
+        (HostKind::Nix, true) => (
+            format!("{label} isn't logged in. Settings → Providers shows how to sign in."),
+            None,
+        ),
+        (HostKind::Other, false) => (
+            format!("{label} isn't set up on this device."),
+            name.map(|a| format!("sudo melissa-setup {verb} {a}")),
+        ),
+        (HostKind::Other, true) => (
+            format!("{label} isn't logged in."),
+            name.map(|a| format!("sudo melissa-setup {verb} {a}")),
+        ),
+    }
+}
+
+/// The menu for `views`, posting to `action`; setup hints fit `host`.
+pub(crate) fn menu(
+    views: &[BackendView],
+    action: String,
+    error: Option<String>,
+    host: HostKind,
+) -> AgentMenu {
     let current = views
         .iter()
         .find(|v| v.current)
@@ -70,18 +110,12 @@ pub(crate) fn menu(views: &[BackendView], action: String, error: Option<String>)
         let label = backend_label(&v.name).to_string();
         if !v.available {
             let (text, command) = match v.reason {
-                Some("not_logged_in") => (
-                    format!("{label} isn't logged in."),
-                    setup_name(&v.name).map(|a| format!("sudo melissa-setup login {a}")),
-                ),
+                Some("not_logged_in") => setup_hint(&label, &v.name, true, host),
                 Some("sandbox") => (
                     format!("{label} can't start its sandbox here; the log says why."),
                     None,
                 ),
-                _ => (
-                    format!("{label} isn't set up on this device."),
-                    setup_name(&v.name).map(|a| format!("sudo melissa-setup agent {a}")),
-                ),
+                _ => setup_hint(&label, &v.name, false, host),
             };
             unavailable.push(AgentHint {
                 label,
@@ -160,7 +194,7 @@ mod tests {
             grok,
             view("opencode-acp", false, false),
         ];
-        let m = menu(&views, "/ui/backend".into(), None);
+        let m = menu(&views, "/ui/backend".into(), None, HostKind::Other);
         assert_eq!(m.current, "Claude · Sonnet 5.5");
         assert_eq!(m.groups.len(), 2);
         assert_eq!(m.groups[0].options[0].value, "echo-a");
@@ -187,5 +221,24 @@ mod tests {
             ("claude-session", Some("sonnet"))
         );
         assert_eq!(parse_choice(" grok-acp "), ("grok-acp", None));
+
+        // In the container image: Settings → Providers, or melissa-setup through podman.
+        let m = menu(&views, "/ui/backend".into(), None, HostKind::Container);
+        assert_eq!(
+            m.unavailable[0].command.as_deref(),
+            Some("sudo podman exec -it melissa melissa-setup login grok")
+        );
+        assert!(m.unavailable[1].text.contains("Settings → Providers"));
+        assert_eq!(
+            m.unavailable[1].command.as_deref(),
+            Some("sudo podman exec -it melissa melissa-setup agent opencode")
+        );
+        // On Nix: the Nix configuration, no melissa-setup.
+        let m = menu(&views, "/ui/backend".into(), None, HostKind::Nix);
+        assert_eq!(
+            m.unavailable[1].text,
+            "This requires you add OpenCode via your Nix configuration."
+        );
+        assert!(m.unavailable.iter().all(|h| h.command.is_none()));
     }
 }

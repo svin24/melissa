@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use super::{
     pages::{self, Flash, ImageLine, UpdatesView},
-    providers::{agent_versions, restart_hint},
+    providers::{self, agent_versions, restart_hint},
 };
 use crate::{components::Tone, is_htmx, ui::Ui};
 
@@ -236,7 +236,11 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
         commands: manual_commands(env),
         automatic: auto_words(env, &state),
         agents: agent_versions(ui).await,
-        restart: s.parts().store.restart_needed().then(|| restart_hint(s)),
+        restart: s
+            .parts()
+            .store
+            .restart_needed()
+            .then(|| restart_hint(s, providers::SAVED)),
     }
 }
 
