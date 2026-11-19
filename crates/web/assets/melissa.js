@@ -54,6 +54,29 @@
     }
   });
 
+  // Copy buttons on code blocks in agent replies. They stay hidden (CSS) unless the
+  // clipboard is usable, which needs a secure context (localhost or HTTPS).
+  if (navigator.clipboard && window.isSecureContext) {
+    document.documentElement.classList.add("can-copy");
+  }
+
+  document.addEventListener("click", function (e) {
+    var button = e.target.closest ? e.target.closest(".copy-code") : null;
+    if (!button) {
+      return;
+    }
+    var code = button.parentElement && button.parentElement.querySelector("pre code");
+    if (!code || !navigator.clipboard) {
+      return;
+    }
+    navigator.clipboard.writeText(code.textContent).then(function () {
+      button.textContent = "Copied";
+      setTimeout(function () {
+        button.textContent = "Copy";
+      }, 1500);
+    });
+  });
+
   document.addEventListener("DOMContentLoaded", function () {
     if (document.getElementById("feed")) {
       scrollToBottom();

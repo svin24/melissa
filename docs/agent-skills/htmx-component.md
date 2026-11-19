@@ -28,7 +28,8 @@ devices; a de-emphasised "Agent tasks" link), `waiting_count`, `page_header`, `s
 Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
 "Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `queen_message`,
 `relayed_message` (a job or message Melissa passed into a helper's chat),
-`plain_text`, `activity_row`, `note` (tones quiet, caution, guard: the honey "read text from outside" note),
+`markdown` (agent prose), `plain_text` (what the user typed), `activity_row` (its detail is Markdown for a
+helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey "read text from outside" note),
 `approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
 "Can't be undone" variant), `composer`, `composer_status`.
 Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
@@ -39,12 +40,29 @@ Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `li
 ## Rules
 - All markup lives in `components.rs`. Pages only call component functions. A new component is a
   human-reviewed change; agents never generate markup.
-- All text goes through maud escaping. No `PreEscaped` with data. Agent/model output is untrusted: render it with
-  `plain_text` (paragraphs, `- ` lists and backtick code by splitting text; never HTML or markdown) or `log_view`.
+- All text goes through maud escaping. No `PreEscaped` with data. Agent/model output is untrusted: prose (replies,
+  relayed jobs, a helper's job detail) goes through `markdown`; user text through `plain_text` (paragraphs, `- `
+  lists, backtick code, bare URLs linked); logs through `log_view`.
 - Agent-supplied ids (e.g. ACP tool-call ids) never become DOM ids or selectors: `feed.rs` maps them to its own
   keys (`t1`, `t2`, ...).
 - Styles only in `assets/melissa.css` (tokens on `:root`, dark mode via `prefers-color-scheme`). No CDN, no
   inline `style=`. Our only script is `assets/melissa.js` (Enter-to-send, scrolling, reload after a restart).
+
+## Agent Markdown (`markdown`, 2026-11-19)
+- Two steps: `src/markdown.rs` parses with `pulldown-cmark` (no default features; tables, strikethrough, task lists)
+  into a small `Node` tree, no markup; `components::markdown` renders the tree with maud, so every text is escaped.
+  We never use pulldown-cmark's HTML writer (it passes raw HTML through).
+- Safety: `Html`/`InlineHtml` events become text; `safe_href` passes only `http(s)://host` and `mailto:` (Email
+  autolinks get `mailto:`), everything else keeps just the link text; images become a link "Image: <alt>"; all
+  links get `target="_blank" rel="noopener noreferrer nofollow"`; nesting capped at `MAX_DEPTH` (24).
+- `markdown::linkify` links bare `http(s)://` URLs in text (not in code or inside links); GFM-like trailing
+  punctuation and unbalanced `)` trimming. `plain_text` (user messages) uses it too.
+- Chat choices: soft line breaks render as `<br>` (agents and users mean them); `#`..`###+` become `h4`/`h5`/`h6`
+  (the message has a hidden `h3`); tables scroll in `div.md-table`; code blocks scroll horizontally.
+- Copy button on code blocks: `button.copy-code`, hidden by CSS unless `melissa.js` set `html.can-copy` (needs
+  `navigator.clipboard`, i.e. a secure context: localhost or HTTPS; on plain-HTTP LAN it stays hidden).
+- Tests: `components::tests::markdown_xss_inputs_are_inert` checks every emitted tag and attribute against an
+  allowlist and every `href` scheme; add new XSS inputs there.
 
 ## Live updates (chat and approvals)
 - `GET /ui/stream?since=<seq>&view=chat|approvals` (the Queen) and `GET /ui/bees/{bee}/stream?since=` (a helper)

@@ -7,6 +7,7 @@
 mod api;
 pub mod components;
 mod feed;
+mod markdown;
 mod pages;
 mod state;
 mod ui;
