@@ -326,3 +326,12 @@ Format: date — decision. Why. Alternatives considered.
   Why: there is no login yet and any API client can approve confirmations (PLAN Q37); SSH adds authentication and
   encryption at no cost. Alternative: bind the VM's host-only address with a warning (rejected: anything on that
   network gets full control).
+- **2026-11-19 — Agent prose is rendered as Markdown (CommonMark + GFM tables, strikethrough, task lists) with
+  `pulldown-cmark`, through our own maud renderer.** Owner tested the chat and asked for it (agents write Markdown;
+  links should be clickable). Safety: raw HTML shows as text, links only to http/https/mailto with
+  `noopener noreferrer nofollow` in a new tab, images are links (never loaded; the CSP blocks them anyway), nesting
+  capped, bare URLs linked by a small tested linkifier. User messages stay plain text with linked URLs. Why
+  pulldown-cmark: the standard Rust CommonMark parser, MIT, pure safe Rust, 3 small deps already allowed, no
+  default features needed. Why not its HTML writer or an HTML sanitizer (ammonia): rendering our own tree keeps
+  every text in maud escaping and the allowed elements in `components.rs`; a sanitizer would add html5ever and
+  still start from raw HTML. Alternatives: `comrak` (heavier, its own HTML), `markdown-rs`, keeping `plain_text`.

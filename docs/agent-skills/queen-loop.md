@@ -80,7 +80,7 @@ pending/running/done/failed), `permission`, `confirmation_needed` (id, task, too
 `session_lost`, `turn_finished` (stop_reason: end_turn, cancelled, refusal, max_tokens, max_turn_requests,
 error), `error`, `tainted` (tool, subject), `new_chat`, and in memory only `earlier_start`/`earlier_end`. Only in the Queen's log: `bee_created` (bee, name, backend), `bee_started` (bee, name,
 goal), `bee_finished` (bee, name, status succeeded/failed/cancelled, error), `cell_reassigned` (cell, from,
-to, by). Agent text is untrusted: render as plain text.
+to, by). Agent text is untrusted: the web UI renders it with the safe `components::markdown`.
 - `GET /api/queen/events?since=<seq>&wait=<s≤30>&limit=<n>` → `{events, next, missed}`. Keep `next` as the
   cursor; `missed` = the client fell behind the 2000 events kept in memory.
 - Transcript: `$XDG_STATE_HOME/melissa/queen/transcript.jsonl` and `bees/<id>/transcript.jsonl` (mode

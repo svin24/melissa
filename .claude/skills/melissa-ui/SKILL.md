@@ -14,9 +14,9 @@ description: Melissa's binding web UI rules. Load before any work on crates/web 
    No CDN, no web fonts from the internet, no JS frameworks or build step; must work offline on a LAN.
 4. **Security.** Strict CSP (`default-src 'self'`, no inline script/style; htmx `allowEval:false`,
    `includeIndicatorStyles:false`). All text through maud escaping; never `PreEscaped` with data. Agent/model output
-   is untrusted: render as escaped text (`plain_text` or `log_view`; `plain_text` only splits text into
-   paragraphs, lists and backtick code), never HTML/markdown, no remote images. Mutating requests must
-   pass the same-origin check.
+   is untrusted: agent prose goes through `markdown` (safe CommonMark + GFM tree, raw HTML as text, only
+   http/https/mailto links, images never loaded), user text through `plain_text`, logs through `log_view`.
+   Never raw HTML, no remote images. Mutating requests must pass the same-origin check.
 5. **Style.** Calm, boring, reliable over flashy: Melissa is infrastructure people trust with their data. Use
    design skills (frontend-design, modern-web-guidance) for typography, spacing, accessibility and modern CSS,
    but not for "aesthetic risk". Accessible by default: semantic HTML, keyboard use, contrast, light/dark via

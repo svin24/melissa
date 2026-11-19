@@ -202,6 +202,9 @@ pub fn entry_content(entry: &Entry) -> Markup {
         } => activity_row(
             label,
             detail.as_deref(),
+            // A helper's job: the detail is the Queen's words (Markdown). Tool calls carry
+            // a short title as plain text.
+            bee.is_some(),
             *state,
             bee.as_deref().map(bee_href).as_deref(),
         ),

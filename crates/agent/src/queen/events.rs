@@ -22,7 +22,7 @@ use crate::TaskId;
 pub type TurnId = u64;
 
 /// Something that happened in the Queen's conversation. Agent text is untrusted: clients
-/// must render it as plain text.
+/// must never render it as HTML (the web UI uses a safe Markdown subset, `components::markdown`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueenEvent {

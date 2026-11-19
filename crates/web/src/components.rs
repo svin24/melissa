@@ -6,9 +6,12 @@
 //! Adding or changing a component is a human-reviewed code change.
 //!
 //! All text passed in is escaped by maud. Nothing here emits raw, unescaped HTML. Agent
-//! and model text goes through [`plain_text`], which only splits it into paragraphs and
-//! list items; it never interprets HTML or markdown.
+//! and model prose goes through [`markdown`]: CommonMark + GFM read into a safe tree by
+//! `crate::markdown` (raw HTML as text, only http/https/mailto links, no images loaded) and
+//! rendered here element by element. What the user typed goes through [`plain_text`], which
+//! only splits it into paragraphs and list items and links bare URLs.
 
+use crate::markdown::{self, Align, El, Node, Segment};
 use maud::{html, Markup, DOCTYPE};
 
 /// Visual tone used by badges and notices.
@@ -498,8 +501,9 @@ pub fn oob_inner(id: &str, content: Markup) -> Markup {
     html! { div hx-swap-oob={ "innerHTML:#" (id) } { (content) } }
 }
 
-/// Untrusted text (agent or user) as paragraphs and simple bullet lists. Only splits on
-/// blank lines and leading `- `/`* `; everything else is shown as written, escaped.
+/// What the user typed, as paragraphs and simple bullet lists. Only splits on blank lines
+/// and leading `- `/`* `, marks backtick code and links bare URLs; everything else is shown
+/// as written, escaped. Agent prose uses [`markdown`].
 pub fn plain_text(text: &str) -> Markup {
     let blocks = split_blocks(text);
     html! {
@@ -512,7 +516,8 @@ pub fn plain_text(text: &str) -> Markup {
     }
 }
 
-/// One line: text between a pair of backticks becomes inline code (still escaped text).
+/// One line: text between a pair of backticks becomes inline code (still escaped text);
+/// bare URLs elsewhere become links.
 fn inline(line: &str) -> Markup {
     let parts: Vec<&str> = line.split('`').collect();
     // `split` yields at least one part, so this can't underflow.
@@ -520,14 +525,119 @@ fn inline(line: &str) -> Markup {
     html! {
         @for (i, part) in parts.iter().enumerate() {
             @if i % 2 == 0 {
-                (part)
+                (linked(part))
             } @else if i == last {
                 // A backtick without a partner stays as written.
-                "`" (part)
+                "`" (linked(part))
             } @else if part.is_empty() {
                 "``"
             } @else {
                 code { (part) }
+            }
+        }
+    }
+}
+
+/// Text with its bare `http(s)://` URLs as links.
+fn linked(text: &str) -> Markup {
+    html! {
+        @for seg in markdown::linkify(text) {
+            @match seg {
+                Segment::Text(t) => (t),
+                Segment::Url(u) => (external_link(u, html! { (u) }, false)),
+            }
+        }
+    }
+}
+
+/// A link that leaves Melissa: new tab, no opener, no referrer, not endorsed. `href` must
+/// already be checked (`markdown::safe_href` or `markdown::linkify`).
+fn external_link(href: &str, content: Markup, image: bool) -> Markup {
+    html! {
+        a href=(href) target="_blank" rel="noopener noreferrer nofollow" class=[image.then_some("md-image")] {
+            @if image { span.image-tag { "Image: " } }
+            (content)
+        }
+    }
+}
+
+/// Agent prose (the Queen's or a helper's reply, a job, a job's summary): Markdown with
+/// the GFM extensions, rendered from the safe tree of `crate::markdown`. Headings are
+/// scaled down for chat (`#` becomes `h4`), code blocks get a copy button (shown by
+/// `melissa.js` when the clipboard is available), wide tables scroll.
+pub fn markdown(text: &str) -> Markup {
+    html! { div.md { (md_nodes(&markdown::parse(text))) } }
+}
+
+fn md_nodes(nodes: &[Node]) -> Markup {
+    html! { @for n in nodes { (md_node(n)) } }
+}
+
+fn md_node(node: &Node) -> Markup {
+    match node {
+        Node::Text(t) => html! { (t) },
+        Node::Code(t) => html! { code { (t) } },
+        Node::CodeBlock(t) => html! {
+            div.md-code {
+                pre tabindex="0" { code { (t) } }
+                button.copy-code.secondary type="button" aria-label="Copy code" { "Copy" }
+            }
+        },
+        Node::Link {
+            href,
+            image,
+            children,
+        } => external_link(href, md_nodes(children), *image),
+        Node::Break => html! { br; },
+        Node::Rule => html! { hr; },
+        Node::Task(done) => html! {
+            input.task type="checkbox" disabled checked[*done] aria-label=(if *done { "Done" } else { "Not done" });
+            " "
+        },
+        Node::El(el, children) => {
+            let inner = || md_nodes(children);
+            match el {
+                El::Para => html! { p { (inner()) } },
+                El::Heading(1) => html! { h4.md-h1 { (inner()) } },
+                El::Heading(2) => html! { h5.md-h2 { (inner()) } },
+                El::Heading(_) => html! { h6.md-h3 { (inner()) } },
+                El::Quote => html! { blockquote { (inner()) } },
+                El::List { start: None } => html! { ul { (inner()) } },
+                El::List { start: Some(1) } => html! { ol { (inner()) } },
+                El::List { start: Some(n) } => html! { ol start=(n) { (inner()) } },
+                El::Item => html! { li { (inner()) } },
+                El::Table => {
+                    let (head, rows) = match children.split_first() {
+                        Some((h @ Node::El(El::TableHead, _), rows)) => (Some(h), rows),
+                        _ => (None, &children[..]),
+                    };
+                    html! {
+                        div.md-table tabindex="0" {
+                            table {
+                                @if let Some(h) = head { (md_node(h)) }
+                                tbody { (md_nodes(rows)) }
+                            }
+                        }
+                    }
+                }
+                El::TableHead => html! { thead { tr { (inner()) } } },
+                El::TableRow => html! { tr { (inner()) } },
+                El::TableCell { head, align } => {
+                    let class = match align {
+                        Align::None => None,
+                        Align::Left => Some("align-left"),
+                        Align::Center => Some("align-center"),
+                        Align::Right => Some("align-right"),
+                    };
+                    if *head {
+                        html! { th scope="col" class=[class] { (inner()) } }
+                    } else {
+                        html! { td class=[class] { (inner()) } }
+                    }
+                }
+                El::Emphasis => html! { em { (inner()) } },
+                El::Strong => html! { strong { (inner()) } },
+                El::Strike => html! { del { (inner()) } },
             }
         }
     }
@@ -578,7 +688,7 @@ pub fn relayed_message(from: &str, text: &str) -> Markup {
     html! {
         div.msg.msg-relayed {
             h3.from { (from) }
-            div.body { (plain_text(text)) }
+            div.body { (markdown(text)) }
         }
     }
 }
@@ -589,7 +699,7 @@ pub fn queen_message(text: &str) -> Markup {
         div.msg.msg-queen {
             (mark("avatar"))
             h3.visually-hidden { "Melissa" }
-            div.body { (plain_text(text)) }
+            div.body { (markdown(text)) }
         }
     }
 }
@@ -618,10 +728,12 @@ fn activity_icon(state: ActivityState) -> Markup {
 }
 
 /// A compact "what I did" row: icon, plain label (a link when `href` is given, e.g. to a
-/// helper's conversation), short detail.
+/// helper's conversation), short detail. `prose`: the detail is agent prose (a helper's
+/// job), rendered as [`markdown`]; otherwise it is a short plain text (a tool's title).
 pub fn activity_row(
     label: &str,
     detail: Option<&str>,
+    prose: bool,
     state: ActivityState,
     href: Option<&str>,
 ) -> Markup {
@@ -638,7 +750,9 @@ pub fn activity_row(
                 @if let Some(href) = href { a href=(href) { (label) } } @else { (label) }
                 span.visually-hidden { " (" (state_text) ")" }
             }
-            @if let Some(d) = detail { span.detail { (d) } }
+            @if let Some(d) = detail {
+                @if prose { div.detail { (markdown(d)) } } @else { span.detail { (d) } }
+            }
         }
     }
 }
@@ -926,23 +1040,227 @@ mod tests {
     }
 
     #[test]
-    fn agent_text_is_escaped_and_never_markdown() {
+    fn agent_text_is_markdown_with_html_escaped() {
         let evil = "Hi <img src=x onerror=alert(1)>\n\n**bold** [link](http://example.com)\n- one\n- <b>two</b>";
         let out = queen_message(evil).into_string();
         assert!(!out.contains("<img"));
         assert!(!out.contains("<b>"));
-        assert!(!out.contains("<a "));
-        assert!(!out.contains("<strong"));
-        assert!(out.contains("&lt;img src=x onerror=alert(1)&gt;"));
-        assert!(out.contains("**bold** [link](http://example.com)"));
-        assert!(out.contains("<li>one</li><li>&lt;b&gt;two&lt;/b&gt;</li>"));
+        assert!(out.contains("&lt;img src=x onerror=alert(1)&gt;"), "{out}");
+        assert!(out.contains("<strong>bold</strong>"), "{out}");
+        assert!(out.contains(
+            r#"<a href="http://example.com" target="_blank" rel="noopener noreferrer nofollow">link</a>"#
+        ));
+        assert!(
+            out.contains("<li>one</li><li>&lt;b&gt;two&lt;/b&gt;</li>"),
+            "{out}"
+        );
         let out = relayed_message("A job from Melissa", "<b>x</b>").into_string();
         assert!(out.contains("&lt;b&gt;x&lt;/b&gt;"));
         assert!(out.contains("A job from Melissa"));
-        let out = user_message("a\nb\n\nc").into_string();
-        assert!(out.contains("<p>a<br>b</p><p>c</p>"));
         let out = queen_message("run `<ls>` and `x").into_string();
         assert!(out.contains("run <code>&lt;ls&gt;</code> and `x"), "{out}");
+    }
+
+    /// Every real tag in `out` (text `<` is escaped, so each `<` starts one) is from the
+    /// markdown allowlist, with allowed attributes only, and links go to http(s)/mailto.
+    fn assert_inert(out: &str) {
+        const TAGS: &[&str] = &[
+            "div",
+            "p",
+            "br",
+            "hr",
+            "h4",
+            "h5",
+            "h6",
+            "blockquote",
+            "ul",
+            "ol",
+            "li",
+            "pre",
+            "code",
+            "button",
+            "a",
+            "span",
+            "em",
+            "strong",
+            "del",
+            "table",
+            "thead",
+            "tbody",
+            "tr",
+            "th",
+            "td",
+            "input",
+        ];
+        const ATTRS: &[&str] = &[
+            "class",
+            "href",
+            "target",
+            "rel",
+            "tabindex",
+            "type",
+            "aria-label",
+            "start",
+            "scope",
+            "disabled",
+            "checked",
+        ];
+        for tag in out.split('<').skip(1) {
+            let tag = tag.split('>').next().unwrap_or_default();
+            let tag = tag.strip_prefix('/').unwrap_or(tag);
+            let (name, mut attrs) = tag.split_once(' ').unwrap_or((tag, ""));
+            assert!(TAGS.contains(&name), "tag {name:?} in {out}");
+            while !attrs.is_empty() {
+                let end = attrs.find([' ', '=']).unwrap_or(attrs.len());
+                let attr = &attrs[..end];
+                assert!(ATTRS.contains(&attr), "attribute {attr:?} in {out}");
+                attrs = &attrs[end..];
+                if let Some(rest) = attrs.strip_prefix("=\"") {
+                    let close = rest.find('"').unwrap_or(rest.len());
+                    let value = &rest[..close];
+                    if attr == "href" {
+                        assert!(
+                            ["http://", "https://", "mailto:"]
+                                .iter()
+                                .any(|p| value.to_ascii_lowercase().starts_with(p)),
+                            "href {value:?} in {out}"
+                        );
+                    }
+                    attrs = rest.get(close + 1..).unwrap_or_default();
+                }
+                attrs = attrs.trim_start();
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_xss_inputs_are_inert() {
+        let inputs = [
+            "<script>alert(1)</script>",
+            "<div>\n<script>alert(1)</script>\n</div>",
+            "<!-- x --><img src=x onerror=alert(1)>",
+            "a <svg onload=alert(1)> b",
+            "<style>body{display:none}</style>",
+            "[x](javascript:alert(1))",
+            "[x](JAVASCRIPT:alert(1))",
+            "[x](  javascript:alert(1))",
+            "[x](java&#x09;script:alert(1))",
+            "[x](&#106;avascript:alert(1))",
+            "[x](javascript&colon;alert(1))",
+            "[x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+            "[x](vbscript:msgbox)",
+            "[x](/ui/cancel)",
+            "[x](#f-1)",
+            "[x][r]\n\n[r]: javascript:alert(1)",
+            "<javascript:alert(1)>",
+            "![x](https://example.com/a.png)",
+            "![x](data:image/svg+xml,<svg onload=alert(1)>)",
+            "[x](https://example.com \"title\\\" onmouseover=\\\"alert(1)\")",
+            "[a\"b](https://example.com/\"onmouseover=\"alert(1))",
+            "https://example.com/\"onmouseover=\"alert(1)",
+            "`<script>`",
+            "```html\n<script>alert(1)</script>\n```",
+            "| <script> | b |\n|---|---|\n| <img src=x> | [x](javascript:1) |",
+            "- [x] <b>done</b>",
+            "> <iframe src=https://example.com>",
+        ];
+        for input in inputs {
+            let out = markdown(input).into_string();
+            assert_inert(&out);
+        }
+    }
+
+    #[test]
+    fn markdown_elements() {
+        let out = markdown("# Title\n\n## Sub\n\n### Small").into_string();
+        assert!(out.contains(r#"<h4 class="md-h1">Title</h4>"#), "{out}");
+        assert!(out.contains(r#"<h5 class="md-h2">Sub</h5>"#));
+        assert!(out.contains(r#"<h6 class="md-h3">Small</h6>"#));
+
+        let out = markdown("```rust\nfn main() { 1 < 2 }\n```").into_string();
+        assert!(
+            out.contains("<pre tabindex=\"0\"><code>fn main() { 1 &lt; 2 }\n</code></pre>"),
+            "{out}"
+        );
+        assert!(out.contains("copy-code"));
+
+        let out = markdown("| a | b |\n|:-:|---|\n| 1 | 2 |").into_string();
+        assert!(out.contains(r#"<div class="md-table" tabindex="0"><table><thead><tr><th scope="col" class="align-center">a</th><th scope="col">b</th></tr></thead><tbody><tr><td class="align-center">1</td><td>2</td></tr></tbody></table></div>"#), "{out}");
+
+        let out =
+            markdown("~~old~~ *em*\n> quote\n\n3. three\n4. four\n\n- [x] done\n- [ ] todo\n\n---")
+                .into_string();
+        assert!(out.contains("<del>old</del> <em>em</em>"), "{out}");
+        assert!(
+            out.contains("<blockquote><p>quote</p></blockquote>"),
+            "{out}"
+        );
+        assert!(out.contains(r#"<ol start="3"><li>three</li>"#), "{out}");
+        assert!(
+            out.contains(
+                r#"<input class="task" type="checkbox" disabled checked aria-label="Done">"#
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<input class="task" type="checkbox" disabled aria-label="Not done">"#)
+        );
+        assert!(out.contains("<hr>"));
+
+        // Images are not loaded: a link with the alt text.
+        let out = markdown("![the logo](https://example.com/logo.png)").into_string();
+        assert!(out.contains(r#"<a href="https://example.com/logo.png" target="_blank" rel="noopener noreferrer nofollow" class="md-image"><span class="image-tag">Image: </span>the logo</a>"#), "{out}");
+
+        // Line breaks inside a paragraph are kept (chat style).
+        let out = markdown("a\nb").into_string();
+        assert!(out.contains("<p>a<br>b</p>"), "{out}");
+    }
+
+    #[test]
+    fn bare_urls_become_links() {
+        let link = r#"<a href="http://nextcloud.example.com" target="_blank" rel="noopener noreferrer nofollow">http://nextcloud.example.com</a>"#;
+        let out = markdown("Open http://nextcloud.example.com.").into_string();
+        assert!(out.contains(&format!("Open {link}.")), "{out}");
+        let out = markdown("`http://nextcloud.example.com`").into_string();
+        assert!(!out.contains("<a "), "{out}");
+        let out =
+            user_message("see http://nextcloud.example.com, `http://x.example`").into_string();
+        assert!(
+            out.contains(&format!("see {link}, <code>http://x.example</code>")),
+            "{out}"
+        );
+        let out = user_message("a\nb\n\nc <b>").into_string();
+        assert!(out.contains("<p>a<br>b</p><p>c &lt;b&gt;</p>"), "{out}");
+    }
+
+    #[test]
+    fn activity_detail_is_markdown_only_for_prose() {
+        let out = activity_row(
+            "Ada finished",
+            Some("**done**"),
+            true,
+            ActivityState::Done,
+            None,
+        )
+        .into_string();
+        assert!(
+            out.contains(
+                r#"<div class="detail"><div class="md"><p><strong>done</strong></p></div></div>"#
+            ),
+            "{out}"
+        );
+        let out = activity_row(
+            "Using a tool",
+            Some("**x**"),
+            false,
+            ActivityState::Done,
+            None,
+        )
+        .into_string();
+        assert!(
+            out.contains(r#"<span class="detail">**x**</span>"#),
+            "{out}"
+        );
     }
 
     #[test]

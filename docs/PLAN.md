@@ -241,8 +241,10 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   binds to loopback only, mutating requests must be same-origin (`Sec-Fetch-Site`/`Origin`), and a strict CSP
   (no inline script/style) is set. With login: `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Strict`), CSRF
   tokens, Argon2id passwords, revocable sessions, and a one-time setup code shown on the console to claim a new bee.
-- Agent and model output is untrusted: rendered as escaped text in fixed components, never HTML or markdown, no
-  remote images.
+- Agent and model output is untrusted. Agent prose is Markdown (CommonMark + GFM tables, strikethrough, task lists)
+  rendered by one fixed component (`components::markdown`, owner-approved 2026-11-19): raw HTML shows as text,
+  links only to http/https/mailto (new tab, `noopener noreferrer nofollow`), bare URLs linked, images never loaded.
+  Logs and tool output stay escaped plain text.
 - Later: problem+json error codes, a build-id header with an "updated, reload" banner, SSE for live updates.
 
 - **UI direction (owner, 2026-11-18):** simple, like a chat bot. **Home = the chat with the Queen, with a compact
@@ -252,7 +254,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   claude.ai artifact "Melissa UI concepts" (private to the owner). The owner approved building them for the
   pre-alpha demo.
 - **Status (2026-11-18):** built in `crates/web` (branch `t3/chat-home-hive-ui`, on top of the hive-model rename):
-  home = chat with the Queen (app strip, replies as escaped plain text, "what I did" rows, helper rows that link to
+  home = chat with the Queen (app strip, replies as Markdown (since 2026-11-19), "what I did" rows, helper rows that link to
   the helper, inline approval cards, composer with backend line and Stop), `/hive` (apps as honeycomb cells with
   "Looked after by <bee>", "Add an app" into the chat, device cards), `/approvals`, and `/bees/{bee}` (chat with one
   helper; listed under Conversations in the rail); the task dashboard moved to `/tasks`. Live updates over SSE from

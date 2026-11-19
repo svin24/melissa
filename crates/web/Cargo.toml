@@ -9,6 +9,7 @@ description = "Melissa web UI: axum + maud, fixed component library, embedded ht
 melissa-agent = { workspace = true }
 axum = { workspace = true }
 maud = { workspace = true }
+pulldown-cmark = { workspace = true }
 rust-embed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
