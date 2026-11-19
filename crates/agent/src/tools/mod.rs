@@ -225,7 +225,11 @@ impl ToolRegistry {
         }
         let spec = tool.spec();
         let hash = args_hash(&args);
-        tool.check_args(&args)?;
+        if let Err(e) = tool.check_args(&args) {
+            // Audited like any failed call, so a refused spec can be looked up later.
+            self.audit(task, "tool.call", name, &hash, &format!("error: {e}"));
+            return Err(e);
+        }
 
         let mut reasons = Vec::new();
         let mut note = None;
