@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Melissa lead agent: coordinates the cluster and hosts the agent layer"
+description = "Melissa server: runs the lead agent, coordinates the cluster and hosts the agent layer and web UI"
 
 [dependencies]
 melissa-agent = { workspace = true }

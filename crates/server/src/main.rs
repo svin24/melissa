@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Lead agent agent: coordinates the cluster and hosts the agent layer and the web UI.
+//! The Melissa server: runs the lead agent, coordinates the cluster and hosts the agent layer and the web UI.
 //!
 //! Usage:
 //!   `melissa-server [--config <path>]`                         serve the web UI and agents
@@ -202,6 +202,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     let mut config = ServerConfig::load(&config_path)?;
+    if matches!(command, Command::Serve { .. }) {
+        let text = std::fs::read_to_string(&config_path).unwrap_or_default();
+        for key in config::legacy_keys(&text) {
+            tracing::warn!(file = %config_path.display(), key, "old config key; it still works for now, please rename it");
+        }
+    }
     config.validate()?;
     // The owner's provider settings (web UI, `provider set`) win over server.toml.
     let base = config.clone();

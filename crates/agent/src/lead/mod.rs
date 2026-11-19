@@ -1,4 +1,4 @@
-//! The lead agent: Melissa's head agent on this device. One long-lived agent conversation per
+//! The lead agent: the agent in charge of this device. One long-lived agent conversation per
 //! daemon that the user talks to; it plans, uses Melissa's tools, and creates, names and
 //! directs this device's **agents** ([`agents`]): persistent agents that each look after their own
 //! workspaces.
@@ -50,7 +50,7 @@ pub struct LeadSettings {
     pub agent_backend: Option<String>,
     /// Melissa's state for the lead agent: `session.json`, the agent's session store.
     pub state_dir: PathBuf,
-    /// The lead agent agent's working directory; agents work in `<workdir>/../agents/<id>`.
+    /// The lead agent's working directory; agents work in `<workdir>/../agents/<id>`.
     pub workdir: PathBuf,
     /// Tools the lead agent may use (None = all). Agents get at most these.
     pub tools: Option<Vec<String>>,

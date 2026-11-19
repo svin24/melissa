@@ -1,6 +1,6 @@
 # Long-lived agent sessions (ACP, and Claude's stream-json)
 
-**When:** building the lead agent (head agent) and agent sessions, or wiring a backend that speaks ACP or another
+**When:** building the lead agent and agent sessions, or wiring a backend that speaks ACP or another
 session protocol.
 Code: `crates/agent/src/session/` (protocol-neutral API + policy permissions), `crates/agent/src/acp/` (client,
 transport, replay; `grok-acp`, `opencode-acp`), `crates/agent/src/claude/` (Claude Code over stream-json,

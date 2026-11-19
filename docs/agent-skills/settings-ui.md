@@ -74,7 +74,7 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 - **API key** ("Use an API key instead", shown when a sign-in is needed or a key is set): one password field,
   `POST /ui/settings/providers/{id}/key` (`value`; empty removes). The server picks the name (`key_var`:
   claude → `ANTHROPIC_API_KEY`, grok → `XAI_API_KEY`); the page never shows variable names outside Details.
-- Disabling is refused while the lead agent runs on it, a helper uses it, or no other lead agent agent would be left.
+- Disabling is refused while the lead agent runs on it, a helper uses it, or no other lead agent would be left.
 - **Install** (`InstallWay::detect(root, MELISSA_RUNTIME)`): unit + polkit rule present → Install button
   (`POST /ui|/api/settings/providers/{id}/install`; id must be configured AND in `INSTALLABLE`; refused while
   running or installed). It runs `systemctl start --no-block melissa-agent-install@<id>.service` (a fixed

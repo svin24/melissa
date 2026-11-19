@@ -10,7 +10,7 @@ Read this at the start of every session. One file per skill; update the skill wh
   recording/replay transcripts, gotchas.
 - [agent-egress.md](agent-egress.md) — deny-by-default network for sandboxed agents: netns + `melissa-netbridge`,
   CONNECT proxy with per-backend allowlists, MCP-only socket, `network = proxy|learn|none|host`, what each CLI contacts.
-- [lead-loop.md](lead-loop.md) — the lead agent (head agent) and its persistent, named agents: the shared
+- [lead-loop.md](lead-loop.md) — the lead agent and its persistent, named agents: the shared
   conversation machinery, agent registry, agent tools and guards, event stream + transcript, resume via a
   Melissa-owned session store, `/api/lead`, `/api/agents`, `melissa-server chat|ask [--agent]`, `agent`, `workspace`;
   switching a conversation's backend/model at runtime (`backend list|use`, models only as agents report them).

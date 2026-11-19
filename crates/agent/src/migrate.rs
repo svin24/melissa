@@ -10,7 +10,7 @@
 //! | `bees/registry.json` (`comb`, `bees`, ids `c-<hex>.b<n>`) | `agents/registry.json` (`device`, `agents`, ids `d-<hex>.a<n>`) |
 //! | `bees/c-<hex>.b<n>/` | `agents/d-<hex>.a<n>/` |
 //! | `queen/` | `lead/` |
-//! | `work/queen/bees/c-<hex>.b<n>/` | `work/lead/agents/d-<hex>.a<n>/` |
+//! | `work/queen/`, `work/bees/c-<hex>.b<n>/` | `work/lead/`, `work/agents/d-<hex>.a<n>/` |
 //!
 //! Transcripts (`transcript.jsonl`, its rotated copy and `chats/*.jsonl`) and `session.json`
 //! get the new ids, event names (`bee_created` → `agent_created`, `cell_reassigned` →
@@ -130,17 +130,13 @@ pub fn migrate_state(state: &Path) -> Result<Report, MigrateError> {
     rename(&state.join("queen"), &state.join("lead"), &mut report)?;
     let work = state.join("work");
     rename(&work.join("queen"), &work.join("lead"), &mut report)?;
-    rename(
-        &work.join("lead").join("bees"),
-        &work.join("lead").join("agents"),
-        &mut report,
-    )?;
+    rename(&work.join("bees"), &work.join("agents"), &mut report)?;
     let Some(ids) = ids else {
         return Ok(report);
     };
     migrate_registry(&state.join("agents"), &ids, &mut report)?;
     rename_id_dirs(&state.join("agents"), &mut report)?;
-    rename_id_dirs(&work.join("lead").join("agents"), &mut report)?;
+    rename_id_dirs(&work.join("agents"), &mut report)?;
     rewrite_transcripts(&state.join("lead"), &ids, &mut report)?;
     if let Ok(entries) = std::fs::read_dir(state.join("agents")) {
         for entry in entries.flatten() {
@@ -177,6 +173,10 @@ fn migrate_device_file(state: &Path, report: &mut Report) -> Result<Option<Ids>,
         let old = json["id"].as_str().unwrap_or_default().to_string();
         let new = new_device_id(&old).ok_or_else(|| err(&old_path, "no old device id in it"))?;
         json["id"] = Value::String(new);
+        // The default name the old code gave.
+        if json["name"] == "this comb" {
+            json["name"] = Value::String("this device".into());
+        }
         let out = serde_json::to_vec_pretty(&json).map_err(|e| err(&new_path, e))?;
         write_private(&new_path, &out).map_err(|e| err(&new_path, e))?;
         report.did(format!(
@@ -336,9 +336,21 @@ fn rewrite_event_line(line: &str, ids: &Ids) -> String {
             changed = true;
         }
     }
+    if let Some(Value::String(text)) = obj.get_mut("text") {
+        let new = rename_relay_text(text);
+        if new != *text {
+            *text = new;
+            changed = true;
+        }
+    }
     for key in ["title", "tool"] {
         if let Some(Value::String(s)) = obj.get_mut(key) {
-            let new = rename_tools(s);
+            // `tainted` events name the lead agent as their source.
+            let new = if s == "queen" {
+                "lead".to_string()
+            } else {
+                rename_tools(s)
+            };
             if new != *s {
                 *s = new;
                 changed = true;
@@ -350,6 +362,32 @@ fn rewrite_event_line(line: &str, ids: &Ids) -> String {
     } else {
         line
     }
+}
+
+/// The words the lead agent framed jobs and relayed messages with (the feed shows them as
+/// "A job from Melissa", "A message from Ada, passed on by Melissa").
+fn rename_relay_text(text: &str) -> String {
+    const OLD: [(&str, &str); 4] = [
+        ("A job from the Queen:", "A job from the lead agent:"),
+        (
+            "The Queen passes on a message from bee ",
+            "The lead agent passes on a message from agent ",
+        ),
+        (
+            "The Queen passes on a message from ",
+            "The lead agent passes on a message from ",
+        ),
+        ("<melissa-data from=\"bee ", "<melissa-data from=\"agent "),
+    ];
+    let mut out = text.to_string();
+    for (old, new) in OLD {
+        if old.starts_with('<') {
+            out = out.replace(old, new);
+        } else if let Some(rest) = out.strip_prefix(old) {
+            out = format!("{new}{rest}");
+        }
+    }
+    out
 }
 
 /// Replace old tool names inside a tool title (`melissa__create_bee`, `create_bee (melissa)`).

@@ -1,4 +1,4 @@
-//! Lead agent agent configuration, read from `$XDG_CONFIG_HOME/melissa/server.toml`.
+//! Server configuration, read from `$XDG_CONFIG_HOME/melissa/server.toml`.
 //! Every field is optional; a missing file means "use the defaults".
 
 use std::{
@@ -362,7 +362,7 @@ pub fn default_backends() -> Vec<BackendSpec> {
 }
 
 /// Keys from before the rename to generic terms (docs/AGENT-MODEL.md) that `text` still uses.
-fn legacy_keys(text: &str) -> Vec<&'static str> {
+pub fn legacy_keys(text: &str) -> Vec<&'static str> {
     const OLD: [&str; 5] = [
         "bee_backend",
         "max_bees",
@@ -399,9 +399,6 @@ impl ServerConfig {
         };
         let mut config: Self =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        for old in legacy_keys(&text) {
-            tracing::warn!(file = %path.display(), key = old, "old config key; it still works for now, please rename it");
-        }
         if let Some(tools) = &mut config.lead.tools {
             for tool in tools.iter_mut() {
                 if let Some(new) = melissa_agent::migrate::legacy_tool_name(tool) {

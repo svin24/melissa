@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Melissa cluster layer: the lead's client for the local k3s API and the cluster tools"
+description = "Melissa cluster layer: the server's client for the local k3s API and the cluster tools"
 
 [dependencies]
 melissa-agent = { workspace = true }

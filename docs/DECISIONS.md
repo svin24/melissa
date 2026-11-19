@@ -2,6 +2,9 @@
 
 Format: date — decision. Why. Alternatives considered.
 
+Entries before 2026-11-19 use the old role names: hive = cluster, comb = device, queen = lead agent
+(`melissa-queen` = `melissa-server`), bee = agent, cell = workspace, apiary = fleet (see the last entry).
+
 - **2026-11-18 — Agent backends drive the vendors' CLIs headlessly** (`claude -p`, `grok -p`, `opencode run`) behind
   one Rust `Backend` trait, plus a built-in `echo` backend. Why: reuses the user's existing subscriptions and logins,
   no API keys in Melissa, works today. Alternatives: direct HTTP APIs (needs keys, per-vendor code), ACP/MCP
@@ -647,3 +650,26 @@ Format: date — decision. Why. Alternatives considered.
   instead" with the variable name chosen by the server; no host commands in the container UI or the chat's
   hints (only for runs from source); Updates and Developer shortened the same way. (4) Installs and sign-ins
   are audited with their outcome, not only the request.
+- **2026-11-19 — Generic role names instead of bee terms** (owner decision): cluster (was hive), device (comb),
+  primary device (main comb), lead agent (queen; `lead` in code, e.g. `Scope::Lead`), agent (bee; `agent` in
+  code, `AgentId`-style names where the backend CLI is meant they say `backend`), workspace (cell), fleet
+  (apiary). Melissa stays the product name, with the `melissa-` prefix. Why: contributors were confused by the
+  metaphor; pre-alpha, so renaming is cheapest now. Renamed everywhere: crates (`melissa-server`,
+  `melissa-device`, `melissa-cluster`), unit `melissa-server.service`, ServiceAccount `melissa-server`, prompts
+  `lead.md`/`agent.md`, tools (`create_agent`, `give_agent_job`, `agent_status`, `list_agents`, `start_agent`,
+  `stop_agent`, `message_agent`, `reassign_workspace`, `device_info`), routes (`/api/lead`, `/api/agents`,
+  `/api/workspaces`), CLI (`chat --agent`, `workspace reassign`), labels (`melissa.io/workspace`,
+  `melissa.io/device`, `melissa.io/owner-agent`), ids (`d-<hex>`, `<device>.a<n>`), audit kinds (`agent.*`,
+  `workspace.*`), config `server.toml` `[lead]`. The UI's honeycomb became an app grid (`app_grid`,
+  `app_tile`). **Migration** for existing installs, all idempotent: on start the daemon moves its state
+  (`comb.json` → `device.json`, `bees/` → `agents/`, `queen/` → `lead/`, work dirs, ids, transcript event,
+  field and tool names; `melissa_agent::migrate`) and `queen.toml` → `server.toml`; `[queen]` and the old
+  `bee_*` keys and tool names are still read for one release, with a warning. Old namespace label keys
+  (`melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee`) are read as aliases **and** moved once through
+  the apps identity; the admission policy allows exactly that move (old keys only kept or dropped, the new
+  device/owner must be the old value in the new id shape, no new `assigned-at` needed for it). Both, because
+  reading aliases alone would keep the old keys forever, and relabelling alone would leave ownership unknown
+  while k3s is still starting. The audit log keeps old lines as they are (history). Compatibility for one
+  release: `Alias=melissa-queen.service` (host update helpers installed earlier wait for that name), the old
+  feed words for `comb_info`/`bee_info` in old chats. Alternatives: keep the metaphor and only explain it
+  (rejected by the owner); aliases only, no migration (two names forever).

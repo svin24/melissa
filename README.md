@@ -10,8 +10,8 @@ Melissa turns a handful of ordinary machines (a laptop, a mini PC, a NAS, a VPS)
 cluster that AI agents run for you. You chat with the lead agent; it and its agents install apps like Nextcloud,
 keep them healthy and tidy up, asking you before anything risky.
 
-- **Cluster**: all your devices together. **Device**: one device, with one **Lead agent** (the lead agent).
-- **Agents**: worker agents; each looks after its own **workspaces** (apps and their services).
+- **Cluster**: all your devices together. **Device**: one machine, with one **lead agent** in charge.
+- **Agents**: workers; each looks after its own **workspaces** (apps and their services).
 - You can talk to any lead agent or agent. Only a lead agent, or you, can hand a workspace to another agent.
   Full model: [docs/AGENT-MODEL.md](docs/AGENT-MODEL.md).
 
@@ -24,8 +24,9 @@ without internet, and open source so others can build on top.
 
 ```
 crates/agent   agent layer: backend trait, echo + CLI backends, task board, audit log
-crates/server   lead agent agent (coordinator + agent layer entrypoint)
-crates/device    per-device daemon (a device = one device)
+crates/server  server: lead agent, web UI and API, coordinator
+crates/device  per-device daemon (stub)
+crates/cluster k3s client and the app tools
 crates/web     web UI (axum + maud + embedded htmx)
 packaging/     common/ (system files every packaging installs), container/ (image, Quadlet, install.sh),
                nix/ (Nix flake/module)

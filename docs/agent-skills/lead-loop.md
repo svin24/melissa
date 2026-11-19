@@ -1,4 +1,4 @@
-# The lead agent loop (head agent, agents, event stream, CLI)
+# The lead agent loop (agents, event stream, CLI)
 
 **When:** changing the lead agent's or an agent's conversation loop, the agent tools, the agent registry, the
 `/api/lead` / `/api/agents` JSON API or the `melissa-server chat|ask|confirm|agent|workspace` client; building the
