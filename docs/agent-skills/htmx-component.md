@@ -23,7 +23,7 @@
   task pages, assets, security middleware.
 
 ## Components (2026-11-18)
-Shell: `app_page` (banner + rail + main), `page` (no rail: task pages, errors), `banner`, `mark`, `rail`
+Shell: `app_page` (banner + rail + main), `page` (no rail: errors, and the task pages when there is no Queen), `banner`, `mark`, `rail`
 (nav, conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
 devices; a de-emphasised "Agent tasks" link), `waiting_count`, `page_header`, `section`, `empty_state`.
 Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
@@ -43,8 +43,10 @@ Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.m
 `settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts`, `group`,
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
 `actions`, `region`; rail link "Settings" (`Nav::Settings`).
-Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
-`select_field`, `textarea_field`, `post_form`, `action_button`.
+Task pages (2026-11-19: in the app with the rail, `Nav::Tasks`; the built-in `echo` is not offered, a configured
+echo is; the reply (stdout) is `markdown`, stderr a `log_view` "Agent log"; htmx "Run" answers `HX-Redirect` to the
+new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
+`select_field`, `textarea_field`, `post_form`, `action_button`, `crumbs` (breadcrumb, Settings' look), `facts`.
 
 ## Rules
 - All markup lives in `components.rs`. Pages only call component functions. A new component is a

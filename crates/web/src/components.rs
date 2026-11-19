@@ -1010,6 +1010,19 @@ pub fn table(headers: &[&str], rows: Vec<Vec<Markup>>, empty: &str) -> Markup {
     }
 }
 
+/// A breadcrumb ("Agent tasks / Task #3"): links to the pages above, then the current one.
+/// Same look as the Settings breadcrumb; the way back on phones, where the rail is short.
+pub fn crumbs(trail: &[(&str, &str)], current: &str) -> Markup {
+    html! {
+        nav.crumbs aria-label="Breadcrumb" {
+            ol {
+                @for (href, label) in trail { li { a href=(href) { (label) } } }
+                li aria-current="page" { (current) }
+            }
+        }
+    }
+}
+
 /// A short coloured status label.
 pub fn badge(label: &str, tone: Tone) -> Markup {
     html! { span class={ "badge " (tone.class()) } { (label) } }
