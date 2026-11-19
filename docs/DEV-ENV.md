@@ -3,7 +3,7 @@
 The repo ships a `devenv.nix` / `devenv.yaml` (primary), a `flake.nix` (alternative entry point),
 and an `.envrc`. The shell provides Rust (stable via rust-overlay: rustc, cargo, clippy, rustfmt,
 rust-analyzer, rust-src), cargo-nextest, cargo-watch, just, pkg-config, and pre-commit hooks
-(rustfmt + clippy). Container tooling (podman, buildah, bootc) comes from the host, not Nix.
+(rustfmt + clippy). Container tooling (podman) comes from the host, not Nix; `just container-*` uses it.
 
 ```
 direnv allow          # auto-loads the shell via .envrc (`use devenv`)

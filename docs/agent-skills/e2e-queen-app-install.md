@@ -7,60 +7,32 @@ policy, the app tools or the image; trying a new Queen backend against real apps
 Note (2026-11-18, later): this run predates persistent bees. Today the Queen creates a named bee and
 gives it the job (`create_bee`, `give_bee_job`, `bee_status`) instead of `start_worker`/`worker_status`,
 and `install_app` from the Queen names the bee that looks after the new cell
-([cells-and-ownership.md](cells-and-ownership.md)). Not re-run against the VM yet.
+([cells-and-ownership.md](cells-and-ownership.md)). Not re-run end to end since.
 
 Note (2026-11-19): apps now have `stop_app`/`start_app` ("turn off" must never become an uninstall) and
 links `http://<device>:<port>` instead of `<app>.<domain>` (see app-catalog.md, "Links and ports").
-In the VM, add `hostfwd_add tcp:127.0.0.1:13000-:30000` on `vm/headless/monitor.sock` and curl with
-`Host: 10.0.2.15:30000`.
 
-## Setup (laptop Queen, VM cluster)
-The headless test VM has k3s and the app RBAC but no agent CLI logins; the dev laptop has them. So
-the Queen daemon runs on the laptop (temp XDG dirs, egress proxy, default sandbox) and its cluster
-tools talk to the VM's k3s through the forwarded API port (127.0.0.1:16443 → VM 6443). The k3s
-serving cert has `IP:127.0.0.1` in its SANs, so no `tls-server-name` is needed. No code change was
-needed: `kubeconfig` (read-only identity) and `[apps] kubeconfig` (write identity) are config keys.
+## Setup (the installed container, 2026-11-19)
+Everything runs inside the rootful container from `packaging/container/install.sh`
+([container-image.md](container-image.md)): Queen, agent sandbox, k3s. Agent logins live in the volume.
+```
+just container-build && just container-install      # or keep the running install
+sudo podman exec melissa melissa-setup agent opencode --yes --no-login   # or: -it ... agent claude (logs in)
+sudo podman exec melissa melissa-queen tool cluster_health
+sudo podman exec melissa melissa-queen ask "What apps can you install here?"
+```
+- **Answer confirmations** from a second shell: `sudo podman exec melissa melissa-queen confirm list|approve <id>`.
+  A `tool --wait` client that is killed leaves no pending confirmation behind; start it again.
+- **Owner credentials:** `sudo podman exec melissa melissa-queen app-credentials nextcloud` (write it to a 0600
+  file, not the terminal log), then `curl -K <file with user = "admin:<pw>">
+  http://<BIND>:<port>/ocs/v2.php/cloud/user?format=json`.
+- Apps answer on the host at `BIND:30000+` (the app's link). Check `df -h` of the volume's filesystem before
+  installing (Nextcloud pulls ~0.5 GB).
+- Audit summary: `python3` over `/var/lib/melissa/audit.jsonl` inside (`action`, `task`, `tool`, `detail`;
+  `egress.*` lines collapse repeats as `(+N repeats)`).
 
-```
-# 1. VM, from the MAIN checkout (owns vm/), detached so tool time limits don't kill it
-cd <main checkout>
-setsid -f nohup devenv shell -- scripts/vm-run.sh headless > <scratch>/vm-run.log 2>&1 < /dev/null
-# 2. image from the worktree, deploy from the main checkout
-(cd <worktree> && devenv shell -- just image-build headless)
-scripts/vm-dev.sh deploy headless                       # ~47 s incl. reboot
-scripts/vm-dev.sh ssh headless 'df -h /var'             # want > 2.5 GB free for Nextcloud
-# 3. kubeconfigs (contain tokens: 0600, scratch dir only, never commit/print, delete afterwards)
-umask 077; for f in queen apps; do scripts/vm-dev.sh ssh headless "sudo cat /run/melissa-kube/$f.kubeconfig" \
-  | sed 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' > <scratch>/kube/$f.kubeconfig; done
-```
-`<scratch>/config/melissa/queen.toml`:
-```toml
-listen = "127.0.0.1:18090"          # 8080 may be taken on the laptop
-kubeconfig = "<scratch>/kube/queen.kubeconfig"
-[apps]
-catalog = "<worktree>/manifests"
-kubeconfig = "<scratch>/kube/apps.kubeconfig"
-# [queen]
-# backends = ["claude-session"]     # to force a backend; default grok-acp, claude-session, opencode-acp
-```
-```
-export XDG_CONFIG_HOME=<scratch>/config XDG_STATE_HOME=<scratch>/state XDG_RUNTIME_DIR=/tmp/mq-rt  # short: socket paths
-Q=<worktree>/target/debug/melissa-queen      # devenv shell -- cargo build -p melissa-queen -p melissa-agent --bins
-$Q tool cluster_health                        # proves both the API path and the kubeconfig
-setsid -f nohup $Q > <scratch>/daemon.log 2>&1 < /dev/null
-$Q ask "What apps can you install here?"
-```
-- **Owner credentials with a remote cluster:** `app-credentials` reads the Secret with k3s's admin
-  kubeconfig, which never leaves the bee. Run it on the bee:
-  `scripts/vm-dev.sh ssh headless 'sudo melissa-queen app-credentials nextcloud'` (write it to a
-  0600 file, not the terminal log). Then `curl -K <file with user = "admin:<pw>">` against
-  `--resolve nextcloud.melissa.home.arpa:18080:127.0.0.1 .../ocs/v2.php/cloud/user?format=json`.
-- **Answer confirmations** from a second shell: `$Q confirm list`, `$Q confirm approve <id>`. In a
-  script: run `ask` in the background, poll `confirm list` with an until-loop.
-- **Afterwards:** `pkill -x melissa-queen`, `shred -u <scratch>/kube/*`, stop the VM
-  (`echo system_powerdown | socat - unix-connect:vm/headless/monitor.sock`), `podman stop melissa-registry`.
-- Audit summary: `python3` over `<scratch>/state/melissa/audit.jsonl` (`action`, `task`, `tool`,
-  `detail`; `egress.*` lines collapse repeats as `(+N repeats)`).
+The runs below used the archived bootc VM with the Queen on the laptop (procedure at tag
+`bootc-archive-2026-11-19`); the results about the Queen's behaviour still hold.
 
 ## Verified run (2026-11-18, image f1b3f01 + fixes, VM 3 GiB / 8.6 GiB /var, k3s v1.37.2)
 Fresh start: old `app-nextcloud` namespace deleted, unused containerd images pruned (`k3s crictl rmi
@@ -114,6 +86,5 @@ extra calls). Claude's Queen read logs on its own initiative while waiting, whic
 - With nobody watching the inbox, a waiting call blocks the Queen's turn for up to
   `confirm_timeout_secs`. In scripted runs, answer confirmations from a second shell.
 - `ask` blocks for the whole turn (an install with a cold pull is 6+ minutes): run it in the background.
-- `vm-dev.sh deploy` starts the dev registry; stop it afterwards. `crictl rmi --prune` also removes the
-  smoke test's `traefik/whoami` (re-pulled by `vm-k3s-smoke.sh`).
-- `sudo cat /path/*` over ssh: the glob is expanded by the unprivileged shell; use `sudo sh -c '…'`.
+- `k3s crictl rmi --prune` inside also removes images the smoke test or apps re-pull later.
+- `sudo cat /path/*`: the glob is expanded by the unprivileged shell; use `sudo sh -c '…'`.

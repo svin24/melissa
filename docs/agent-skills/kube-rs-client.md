@@ -32,7 +32,7 @@
 ## Versions and features (2026-11-18)
 - `kube = { version = "5.1", default-features = false, features = ["client", "rustls-tls", "ring"] }`,
   `k8s-openapi = { version = "0.29", features = ["v1_37"] }` (newest feature; matches k3s v1.37.2). Bump the
-  k8s-openapi feature together with `image/k3s.lock`.
+  k8s-openapi feature together with `packaging/common/usr/lib/melissa/k3s.lock`.
 - No OpenSSL: `cargo tree -i openssl-sys` must stay empty. `ring` needs a C compiler (dev shell `cc`, `gcc` in the
   image build stage); `aws-lc-rs` would also need cmake, so we avoid it.
 - kube 5.x: `kube::Error::Api(status)` carries `status.code` and `status.message`; transport failures are

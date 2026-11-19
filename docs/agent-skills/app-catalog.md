@@ -5,8 +5,8 @@
 `uninstall_app`), app links and ports, the write identity
 `melissa-apps` or its admission policies, or the owner's `app-credentials` command.
 Code: `crates/catalog` (schema, validation), `crates/hive/src/{render,apps,app_tools}.rs`,
-`crates/queen/src/credentials.rs`, `image/rootfs/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`,
-`image/rootfs/usr/libexec/melissa/melissa-kubeconfig`. Manifests: `manifests/*.toml` (shipped at
+`crates/queen/src/credentials.rs`, `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`,
+`packaging/common/usr/libexec/melissa/melissa-kubeconfig`. Manifests: `manifests/*.toml` (shipped at
 `/usr/share/melissa/catalog/`).
 
 ## Split of duties
@@ -111,8 +111,9 @@ so "keep data" and "delete data" are explicit, and `Recreate` never runs two pod
 - `device_hosts` (Nextcloud's trusted domains) = ingress host + those addresses + the kernel host
   name. Exact names only, never wildcards (DNS rebinding; see DECISIONS.md).
 - Web UI: `App::link(host)` = the visitor's `Host` (port stripped) + the app's port.
-- Firewall: headless has none; desktop's default zone (FedoraWorkstation) accepts 1025-65535; for
-  stricter zones `firewall-cmd --add-service=melissa-apps` (shipped in the desktop image).
+- Container: app ports are published on the host's `BIND` (install.sh) and `[apps] addresses` names it. Forwarded
+  (DNAT) traffic passes firewalld's `ct status dnat accept`, so no zone change is needed, including for the
+  Tailscale address (verified 2026-11-19 on Fedora Workstation's default zone).
 
 ## Tools and labels (policy keys off them)
 | tool | labels | notes |
@@ -173,29 +174,23 @@ since 2026-11-18 that taint survives session reopens and daemon restarts. Confir
 admin kubeconfig (`/etc/rancher/k3s/k3s.yaml`, 0600 root). Not a tool, not an API route; neither
 queen identity can read Secrets; the queen and its agents run as the unprivileged system user `melissa`.
 Without root: "needs root". The Secret is the single source of truth (no copy in the queen's state).
-With a Queen elsewhere (dev laptop against the VM), run it on the bee over SSH; the admin kubeconfig
-stays there.
+In the container: `sudo podman exec melissa melissa-queen app-credentials <app>`; the admin kubeconfig stays
+inside.
 
-## VM test (headless, from the main checkout)
+## Test in the container
 ```
-devenv shell -- just image-build headless          # in the worktree
-scripts/vm-dev.sh deploy headless                   # main checkout (owns vm/)
-vm='ssh -p 2222 -i vm/test_key bee@127.0.0.1'
-$vm 'melissa-queen tool --wait install_app "{\"app\":\"nextcloud\"}"' &   # prints the confirmation id
-$vm 'melissa-queen confirm list; melissa-queen confirm approve <id>'
-$vm 'melissa-queen tool --wait app_status "{\"app\":\"nextcloud\"}"'
-curl --resolve nextcloud.melissa.home.arpa:18080:127.0.0.1 http://nextcloud.melissa.home.arpa:18080/status.php
-# The app's own port (e.g. 30000) through a QEMU forward added at runtime:
-echo 'hostfwd_add tcp:127.0.0.1:13000-:30000' | socat - unix-connect:vm/headless/monitor.sock
-curl -H 'Host: <VM address>:30000' http://127.0.0.1:13000/status.php   # Host = an address Nextcloud trusts
-$vm 'melissa-queen tool --wait stop_app "{\"app\":\"nextcloud\"}"' &   # always asks: confirm approve <id>
-$vm 'sudo melissa-queen app-credentials nextcloud'
-curl -u admin:<pw> -H 'OCS-APIRequest: true' --resolve ... 'http://nextcloud.melissa.home.arpa:18080/ocs/v2.php/cloud/user?format=json'
+q='sudo podman exec melissa melissa-queen'
+$q tool --wait install_app '{"app":"nextcloud"}' &   # prints the confirmation id
+$q confirm list; $q confirm approve <id>
+$q tool app_status '{"app":"nextcloud"}'            # until "phase": "ready"; "url" = http://<BIND>:30000
+curl http://<BIND>:30000/status.php
+$q tool --wait stop_app '{"app":"nextcloud"}' &      # always asks: confirm approve <id>
+sudo podman exec melissa melissa-queen app-credentials nextcloud
 ```
-Negative RBAC checks: `sudo kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig ...` (create
+Negative RBAC checks (inside: `sudo podman exec melissa ...`): `kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig ...` (create
 namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in default, ...).
 
-## Verified (2026-11-18, headless VM, 3 GiB RAM, 8.6 GiB /var, k3s v1.37.2)
+## Verified (2026-11-18, headless bootc VM (archived), 3 GiB RAM, 8.6 GiB /var, k3s v1.37.2)
 - **Confirmation flow:** `melissa-queen tool --wait install_app '{"app":"nextcloud"}'` printed
   "waiting for confirmation #2 (changes state while nobody is watching): approve with
   `melissa-queen confirm approve 2`"; `confirm list` showed `#2 task 0 install_app`; after
@@ -234,7 +229,7 @@ namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in d
 - Deploying the change moved 11 layers / 580 MB the first time (base layers had moved on), 7 layers
   / 9 MB for the fix.
 
-## Verified (2026-11-19, headless VM, image 13fb138, stop/start + ports)
+## Verified (2026-11-19, headless bootc VM (archived), image 13fb138, stop/start + ports)
 - Install over the existing Nextcloud from 2026-11-18 (old namespace without a port): applied incl.
   `ConfigMap` and `Service (device port)`, port 30000 recorded, secret `kept existing`; `url`
   `http://10.0.2.15:30000`. The hook logged `trusted_domains set to: nextcloud.melissa.home.arpa

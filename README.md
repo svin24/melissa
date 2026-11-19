@@ -15,7 +15,8 @@ keep them healthy and tidy up, asking you before anything risky.
 - You can talk to any Queen or bee. Only a Queen, or you, can hand a cell to another bee.
   Full model: [docs/HIVE-MODEL.md](docs/HIVE-MODEL.md).
 
-Principles: immutable base (Fedora bootc), **Rust** almost everywhere (agents work better with a safe,
+Principles: runs on an existing Linux host (a rootful podman container started by systemd; a Nix service is
+in progress), **Rust** almost everywhere (agents work better with a safe,
 strongly typed language), a boring server-rendered web UI with no AI-generated UI, a UI that works on a LAN
 without internet, and open source so others can build on top.
 
@@ -26,8 +27,9 @@ crates/agent   agent layer: backend trait, echo + CLI backends, task board, audi
 crates/queen   queen bee (coordinator + agent layer entrypoint)
 crates/comb    per-device daemon (a comb = one device)
 crates/web     web UI (axum + maud + embedded htmx)
-image/         bootc Containerfile with desktop (Kinoite/KDE) and headless (fedora-bootc) variants
-scripts/       VM helpers (QEMU)
+packaging/     common/ (system files every packaging installs), container/ (image, Quadlet, install.sh),
+               nix/ (Nix flake/module)
+scripts/       container-run.sh (dev/test driver for the container)
 docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
 ```
 
@@ -36,8 +38,9 @@ docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
 - **From source** on any Linux (x86_64): [docs/QUICKSTART.md](docs/QUICKSTART.md). In short: install
   bubblewrap and one agent CLI (Claude Code, Grok CLI or OpenCode) and log in, then
   `devenv shell -- just demo` and open http://127.0.0.1:8080. No k3s, so no app installs.
-- **Ready VM image:** download, boot in QEMU or virt-manager, chat with the Queen. Step by step:
-  [docs/TRY-THE-VM.md](docs/TRY-THE-VM.md).
+- **Full system in a container** (rootful podman, started by systemd; k3s and apps included):
+  [packaging/container/README.md](packaging/container/README.md), short version in
+  [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Quick start (dev)
 
@@ -51,9 +54,11 @@ just check        # fmt, clippy, tests
 Run the queen and open http://127.0.0.1:8080: `devenv shell -- just run-web` (full log) or `just demo` (short summary). Agents found on `PATH`
 (`claude`, `grok`, `opencode`) show up as backends; a built-in `echo` backend always works.
 
-Images: `just image-build desktop|headless`, VM tests with `just vm-disk` / `just vm-run` (see docs/agent-skills).
+Full system (k3s, apps) as a container: `just container-build && just container-install`, then
+`just container-smoke` (see [packaging/container/README.md](packaging/container/README.md)). The earlier bootc OS
+images are archived at git tag `bootc-archive-2026-11-19`.
 
-Status: early. The multi-agent demo works locally; images are being brought up in VMs (milestone M0).
+Status: early. The multi-agent demo works locally; the full system runs as a rootful container (milestone M0).
 Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md) first.
 
 Credits and third-party notices: [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
