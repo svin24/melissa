@@ -30,7 +30,7 @@ pub struct AuditRecord {
     /// SHA-256 of the tool's canonical JSON arguments (arguments themselves are not logged).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args_sha256: Option<String>,
-    /// The task that started this one (a bee's Queen).
+    /// The task that started this one (an agent's lead agent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<u64>,
 }

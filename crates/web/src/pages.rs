@@ -7,20 +7,20 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 
 use crate::{
     components::{
-        action_button, activity_row, add_app_cell, app_cell, app_dialog, app_page, app_strip,
-        approval_card, badge, card, chat_divider, composer, composer_status, crumbs, device_card,
-        empty_state, facts, feed, feed_entry, honeycomb, link, live_region, live_region_on,
-        log_view, markdown, note, oob_inner, page, page_header, plain_text, post_form,
-        queen_message, rail, relayed_message, section, select_field, table, textarea_field,
-        truncated, user_message, waiting_count, AppCell, ApprovalCard, Choice, DeviceCard, Health,
-        LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
+        action_button, activity_row, add_app_tile, app_dialog, app_grid, app_page, app_strip,
+        app_tile, approval_card, badge, card, chat_divider, composer, composer_status, crumbs,
+        device_card, empty_state, facts, feed, feed_entry, lead_message, link, live_region,
+        live_region_on, log_view, markdown, note, oob_inner, page, page_header, plain_text,
+        post_form, rail, relayed_message, section, select_field, table, textarea_field, truncated,
+        user_message, waiting_count, AppWorkspace, ApprovalCard, Choice, DeviceCard, Health,
+        LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
         FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
-    state::{phase_words, Apps, Device, Disk, HiveSnapshot, Keeper},
+    state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
 };
-use melissa_agent::queen::{bees::BeeView, transcript::PastChat};
+use melissa_agent::lead::{agents::AgentView, transcript::PastChat};
 
 pub const TASKS_ID: &str = "tasks";
 pub const TASK_ID: &str = "task";
@@ -41,8 +41,8 @@ fn device_health(d: &Device) -> (Health, &'static str) {
 /// What every page with the rail needs.
 pub struct Frame<'a> {
     pub waiting: usize,
-    pub snap: &'a HiveSnapshot,
-    pub bees: &'a [BeeView],
+    pub snap: &'a ClusterSnapshot,
+    pub agents: &'a [AgentView],
     /// Archived chats with Melissa, newest first.
     pub past: &'a [PastChat],
     /// The `Host` the visitor used (for app links), if the page needs it.
@@ -77,11 +77,11 @@ pub fn short_date(secs: u64) -> String {
 }
 
 /// A helper's page.
-pub fn bee_href(id: &str) -> String {
-    format!("/bees/{id}")
+pub fn agent_href(id: &str) -> String {
+    format!("/agents/{id}")
 }
 
-fn bee_health(status: &str) -> (Health, &'static str) {
+fn agent_health(status: &str) -> (Health, &'static str) {
     match status {
         "working" => (Health::Busy, "working"),
         "stopped" => (Health::Idle, "stopped"),
@@ -89,16 +89,16 @@ fn bee_health(status: &str) -> (Health, &'static str) {
     }
 }
 
-/// The rail. `current_bee`: the helper whose conversation is open.
-pub fn rail_for(nav: Nav, f: &Frame<'_>, current_bee: Option<&str>) -> Markup {
-    rail_with(nav, f, current_bee, None)
+/// The rail. `current_agent`: the helper whose conversation is open.
+pub fn rail_for(nav: Nav, f: &Frame<'_>, current_agent: Option<&str>) -> Markup {
+    rail_with(nav, f, current_agent, None)
 }
 
 /// The rail; `current_past`: the archived chat that is open.
 fn rail_with(
     nav: Nav,
     f: &Frame<'_>,
-    current_bee: Option<&str>,
+    current_agent: Option<&str>,
     current_past: Option<u64>,
 ) -> Markup {
     let devices: Vec<RailDevice<'_>> = f
@@ -114,19 +114,19 @@ fn rail_with(
             }
         })
         .collect();
-    let hrefs: Vec<String> = f.bees.iter().map(|b| bee_href(&b.id)).collect();
+    let hrefs: Vec<String> = f.agents.iter().map(|b| agent_href(&b.id)).collect();
     let helpers: Vec<RailHelper<'_>> = f
-        .bees
+        .agents
         .iter()
         .zip(&hrefs)
         .map(|(b, href)| {
-            let (health, status) = bee_health(b.status);
+            let (health, status) = agent_health(b.status);
             RailHelper {
                 href,
                 name: &b.name,
                 health,
                 status,
-                current: current_bee == Some(b.id.as_str()),
+                current: current_agent == Some(b.id.as_str()),
             }
         })
         .collect();
@@ -158,30 +158,30 @@ fn rail_with(
 /// Whose conversation a chat page or stream shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Who<'a> {
-    Queen,
-    /// A helper (bee) by id.
-    Bee(&'a str),
+    Lead,
+    /// A helper (agent) by id.
+    Agent(&'a str),
 }
 
 impl Who<'_> {
     pub fn send_url(self) -> String {
         match self {
-            Self::Queen => "/ui/messages".into(),
-            Self::Bee(id) => format!("/ui/bees/{id}/messages"),
+            Self::Lead => "/ui/messages".into(),
+            Self::Agent(id) => format!("/ui/agents/{id}/messages"),
         }
     }
 
     pub fn cancel_url(self) -> String {
         match self {
-            Self::Queen => "/ui/cancel".into(),
-            Self::Bee(id) => format!("/ui/bees/{id}/cancel"),
+            Self::Lead => "/ui/cancel".into(),
+            Self::Agent(id) => format!("/ui/agents/{id}/cancel"),
         }
     }
 
     fn stream_url(self, since: u64, epoch: u64) -> String {
         match self {
-            Self::Queen => format!("/ui/stream?since={since}&epoch={epoch}"),
-            Self::Bee(id) => format!("/ui/bees/{id}/stream?since={since}&epoch={epoch}"),
+            Self::Lead => format!("/ui/stream?since={since}&epoch={epoch}"),
+            Self::Agent(id) => format!("/ui/agents/{id}/stream?since={since}&epoch={epoch}"),
         }
     }
 }
@@ -196,20 +196,20 @@ pub fn entry_content(entry: &Entry) -> Markup {
     match &entry.item {
         Item::User { text } => user_message(text),
         Item::Relayed { from, text } => relayed_message(from, text),
-        Item::Reply { text } => queen_message(text),
+        Item::Reply { text } => lead_message(text),
         Item::Activity {
             label,
             detail,
             state,
-            bee,
+            agent,
         } => activity_row(
             label,
             detail.as_deref(),
-            // A helper's job: the detail is the Queen's words (Markdown). Tool calls carry
+            // A helper's job: the detail is the lead agent's words (Markdown). Tool calls carry
             // a short title as plain text.
-            bee.is_some(),
+            agent.is_some(),
             *state,
-            bee.as_deref().map(bee_href).as_deref(),
+            agent.as_deref().map(agent_href).as_deref(),
         ),
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
         Item::Note { text, detail, tone } => note(text, detail.as_deref(), *tone),
@@ -311,7 +311,7 @@ pub fn stream_update(
 // --- Home: the chat ---------------------------------------------------------------------------
 
 /// The app strip from a snapshot.
-pub fn strip(snap: &HiveSnapshot) -> Markup {
+pub fn strip(snap: &ClusterSnapshot) -> Markup {
     let words: Vec<(String, Health, &str)> = match &snap.apps {
         Apps::Known { installed, .. } => installed
             .iter()
@@ -334,19 +334,19 @@ pub fn strip(snap: &HiveSnapshot) -> Markup {
             .collect::<Vec<_>>()
             .join(", "),
     };
-    let cells: Vec<StripCell<'_>> = words
+    let workspaces: Vec<StripTile<'_>> = words
         .iter()
-        .map(|(name, health, _)| StripCell {
+        .map(|(name, health, _)| StripTile {
             name,
             health: *health,
         })
         .collect();
     let warning = disk_warning(snap);
-    app_strip(STRIP_URL, &cells, &summary, warning.as_deref())
+    app_strip(STRIP_URL, &workspaces, &summary, warning.as_deref())
 }
 
 /// "Storage almost full" when a device's data disk is above [`Disk::WARN_PERCENT`].
-fn disk_warning(snap: &HiveSnapshot) -> Option<String> {
+fn disk_warning(snap: &ClusterSnapshot) -> Option<String> {
     let d = snap
         .devices
         .iter()
@@ -378,7 +378,7 @@ pub struct ChatView<'a> {
     pub error: Option<&'a str>,
 }
 
-/// The chat with Melissa (the Queen): home.
+/// The chat with Melissa (the lead agent): home.
 pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
     app_page(
         "Chat",
@@ -403,32 +403,35 @@ pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
 }
 
 /// The chat with one helper.
-pub fn bee_chat(f: &Frame<'_>, bee: &BeeView, v: &ChatView<'_>) -> Markup {
-    let cells: Vec<String> = match &f.snap.apps {
+pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup {
+    let workspaces: Vec<String> = match &f.snap.apps {
         Apps::Known { installed, .. } => installed
             .iter()
-            .filter(|a| matches!(&a.keeper, Some(Keeper::Bee { id, .. }) if *id == bee.id))
+            .filter(|a| matches!(&a.keeper, Some(Keeper::Agent { id, .. }) if *id == agent.id))
             .map(|a| a.display_name())
             .collect(),
         _ => Vec::new(),
     };
-    let lead = match cells.len() {
+    let lead = match workspaces.len() {
         0 => "A helper on this device. Melissa gives it jobs; you can talk to it here.".to_string(),
-        _ => format!("A helper on this device. Looks after {}.", cells.join(", ")),
+        _ => format!(
+            "A helper on this device. Looks after {}.",
+            workspaces.join(", ")
+        ),
     };
     app_page(
-        &bee.name,
-        rail_for(Nav::Helper, f, Some(&bee.id)),
+        &agent.name,
+        rail_for(Nav::Helper, f, Some(&agent.id)),
         html! {
             div.chat {
-                (page_header(&bee.name, Some(&lead)))
+                (page_header(&agent.name, Some(&lead)))
                 (feed(
                     FEED_ID,
-                    &format!("Conversation with {}", bee.name),
+                    &format!("Conversation with {}", agent.name),
                     &v.who.stream_url(v.feed.last_seq(), v.epoch),
                     entries(v.feed.entries()),
                     empty_state(
-                        &format!("Nothing here yet with {}.", bee.name),
+                        &format!("Nothing here yet with {}.", agent.name),
                         "Its jobs from Melissa and your messages show up here.",
                     ),
                 ))
@@ -442,8 +445,8 @@ pub fn bee_chat(f: &Frame<'_>, bee: &BeeView, v: &ChatView<'_>) -> Markup {
 pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
     let placeholder = match v.who {
-        Who::Queen => "Ask Melissa to install, check or fix something",
-        Who::Bee(_) => "Message this helper",
+        Who::Lead => "Ask Melissa to install, check or fix something",
+        Who::Agent(_) => "Message this helper",
     };
     composer(
         &ComposerTarget {
@@ -482,7 +485,7 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed) -> Markup {
     )
 }
 
-// --- The hive: apps and devices ---------------------------------------------------------
+// --- The cluster: apps and devices ---------------------------------------------------------
 
 fn format_kib(kib: u64) -> String {
     let gib = kib as f64 / (1024.0 * 1024.0);
@@ -570,16 +573,16 @@ fn device(d: &Device) -> Markup {
     })
 }
 
-/// The apps region of the hive page (refreshes itself). App links use `host`, the address
+/// The apps region of the cluster page (refreshes itself). App links use `host`, the address
 /// the visitor reached the UI at.
-pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
+pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
     let content = match &snap.apps {
         Apps::Unknown => html! {
-            (honeycomb("Apps", add_app_cell("/?draft=Install%20")))
+            (app_grid("Apps", add_app_tile("/?draft=Install%20")))
             p.quiet { "Couldn't read the app list yet." }
         },
         Apps::Unreachable => html! {
-            (honeycomb("Apps", add_app_cell("/?draft=Install%20")))
+            (app_grid("Apps", add_app_tile("/?draft=Install%20")))
             p.quiet { "The app platform isn't answering right now. Melissa keeps trying." }
         },
         Apps::Known {
@@ -595,18 +598,18 @@ pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
             let keepers: Vec<Option<String>> = installed
                 .iter()
                 .map(|a| match &a.keeper {
-                    Some(Keeper::Bee { name, .. }) => Some(format!("Looked after by {name}")),
+                    Some(Keeper::Agent { name, .. }) => Some(format!("Looked after by {name}")),
                     Some(Keeper::Owner) => Some("Looked after by you".to_string()),
                     None => None,
                 })
                 .collect();
             html! {
-                (honeycomb("Apps", html! {
+                (app_grid("Apps", html! {
                     @for ((((a, name), keeper), link), details) in installed.iter().zip(&names).zip(&keepers).zip(&links).zip(&details) {
                         @let (health, status) = phase_words(&a.phase);
-                        (app_cell(&AppCell { name, health, status, detail: keeper.as_deref(), url: link.as_deref(), details: Some(details) }))
+                        (app_tile(&AppWorkspace { name, health, status, detail: keeper.as_deref(), url: link.as_deref(), details: Some(details) }))
                     }
-                    (add_app_cell("/?draft=Install%20"))
+                    (add_app_tile("/?draft=Install%20"))
                 }))
                 @if !available.is_empty() {
                     p.quiet {
@@ -620,19 +623,25 @@ pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
             }
         }
     };
-    // Also refreshed at once after a change from the app dialog (`hive-changed`).
-    live_region_on("hive-apps", "/ui/hive/apps", 15, "hive-changed", content)
+    // Also refreshed at once after a change from the app dialog (`cluster-changed`).
+    live_region_on(
+        "cluster-apps",
+        "/ui/cluster/apps",
+        15,
+        "cluster-changed",
+        content,
+    )
 }
 
-pub fn hive(f: &Frame<'_>) -> Markup {
+pub fn cluster(f: &Frame<'_>) -> Markup {
     let snap = f.snap;
     app_page(
         "Apps and devices",
-        rail_for(Nav::Hive, f, None),
+        rail_for(Nav::Cluster, f, None),
         html! {
             div.wide {
                 (page_header("Apps and devices", Some("What runs where. Ask in the chat to change anything.")))
-                (section("Apps", hive_apps(snap, f.host)))
+                (section("Apps", cluster_apps(snap, f.host)))
                 (app_dialog())
                 (section("Devices", html! {
                     @if snap.devices.is_empty() {
@@ -682,8 +691,8 @@ fn offered(b: &BackendInfo) -> bool {
     !(b.kind == "echo" && b.name == "echo")
 }
 
-/// A task page: in Settings → Developer when `f` is given (the app with a Queen), else the
-/// bare page (the task UI without a Queen). `sub`: the page below the section (a task).
+/// A task page: in Settings → Developer when `f` is given (the app with a lead agent), else the
+/// bare page (the task UI without a lead agent). `sub`: the page below the section (a task).
 fn tasks_page(f: Option<&Frame<'_>>, title: &str, sub: bool, content: Markup) -> Markup {
     match f {
         Some(f) => crate::settings::pages::frame_at(f, "Developer", sub.then_some(title), content),
@@ -922,7 +931,7 @@ mod tests {
     #[test]
     fn strip_summarises_apps() {
         use crate::state::App;
-        let snap = HiveSnapshot {
+        let snap = ClusterSnapshot {
             apps: Apps::Known {
                 installed: vec![
                     App {

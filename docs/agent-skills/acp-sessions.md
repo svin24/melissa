@@ -1,10 +1,10 @@
 # Long-lived agent sessions (ACP, and Claude's stream-json)
 
-**When:** building the Queen (head agent) and bee sessions, or wiring a backend that speaks ACP or another
+**When:** building the lead agent and agent sessions, or wiring a backend that speaks ACP or another
 session protocol.
 Code: `crates/agent/src/session/` (protocol-neutral API + policy permissions), `crates/agent/src/acp/` (client,
 transport, replay; `grok-acp`, `opencode-acp`), `crates/agent/src/claude/` (Claude Code over stream-json,
-`claude-session`), queen config `kind = "acp"` / `kind = "claude"`. Background study of T3 Code (MIT, design reference only):
+`claude-session`), lead agent config `kind = "acp"` / `kind = "claude"`. Background study of T3 Code (MIT, design reference only):
 `~/.local/share/melissa/research/t3code-backends-acp.md` (the owner's local notes, not in the repo).
 
 ## Protocol in one paragraph
@@ -18,7 +18,7 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
 - Board task: dispatch to backend `grok-acp`, `opencode-acp` or `claude-session` (all built in). One task = open session, one prompt, close. Output: reply
   text on stdout lines; `[tool] <title> → pending|running|done|failed`, `[permission] <title> → allow_once|…`,
   `[plan] a | b` on stderr.
-- Queen loop: built, see [queen-loop.md](queen-loop.md). `SessionBackend::open(OpenSession::new(cwd,
+- Lead agent loop: built, see [lead-loop.md](lead-loop.md). `SessionBackend::open(OpenSession::new(cwd,
   mcp_servers, permissions))` → `AgentSession` + event receiver; `prompt()` per user message (one turn at a
   time, `Busy` otherwise), `cancel()` from another task, `close()`. Hold it as `Arc<dyn AgentSession>`.
 - Config: `[[backend]] kind = "acp"`, `name`, `command`, `args`, `tools` (default true), `[backend.sandbox]`,
@@ -37,12 +37,12 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
 
 ## OpenCode over ACP (verified 2026-11-18, opencode 2.3.2, free default model `opencode/big-pickle`)
 - **Code Mode:** by default OpenCode exposes MCP tools only through its own `execute` tool, which runs
-  JavaScript (`await tools.melissa.comb_info()`): the permission request is for `execute` (`kind: other`,
+  JavaScript (`await tools.melissa.device_info()`): the permission request is for `execute` (`kind: other`,
   `rawInput.code`), so Melissa could not tell a tool call from arbitrary code. With `codemode: false` on the MCP
-  server each tool is its own call named `melissa_comb_info` (`<server>_<tool>`, recognised by the policy).
+  server each tool is its own call named `melissa_device_info` (`<server>_<tool>`, recognised by the policy).
   `codemode` is a per-server config key; ACP's `session/new` cannot set it, so Melissa puts its MCP server into
   OpenCode's config and sends `mcpServers: []`.
-- **Permissions:** by default OpenCode ran `melissa_comb_info` without asking (verified). `permission: {"*":
+- **Permissions:** by default OpenCode ran `melissa_device_info` without asking (verified). `permission: {"*":
   "ask"}` makes every tool (MCP and built-in) ask via `session/request_permission`; options `once` /
   `always` / `reject` (allow_once / allow_always / reject_once). Shell: `name: "shell"`, `kind: "execute"`,
   title = the command (`uname -r`) → Melissa's inbox; denied → `reject_once`. **A reject ends OpenCode's turn
@@ -82,7 +82,7 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
   `error_during_execution`, `terminal_reason: aborted_tools` (or similar) → Melissa reports `cancelled`. The next
   user message works in the same process.
 - Resume: sessions in `~/.claude/projects/<cwd with / → ->/<id>.jsonl` (plus a `memory/` dir for auto-memory).
-  The Queen binds `$XDG_STATE_HOME/melissa/queen/agent-sessions/claude-session/` there; `--resume <id>` restores
+  The lead agent binds `$XDG_STATE_HOME/melissa/lead/agent-sessions/claude-session/` there; `--resume <id>` restores
   the conversation (verified after a daemon restart and after `kill -9` of the sandbox). Unknown id: Claude
   prints `No conversation found with session ID: …`, a `result` `error_during_execution` and exits 1 before the
   handshake answer → Melissa starts a new session.
@@ -94,13 +94,13 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
 - Grok does not send `agentInfo`; its version is in `initialize` `_meta.agentVersion`.
 - MCP: `session/new` with `{"type":"http","name":"melissa","url":"http://127.0.0.1:<port>/mcp/<token>"}` works.
   Grok loads MCP tools lazily: it calls its own `search_tool` (no permission asked), then `use_tool`, which asks
-  `session/request_permission` with `kind: "other"`, `title: "melissa__comb_info"`, `rawInput.tool_name:
-  "melissa__comb_info"` (no `name` field). Options offered: always-allow / allow-once / reject-once.
+  `session/request_permission` with `kind: "other"`, `title: "melissa__device_info"`, `rawInput.tool_name:
+  "melissa__device_info"` (no `name` field). Options offered: always-allow / allow-once / reject-once.
 - `--permission-mode default` (before `agent`) overrides a user config `permission_mode = "always-approve"`:
   `run_terminal_command` still came as a permission request (`kind: "execute"`, title "Execute `uname -r`").
 - Graceful cancel: `session/cancel` → the prompt returned `stopReason: cancelled` in ~40 ms; a second prompt in the
   same session then worked. Board cancel (dropping the session) kills bwrap and grok (no leftovers).
-- A comb_info task through the queen took ~11 s; audit shows `agent.permission` then `tool.call`.
+- A device_info task through the lead agent took ~11 s; audit shows `agent.permission` then `tool.call`.
 
 ## Melissa design (see DECISIONS.md)
 - Permission requests → `PolicyPermissions`: Melissa MCP tools → allow_once (the MCP server applies policy, waits
@@ -113,13 +113,13 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
 - No client fs/terminal capabilities. Sandbox: the `grok` preset (tmpfs `~/.grok`, rw `auth.json`, ro
   `config.toml`) works unchanged for `agent stdio`; `claude` preset unchanged for stream-json; OpenCode ACP uses
   the managed preset (no user config).
-- Replay tests: transcripts in `crates/agent/tests/fixtures/acp/*.jsonl` (`grok_comb_info`, `opencode_comb_info`)
-  and `crates/agent/tests/fixtures/claude/claude_comb_info.jsonl`, header line + `{"dir":"send"|"recv",
+- Replay tests: transcripts in `crates/agent/tests/fixtures/acp/*.jsonl` (`grok_device_info`, `opencode_device_info`)
+  and `crates/agent/tests/fixtures/claude/claude_device_info.jsonl`, header line + `{"dir":"send"|"recv",
   "msg":…}`. The replay agent matches sends structurally (`"<any>"` wildcard, request ids mapped); the Claude
   client uses the same replay agent (its request ids are fixed strings, Claude's are echoed).
 
 ## Recording a transcript
-1. Add `record_dir = "/some/dir"` to the ACP or Claude backend in a scratch queen config (temp `XDG_*` dirs), run
+1. Add `record_dir = "/some/dir"` to the ACP or Claude backend in a scratch lead agent config (temp `XDG_*` dirs), run
    a task.
 2. The recorder scrubs home/workdir paths, the MCP token, user and host names, e-mail addresses (Claude's
    handshake answer contains the account's address), and replaces UUIDs with fixed ids.
@@ -154,7 +154,7 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
 - `OpenSession { state_dir, resume }`: with `AcpSpec.session_store = ".grok/sessions"` (built-in grok-acp),
   the Melissa-owned `state_dir` (0700) is bound read-write there inside the sandbox (rest of `~/.grok` stays
   tmpfs). `resume` → `session/resume` (if `sessionCapabilities.resume`), falling back to `session/new`;
-  `OpenedSession.resumed` says which. The Queen and every bee pass a `state_dir` (their own resumable session store); one-shot board tasks stay throw-away.
+  `OpenedSession.resumed` says which. The lead agent and every agent pass a `state_dir` (their own resumable session store); one-shot board tasks stay throw-away.
 - Grok writes `<url-encoded cwd>/<session-id>/` (chat history, events, system prompt), `prompt_history.jsonl`
   and `session_search.sqlite` into the store; resume after a process restart keeps the conversation.
 - `session/load` (replays history as updates) is not used.
@@ -168,7 +168,7 @@ Code: `crates/agent/src/claude/` (`mod.rs` spec/backend/args, `client.rs` protoc
   handshake. Its answer carries the account's e-mail: never log it.
 - Claude puts its auto-memory under the session store (`<project>/memory/`) and its system prompt mentions it;
   with no file tools it cannot write there ("Noted, but only for this conversation").
-- Claude passed `mcp__melissa__comb_info` as a tool name in `start_worker`'s (now `create_bee`'s) `tools` once; the tool's error
+- Claude passed `mcp__melissa__device_info` as a tool name in `start_worker`'s (now `create_agent`'s) `tools` once; the tool's error
   listed the plain names and Claude retried correctly. The description now asks for plain names.
 - OpenCode on a policy reject ends the whole turn (`cancelled`), unlike Grok and Claude, which continue.
 - OpenCode's `$/cancel_request` notification (after `session/cancel`) is handled by the catch-all handler.

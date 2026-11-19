@@ -4,7 +4,7 @@
 //!   (melissa-agent `ProgramPath`) and check the login file every time, so a new CLI or login
 //!   counts at once.
 //! - Saved provider settings (an API key, a program path, enabling a provider) are read when
-//!   the queen starts. After such a change she restarts herself, but only once nothing runs
+//!   the lead agent starts. After such a change it restarts itself, but only once nothing runs
 //!   that the restart would cut off ([`Ui::busy`]: a chat turn, a helper's job, an agent task)
 //!   and the owner stopped changing things for a moment ([`QUIET`]). Until then the pages say
 //!   "Ready after the current task".
@@ -96,13 +96,13 @@ pub(super) fn schedule(ui: &Ui) {
             s.apply_lock().state = ApplyState::Restarting;
             s.audit(
                 "settings.apply",
-                "queen",
+                "lead",
                 "restart to use saved provider settings (idle)",
                 None,
             );
             if let Err(e) = s.parts().updates.request(UpdateAction::Restart).await {
                 tracing::warn!("automatic restart failed: {e}");
-                s.audit("settings.apply", "queen", "restart failed", None);
+                s.audit("settings.apply", "lead", "restart failed", None);
                 s.apply_lock().state = ApplyState::Idle;
             }
             return;

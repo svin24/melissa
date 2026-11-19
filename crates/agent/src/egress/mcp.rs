@@ -1,5 +1,5 @@
 //! Melissa's MCP endpoint, served on a sandbox's `mcp.sock`: only `POST /mcp/<token>` for
-//! that sandbox's own session tokens. The rest of the queen's HTTP API (the Queen chat,
+//! that sandbox's own session tokens. The rest of the lead agent's HTTP API (the lead agent chat,
 //! confirmations) is not reachable from inside a sandbox.
 
 use std::convert::Infallible;
@@ -73,7 +73,7 @@ async fn handle(
         return Ok(reply(StatusCode::NOT_FOUND, "", false));
     };
     if req.method() != Method::POST {
-        // No server-initiated event stream, no session DELETE (same as the queen's endpoint).
+        // No server-initiated event stream, no session DELETE (same as the lead agent's endpoint).
         return Ok(reply(StatusCode::METHOD_NOT_ALLOWED, "", false));
     }
     let body = match Limited::new(req.into_body(), MAX_BODY).collect().await {

@@ -258,7 +258,7 @@ enum Outcome {
     Failed(Flash),
 }
 
-/// How long the queen waits after answering before it asks systemd to restart it.
+/// How long the lead agent waits after answering before it asks systemd to restart it.
 const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
 
 fn started_text(action: UpdateAction) -> &'static str {
@@ -301,7 +301,7 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
             tokio::time::sleep(RESTART_DELAY).await;
             if let Err(e) = settings.parts().updates.request(action).await {
                 tracing::warn!("restart request failed: {e}");
-                settings.audit("settings.update", "queen", "restart failed", None);
+                settings.audit("settings.update", "lead", "restart failed", None);
             }
         });
         return Outcome::Started(Flash {

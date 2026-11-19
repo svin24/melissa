@@ -22,7 +22,7 @@ use crate::{
         PermissionDecision, PermissionHandler, PolicyPermissions, SessionBackend, SessionEvent,
         StopReason, ToolKind, ToolStatus,
     },
-    tools::{CombInfo, TaskContext, Tool, ToolRegistry},
+    tools::{DeviceInfo, TaskContext, Tool, ToolRegistry},
     AgentError, AuditLog, EventSink, Stream,
 };
 
@@ -40,9 +40,9 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Policy permissions over a registry with `comb_info`, for an attended task 7.
+/// Policy permissions over a registry with `device_info`, for an attended task 7.
 fn policy(audit: Option<AuditLog>) -> (PolicyPermissions, ToolRegistry) {
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CombInfo::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(DeviceInfo::new())];
     let registry = ToolRegistry::new(tools, audit).with_confirm_timeout(Duration::from_secs(30));
     let server = McpServer::new(registry.clone());
     let token = server
@@ -237,7 +237,7 @@ fn permission_answers_are_one_off() {
 
 #[test]
 fn tool_kinds_by_name() {
-    assert_eq!(tool_kind("mcp__melissa__comb_info"), ToolKind::Other);
+    assert_eq!(tool_kind("mcp__melissa__device_info"), ToolKind::Other);
     assert_eq!(tool_kind("Bash"), ToolKind::Execute);
     assert_eq!(tool_kind("Write"), ToolKind::Edit);
     assert_eq!(tool_kind("WebFetch"), ToolKind::Fetch);
@@ -251,18 +251,18 @@ async fn tool_turn_maps_events_and_asks_policy() {
     let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
     let mut steps = init_steps();
     steps.extend([
-        user("check the bee"),
+        user("check the agent"),
         Step::recv(json!({"type": "system", "subtype": "init",
-            "session_id": "00000000-0000-4000-8000-000000000001", "tools": ["mcp__melissa__comb_info"]})),
+            "session_id": "00000000-0000-4000-8000-000000000001", "tools": ["mcp__melissa__device_info"]})),
         Step::recv(json!({"type": "stream_event", "parent_tool_use_id": null, "event":
             {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "hmm"}}})),
         Step::recv(json!({"type": "stream_event", "parent_tool_use_id": null, "event":
             {"type": "content_block_start", "index": 1, "content_block":
-                {"type": "tool_use", "id": "toolu_1", "name": "mcp__melissa__comb_info", "input": {}}}})),
+                {"type": "tool_use", "id": "toolu_1", "name": "mcp__melissa__device_info", "input": {}}}})),
         Step::recv(json!({"type": "assistant", "parent_tool_use_id": null, "message": {"content": [
-            {"type": "tool_use", "id": "toolu_1", "name": "mcp__melissa__comb_info", "input": {}}]}})),
+            {"type": "tool_use", "id": "toolu_1", "name": "mcp__melissa__device_info", "input": {}}]}})),
         Step::recv(json!({"type": "control_request", "request_id": "perm-1", "request": {
-            "subtype": "can_use_tool", "tool_name": "mcp__melissa__comb_info", "input": {},
+            "subtype": "can_use_tool", "tool_name": "mcp__melissa__device_info", "input": {},
             "tool_use_id": "toolu_1", "permission_suggestions": [{"type": "addRules"}]}})),
         Step::send(json!({"type": "control_response", "response": {"subtype": "success",
             "request_id": "perm-1", "response": {"behavior": "allow", "updatedInput": {}}}})),
@@ -290,7 +290,7 @@ async fn tool_turn_maps_events_and_asks_policy() {
     assert!(caps.resume && caps.mcp_http && !caps.load);
 
     assert_eq!(
-        session.prompt("check the bee").await.unwrap(),
+        session.prompt("check the agent").await.unwrap(),
         StopReason::EndTurn
     );
     // A second prompt in the same session.
@@ -318,19 +318,19 @@ async fn tool_turn_maps_events_and_asks_policy() {
         started[0],
         &SessionEvent::ToolStarted {
             id: "toolu_1".into(),
-            title: "mcp__melissa__comb_info".into(),
+            title: "mcp__melissa__device_info".into(),
             kind: ToolKind::Other,
             status: ToolStatus::Pending,
         }
     );
     assert!(got.contains(&SessionEvent::Permission {
         tool_call_id: "toolu_1".into(),
-        title: "mcp__melissa__comb_info".into(),
+        title: "mcp__melissa__device_info".into(),
         decision: PermissionDecision::AllowOnce,
     }));
     assert!(got.contains(&SessionEvent::ToolFinished {
         id: "toolu_1".into(),
-        title: Some("mcp__melissa__comb_info".into()),
+        title: Some("mcp__melissa__device_info".into()),
         status: ToolStatus::Completed,
     }));
     assert!(got.contains(&SessionEvent::Usage {
@@ -510,11 +510,11 @@ async fn refused_handshake_is_an_error() {
 
 #[tokio::test]
 async fn real_claude_transcript_replays() {
-    // Recorded from `claude` 2.1.327 through the queen (sandboxed, egress proxy); see the
-    // fixture header. comb_info through MCP, allowed by policy, then the answer.
+    // Recorded from `claude` 2.1.327 through the lead agent (sandboxed, egress proxy); see the
+    // fixture header. device_info through MCP, allowed by policy, then the answer.
     let audit_path = scratch("real").join("audit.jsonl");
     let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
-    let steps = agent::parse(&fixture("claude_comb_info.jsonl"));
+    let steps = agent::parse(&fixture("claude_device_info.jsonl"));
     let (opened, agent) = open_replay(steps, Arc::new(perms)).await;
     let OpenedSession {
         session,
@@ -522,7 +522,7 @@ async fn real_claude_transcript_replays() {
         ..
     } = opened;
     let (sink, mut rx) = EventSink::channel();
-    let prompt = "Use the comb_info tool, then reply with one line: the kernel version.";
+    let prompt = "Use the device_info tool, then reply with one line: the kernel version.";
     let stop = one_turn(session.as_ref(), &mut events, prompt, &sink)
         .await
         .unwrap();
@@ -538,9 +538,9 @@ async fn real_claude_transcript_replays() {
     assert_eq!(
         &lines[..3],
         [
-            err("[tool] mcp__melissa__comb_info → pending"),
-            err("[permission] mcp__melissa__comb_info → allow_once"),
-            err("[tool] mcp__melissa__comb_info → done"),
+            err("[tool] mcp__melissa__device_info → pending"),
+            err("[permission] mcp__melissa__device_info → allow_once"),
+            err("[tool] mcp__melissa__device_info → done"),
         ]
     );
     assert!(

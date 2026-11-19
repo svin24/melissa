@@ -5,29 +5,29 @@
 ## Layout of the crate
 - `components.rs`: the fixed component library, the only place with markup and CSS classes.
 - `pages.rs`: pages and fragments composed from components (no markup of its own).
-- `feed.rs`: folds a conversation's event log (the Queen's or a bee's: same shape) into chat items and holds
+- `feed.rs`: folds a conversation's event log (the lead agent's or an agent's: same shape) into chat items and holds
   **every mapping from internal names to UI words** (tool names, event types, backend names, approval texts, how
-  Melissa frames jobs/messages relayed into a bee's conversation). The UI says "helper" for a bee and "app" for a
-  cell. Renames of tools/events only touch this module (and `state.rs` for `list_apps`/`cluster_health`/
-  `comb_info`). `bee_info` is still mapped for old transcripts. A `Lookup` trait gives the fold
-  confirmation arguments and bee names (implemented by `ui::Ui`). `Feed::for_helper(true)` words things for a
+  Melissa frames jobs/messages relayed into an agent's conversation). The UI says "helper" for an agent and "app" for a
+  workspace. Renames of tools/events only touch this module (and `state.rs` for `list_apps`/`cluster_health`/
+  `device_info`). `agent_info` is still mapped for old transcripts. A `Lookup` trait gives the fold
+  confirmation arguments and agent names (implemented by `ui::Ui`). `Feed::for_helper(true)` words things for a
   helper's chat; `Feed::archived()` folds a past chat (no confirmation lookups); `settle()` marks what was still
   running as stopped and pending approvals as withdrawn.
 - `state.rs`: apps and devices for the UI, read through the tool registry (audited `tool.call`, task 0,
-  `Scope::Nothing`, read-only tools) plus who looks after each cell (`queen.bees().cells()`, i.e. the
-  `melissa.io/owner-bee` labels), cached 30 s; the first request waits, later ones refresh in the background.
+  `Scope::Nothing`, read-only tools) plus who looks after each workspace (`lead.agents().workspaces()`, i.e. the
+  `melissa.io/owner-agent` labels), cached 30 s; the first request waits, later ones refresh in the background.
 - `settings/`: the Settings pages, forms and `/api/settings/...` (see [settings-ui.md](settings-ui.md)).
-- `ui.rs`: the UI routes (`/`, `/hive`, `/approvals`, `/bees/{bee}`, `/chats/{id}` (a past chat, read-only),
+- `ui.rs`: the UI routes (`/`, `/cluster`, `/approvals`, `/agents/{agent}`, `/chats/{id}` (a past chat, read-only),
   `/ui/...`, `POST /ui/new-chat`); `pages::Who` picks the
-  conversation (Queen or a bee) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
+  conversation (Lead agent or an agent) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
   task pages, assets, security middleware.
 
 ## Components (2026-11-18)
-Shell: `app_page` (banner + rail + main), `page` (no rail: errors, and the task pages when there is no Queen), `banner`, `mark`, `rail`
+Shell: `app_page` (banner + rail + main), `page` (no rail: errors, and the task pages when there is no lead agent), `banner`, `mark`, `rail`
 (nav, conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
 devices; no task link: Agent tasks live in Settings → Developer), `waiting_count`, `page_header`, `section`, `empty_state`.
 Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
-"Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `queen_message`,
+"Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `lead_message`,
 `relayed_message` (a job or message Melissa passed into a helper's chat),
 `markdown` (agent prose), `plain_text` (what the user typed), `activity_row` (its detail is Markdown for a
 helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey "read text from outside" note),
@@ -36,9 +36,9 @@ helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey 
 [Grok ▾]" in the composer status; a `details` panel with a native `select` of agents/models, unavailable agents
 disabled with a host-aware hint (container: Settings → Providers or `sudo podman exec -it melissa melissa-setup …`;
 Nix: the Nix note; from source: `sudo melissa-setup …`); the Switch button posts the composer form like Stop (`formaction` +
-`hx-post` to `/ui/backend` or `/ui/bees/{id}/backend`, form field `choice` = `<backend>[ <model>]`), htmx swaps
+`hx-post` to `/ui/backend` or `/ui/agents/{id}/backend`, form field `choice` = `<backend>[ <model>]`), htmx swaps
 the status line; built from `BackendView`s in `agents.rs`).
-Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
+Apps and devices: `app_tile` (hexagon), `add_app_tile`, `app_grid`, `app_strip` (mini workspaces, polls itself),
 `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.md)): `settings_frame`,
 `settings_frame_at` (a page below a section: Settings / Section / page),
@@ -46,7 +46,7 @@ Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.m
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
 `actions`, `region`; rail link "Settings" (`Nav::Settings`).
 Task pages (2026-11-19; since the providers integration in Settings → Developer: `/settings/developer` is the
-list, `GET /tasks` redirects there, `/tasks/{id}` uses `settings_frame_at`; bare pages without a Queen; the built-in `echo` is not offered, a configured
+list, `GET /tasks` redirects there, `/tasks/{id}` uses `settings_frame_at`; bare pages without a lead agent; the built-in `echo` is not offered, a configured
 echo is; the reply (stdout) is `markdown`, stderr a `log_view` "Agent log"; htmx "Run" answers `HX-Redirect` to the
 new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
 `select_field`, `textarea_field`, `post_form`, `action_button`, `crumbs` (breadcrumb, Settings' look), `facts`.
@@ -79,9 +79,9 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   allowlist and every `href` scheme; add new XSS inputs there.
 
 ## Live updates (chat and approvals)
-- `GET /ui/stream?since=<seq>&view=chat|approvals` (the Queen) and `GET /ui/bees/{bee}/stream?since=` (a helper)
+- `GET /ui/stream?since=<seq>&view=chat|approvals` (the lead agent) and `GET /ui/agents/{agent}/stream?since=` (a helper)
   are SSE, fed by the conversation's `EventLog` (same logs as the long-poll API). Confirmations are only in the
-  Queen's log, so approvals show in her chat and on `/approvals`, not in a helper's chat. The page renders the feed folded up to `last_seq` and connects with `since=last_seq`.
+  Lead agent's log, so approvals show in its chat and on `/approvals`, not in a helper's chat. The page renders the feed folded up to `last_seq` and connects with `since=last_seq`.
 - Each SSE `feed` event is server-rendered HTML: new `feed_entry` items (the htmx SSE extension appends them,
   `sse-swap="feed" hx-swap="beforeend"`) plus `hx-swap-oob` replacements for changed entries (a growing reply, a
   tool call that finished, a decided approval), the composer status and the waiting count. One SSE event per
@@ -97,11 +97,11 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
 - Taint: the first `tainted` event of a conversation becomes a `guard` note at that point ("Melissa read text
   from outside (Nextcloud's logs). Changes now need your OK until you start a new chat."); no "trust again"
   button. A new chat is the way to clear it.
-- Disk: `comb_info` reports `disks`; `state.rs` takes `/var` (else `/`) as the data disk; at 85% used or more
+- Disk: `device_info` reports `disks`; `state.rs` takes `/var` (else `/`) as the data disk; at 85% used or more
   the app strip and the device card warn ("Storage almost full (1.7 GB left)").
 - Why SSE + the extension and not polling: one connection, low latency for streamed reply text, no
   re-rendering of the whole conversation (which would also steal focus from approval buttons).
-- Apps change slowly: `app_strip` and the hive's apps region poll (`/ui/strip`, `/ui/hive/apps`, 15 s).
+- Apps change slowly: `app_strip` and the cluster's apps region poll (`/ui/strip`, `/ui/cluster/apps`, 15 s).
 
 ## Patterns
 - `live_region(id, url, secs, live, content)`: a region that polls itself; `live = false` stops polling.
@@ -136,5 +136,5 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
 ## Testing
 - Router tests: `tower::ServiceExt::oneshot` + `http_body_util::BodyExt::collect` (dev-deps). For SSE, keep the
   response body and read frames with `body.frame()` under a timeout (`the_stream_sends_rendered_updates`).
-- The Queen test app registers fake read-only `list_apps`/`cluster_health`/`comb_info` tools (`Fixed`; its
+- The lead agent test app registers fake read-only `list_apps`/`cluster_health`/`device_info` tools (`Fixed`; its
   `/var` is 91% used, so the disk warning shows) and keeps a transcript (new chat archives it).

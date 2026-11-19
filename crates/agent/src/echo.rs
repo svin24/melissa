@@ -1,4 +1,4 @@
-//! Built-in backend with no LLM. Echoes the prompt back; useful on combs without any
+//! Built-in backend with no LLM. Echoes the prompt back; useful on devices without any
 //! agent subscription and as a deterministic backend for tests and demos.
 
 use std::{
@@ -63,7 +63,7 @@ impl Backend for EchoBackend {
     }
 }
 
-/// Configuration of an echo session backend (`kind = "echo"` in the queen config): a
+/// Configuration of an echo session backend (`kind = "echo"` in the lead agent config): a
 /// conversation partner with no LLM, for demos and for trying the chat (and switching
 /// between backends) without any agent subscription.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

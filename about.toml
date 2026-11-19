@@ -1,4 +1,4 @@
-# cargo-about config: license report for the Rust crates compiled into melissa-queen and melissa-comb.
+# cargo-about config: license report for the Rust crates compiled into melissa-server and melissa-device.
 # Run `just licenses`. The image build generates the same report (packaging/container/Containerfile, stage "build").
 #
 # `accepted` is an allowlist. A crate whose license expression cannot be satisfied by it fails the report.

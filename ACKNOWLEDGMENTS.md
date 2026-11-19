@@ -48,8 +48,8 @@ licenses under `/usr/share/licenses`):
 
 ## Where the notices live in the images
 
-- `/usr/share/licenses/melissa/THIRD-PARTY-LICENSES.md`: every Rust crate compiled into `melissa-queen` and
-  `melissa-comb` with its license expression and full license text. Generated at image build time by
+- `/usr/share/licenses/melissa/THIRD-PARTY-LICENSES.md`: every Rust crate compiled into `melissa-server` and
+  `melissa-device` with its license expression and full license text. Generated at image build time by
   [cargo-about](https://github.com/EmbarkStudios/cargo-about) from `Cargo.lock` (config `about.toml`, template
   `about.hbs`); run `just licenses` to produce the same file locally (`target/THIRD-PARTY-LICENSES.md`).
 - `/usr/share/licenses/melissa/ACKNOWLEDGMENTS.md`: this file (covers htmx, which is vendored, not a crate).

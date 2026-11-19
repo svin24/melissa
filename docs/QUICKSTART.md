@@ -4,8 +4,8 @@
 > keep it on this machine (it listens on 127.0.0.1 only and has no login), and read what the agents
 > ask to do before you approve it.
 
-From source you get the Queen, her bees and the web UI on your own Linux machine. You chat with the
-Queen; she uses an AI coding CLI you are already logged in to (Claude Code, Grok CLI or OpenCode).
+From source you get the lead agent, its agents and the web UI on your own Linux machine. You chat with the
+Lead agent; it uses an AI coding CLI you are already logged in to (Claude Code, Grok CLI or OpenCode).
 Installing apps needs k3s, which a plain source checkout does not have (see [Apps and k3s](#apps-and-k3s)).
 For the full system with k3s, run the container instead ([Run the full system in a container](#run-the-full-system-in-a-container-rootful-podman)).
 
@@ -52,18 +52,18 @@ downloading the crates). Then you see something like:
 Melissa (pre-alpha) is running.
   Open:     http://127.0.0.1:8080   (this machine only)
   State:    /home/you/.local/state/melissa
-  Config:   /home/you/.config/melissa/queen.toml  (not present: defaults)
+  Config:   /home/you/.config/melissa/server.toml  (not present: defaults)
   Sandbox:  ok (bubblewrap)
   Agents:
     claude          claude    found
     grok-acp        grok      not installed (`grok` not on PATH)
-    claude-session  claude    found   <- the Queen uses this
+    claude-session  claude    found   <- the lead agent uses this
     ...
-  k3s:      not found on this machine. Chat, bees and machine checks work; installing apps needs k3s.
+  k3s:      not found on this machine. Chat, agents and machine checks work; installing apps needs k3s.
   Stop with Ctrl-C.
 ```
 
-Open **http://127.0.0.1:8080**. The Queen starts with your first message; she uses the first agent of
+Open **http://127.0.0.1:8080**. The lead agent starts with your first message; it uses the first agent of
 `grok-acp`, `claude-session`, `opencode-acp` that is installed (and moves on to the next if one fails to
 start, for example because it is not logged in).
 
@@ -74,30 +74,30 @@ You can also talk to her from a second terminal in the same folder: `just chat`,
 
 Without k3s these work:
 
-1. **"Describe this machine."** The Queen calls Melissa's `comb_info` tool and tells you the OS, kernel,
+1. **"Describe this machine."** The lead agent calls Melissa's `device_info` tool and tells you the OS, kernel,
    memory and disk space.
-2. **"Create a bee named Ada and have her check this machine, then tell me what she found."** The Queen
-   creates a persistent bee, gives her a job and reports back (20-30 s). Talk to Ada directly afterwards:
-   `just chat` then type, or `cargo run -q -p melissa-queen -- ask --bee Ada "what did you find?"`.
+2. **"Create an agent named Ada and have her check this machine, then tell me what she found."** The lead agent
+   creates a persistent agent, gives her a job and reports back (20-30 s). Talk to Ada directly afterwards:
+   `just chat` then type, or `cargo run -q -p melissa-server -- ask --agent Ada "what did you find?"`.
 3. **"Which apps can you install?"** She lists the catalog (Nextcloud for now).
 4. **"Install Nextcloud."** Without k3s she answers that k3s is not running on this machine. Nothing is
    installed. That is expected from source.
 
 Agents act only through Melissa's tools: no shell, no file access, and network only to their own AI
 service. Anything risky waits for your approval in the confirmation inbox (in the UI, or
-`cargo run -q -p melissa-queen -- confirm list`).
+`cargo run -q -p melissa-server -- confirm list`).
 
 ## Apps and k3s
 
 App installs need a k3s cluster. A source checkout looks for cluster credentials in
 `/run/melissa-kube/` (written in the Melissa container) or at `kubeconfig = "..."` in
-`~/.config/melissa/queen.toml`, and app installs need a second, write-only identity
+`~/.config/melissa/server.toml`, and app installs need a second, write-only identity
 (`[apps] kubeconfig`) with Melissa's admission policies. Setting that up by hand is not documented for
 strangers yet; use the container to try apps.
 
 ## Run the full system in a container (rootful podman)
 
-The whole of Melissa (Queen, agent sandbox, k3s and apps) as one container on your Linux machine, started by
+The whole of Melissa (Lead agent, agent sandbox, k3s and apps) as one container on your Linux machine, started by
 systemd. Needs root, podman 5+, cgroup v2 and free ports 8080 and 30000-30079. Full guide, settings and what it
 changes on the host: [packaging/container/README.md](../packaging/container/README.md).
 
@@ -106,7 +106,7 @@ just container-build           # builds localhost/melissa:dev (no root)
 just container-install         # sudo: installs the Quadlet, starts melissa.service, prints the UI URL
 just container-smoke           # sudo: k3s, Traefik, policies, an app port, pods can't reach the UI
 sudo podman exec -it melissa melissa-setup agent opencode     # free models; or claude / grok (log in)
-sudo podman exec -it melissa melissa-queen chat               # or the web UI: http://127.0.0.1:8080
+sudo podman exec -it melissa melissa-server chat               # or the web UI: http://127.0.0.1:8080
 systemctl status melissa
 just container-uninstall       # keeps your data; `just container-uninstall --purge` deletes it
 ```
@@ -141,12 +141,12 @@ It is then at `https://<host>.example.ts.net:8443` (your tailnet's name instead 
 `tailscale serve --https=8443 off` turns it off.
 
 **Warning:** Melissa has no login yet. Everyone and every device that can reach that address on your tailnet can
-chat with the Queen and **approve her actions**, including deleting apps and their data. Only do this on a tailnet
+chat with the lead agent and **approve its actions**, including deleting apps and their data. Only do this on a tailnet
 you alone use, or restrict who can reach the host on that port with Tailscale ACLs (grants) first.
 
 ## Run on NixOS — experimental
 
-Melissa is a Nix flake with a NixOS module (`services.melissa`): the Queen as a system service, k3s for apps,
+Melissa is a Nix flake with a NixOS module (`services.melissa`): the lead agent as a system service, k3s for apps,
 the agent sandbox. In your system flake:
 
 ```nix
@@ -180,10 +180,10 @@ Updates come with your system: `nix flake update && sudo nixos-rebuild switch` (
 ## Stop, state and reset
 
 - **Stop:** Ctrl-C in the terminal running `just demo`. Agents stop with it.
-- **State** (audit log, the Queen's and bees' conversations, bee registry, agent working folders):
-  `~/.local/state/melissa/`. **Config** (optional): `~/.config/melissa/queen.toml`. Sandbox sockets:
+- **State** (audit log, the lead agent's and agents' conversations, agent registry, agent working folders):
+  `~/.local/state/melissa/`. **Config** (optional): `~/.config/melissa/server.toml`. Sandbox sockets:
   `$XDG_RUNTIME_DIR/melissa/`. Nothing is written into the repo except the build in `target/`.
-- **Reset:** stop Melissa, then `rm -rf ~/.local/state/melissa` (forgets the conversation, bees and audit
+- **Reset:** stop Melissa, then `rm -rf ~/.local/state/melissa` (forgets the conversation, agents and audit
   log). Your agent CLIs' own logins are not touched.
 - **Try it without touching your normal dirs:**
   `XDG_STATE_HOME=/tmp/m/state XDG_CONFIG_HOME=/tmp/m/config just demo`.
@@ -239,15 +239,15 @@ Pick one (not yet tested by us on Ubuntu; please tell us what worked):
   `sysctl user.max_user_namespaces` (must be > 0) and, on older Debian,
   `sysctl kernel.unprivileged_userns_clone` (must be 1).
 - **"cannot listen on 127.0.0.1:8080".** Something else uses the port, perhaps another Melissa. Stop it,
-  or create `~/.config/melissa/queen.toml` with `listen = "127.0.0.1:8090"` and open that port instead
+  or create `~/.config/melissa/server.toml` with `listen = "127.0.0.1:8090"` and open that port instead
   (`just chat`/`ask` read the same file). On a machine running the Melissa desktop image (e.g. the dev
-  laptop) the system queen always holds 127.0.0.1:8080, so put `listen = "127.0.0.1:8090"` in
-  `~/.config/melissa/queen.toml` once for `just demo`.
-- **The Queen answers "not logged in" or every backend fails.** Run the CLI once by hand (`claude`,
+  laptop) the system lead agent always holds 127.0.0.1:8080, so put `listen = "127.0.0.1:8090"` in
+  `~/.config/melissa/server.toml` once for `just demo`.
+- **The lead agent answers "not logged in" or every backend fails.** Run the CLI once by hand (`claude`,
   `grok`, `opencode`) and log in, then send the message again. To pin one agent, put this in
-  `~/.config/melissa/queen.toml`:
+  `~/.config/melissa/server.toml`:
   ```toml
-  [queen]
+  [lead]
   backends = ["claude-session"]   # or "grok-acp", "opencode-acp"
   ```
 - **Something else.** Run with the full log: `RUST_LOG=info just demo`, and look at the audit log in

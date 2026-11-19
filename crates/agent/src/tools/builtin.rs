@@ -1,4 +1,4 @@
-//! Built-in tools that need nothing but the local comb (this device).
+//! Built-in tools that need nothing but the local device (this device).
 
 use std::path::PathBuf;
 
@@ -7,19 +7,19 @@ use serde_json::{json, Value};
 use super::{Labels, Tool, ToolError, ToolSpec};
 use crate::BoxFuture;
 
-/// Filesystems whose space `comb_info` reports, relative to the root: `/`, `/var` (apps'
+/// Filesystems whose space `device_info` reports, relative to the root: `/`, `/var` (apps'
 /// data and images) and k3s's data directory when it exists.
 const DISKS: &[&str] = &["", "var", "var/lib/rancher/k3s"];
 
-/// `comb_info`: OS, kernel, Melissa release, uptime, memory and disk space of this comb.
+/// `device_info`: OS, kernel, Melissa release, uptime, memory and disk space of this device.
 /// Read-only; disk space comes from `statvfs` (no privileges, no shelling out).
 #[derive(Debug, Clone)]
-pub struct CombInfo {
+pub struct DeviceInfo {
     /// Filesystem root to read from (`/` in production; a fixture dir in tests).
     root: PathBuf,
 }
 
-impl CombInfo {
+impl DeviceInfo {
     pub fn new() -> Self {
         Self {
             root: PathBuf::from("/"),
@@ -35,7 +35,7 @@ impl CombInfo {
     }
 }
 
-impl CombInfo {
+impl DeviceInfo {
     /// Space on the filesystem holding `rel` (None if it does not exist or can't be read).
     fn disk(&self, rel: &str) -> Option<Value> {
         let path = self.root.join(rel);
@@ -66,17 +66,17 @@ fn used_percent(total: u64, free: u64, available: u64) -> u64 {
     (used.saturating_mul(100)).div_ceil(usable)
 }
 
-impl Default for CombInfo {
+impl Default for DeviceInfo {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Tool for CombInfo {
+impl Tool for DeviceInfo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "comb_info",
-            description: "Describe this comb (the device Melissa runs on): OS, kernel, Melissa release, uptime, memory and disk space (`disks`: total/available bytes and percent used of /, /var and the k3s data directory).",
+            name: "device_info",
+            description: "Describe this device (the device Melissa runs on): OS, kernel, Melissa release, uptime, memory and disk space (`disks`: total/available bytes and percent used of /, /var and the k3s data directory).",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         }
@@ -157,7 +157,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, body).unwrap();
         }
-        let out = CombInfo::with_root(&dir).call(Value::Null).await.unwrap();
+        let out = DeviceInfo::with_root(&dir).call(Value::Null).await.unwrap();
         assert_eq!(out["os"], "Fedora Linux 45");
         assert_eq!(out["melissa_variant"], "headless");
         assert_eq!(out["kernel"], "7.3.4");
@@ -166,7 +166,7 @@ mod tests {
         // Disk space of the fixture's / and /var (a real filesystem under the temp dir); no
         // k3s data directory, so no entry for it.
         std::fs::create_dir_all(dir.join("var")).unwrap();
-        let out = CombInfo::with_root(&dir).call(Value::Null).await.unwrap();
+        let out = DeviceInfo::with_root(&dir).call(Value::Null).await.unwrap();
         let disks = out["disks"].as_array().unwrap();
         let paths: Vec<&str> = disks.iter().map(|d| d["path"].as_str().unwrap()).collect();
         assert_eq!(paths, ["/", "/var"]);
@@ -177,7 +177,7 @@ mod tests {
             assert!(d["used_percent"].as_u64().unwrap() <= 100);
         }
         std::fs::create_dir_all(dir.join("var/lib/rancher/k3s")).unwrap();
-        let out = CombInfo::with_root(&dir).call(Value::Null).await.unwrap();
+        let out = DeviceInfo::with_root(&dir).call(Value::Null).await.unwrap();
         assert_eq!(out["disks"][2]["path"], "/var/lib/rancher/k3s");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -193,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_files_give_nulls_not_errors() {
-        let out = CombInfo::with_root("/nonexistent-melissa")
+        let out = DeviceInfo::with_root("/nonexistent-melissa")
             .call(Value::Null)
             .await
             .unwrap();

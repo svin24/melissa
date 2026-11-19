@@ -7,7 +7,7 @@ iptables-nft        # k3s (kube-proxy, flannel, network policy) uses it from PAT
                     # falls back to legacy iptables, which needs the ip_tables module (absent)
 iproute             # k3s-prepare (node IP), ui-forward-filter (default route)
 util-linux          # mount, nsenter (k3s, smoke test)
-polkit              # lets the queen restart itself (Settings → Restart; 50-melissa.rules)
+polkit              # lets the server restart itself (Settings → Restart; 50-melissa.rules)
 ca-certificates
 curl                # agent installers (melissa-setup)
 tar

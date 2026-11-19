@@ -30,12 +30,12 @@ struct Session {
     ctx: TaskContext,
     /// Tools this task may see (None = all).
     allow: Option<Vec<&'static str>>,
-    /// What first brought untrusted content into the session (tool, app or bee).
+    /// What first brought untrusted content into the session (tool, app or agent).
     taint_source: Option<TaintSource>,
 }
 
 /// What first brought untrusted content into a session: the tool and what it was about
-/// (its `app`, `cell` or `bee` argument), for a plain-language note to the user.
+/// (its `app`, `workspace` or `agent` argument), for a plain-language note to the user.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaintSource {
     pub tool: Option<String>,
@@ -117,7 +117,7 @@ impl McpServer {
     }
 
     /// Mark a session tainted (it was handed untrusted content outside a tool call, e.g. a
-    /// message from a tainted Queen). Returns false for an unknown session.
+    /// message from a tainted lead agent). Returns false for an unknown session.
     pub fn taint_session(&self, token: &str) -> bool {
         match lock(&self.sessions).get_mut(token) {
             Some(s) => {
@@ -189,7 +189,7 @@ impl McpServer {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "melissa", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Tools to inspect and operate this Melissa hive. Some calls wait for a human to approve them."
+                "instructions": "Tools to inspect and operate this Melissa cluster. Some calls wait for a human to approve them."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(self.tools_list(token)),
@@ -276,7 +276,7 @@ impl McpServer {
             return Ok(tool_error(&format!("unknown tool `{name}`")));
         }
         let was_tainted = ctx.tainted;
-        let subject = ["app", "cell", "bee"]
+        let subject = ["app", "workspace", "agent"]
             .iter()
             .find_map(|k| args.get(k).and_then(Value::as_str))
             .map(str::to_string);
@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(init["result"]["serverInfo"]["name"], "melissa");
         assert!(init["result"]["capabilities"]["tools"].is_object());
         let list = rpc(&server, &token, "tools/list", json!({})).await;
-        assert_eq!(list["result"]["tools"][0]["name"], "comb_info");
+        assert_eq!(list["result"]["tools"][0]["name"], "device_info");
         assert!(list["result"]["tools"][0]["inputSchema"].is_object());
     }
 
@@ -369,7 +369,7 @@ mod tests {
             &server,
             &token,
             "tools/call",
-            json!({"name": "comb_info", "arguments": {}}),
+            json!({"name": "device_info", "arguments": {}}),
         )
         .await;
         assert_eq!(out["result"]["isError"], false);
@@ -404,7 +404,13 @@ mod tests {
             .unwrap();
         let list = rpc(&server, &token, "tools/list", json!({})).await;
         assert_eq!(list["result"]["tools"], json!([]));
-        let call = rpc(&server, &token, "tools/call", json!({"name": "comb_info"})).await;
+        let call = rpc(
+            &server,
+            &token,
+            "tools/call",
+            json!({"name": "device_info"}),
+        )
+        .await;
         assert_eq!(call["result"]["isError"], true);
     }
 

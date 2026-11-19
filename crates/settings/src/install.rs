@@ -1,6 +1,6 @@
 //! Installing an agent CLI from Settings → Providers.
 //!
-//! The queen runs as the unprivileged user `melissa`; installing needs root (it runs the
+//! The lead agent runs as the unprivileged user `melissa`; installing needs root (it runs the
 //! vendor's installer as `melissa` through `melissa-setup`). The narrow path is a systemd
 //! template unit, `melissa-agent-install@.service` (packaging/container/rootfs), and a polkit rule
 //! (`51-melissa-agent-install.rules`, container image only) that

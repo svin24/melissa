@@ -2,15 +2,15 @@
 # docs/agent-skills/nix-service.md.
 #
 # What it sets up, from the files every packaging shares (packaging/common, see common.nix):
-# - users `melissa` (the queen and its agents) and group `melissa-kube`, tmpfiles from the package;
-# - melissa-queen.service: the shared unit (hardening, state/config/runtime dirs) with a drop-in
+# - users `melissa` (the server and its agents) and group `melissa-kube`, tmpfiles from the package;
+# - melissa-server.service: the shared unit (hardening, state/config/runtime dirs) with a drop-in
 #   for PATH (bubblewrap, the agent CLIs in /var/lib/melissa/home, the NixOS system profile);
-# - /etc/melissa/queen.toml generated from the options (providers.toml stays the queen's to write);
+# - /etc/melissa/server.toml generated from the options (providers.toml stays the server's to write);
 # - k3s through nixpkgs' `services.k3s`, with Melissa's RBAC, admission policies and Traefik
 #   config as auto-deploy manifests, the shared k3s config, the node IP pinned by the shared
 #   k3s-node-ip helper (as in the container), airgap images optional;
-# - melissa-kubeconfig.service: the queen's read-only and app-install kubeconfigs;
-# - the polkit rule that lets the queen restart itself (Settings → Restart), nothing else;
+# - melissa-kubeconfig.service: the server's read-only and app-install kubeconfigs;
+# - the polkit rule that lets the server restart itself (Settings → Restart), nothing else;
 # - the release file (MELISSA_RUNTIME=nix) for Settings, through MELISSA_RELEASE_FILE;
 # - agent CLIs: `agents.packages` (the Nix way), or nix-ld for the vendors' installers.
 { self }:
@@ -25,7 +25,7 @@ let
   toml = pkgs.formats.toml { };
   home = "/var/lib/melissa/home";
 
-  queenToml = toml.generate "queen.toml" (
+  serverToml = toml.generate "server.toml" (
     lib.recursiveUpdate (
       {
         inherit (cfg) listen;
@@ -55,7 +55,7 @@ let
 in
 {
   options.services.melissa = {
-    enable = lib.mkEnableOption "Melissa, the queen bee with its web UI, agent sandbox and k3s apps";
+    enable = lib.mkEnableOption "Melissa, the server with its web UI, agent sandbox and k3s apps";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -68,7 +68,7 @@ in
       type = lib.types.str;
       default = "127.0.0.1:8080";
       description = ''
-        Address of the web UI. The queen refuses a non-loopback address until the UI has logins;
+        Address of the web UI. The server refuses a non-loopback address until the UI has logins;
         reach it with `ssh -L 8080:127.0.0.1:8080` or a local reverse proxy you secure yourself.
       '';
     };
@@ -80,7 +80,7 @@ in
         [ { kind = "echo"; name = "echo-demo"; } ]
       '';
       description = ''
-        Extra agent backends: `[[backend]]` entries of queen.toml (see docs/agent-skills/
+        Extra agent backends: `[[backend]]` entries of server.toml (see docs/agent-skills/
         agent-cli-backends.md). The built-in ones (claude, grok, opencode) need no entry; they are
         used once their CLI is installed with `sudo melissa-setup agent <name>`.
       '';
@@ -90,10 +90,10 @@ in
       type = toml.type;
       default = { };
       example = lib.literalExpression ''
-        { queen.backends = [ "claude-session" ]; task_timeout_secs = 600; }
+        { lead.backends = [ "claude-session" ]; task_timeout_secs = 600; }
       '';
       description = ''
-        Further queen.toml settings, merged over the ones the module derives from its options.
+        Further server.toml settings, merged over the ones the module derives from its options.
         Provider settings made in the web UI go to /etc/melissa/providers.toml instead and win
         over these.
       '';
@@ -141,7 +141,7 @@ in
         type = lib.types.bool;
         default = true;
         description = ''
-          Run k3s (nixpkgs `services.k3s`) for apps. Without it the queen and its agents still
+          Run k3s (nixpkgs `services.k3s`) for apps. Without it the server and its agents still
           work; app tools report that no cluster is there.
         '';
       };
@@ -200,7 +200,7 @@ in
         description = ''
           The agent CLIs (Claude Code, Grok, OpenCode), from Nix: the documented way to add a
           provider on NixOS (Settings → Providers does not install agents on Nix installs). They are
-          put on the queen's PATH (after any that `melissa-setup` installed by hand). The binary's
+          put on the server's PATH (after any that `melissa-setup` installed by hand). The binary's
           file name decides its sandbox preset and egress allowlist, so it must be called `claude`,
           `grok` or `opencode`. Logins live in /var/lib/melissa/home
           (`sudo melissa-setup login <name>`).
@@ -222,20 +222,20 @@ in
         users.users.melissa = {
           isSystemUser = true;
           group = "melissa";
-          description = "Melissa queen and its agents";
+          description = "Melissa server and its agents";
           inherit home;
           shell = "${pkgs.shadow}/bin/nologin";
         };
         users.groups.melissa = { };
-        # May read the queen's k3s kubeconfigs in /run/melissa-kube; only the queen's unit has it.
+        # May read the server's k3s kubeconfigs in /run/melissa-kube; only the server's unit has it.
         users.groups.melissa-kube = { };
 
         environment.systemPackages = [ cfg.package ];
         systemd.packages = [ cfg.package ];
         systemd.tmpfiles.packages = [ cfg.package ];
-        environment.etc."melissa/queen.toml".source = queenToml;
+        environment.etc."melissa/server.toml".source = serverToml;
 
-        systemd.services.melissa-queen = {
+        systemd.services.melissa-server = {
           wantedBy = [ "multi-user.target" ];
           # The unit sets PATH for the image; this drop-in replaces it. Agent CLIs first (as on
           # the image), then the sandbox and the system profile (systemctl, sh for the agents).
@@ -249,11 +249,11 @@ in
           ++ [ "/run/current-system/sw" ];
           # The release file (version, revision, MELISSA_RUNTIME=nix) is in the store, not /usr.
           environment.MELISSA_RELEASE_FILE = "${cfg.package}/lib/melissa/release";
-          restartTriggers = [ queenToml ];
+          restartTriggers = [ serverToml ];
         };
 
-        # Settings restarts the queen through polkit (the shared rule from the package: restart
-        # melissa-queen.service, nothing else). Updates come from the NixOS configuration.
+        # Settings restarts the server through polkit (the shared rule from the package: restart
+        # melissa-server.service, nothing else). Updates come from the NixOS configuration.
         security.polkit.enable = true;
 
         programs.nix-ld.enable = lib.mkIf cfg.agents.nixLd true;
@@ -303,7 +303,7 @@ in
         networking.firewall.trustedInterfaces = [ "cni0" ];
 
         systemd.services.melissa-kubeconfig = {
-          description = "Melissa queen's k3s credentials (read-only ServiceAccount kubeconfig)";
+          description = "Melissa server's k3s credentials (read-only ServiceAccount kubeconfig)";
           after = [ "k3s.service" ];
           wantedBy = [ "k3s.service" ];
           path = [ cfg.k3s.package ];

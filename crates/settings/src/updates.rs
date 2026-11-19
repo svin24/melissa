@@ -1,23 +1,23 @@
 //! This device's Melissa release and container image updates.
 //!
-//! Melissa runs as a rootful podman container (packaging/container). The queen inside it can't
+//! Melissa runs as a rootful podman container (packaging/container). The lead agent inside it can't
 //! run the host's podman, so a small host helper does the privileged part:
 //!
-//! - The queen asks by creating an **empty file** named `check`, `apply` or `rollback` in
+//! - The lead agent asks by creating an **empty file** named `check`, `apply` or `rollback` in
 //!   [`REQUEST_DIR`] (a bind mount of the host's `/var/lib/melissa-container/request`). A host
 //!   path unit starts `melissa-host-update requests`, which acts only on those three names and
 //!   never reads file contents. Nothing else travels from the web.
 //! - The helper writes `status.json` (running, staged, available and previous image) and
 //!   `last.json` (the outcome of its last action) to the host's
 //!   `/var/lib/melissa-container/status`, mounted read-only at [`STATE_DIR`].
-//! - Restarting the queen itself (to use saved settings) goes through systemd inside the
-//!   container: a polkit rule lets the `melissa` user restart `melissa-queen.service`, nothing else.
+//! - Restarting the lead agent itself (to use saved settings) goes through systemd inside the
+//!   container: a polkit rule lets the `melissa` user restart `melissa-server.service`, nothing else.
 //!
 //! Without the helper (a dev container, a from-source run) the UI shows the host commands.
 //!
 //! A Nix install (`MELISSA_RUNTIME=nix` in the release file, which the Nix package ships in the
 //! store and names with [`RELEASE_FILE_ENV`]) updates with the system's Nix configuration: the UI
-//! shows the commands and offers no update buttons, only the queen's restart.
+//! shows the commands and offers no update buttons, only the lead agent's restart.
 
 use std::{
     path::{Path, PathBuf},
@@ -30,7 +30,7 @@ use crate::{clean_text, SettingsError};
 
 /// Where the host helper's status arrives (read-only bind mount).
 pub const STATE_DIR: &str = "/run/melissa-update";
-/// Where the queen drops requests for the host helper (bind mount, group `melissa` writable).
+/// Where the lead agent drops requests for the host helper (bind mount, group `melissa` writable).
 pub const REQUEST_DIR: &str = "/run/melissa-update-request";
 /// Build facts written into the image.
 pub const RELEASE_FILE: &str = "/usr/lib/melissa/release";
@@ -98,7 +98,7 @@ impl Release {
     }
 }
 
-/// What kind of host the queen runs on, which decides how it is updated.
+/// What kind of host the lead agent runs on, which decides how it is updated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostKind {
@@ -331,7 +331,7 @@ pub fn read_state(dir: &Path) -> UpdateState {
 
 // --- Actions -------------------------------------------------------------------------------------
 
-/// The only things the queen may ask for. Each maps to one fixed request.
+/// The only things the lead agent may ask for. Each maps to one fixed request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateAction {
@@ -341,7 +341,7 @@ pub enum UpdateAction {
     Apply,
     /// Restart Melissa on the previous image.
     Rollback,
-    /// Restart Melissa's queen (to use saved settings).
+    /// Restart Melissa's lead agent (to use saved settings).
     Restart,
 }
 
@@ -370,10 +370,10 @@ impl UpdateAction {
         matches!(self, Self::Apply | Self::Rollback)
     }
 
-    /// The `systemctl` arguments for a restart of the queen: a fixed verb and unit.
+    /// The `systemctl` arguments for a restart of the lead agent: a fixed verb and unit.
     pub fn systemctl_args(self) -> Option<[&'static str; 3]> {
         match self {
-            Self::Restart => Some(["restart", "--no-block", "melissa-queen.service"]),
+            Self::Restart => Some(["restart", "--no-block", "melissa-server.service"]),
             _ => None,
         }
     }
@@ -389,7 +389,7 @@ impl UpdateAction {
     /// What to type on the host instead, where the helper is missing.
     pub fn manual_command(self) -> String {
         match self {
-            Self::Restart => "sudo podman exec melissa systemctl restart melissa-queen".into(),
+            Self::Restart => "sudo podman exec melissa systemctl restart melissa-server".into(),
             _ => format!("sudo {HOST_HELPER} {}", self.as_str()),
         }
     }
@@ -434,7 +434,7 @@ impl UpdateEnv {
         self.root.join("etc/NIXOS").exists()
     }
 
-    /// The queen may restart itself: Melissa's polkit rule (restart the queen, nothing else) is
+    /// The lead agent may restart itself: Melissa's polkit rule (restart the lead agent, nothing else) is
     /// installed, by the container image in /usr, by the non-NixOS Nix bundle in /etc, or by the
     /// NixOS module in the system profile.
     pub fn can_restart(&self) -> bool {
@@ -485,7 +485,7 @@ fn place_request(dir: &Path, name: &str) -> Result<(), SettingsError> {
         })
 }
 
-/// Ask systemd (through polkit) to restart the queen. Returns once systemd took the job.
+/// Ask systemd (through polkit) to restart the lead agent. Returns once systemd took the job.
 async fn systemctl(action: UpdateAction) -> Result<(), SettingsError> {
     let Some(args) = action.systemctl_args() else {
         return Err(SettingsError::Invalid(format!(
@@ -729,7 +729,7 @@ mod tests {
         }
         let r = UpdateAction::Restart;
         assert_eq!(r.request_name(), None);
-        assert_eq!(r.systemctl_args().unwrap()[2], "melissa-queen.service");
+        assert_eq!(r.systemctl_args().unwrap()[2], "melissa-server.service");
         assert_eq!(UpdateAction::parse("reboot; rm -rf /"), None);
         assert!(UpdateAction::Apply.restarts_melissa() && !UpdateAction::Check.restarts_melissa());
     }

@@ -36,7 +36,7 @@ fn grok() -> AcpBackend {
         ],
     );
     let workdir = std::env::temp_dir().join(format!("melissa-acp-live-{}", std::process::id()));
-    // Deny-by-default network, like the queen: the built-in grok allowlist through the proxy.
+    // Deny-by-default network, like the lead agent: the built-in grok allowlist through the proxy.
     let sockets = std::env::temp_dir().join(format!("melissa-acp-live-net-{}", std::process::id()));
     let egress = EgressProxy::new(sockets, None)
         .unwrap()
@@ -92,7 +92,7 @@ async fn grok_cancel_then_second_prompt_in_one_session() {
     eprintln!("turn 1 stop: {stop:?} after {:?}", t0.elapsed());
     assert_eq!(stop, StopReason::Cancelled);
 
-    // Turn 2 in the same session (the Queen keeps one session across prompts).
+    // Turn 2 in the same session (the lead agent keeps one session across prompts).
     while events.try_recv().is_ok() {}
     let stop = tokio::time::timeout(
         Duration::from_secs(90),

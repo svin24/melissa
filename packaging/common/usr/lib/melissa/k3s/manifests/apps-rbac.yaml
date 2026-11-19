@@ -1,5 +1,5 @@
 # Melissa: the write identity for app installs (ServiceAccount melissa/melissa-apps), separate
-# from the read-only melissa-queen. Only the queen's app tools (install_app, stop_app,
+# from the read-only melissa-server. Only the lead agent's app tools (install_app, stop_app,
 # start_app, uninstall_app, app_status, app_logs, list_apps) use it; see docs/agent-skills/app-catalog.md and docs/DECISIONS.md.
 #
 # Shape:
@@ -8,15 +8,15 @@
 #   pin all of that to namespaces named app-<name> labelled melissa.io/app=<name> with Pod
 #   Security "baseline" (or "restricted") enforced, and to RoleBindings that grant exactly
 #   melissa-app-workload to exactly this ServiceAccount.
-# - Cells (docs/HIVE-MODEL.md): every new app namespace carries melissa.io/cell=<name> and
-#   melissa.io/comb=<comb id>; melissa.io/owner-bee=<bee id> names the bee that owns it
-#   (absent: unassigned). The comb is fixed once set. The owner bee can only change together
+# - Workspaces (docs/AGENT-MODEL.md): every new app namespace carries melissa.io/workspace=<name> and
+#   melissa.io/device=<device id>; melissa.io/owner-agent=<agent id> names the agent that owns it
+#   (absent: unassigned). The device is fixed once set. The owner agent can only change together
 #   with a new melissa.io/assigned-at (and assigned-by) annotation: that is the reassign path
-#   (the Queen's reassign_cell after the user approved it, or the user's
-#   `melissa-queen cell reassign`); an owned cell never becomes unassigned again. The old
-#   melissa.io/owner label (`owner`/`job-<key>`, before bees) may only be dropped. Which agent
-#   may act on which cell is enforced in the queen (agents hold no cluster credentials); see
-#   docs/agent-skills/cells-and-ownership.md.
+#   (the lead agent's reassign_workspace after the user approved it, or the user's
+#   `melissa-server workspace reassign`); an owned workspace never becomes unassigned again. The old
+#   melissa.io/owner label (`owner`/`job-<key>`, before agents) may only be dropped. Which agent
+#   may act on which workspace is enforced in the server (agents hold no cluster credentials); see
+#   docs/agent-skills/workspaces-and-ownership.md.
 # - App ports (docs/DECISIONS.md, 2026-11-19): an app namespace may record its own port on the
 #   device (annotation melissa.io/port, 30000-30079), which never changes while the namespace
 #   exists; its one NodePort Service `<app>-port` must use exactly that range. Everything else
@@ -25,7 +25,7 @@
 #   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
 #   generated credentials are for the owner); pods and logs read.
 # - Nothing in kube-system or any other namespace; no PersistentVolumes, no nodes, no exec.
-# The token reaches the queen as /run/melissa-kube/apps.kubeconfig (melissa-kubeconfig).
+# The token reaches the server as /run/melissa-kube/apps.kubeconfig (melissa-kubeconfig).
 #
 # Admission policies come first so they exist before the permissions do.
 apiVersion: admissionregistration.k8s.io/v1
@@ -56,6 +56,21 @@ spec:
          !('melissa.io/assigned-at' in oldObject.metadata.annotations) ||
          object.metadata.annotations['melissa.io/assigned-at'] !=
            oldObject.metadata.annotations['melissa.io/assigned-at'])
+    # Labels from before the rename to generic terms (docs/DECISIONS.md, 2026-11-19).
+    - name: oldLabels
+      expression: >-
+        request.operation == 'UPDATE' && has(oldObject.metadata.labels) ?
+          oldObject.metadata.labels : {}
+    # The one-time relabel: the owner moves from melissa.io/owner-bee=c-<hex>.b<n> to
+    # melissa.io/owner-agent=d-<hex>.a<n> (same agent, new id shape).
+    - name: ownerRelabelled
+      expression: >-
+        'melissa.io/owner-bee' in variables.oldLabels &&
+        variables.oldLabels['melissa.io/owner-bee'].matches('^c-[0-9a-f]{8}[.]b[1-9][0-9]{0,8}$') &&
+        'melissa.io/owner-agent' in object.metadata.labels &&
+        object.metadata.labels['melissa.io/owner-agent'] ==
+          'd-' + variables.oldLabels['melissa.io/owner-bee'].substring(2, 11) + 'a' +
+          variables.oldLabels['melissa.io/owner-bee'].substring(12)
   validations:
     - expression: "variables.ns.metadata.name.startsWith('app-')"
       message: "melissa-apps may only manage namespaces named app-<name>"
@@ -71,27 +86,49 @@ spec:
       message: "app namespaces must enforce Pod Security baseline or restricted"
     - expression: >-
         request.operation != 'CREATE' ||
-        ('melissa.io/cell' in object.metadata.labels &&
-         object.metadata.labels['melissa.io/cell'] == object.metadata.name.substring(4) &&
-         'melissa.io/comb' in object.metadata.labels &&
+        ('melissa.io/workspace' in object.metadata.labels &&
+         object.metadata.labels['melissa.io/workspace'] == object.metadata.name.substring(4) &&
+         'melissa.io/device' in object.metadata.labels &&
          !('melissa.io/owner' in object.metadata.labels))
-      message: "new cells must carry melissa.io/cell=<name> and melissa.io/comb=<comb id>"
+      message: "new workspaces must carry melissa.io/workspace=<name> and melissa.io/device=<device id>"
     - expression: >-
         request.operation == 'DELETE' ||
-        !('melissa.io/comb' in object.metadata.labels) ||
-        object.metadata.labels['melissa.io/comb'].matches('^c-[0-9a-f]{8}$')
-      message: "melissa.io/comb must be a comb id (c-<8 hex>)"
+        !('melissa.io/device' in object.metadata.labels) ||
+        object.metadata.labels['melissa.io/device'].matches('^d-[0-9a-f]{8}$')
+      message: "melissa.io/device must be a device id (d-<8 hex>)"
     - expression: >-
         request.operation == 'DELETE' ||
-        !('melissa.io/owner-bee' in object.metadata.labels) ||
-        object.metadata.labels['melissa.io/owner-bee'].matches('^c-[0-9a-f]{8}[.]b[1-9][0-9]{0,8}$')
-      message: "melissa.io/owner-bee must be a bee id (<comb id>.b<n>)"
+        !('melissa.io/owner-agent' in object.metadata.labels) ||
+        object.metadata.labels['melissa.io/owner-agent'].matches('^d-[0-9a-f]{8}[.]a[1-9][0-9]{0,8}$')
+      message: "melissa.io/owner-agent must be an agent id (<device id>.a<n>)"
     - expression: >-
         request.operation != 'UPDATE' ||
-        !(has(oldObject.metadata.labels) && 'melissa.io/comb' in oldObject.metadata.labels) ||
-        ('melissa.io/comb' in object.metadata.labels &&
-         object.metadata.labels['melissa.io/comb'] == oldObject.metadata.labels['melissa.io/comb'])
-      message: "a cell's comb never changes"
+        !(has(oldObject.metadata.labels) && 'melissa.io/device' in oldObject.metadata.labels) ||
+        ('melissa.io/device' in object.metadata.labels &&
+         object.metadata.labels['melissa.io/device'] == oldObject.metadata.labels['melissa.io/device'])
+      message: "a workspace's device never changes"
+    # Old label keys (melissa.io/cell, melissa.io/comb, melissa.io/owner-bee) are only ever
+    # kept as they are or dropped; the new keys take their values (ids in the new shape).
+    - expression: >-
+        request.operation == 'DELETE' ||
+        ['melissa.io/cell', 'melissa.io/comb', 'melissa.io/owner-bee'].all(k,
+          !(k in object.metadata.labels) ||
+          (k in variables.oldLabels && object.metadata.labels[k] == variables.oldLabels[k]))
+      message: "the old melissa.io/cell, melissa.io/comb and melissa.io/owner-bee labels may only be kept or dropped"
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        !('melissa.io/comb' in variables.oldLabels) ||
+        'melissa.io/device' in variables.oldLabels ||
+        !('melissa.io/device' in object.metadata.labels) ||
+        object.metadata.labels['melissa.io/device'] ==
+          'd-' + variables.oldLabels['melissa.io/comb'].substring(2)
+      message: "a workspace's melissa.io/device takes its old melissa.io/comb id (c-<hex> becomes d-<hex>)"
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        !('melissa.io/owner-bee' in variables.oldLabels) ||
+        'melissa.io/owner-bee' in object.metadata.labels ||
+        'melissa.io/owner-agent' in object.metadata.labels
+      message: "the old melissa.io/owner-bee label may only be dropped for melissa.io/owner-agent"
     - expression: >-
         request.operation == 'DELETE' ||
         !('melissa.io/owner' in object.metadata.labels) ||
@@ -101,16 +138,17 @@ spec:
       message: "the old melissa.io/owner label may only be kept or dropped"
     - expression: >-
         request.operation != 'CREATE' ||
-        !('melissa.io/owner-bee' in object.metadata.labels) || variables.newAssignment
-      message: "a new cell's owner bee needs melissa.io/assigned-by and melissa.io/assigned-at"
+        !('melissa.io/owner-agent' in object.metadata.labels) || variables.newAssignment
+      message: "a new workspace's owner agent needs melissa.io/assigned-by and melissa.io/assigned-at"
     - expression: >-
         request.operation != 'UPDATE' ||
-        ((has(oldObject.metadata.labels) && 'melissa.io/owner-bee' in oldObject.metadata.labels) ?
-          ('melissa.io/owner-bee' in object.metadata.labels &&
-           (object.metadata.labels['melissa.io/owner-bee'] == oldObject.metadata.labels['melissa.io/owner-bee'] ||
+        ((has(oldObject.metadata.labels) && 'melissa.io/owner-agent' in oldObject.metadata.labels) ?
+          ('melissa.io/owner-agent' in object.metadata.labels &&
+           (object.metadata.labels['melissa.io/owner-agent'] == oldObject.metadata.labels['melissa.io/owner-agent'] ||
             variables.newAssignment)) :
-          (!('melissa.io/owner-bee' in object.metadata.labels) || variables.newAssignment))
-      message: "a cell's owner bee changes only through the reassign path (new melissa.io/assigned-at)"
+          (!('melissa.io/owner-agent' in object.metadata.labels) || variables.newAssignment ||
+           variables.ownerRelabelled))
+      message: "a workspace's owner agent changes only through the reassign path (new melissa.io/assigned-at)"
     - expression: >-
         request.operation == 'DELETE' || !has(object.metadata.annotations) ||
         !('melissa.io/port' in object.metadata.annotations) ||
@@ -221,7 +259,7 @@ metadata:
   namespace: melissa
 automountServiceAccountToken: false
 ---
-# Long-lived token, like melissa-queen-token (see DECISIONS.md). Rotate with
+# Long-lived token, like melissa-server-token (see DECISIONS.md). Rotate with
 # `/usr/libexec/melissa/melissa-kubeconfig rotate apps`.
 apiVersion: v1
 kind: Secret
@@ -277,7 +315,7 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Generated credentials: written once, never read back by Melissa (the owner reads them
-  # with root's admin kubeconfig: `sudo melissa-queen app-credentials <app>`).
+  # with root's admin kubeconfig: `sudo melissa-server app-credentials <app>`).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "delete"]

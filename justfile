@@ -12,25 +12,25 @@ test:
 
 check: fmt lint test
 
-# The queen plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
-# `cargo run -p melissa-queen` alone does not build it, and sandboxed agents then have no network).
+# The server plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
+# `cargo run -p melissa-server` alone does not build it, and sandboxed agents then have no network).
 build:
-    cargo build --bins -p melissa-queen -p melissa-agent
+    cargo build --bins -p melissa-server -p melissa-agent
 
 run-web: build
-    cargo run -q -p melissa-queen
+    cargo run -q -p melissa-server
 
 # First run from source (docs/QUICKSTART.md): builds, prints a short summary (URL, agents found,
 # sandbox, k3s) and serves http://127.0.0.1:8080 until Ctrl-C.
 demo: build
-    cargo run -q -p melissa-queen -- demo
+    cargo run -q -p melissa-server -- demo
 
-# Talk to the running Queen from a terminal (second shell): `just chat`, `just ask "describe this machine"`.
+# Talk to the running server from a terminal (second shell): `just chat`, `just ask "describe this machine"`.
 chat:
-    cargo run -q -p melissa-queen -- chat
+    cargo run -q -p melissa-server -- chat
 
 ask +message:
-    cargo run -q -p melissa-queen -- ask {{quote(message)}}
+    cargo run -q -p melissa-server -- ask {{quote(message)}}
 
 # --- container image (packaging/container) ---------------------------------------------
 # Build localhost/melissa:dev (rootless). --network=host: rootless pasta may be denied by SELinux.
@@ -60,7 +60,7 @@ container-smoke:
     sudo sh -c 'set -a; . /var/lib/melissa-container/install.env; NAME=melissa exec scripts/container-run.sh smoke'
 
 # --- third-party licenses -------------------------------------------------------------
-# License report for the Rust crates in melissa-queen/-comb (cargo-about, allowlist in about.toml).
+# License report for the Rust crates in melissa-server/-device (cargo-about, allowlist in about.toml).
 # Fails if a crate's license is not on the allowlist or cannot be identified. Needs the network
 # only for `cargo fetch` (crate sources); the image build runs the same command.
 licenses out="target/THIRD-PARTY-LICENSES.md":

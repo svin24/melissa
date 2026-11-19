@@ -1,4 +1,4 @@
-# Melissa: queen (web UI), k3s and the agent sandbox in one rootful container, systemd as PID 1.
+# Melissa: server (web UI), k3s and the agent sandbox in one rootful container, systemd as PID 1.
 # Template: install.sh fills in the @...@ values and writes /etc/containers/systemd/melissa.container.
 # Quadlet turns it into melissa.service: `systemctl start|stop|status melissa`. The container is
 # recreated from the image at every start; state lives in the melissa-var volume (/var, incl.
@@ -6,7 +6,7 @@
 # Docs: packaging/container/README.md.
 
 [Unit]
-Description=Melissa (queen, k3s, agent sandbox)
+Description=Melissa (server, k3s, agent sandbox)
 Documentation=file:///usr/local/share/melissa/README.md
 Wants=network-online.target
 After=network-online.target
@@ -24,11 +24,11 @@ PodmanArgs=--privileged --systemd=always
 # --privileged shares the host's /dev. Hide input devices (lid switch, power key, keyboards): nothing
 # in Melissa needs them, and logind (masked in the image) must never act on them.
 Tmpfs=/dev/input
-# For `podman exec melissa melissa-queen ...` run as root: read the queen's config (/etc/melissa,
-# [apps] addresses) like melissa-queen.service does, not root's empty ~/.config.
+# For `podman exec melissa melissa-server ...` run as root: read the server's config (/etc/melissa,
+# [apps] addresses) like melissa-server.service does, not root's empty ~/.config.
 Environment=XDG_CONFIG_HOME=/etc
 # The default rootful bridge. The UI: host 127.0.0.1:UI_PORT → container :8081
-# (melissa-ui-forward, nftables-filtered so pods can't reach it) → queen on 127.0.0.1:8080.
+# (melissa-ui-forward, nftables-filtered so pods can't reach it) → server on 127.0.0.1:8080.
 Network=podman
 PublishPort=@UI_BIND@:@UI_PORT@:8081
 # App NodePorts 30000-30079 (first app port on the host: APP_PORT_BASE).

@@ -22,7 +22,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
-# Runs inside each agent sandbox: forwards loopback ports to the queen's egress sockets.
+# Runs inside each agent sandbox: forwards loopback ports to the lead agent's egress sockets.
 [[bin]]
 name = "melissa-netbridge"
 path = "src/bin/melissa-netbridge.rs"

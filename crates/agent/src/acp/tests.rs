@@ -16,7 +16,7 @@ use crate::{
         McpServerSpec, OpenSession, OpenedSession, PermissionContext, PermissionDecision,
         PermissionHandler, PolicyPermissions, SessionEvent, StopReason, ToolKind, ToolStatus,
     },
-    tools::{CombInfo, TaskContext, Tool, ToolRegistry},
+    tools::{DeviceInfo, TaskContext, Tool, ToolRegistry},
     AuditLog, EventSink, Stream,
 };
 
@@ -34,9 +34,9 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Policy permissions over a registry with `comb_info`, for an attended task 5.
+/// Policy permissions over a registry with `device_info`, for an attended task 5.
 fn policy(audit: Option<AuditLog>) -> (PolicyPermissions, ToolRegistry) {
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CombInfo::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(DeviceInfo::new())];
     let registry = ToolRegistry::new(tools, audit).with_confirm_timeout(Duration::from_secs(30));
     let server = McpServer::new(registry.clone());
     let token = server
@@ -94,7 +94,7 @@ fn open_with(perms: Arc<dyn PermissionHandler>, mcp: bool) -> OpenSession {
     )
 }
 
-const COMB_PROMPT: &str = "Use the comb_info tool, then reply with the kernel version.";
+const DEVICE_PROMPT: &str = "Use the device_info tool, then reply with the kernel version.";
 
 #[tokio::test]
 async fn tool_turn_streams_events_and_allows_once() {
@@ -112,7 +112,7 @@ async fn tool_turn_streams_events_and_allows_once() {
     assert!(caps.load && caps.resume && caps.close && caps.mcp_http && !caps.fork);
     assert_eq!(caps.agent.as_deref(), Some("fake-agent 0.1.0"));
 
-    let stop = session.prompt(COMB_PROMPT).await.unwrap();
+    let stop = session.prompt(DEVICE_PROMPT).await.unwrap();
     assert_eq!(stop, StopReason::EndTurn);
     session.close().await.unwrap();
     agent.await.unwrap().unwrap();
@@ -131,18 +131,18 @@ async fn tool_turn_streams_events_and_allows_once() {
     assert_eq!(text, "Kernel: 6.1.0-test\nDone.");
     assert!(got.contains(&SessionEvent::ToolStarted {
         id: "t1".into(),
-        title: "melissa__comb_info".into(),
+        title: "melissa__device_info".into(),
         kind: ToolKind::Other,
         status: ToolStatus::Pending,
     }));
     assert!(got.contains(&SessionEvent::Permission {
         tool_call_id: "t1".into(),
-        title: "melissa__comb_info".into(),
+        title: "melissa__device_info".into(),
         decision: PermissionDecision::AllowOnce,
     }));
     assert!(got.contains(&SessionEvent::ToolFinished {
         id: "t1".into(),
-        title: Some("melissa__comb_info".into()),
+        title: Some("melissa__device_info".into()),
         status: ToolStatus::Completed,
     }));
     assert!(got.contains(&SessionEvent::Usage {
@@ -179,7 +179,7 @@ async fn one_turn_renders_concise_output() {
         ..
     } = opened;
     let (sink, mut rx) = EventSink::channel();
-    let stop = one_turn(session.as_ref(), &mut events, COMB_PROMPT, &sink)
+    let stop = one_turn(session.as_ref(), &mut events, DEVICE_PROMPT, &sink)
         .await
         .unwrap();
     assert_eq!(stop, StopReason::EndTurn);
@@ -195,10 +195,10 @@ async fn one_turn_renders_concise_output() {
     assert_eq!(
         lines,
         [
-            err("[plan] Call comb_info | Answer"),
-            err("[tool] melissa__comb_info → pending"),
-            err("[permission] melissa__comb_info → allow_once"),
-            err("[tool] melissa__comb_info → done"),
+            err("[plan] Call device_info | Answer"),
+            err("[tool] melissa__device_info → pending"),
+            err("[permission] melissa__device_info → allow_once"),
+            err("[tool] melissa__device_info → done"),
             out("Kernel: 6.1.0-test"),
             out("Done."),
         ]
@@ -282,7 +282,7 @@ async fn recorded_sessions_replay() {
         Some(recorder.clone()),
     )
     .await;
-    opened.session.prompt(COMB_PROMPT).await.unwrap();
+    opened.session.prompt(DEVICE_PROMPT).await.unwrap();
     opened.session.close().await.unwrap();
     agent.await.unwrap().unwrap();
 
@@ -305,7 +305,7 @@ async fn recorded_sessions_replay() {
         .collect();
     let (opened, agent) = open_replay(steps, open_with(perms, true), None).await;
     assert_eq!(
-        opened.session.prompt(COMB_PROMPT).await.unwrap(),
+        opened.session.prompt(DEVICE_PROMPT).await.unwrap(),
         StopReason::EndTurn
     );
     opened.session.close().await.unwrap();
@@ -314,10 +314,10 @@ async fn recorded_sessions_replay() {
 
 #[tokio::test]
 async fn real_grok_transcript_replays() {
-    // Recorded from `grok agent stdio` (1.0.89) through the queen; see the fixture header.
+    // Recorded from `grok agent stdio` (1.0.89) through the lead agent; see the fixture header.
     let audit_path = scratch("grok").join("audit.jsonl");
     let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
-    let steps = agent::parse(&fixture("grok_comb_info.jsonl"));
+    let steps = agent::parse(&fixture("grok_device_info.jsonl"));
     let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), true), None).await;
     let OpenedSession {
         session,
@@ -330,7 +330,7 @@ async fn real_grok_transcript_replays() {
     let stop = one_turn(
         session.as_ref(),
         &mut events,
-        "Use the comb_info tool, then reply with one line: the kernel version.",
+        "Use the device_info tool, then reply with one line: the kernel version.",
         &sink,
     )
     .await
@@ -348,10 +348,10 @@ async fn real_grok_transcript_replays() {
         lines,
         [
             err("[tool] search_tool → pending"),
-            err("[tool] Search tools: \"comb_info\" → done"),
+            err("[tool] Search tools: \"device_info\" → done"),
             err("[tool] use_tool → pending"),
-            err("[permission] melissa__comb_info → allow_once"),
-            err("[tool] melissa__comb_info → done"),
+            err("[permission] melissa__device_info → allow_once"),
+            err("[tool] melissa__device_info → done"),
             (Stream::Stdout, "7.3.4-300.fc45.x86_64".to_string()),
         ]
     );
@@ -486,12 +486,12 @@ async fn agent_death_between_turns_ends_the_event_stream() {
 
 #[tokio::test]
 async fn real_opencode_transcript_replays() {
-    // Recorded from `opencode acp` (2.3.2, flavor opencode) through the queen; see the header.
+    // Recorded from `opencode acp` (2.3.2, flavor opencode) through the lead agent; see the header.
     // Melissa's MCP server is in OpenCode's config, so `session/new` carries none, and the
-    // tool is named `melissa_comb_info` (no Code Mode).
+    // tool is named `melissa_device_info` (no Code Mode).
     let audit_path = scratch("opencode").join("audit.jsonl");
     let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
-    let steps = agent::parse(&fixture("opencode_comb_info.jsonl"));
+    let steps = agent::parse(&fixture("opencode_device_info.jsonl"));
     let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), false), None).await;
     let OpenedSession {
         session,
@@ -505,7 +505,7 @@ async fn real_opencode_transcript_replays() {
     let stop = one_turn(
         session.as_ref(),
         &mut events,
-        "Use the comb_info tool, then reply with one line: the kernel version.",
+        "Use the device_info tool, then reply with one line: the kernel version.",
         &sink,
     )
     .await
@@ -522,9 +522,9 @@ async fn real_opencode_transcript_replays() {
     assert_eq!(
         lines,
         [
-            err("[tool] melissa_comb_info → pending"),
-            err("[permission] melissa_comb_info → allow_once"),
-            err("[tool] melissa_comb_info → done"),
+            err("[tool] melissa_device_info → pending"),
+            err("[permission] melissa_device_info → allow_once"),
+            err("[tool] melissa_device_info → done"),
             (Stream::Stdout, "Kernel: 7.3.4-300.fc45.x86_64".to_string()),
         ]
     );

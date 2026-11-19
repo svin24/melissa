@@ -1,11 +1,11 @@
 //! What the UI shows about apps and devices, read with Melissa's read-only tools
-//! (`list_apps`, `cluster_health`, `comb_info`) through the same registry the agents use, so
+//! (`list_apps`, `cluster_health`, `device_info`) through the same registry the agents use, so
 //! the calls are policy-checked and audited (`tool.call`, task 0, read-only scope). The answer is cached for
-//! [`HiveCache::TTL`] so open pages don't fill the audit log; a stale answer is served
+//! [`ClusterCache::TTL`] so open pages don't fill the audit log; a stale answer is served
 //! while a fresh one is fetched in the background.
 //!
-//! Who looks after each app (cell) comes from the Queen's bee pool (`cells()`: the
-//! `melissa.io/owner-bee` labels with the bees' names).
+//! Who looks after each app (workspace) comes from the lead agent's agent pool (`workspaces()`: the
+//! `melissa.io/owner-agent` labels with the agents' names).
 //!
 //! Like `feed.rs`, this module holds the names of tools and phases the UI depends on.
 
@@ -15,8 +15,8 @@ use std::{
 };
 
 use melissa_agent::{
+    lead::{agents::WorkspaceView, Lead},
     mcp::McpServer,
-    queen::{bees::CellView, Queen},
     tools::{Scope, TaskContext},
 };
 use serde_json::{json, Value};
@@ -30,7 +30,7 @@ pub struct App {
     pub name: String,
     /// Phase as `app_status` reports it.
     pub phase: String,
-    /// The link `list_apps` gave (`http://<device address>:<port>`, as the queen sees it).
+    /// The link `list_apps` gave (`http://<device address>:<port>`, as the lead agent sees it).
     pub url: Option<String>,
     /// The port people reach the app at (`list_apps`' `port`: its NodePort plus `[apps]
     /// port_offset`); pages build the link from the address the visitor used to reach the
@@ -40,29 +40,29 @@ pub struct App {
     pub keeper: Option<Keeper>,
 }
 
-/// Who looks after an app (cell).
+/// Who looks after an app (workspace).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Keeper {
-    /// A bee: id and display name.
-    Bee { id: String, name: String },
-    /// The owner (a cell from before bees, `melissa.io/owner=owner`).
+    /// An agent: id and display name.
+    Agent { id: String, name: String },
+    /// The owner (a workspace from before agents, `melissa.io/owner=owner`).
     Owner,
 }
 
-/// Who looks after each cell, from the bee pool's cell list.
-pub fn keepers(cells: &[CellView]) -> Vec<(String, Keeper)> {
-    cells
+/// Who looks after each workspace, from the agent pool's workspace list.
+pub fn keepers(workspaces: &[WorkspaceView]) -> Vec<(String, Keeper)> {
+    workspaces
         .iter()
         .filter_map(|c| {
-            let keeper = match (&c.bee, &c.bee_name, c.legacy_owner.as_deref()) {
-                (Some(id), name, _) => Keeper::Bee {
+            let keeper = match (&c.agent, &c.agent_name, c.legacy_owner.as_deref()) {
+                (Some(id), name, _) => Keeper::Agent {
                     id: id.clone(),
                     name: name.clone().unwrap_or_else(|| id.clone()),
                 },
                 (None, _, Some("owner")) => Keeper::Owner,
                 _ => return None,
             };
-            Some((c.cell.clone(), keeper))
+            Some((c.workspace.clone(), keeper))
         })
         .collect()
 }
@@ -139,7 +139,7 @@ pub struct Device {
     pub mem_total_kib: Option<u64>,
     pub mem_available_kib: Option<u64>,
     pub uptime_secs: Option<u64>,
-    /// Space where apps keep their data (`/var`, else `/`), from `comb_info`'s `disks`.
+    /// Space where apps keep their data (`/var`, else `/`), from `device_info`'s `disks`.
     pub disk: Option<Disk>,
 }
 
@@ -176,12 +176,12 @@ fn data_disk(info: &Value) -> Option<Disk> {
 
 /// Apps and devices at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HiveSnapshot {
+pub struct ClusterSnapshot {
     pub apps: Apps,
     pub devices: Vec<Device>,
 }
 
-impl Default for HiveSnapshot {
+impl Default for ClusterSnapshot {
     fn default() -> Self {
         Self {
             apps: Apps::Unknown,
@@ -204,12 +204,12 @@ pub fn phase_words(phase: &str) -> (Health, &'static str) {
     }
 }
 
-impl HiveSnapshot {
+impl ClusterSnapshot {
     /// Build from the tools' answers (None: tool missing or failed).
     pub fn from_tools(
         list_apps: Option<&Value>,
         cluster: Option<&Value>,
-        bee: Option<&Value>,
+        agent: Option<&Value>,
     ) -> Self {
         let apps = match list_apps {
             None => Apps::Unknown,
@@ -249,8 +249,8 @@ impl HiveSnapshot {
                 ..Device::default()
             })
             .collect();
-        if let Some(b) = bee {
-            // comb_info describes the device this daemon runs on. With one node that is it;
+        if let Some(b) = agent {
+            // device_info describes the device this daemon runs on. With one node that is it;
             // with several we can't tell which, so it becomes its own entry.
             if devices.len() != 1 {
                 devices.insert(
@@ -278,7 +278,7 @@ impl HiveSnapshot {
             for app in installed {
                 app.keeper = keepers
                     .iter()
-                    .find(|(cell, _)| *cell == app.name)
+                    .find(|(workspace, _)| *workspace == app.name)
                     .map(|(_, k)| k.clone());
             }
         }
@@ -287,30 +287,30 @@ impl HiveSnapshot {
 }
 
 struct Cached {
-    snap: Option<Arc<HiveSnapshot>>,
+    snap: Option<Arc<ClusterSnapshot>>,
     at: Option<Instant>,
     refreshing: bool,
 }
 
 /// The cached snapshot. Cheap to clone.
 #[derive(Clone)]
-pub struct HiveCache {
+pub struct ClusterCache {
     mcp: McpServer,
-    queen: Option<Queen>,
+    lead: Option<Lead>,
     cached: Arc<Mutex<Cached>>,
 }
 
-impl HiveCache {
+impl ClusterCache {
     /// How long an answer is fresh.
     pub const TTL: Duration = Duration::from_secs(30);
     /// Longest wait for one tool.
     const CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
-    /// `queen`: for who looks after which app (None: not shown).
-    pub fn new(mcp: McpServer, queen: Option<Queen>) -> Self {
+    /// `lead`: for who looks after which app (None: not shown).
+    pub fn new(mcp: McpServer, lead: Option<Lead>) -> Self {
         Self {
             mcp,
-            queen,
+            lead,
             cached: Arc::new(Mutex::new(Cached {
                 snap: None,
                 at: None,
@@ -321,7 +321,7 @@ impl HiveCache {
 
     /// The newest snapshot. The first call waits for the tools; later calls return the
     /// cached answer and refresh it in the background once it is stale.
-    pub async fn get(&self) -> Arc<HiveSnapshot> {
+    pub async fn get(&self) -> Arc<ClusterSnapshot> {
         let (snap, stale) = {
             let mut c = lock(&self.cached);
             let stale = c.at.is_none_or(|at| at.elapsed() > Self::TTL);
@@ -349,16 +349,16 @@ impl HiveCache {
         self.refresh().await;
     }
 
-    async fn refresh(&self) -> Arc<HiveSnapshot> {
-        let (apps, cluster, bee, cells) = tokio::join!(
+    async fn refresh(&self) -> Arc<ClusterSnapshot> {
+        let (apps, cluster, agent, workspaces) = tokio::join!(
             self.call("list_apps"),
             self.call("cluster_health"),
-            self.call("comb_info"),
-            self.cells(),
+            self.call("device_info"),
+            self.workspaces(),
         );
         let snap = Arc::new(
-            HiveSnapshot::from_tools(apps.as_ref(), cluster.as_ref(), bee.as_ref())
-                .with_keepers(keepers(&cells)),
+            ClusterSnapshot::from_tools(apps.as_ref(), cluster.as_ref(), agent.as_ref())
+                .with_keepers(keepers(&workspaces)),
         );
         let mut c = lock(&self.cached);
         c.snap = Some(snap.clone());
@@ -367,14 +367,14 @@ impl HiveCache {
         snap
     }
 
-    async fn cells(&self) -> Vec<CellView> {
-        let Some(queen) = &self.queen else {
+    async fn workspaces(&self) -> Vec<WorkspaceView> {
+        let Some(lead) = &self.lead else {
             return Vec::new();
         };
-        match tokio::time::timeout(Self::CALL_TIMEOUT, queen.bees().cells()).await {
-            Ok(Ok(cells)) => cells,
+        match tokio::time::timeout(Self::CALL_TIMEOUT, lead.agents().workspaces()).await {
+            Ok(Ok(workspaces)) => workspaces,
             Ok(Err(e)) => {
-                tracing::debug!("UI cell read failed: {e}");
+                tracing::debug!("UI workspace read failed: {e}");
                 Vec::new()
             }
             Err(_) => Vec::new(),
@@ -417,7 +417,7 @@ mod tests {
             {"path": "/", "total_bytes": 100, "available_bytes": 50, "used_percent": 50},
             {"path": "/var", "total_bytes": 100, "available_bytes": 14, "used_percent": 86},
         ]});
-        let snap = HiveSnapshot::from_tools(None, None, Some(&info));
+        let snap = ClusterSnapshot::from_tools(None, None, Some(&info));
         let disk = snap.devices[0].disk.clone().unwrap();
         assert_eq!(disk.path, "/var");
         assert!(disk.nearly_full());
@@ -425,12 +425,12 @@ mod tests {
         let info = json!({"disks": [
             {"path": "/", "total_bytes": 100, "available_bytes": 16, "used_percent": 84},
         ]});
-        let snap = HiveSnapshot::from_tools(None, None, Some(&info));
+        let snap = ClusterSnapshot::from_tools(None, None, Some(&info));
         let disk = snap.devices[0].disk.clone().unwrap();
         assert_eq!(disk.path, "/");
         assert!(!disk.nearly_full());
-        // Older comb_info without disks.
-        let snap = HiveSnapshot::from_tools(None, None, Some(&json!({})));
+        // Older device_info without disks.
+        let snap = ClusterSnapshot::from_tools(None, None, Some(&json!({})));
         assert_eq!(snap.devices[0].disk, None);
     }
 
@@ -451,7 +451,7 @@ mod tests {
                 "http://melissa.example.ts.net:30000",
             ),
             (Some("[2001:db8::1]:8080"), "http://[2001:db8::1]:30000"),
-            // Nothing usable: the queen's own link.
+            // Nothing usable: the lead agent's own link.
             (None, "http://192.0.2.15:30000"),
             (Some("evil\"><script>"), "http://192.0.2.15:30000"),
             (Some("[::1"), "http://192.0.2.15:30000"),
@@ -486,9 +486,9 @@ mod tests {
             "not_installed": ["jellyfin"],
         });
         let cluster =
-            json!({"nodes": [{"name": "comb-1", "ready": true, "allocatable": {"cpu": "4"}}]});
-        let bee = json!({"os": "Fedora Linux 45", "mem_total_kib": 8_000_000, "mem_available_kib": 2_000_000});
-        let s = HiveSnapshot::from_tools(Some(&apps), Some(&cluster), Some(&bee));
+            json!({"nodes": [{"name": "device-1", "ready": true, "allocatable": {"cpu": "4"}}]});
+        let agent = json!({"os": "Fedora Linux 45", "mem_total_kib": 8_000_000, "mem_available_kib": 2_000_000});
+        let s = ClusterSnapshot::from_tools(Some(&apps), Some(&cluster), Some(&agent));
         let Apps::Known {
             installed,
             available,
@@ -503,40 +503,41 @@ mod tests {
         assert_eq!(phase_words(&installed[1].phase).1, "Stopped");
         assert_eq!(available, &["jellyfin"]);
         assert_eq!(s.devices.len(), 1);
-        assert_eq!(s.devices[0].name, "comb-1");
+        assert_eq!(s.devices[0].name, "device-1");
         assert_eq!(s.devices[0].os.as_deref(), Some("Fedora Linux 45"));
         assert_eq!(s.devices[0].cpus.as_deref(), Some("4"));
 
-        let s = HiveSnapshot::from_tools(Some(&json!({"k3s_reachable": false})), None, Some(&bee));
+        let s =
+            ClusterSnapshot::from_tools(Some(&json!({"k3s_reachable": false})), None, Some(&agent));
         assert_eq!(s.apps, Apps::Unreachable);
         assert_eq!(s.devices[0].name, "This device");
         assert_eq!(
-            HiveSnapshot::from_tools(None, None, None),
-            HiveSnapshot::default()
+            ClusterSnapshot::from_tools(None, None, None),
+            ClusterSnapshot::default()
         );
 
-        let cell = |name: &str, bee: Option<&str>, legacy: Option<&str>| CellView {
-            cell: name.into(),
-            bee: bee.map(str::to_string),
-            bee_name: bee.map(|_| "Ada".to_string()),
-            comb: None,
+        let workspace = |name: &str, agent: Option<&str>, legacy: Option<&str>| WorkspaceView {
+            workspace: name.into(),
+            agent: agent.map(str::to_string),
+            agent_name: agent.map(|_| "Ada".to_string()),
+            device: None,
             assigned_by: None,
             assigned_at: None,
             legacy_owner: legacy.map(str::to_string),
         };
         let k = keepers(&[
-            cell("nextcloud", Some("c.b1"), None),
-            cell("immich", None, Some("owner")),
-            cell("old", None, Some("job-1")),
+            workspace("nextcloud", Some("d.a1"), None),
+            workspace("immich", None, Some("owner")),
+            workspace("old", None, Some("job-1")),
         ]);
-        let s = HiveSnapshot::from_tools(Some(&apps), None, None).with_keepers(k);
+        let s = ClusterSnapshot::from_tools(Some(&apps), None, None).with_keepers(k);
         let Apps::Known { installed, .. } = &s.apps else {
             panic!()
         };
         assert_eq!(
             installed[0].keeper,
-            Some(Keeper::Bee {
-                id: "c.b1".into(),
+            Some(Keeper::Agent {
+                id: "d.a1".into(),
                 name: "Ada".into()
             })
         );

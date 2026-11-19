@@ -1,7 +1,7 @@
 //! Which resolved addresses the egress proxy may connect to: public unicast only.
 //!
 //! Refused after DNS resolution, so a name that resolves (or rebinds) to the LAN, the
-//! bee itself, the tailnet (CGNAT `100.64.0.0/10`, ULA `fd7a:115c:a1e0::/48`) or a cloud
+//! agent itself, the tailnet (CGNAT `100.64.0.0/10`, ULA `fd7a:115c:a1e0::/48`) or a cloud
 //! metadata service (`169.254.169.254`) cannot be used to reach it.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

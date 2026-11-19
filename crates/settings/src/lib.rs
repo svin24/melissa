@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 //! Melissa's settings that the owner changes at runtime (the web UI's Settings pages and
-//! `melissa-queen provider|update`), kept apart from the hand-written `queen.toml`:
+//! `melissa-server provider|update`), kept apart from the hand-written `server.toml`:
 //!
 //! - [`providers`]: per agent CLI (claude, grok, opencode, echo, ...) overrides in
-//!   `$XDG_CONFIG_HOME/melissa/providers.toml`, merged over `queen.toml` at startup.
+//!   `$XDG_CONFIG_HOME/melissa/providers.toml`, merged over `server.toml` at startup.
 //! - [`version`]: the installed CLIs' `--version`, cached and timed out.
 //! - [`updates`]: this device's Melissa release and its container image state, read from what
-//!   the host helper writes; the fixed list of actions the queen may ask it for.
+//!   the host helper writes; the fixed list of actions the lead agent may ask it for.
 
 pub mod install;
 pub mod providers;

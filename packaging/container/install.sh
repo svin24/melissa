@@ -168,7 +168,7 @@ EOF
     systemctl enable -q --now melissa-update.path
 }
 
-# The app addresses for the queen's config: what people type before :port.
+# The app addresses for the server's config: what people type before :port.
 app_addresses() {
     if [ -n "${APP_ADDRESSES:-}" ]; then echo "$APP_ADDRESSES"; return; fi
     case "$BIND" in
@@ -179,12 +179,14 @@ app_addresses() {
     esac
 }
 
-# Write [apps] addresses and port_offset into the queen's config unless one exists already.
+# Write [apps] addresses and port_offset into the server's config unless one exists already.
 configure() {
     local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
-    if podman exec melissa test -e /etc/melissa/queen.toml; then
-        if [ "$offset" != 0 ] && ! podman exec melissa grep -qsx "port_offset = $offset" /etc/melissa/queen.toml; then
-            say "note: /etc/melissa/queen.toml has no 'port_offset = $offset' under [apps]; app links name the wrong port"
+    # Before the rename to generic terms (2026-11-19) the file was queen.toml: keep it.
+    podman exec melissa sh -c 'cd /etc/melissa && if [ -e queen.toml ] && [ ! -e server.toml ]; then mv queen.toml server.toml; fi' || true
+    if podman exec melissa test -e /etc/melissa/server.toml; then
+        if [ "$offset" != 0 ] && ! podman exec melissa grep -qsx "port_offset = $offset" /etc/melissa/server.toml; then
+            say "note: /etc/melissa/server.toml has no 'port_offset = $offset' under [apps]; app links name the wrong port"
         fi
         return 0
     fi
@@ -194,9 +196,9 @@ configure() {
     [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
     [ -n "$body" ] || return 0
     printf '# Written by install.sh: app links use these.\n[apps]\n%s' "$body" \
-        | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/queen.toml'
-    podman exec melissa systemctl try-restart melissa-queen
-    say "queen config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+        | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/server.toml'
+    podman exec melissa systemctl try-restart melissa-server
+    say "server config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
 }
 
 wait_for() { # seconds, description, command...
@@ -229,7 +231,7 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Web UI:     http://$UI_BIND:$UI_PORT/
   Apps:       ports $APP_PORT_BASE-$APP_PORT_LAST on $BIND
   Agents:     sudo podman exec -it melissa melissa-setup            (e.g. agent opencode)
-  Chat:       sudo podman exec -it melissa melissa-queen chat
+  Chat:       sudo podman exec -it melissa melissa-server chat
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
               (automatic: $AUTO_UPDATE)
   From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve

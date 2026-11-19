@@ -3,7 +3,7 @@
 # No NixOS, no extra tool. Prototype; see docs/agent-skills/nix-service.md ("Other distributions").
 #
 #   sudo nix profile install --profile /nix/var/nix/profiles/melissa <flake>#melissa-host
-#   sudo /nix/var/nix/profiles/melissa/bin/melissa-host install     # links units, starts the queen
+#   sudo /nix/var/nix/profiles/melissa/bin/melissa-host install     # links units, starts the server
 #   sudo nix profile upgrade --profile /nix/var/nix/profiles/melissa --all \
 #     && sudo /nix/var/nix/profiles/melissa/bin/melissa-host install   # update
 #   sudo /nix/var/nix/profiles/melissa/bin/melissa-host uninstall   # keeps /etc/melissa, /var/lib/melissa
@@ -12,7 +12,7 @@
 # plus `systemctl daemon-reload` and a restart (`nix profile rollback` goes back).
 #
 # k3s is not part of it: install k3s the distribution's way (on SELinux hosts with k3s-selinux, which
-# labels /usr/bin/k3s, not a store path), then `melissa-host install` links the queen's RBAC,
+# labels /usr/bin/k3s, not a store path), then `melissa-host install` links the server's RBAC,
 # admission policies and Traefik config into k3s's manifests directory and adds
 # melissa-kubeconfig.service.
 {
@@ -36,7 +36,7 @@ let
 
   kubeconfigUnit = ''
     [Unit]
-    Description=Melissa queen's k3s credentials (read-only ServiceAccount kubeconfig)
+    Description=Melissa server's k3s credentials (read-only ServiceAccount kubeconfig)
     After=k3s.service
     ConditionPathExists=/etc/rancher/k3s/k3s.yaml
 
@@ -64,15 +64,24 @@ let
 
     case ''${1:-} in
       install)
-        link "$base/lib/systemd/system/melissa-queen.service" /etc/systemd/system/melissa-queen.service
-        link "$base/lib/melissa-host/10-nix.conf" /etc/systemd/system/melissa-queen.service.d/10-nix.conf
+        # Before the rename to generic terms (2026-11-19) the unit was melissa-queen: retire it
+        # (state and config migrate when melissa-server starts). Not the Alias= link that enabling
+        # melissa-server.service makes, which points at melissa-server.service.
+        if case "$(readlink /etc/systemd/system/melissa-queen.service 2>/dev/null)" in
+             */melissa-queen.service) true ;; *) false ;; esac; then
+          systemctl disable --now melissa-queen.service 2>/dev/null || true
+          rm -f /etc/systemd/system/melissa-queen.service /usr/local/bin/melissa-queen
+          rm -rf /etc/systemd/system/melissa-queen.service.d
+        fi
+        link "$base/lib/systemd/system/melissa-server.service" /etc/systemd/system/melissa-server.service
+        link "$base/lib/melissa-host/10-nix.conf" /etc/systemd/system/melissa-server.service.d/10-nix.conf
         link "$base/lib/sysusers.d/melissa.conf" /etc/sysusers.d/melissa.conf
         for f in melissa-config melissa-home melissa-kube; do
           link "$base/lib/tmpfiles.d/$f.conf" "/etc/tmpfiles.d/$f.conf"
         done
         # polkit reads /etc/polkit-1/rules.d; a copy, since polkitd may not follow links into /nix.
         install -D -m 0644 "$base/share/polkit-1/rules.d/50-melissa.rules" /etc/polkit-1/rules.d/50-melissa.rules
-        for b in melissa-queen melissa-setup; do link "$base/bin/$b" "/usr/local/bin/$b"; done
+        for b in melissa-server melissa-setup; do link "$base/bin/$b" "/usr/local/bin/$b"; done
         systemd-sysusers /etc/sysusers.d/melissa.conf
         systemd-tmpfiles --create /etc/tmpfiles.d/melissa-config.conf /etc/tmpfiles.d/melissa-home.conf \
           /etc/tmpfiles.d/melissa-kube.conf
@@ -86,20 +95,20 @@ let
           systemctl daemon-reload
           systemctl enable melissa-kubeconfig.service
         else
-          echo "melissa-host: no k3s here; apps need k3s (see nix-service.md). The queen runs without it."
+          echo "melissa-host: no k3s here; apps need k3s (see nix-service.md). The server runs without it."
         fi
         systemctl daemon-reload
-        systemctl enable melissa-queen.service
-        systemctl restart melissa-queen.service
+        systemctl enable melissa-server.service
+        systemctl restart melissa-server.service
         echo "melissa-host: installed $(sed -n 's/^MELISSA_VERSION=//p' "$base/lib/melissa/release"); web UI on http://127.0.0.1:8080"
         ;;
       uninstall)
-        systemctl disable --now melissa-queen.service melissa-kubeconfig.service 2>/dev/null || true
-        rm -f /etc/systemd/system/melissa-queen.service /etc/systemd/system/melissa-kubeconfig.service \
+        systemctl disable --now melissa-server.service melissa-kubeconfig.service 2>/dev/null || true
+        rm -f /etc/systemd/system/melissa-server.service /etc/systemd/system/melissa-kubeconfig.service \
           /etc/sysusers.d/melissa.conf /etc/tmpfiles.d/melissa-config.conf /etc/tmpfiles.d/melissa-home.conf \
           /etc/tmpfiles.d/melissa-kube.conf /etc/polkit-1/rules.d/50-melissa.rules \
-          /usr/local/bin/melissa-queen /usr/local/bin/melissa-setup
-        rm -rf /etc/systemd/system/melissa-queen.service.d
+          /usr/local/bin/melissa-server /usr/local/bin/melissa-setup
+        rm -rf /etc/systemd/system/melissa-server.service.d
         rm -f /var/lib/rancher/k3s/server/manifests/melissa-*.yaml
         systemctl daemon-reload
         echo "melissa-host: removed; /etc/melissa and /var/lib/melissa are kept"

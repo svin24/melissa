@@ -8,9 +8,9 @@
 #   melissa-host-update apply      pull the newer image and restart Melissa on it; if it does not
 #                                  come up, go back to the image it ran before
 #   melissa-host-update rollback   restart Melissa on the previous image
-#   melissa-host-update requests   melissa-update.service: carry out what the queen asked for
+#   melissa-host-update requests   melissa-update.service: carry out what the server asked for
 #
-# The queen (inside the container, unprivileged) asks by creating an empty file named check, apply
+# The server (inside the container, unprivileged) asks by creating an empty file named check, apply
 # or rollback in /var/lib/melissa-container/request (bind-mounted at /run/melissa-update-request).
 # Only those names are acted on; file contents are never read and nothing else travels from the web.
 # Results go to /var/lib/melissa-container/status (root, read-only inside at /run/melissa-update):
@@ -110,11 +110,12 @@ status() { # status [available-json]
         | write status.json
 }
 
-wait_up() { # wait until Melissa runs <image id> and its queen is active (or time out)
+wait_up() { # wait until Melissa runs <image id> and its server is active (or time out)
     local want=$1 end=$(( $(date +%s) + 180 ))
     while [ "$(date +%s)" -lt "$end" ]; do
         if systemctl is-active -q "$UNIT" && [ "$(running_id)" = "$want" ] \
-            && podman exec "$NAME" systemctl is-active -q melissa-queen.service 2>/dev/null; then
+            && { podman exec "$NAME" systemctl is-active -q melissa-server.service 2>/dev/null \
+                || podman exec "$NAME" systemctl is-active -q melissa-queen.service 2>/dev/null; }; then
             return 0
         fi
         sleep 3

@@ -5,7 +5,7 @@
 #   nix build .#checks.x86_64-linux.melissa-nixos -L        (KVM; about 10 minutes)
 #   nix run .#checks.x86_64-linux.melissa-nixos.driverInteractive   (debug: start_all(), ...)
 #
-# Checked: the queen starts, the UI answers on loopback only, an echo chat turn, the sandbox and
+# Checked: the server starts, the UI answers on loopback only, an echo chat turn, the sandbox and
 # egress integration tests as the `melissa` user (bwrap, own netns, netbridge, proxy), a
 # vendor-style binary (/lib64 loader) running in the sandbox through nix-ld, k3s Ready, Melissa's
 # RBAC and admission policies applied, an app install from the catalog whose NodePort answers
@@ -99,9 +99,9 @@ pkgs.testers.runNixOSTest {
           airgapImages = true;
           images = [ helloImage ];
         };
-        settings.queen.backends = [ "echo-chat" ];
+        settings.lead.backends = [ "echo-chat" ];
         backends = [
-          # The Queen's session partner (no LLM): repeats the message.
+          # The server's session partner (no LLM): repeats the message.
           {
             kind = "echo";
             name = "echo-chat";
@@ -168,8 +168,8 @@ pkgs.testers.runNixOSTest {
 
     start_all()
 
-    with subtest("queen starts, UI on loopback only"):
-        server.wait_for_unit("melissa-queen.service")
+    with subtest("server starts, UI on loopback only"):
+        server.wait_for_unit("melissa-server.service")
         server.wait_for_open_port(8080, addr="127.0.0.1")
         assert api("/healthz").strip() == "ok"
         server.succeed("curl -sSfL http://127.0.0.1:8080/tasks | grep -qi melissa")
@@ -178,14 +178,14 @@ pkgs.testers.runNixOSTest {
         assert listen == ["127.0.0.1:8080"], listen
         client.wait_for_unit("multi-user.target")
         client.fail("curl -sS --max-time 5 http://${serverIp}:8080/healthz")
-        server.succeed("systemctl show -p User --value melissa-queen | grep -qx melissa")
+        server.succeed("systemctl show -p User --value melissa-server | grep -qx melissa")
         server.succeed("stat -c '%U %a' /etc/melissa | grep -qx 'melissa 750'")
 
     with subtest("chat turn on the echo backend"):
-        rc, out = server.execute("melissa-queen ask 'hello from nixos' 2>&1")
+        rc, out = server.execute("melissa-server ask 'hello from nixos' 2>&1")
         print(out)
         if rc != 0 or "echo: hello from nixos" not in out:
-            print(server.execute("journalctl -u melissa-queen --no-pager | tail -40")[1])
+            print(server.execute("journalctl -u melissa-server --no-pager | tail -40")[1])
             raise Exception("no echo reply")
 
     with subtest("sandbox and egress integration tests as the melissa user"):
@@ -204,7 +204,7 @@ pkgs.testers.runNixOSTest {
             "/var/lib/melissa/home/.local/bin/foreign-hello"
         )
         server.succeed("runuser -u melissa -- /var/lib/melissa/home/.local/bin/foreign-hello -g direct | grep -qx direct")
-        server.succeed("systemctl restart melissa-queen.service")
+        server.succeed("systemctl restart melissa-server.service")
         server.wait_for_open_port(8080, addr="127.0.0.1")
         server.succeed(
             "curl -sS -o /dev/null -w '%{redirect_url}' -d backend=foreign -d prompt=sandboxed-hello "
@@ -218,14 +218,14 @@ pkgs.testers.runNixOSTest {
         server.succeed("k3s kubectl get node --show-labels | grep -q melissa.io/managed=true")
         # The shared k3s-node-ip pinned the default-route IPv4 (k3s's ExecStartPre).
         server.succeed("grep -qE '^MELISSA_K3S_ARGS=--node-ip=[0-9.]+$' /run/melissa-k3s/env")
-        server.wait_until_succeeds("k3s kubectl -n melissa get serviceaccount melissa-queen melissa-apps", timeout=120)
+        server.wait_until_succeeds("k3s kubectl -n melissa get serviceaccount melissa-server melissa-apps", timeout=120)
         server.wait_until_succeeds("test -n \"$(k3s kubectl get validatingadmissionpolicy -o name)\"", timeout=120)
         print(kubectl("get validatingadmissionpolicy,validatingadmissionpolicybinding -o name"))
         server.wait_for_unit("melissa-kubeconfig.service", timeout=330)
-        server.succeed("stat -c '%U %G %a' /run/melissa-kube/queen.kubeconfig | grep -qx 'root melissa-kube 640'")
-        # The queen's identity is read-only; its write identity cannot touch other namespaces.
-        server.succeed("k3s kubectl --kubeconfig /run/melissa-kube/queen.kubeconfig get nodes")
-        server.fail("k3s kubectl --kubeconfig /run/melissa-kube/queen.kubeconfig -n default create configmap x")
+        server.succeed("stat -c '%U %G %a' /run/melissa-kube/server.kubeconfig | grep -qx 'root melissa-kube 640'")
+        # The server's identity is read-only; its write identity cannot touch other namespaces.
+        server.succeed("k3s kubectl --kubeconfig /run/melissa-kube/server.kubeconfig get nodes")
+        server.fail("k3s kubectl --kubeconfig /run/melissa-kube/server.kubeconfig -n default create configmap x")
         server.fail("k3s kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig -n kube-system get secrets")
         out = tool("cluster_health", {})
         print(out)
@@ -269,9 +269,9 @@ pkgs.testers.runNixOSTest {
         print(api("/api/settings/providers/foreign-hello", body={"display_name": "Foreign (test)"}))
         server.succeed("stat -c '%U %a' /etc/melissa/providers.toml | grep -qx 'melissa 600'")
         server.succeed("grep -q 'Foreign (test)' /etc/melissa/providers.toml")
-        before = server.succeed("systemctl show -p InvocationID --value melissa-queen").strip()
+        before = server.succeed("systemctl show -p InvocationID --value melissa-server").strip()
         print(api("/api/settings/updates/restart", body={"confirm": True}))
-        server.wait_until_succeeds(f"test \"$(systemctl show -p InvocationID --value melissa-queen)\" != {before}", timeout=60)
+        server.wait_until_succeeds(f"test \"$(systemctl show -p InvocationID --value melissa-server)\" != {before}", timeout=60)
         server.wait_for_open_port(8080, addr="127.0.0.1")
         updates = json.loads(api("/api/settings/updates"))
         print(updates)

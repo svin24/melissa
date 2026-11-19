@@ -1,13 +1,13 @@
 //! Provider settings: the owner's overrides per agent CLI ("provider"), written by the web UI
-//! and `melissa-queen provider set`, in `$XDG_CONFIG_HOME/melissa/providers.toml` (mode 0600).
+//! and `melissa-server provider set`, in `$XDG_CONFIG_HOME/melissa/providers.toml` (mode 0600).
 //!
 //! A provider is an agent program, named by its file name: `claude`, `grok`, `opencode`,
 //! `echo` (Melissa's built-in test partner), or the file name of any other `[[backend]]`
 //! command. One provider can back several backends (`grok` runs `grok-acp` and the one-shot
 //! `grok`); its overrides apply to all of them.
 //!
-//! Precedence, lowest first: built-in defaults < `queen.toml` < `providers.toml`. The queen
-//! merges them once at startup (`QueenConfig::apply_providers`); a change made while it runs
+//! Precedence, lowest first: built-in defaults < `server.toml` < `providers.toml`. The lead agent
+//! merges them once at startup (`ServerConfig::apply_providers`); a change made while it runs
 //! is saved at once and used after the next restart (the UI says so).
 //!
 //! ```toml
@@ -88,11 +88,11 @@ pub struct ProviderFile {
     pub providers: BTreeMap<String, ProviderOverride>,
 }
 
-/// One provider's overrides. Absent fields leave `queen.toml` (or the default) as it is.
+/// One provider's overrides. Absent fields leave `server.toml` (or the default) as it is.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderOverride {
-    /// False: its backends are left out at startup (the Queen and bees can't use it).
+    /// False: its backends are left out at startup (the lead agent and agents can't use it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// The name the UI shows.
@@ -184,7 +184,7 @@ pub struct BackendFacts {
     pub name: String,
     /// Its provider ([`provider_id`] of the command, or `echo`).
     pub provider: String,
-    /// A session backend (the Queen and bees); else one-shot (agent tasks).
+    /// A session backend (the lead agent and agents); else one-shot (agent tasks).
     pub session: bool,
     /// The program it runs (None: built into Melissa).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -378,8 +378,8 @@ impl ProviderFile {
 
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
         let mut text = String::from(
-            "# Melissa provider settings, written by the web UI and `melissa-queen provider`.\n\
-             # Merged over queen.toml when Melissa starts. Holds secrets: keep it mode 0600.\n\n",
+            "# Melissa provider settings, written by the web UI and `melissa-server provider`.\n\
+             # Merged over server.toml when Melissa starts. Holds secrets: keep it mode 0600.\n\n",
         );
         text.push_str(&toml::to_string(self).map_err(|e| SettingsError::Failed(e.to_string()))?);
         write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {

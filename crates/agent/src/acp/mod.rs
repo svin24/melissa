@@ -2,8 +2,8 @@
 //! agent's stdin/stdout, e.g. `grok agent stdio`.
 //!
 //! [`AcpBackend`] spawns the agent under the bubblewrap sandbox ([`crate::sandbox`]) and
-//! implements both [`SessionBackend`] (open a session, many prompts: the Queen) and
-//! [`Backend`] (one task = one session with one prompt: bees on the task board).
+//! implements both [`SessionBackend`] (open a session, many prompts: the lead agent) and
+//! [`Backend`] (one task = one session with one prompt: agents on the task board).
 //! Melissa declares no client file system or terminal capabilities: the agent acts through
 //! its own sandboxed tools (each asked through `session/request_permission`, answered by
 //! [`PolicyPermissions`]) and through Melissa's MCP tools.
@@ -64,7 +64,7 @@ pub fn flavor_for(command: &str) -> AcpFlavor {
     }
 }
 
-/// Configuration of one ACP backend (`kind = "acp"` in the queen config).
+/// Configuration of one ACP backend (`kind = "acp"` in the lead agent config).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcpSpec {
@@ -97,7 +97,7 @@ pub struct AcpSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_dir: Option<PathBuf>,
     /// Where the agent keeps its sessions, relative to `$HOME` (e.g. `.grok/sessions`).
-    /// For sessions opened with a [`OpenSession::state_dir`] (the Queen), that Melissa-owned
+    /// For sessions opened with a [`OpenSession::state_dir`] (the lead agent), that Melissa-owned
     /// directory is bound here inside the sandbox so the session can be resumed later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_store: Option<String>,

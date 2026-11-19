@@ -23,7 +23,7 @@ pub const SECTIONS: [(&str, &str); 3] = [
     (DEVELOPER_URL, "Developer"),
 ];
 
-/// The Developer section: Agent tasks (`/tasks` redirects here when the Queen is present).
+/// The Developer section: Agent tasks (`/tasks` redirects here when the lead agent is present).
 pub const DEVELOPER_URL: &str = "/settings/developer";
 
 /// DOM id of the Providers region (forms swap it).

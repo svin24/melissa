@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use super::*;
-use crate::tools::{CombInfo, TaskContext, Tool, ToolRegistry};
+use crate::tools::{DeviceInfo, TaskContext, Tool, ToolRegistry};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("melissa-egress-{name}-{}", std::process::id()));
@@ -278,7 +278,7 @@ async fn http(dir: &Path, method: &str, path: &str, body: &str) -> (u16, String)
 #[tokio::test]
 async fn mcp_socket_serves_only_its_own_tokens() {
     let root = scratch("mcp");
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CombInfo::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(DeviceInfo::new())];
     let server = McpServer::new(ToolRegistry::new(tools, None));
     let mine = server
         .open_session(7, TaskContext::default(), None)
@@ -307,13 +307,13 @@ async fn mcp_socket_serves_only_its_own_tokens() {
     let (status, body) = http(&dir, "POST", &format!("/mcp/{mine}"), &list).await;
     assert_eq!(status, 200);
     let reply: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(reply["result"]["tools"][0]["name"], "comb_info");
-    // Another task's token, the rest of the queen's API, other methods: refused.
+    assert_eq!(reply["result"]["tools"][0]["name"], "device_info");
+    // Another task's token, the rest of the lead agent's API, other methods: refused.
     assert_eq!(
         http(&dir, "POST", &format!("/mcp/{other}"), &list).await.0,
         404
     );
-    assert_eq!(http(&dir, "POST", "/api/queen/messages", "{}").await.0, 404);
+    assert_eq!(http(&dir, "POST", "/api/lead/messages", "{}").await.0, 404);
     assert_eq!(
         http(&dir, "POST", "/api/confirmations/1/approve", "")
             .await
@@ -376,7 +376,7 @@ async fn startup_keeps_live_leases_and_rejects_long_paths() {
     let stale = sockets.join("0123456789abcdef");
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join(EGRESS_SOCKET), "").unwrap();
-    // A second queen on the same directory removes only the dead lease.
+    // A second lead agent on the same directory removes only the dead lease.
     let _second = EgressProxy::new(sockets.clone(), None).unwrap();
     assert!(live_dir.exists());
     assert!(!stale.exists());

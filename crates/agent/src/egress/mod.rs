@@ -2,11 +2,11 @@
 //!
 //! A sandboxed agent runs in its own network namespace (`bwrap --unshare-net`) with only
 //! loopback. Inside, `melissa-netbridge` listens on loopback ports and forwards every TCP
-//! connection over a Unix socket that is bound into the sandbox; the queen side of each
+//! connection over a Unix socket that is bound into the sandbox; the lead agent side of each
 //! socket is served here:
 //!
 //! - `egress.sock`: an HTTP `CONNECT` proxy (no TLS interception). A tunnel is opened only
-//!   to hosts on the backend's allowlist (default port 443), resolved by the queen, and only
+//!   to hosts on the backend's allowlist (default port 443), resolved by the lead agent, and only
 //!   to public addresses (no loopback, LAN, link-local, CGNAT/tailnet, multicast; checked
 //!   after resolution, so DNS rebinding cannot reach the LAN). Every decision is audited
 //!   (`egress.allow` / `egress.deny` / `egress.error`, host and port, never payload).
@@ -49,9 +49,9 @@ use crate::{mcp::McpServer, sandbox::Bridge, AuditLog, AuditRecord, TaskId};
 /// Socket file names inside a lease directory (and inside the sandbox).
 pub const EGRESS_SOCKET: &str = "egress.sock";
 pub const MCP_SOCKET: &str = "mcp.sock";
-/// Name of the bridge binary, installed next to `melissa-queen`.
+/// Name of the bridge binary, installed next to `melissa-server`.
 pub const NETBRIDGE: &str = "melissa-netbridge";
-/// Loopback port of the proxy inside the sandbox (the MCP port is the queen's own).
+/// Loopback port of the proxy inside the sandbox (the MCP port is the lead agent's own).
 const PROXY_PORT: u16 = 3128;
 
 /// How a sandboxed agent reaches the network (`network = "..."` in `[backend.sandbox]`).
@@ -135,7 +135,7 @@ impl Default for EgressLimits {
 pub enum EgressError {
     #[error("egress proxy i/o: {0}")]
     Io(#[from] std::io::Error),
-    #[error("`{NETBRIDGE}` was not found next to the queen binary, in /usr/bin or on PATH")]
+    #[error("`{NETBRIDGE}` was not found next to the lead binary, in /usr/bin or on PATH")]
     NoNetbridge,
 }
 
@@ -150,7 +150,7 @@ struct ProxyInner {
     overrides: HashMap<String, Vec<IpAddr>>,
 }
 
-/// The queen side of every sandbox's network. Cheap to clone.
+/// The lead agent side of every sandbox's network. Cheap to clone.
 #[derive(Clone)]
 pub struct EgressProxy {
     inner: Arc<ProxyInner>,
@@ -238,7 +238,7 @@ impl EgressProxy {
         Arc::make_mut(&mut self.inner)
     }
 
-    /// Serve Melissa's MCP endpoint into sandboxes, at `addr` inside them (the queen's own
+    /// Serve Melissa's MCP endpoint into sandboxes, at `addr` inside them (the lead agent's own
     /// listen address, so MCP URLs are the same inside and outside).
     pub fn with_mcp(mut self, server: McpServer, addr: SocketAddr) -> Self {
         self.inner_mut().mcp = Some((server, addr));
@@ -337,8 +337,8 @@ pub fn find_netbridge() -> Option<PathBuf> {
         .or_else(|| crate::cli::resolve_program(NETBRIDGE))
 }
 
-/// Remove lease directories left behind by a queen that died. A directory whose sockets
-/// still accept connections belongs to a running queen (sharing the runtime dir) and stays.
+/// Remove lease directories left behind by a lead agent that died. A directory whose sockets
+/// still accept connections belongs to a running lead agent (sharing the runtime dir) and stays.
 fn remove_stale_leases(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

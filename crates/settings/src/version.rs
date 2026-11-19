@@ -1,6 +1,6 @@
 //! The installed agent CLIs: where the program is and what `--version` says.
 //!
-//! `--version` runs as the queen's user, outside the sandbox (it only prints), with a clean
+//! `--version` runs as the lead agent's user, outside the sandbox (it only prints), with a clean
 //! environment (PATH, HOME, NO_COLOR), no stdin, a 5 s timeout and the answer cached for
 //! 10 minutes ("Check again" forgets it). Its output is untrusted: cleaned and cut short.
 

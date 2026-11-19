@@ -7,14 +7,14 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
 ## Layout
 - `flake.nix` outputs (besides `devShells`):
   - `packages.<system>.melissa` (= `default`): two derivations. `passthru.unwrapped` is
-    `rustPlatform.buildRustPackage` from `Cargo.lock` (`-p melissa-queen -p melissa-comb -p melissa-agent`;
+    `rustPlatform.buildRustPackage` from `Cargo.lock` (`-p melissa-server -p melissa-device -p melissa-agent`;
     rust-embed reads `crates/web/assets` at build time, so the UI is in the binary). The outer one links
-    its binaries and adds the catalog, the k3s manifests, the shared queen unit (ExecStart pointed at the
+    its binaries and adds the catalog, the k3s manifests, the shared lead agent unit (ExecStart pointed at the
     store), tmpfiles, the polkit rule, `melissa-setup`, `libexec/melissa/{melissa-kubeconfig,k3s-node-ip}`
     (paths substituted, tools wrapped) and `lib/melissa/release`. A new revision or packaging change
     rebuilds only the outer one.
   - `lib/melissa/release`: `MELISSA_VERSION`, `MELISSA_REVISION` (the flake's `self.shortRev` or
-    `dirtyShortRev`) and `MELISSA_RUNTIME=nix`, like the container's `/usr/lib/melissa/release`. The queen
+    `dirtyShortRev`) and `MELISSA_RUNTIME=nix`, like the container's `/usr/lib/melissa/release`. The lead agent
     reads `/usr/lib/melissa/release` unless **`MELISSA_RELEASE_FILE`** names another file; the module and
     the `melissa-host` drop-in set it to the store copy. `MELISSA_RUNTIME=nix` makes Settings treat the
     install as Nix (`HostKind::Nix`).
@@ -25,7 +25,7 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
   - `checks.x86_64-linux.melissa-nixos`: the VM test.
 - `packaging/nix/common.nix`: **one** variable, `root` = `packaging/common` (the files every packaging
   shares, paths mirroring the install layout; see `packaging/common/README.md`). Never copy those files
-  into `packaging/nix`. Used from there: the queen unit, tmpfiles `melissa-{config,home,kube}`, sysusers
+  into `packaging/nix`. Used from there: the lead agent unit, tmpfiles `melissa-{config,home,kube}`, sysusers
   (melissa-host), the polkit rule, `melissa-setup`, `melissa-kubeconfig`, `k3s-node-ip`, the k3s
   manifests and `etc/rancher/k3s/config.yaml.d/10-melissa.yaml`. Not used: `k3s.service`,
   `k3s-prepare`, `k3s.lock`, `melissa-kubeconfig.service` (nixpkgs' k3s and a native unit instead).
@@ -38,9 +38,9 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
 |---|---|---|
 | `enable` | false | everything below |
 | `package` | flake's `melissa` | |
-| `listen` | `127.0.0.1:8080` | `listen` (the queen refuses non-loopback: no login yet) |
+| `listen` | `127.0.0.1:8080` | `listen` (the lead agent refuses non-loopback: no login yet) |
 | `backends` | `[]` | extra `[[backend]]` entries |
-| `settings` | `{}` | free-form queen.toml, merged last |
+| `settings` | `{}` | free-form server.toml, merged last |
 | `apps.catalog` | package's catalog | `[apps] catalog` |
 | `apps.addresses` | null (auto) | `[apps] addresses` |
 | `apps.portOffset` | 0 | `[apps] port_offset` |
@@ -51,13 +51,13 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
 | `k3s.images` | `[]` | more image archives (the VM test's app) |
 | `k3s.nodeIp` | null | null: default-route IPv4 pinned at each start by the shared `k3s-node-ip` (as `k3s-prepare` does) |
 | `agents.nixLd` | true | `programs.nix-ld.enable` |
-| `agents.packages` | `[]` | **the** way to add Claude Code, Grok, OpenCode on NixOS: CLIs from Nix on the queen's PATH (file name must stay `claude`/`grok`/`opencode`) |
+| `agents.packages` | `[]` | **the** way to add Claude Code, Grok, OpenCode on NixOS: CLIs from Nix on the lead agent's PATH (file name must stay `claude`/`grok`/`opencode`) |
 
 What it sets: users `melissa` (home `/var/lib/melissa/home`, nologin) and groups `melissa`,
 `melissa-kube`; `systemd.packages`/`systemd.tmpfiles.packages` = the package, so the **shared**
-melissa-queen.service (hardening, State/Configuration/RuntimeDirectory, XDG mapping) is used as is, plus a
+melissa-server.service (hardening, State/Configuration/RuntimeDirectory, XDG mapping) is used as is, plus a
 NixOS drop-in for PATH (agent CLIs in the home, bubblewrap, `/run/current-system/sw`) and
-`MELISSA_RELEASE_FILE=<package>/lib/melissa/release`; `/etc/melissa/queen.toml` (store symlink, restart
+`MELISSA_RELEASE_FILE=<package>/lib/melissa/release`; `/etc/melissa/server.toml` (store symlink, restart
 trigger; the dir stays melissa:melissa 0750 for `providers.toml`); k3s with the shared
 `/etc/rancher/k3s/config.yaml.d/10-melissa.yaml` (kubeconfig mode 0600, node label
 `melissa.io/managed=true`; no SELinux setting, that is per packaging), Melissa's manifests as `services.k3s.manifests`
@@ -95,7 +95,7 @@ binary is named `grok`). Settings → Providers does not offer installing agents
 to add the provider through the Nix configuration. Log in with `sudo melissa-setup login <name>`.
 
 By hand (fallback): `sudo melissa-setup agent <claude|grok|opencode>` works as in the container: it downloads the vendor's
-installer and runs it as `melissa` into `/var/lib/melissa/home` (writable; the queen's StateDirectory). The
+installer and runs it as `melissa` into `/var/lib/melissa/home` (writable; the lead agent's StateDirectory). The
 package substitutes the installer's PATH (coreutils, curl, tar, unzip, ... and `/run/current-system/sw/bin`).
 The installed CLIs are prebuilt glibc binaries with `/lib64/ld-linux-x86-64.so.2`: they run through
 **nix-ld** (`agents.nixLd`, default on), inside the sandbox too (it binds `/lib64` and
@@ -105,8 +105,8 @@ write into the home, which is fine.
 ## VM test (passes 2026-11-19, 111 s of VM time after the builds)
 | feature | checked |
 |---|---|
-| web UI | queen active as `melissa`; `/healthz`, `/tasks` on 127.0.0.1:8080; only a loopback listener; the LAN client can't connect |
-| chat turn | `melissa-queen ask` on an echo session backend |
+| web UI | lead agent active as `melissa`; `/healthz`, `/tasks` on 127.0.0.1:8080; only a loopback listener; the LAN client can't connect |
+| chat turn | `melissa-server ask` on an echo session backend |
 | sandbox / egress | `melissa-it-sandbox`, `melissa-it-egress` as `melissa`: bwrap, own netns, netbridge, proxy allowlist, MCP, no leaks, no skips |
 | vendor CLI via nix-ld | a /lib64-loader binary as a CLI backend task, inside the sandbox |
 | k3s | node Ready (v1.37.1), `melissa.io/managed` label, Traefik rolled out offline (airgap images) |
@@ -124,8 +124,8 @@ The test app's catalog entry is written at test time with the digest k3s reports
 ## Other distributions with Nix (prototype: `melissa-host`)
 `packages.<system>.melissa-host` = the package + sysusers file + a PATH drop-in (vendor CLIs, `/usr/bin`
 with the distribution's bwrap) + `bin/melissa-host install|uninstall`, which links units, sysusers,
-tmpfiles into `/etc`, copies the polkit rule, links `melissa-queen`/`melissa-setup` into
-`/usr/local/bin`, runs sysusers/tmpfiles and starts the queen. The GC root is a root profile:
+tmpfiles into `/etc`, copies the polkit rule, links `melissa-server`/`melissa-setup` into
+`/usr/local/bin`, runs sysusers/tmpfiles and starts the lead agent. The GC root is a root profile:
 ```
 sudo nix profile install --profile /nix/var/nix/profiles/melissa <flake>#melissa-host
 sudo /nix/var/nix/profiles/melissa/bin/melissa-host install
@@ -143,7 +143,7 @@ other distros behind `allowAnyDistro` ("unsupported and untested"); firewall onl
 Only the host's own systemd-logind handles the lid switch, power keys and input devices. The module and
 the `melissa-host` bundle add no logind, no `services.logind` / `HandleLidSwitch` settings, no udev rules,
 no access to `/dev/input`, and no inhibitors. (Found 2026-11-19: a privileged rootful container running its
-own logind saw the host's lid switch and suspended the laptop.) The queen unit runs as `melissa` with
+own logind saw the host's lid switch and suspended the laptop.) The lead agent unit runs as `melissa` with
 `ProtectSystem=strict`, and k3s pods get the default device cgroup. Keep it that way. A review of any new
 unit or option should check it.
 
@@ -151,10 +151,10 @@ unit or option should check it.
 - `nix build` of the package is ~3 min cold (full release build); the integration tests build it again.
 - The local tool API (`POST /api/tools/<name>`) is unattended: `install_app`, `stop_app`, `start_app` wait in the
   confirmation inbox; the VM test approves them through `/api/confirmations/<id>/approve`.
-- The built-in `echo` is a task backend only; a Queen chat on echo needs a `[[backend]] kind = "echo"` entry.
+- The built-in `echo` is a task backend only; a lead agent chat on echo needs a `[[backend]] kind = "echo"` entry.
 - Settings' restart button needs only Melissa's polkit rule (`UpdateEnv::can_restart`: `/usr/share`,
   `/etc` or NixOS's `/run/current-system/sw/share`), not the container's host update helper. The rule allows
-  restarting `melissa-queen.service` only.
+  restarting `melissa-server.service` only.
 - `patchShebangs` only finds interpreters in `buildInputs`: `bash` must be there for `melissa-setup`.
 - `git add -N` new files before `nix build .#...`: flakes only see tracked files.
 - The k3s module's `ExecStart` does not escape `extraFlags`, so `"$MELISSA_K3S_ARGS"` is expanded by systemd

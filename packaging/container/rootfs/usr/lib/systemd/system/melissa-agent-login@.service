@@ -1,5 +1,5 @@
 # Sign one agent CLI in from Settings → Providers → Sign in. The polkit rule
-# 51-melissa-agent-install.rules (container image only) lets the queen (user `melissa`) start only
+# 51-melissa-agent-install.rules (container image only) lets the server (user `melissa`) start only
 # the instances `claude` and `grok`; melissa-setup checks the name again.
 # - grok: a device code; the vendor's URL and code go to the log, nothing comes back.
 # - claude: the vendor's URL goes to the log; the code the person pastes on the page comes back

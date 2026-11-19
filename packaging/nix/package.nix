@@ -1,17 +1,17 @@
 # Melissa as a Nix package: the Rust binaries (built from Cargo.lock), the app catalog, and the
 # host-agnostic system files from `common.nix` with their /usr paths pointed at the store.
 #
-#   bin/melissa-queen, melissa-comb, melissa-netbridge   the workspace binaries
+#   bin/melissa-server, melissa-device, melissa-netbridge   the workspace binaries
 #   bin/melissa-setup                                     agent CLI installer (vendor installers)
-#   libexec/melissa/melissa-kubeconfig                    root helper: the queen's k3s credentials
+#   libexec/melissa/melissa-kubeconfig                    root helper: the server's k3s credentials
 #   libexec/melissa/k3s-node-ip                           pins k3s's node IP (shared with k3s-prepare)
-#   lib/systemd/system/melissa-queen.service              the shared unit, ExecStart in the store
+#   lib/systemd/system/melissa-server.service              the shared unit, ExecStart in the store
 #   lib/tmpfiles.d/melissa-{config,home,kube}.conf        the shared tmpfiles rules
 #   share/melissa/catalog/*.toml                          the reviewed app manifests
 #   share/melissa/k3s/manifests/*.yaml                    RBAC, admission policies, Traefik config
-#   share/polkit-1/rules.d/50-melissa.rules               lets the queen restart itself (Settings)
+#   share/polkit-1/rules.d/50-melissa.rules               lets the server restart itself (Settings)
 #   lib/melissa/release                                   MELISSA_VERSION/REVISION, MELISSA_RUNTIME=nix
-#                                                         (the queen reads it via MELISSA_RELEASE_FILE)
+#                                                         (the server reads it via MELISSA_RELEASE_FILE)
 #
 # Two derivations: the Rust build (`passthru.unwrapped`, rebuilt only when crates/ or Cargo.lock
 # change) and this cheap one around it, so a new revision or a packaging change never recompiles.
@@ -41,7 +41,7 @@
 let
   inherit (import ./common.nix) root;
   repo = ../..;
-  cargo = lib.importTOML (repo + "/crates/queen/Cargo.toml");
+  cargo = lib.importTOML (repo + "/crates/server/Cargo.toml");
   # Tools the vendors' install scripts and the helpers expect on PATH (the image has them in /usr/bin).
   setupPath = lib.makeBinPath [
     bash
@@ -61,10 +61,10 @@ let
     xz
   ];
   meta = {
-    description = "Melissa: a self-hosted hive of AI agents that runs apps on k3s";
+    description = "Melissa: a self-hosted cluster of AI agents that runs apps on k3s";
     license = lib.licenses.mit;
     platforms = lib.platforms.linux;
-    mainProgram = "melissa-queen";
+    mainProgram = "melissa-server";
   };
 
   bins = rustPlatform.buildRustPackage {
@@ -86,9 +86,9 @@ let
     # melissa-agent's only binary is melissa-netbridge (runs inside every agent sandbox).
     cargoBuildFlags = [
       "-p"
-      "melissa-queen"
+      "melissa-server"
       "-p"
-      "melissa-comb"
+      "melissa-device"
       "-p"
       "melissa-agent"
     ];
@@ -120,7 +120,7 @@ stdenvNoCC.mkDerivation {
     for f in melissa-config melissa-home melissa-kube; do
       install -Dm0644 ${root + "/usr/lib/tmpfiles.d"}/$f.conf $out/lib/tmpfiles.d/$f.conf
     done
-    # Like the container's /usr/lib/melissa/release. The queen finds it through
+    # Like the container's /usr/lib/melissa/release. The server finds it through
     # MELISSA_RELEASE_FILE (set by the NixOS module and the melissa-host unit); MELISSA_RUNTIME=nix
     # tells Settings that updates come from the Nix configuration.
     mkdir -p $out/lib/melissa
@@ -132,10 +132,10 @@ stdenvNoCC.mkDerivation {
 
     # The shared unit with its binary in the store. PATH and the rest are set by the NixOS
     # module (or the non-NixOS unit) in a drop-in.
-    install -Dm0644 ${root + "/usr/lib/systemd/system/melissa-queen.service"} \
-      $out/lib/systemd/system/melissa-queen.service
-    substituteInPlace $out/lib/systemd/system/melissa-queen.service \
-      --replace-fail "ExecStart=/usr/bin/melissa-queen" "ExecStart=$out/bin/melissa-queen"
+    install -Dm0644 ${root + "/usr/lib/systemd/system/melissa-server.service"} \
+      $out/lib/systemd/system/melissa-server.service
+    substituteInPlace $out/lib/systemd/system/melissa-server.service \
+      --replace-fail "ExecStart=/usr/bin/melissa-server" "ExecStart=$out/bin/melissa-server"
 
     # melissa-setup: the vendors' installers run as `melissa` with a clean PATH; give them the
     # usual tools (and the NixOS system profile) instead of /usr/bin alone.

@@ -1,7 +1,7 @@
-// Melissa, container image only: the queen (user `melissa`) may start the installer unit for the
+// Melissa, container image only: the server (user `melissa`) may start the installer unit for the
 // three known agent CLIs (Settings → Providers → Install) and the sign-in of Claude and Grok
 // (Settings → Providers → Sign in). Nothing else: no other units, verbs, instances or arguments.
-// The shared 50-melissa.rules (restart the queen) is separate; Nix installs ship only that one,
+// The shared 50-melissa.rules (restart the server) is separate; Nix installs ship only that one,
 // since their agent CLIs come from the Nix configuration.
 // See docs/DECISIONS.md (2026-11-19).
 var MELISSA_AGENT_UNITS = [

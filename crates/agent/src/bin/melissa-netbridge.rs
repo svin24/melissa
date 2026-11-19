@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 //! `melissa-netbridge`: runs first inside an agent sandbox that has its own network
 //! namespace (loopback only). It listens on loopback TCP ports, forwards every connection
-//! to a Unix socket that the queen serves (the egress proxy, Melissa's MCP endpoint), then
+//! to a Unix socket that the lead agent serves (the egress proxy, Melissa's MCP endpoint), then
 //! runs the agent CLI as its child with the same stdio and exits with the child's status.
 //!
 //! Usage: `melissa-netbridge [--tcp <addr>=<unix socket>]... -- <program> [args...]`
 //!
-//! It enforces nothing itself: the policy lives queen-side, behind the sockets. It never
+//! It enforces nothing itself: the policy lives lead-side, behind the sockets. It never
 //! writes to stdout (an ACP agent speaks JSON-RPC there).
 
 use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
@@ -170,7 +170,7 @@ async fn forward(listener: TcpListener, socket: PathBuf) {
         let socket = socket.clone();
         tokio::spawn(async move {
             let _ = tcp.set_nodelay(true);
-            // A refused socket (the queen closed this sandbox's sockets) just drops the
+            // A refused socket (the lead agent closed this sandbox's sockets) just drops the
             // connection: the client sees a reset, never a way around the proxy.
             if let Ok(mut unix) = UnixStream::connect(&socket).await {
                 let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;

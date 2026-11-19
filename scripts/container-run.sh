@@ -6,7 +6,7 @@
 #   scripts/container-run.sh build      build packaging/container/Containerfile -> $CTR_IMAGE
 #   scripts/container-run.sh up         start (create on first use) the container
 #   scripts/container-run.sh status     unit states, k3s node, URLs
-#   scripts/container-run.sh shell      root shell inside (melissa-setup, melissa-queen chat, kubectl)
+#   scripts/container-run.sh shell      root shell inside (melissa-setup, melissa-server chat, kubectl)
 #   scripts/container-run.sh logs [unit]
 #   scripts/container-run.sh down       stop it (state stays in the volume)
 #   scripts/container-run.sh rm         remove the container (keeps the volume)
@@ -23,10 +23,10 @@
 #   CTR_IMAGE=localhost/melissa:dev
 #   UI_PORT=18080             host port for the web UI (bound to 127.0.0.1 only)
 #   APP_PORT_BASE=30000       host port for app NodePort 30000; 80 ports are mapped (30000-30079).
-#                             Another base (e.g. 31000 next to a host k3s) is written to the queen's
+#                             Another base (e.g. 31000 next to a host k3s) is written to the server's
 #                             config at first `up` as `[apps] port_offset`, so app links name it.
 #   BIND=127.0.0.1            host address for the app ports (0.0.0.0 to reach apps from the LAN)
-#   APP_ADDRESSES=            [apps] addresses written to the queen's config at first `up`
+#   APP_ADDRESSES=            [apps] addresses written to the server's config at first `up`
 #                             (comma separated). Default: 127.0.0.1 when BIND is loopback,
 #                             BIND when it is one address, unset (found automatically) for 0.0.0.0.
 #   PASTA_DIR=                directory with a working `pasta` (on SELinux hosts where the distro
@@ -126,7 +126,7 @@ overlaps() {
     [ $(( ($(ip2n "$a") ^ $(ip2n "$b")) >> (32 - m) )) = 0 ]
 }
 
-# The app addresses for the queen's config: what people on the host (or LAN) type before :port.
+# The app addresses for the server's config: what people on the host (or LAN) type before :port.
 app_addresses() {
     if [ -n "${APP_ADDRESSES:-}" ]; then echo "$APP_ADDRESSES"; return; fi
     case "$BIND" in
@@ -142,13 +142,15 @@ app_addresses() {
     esac
 }
 
-# Write [apps] addresses and port_offset into the queen's config unless the owner already
+# Write [apps] addresses and port_offset into the server's config unless the owner already
 # has a config. /etc/melissa lives on the /var volume (see packaging/container/Containerfile).
 configure() {
     local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
-    if in_ctr test -e /etc/melissa/queen.toml; then
-        if [ "$offset" != 0 ] && ! in_ctr grep -qsx "port_offset = $offset" /etc/melissa/queen.toml; then
-            echo "note: APP_PORT_BASE=$APP_PORT_BASE but /etc/melissa/queen.toml has no 'port_offset = $offset'"
+    # Before the rename to generic terms (2026-11-19) the file was queen.toml: keep it.
+    in_ctr sh -c 'cd /etc/melissa && if [ -e queen.toml ] && [ ! -e server.toml ]; then mv queen.toml server.toml; fi' || true
+    if in_ctr test -e /etc/melissa/server.toml; then
+        if [ "$offset" != 0 ] && ! in_ctr grep -qsx "port_offset = $offset" /etc/melissa/server.toml; then
+            echo "note: APP_PORT_BASE=$APP_PORT_BASE but /etc/melissa/server.toml has no 'port_offset = $offset'"
             echo "  under [apps]: app links name the wrong port until you add it ('$0 shell')."
         fi
         return 0
@@ -159,9 +161,9 @@ configure() {
     [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
     [ -n "$body" ] || return 0
     printf '# Written by scripts/container-run.sh (container mode): app links use these.\n[apps]\n%s' "$body" \
-        | podman exec -i "$NAME" sh -c 'umask 022; cat > /etc/melissa/queen.toml'
-    in_ctr systemctl try-restart melissa-queen
-    echo "Queen config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+        | podman exec -i "$NAME" sh -c 'umask 022; cat > /etc/melissa/server.toml'
+    in_ctr systemctl try-restart melissa-server
+    echo "Lead config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
 }
 
 wait_for() { # seconds, description, command...
@@ -228,7 +230,7 @@ smoke() {
     return "$fail"
 }
 
-# A pod must not reach the queen's UI: try from CoreDNS's network namespace (no image pull) the
+# A pod must not reach the server's UI: try from CoreDNS's network namespace (no image pull) the
 # node's address on 8080 and 8081 (the rootful forward) and, rootful, the host's UI port via the gateway.
 pod_isolation() {
     local cid pid node gw t code fail=0
@@ -288,7 +290,7 @@ up)
         #   agent sandbox needs nested namespaces. Rootless, "privileged" means only the
         #   capabilities of your own user namespace; rootful, it is full root on the host.
         # --systemd=always: tmpfs on /run, /tmp; cgroup writable; stop with SIGRTMIN+3.
-        # Rootless --network=pasta:--host-lo-to-ns-lo: host 127.0.0.1:UI_PORT reaches the queen on
+        # Rootless --network=pasta:--host-lo-to-ns-lo: host 127.0.0.1:UI_PORT reaches the server on
         #   the container's own 127.0.0.1:8080, so the UI stays loopback-only inside (pods cannot reach it).
         # Rootful (no pasta): the bridge network; host 127.0.0.1:UI_PORT goes to :8081 on the container's
         #   eth0, where melissa-ui-forward.socket passes it to 127.0.0.1:8080. Its nftables filter admits
@@ -309,7 +311,7 @@ up)
     ;;
 status)
     in_ctr systemctl is-system-running || true
-    for u in melissa-queen k3s melissa-kubeconfig; do printf '  %-20s %s\n' "$u" "$(in_ctr systemctl is-active "$u" || true)"; done
+    for u in melissa-server k3s melissa-kubeconfig; do printf '  %-20s %s\n' "$u" "$(in_ctr systemctl is-active "$u" || true)"; done
     in_ctr kubectl get nodes 2>/dev/null || echo "  (k3s API not up yet)"
     echo "Web UI: http://127.0.0.1:$UI_PORT   Apps: http://$BIND:$APP_PORT_BASE ..."
     ;;
