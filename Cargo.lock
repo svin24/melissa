@@ -1162,6 +1162,7 @@ dependencies = [
  "melissa-agent",
  "melissa-catalog",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "tracing",

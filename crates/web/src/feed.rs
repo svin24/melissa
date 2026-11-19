@@ -696,6 +696,8 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     ("app_status", "Checking an app", "Checked an app"),
     ("app_logs", "Reading an app's logs", "Read an app's logs"),
+    ("stop_app", "Stopping an app", "Stopped an app"),
+    ("start_app", "Starting an app", "Started an app"),
     ("uninstall_app", "Removing an app", "Removed an app"),
     ("create_bee", "Setting up a helper", "Set up a helper"),
     (
@@ -805,6 +807,26 @@ pub fn approval_words(
             };
             a.consequence = "Downloads the app and starts it on this device.".into();
             a.yes = "Install";
+            a.no = "Not now";
+        }
+        "stop_app" => {
+            a.title = match &app {
+                Some(app) => format!("Stop {app}?"),
+                None => "Stop an app?".into(),
+            };
+            a.consequence = "It can be started again; nothing is deleted.".into();
+            // Takes it offline, but nothing is lost: never shown as dangerous.
+            a.destructive = false;
+            a.yes = "Stop";
+            a.no = "Keep it running";
+        }
+        "start_app" => {
+            a.title = match &app {
+                Some(app) => format!("Start {app} again?"),
+                None => "Start an app again?".into(),
+            };
+            a.consequence = "Starts it with its data and settings, at the same link.".into();
+            a.yes = "Start";
             a.no = "Not now";
         }
         "uninstall_app" => {
@@ -1368,5 +1390,36 @@ mod tests {
         );
         assert_eq!(a.title, "Install Immich?");
         assert_eq!(a.yes, "Install");
+    }
+
+    #[test]
+    fn stopping_an_app_is_asked_but_not_dangerous() {
+        let a = approval_words(
+            3,
+            "mcp__melissa__stop_app",
+            "`nextcloud` is looked after by bee Ada (c.b1); stop `nextcloud` (it can be started \
+             again; nothing is deleted); takes a running service offline (it can be started \
+             again; nothing is deleted)",
+            Some(&json!({"app": "nextcloud"})),
+            &NoLookup,
+        );
+        assert_eq!(a.title, "Stop Nextcloud?");
+        assert_eq!(
+            a.consequence,
+            "It can be started again; nothing is deleted."
+        );
+        assert!(!a.destructive && !a.permanent);
+        assert_eq!((a.yes, a.no), ("Stop", "Keep it running"));
+        let a = approval_words(
+            4,
+            "start_app",
+            "x",
+            Some(&json!({"app": "nextcloud"})),
+            &NoLookup,
+        );
+        assert_eq!(a.title, "Start Nextcloud again?");
+        assert!(!a.destructive);
+        assert_eq!(tool_words("melissa__stop_app").done, "Stopped an app");
+        assert_eq!(tool_words("start_app").doing, "Starting an app");
     }
 }

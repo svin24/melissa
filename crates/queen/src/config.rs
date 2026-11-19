@@ -45,8 +45,12 @@ pub struct QueenConfig {
 pub struct AppsSection {
     /// Directory of app manifests (`<name>.toml`).
     pub catalog: PathBuf,
-    /// Apps are served at `<app>.<domain>`.
+    /// Apps are also served at `<app>.<domain>` (for people with their own DNS).
     pub domain: String,
+    /// Addresses (IPs or host names) people reach this device at, for app links
+    /// `http://<address>:<port>`, most useful first. Unset: found automatically (the LAN
+    /// address of the default route and Tailscale addresses).
+    pub addresses: Option<Vec<String>>,
     /// Kubeconfig of the write identity (`melissa-apps`); default
     /// `/run/melissa-kube/apps.kubeconfig`. Re-read on every call.
     pub kubeconfig: Option<PathBuf>,
@@ -57,9 +61,24 @@ impl Default for AppsSection {
         Self {
             catalog: PathBuf::from(melissa_catalog::DEFAULT_CATALOG_DIR),
             domain: melissa_catalog::DEFAULT_DOMAIN.into(),
+            addresses: None,
             kubeconfig: None,
         }
     }
+}
+
+/// An IP address or a host name (one label or more): goes into app links and apps'
+/// trusted hosts.
+fn valid_address(a: &str) -> bool {
+    a.parse::<std::net::IpAddr>().is_ok()
+        || (a.len() <= 253
+            && a.split('.').all(|l| {
+                !l.is_empty()
+                    && l.len() <= 63
+                    && !l.starts_with('-')
+                    && !l.ends_with('-')
+                    && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            }))
 }
 
 /// A DNS name of lowercase labels (`melissa.home.arpa`).
@@ -294,6 +313,11 @@ impl QueenConfig {
                 self.apps.domain
             );
         }
+        for a in self.apps.addresses.iter().flatten() {
+            if !valid_address(a) {
+                bail!("[apps] addresses: `{a}` must be an IP address or a host name");
+            }
+        }
         let mut names = vec!["echo"];
         for b in &self.backends {
             if names.contains(&b.name()) {
@@ -402,6 +426,17 @@ mod tests {
             assert!(config.validate().is_err(), "{bad}");
         }
         assert!(toml::from_str::<QueenConfig>("[apps]\nimage = \"x\"").is_err());
+        let config: QueenConfig = toml::from_str(
+            "[apps]\naddresses = [\"192.0.2.15\", \"2001:db8::1\", \"box.example.com\", \"melissa\"]",
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.apps.addresses.as_ref().map(Vec::len), Some(4));
+        for bad in ["a b", "http://x", "x..y", ""] {
+            let config: QueenConfig =
+                toml::from_str(&format!("[apps]\naddresses = [\"{bad}\"]")).unwrap();
+            assert!(config.validate().is_err(), "{bad}");
+        }
     }
 
     #[test]

@@ -23,7 +23,7 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Form, Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Redirect, Response,
@@ -124,6 +124,15 @@ impl Ui {
 
     /// Render a page with the rail.
     async fn framed(&self, page: impl FnOnce(&Frame<'_>) -> Markup) -> Markup {
+        self.framed_at(None, page).await
+    }
+
+    /// Render a page with the rail for a visitor who came in at `host` (app links).
+    async fn framed_at(
+        &self,
+        host: Option<&str>,
+        page: impl FnOnce(&Frame<'_>) -> Markup,
+    ) -> Markup {
         let snap = self.hive.get().await;
         let bees = self.queen.bees().list();
         let past = self.queen.past_chats();
@@ -132,6 +141,7 @@ impl Ui {
             snap: &snap,
             bees: &bees,
             past: &past,
+            host,
         })
     }
 
@@ -197,12 +207,17 @@ fn error_page(e: QueenError) -> Response {
         .into_response()
 }
 
-async fn hive_page(State(ui): State<Ui>) -> Markup {
-    ui.framed(pages::hive).await
+/// The `Host` header, for app links built from the address the visitor used.
+fn host(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::HOST).and_then(|h| h.to_str().ok())
 }
 
-async fn hive_apps(State(ui): State<Ui>) -> Markup {
-    pages::hive_apps(&*ui.hive.get().await)
+async fn hive_page(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
+    ui.framed_at(host(&headers), pages::hive).await
+}
+
+async fn hive_apps(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
+    pages::hive_apps(&*ui.hive.get().await, host(&headers))
 }
 
 async fn strip(State(ui): State<Ui>) -> Markup {

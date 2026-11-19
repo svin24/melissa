@@ -51,9 +51,40 @@ mounts = [{ volume = "data", path = "/var/www/html" }]
 SQLITE_DATABASE = { value = "nextcloud" }
 NEXTCLOUD_ADMIN_USER = { config = "admin_user" }
 NEXTCLOUD_ADMIN_PASSWORD = { secret = "admin_password" }
-NEXTCLOUD_TRUSTED_DOMAINS = { builtin = "ingress_host" }
+# The ingress host plus this device's addresses and host name at install time, so the app
+# answers at http://<device>:<port> too. Exact names only: no wildcards (`192.168.*` would
+# also trust `192.168.evil.example`, a DNS-rebinding risk). The image reads this only at the
+# first install; the hook below applies it on every start.
+NEXTCLOUD_TRUSTED_DOMAINS = { builtin = "device_hosts" }
 PHP_MEMORY_LIMIT = { config = "php_memory_limit" }
 PHP_UPLOAD_LIMIT = { config = "upload_limit" }
+
+# Reviewed entrypoint hook (the image runs before-starting/*.sh on every start, as
+# www-data): makes `trusted_domains` exactly NEXTCLOUD_TRUSTED_DOMAINS, so an existing
+# install picks up new device addresses at its next start (install_app or start_app).
+[[containers.files]]
+path = "/docker-entrypoint-hooks.d/before-starting/50-melissa-trusted-domains.sh"
+executable = true
+content = '''#!/bin/sh
+# Melissa: make Nextcloud's trusted_domains exactly the hosts in NEXTCLOUD_TRUSTED_DOMAINS
+# (the image itself reads it only at the first install). Never fails the start: a problem
+# here only means the app answers at fewer addresses.
+set -u
+[ -n "${NEXTCLOUD_TRUSTED_DOMAINS:-}" ] || exit 0
+cd /var/www/html
+php occ status --output=json 2>/dev/null | grep -q '"installed":true' || exit 0
+set -f
+i=0
+for host in $NEXTCLOUD_TRUSTED_DOMAINS; do
+    php occ config:system:set trusted_domains "$i" --value="$host" >/dev/null
+    i=$((i + 1))
+done
+while php occ config:system:get trusted_domains "$i" >/dev/null 2>&1; do
+    php occ config:system:delete trusted_domains "$i" >/dev/null
+    i=$((i + 1))
+done
+echo "Melissa: trusted_domains set to: $NEXTCLOUD_TRUSTED_DOMAINS"
+'''
 
 [containers.resources]
 cpu_request = "100m"

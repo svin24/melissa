@@ -3,6 +3,9 @@
     "apiVersion": "v1",
     "kind": "Namespace",
     "metadata": {
+      "annotations": {
+        "melissa.io/port": "30000"
+      },
       "labels": {
         "app.kubernetes.io/managed-by": "melissa",
         "melissa.io/app": "nextcloud",
@@ -108,6 +111,9 @@
       },
       "template": {
         "metadata": {
+          "annotations": {
+            "melissa.io/files-sha256": "3cc528c204f35a34aec5a1f1bf808a942e074ac03bdac24367683f02d6945d28"
+          },
           "labels": {
             "app.kubernetes.io/managed-by": "melissa",
             "app.kubernetes.io/name": "nextcloud",
@@ -136,7 +142,7 @@
                 },
                 {
                   "name": "NEXTCLOUD_TRUSTED_DOMAINS",
-                  "value": "nextcloud.melissa.home.arpa"
+                  "value": "nextcloud.melissa.home.arpa 192.0.2.15 melissa"
                 },
                 {
                   "name": "PHP_MEMORY_LIMIT",
@@ -220,6 +226,12 @@
                 {
                   "mountPath": "/var/www/html",
                   "name": "data"
+                },
+                {
+                  "mountPath": "/docker-entrypoint-hooks.d/before-starting/50-melissa-trusted-domains.sh",
+                  "name": "melissa-files",
+                  "readOnly": true,
+                  "subPath": "nextcloud.0"
                 }
               ]
             }
@@ -236,6 +248,21 @@
               "persistentVolumeClaim": {
                 "claimName": "nextcloud-data"
               }
+            },
+            {
+              "configMap": {
+                "defaultMode": 292,
+                "items": [
+                  {
+                    "key": "nextcloud.0",
+                    "mode": 365,
+                    "path": "nextcloud.0"
+                  }
+                ],
+                "name": "nextcloud-files",
+                "optional": false
+              },
+              "name": "melissa-files"
             }
           ]
         }
@@ -268,6 +295,52 @@
         "melissa.io/app": "nextcloud"
       },
       "type": "ClusterIP"
+    }
+  },
+  "files": {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "data": {
+      "nextcloud.0": "#!/bin/sh\n# Melissa: make Nextcloud's trusted_domains exactly the hosts in NEXTCLOUD_TRUSTED_DOMAINS\n# (the image itself reads it only at the first install). Never fails the start: a problem\n# here only means the app answers at fewer addresses.\nset -u\n[ -n \"${NEXTCLOUD_TRUSTED_DOMAINS:-}\" ] || exit 0\ncd /var/www/html\nphp occ status --output=json 2>/dev/null | grep -q '\"installed\":true' || exit 0\nset -f\ni=0\nfor host in $NEXTCLOUD_TRUSTED_DOMAINS; do\n    php occ config:system:set trusted_domains \"$i\" --value=\"$host\" >/dev/null\n    i=$((i + 1))\ndone\nwhile php occ config:system:get trusted_domains \"$i\" >/dev/null 2>&1; do\n    php occ config:system:delete trusted_domains \"$i\" >/dev/null\n    i=$((i + 1))\ndone\necho \"Melissa: trusted_domains set to: $NEXTCLOUD_TRUSTED_DOMAINS\"\n"
+    },
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "nextcloud",
+        "app.kubernetes.io/version": "34.0.6",
+        "melissa.io/app": "nextcloud"
+      },
+      "name": "nextcloud-files",
+      "namespace": "app-nextcloud"
+    }
+  },
+  "port_service": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "nextcloud",
+        "app.kubernetes.io/version": "34.0.6",
+        "melissa.io/app": "nextcloud"
+      },
+      "name": "nextcloud-port",
+      "namespace": "app-nextcloud"
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "http",
+          "nodePort": 30000,
+          "port": 80,
+          "protocol": "TCP",
+          "targetPort": "http"
+        }
+      ],
+      "selector": {
+        "melissa.io/app": "nextcloud"
+      },
+      "type": "NodePort"
     }
   },
   "ingress": {

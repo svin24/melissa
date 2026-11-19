@@ -1,15 +1,21 @@
 //! The app tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`,
-//! `uninstall_app`.
+//! `stop_app`, `start_app`, `uninstall_app`.
 //!
 //! Labels (policy keys off them): `list_catalog`, `list_apps` and `app_status` read-only; `app_logs`
-//! reads untrusted content (app output is attacker-influenced); `install_app` Reversible;
-//! `uninstall_app` Destructive (always confirmed, even when the data is kept). Generated
-//! secrets never appear in any tool's output.
+//! reads untrusted content (app output is attacker-influenced); `install_app` and `start_app`
+//! Reversible; `stop_app` Disruptive (always confirmed, never called destructive: nothing is
+//! deleted); `uninstall_app` Destructive (always confirmed, even when the data is kept).
+//! Generated secrets never appear in any tool's output.
+//!
+//! Links: every app with a web port gets its own port on the device (a NodePort from
+//! [`APP_PORTS`], recorded on its namespace), so it is reachable at
+//! `http://<device address>:<port>` on the LAN and over Tailscale without any DNS. The
+//! `<app>.<domain>` Ingress stays for people with their own DNS (`dns_url`).
 //!
 //! Cells: an installed app is a cell (docs/HIVE-MODEL.md) owned by one bee. Every tool
 //! declares its `app` argument as its target (`Tool::target`), so the registry checks the
-//! caller's scope first (`melissa_agent::tools::scope`): `install_app` and `uninstall_app`
-//! change the cell, `app_logs` reads into it (scoped), `app_status` only reads names and
+//! caller's scope first (`melissa_agent::tools::scope`): `install_app`, `stop_app`,
+//! `start_app` and `uninstall_app` change the cell, `app_logs` reads into it (scoped), `app_status` only reads names and
 //! phases. `install_app` records the comb and the owning bee on a new cell's namespace
 //! ([`Ownership`]): a bee's new cell is its own, the Queen names the bee (`bee`), the user
 //! may. An existing record is kept. [`Cells`] reads it back, lists cells and reassigns them.
@@ -33,8 +39,12 @@ use serde_json::{json, Map, Value};
 
 use crate::{
     apps::{AppDeployer, AppObject, AppRead, LogRequest},
+    device,
     health::reason_code,
-    render::{assign_patch, render, secret_object, Ownership, CONFIG_ANNOTATION},
+    render::{
+        assign_patch, render, secret_object, Ownership, Placement, APP_PORTS, CONFIG_ANNOTATION,
+        PORT_ANNOTATION, REPLICAS_BEFORE_STOP_ANNOTATION,
+    },
     ClusterError,
 };
 
@@ -46,11 +56,19 @@ const MAX_LOG_BYTES: usize = 64 * 1024;
 /// Longer log lines are cut (single huge lines are a cheap way to flood an agent).
 const MAX_LOG_LINE_CHARS: usize = 2000;
 
+/// Most replicas `start_app` restores (apps are single-replica today).
+const MAX_RESTORED_REPLICAS: i32 = 10;
+
 /// Where the catalog lives, which domain ingress hosts use, and the comb the cells are on.
 #[derive(Clone)]
 pub struct AppSettings {
     pub catalog_dir: PathBuf,
     pub domain: String,
+    /// Addresses (IPs or host names) people reach this device at, for app links
+    /// (`http://<address>:<port>`), most useful first. `None`: found at call time (the LAN
+    /// address of the default route, Tailscale addresses, and the host name for apps'
+    /// trusted hosts).
+    pub addresses: Option<Vec<String>>,
     /// This comb's id, recorded on every new cell.
     pub comb: String,
     /// Bee names, for the `bee` argument of `install_app` and for messages.
@@ -70,12 +88,74 @@ impl AppSettings {
         })
     }
 
-    fn url(&self, app: &str) -> String {
+    /// `http://<app>.<domain>`: works only where that name resolves (the owner's own DNS).
+    fn dns_url(&self, app: &str) -> String {
         format!("http://{app}.{}", self.domain)
+    }
+
+    /// The addresses for links, most useful first.
+    fn addresses(&self) -> Vec<String> {
+        match &self.addresses {
+            Some(a) => a.clone(),
+            None => device::addresses()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+
+    /// Links to an app on `port`, one per address.
+    fn urls(&self, port: u16) -> Vec<String> {
+        self.addresses()
+            .iter()
+            .map(|a| device::url(a, port))
+            .collect()
+    }
+
+    /// Host names an app is reached at (builtin `device_hosts`): the addresses, and when
+    /// they are found automatically, the device's host name too.
+    fn device_hosts(&self) -> Vec<String> {
+        let mut hosts = self.addresses();
+        if self.addresses.is_none() {
+            if let Some(name) = device::host_name() {
+                if !hosts.contains(&name) {
+                    hosts.push(name);
+                }
+            }
+        }
+        hosts
     }
 }
 
-/// All six tools over one cluster connection (`None` = no k3s on this comb).
+/// The app's port on the device, from its namespace (`None`: none recorded yet).
+fn port_of(ns: &Namespace) -> Option<u16> {
+    ns.metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(PORT_ANNOTATION))
+        .and_then(|p| p.parse().ok())
+        .filter(|p| APP_PORTS.contains(p))
+}
+
+/// Link fields for an app on `port` (`None`: no port, e.g. uninstalled or no web port).
+fn link_fields(settings: &AppSettings, app: &str, port: Option<u16>, has_web: bool) -> Value {
+    let urls = port.map(|p| settings.urls(p)).unwrap_or_default();
+    json!({
+        "url": urls.first(),
+        "urls": urls,
+        "port": port,
+        "dns_url": has_web.then(|| settings.dns_url(app)),
+    })
+}
+
+/// Copy `fields`' entries into `target` (both JSON objects).
+fn merge(target: &mut Value, fields: Value) {
+    if let (Some(t), Value::Object(f)) = (target.as_object_mut(), fields) {
+        t.extend(f);
+    }
+}
+
+/// All eight tools over one cluster connection (`None` = no k3s on this comb).
 pub fn app_tools<C>(settings: AppSettings, cluster: Option<Arc<C>>) -> Vec<Arc<dyn Tool>>
 where
     C: AppRead + AppDeployer + 'static,
@@ -101,6 +181,15 @@ where
             read: read.clone(),
         }),
         Arc::new(AppLogs { read: read.clone() }),
+        Arc::new(StopApp {
+            read: read.clone(),
+            deploy: deploy.clone(),
+        }),
+        Arc::new(StartApp {
+            settings,
+            read: read.clone(),
+            deploy: deploy.clone(),
+        }),
         Arc::new(UninstallApp { read, deploy }),
     ]
 }
@@ -262,7 +351,8 @@ impl Tool for ListCatalog {
         ToolSpec {
             name: "list_catalog",
             description: "Apps this comb can install (Melissa's reviewed catalog): name, version, \
-                description, URL it would get, volumes, and the config fields install_app \
+                description, whether it has a web UI (it gets its own port on this device \
+                at install), volumes, and the config fields install_app \
                 accepts (type, default, allowed values). Secret fields are generated at \
                 install and can't be set or read by agents.",
             labels: Labels::READ_ONLY,
@@ -297,7 +387,8 @@ impl Tool for ListCatalog {
                         "name": m.name,
                         "version": m.version,
                         "description": m.description,
-                        "url": m.ingress.as_ref().map(|_| self.settings.url(&m.name)),
+                        "web_ui": m.ingress.is_some(),
+                        "dns_url": m.ingress.as_ref().map(|_| self.settings.dns_url(&m.name)),
                         "volumes": m.volumes.iter().map(|v| json!({"name": v.name, "size": v.size})).collect::<Vec<_>>(),
                         "config": config,
                     })
@@ -434,8 +525,41 @@ impl InstallApp {
                 }
             }
         };
-        let mut objects = render(&manifest, &config, &self.settings.domain);
+        // A stopped app stays stopped: installing over it (e.g. a config change) never
+        // undoes a stop the user confirmed; start_app does.
+        let stopped_from = match &existing {
+            Some(_) => read
+                .deployment(&app)
+                .await
+                .map_err(failed)?
+                .filter(|d| d.spec.replicas == Some(0))
+                .map(|d| replicas_before_stop(&d)),
+            None => None,
+        };
+        let recorded_port = existing.as_ref().and_then(port_of);
+        let mut port = match (&manifest.ingress, recorded_port) {
+            (None, _) => None,
+            (Some(_), Some(p)) => Some(p),
+            (Some(_), None) => Some(self.free_port(read.as_ref(), &app, &[]).await?),
+        };
+        let hosts = self.settings.device_hosts();
+        let placement = Placement {
+            port,
+            stopped_from,
+            hosts: &hosts,
+            ..Placement::domain(&self.settings.domain)
+        };
+        let mut objects = render(&manifest, &config, &placement);
         ownership.apply_to(&app, &mut objects.namespace);
+        // A new port is recorded on the namespace only once its Service exists (the record
+        // never changes afterwards, see the namespaces admission policy).
+        let mut namespace_with_port = None;
+        if recorded_port.is_none() && port.is_some() {
+            namespace_with_port = Some(objects.namespace.clone());
+            if let Some(a) = objects.namespace.metadata.annotations.as_mut() {
+                a.remove(PORT_ANNOTATION);
+            }
+        }
 
         let mut applied = Vec::new();
         for object in [
@@ -471,6 +595,7 @@ impl InstallApp {
             .volumes
             .into_iter()
             .map(AppObject::Volume)
+            .chain(objects.files.map(AppObject::ConfigMap))
             .chain([AppObject::Deployment(Box::new(objects.deployment))])
             .chain(objects.service.map(AppObject::Service))
             .chain(objects.ingress.map(AppObject::Ingress));
@@ -478,13 +603,45 @@ impl InstallApp {
             deploy.apply(&object).await.map_err(failed)?;
             applied.push(object.kind());
         }
+        if let Some(mut service) = objects.port_service {
+            let mut tried = Vec::new();
+            loop {
+                match deploy.apply(&AppObject::Service(service.clone())).await {
+                    Ok(()) => break,
+                    // Someone else holds this NodePort: take the next free one (a new port
+                    // only; a recorded one is this app's already).
+                    Err(ClusterError::Api(m))
+                        if m.contains("already allocated")
+                            && recorded_port.is_none()
+                            && tried.len() < 5 =>
+                    {
+                        tried.extend(port);
+                        let next = self.free_port(read.as_ref(), &app, &tried).await?;
+                        port = Some(next);
+                        set_node_port(&mut service, next);
+                    }
+                    Err(e) => return Err(failed(e)),
+                }
+            }
+            applied.push("Service (device port)");
+        }
+        if let (Some(mut ns), Some(p)) = (namespace_with_port, port) {
+            ns.metadata
+                .annotations
+                .get_or_insert_with(BTreeMap::new)
+                .insert(PORT_ANNOTATION.into(), p.to_string());
+            deploy
+                .apply(&AppObject::Namespace(ns))
+                .await
+                .map_err(failed)?;
+        }
         let secret_fields: Vec<&String> = config.secrets.keys().collect();
-        Ok(json!({
+        let mut out = json!({
             "app": app,
             "version": manifest.version,
             "namespace": manifest.namespace(),
-            "url": manifest.ingress.as_ref().map(|_| self.settings.url(&app)),
             "applied": applied,
+            "stopped": stopped_from.is_some(),
             "bee": ownership.owner.label_value(),
             "bee_name": ownership.owner.label_value().and_then(|id| names.and_then(|n| n.name_of(id))),
             "comb": ownership.comb,
@@ -496,9 +653,77 @@ impl InstallApp {
                 "note": "values are never shown to agents; the owner reads them with \
                          `sudo melissa-queen app-credentials <app>`",
             })),
-            "next": "the image is pulled and the app starts in the background; poll app_status",
-        }))
+            "next": if stopped_from.is_some() {
+                "the app is stopped and stays stopped (its settings are updated); start_app \
+                 starts it"
+            } else {
+                "the image is pulled and the app starts in the background; poll app_status"
+            },
+        });
+        merge(
+            &mut out,
+            link_fields(&self.settings, &app, port, manifest.ingress.is_some()),
+        );
+        Ok(out)
     }
+
+    /// The lowest port in [`APP_PORTS`] that no catalog app records and that is not in
+    /// `skip`. Per-app reads: the write identity may get namespaces but not list them.
+    async fn free_port(
+        &self,
+        read: &dyn AppRead,
+        app: &str,
+        skip: &[u16],
+    ) -> Result<u16, ToolError> {
+        let mut used: Vec<u16> = skip.to_vec();
+        for name in self.settings.catalog().apps.keys() {
+            if name == app {
+                continue;
+            }
+            if let Some(p) = read
+                .namespace(name)
+                .await
+                .map_err(failed)?
+                .as_ref()
+                .and_then(port_of)
+            {
+                used.push(p);
+            }
+        }
+        APP_PORTS
+            .clone()
+            .find(|p| !used.contains(p))
+            .ok_or_else(|| {
+                ToolError::Failed(format!(
+                    "no free app port left in {}-{}",
+                    APP_PORTS.start(),
+                    APP_PORTS.end()
+                ))
+            })
+    }
+}
+
+/// Point a rendered port Service at `port`.
+fn set_node_port(service: &mut k8s_openapi::api::core::v1::Service, port: u16) {
+    for p in service
+        .spec
+        .iter_mut()
+        .flat_map(|s| s.ports.iter_mut())
+        .flatten()
+    {
+        p.node_port = Some(i32::from(port));
+    }
+}
+
+/// The replica count a stopped Deployment had (its annotation; 1 if missing or odd).
+fn replicas_before_stop(d: &Deployment) -> i32 {
+    d.metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(REPLICAS_BEFORE_STOP_ANNOTATION))
+        .and_then(|v| v.parse::<i32>().ok())
+        .filter(|n| (1..=MAX_RESTORED_REPLICAS).contains(n))
+        .unwrap_or(1)
 }
 
 impl Tool for InstallApp {
@@ -646,9 +871,13 @@ impl AppStatus {
             &volumes,
             &pods,
         );
-        if report["url"].is_null() && ingress.is_some() {
-            report["url"] = json!(self.settings.url(&app));
-        }
+        // Links only while the app is installed (stopped included: start_app brings the
+        // same link back).
+        let port = deployment.as_ref().and_then(|_| port_of(&ns));
+        merge(
+            &mut report,
+            link_fields(&self.settings, &app, port, ingress.is_some()),
+        );
         if let (Some(id), Some(names)) = (report["bee"].as_str(), &self.settings.bees) {
             report["bee_name"] = json!(names.name_of(id));
         }
@@ -661,7 +890,9 @@ impl Tool for AppStatus {
         ToolSpec {
             name: "app_status",
             description: "State of an installed app: phase (not_installed, starting, ready, \
-                failing, uninstalled_data_kept, deleting), ready replicas, URL, config, \
+                failing, stopping, stopped, uninstalled_data_kept, deleting), ready replicas, \
+                `url` (http://<this device>:<its port>; `urls`: every address of the \
+                device; `dns_url` only works with the owner's own DNS), config, \
                 the bee that looks after the cell (`bee`: id, `bee_name`; null = no bee) \
                 and who installed it, volumes, and pods with sanitized problem reasons (e.g. ImagePullBackOff, \
                 CrashLoopBackOff, OOMKilled).",
@@ -713,6 +944,8 @@ impl ListApps {
                 "ready_replicas": report["ready_replicas"],
                 "replicas": report["replicas"],
                 "url": report["url"],
+                "urls": report["urls"],
+                "port": report["port"],
                 "volumes": report["volumes"],
                 "problem_pods": report["pods"].as_array().map(|p| {
                     p.iter().filter(|p| !p["reason"].is_null()).cloned().collect::<Vec<_>>()
@@ -728,8 +961,9 @@ impl Tool for ListApps {
         ToolSpec {
             name: "list_apps",
             description: "Catalog apps present on this comb: running, starting, failing, \
-                uninstalled with data kept, or being deleted (phase as in app_status), with \
-                ready replicas, URL, volumes and problem pods; plus the catalog apps that are \
+                stopped, uninstalled with data kept, or being deleted (phase as in \
+                app_status), with ready replicas, URL (http://<this device>:<its port>), \
+                volumes and problem pods; plus the catalog apps that are \
                 not installed. Use it to find leftovers such as kept data.",
             // Same content as app_status: names, counts, phases, reason codes.
             labels: Labels::READ_ONLY,
@@ -771,7 +1005,7 @@ pub(crate) fn status_report(
         })
         .collect();
     let pods_json: Vec<Value> = pods.iter().map(pod_summary).collect();
-    let url = ingress
+    let dns_url = ingress
         .and_then(|i| i.spec.as_ref())
         .and_then(|s| s.rules.as_ref())
         .and_then(|r| r.first())
@@ -800,7 +1034,9 @@ pub(crate) fn status_report(
         (Some(ns), _) if is_terminating(ns) => "deleting",
         (Some(_), None) if !volumes.is_empty() => "uninstalled_data_kept",
         (Some(_), None) => "not_installed",
-        (Some(_), Some(_)) if ready >= replicas && replicas > 0 => "ready",
+        (Some(_), Some(_)) if replicas == 0 && pods.is_empty() => "stopped",
+        (Some(_), Some(_)) if replicas == 0 => "stopping",
+        (Some(_), Some(_)) if ready >= replicas => "ready",
         (Some(_), Some(_)) if failing => "failing",
         (Some(_), Some(_)) => "starting",
     };
@@ -828,7 +1064,8 @@ pub(crate) fn status_report(
         "version": version,
         "replicas": replicas,
         "ready_replicas": ready,
-        "url": url,
+        "url": Value::Null,
+        "dns_url": dns_url,
         "config": config,
         "volumes": volumes_json,
         "pods": pods_json,
@@ -1079,6 +1316,198 @@ fn strip_controls(line: &str) -> String {
     out
 }
 
+// ---- stop_app / start_app ---------------------------------------------------------------
+
+/// The installed app's Deployment, or a clear error: not installed, uninstalled with data
+/// kept (install_app brings it back), or being deleted.
+async fn installed_deployment(read: &dyn AppRead, app: &str) -> Result<Deployment, ToolError> {
+    let Some(ns) = read.namespace(app).await.map_err(failed)? else {
+        return Err(ToolError::Failed(format!("`{app}` is not installed")));
+    };
+    if is_terminating(&ns) {
+        return Err(ToolError::Failed(format!("`{app}` is being deleted")));
+    }
+    read.deployment(app).await.map_err(failed)?.ok_or_else(|| {
+        ToolError::Failed(format!(
+            "`{app}` is uninstalled (its data is kept); install_app brings it back"
+        ))
+    })
+}
+
+/// Stop an app: scale its Deployment to 0 and remember the replica count. Nothing else
+/// changes: namespace, volumes, Secret, Services, Ingress and its port stay.
+struct StopApp {
+    read: Option<Arc<dyn AppRead>>,
+    deploy: Option<Arc<dyn AppDeployer>>,
+}
+
+impl StopApp {
+    async fn stop(&self, args: Value) -> Result<Value, ToolError> {
+        let args = arg_object(&args)?;
+        reject_unknown(args, &["app"])?;
+        let app = app_arg(args)?;
+        let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
+            return Err(no_cluster());
+        };
+        let deployment = installed_deployment(read.as_ref(), &app).await?;
+        let replicas = deployment.spec.replicas.unwrap_or(1);
+        if replicas == 0 {
+            return Ok(json!({
+                "app": app,
+                "state": "stopped",
+                "changed": false,
+                "note": "it was already stopped; start_app starts it",
+            }));
+        }
+        let patch = json!({
+            "metadata": {"annotations": {REPLICAS_BEFORE_STOP_ANNOTATION: replicas.to_string()}},
+            "spec": {"replicas": 0},
+        });
+        deploy
+            .patch_deployment(&app, &patch)
+            .await
+            .map_err(failed)?;
+        Ok(json!({
+            "app": app,
+            "state": "stopping",
+            "changed": true,
+            "replicas_before_stop": replicas,
+            "kept": ["data volumes", "generated credentials", "settings", "its port and link"],
+            "note": "nothing is deleted; start_app starts it again with the same data and link. \
+                     app_status shows `stopping`, then `stopped`",
+        }))
+    }
+}
+
+impl Tool for StopApp {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "stop_app",
+            description: "Stop (turn off, pause, shut down) an installed app: its containers \
+                stop and it goes offline. Nothing is deleted: data, credentials, settings and \
+                its link stay, and start_app starts it again. Use this, never uninstall_app, \
+                when someone asks to turn an app off. Always asks the user first.",
+            // Takes a service offline: always confirmed, but not destructive.
+            labels: Labels {
+                effect: Effect::Disruptive,
+                ..Labels::READ_ONLY
+            },
+            params: json!({
+                "type": "object",
+                "properties": {"app": {"type": "string"}},
+                "required": ["app"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.stop(args))
+    }
+
+    fn target(&self) -> Option<Target> {
+        Some(app_target(Access::Change, "stop"))
+    }
+
+    fn describe_call(&self, args: &Value) -> Option<String> {
+        let app = args.get("app")?.as_str()?;
+        Some(format!(
+            "stop `{app}` (it can be started again; nothing is deleted)"
+        ))
+    }
+}
+
+/// Start a stopped app: restore the replica count `stop_app` recorded.
+struct StartApp {
+    settings: Arc<AppSettings>,
+    read: Option<Arc<dyn AppRead>>,
+    deploy: Option<Arc<dyn AppDeployer>>,
+}
+
+impl StartApp {
+    async fn start(&self, args: Value) -> Result<Value, ToolError> {
+        let args = arg_object(&args)?;
+        reject_unknown(args, &["app"])?;
+        let app = app_arg(args)?;
+        let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
+            return Err(no_cluster());
+        };
+        let deployment = installed_deployment(read.as_ref(), &app).await?;
+        let port = read
+            .namespace(&app)
+            .await
+            .map_err(failed)?
+            .as_ref()
+            .and_then(port_of);
+        let has_web = read.ingress(&app).await.map_err(failed)?.is_some();
+        let replicas = deployment.spec.replicas.unwrap_or(1);
+        let mut out = if replicas > 0 {
+            json!({
+                "app": app,
+                "state": "running",
+                "changed": false,
+                "note": "it was not stopped; app_status shows how it is doing",
+            })
+        } else {
+            let restore = replicas_before_stop(&deployment);
+            let patch = json!({
+                "metadata": {"annotations": {REPLICAS_BEFORE_STOP_ANNOTATION: null}},
+                "spec": {"replicas": restore},
+            });
+            deploy
+                .patch_deployment(&app, &patch)
+                .await
+                .map_err(failed)?;
+            json!({
+                "app": app,
+                "state": "starting",
+                "changed": true,
+                "replicas": restore,
+                "next": "it starts in the background with its data; poll app_status",
+            })
+        };
+        merge(&mut out, link_fields(&self.settings, &app, port, has_web));
+        Ok(out)
+    }
+}
+
+impl Tool for StartApp {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "start_app",
+            description: "Start (turn on again) an app that stop_app stopped, with the same \
+                data, settings and link. Does nothing to an app that is already running. An \
+                uninstalled app comes back with install_app instead.",
+            // Brings back a state the user approved before (the install); uses resources
+            // and puts the app back on the network, so it is not read-only: the normal
+            // policy applies (attended, untainted: runs; unattended or tainted: asks).
+            labels: Labels {
+                effect: Effect::Reversible,
+                ..Labels::READ_ONLY
+            },
+            params: json!({
+                "type": "object",
+                "properties": {"app": {"type": "string"}},
+                "required": ["app"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.start(args))
+    }
+
+    fn target(&self) -> Option<Target> {
+        Some(app_target(Access::Change, "start"))
+    }
+
+    fn describe_call(&self, args: &Value) -> Option<String> {
+        let app = args.get("app")?.as_str()?;
+        Some(format!("start `{app}` again"))
+    }
+}
+
 // ---- uninstall_app -----------------------------------------------------------------------
 
 struct UninstallApp {
@@ -1133,9 +1562,11 @@ impl Tool for UninstallApp {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "uninstall_app",
-            description: "Uninstall an app. By default stops it and keeps its data volumes and \
-                generated credentials, so install_app brings it back with its data. With \
-                `delete_data: true` the app's namespace is deleted with all its data, for good.",
+            description: "Uninstall (remove) an app. Only when someone explicitly asks to \
+                uninstall, remove or delete it; to turn an app off use stop_app. By default \
+                removes the app and keeps its data volumes and generated credentials, so \
+                install_app brings it back with its data. With `delete_data: true` the \
+                app's namespace is deleted with all its data, for good.",
             labels: Labels {
                 effect: Effect::Destructive,
                 ..Labels::READ_ONLY

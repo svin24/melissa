@@ -2,8 +2,8 @@
 //!
 //! - [`AppRead`]: what `app_status` and `app_logs` need (objects and logs in one app's
 //!   namespace). No writes.
-//! - [`AppDeployer`]: server-side apply of rendered objects, create-once Secrets, deletes.
-//!   Only `install_app` and `uninstall_app` hold one.
+//! - [`AppDeployer`]: server-side apply of rendered objects, create-once Secrets, deletes,
+//!   and the replica patch of `stop_app`/`start_app`. Only the changing app tools hold one.
 //!
 //! Both are implemented by [`KubeApps`] over the write identity's kubeconfig
 //! (`melissa/melissa-apps`, RBAC in `apps-rbac.yaml`). `cluster_health` and other read-only
@@ -14,7 +14,7 @@ use std::{future::Future, time::Duration};
 use k8s_openapi::{
     api::{
         apps::v1::Deployment,
-        core::v1::{Namespace, PersistentVolumeClaim, Pod, Secret, Service},
+        core::v1::{ConfigMap, Namespace, PersistentVolumeClaim, Pod, Secret, Service},
         networking::v1::Ingress,
         rbac::v1::RoleBinding,
     },
@@ -30,7 +30,7 @@ use melissa_catalog::namespace_of;
 
 use crate::{
     cluster::map_err,
-    render::{APP_LABEL, FIELD_MANAGER},
+    render::{files_name, port_service_name, APP_LABEL, FIELD_MANAGER},
     ClusterError, LazyCluster,
 };
 
@@ -42,6 +42,7 @@ pub enum AppObject {
     Namespace(Namespace),
     RoleBinding(RoleBinding),
     Volume(PersistentVolumeClaim),
+    ConfigMap(ConfigMap),
     Deployment(Box<Deployment>),
     Service(Service),
     Ingress(Ingress),
@@ -53,6 +54,7 @@ impl AppObject {
             Self::Namespace(_) => "Namespace",
             Self::RoleBinding(_) => "RoleBinding",
             Self::Volume(_) => "PersistentVolumeClaim",
+            Self::ConfigMap(_) => "ConfigMap",
             Self::Deployment(_) => "Deployment",
             Self::Service(_) => "Service",
             Self::Ingress(_) => "Ingress",
@@ -94,14 +96,22 @@ pub trait AppDeployer: Send + Sync {
     /// Never reads or overwrites an existing Secret.
     fn create_secret<'a>(&'a self, secret: &'a Secret)
         -> BoxFuture<'a, Result<bool, ClusterError>>;
-    /// Delete the app's Deployment, Service and Ingress (missing ones are fine). Keeps the
-    /// namespace, PVCs and Secret. Returns the kinds that were deleted.
+    /// Delete the app's Deployment, Services (incl. the port Service) and Ingress (missing
+    /// ones are fine). Keeps the namespace (with its port), PVCs and Secret. Returns the
+    /// kinds that were deleted.
     fn delete_workload<'a>(
         &'a self,
         app: &'a str,
     ) -> BoxFuture<'a, Result<Vec<&'static str>, ClusterError>>;
     /// Delete the app's namespace and everything in it, including its volumes' data.
     fn delete_namespace<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<bool, ClusterError>>;
+    /// Merge-patch the app's Deployment (stop/start: replicas and the
+    /// replicas-before-stop annotation).
+    fn patch_deployment<'a>(
+        &'a self,
+        app: &'a str,
+        patch: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<(), ClusterError>>;
     /// Merge-patch the app's namespace (the reassign path: owner label and annotations).
     fn patch_namespace<'a>(
         &'a self,
@@ -270,6 +280,7 @@ impl AppDeployer for KubeApps {
                 }
                 AppObject::RoleBinding(o) => apply_namespaced(&client, o).await,
                 AppObject::Volume(o) => apply_namespaced(&client, o).await,
+                AppObject::ConfigMap(o) => apply_namespaced(&client, o).await,
                 AppObject::Deployment(o) => apply_namespaced(&client, o.as_ref()).await,
                 AppObject::Service(o) => apply_namespaced(&client, o).await,
                 AppObject::Ingress(o) => apply_namespaced(&client, o).await,
@@ -316,9 +327,16 @@ impl AppDeployer for KubeApps {
             if optional(service.delete(app, &dp).await)?.is_some() {
                 deleted.push("Service");
             }
+            if optional(service.delete(&port_service_name(app), &dp).await)?.is_some() {
+                deleted.push("Service (device port)");
+            }
             let deployment = self.ns_api::<Deployment>(app).await?;
             if optional(deployment.delete(app, &dp).await)?.is_some() {
                 deleted.push("Deployment");
+            }
+            let files = self.ns_api::<ConfigMap>(app).await?;
+            if optional(files.delete(&files_name(app), &dp).await)?.is_some() {
+                deleted.push("ConfigMap");
             }
             Ok(deleted)
         })
@@ -332,6 +350,24 @@ impl AppDeployer for KubeApps {
                     .await,
             )?
             .is_some())
+        })
+    }
+
+    fn patch_deployment<'a>(
+        &'a self,
+        app: &'a str,
+        patch: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<(), ClusterError>> {
+        Box::pin(async move {
+            let api = self.ns_api::<Deployment>(app).await?;
+            let params = PatchParams {
+                field_manager: Some(FIELD_MANAGER.into()),
+                ..PatchParams::default()
+            };
+            api.patch(app, &params, &Patch::Merge(patch))
+                .await
+                .map(|_| ())
+                .map_err(map_err)
         })
     }
 

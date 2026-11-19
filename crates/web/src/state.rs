@@ -30,7 +30,11 @@ pub struct App {
     pub name: String,
     /// Phase as `app_status` reports it.
     pub phase: String,
+    /// The link `list_apps` gave (`http://<device address>:<port>`, as the queen sees it).
     pub url: Option<String>,
+    /// The app's own port on the device; pages build the link from the address the
+    /// visitor used to reach the UI ([`App::link`]).
+    pub port: Option<u16>,
     /// Who looks after it.
     pub keeper: Option<Keeper>,
 }
@@ -66,6 +70,46 @@ impl App {
     pub fn display_name(&self) -> String {
         display_app(&self.name)
     }
+
+    /// The app's link for a visitor who reached the UI at `host` (the request's `Host`
+    /// header): the same address with the app's port, so it works whether they came by LAN
+    /// address, host name or Tailscale. Without a usable host or port: the tool's link.
+    pub fn link(&self, host: Option<&str>) -> Option<String> {
+        match (host.and_then(host_name_of), self.port) {
+            (Some(h), Some(port)) => Some(format!("http://{h}:{port}")),
+            _ => self.url.clone(),
+        }
+    }
+}
+
+/// The host part of a `Host` header value (`192.0.2.15:8080` → `192.0.2.15`, `[::1]:8080` →
+/// `[::1]`), if it is a plain host name or IP literal. Anything odd: `None`.
+pub fn host_name_of(header: &str) -> Option<&str> {
+    let h = header.trim();
+    let host = if h.starts_with('[') {
+        let end = h.find(']')?;
+        let inner = &h[1..end];
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return None;
+        }
+        &h[..=end]
+    } else {
+        let host = h.split(':').next()?;
+        if host.is_empty()
+            || host.len() > 253
+            || !host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        {
+            return None;
+        }
+        host
+    };
+    Some(host)
 }
 
 /// What is known about the apps.
@@ -153,6 +197,8 @@ pub fn phase_words(phase: &str) -> (Health, &'static str) {
         "failing" => (Health::Problem, "Needs attention"),
         "deleting" => (Health::Busy, "Removing"),
         "uninstalled_data_kept" => (Health::Idle, "Removed, data kept"),
+        "stopping" => (Health::Busy, "Stopping"),
+        "stopped" => (Health::Idle, "Stopped"),
         _ => (Health::Idle, "Unknown"),
     }
 }
@@ -177,6 +223,7 @@ impl HiveSnapshot {
                             name: a["app"].as_str()?.to_string(),
                             phase: a["phase"].as_str().unwrap_or("unknown").to_string(),
                             url: a["url"].as_str().map(str::to_string),
+                            port: a["port"].as_u64().and_then(|p| u16::try_from(p).ok()),
                             keeper: None,
                         })
                     })
@@ -381,11 +428,44 @@ mod tests {
     }
 
     #[test]
+    fn app_links_follow_the_visitors_host() {
+        let app = App {
+            name: "nextcloud".into(),
+            phase: "ready".into(),
+            url: Some("http://192.0.2.15:30000".into()),
+            port: Some(30000),
+            keeper: None,
+        };
+        for (host, link) in [
+            (Some("192.0.2.15:8080"), "http://192.0.2.15:30000"),
+            (Some("100.64.0.10:8080"), "http://100.64.0.10:30000"),
+            (
+                Some("melissa.example.ts.net"),
+                "http://melissa.example.ts.net:30000",
+            ),
+            (Some("[2001:db8::1]:8080"), "http://[2001:db8::1]:30000"),
+            // Nothing usable: the queen's own link.
+            (None, "http://192.0.2.15:30000"),
+            (Some("evil\"><script>"), "http://192.0.2.15:30000"),
+            (Some("[::1"), "http://192.0.2.15:30000"),
+            (Some(""), "http://192.0.2.15:30000"),
+        ] {
+            assert_eq!(app.link(host).as_deref(), Some(link), "{host:?}");
+        }
+        let no_port = App {
+            port: None,
+            url: None,
+            ..app
+        };
+        assert_eq!(no_port.link(Some("192.0.2.15:8080")), None);
+    }
+
+    #[test]
     fn snapshot_from_tool_answers() {
         let apps = json!({
             "apps": [
-                {"app": "nextcloud", "phase": "ready", "url": "http://nextcloud.example.com"},
-                {"app": "immich", "phase": "starting", "url": null},
+                {"app": "nextcloud", "phase": "ready", "url": "http://192.0.2.15:30000", "port": 30000},
+                {"app": "immich", "phase": "stopped", "url": null},
             ],
             "not_installed": ["jellyfin"],
         });
@@ -402,6 +482,9 @@ mod tests {
         };
         assert_eq!(installed.len(), 2);
         assert_eq!(installed[0].display_name(), "Nextcloud");
+        assert_eq!(installed[0].port, Some(30000));
+        assert_eq!(installed[1].port, None);
+        assert_eq!(phase_words(&installed[1].phase).1, "Stopped");
         assert_eq!(available, &["jellyfin"]);
         assert_eq!(s.devices.len(), 1);
         assert_eq!(s.devices[0].name, "comb-1");

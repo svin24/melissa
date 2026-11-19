@@ -166,6 +166,10 @@ pub struct Container {
     pub env: BTreeMap<String, EnvValue>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// Small files from the manifest itself (e.g. an entrypoint hook), mounted read-only.
+    /// Reviewed with the manifest like everything else; agents can't add or change them.
+    #[serde(default)]
+    pub files: Vec<File>,
     pub resources: Resources,
     pub probe: Option<Probe>,
 }
@@ -223,7 +227,32 @@ pub enum Builtin {
     IngressHost,
     /// `http://<app>.<domain>` (https once the comb has its CA).
     IngressUrl,
+    /// Space-separated host names the app is reached at: the ingress host, then the
+    /// device's addresses and host name as known at install time (for apps that check
+    /// the `Host` header, like Nextcloud's `trusted_domains`).
+    DeviceHosts,
 }
+
+/// A file placed into a container from the manifest (rendered as a ConfigMap, mounted
+/// read-only with `subPath`, so it never lands in a data volume).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct File {
+    /// Absolute path in the container; not inside one of its volume mounts.
+    pub path: String,
+    /// The file's text (at most [`MAX_FILE_BYTES`]).
+    pub content: String,
+    /// Mode 0555 instead of 0444 (scripts).
+    #[serde(default)]
+    pub executable: bool,
+}
+
+/// Largest [`File::content`] in bytes, and most files per container.
+pub const MAX_FILE_BYTES: usize = 16 * 1024;
+pub const MAX_FILES: usize = 8;
+
+/// Pod volume name the rendered files use; manifests can't name a volume this.
+pub const FILES_VOLUME: &str = "melissa-files";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -14,6 +14,10 @@ pub enum Effect {
     None,
     /// Changes state but can be undone (scale, restart, install an app).
     Reversible,
+    /// Takes a service offline without losing anything (stop an app); undone by its
+    /// counterpart (start). Always confirmed, like a destructive action, but never shown
+    /// as one: nothing is deleted.
+    Disruptive,
     /// Can lose data or availability (remove an app, restore over data, delete a volume).
     Destructive,
     /// Changes who looks after a cell (reassign). Always confirmed: only the user decides
@@ -66,10 +70,18 @@ pub enum Decision {
     Confirm(String),
 }
 
+/// The confirmation reason for [`Effect::Disruptive`]. Deliberately free of the word
+/// "destructive": the UI marks cards with that word as dangerous.
+pub const STOPS_SERVICE: &str =
+    "takes a running service offline (it can be started again; nothing is deleted)";
+
 /// Decide whether `tool` (with `labels`) may run now in `ctx`.
 pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
     if labels.effect == Effect::Destructive {
         return Decision::Confirm("destructive action".into());
+    }
+    if labels.effect == Effect::Disruptive {
+        return Decision::Confirm(STOPS_SERVICE.into());
     }
     if labels.effect == Effect::Ownership {
         return Decision::Confirm("changes who looks after a cell (only you decide that)".into());
@@ -165,6 +177,23 @@ mod tests {
             decide("remove_app", &DESTRUCTIVE, &ctx),
             Decision::Confirm(_)
         ));
+    }
+
+    #[test]
+    fn disruptive_always_asks_but_is_not_called_destructive() {
+        let disruptive = Labels {
+            effect: Effect::Disruptive,
+            ..Labels::READ_ONLY
+        };
+        let mut ctx = attended();
+        ctx.preapproved.insert("stop_app".into());
+        match decide("stop_app", &disruptive, &ctx) {
+            Decision::Confirm(reason) => {
+                assert_eq!(reason, STOPS_SERVICE);
+                assert!(!reason.contains("destructive"));
+            }
+            Decision::Allow => panic!("a stop must ask"),
+        }
     }
 
     #[test]
