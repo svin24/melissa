@@ -24,22 +24,5 @@ if [ ! -e "$stamp" ]; then
     touch "$stamp"
 fi
 
-# Pin the node IP to the IPv4 address of the default route. Left alone, k3s also advertises the
-# node's global IPv6 address, which SLAAC adds a second or two *after* network-online.target (an
-# IPv4 DHCP lease is enough for NetworkManager-wait-online). k3s then sees "NodeIPs changed" and
-# exits, twice (v4 -> v4+v6, then the stored v4 vs the new v4+v6). The cluster is single-stack
-# IPv4, and changing IPv6 prefixes/privacy addresses would restart it at runtime too. A local
-# `node-ip` in config.yaml(.d) wins; with no IPv4 default route (IPv6-only bee) k3s autodetects.
-env=/run/melissa/k3s.env
-mkdir -p /run/melissa
-args=
-if ! grep -qsE '^[[:space:]]*"?node-ip"?[[:space:]]*:' /etc/rancher/k3s/config.yaml /etc/rancher/k3s/config.yaml.d/*.yaml; then
-    ip4=$(ip -4 -o route show default 2>/dev/null | sed -n '1s/.* src \([0-9.]*\).*/\1/p')
-    if [ -z "$ip4" ]; then
-        dev=$(ip -4 -o route show default 2>/dev/null | sed -n '1s/.* dev \([^ ]*\).*/\1/p')
-        [ -n "$dev" ] && ip4=$(ip -4 -o addr show dev "$dev" scope global 2>/dev/null \
-            | sed -n '1s/.* inet \([0-9.]*\)\/.*/\1/p')
-    fi
-    if [ -n "$ip4" ]; then args="--node-ip=$ip4"; else echo "k3s-prepare: no IPv4 default route; k3s picks the node IP" >&2; fi
-fi
-printf 'MELISSA_K3S_ARGS=%s\n' "$args" > "$env"
+# Pin the node IP (shared with the Nix packaging; see k3s-node-ip).
+/usr/libexec/melissa/k3s-node-ip /run/melissa/k3s.env

@@ -14,6 +14,10 @@
 //!   container: a polkit rule lets the `melissa` user restart `melissa-queen.service`, nothing else.
 //!
 //! Without the helper (a dev container, a from-source run) the UI shows the host commands.
+//!
+//! A Nix install (`MELISSA_RUNTIME=nix` in the release file, which the Nix package ships in the
+//! store and names with [`RELEASE_FILE_ENV`]) updates with the system's Nix configuration: the UI
+//! shows the commands and offers no update buttons, only the queen's restart.
 
 use std::{
     path::{Path, PathBuf},
@@ -30,6 +34,15 @@ pub const STATE_DIR: &str = "/run/melissa-update";
 pub const REQUEST_DIR: &str = "/run/melissa-update-request";
 /// Build facts written into the image.
 pub const RELEASE_FILE: &str = "/usr/lib/melissa/release";
+/// Overrides [`RELEASE_FILE`]: the Nix packaging sets it to the release file in the store.
+pub const RELEASE_FILE_ENV: &str = "MELISSA_RELEASE_FILE";
+
+/// The release file to read: `$MELISSA_RELEASE_FILE` if set, else [`RELEASE_FILE`].
+pub fn release_file() -> PathBuf {
+    std::env::var_os(RELEASE_FILE_ENV)
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from(RELEASE_FILE), PathBuf::from)
+}
 /// The host helper, for commands typed on the host.
 pub const HOST_HELPER: &str = "/usr/local/libexec/melissa/melissa-host-update";
 
@@ -40,7 +53,7 @@ pub struct Release {
     /// The source revision the image was built from, if recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
-    /// How it is packaged, e.g. `container` (image builds only).
+    /// How it is packaged: `container` or `nix` (from the release file only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     /// `image` (the release file), `env` (MELISSA_VERSION) or `source` (a cargo build).
@@ -91,15 +104,19 @@ impl Release {
 pub enum HostKind {
     /// The Melissa container image under podman.
     Container,
+    /// The Nix package: the NixOS module or the `melissa-host` profile on another distribution.
+    Nix,
     /// Anything else, e.g. a developer's machine running from source.
     Other,
 }
 
 impl HostKind {
-    /// Look at marker files under `root` (`/` normally).
-    pub fn detect(root: &Path) -> Self {
+    /// From the release's `runtime` (`nix`), else marker files under `root` (`/` normally).
+    pub fn detect(root: &Path, runtime: Option<&str>) -> Self {
         let run = root.join("run");
-        if run.join(".containerenv").exists() || run.join("systemd/container").exists() {
+        if runtime == Some("nix") {
+            Self::Nix
+        } else if run.join(".containerenv").exists() || run.join("systemd/container").exists() {
             Self::Container
         } else {
             Self::Other
@@ -378,6 +395,14 @@ impl UpdateAction {
     }
 }
 
+/// Melissa's polkit rule file and the directories polkit reads it from (relative to `root`).
+const POLKIT_RULE: &str = "50-melissa.rules";
+const POLKIT_RULE_DIRS: [&str; 3] = [
+    "usr/share/polkit-1/rules.d",
+    "etc/polkit-1/rules.d",
+    "run/current-system/sw/share/polkit-1/rules.d",
+];
+
 /// Where the helper writes and reads; `root` is `/` except in tests.
 #[derive(Debug, Clone)]
 pub struct UpdateEnv {
@@ -390,8 +415,9 @@ pub struct UpdateEnv {
 impl UpdateEnv {
     pub fn system() -> Self {
         let root = PathBuf::from("/");
+        let release = Release::read(&release_file());
         Self {
-            kind: HostKind::detect(&root),
+            kind: HostKind::detect(&root, release.runtime.as_deref()),
             state_dir: PathBuf::from(STATE_DIR),
             request_dir: PathBuf::from(REQUEST_DIR),
             root,
@@ -403,11 +429,18 @@ impl UpdateEnv {
         self.kind == HostKind::Container && self.request_dir.is_dir() && self.state_dir.is_dir()
     }
 
-    /// The queen may restart itself (polkit rule from packaging/common).
+    /// A Nix install on NixOS (else the `melissa-host` profile on another distribution).
+    pub fn nixos(&self) -> bool {
+        self.root.join("etc/NIXOS").exists()
+    }
+
+    /// The queen may restart itself: Melissa's polkit rule (restart the queen, nothing else) is
+    /// installed, by the container image in /usr, by the non-NixOS Nix bundle in /etc, or by the
+    /// NixOS module in the system profile.
     pub fn can_restart(&self) -> bool {
-        self.root
-            .join("usr/share/polkit-1/rules.d/50-melissa.rules")
-            .exists()
+        POLKIT_RULE_DIRS
+            .iter()
+            .any(|d| self.root.join(d).join(POLKIT_RULE).exists())
     }
 
     /// Whether the UI may offer `action` as a button.
@@ -593,7 +626,7 @@ mod tests {
     fn host_kind_and_helper_detection() {
         let root = temp("root");
         std::fs::create_dir_all(root.join("run")).unwrap();
-        assert_eq!(HostKind::detect(&root), HostKind::Other);
+        assert_eq!(HostKind::detect(&root, None), HostKind::Other);
         let env = UpdateEnv {
             root: root.clone(),
             kind: HostKind::Container,
@@ -617,7 +650,8 @@ mod tests {
             "engine=\"podman-6.1.3\"\nname=\"melissa\"\nimage=\"localhost/melissa:latest\"\nimageid=\"5b0d3c1e9f2a77\"\nrootless=0\n",
         )
         .unwrap();
-        assert_eq!(HostKind::detect(&root), HostKind::Container);
+        assert_eq!(HostKind::detect(&root, None), HostKind::Container);
+        assert_eq!(HostKind::detect(&root, Some("nix")), HostKind::Nix);
         let img = env.container_image().unwrap();
         assert_eq!(img.image, "localhost/melissa:latest");
         assert_eq!(img.short_digest().as_deref(), Some("sha256:5b0d3c1e9f2a"));
@@ -648,6 +682,37 @@ mod tests {
                 .len(),
             0
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restart_needs_only_the_polkit_rule() {
+        // NixOS: the rule comes with the system profile; no host helper, no container.
+        let root = temp("nixos-root");
+        let env = UpdateEnv {
+            root: root.clone(),
+            kind: HostKind::Other,
+            state_dir: root.join("run/melissa-update"),
+            request_dir: root.join("run/melissa-update-request"),
+        };
+        assert!(!env.can(UpdateAction::Restart));
+        let dir = root.join("run/current-system/sw/share/polkit-1/rules.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("50-melissa.rules"), "").unwrap();
+        assert!(env.can(UpdateAction::Restart));
+        assert!(!env.helper_installed() && !env.can(UpdateAction::Check));
+        // Nix: restart yes, never the helper's actions (even with stray mounts).
+        let nix = UpdateEnv {
+            kind: HostKind::Nix,
+            ..env.clone()
+        };
+        std::fs::create_dir_all(&nix.state_dir).unwrap();
+        std::fs::create_dir_all(&nix.request_dir).unwrap();
+        assert!(nix.can(UpdateAction::Restart) && !nix.can(UpdateAction::Apply));
+        assert!(!nix.nixos());
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::write(root.join("etc/NIXOS"), "").unwrap();
+        assert!(nix.nixos());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -688,6 +753,12 @@ mod tests {
             ),
             ("0.3.1", Some("abc1234"), Some("container"), "image")
         );
+        std::fs::write(
+            &file,
+            "MELISSA_VERSION=0.0.1\nMELISSA_REVISION=abc1234\nMELISSA_RUNTIME=nix\n",
+        )
+        .unwrap();
+        assert_eq!(Release::read(&file).runtime.as_deref(), Some("nix"));
         let r = Release::read(&dir.join("missing"));
         assert!(r.source == "source" || r.source == "env");
         let _ = std::fs::remove_dir_all(dir);

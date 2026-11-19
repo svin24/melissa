@@ -24,25 +24,49 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// A host program: `/usr/bin/<name>` (Fedora) or the first `<name>` on `PATH` (NixOS).
+fn host_program(name: &str) -> Option<PathBuf> {
+    let usr = Path::new("/usr/bin").join(name);
+    if usr.is_file() {
+        return Some(usr);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Can bwrap create the sandbox's namespaces here? Probes with the host's root bound
+/// read-only, so the check does not depend on the distribution's layout.
+fn namespaces_work(bwrap: &Path, sh: &Path) -> bool {
+    std::process::Command::new(bwrap)
+        .args(["--unshare-all", "--ro-bind", "/", "/", "--"])
+        .arg(sh)
+        .args(["-c", "true"])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 fn bwrap_works() -> bool {
     let Some(bwrap) = sandbox::find_bwrap() else {
         eprintln!("SKIP: bwrap not found; install bubblewrap to run the sandbox tests");
         return false;
     };
-    let ok = std::process::Command::new(&bwrap)
-        .args(["--unshare-all", "--ro-bind", "/usr", "/usr"])
-        .args(["--symlink", "usr/lib64", "/lib64", "--", "/usr/bin/true"])
-        .status()
-        .is_ok_and(|s| s.success());
+    let Some(sh) = host_program("sh") else {
+        eprintln!("SKIP: no sh found");
+        return false;
+    };
+    let ok = namespaces_work(&bwrap, &sh);
     if !ok {
         eprintln!("SKIP: bwrap cannot create namespaces here (unprivileged user namespaces off?)");
     }
     ok
 }
 
-/// `/usr/bin/sh -c <script>` as a sandboxed backend whose home is `home`.
+/// `sh -c <script>` as a sandboxed backend whose home is `home`.
 fn backend(script: &str, home: &Path, workdir: &Path) -> CliBackend {
-    let spec = CliSpec::new("sh", "/usr/bin/sh", &["-c", script, "melissa", "{prompt}"])
+    let sh = host_program("sh").unwrap();
+    let sh = sh.to_str().unwrap();
+    let spec = CliSpec::new("sh", sh, &["-c", script, "melissa", "{prompt}"])
         .with_sandbox(SandboxSpec {
             ro: vec![".fakecli".into()],
             ..SandboxSpec::default()

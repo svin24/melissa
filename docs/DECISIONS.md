@@ -546,3 +546,29 @@ Format: date — decision. Why. Alternatives considered.
   container's bridge address otherwise).
 - **2026-11-19 — The container image ships `iptables-nft`.** k3s's bundled iptables picked the legacy backend in a
   fresh fedora container and needs the `ip_tables` module, which modern hosts don't load: kube-proxy exited.
+- **2026-11-19 — Nix service: flake package + NixOS module; the sandbox learns the NixOS layout.** `nix build
+  .#melissa` builds the workspace from `Cargo.lock` with nixpkgs' `rustPlatform` (no crane: one package, no new
+  input); `nixosModules.melissa` reuses the shared queen unit, tmpfiles, polkit rule, k3s manifests and helper
+  scripts (one `root` variable in `packaging/nix/common.nix`) and uses nixpkgs' `services.k3s` (k3s 1.37 from
+  nixpkgs, not the pinned binary of `k3s.lock`). Vendor agent CLIs keep coming from `melissa-setup` and run
+  through nix-ld (on by default); Nix-built CLIs are an option. The sandbox binds `/nix/store` and
+  `/run/current-system` on NixOS and the host's real `/bin`, `/lib64` instead of usr-links. Why: the same
+  files and code paths as the images, so a fix lands everywhere; nix-ld instead of `buildFHSEnv` because the
+  vendors' self-updating installers write into the home and an FHS wrapper would hide the binary path the
+  sandbox preset and egress allowlist depend on. Alternatives: crane (better incremental CI builds; later if
+  needed), module-native units (would drift from the images' hardening), binding all of `/` in the sandbox
+  (exposes far more than the store).
+- **2026-11-19 — Non-NixOS hosts with Nix: a `melissa-host` bundle, not system-manager (prototype).** A root
+  Nix profile (`/nix/var/nix/profiles/melissa`) is the GC root and the update/rollback unit; `melissa-host
+  install` links the units, sysusers and tmpfiles into `/etc` through it. k3s comes from the distribution
+  (on SELinux hosts k3s-selinux labels `/usr/bin/k3s`; a store path would not be labelled). Why: no extra
+  tool, idempotent, easy to remove. numtide's system-manager (v1.1.0) officially supports only
+  Ubuntu/Debian/NixOS and mocks the firewall; revisit if that changes.
+- **2026-11-19 — Nix installs carry a release file; Settings keys on `MELISSA_RUNTIME=nix`.** The Nix package
+  ships `lib/melissa/release` (version, revision, `MELISSA_RUNTIME=nix`) like the container's
+  `/usr/lib/melissa/release`; the queen reads `$MELISSA_RELEASE_FILE` if set (the module and `melissa-host` set
+  it to the store copy), else the `/usr` path. `HostKind::Nix` shows the Nix update commands and no update
+  buttons; agents come from `services.melissa.agents.packages`. The node-IP pin moved from `k3s-prepare` into
+  the shared `k3s-node-ip`, which the NixOS module also runs. Alternatives: detect NixOS by `/etc/NIXOS` alone
+  (misses `melissa-host` on other distributions), a symlink at `/usr/lib/melissa/release` (NixOS has no /usr
+  to put it in declaratively).

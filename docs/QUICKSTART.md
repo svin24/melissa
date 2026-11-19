@@ -144,6 +144,39 @@ It is then at `https://<host>.example.ts.net:8443` (your tailnet's name instead 
 chat with the Queen and **approve her actions**, including deleting apps and their data. Only do this on a tailnet
 you alone use, or restrict who can reach the host on that port with Tailscale ACLs (grants) first.
 
+## Run on NixOS — experimental
+
+Melissa is a Nix flake with a NixOS module (`services.melissa`): the Queen as a system service, k3s for apps,
+the agent sandbox. In your system flake:
+
+```nix
+inputs.melissa.url = "path:/path/to/melissa";   # a checkout; nothing is published yet
+# in nixosSystem { modules = [ ... ]; }:
+melissa.nixosModules.default
+({ pkgs, ... }: {
+  services.melissa = {
+    enable = true;
+    apps.openFirewall = true;        # app ports 30000-30079 for the LAN
+    # k3s.airgapImages = true;       # k3s's own images from the store (offline boxes)
+    # The agents (providers) come from Nix; the binary must be named claude, grok or opencode.
+    agents.packages = [ pkgs.opencode pkgs.claude-code ];   # claude-code is unfree: allow it
+  };
+})
+```
+
+Then `sudo nixos-rebuild switch`, and log in to an agent: `sudo melissa-setup login opencode` (or `claude`).
+Settings → Providers doesn't install agents on NixOS; add them to `agents.packages`. (By hand,
+`sudo melissa-setup agent <name>` still works: the vendors' CLIs run through nix-ld, which the module turns
+on.) The web UI listens on 127.0.0.1:8080 only (no login yet): `ssh -L 8080:127.0.0.1:8080 you@box`.
+Updates come with your system: `nix flake update && sudo nixos-rebuild switch` (rollback with
+`sudo nixos-rebuild switch --rollback`); Settings → Updates shows the same commands.
+
+- **Status:** verified in a NixOS VM test (`nix build .#checks.x86_64-linux.melissa-nixos -L`, 2026-11-19):
+  web UI, a chat turn, the agent sandbox and network allowlist, k3s with Melissa's policies, an app install
+  reachable from another machine, stop/start, Settings. Not yet on real hardware.
+- **Other distributions with Nix** (Fedora, Debian, ...): a prototype bundle, `.#melissa-host`; k3s comes from the
+  distribution. Details, options and gotchas: [agent-skills/nix-service.md](agent-skills/nix-service.md).
+
 ## Stop, state and reset
 
 - **Stop:** Ctrl-C in the terminal running `just demo`. Agents stop with it.

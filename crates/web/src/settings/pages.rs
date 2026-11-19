@@ -323,6 +323,8 @@ pub struct UpdatesView {
     pub install: String,
     /// One-line explanation of how this host updates.
     pub how: String,
+    /// The page's subtitle (what is updated here).
+    pub about: &'static str,
     pub images: Vec<ImageLine>,
     /// "Checked 5 min ago", or why not.
     pub checked: String,
@@ -373,7 +375,7 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
         div id=(UPDATES_ID) {
             (settings_head(
                 "Updates",
-                "This device's Melissa and its container image.",
+                v.about,
                 &v.checked,
                 "/ui/settings/updates/check",
                 UPDATES_ID,

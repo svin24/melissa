@@ -354,12 +354,32 @@ fn remove_stale_leases(dir: &Path) {
 }
 
 /// Directories a binary needs besides `/usr`: `/nix/store` if its ELF interpreter lives
-/// there (a build from the Nix dev shell). Image builds use `/usr/lib64` and need nothing.
+/// there (a Nix build). Image builds use `/usr/lib64` and need nothing.
 fn runtime_dirs(binary: &Path) -> Vec<PathBuf> {
-    match elf_interpreter(binary) {
-        Some(interp) if interp.starts_with("/nix/store/") => vec!["/nix/store".into()],
-        _ => Vec::new(),
+    if needs_nix_store(binary) {
+        vec!["/nix/store".into()]
+    } else {
+        Vec::new()
     }
+}
+
+/// True if `binary` is an ELF file whose interpreter lives in `/nix/store`, or a script
+/// whose `#!` line points there (Nix wrappers).
+pub(crate) fn needs_nix_store(binary: &Path) -> bool {
+    elf_interpreter(binary)
+        .or_else(|| shebang(binary))
+        .is_some_and(|interp| interp.starts_with("/nix/store/"))
+}
+
+/// The interpreter named on a script's `#!` line.
+fn shebang(path: &Path) -> Option<PathBuf> {
+    use std::io::Read;
+    let mut head = [0u8; 256];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let line = head.get(..n)?.strip_prefix(b"#!")?;
+    let line = line.split(|b| *b == b'\n').next()?;
+    let interp = std::str::from_utf8(line).ok()?.split_whitespace().next()?;
+    Some(PathBuf::from(interp))
 }
 
 /// The `PT_INTERP` path of a 64-bit little-endian ELF file, if any.

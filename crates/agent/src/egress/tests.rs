@@ -391,15 +391,33 @@ async fn startup_keeps_live_leases_and_rejects_long_paths() {
 #[test]
 fn elf_interpreter_is_read_from_the_binary() {
     // /usr/bin/true is a dynamically linked ELF on Fedora; its loader is under /usr or /lib64.
-    let interp = elf_interpreter(Path::new("/usr/bin/true")).unwrap();
-    assert!(interp.to_string_lossy().contains("ld-linux"), "{interp:?}");
-    assert!(runtime_dirs(Path::new("/usr/bin/true")).is_empty());
+    // (NixOS and the Nix build sandbox have no /usr/bin/true.)
+    if Path::new("/usr/bin/true").is_file() {
+        let interp = elf_interpreter(Path::new("/usr/bin/true")).unwrap();
+        assert!(interp.to_string_lossy().contains("ld-linux"), "{interp:?}");
+        assert!(runtime_dirs(Path::new("/usr/bin/true")).is_empty());
+    }
     assert_eq!(elf_interpreter(Path::new("/etc/hostname")), None);
     // This test binary: from the Nix dev shell its loader is in /nix/store.
     let me = std::env::current_exe().unwrap();
     let dirs = runtime_dirs(&me);
     let nix = elf_interpreter(&me).is_some_and(|i| i.starts_with("/nix/store"));
     assert_eq!(dirs.is_empty(), !nix);
+}
+
+#[test]
+fn scripts_from_the_nix_store_need_it() {
+    let dir = std::env::temp_dir().join(format!("melissa-shebang-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let nix = dir.join("nix");
+    std::fs::write(&nix, "#!/nix/store/abc-bash/bin/bash -e\nexec x\n").unwrap();
+    let env = dir.join("env");
+    std::fs::write(&env, "#! /usr/bin/env node\n").unwrap();
+    assert!(needs_nix_store(&nix));
+    assert_eq!(shebang(&env), Some(PathBuf::from("/usr/bin/env")));
+    assert!(!needs_nix_store(&env));
+    assert!(!needs_nix_store(&dir.join("missing")));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

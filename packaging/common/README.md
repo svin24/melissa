@@ -4,7 +4,9 @@ Host-agnostic system files for running Melissa: the queen and k3s as systemd ser
 user and directories, the k3s config and Melissa's k3s manifests. Every packaging uses this tree:
 
 - `packaging/container/` copies it into the container image (`COPY packaging/common/ /`);
-- `packaging/nix/` (the Nix service) installs the same files from here.
+- `packaging/nix/` (the Nix service) installs the same files from here (`packaging/nix/common.nix`;
+  it uses its own k3s units, so not `k3s.service`, `k3s-prepare`, `k3s.lock` or
+  `melissa-kubeconfig.service`).
 
 **Paths mirror the install layout.** `packaging/common/<path>` installs to `/<path>`. Keep it that
 way and don't rename files: other packagings refer to these paths. Packaging-specific changes go in
@@ -20,7 +22,8 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 | `usr/lib/tmpfiles.d/melissa-{config,home,kube}.conf` | `/etc/melissa`, `/var/lib/melissa{,/home}`, `/run/melissa-kube` |
 | `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-queen.service` (Settings → Restart), nothing else |
 | `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the queen's user |
-| `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP |
+| `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP (`k3s-node-ip`) |
+| `usr/libexec/melissa/k3s-node-ip` | Writes `MELISSA_K3S_ARGS=--node-ip=<default-route IPv4>` to the env file given (k3s-prepare; the NixOS module's k3s) |
 | `usr/libexec/melissa/melissa-kubeconfig` | ServiceAccount tokens → `/run/melissa-kube/{queen,apps}.kubeconfig` |
 | `usr/lib/melissa/k3s.lock` | Pinned k3s version and sha256 sums (binary, airgap images, LICENSE; k3s-selinux for SELinux hosts) |
 | `usr/lib/melissa/k3s/manifests/*.yaml` | Deploy-on-start manifests: queen RBAC, app RBAC and ValidatingAdmissionPolicies, Traefik HelmChartConfig |

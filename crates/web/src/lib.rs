@@ -771,6 +771,42 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn nixos_updates_show_nix_commands_and_only_restart() {
+            let fx = SettingsFixture::new("nixos");
+            // helper=true also lays down stray helper mounts: a Nix install must still not
+            // offer the container's update buttons.
+            let settings = fx.settings(HostKind::Nix, true);
+            std::fs::create_dir_all(fx.dir.join("root/etc")).unwrap();
+            std::fs::write(fx.dir.join("root/etc/NIXOS"), "").unwrap();
+            let (app, _) = app_with(Some(settings));
+            let (status, _, html) = send(&app, get("/settings/updates")).await;
+            assert_eq!(status, StatusCode::OK);
+            for want in [
+                "0.3.1",
+                "NixOS configuration",
+                "nix flake update",
+                "sudo nixos-rebuild switch",
+                "sudo nixos-rebuild switch --rollback",
+            ] {
+                assert!(html.contains(want), "missing {want}");
+            }
+            for unwanted in [
+                "git pull",
+                "podman",
+                "container-build",
+                "container image",
+                "/ui/settings/updates/apply",
+                "/ui/settings/updates/rollback",
+            ] {
+                assert!(!html.contains(unwanted), "unexpected {unwanted}");
+            }
+            let (_, _, json) = send(&app, get("/api/settings/updates")).await;
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(v["host"], "nix");
+            assert_eq!(v["actions"], serde_json::json!(["restart"]));
+        }
+
+        #[tokio::test]
         async fn secrets_are_write_only_everywhere() {
             let fx = SettingsFixture::new("secrets");
             let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));

@@ -22,6 +22,8 @@ use crate::{components::Tone, is_htmx, ui::Ui};
 const SOURCE_UPDATE: &str = "git pull && just demo";
 /// Where a container without the host helper gets a newer image (from the source folder).
 const CONTAINER_REBUILD: &str = "just container-build && just container-install";
+/// The `melissa-host` profile on a non-NixOS host with Nix (packaging/nix/host).
+const NIX_PROFILE: &str = "/nix/var/nix/profiles/melissa";
 
 fn image_detail(i: &ImageView) -> String {
     let mut parts = Vec::new();
@@ -72,9 +74,11 @@ fn images(env: &UpdateEnv, state: &UpdateState) -> Vec<ImageLine> {
     out
 }
 
-fn install_words(kind: HostKind) -> &'static str {
-    match kind {
+fn install_words(env: &UpdateEnv) -> &'static str {
+    match env.kind {
         HostKind::Container => "Melissa container (podman, started by systemd)",
+        HostKind::Nix if env.nixos() => "Nix (part of this computer's NixOS configuration)",
+        HostKind::Nix => "Nix (the melissa-host profile on this computer)",
         HostKind::Other => "From source on this computer",
     }
 }
@@ -87,13 +91,26 @@ fn how(env: &UpdateEnv) -> &'static str {
         HostKind::Container => {
             "Updates come as a new container image. The host's update helper isn't connected to this container, so run the commands below on the host. Apps, chats and settings are kept."
         }
+        HostKind::Nix if env.nixos() => {
+            "Melissa updates with this computer's NixOS configuration, not from here. Update the flake inputs and rebuild with the commands below; a rebuild can be rolled back (also from the boot menu). Apps, chats and settings are kept."
+        }
+        HostKind::Nix => {
+            "Melissa is installed from Nix and updates with its Nix profile, not from here. Run the commands below on this computer. Apps, chats and settings are kept."
+        }
         HostKind::Other => {
             "This computer isn't running the Melissa container, so there is no image to update. Update Melissa from source instead."
         }
     }
 }
 
-fn auto_words(state: &UpdateState) -> String {
+fn auto_words(env: &UpdateEnv, state: &UpdateState) -> String {
+    if env.kind == HostKind::Nix {
+        return if env.nixos() {
+            "Automatic updates: through the NixOS configuration (system.autoUpgrade), if it is set there.".into()
+        } else {
+            "Automatic updates: not set up (the Nix profile is updated by hand).".into()
+        };
+    }
     match state.status.as_ref().and_then(|s| s.auto_update.as_deref()) {
         Some("registry") => "Automatic updates: on (podman-auto-update.timer pulls a newer image daily and restarts Melissa on it).".into(),
         Some("local") => "Automatic updates: on for images loaded on the host (podman-auto-update.timer, daily).".into(),
@@ -114,6 +131,34 @@ fn manual_commands(env: &UpdateEnv) -> Vec<(String, String)> {
                 "Without the helper (a development container), in the Melissa source folder:"
                     .into(),
                 CONTAINER_REBUILD.into(),
+            ),
+        ],
+        HostKind::Nix if env.nixos() => vec![
+            (
+                "In the folder of this computer's system flake, update its inputs:".into(),
+                "nix flake update".into(),
+            ),
+            (
+                "Rebuild (Melissa restarts if it changed):".into(),
+                "sudo nixos-rebuild switch".into(),
+            ),
+            (
+                "Roll back to the previous system:".into(),
+                "sudo nixos-rebuild switch --rollback".into(),
+            ),
+        ],
+        HostKind::Nix => vec![
+            (
+                "Update (Melissa restarts):".into(),
+                format!(
+                    "sudo nix profile upgrade --profile {NIX_PROFILE} --all && sudo {NIX_PROFILE}/bin/melissa-host install"
+                ),
+            ),
+            (
+                "Roll back:".into(),
+                format!(
+                    "sudo nix profile rollback --profile {NIX_PROFILE} && sudo {NIX_PROFILE}/bin/melissa-host install"
+                ),
             ),
         ],
         HostKind::Other => vec![("In the Melissa source folder:".into(), SOURCE_UPDATE.into())],
@@ -172,8 +217,12 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
     UpdatesView {
         version: release.version.clone(),
         revision: release.revision.clone(),
-        install: install_words(env.kind).into(),
+        install: install_words(env).into(),
         how: how(env).into(),
+        about: match env.kind {
+            HostKind::Nix => "This device's Melissa and how its Nix install is updated.",
+            _ => "This device's Melissa and its container image.",
+        },
         images: images(env, &state),
         checked,
         last: last_flash(&state),
@@ -185,7 +234,7 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
             && status.is_some_and(|s| s.previous.is_some()),
         confirm,
         commands: manual_commands(env),
-        automatic: auto_words(&state),
+        automatic: auto_words(env, &state),
         agents: agent_versions(ui).await,
         restart: s.parts().store.restart_needed().then(|| restart_hint(s)),
     }
@@ -238,6 +287,9 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
                 "Melissa can't do that from here. On the host, run: {}",
                 action.manual_command()
             ),
+            HostKind::Nix => {
+                "Melissa updates with this computer's Nix configuration; the commands are on Settings → Updates.".into()
+            }
             HostKind::Other => "There is no container image to update on this device.".into(),
         };
         return Outcome::NotHere(Flash {

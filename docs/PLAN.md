@@ -79,6 +79,31 @@ git tag **`bootc-archive-2026-11-19`** (`image/`, `scripts/vm-*`, the `bootc-ima
 `k3s-on-bootc` skills, `docs/TRY-THE-VM.md`). It comes back "far later", built on `packaging/common/` like the
 other packagings.
 
+### 2b. Nix service (host-first track 2)
+
+Kept separate from the container-first text above on purpose (two tracks, two authors).
+
+- **Flake outputs (2026-11-19):** `packages.<system>.melissa` (workspace from `Cargo.lock`, UI embedded),
+  `nixosModules.melissa` (`services.melissa`), `checks.x86_64-linux.melissa-nixos` (NixOS VM test), and a
+  prototype `melissa-host` bundle for other distributions with Nix. Details:
+  `docs/agent-skills/nix-service.md`.
+- **NixOS module:** the shared queen unit, tmpfiles, polkit rule, k3s config and manifests and helpers
+  from `packaging/common/` (no copies; `packaging/nix/common.nix` names the root), nixpkgs' `services.k3s`
+  (1.37) with the node IP pinned by the shared `k3s-node-ip` (also used by the container's `k3s-prepare`),
+  UI on loopback, app ports 30000-30079 behind `apps.openFirewall`.
+- **Agents on NixOS:** `services.melissa.agents.packages` (Nix-built claude/grok/opencode) is the documented
+  way; Settings → Providers doesn't install agents on Nix installs. nix-ld stays on for CLIs installed by
+  hand with `melissa-setup`.
+- **Release file:** the package ships `lib/melissa/release` (`MELISSA_VERSION`, `MELISSA_REVISION`,
+  `MELISSA_RUNTIME=nix`); the queen reads it through `MELISSA_RELEASE_FILE` (set by the module and the
+  `melissa-host` drop-in; default `/usr/lib/melissa/release`).
+- **Updates on NixOS** are the system's: `nix flake update` + `sudo nixos-rebuild switch`, rollback with
+  `sudo nixos-rebuild switch --rollback` or the boot menu. Melissa never rebuilds the system itself.
+  Settings → Updates shows the running version, these commands and no update buttons (Restart stays);
+  provisional text, the owner reviews it (open question 62).
+- **Other distributions:** `melissa-host` (root Nix profile as GC root, `melissa-host install` links units into
+  `/etc`); k3s from the distribution. Not system-manager for now (Fedora unsupported upstream).
+
 ## 3. Cluster layer
 
 - **Status (2026-11-19):** k3s v1.37.2 ships in the container image, pinned by sha256 in
@@ -588,3 +613,11 @@ Roadmap (rough, phases may overlap):
     (d) `--privileged` lets root inside mknod and open any host device even with `/dev/input` hidden; the
     logind/sleep masking is the real protection against power handling. Narrower than `--privileged`
     (explicit caps + device list) is worth a spike.
+62. Nix service (2026-11-19): (a) Settings → Updates on Nix installs (`HostKind::Nix` from
+    `MELISSA_RUNTIME=nix`): running version, the NixOS commands (or the `melissa-host` profile commands
+    off NixOS), no update buttons, Restart kept. Provisional wording, for the owner's review; the "Look
+    again" header button still posts `check`, which answers with a notice. (b) Done: the node-IP pin is
+    the shared `packaging/common/usr/libexec/melissa/k3s-node-ip`. (c) `melissa-host` was built but not run: podman cannot start containers
+    from the agent session; verify it in a Fedora/Kinoite VM, incl. SELinux labels on `/nix/store` binaries
+    run by systemd. (d) k3s on NixOS is nixpkgs' 1.37.x, not the sha256-pinned `k3s.lock` binary; pin through
+    the flake lock only. (e) Publishing the flake (a public input URL) needs the owner's yes.

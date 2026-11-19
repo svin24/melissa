@@ -18,6 +18,9 @@ Read this at the start of every session. One file per skill; update the skill wh
   `packaging/common` vs `packaging/container`, build/install/smoke loop, image lint, UI forward + nftables filter,
   logind/sleep masked, persistence, the host update helper, what's verified. (The bootc images, VM tests and
   their skills are archived at tag `bootc-archive-2026-11-19`.)
+- [nix-service.md](nix-service.md) — Melissa from the flake: package, NixOS module `services.melissa` (options, k3s,
+  nix-ld for vendor CLIs), the sandbox on NixOS (`SystemRoot`), the NixOS VM test, the non-NixOS `melissa-host`
+  bundle and why not system-manager.
 - [k3s-in-container.md](k3s-in-container.md) — k3s pinned + sha256-checked in the image, airgap images, iptables-nft, container config, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
