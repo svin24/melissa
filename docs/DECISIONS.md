@@ -483,4 +483,12 @@ Format: date — decision. Why. Alternatives considered.
   (needs setuid sudo, `NoNewPrivileges=yes` blocks it), a root daemon with a socket (more code, a long-running
   root process), running the queen as root (no). `polkit` is added to the image packages. Auto-update stays
   off until the update policy (PLAN 20) exists.
-
+- **2026-11-19 — The update helper runs each `bootc` call as a transient systemd unit** (found testing PLAN
+  60e on a bootc VM). bootc needs SELinux `install_t` to write labels the running policy may not know; systemd
+  starts `/usr/bin/bootc` (`install_exec_t`) there, a shell script does not (AVC `mac_admin` on bootc's chcon
+  fallback). `systemd-run --wait` with output to files in `/run/melissa-update/.work` keeps the fixed-verb
+  helper and its error messages. Alternatives: an SELinux module or file-context rule labelling the helper
+  `install_exec_t` (needs semanage/policy build in the image), one unit per bootc command with
+  `StandardOutput=` and `OnSuccess=` chains (more units, loses the error text in `last.json`).
+- **2026-11-19 — `/etc/melissa` belongs to the queen's user** (`tmpfiles.d/melissa-config.conf`, `melissa:melissa
+  0750`), because Settings writes `providers.toml` there. systemd's `ConfigurationDirectory=` never chowns.

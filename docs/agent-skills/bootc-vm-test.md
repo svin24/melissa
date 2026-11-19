@@ -124,3 +124,24 @@ Tester guide: [../TRY-THE-VM.md](../TRY-THE-VM.md). Pieces in the headless image
 - Gotcha (again): `pkill -f <pattern>` inside a tool call kills the calling shell when the pattern is in its own
   command line. Stop helper processes by PID.
 
+## Settings → Updates on the VM (2026-11-19)
+- **Port 2222 may be taken** by another VM on the laptop; every script honours `VM_SSH_PORT`
+  (`VM_SSH_PORT=2232 devenv shell -- scripts/vm-run.sh headless`, same variable for `vm-dev.sh`,
+  `vm-k3s-smoke.sh`). The owner's `melissa-vm-tunnel@headless` follows 2222 only.
+- **vm/ lives in the main checkout.** From a worktree, link it (`ln -s ~/dev/melissa/vm vm`; it is gitignored
+  as a directory only, so don't `git add` the link).
+- **A second image version:** build with another `MELISSA_VERSION` and a label, push to the dev registry under
+  the same tag, then use the UI/API instead of `vm-dev deploy`:
+  ```
+  devenv shell -- bash -c 'SOURCE_DATE_EPOCH=$(date +%s) podman build -q --layers --network=host \
+    -f image/Containerfile --build-arg VARIANT=headless --build-arg BASE=quay.io/fedora/fedora-bootc:45 \
+    --build-arg MELISSA_VERSION=<ver>-v3 --label org.example.melissa.test=v3 -t localhost/melissa-headless:v3 .'
+  podman push -q --tls-verify=false localhost/melissa-headless:v3 127.0.0.1:5000/melissa-headless:dev
+  ```
+- Test as the queen does: `curl` on `127.0.0.1:8080` inside the VM (UI posts need `Origin:
+  http://localhost:8080`, `HX-Request: true` and a form body, even empty `--data ""`), `sudo -u melissa
+  melissa-queen update ...`, `sudo -u melissa systemctl ...` for the polkit negatives.
+- AVCs: `sudo journalctl -b -o cat | grep "avc:  denied"` (also `-b -1` after a reboot).
+- **Image timestamps:** the Nix dev shell exports `SOURCE_DATE_EPOCH=315532800`; podman made every image
+  "built 1980-01-01". `just image-build` now sets it to the last commit's time.
+- Results: [settings-ui.md](settings-ui.md#verified-on-the-headless-bootc-vm-2026-11-19).

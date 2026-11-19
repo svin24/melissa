@@ -543,5 +543,9 @@ Roadmap (rough, phases may overlap):
     restart. (c) Extra launch arguments use a denylist of permission/tool flags, which can miss a vendor's new
     flag; an allowlist per CLI (like Claude sessions') is stricter but less useful. (d) Automatic updates
     (on/off, schedule) are not built: they need the staged-update + health-check policy of question 20 first.
-    (e) The root helper, units and polkit rule are not verified on a bootc VM yet. (f) Settings has no login
+    (e) Verified on the headless bootc VM 2026-11-19 (status, check, apply, rollback, restart, polkit
+    negatives, 0 AVCs; Providers save + secrets). Fixed there: bootc now runs in `install_t` (transient unit
+    per call), restart answers before it stops the queen, `/etc/melissa` owned by `melissa`. Still open: the
+    desktop image's helper (same files, not run on the desktop VM), and the apply unit ending "failed
+    (signal)" at the reboot (cosmetic). (f) Settings has no login
     gate beyond loopback-only (28); with accounts, only the owner may change providers or updates.

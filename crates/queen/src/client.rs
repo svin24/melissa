@@ -730,28 +730,8 @@ pub async fn update_status(client: &Client) -> anyhow::Result<()> {
             .as_str()
             .unwrap_or(body["host"].as_str().unwrap_or("?"))
     );
-    let st = &body["state"]["status"];
-    for (label, key) in [
-        ("running", "booted"),
-        ("staged", "staged"),
-        ("available", "available"),
-        ("rollback", "rollback"),
-    ] {
-        if let Some(img) = st[key]["image"].as_str() {
-            let ver = st[key]["version"].as_str().unwrap_or("");
-            println!("  {label:<10} {img} {ver}");
-        }
-    }
-    if let Some(last) = body["state"]["last"].as_object() {
-        println!(
-            "  last {}: {}",
-            last.get("action").and_then(Value::as_str).unwrap_or("?"),
-            if last.get("ok") == Some(&Value::Bool(true)) {
-                "ok"
-            } else {
-                "failed"
-            }
-        );
+    for line in image_lines(&body["state"]) {
+        println!("{line}");
     }
     let actions: Vec<&str> = body["actions"]
         .as_array()
@@ -778,6 +758,50 @@ pub async fn update_status(client: &Client) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The OS image part of `update status`: one line per image (with its short digest, which tells
+/// two builds with the same version apart), then the helper's last action.
+fn image_lines(state: &Value) -> Vec<String> {
+    let st = &state["status"];
+    let mut lines = Vec::new();
+    for (label, key) in [
+        ("running", "booted"),
+        ("staged", "staged"),
+        ("available", "available"),
+        ("rollback", "rollback"),
+    ] {
+        if let Some(img) = st[key]["image"].as_str() {
+            let mut line = format!("  {label:<10} {img}");
+            if let Some(ver) = st[key]["version"].as_str() {
+                line.push_str(&format!(" {ver}"));
+            }
+            if let Some(d) = st[key]["digest"].as_str() {
+                line.push_str(&format!(" {}", d.chars().take(19).collect::<String>()));
+            }
+            lines.push(line);
+        }
+    }
+    if st["rollback_queued"].as_bool() == Some(true) {
+        lines.push("  next boot: rollback".into());
+    }
+    if let Some(last) = state["last"].as_object() {
+        let ok = last.get("ok") == Some(&Value::Bool(true));
+        let mut line = format!(
+            "  last {}: {}",
+            last.get("action").and_then(Value::as_str).unwrap_or("?"),
+            if ok { "ok" } else { "failed" }
+        );
+        if let Some(m) = last
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+        {
+            line.push_str(&format!(" ({m})"));
+        }
+        lines.push(line);
+    }
+    lines
+}
+
 /// `update check|apply|rollback|restart [--yes]`.
 pub async fn update_action(client: &Client, action: &str, yes: bool) -> anyhow::Result<()> {
     let (status, body) = client
@@ -792,4 +816,33 @@ pub async fn update_action(client: &Client, action: &str, yes: bool) -> anyhow::
     let body = ok(status, body)?;
     println!("{}", body["message"].as_str().unwrap_or("started"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_status_shows_digests_and_last_message() {
+        let state = json!({
+            "status": {
+                "booted": {"image": "registry.example.com/melissa:dev", "version": "abc1234",
+                           "digest": "sha256:96e1d42a824a821abe9579b17235c180"},
+                "rollback": {"image": "registry.example.com/melissa:dev",
+                             "digest": "sha256:fee4874b18675799b133faaac4b47a28"},
+                "rollback_queued": true
+            },
+            "last": {"action": "check", "ok": false, "at": 1, "message": "no network"}
+        });
+        assert_eq!(
+            image_lines(&state),
+            [
+                "  running    registry.example.com/melissa:dev abc1234 sha256:96e1d42a824a",
+                "  rollback   registry.example.com/melissa:dev sha256:fee4874b1867",
+                "  next boot: rollback",
+                "  last check: failed (no network)",
+            ]
+        );
+        assert!(image_lines(&json!({})).is_empty());
+    }
 }

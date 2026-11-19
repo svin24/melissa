@@ -17,6 +17,8 @@ Group=melissa
 StateDirectory=melissa
 StateDirectoryMode=0750
 ConfigurationDirectory=melissa
+# Owned by melissa via tmpfiles.d/melissa-config.conf (Settings writes providers.toml here).
+ConfigurationDirectoryMode=0750
 # Per-sandbox egress sockets (crates/agent/src/egress) live in /run/melissa/egress.
 RuntimeDirectory=melissa
 RuntimeDirectoryMode=0700

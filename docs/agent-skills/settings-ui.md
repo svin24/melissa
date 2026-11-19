@@ -19,7 +19,8 @@ status/actions, or adding a Settings section. Load the `melissa-ui` skill first;
   `settings_form`, `var_list`/`VarRow` (secret → "set"), `command_block` (copy button via the existing
   `.copy-code` JS), `confirm_card`, `plain_action`, `actions`, `region`. Rail: `Nav::Settings`.
 - Image: `rootfs/usr/libexec/melissa/melissa-update`, `melissa-update-{status,check,apply,rollback}.service`,
-  `rootfs/usr/share/polkit-1/rules.d/50-melissa.rules`, `tmpfiles.d/melissa-update.conf`, `polkit` package.
+  `rootfs/usr/share/polkit-1/rules.d/50-melissa.rules`, `tmpfiles.d/melissa-update.conf`, `polkit` package;
+  `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`).
 
 ## Adding a section
 1. A view + handlers file in `crates/web/src/settings/` (copy `updates.rs`' shape: `view()`, `page()`, a
@@ -66,5 +67,33 @@ status/actions, or adding a Settings section. Load the `melissa-ui` skill first;
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).
 - The toggle posts `enabled=on` or nothing; parse the form as `Vec<(String, String)>`.
 - `hx-current-url` keeps the open provider when "Check again" swaps the region.
-- Not verified on a real bootc VM yet: the polkit rule, the units and `systemctl` from inside
-  `melissa-queen.service` (`NoNewPrivileges=yes` is fine for D-Bus calls, but check).
+- **bootc only in `install_t`.** The helper never runs `bootc` itself: from a shell script (bin_t →
+  `unconfined_service_t`) bootc stays out of `install_t`, its chcon self-relabel is denied (AVC `mac_admin`)
+  and it carries on without it, which can break writing labels a newer policy brings. `bootc()` in the helper
+  runs each call as a transient unit (`systemd-run --wait`); output goes to files PID 1 opens in
+  `/run/melissa-update/.work` (0700). A pipe (`--pipe`) or `/tmp` from the helper's domain is denied to `init_t`.
+- **Restart answers first.** The queen has no graceful shutdown, so `systemctl restart` asked inline killed it
+  before the reply (UI: dropped connection, CLI: "connection closed"). `run()` returns, then asks systemd
+  750 ms later; a refusal is logged and audited.
+- **`/etc/melissa` must be `melissa`'s** (`tmpfiles.d/melissa-config.conf`): systemd's `ConfigurationDirectory=`
+  never chowns, and saving `providers.toml` failed with EACCES. Container mode overrides that file (symlink).
+- The apply unit ends "Failed with result 'signal'" because the reboot stops it; expected.
+- After a rollback, bootc still lists the newer image as available (the tag still points at it); applying
+  again goes back to it.
+
+## Verified on the headless bootc VM (2026-11-19, Secure Boot on, SELinux enforcing)
+Images `9dd9cc9` → `55a6086` (+ a `-v3` label bump) through the dev registry; see
+[bootc-vm-test.md](bootc-vm-test.md#settings--updates-on-the-vm-2026-11-19).
+
+| Check | Result |
+|---|---|
+| Status: booted/rollback image, version, digest (UI, API, CLI); `melissa-update-status` at boot | works |
+| Check via polkit as `melissa` (UI/API/CLI), "Update available" shown; bootc errors reach `last.json` | works |
+| Apply: UI/API need the confirmation (card / 409), then download + reboot into the new digest (~40 s) | works |
+| Rollback: 409 without confirm, 202 with; reboots into the previous image | works |
+| Restart Melissa (UI 200, API 202, CLI exit 0; new queen PID) | works after fix |
+| `melissa` can't: start/restart/stop/kill other units, stop/restart the helper units, template instances, enable/mask, set-property, set-environment, daemon-reload, reboot, transient units | denied |
+| `nobody` / `bee` (no sudo) can't start the helper units or restart the queen | denied |
+| AVC denials during status/check/apply/rollback | 0 after fix |
+| Providers: list, versions, display name, secret + plain variables via UI/API/CLI | works after fix |
+| Secrets in HTML, JSON, CLI output, journal, `audit.jsonl` | never; only `providers.toml` (0600 melissa) |
