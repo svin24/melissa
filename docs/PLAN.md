@@ -34,40 +34,58 @@ bees with their own resumable sessions, cells owned by bees (namespace labels + 
 Queen with the user's yes or by the user, user chat with any bee, bee-to-bee only via the Queen. Mapping table in
 HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-loop.md`. Multi-comb is M3.
 
-## 2. Base OS and image pipeline
+## 2. Packaging: container first (host-first)
 
-> **Direction change (2026-11-19, owner):** Melissa first targets running **on an existing Linux host**: a
-> **rootful container** (podman, started by systemd, e.g. a Quadlet unit) and/or a **Nix-packaged service**
-> (flake with systemd units; NixOS module, or system-manager style on other distros). The owner's laptop goes back
-> to stock Fedora Kinoite. Only once that works do we resume a **reference distro** (the bootc images below, then
-> the "reference distro"). The bootc work stays in the repo and is not deleted; it is paused.
+> **Direction change (2026-11-19, owner):** Melissa runs **on an existing Linux host** first. The supported way is a
+> **rootful podman container** started by systemd (Quadlet). A **Nix-packaged service** (flake, systemd units) is a
+> parallel track under `packaging/nix/`. The bootc OS images, VM tooling and release disk are removed from the
+> repo and preserved at git tag `bootc-archive-2026-11-19` (see "Reference distro (paused)" below).
 
-- **Two image variants from day one**, built from one `image/Containerfile` (`VARIANT=desktop|headless`) that
-  shares a Rust build stage and the Melissa layer (binaries, units, Tailscale, config under `/usr/lib`):
-  - **desktop**: `FROM quay.io/fedora-ostree-desktops/kinoite:45` (KDE). For the dev laptop and desktop bees.
-    Ships the transient-root `prepare-root.conf` (needed for Nix) and Tailscale, which the laptop currently has as
-    host-side rpm-ostree changes. Runs the full server like headless (system queen as `melissa`, k3s, web UI on
-    127.0.0.1:8080 at boot, whoever is logged in); no first-boot account prompt (KDE has its own setup).
-  - **headless**: `FROM quay.io/fedora/fedora-bootc:45`. For servers, mini PCs and VPS bees. The queen runs as a
-    system service as the fixed system user `melissa` (config in `/etc/melissa`, state in `/var/lib/melissa`, agent CLIs
-    and their logins in `/var/lib/melissa/home`, set up with `sudo melissa-setup agent <name>`; DynamicUser until 2026-11-18).
-  - Both bases carry `containers.bootc=1` (verified with skopeo, 2026-11-18).
-- **Dev laptop:** currently stock Kinoite 45 from the ostree remote. **Switch deferred (owner, 2026-11-18):** develop on
-  the headless image in a QEMU VM until there's much more to it; the desktop image is built and VM-tested meanwhile. It moves onto the desktop image with
-  `bootc switch` only after the image passed VM tests, and only with the owner's explicit yes; roll back with `bootc rollback`.
-- **Packages:** extra packages go into the image (owner's preference, for ease of use), listed in
-  `image/packages-{common,desktop,headless}.txt`. No host-side layering.
-- **Testing:** QEMU VMs (KVM, UEFI) from disks built with bootc-image-builder (`just vm-disk`, `just vm-run`);
-  later multi-node hive tests with disposable bees from the same images.
-- **Update distribution:** images are published first to `ghcr.io`. Later a Cloudflare-fronted or custom registry
-  domain; clients migrate through `registries.conf` mirrors (no reinstall needed). Sign images (cosign) before any public release.
+- **Layout:** `packaging/common/` holds the host-agnostic system files every packaging installs (queen and k3s
+  units, kubeconfig helper, sysusers/tmpfiles, k3s config and manifests, polkit rule, `melissa-setup`,
+  `k3s-prepare`, `k3s.lock`), paths mirroring the install layout (`packaging/common/README.md`).
+  `packaging/container/` is the container packaging; `packaging/nix/` the Nix one.
+- **Container image** (`packaging/container/Containerfile`): `FROM registry.fedoraproject.org/fedora:45`, systemd as
+  PID 1. Stages: Rust build (+ license report), k3s fetch (pinned and sha256-checked from `k3s.lock`), runtime with
+  only what Melissa needs (`packages.txt`: systemd, bubblewrap, nftables, iptables-nft, polkit, curl, ...). No
+  kernel, bootloader, bootc, sshd, NetworkManager, chrony, firewalld or Tailscale: **the host provides networking,
+  time, SSH and Tailscale.** logind and the sleep targets are masked (the container must never handle the host's
+  power keys or lid). An image lint step checks what must and must not be in it. `/usr/lib/melissa/release`
+  carries version, revision and `MELISSA_RUNTIME=container`.
+- **Install** (`packaging/container/install.sh`, root): preflight (podman ≥ 5, cgroup v2 controllers, br_netfilter
+  and overlay, free ports, bridge subnet vs k3s's), the Quadlet `/etc/containers/systemd/melissa.container`
+  (`systemctl start|stop|status melissa`, starts at boot), the kubelet's host sysctls written openly to
+  `/etc/sysctl.d/90-melissa-kubelet.conf` with a notice (restored by `uninstall.sh`). Data: the `melissa-var`
+  volume (`/var`, with `/etc/melissa` and k3s's node password symlinked onto it); the container is recreated
+  from the image at every start. `uninstall.sh` keeps the volume unless `--purge`.
+- **Network:** podman's default bridge. UI: host `127.0.0.1:8080` → container `:8081` → queen on its own
+  loopback, nftables-filtered so pods can't reach it. Apps: NodePorts 30000–30079 published on `BIND`
+  (127.0.0.1 by default; e.g. the host's Tailscale address). Remote use: `ssh -L` or `tailscale serve` (the UI has
+  no login yet).
+- **Updates:** Quadlet `AutoUpdate=` with `podman-auto-update.timer` (daily), plus Settings → Updates
+  Check/Apply/Roll back through a host helper (`melissa-host-update`) that the queen triggers with fixed-name
+  request files in a bind-mounted directory; the previous image is kept for a rollback (DECISIONS 2026-11-19).
+- **Rootless podman: unsupported** (it worked with the earlier image; needs cpuset delegation and pasta; no longer
+  tested). `scripts/container-run.sh` keeps it for experiments and is the dev/test driver (`build`, `smoke`).
+- **Update distribution:** images are published first to `ghcr.io` (not yet; nothing is published without the
+  owner's yes). Later a Cloudflare-fronted or custom registry domain; clients migrate through `registries.conf`
+  mirrors. Sign images (cosign) before any public release.
 - **BuildStream:** a cleaner reproducible build is "later later". Not before the product works.
+
+### Reference distro (paused)
+A Melissa OS (bootc images: headless on fedora-bootc, desktop on Kinoite; VM tests with bootc-image-builder;
+`bootc upgrade`/rollback from Settings; a release qcow2) was built and verified up to 2026-11-19. It is archived at
+git tag **`bootc-archive-2026-11-19`** (`image/`, `scripts/vm-*`, the `bootc-image-build`, `bootc-vm-test` and
+`k3s-on-bootc` skills, `docs/TRY-THE-VM.md`). It comes back "far later", built on `packaging/common/` like the
+other packagings.
 
 ## 3. Cluster layer
 
-- **Status (2026-11-18):** k3s v1.37.2 ships in both images (enabled on headless), pinned by sha256 in
-  `image/k3s.lock`, airgap images in `/usr`, k3s-selinux 1.6 with SELinux enforcing, Traefik telemetry off. Smoke test
-  passes in the headless VM (node Ready, no AVC denials, ingress reachable). See docs/agent-skills/k3s-on-bootc.md.
+- **Status (2026-11-19):** k3s v1.37.2 ships in the container image, pinned by sha256 in
+  `packaging/common/usr/lib/melissa/k3s.lock`, airgap images in `/usr`, Traefik telemetry off, SELinux left to the
+  host (k3s `selinux: false` inside). Smoke test passes rootful (node Ready, Traefik, policies, RBAC, NodePort, pods
+  can't reach the UI). See docs/agent-skills/k3s-in-container.md. (Verified earlier in the bootc VM with
+  k3s-selinux and SELinux enforcing; archived.)
 - **Queen ↔ k3s (2026-11-18):** the queen talks to the API as ServiceAccount `melissa/melissa-queen` with read-only
   RBAC (get/list/watch on nodes, namespaces, pods; no Secrets, no writes). A root oneshot
   (`melissa-kubeconfig.service`) writes its kubeconfig to `/run/melissa-kube` (root:`melissa-kube` 0640); the
@@ -80,7 +98,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   admission policies pin to `app-*` namespaces with Pod Security baseline (no Secret reads anywhere).
   Tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `stop_app`, `start_app`,
   `uninstall_app` (stop/start since 2026-11-19: stop keeps everything, always asks, never "destructive"). First app: Nextcloud
-  34.0.6 (official Apache image by digest, SQLite). Verified in the headless VM: install with
+  34.0.6 (official Apache image by digest, SQLite). Verified in the headless VM (bootc, archived) and again in the rootful container (2026-11-19): install with
   confirmation, ready, `status.php` from the host, owner login, logs cap, keep-data uninstall +
   reinstall, delete-data uninstall, RBAC denials, smoke test, no AVC denials. Details:
   `docs/agent-skills/app-catalog.md`.
@@ -137,7 +155,7 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   `sudo melissa-queen app-credentials <app>`. `melissa-queen tool --wait <tool> [json]` runs a tool in the
   daemon and waits for its confirmation (`POST /api/tools/{name}`).
 - **Cluster tools (2026-11-18):** `cluster_health` (read-only) in `crates/hive`, registered next to `comb_info`;
-  verified in the headless VM through the queen's own credentials. `melissa-queen tool <name> [json]` runs one tool
+  Verified in the headless VM (bootc, archived) and again in the rootful container (2026-11-19) through the queen's own credentials. `melissa-queen tool <name> [json]` runs one tool
   through the MCP session path (unattended policy, no waiting for confirmations) for operators and tests.
 - **ACP sessions (2026-11-18):** long-lived agent sessions behind a protocol-neutral API (`crates/agent/src/session`:
   open, prompt, cancel, close, typed events, permission handler) implemented over ACP with the official Rust crate
@@ -275,9 +293,9 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   CLI `melissa-queen backend list|use`; see [queen-loop.md](agent-skills/queen-loop.md). Settings (2026-11-19, owner-requested,
   modelled on T3 Code's settings): `/settings/providers` (agent programs: installed, version, login, enabled,
   who uses them, models; display name, program path, extra arguments, write-only secret variables; stored in
-  `providers.toml` over `queen.toml`, applied at restart) and `/settings/updates` (Melissa version and variant,
-  bootc booted/staged/rollback image, check/apply/rollback through a fixed-verb root helper, commands where
-  there is none); JSON API `/api/settings/...`, CLI `melissa-queen provider|update`; see
+  `providers.toml` over `queen.toml`, applied at restart) and `/settings/updates` (Melissa version and revision,
+  the running/downloaded/available/previous container image, check/apply/rollback through the host's update
+  helper, host commands where it isn't connected); JSON API `/api/settings/...`, CLI `melissa-queen provider|update`; see
   [settings-ui.md](agent-skills/settings-ui.md). Not yet: disk usage, upkeep line, several conversations with
   the Queen / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
 
@@ -304,13 +322,15 @@ crates/hive         # k3s client (kube-rs, rustls) behind small traits, cluster 
 crates/catalog      # app manifest schema, validation, config resolution
 # planned: crates/mesh (tailscale/headscale/netbird adapters)
 manifests/          # app manifests (nextcloud; immich next)
-image/              # Containerfile(s), bootc config
+packaging/common/   # system files every packaging installs (units, manifests, k3s.lock, melissa-setup)
+packaging/container/ # Containerfile, Quadlet, install.sh/uninstall.sh, host update helper
+packaging/nix/      # Nix flake/module (parallel track)
 docs/
 ```
 
 ## 7b. Dev environment
 
-Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`): Rust stable toolchain with clippy, rustfmt, rust-analyzer; cargo-nextest, cargo-watch, just; pre-commit hooks for rustfmt and clippy. podman, buildah and bootc come from the host. Setup, including **Nix on Kinoite 45** (transient root overlay + reboot, then the ostree installer with persistence at `/var/home/nix`), is in [DEV-ENV.md](DEV-ENV.md). Nix runs on the dev laptop (store at `/var/home/nix`, 2026-11-18). People trying Melissa from source: [QUICKSTART.md](QUICKSTART.md).
+Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`): Rust stable toolchain with clippy, rustfmt, rust-analyzer; cargo-nextest, cargo-watch, just; pre-commit hooks for rustfmt and clippy. podman comes from the host. Setup, including **Nix on Kinoite 45** (transient root overlay + reboot, then the ostree installer with persistence at `/var/home/nix`), is in [DEV-ENV.md](DEV-ENV.md). Nix runs on the dev laptop (store at `/var/home/nix`, 2026-11-18). People trying Melissa from source: [QUICKSTART.md](QUICKSTART.md).
 
 ## 8. Licensing and legal
 
@@ -329,12 +349,10 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 **Pre-alpha demo (owner, weekend of 2026-11-21/22):** the owner publishes a pre-alpha online for people to try.
 Focus: easy to try, honest about being pre-alpha (notice in README and UI), the chat-first web UI from the concepts,
-two ways in (run from source; a ready VM image: [TRY-THE-VM.md](TRY-THE-VM.md), `just release-disk` +
-`just release-pack`; first-boot account prompt, `melissa-setup agent <name>`, UI over an SSH tunnel; VM-verified
-2026-11-18 except the bib build of the release disk itself). **Headless first; then the desktop variant (owner, 2026-11-18):** a Fedora
-KDE (Kinoite) image that also runs the full server by default, the same as headless (k3s enabled, the system
-queen and web UI at boot, independent of who is logged in), with KDE on top. Done 2026-11-18 (VM-verified, see
-bootc-image-build skill); the laptop switch is `scripts/laptop-switch.sh` (owner runs it). Further security hardening (throwaway worker bees, taint UX,
+two ways in (run from source; or the rootful container on any Linux host: `packaging/container/install.sh`,
+`melissa-setup agent <name>` through `podman exec`, UI over `ssh -L` or `tailscale serve`; verified on the dev laptop
+2026-11-19). The earlier bootc VM image and desktop image (done and VM-verified 2026-11-18) are archived at tag
+`bootc-archive-2026-11-19` (section 2, "Reference distro (paused)"). Further security hardening (throwaway worker bees, taint UX,
 escape test suite) is parked until after the demo; the existing basics stay on.
 Run from source: [QUICKSTART.md](QUICKSTART.md) and `just demo` (startup summary of agents, sandbox, k3s; fresh
 clone to running in ~70 s on the dev laptop, 2026-11-18).
@@ -343,9 +361,9 @@ clone to running in ~70 s on the dev laptop, 2026-11-18).
 **Demo (target: end of the current week):** multi-agent demo on the laptop showing Claude, Grok and OpenCode (Gemma) as backends behind the same agent interface, coordinated by a minimal queen bee, with a minimal web UI that lists agents and lets one install/inspect something. Scripted and repeatable.
 
 Roadmap (rough, phases may overlap):
-- **M0 — Repo + images:** repo scaffolding, Nix/devenv dev shell (done), local builds (done), **desktop and headless**
-  bootc images building and booting in QEMU VMs, `bootc switch`/rollback verified in a VM, then (owner's yes) the
-  laptop moved onto the desktop image with rollback verified.
+- **M0 — Repo + packaging:** repo scaffolding, Nix/devenv dev shell (done), local builds (done), the rootful
+  container with Quadlet install, updates and rollback (done 2026-11-19); the Nix service (in progress). The bootc
+  images (built and VM-verified 2026-11-18) are archived at tag `bootc-archive-2026-11-19`.
 - **M1 — Queen bee + UI skeleton:** agent abstraction with three backends, narrow tool API, Rust (axum + maud) + htmx web UI with the base component library, audit log.
 - **M2 — Single-node k3s + apps:** k3s on one bee, wildcard ingress, manifest format, Nextcloud and Immich installable from the UI.
   Progress (2026-11-18): k3s, manifest format, write identity and app tools done; Nextcloud installs,
@@ -354,7 +372,8 @@ Roadmap (rough, phases may overlap):
   DNS + TLS for `*.melissa.home.arpa` (Q22), Immich, the UI (owner's design), per-app NetworkPolicy.
 - **M3 — Multi-bee:** hive of VMs, mesh via Tailscale, bee join flow, node labels, queen bee failover design, shared storage (Longhorn).
 - **M4 — VPS bee + backups:** edge/ingress bee, offsite backups with restic or Kopia, restore drills, VPN exit, seedbox as optional apps.
-- **M5 — Headless image:** fedora-bootc based image, installer/first-boot flow, image signing and update channel on ghcr.io.
+- **M5 — Published image:** the container image signed and on an update channel (ghcr.io, owner's yes first); later
+  the reference distro (bootc, archived) with an installer/first-boot flow.
 - **Later:** gaming node (KubeVirt + GPU + Sunshine/Moonlight), Cloudflare/custom registry mirror, BuildStream, hosted relay access mode, Ceph.
 
 ## 10. Open questions
@@ -369,9 +388,10 @@ Roadmap (rough, phases may overlap):
 8. Can T3 Code code be reused (license is MIT today)? Or only used as a design reference?
 9. App manifest schema: own format vs. Helm/Compose-based? How are app updates and data migrations handled?
 10. Secrets management for apps and backends inside the cluster (e.g. sealed secrets / external vault).
-11. Update safety: how do bees stage, verify and roll back bootc updates across the hive?
-12. Nix on Kinoite: accept the transient-root trade-off, or use another route (nix-portable, toolbox)? Revisit after the first rpm-ostree update.
-13. ~~Image base~~ Decided 2026-11-18: two variants, desktop (Kinoite/KDE) and headless (fedora-bootc).
+11. Update safety: how do bees stage, verify and roll back container image updates across the hive?
+12. ~~Nix on Kinoite~~ Moot for the image (2026-11-19): the laptop runs stock Kinoite; Nix is the dev shell's and the Nix packaging's business.
+13. ~~Image base~~ Decided 2026-11-18: two variants, desktop (Kinoite/KDE) and headless (fedora-bootc). Superseded
+    2026-11-19: one container image on `fedora:45` (bootc variants archived).
 14. Desktop and Android app stack (Tauri? native? a thin wrapper around the web UI?) and how they authenticate.
 15. Agent CLI terms: may Melissa drive Claude Code, Grok and OpenCode headlessly on a user's behalf? Check each.
 16. Prompt injection is unsolved; Melissa can only limit the blast radius (tool labels, confirmations, egress
@@ -463,14 +483,16 @@ Roadmap (rough, phases may overlap):
     list/prune unused images, restart an app, update an app to the catalog's current digest, app events
     (pull progress, probe failures), bootc update status/stage/rollback, journal usage/vacuum. Most need
     root on the bee (crictl, bootc, journald), not the k3s API: a narrow privileged helper with fixed
-    verbs, or k8s-only tools where possible? (`list_apps` added.) 2026-11-19: bootc status/check/apply/rollback is done for the
-    owner (Settings → Updates) with a fixed-verb root helper started through polkit (DECISIONS); the same
-    pattern could carry crictl/journald verbs. Not for agents yet: should the Queen get an `os_update_status`
+    verbs, or k8s-only tools where possible? (`list_apps` added.) 2026-11-19: image status/check/apply/rollback is done for the
+    owner (Settings → Updates) with a fixed-name request to the host's update helper (DECISIONS; was a bootc
+    helper through polkit before the container move); the same pattern could carry crictl/journald verbs. Not for agents yet: should the Queen get an `os_update_status`
     tool, and may she ever ask for an update (always with the owner's yes)?
 43. `install_app` from an attended, untainted Queen needs no confirmation (decided 2026-11-18). It pulls
     ~0.5 GB and fills `/var` (2.0 GB left in the test VM after Nextcloud): revisit together with 36.
-20. Update policy: the stock `bootc-fetch-apply-updates.timer` (download + reboot) is masked in Melissa images;
-    Melissa must stage updates itself, with health checks (greenboot or own) for automatic rollback.
+20. Update policy: the container uses podman-auto-update.timer (daily, Quadlet `AutoUpdate=`; podman rolls back
+    when the new container fails to start) and Settings' Apply (rolls back when the queen doesn't come up). Open:
+    health checks beyond "the queen is active" (k3s Ready, apps), a schedule/maintenance window, and whether
+    automatic updates should default to on (they do now, with a notice; `AUTO_UPDATE=off`).
 44. Cells and bees (2026-11-18, replaces the old ownership question): the user's `cell reassign` goes through
     the daemon's local API (no root), like `confirm approve`; with accounts (28) and the API exposure (37),
     who may reassign? Should a cell ever go back to "unassigned" (admission forbids it today), and should the
@@ -497,9 +519,9 @@ Roadmap (rough, phases may overlap):
     k3s is missing (the Queen's path fails first, through the owner lookup). (e) Asked to install without
     k3s, the Queen (grok) created a bee before the install failed; the prompt could say "check
     cluster_health first".
-50. Demo VM image (2026-11-18): the published qcow2's bootc origin is `localhost/melissa-headless:dev`, so testers
-    get no updates (`bootc upgrade` has nothing to pull). Publish to a registry (ghcr.io, signed) and build the disk
-    with `--target-imgref`? Needs the owner's yes (publishing).
+50. ~~Demo VM image~~ (archived with the bootc work, 2026-11-19). Same question for the container: testers run a
+    `localhost/` image loaded from a build, so `AutoUpdate=local` only sees images they load themselves. Publish
+    to a registry (ghcr.io, signed) and default `IMAGE=` to it? Needs the owner's yes (publishing).
 51. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
     services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
     Consumer Terms. Is "the user installs the official CLI and logs in with their own account on their own box"
@@ -534,24 +556,35 @@ Roadmap (rough, phases may overlap):
     unattended-Queen marking, 27).
 59. Container mode (`scripts/container-run.sh`): verified rootless 2026-11-19 (k3s + Traefik + policies, Nextcloud
     install, stop/start, NodePort from the host, chat turn). Needs `cpuset` delegated to the user. Decided
-    2026-11-19: (a) the desktop image ships `/usr/lib/systemd/system/user@.service.d/delegate.conf`
+    2026-11-19: (a) the desktop image (archived) shipped `/usr/lib/systemd/system/user@.service.d/delegate.conf`
     (`Delegate=cpu cpuset io memory pids`); headless does not (DECISIONS). (b) Container mode becomes a supported
     way to try Melissa once rootful is verified too; publishing a container image needs the owner's explicit yes.
     (c) `[apps] port_offset` (written by `container-run.sh up` from `APP_PORT_BASE`) shifts app links. Rootful verified 2026-11-19
     (bridge network + filtered UI forward; UI, k3s, policies, pod isolation, Nextcloud, stop/start); agents and chat
-    not tried rootful. Still open: rootful lets the kubelet set host sysctls (overcommit, panic): acceptable for a
-    tester's machine, or document only? Re-run the offset path in a live container.
+    not tried rootful. Decided 2026-11-19: install.sh sets the kubelet's host sysctls openly in
+    `/etc/sysctl.d/90-melissa-kubelet.conf` with a notice and uninstall.sh restores the old values (DECISIONS).
+    Agents and chat verified rootful 2026-11-19. Rootless is unsupported since the container move. Re-run the
+    offset path in a live container.
 60. Settings (2026-11-19): (a) provider variables (API keys) reach the sandbox as bwrap `--setenv` arguments,
     so they are visible in `/proc/<pid>/cmdline` to other local users while an agent runs (the existing
     `sandbox.env` pass-through has the same gap). Fix: pass them through a file descriptor (`bwrap --args FD`)
     or a 0600 env file bound into the sandbox; needs a small agent-crate change. (b) Provider changes apply at
     the next restart ("Restart Melissa now" through polkit); live re-creation of backends would avoid the
     restart. (c) Extra launch arguments use a denylist of permission/tool flags, which can miss a vendor's new
-    flag; an allowlist per CLI (like Claude sessions') is stricter but less useful. (d) Automatic updates
-    (on/off, schedule) are not built: they need the staged-update + health-check policy of question 20 first.
-    (e) Verified on the headless bootc VM 2026-11-19 (status, check, apply, rollback, restart, polkit
-    negatives, 0 AVCs; Providers save + secrets). Fixed there: bootc now runs in `install_t` (transient unit
-    per call), restart answers before it stops the queen, `/etc/melissa` owned by `melissa`. Still open: the
-    desktop image's helper (same files, not run on the desktop VM), and the apply unit ending "failed
-    (signal)" at the reboot (cosmetic). (f) Settings has no login
+    flag; an allowlist per CLI (like Claude sessions') is stricter but less useful. (d) Automatic updates: on/off is
+    an install setting (`AUTO_UPDATE`), shown in Settings, not changeable there (question 20).
+    (e) Verified on the headless bootc VM 2026-11-19 (status, check, apply, rollback, restart, polkit negatives,
+    0 AVCs; Providers save + secrets; that helper is archived). The container's host helper verified rootful
+    2026-11-19: status, check, apply, rollback (UI/API and host CLI), restart through polkit with logind
+    masked, previous image kept. (f) Settings has no login
     gate beyond loopback-only (28); with accounts, only the owner may change providers or updates.
+61. Container packaging follow-ups (2026-11-19): (a) every recreate (start, update, rollback) gives the container
+    a new bridge address, so k3s restarts once ("NodeIPs changed") and recovers in about a minute. A fixed address
+    (Quadlet `IP=` on a dedicated podman network) would avoid it; needs a subnet choice that can't clash on
+    testers' hosts. (b) The host's request directory gets the container's `melissa` GID; on a host where that GID
+    is another group (on the dev laptop: `kube`), members of it can also create request files (fixed actions only,
+    still worth a dedicated GID via sysusers?). (c) The chat's agent hints say `sudo melissa-setup ...`; in the
+    container it is `sudo podman exec -it melissa melissa-setup ...` (Settings → Providers already says so).
+    (d) `--privileged` lets root inside mknod and open any host device even with `/dev/input` hidden; the
+    logind/sleep masking is the real protection against power handling. Narrower than `--privileged`
+    (explicit caps + device list) is worth a spike.

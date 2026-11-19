@@ -5,9 +5,6 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [dev-shell-and-checks.md](dev-shell-and-checks.md) — devenv shell, `just check`, committing with hooks, host gotchas.
 - [agent-cli-backends.md](agent-cli-backends.md) — driving claude/grok/opencode headlessly, safety rules, config.
 - [htmx-component.md](htmx-component.md) — the fixed component library, htmx patterns, CSP/CSRF, router tests.
-- [bootc-image-build.md](bootc-image-build.md) — building desktop/headless images, layer order, laptop switch.
-- [bootc-vm-test.md](bootc-vm-test.md) — qcow2 with bootc-image-builder, booting in QEMU, SSH into test VMs;
-  the published tester image (`release-disk`/`release-pack`), first boot, `melissa-setup`, testing the console.
 - [acp-sessions.md](acp-sessions.md) — agent sessions: ACP (`grok-acp`, `opencode-acp`) and Claude's stream-json
   (`claude-session`): session API, verified protocol facts per agent, permission mapping, cancel, resume,
   recording/replay transcripts, gotchas.
@@ -17,10 +14,11 @@ Read this at the start of every session. One file per skill; update the skill wh
   conversation machinery, bee registry, bee tools and guards, event stream + transcript, resume via a
   Melissa-owned session store, `/api/queen`, `/api/bees`, `melissa-queen chat|ask [--bee]`, `bee`, `cell`;
   switching a conversation's backend/model at runtime (`backend list|use`, models only as agents report them).
-- [container-mode.md](container-mode.md) — the headless image under podman with systemd as PID 1
-  (`scripts/container-run.sh`): flags and why, pasta `--host-lo-to-ns-lo`, masked units, rootless k3s (cpuset
-  delegation host prerequisite), `smoke`, app addresses/links, what's verified.
-- [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
+- [container-image.md](container-image.md) — Melissa as a rootful podman container (systemd as PID 1, Quadlet):
+  `packaging/common` vs `packaging/container`, build/install/smoke loop, image lint, UI forward + nftables filter,
+  logind/sleep masked, persistence, the host update helper, what's verified. (The bootc images, VM tests and
+  their skills are archived at tag `bootc-archive-2026-11-19`.)
+- [k3s-in-container.md](k3s-in-container.md) — k3s pinned + sha256-checked in the image, airgap images, iptables-nft, container config, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
 - [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app, reviewed
@@ -32,8 +30,8 @@ Read this at the start of every session. One file per skill; update the skill wh
   (refused vs confirmation naming the bee), reassign path (Queen + user's yes, or the user's CLI),
   migration of old owner labels, admission rules, declaring a tool's target.
 - [settings-ui.md](settings-ui.md) — Settings pages: Providers (`providers.toml` over `queen.toml`, secrets
-  write-only, versions, disable rules) and Updates (bootc status, fixed-verb root helper via polkit, confirmation
-  cards); `/api/settings/...`, `melissa-queen provider|update`; adding a section.
+  write-only, versions, disable rules) and Updates (container image status, host update helper via request files,
+  restart via polkit, confirmation cards); `/api/settings/...`, `melissa-queen provider|update`; adding a section.
 - [e2e-queen-app-install.md](e2e-queen-app-install.md) — the owner installs/checks/uninstalls Nextcloud by
   chatting with the Queen: laptop Queen + VM k3s setup, verified run with timings, taint and confirmation gotchas.
 

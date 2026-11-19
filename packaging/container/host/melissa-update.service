@@ -1,0 +1,11 @@
+[Unit]
+Description=Melissa: carry out update requests from Settings → Updates
+Documentation=file:///usr/local/share/melissa/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Only file names are read from the request directory (never contents); fixed actions only.
+ExecStart=/usr/local/libexec/melissa/melissa-host-update requests
+TimeoutStartSec=30min

@@ -1,0 +1,15 @@
+# Rootful podman has no pasta: the host's port forward (PublishPort=127.0.0.1:UI_PORT:8081) arrives on
+# the container's bridge interface, not its loopback. The queen stays on 127.0.0.1:8080; this socket
+# hands host connections to it, and ui-forward-filter lets in only connections that come in on the
+# default-route interface from the podman gateway (the host): k3s pods and other containers are dropped.
+[Unit]
+Description=Melissa web UI forward (host → queen)
+Before=sockets.target
+
+[Socket]
+ExecStartPre=/usr/libexec/melissa-container/ui-forward-filter
+ListenStream=0.0.0.0:8081
+NoDelay=yes
+
+[Install]
+WantedBy=sockets.target

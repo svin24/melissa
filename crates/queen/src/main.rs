@@ -98,10 +98,11 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
                               change a provider's settings (providers.toml, used after a
                               restart); `--env NAME` reads the value from stdin (secrets stay
                               out of shell history)
-  update [status]             Melissa's version and the OS image (booted, staged, rollback)
+  update [status]             Melissa's version and the container image (running, staged,
+                              previous)
   update check|apply|rollback|restart [--yes]
-                              ask the root helper; apply and rollback restart the device
-                              and need --yes";
+                              ask the host's update helper; apply and rollback restart
+                              Melissa and need --yes";
 
 enum Command {
     /// `demo` = true: first run from a source checkout (quieter log, repo catalog).

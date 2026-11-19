@@ -1,4 +1,4 @@
-//! Settings → Updates: Melissa's release, the OS image (bootc) and the fixed update actions.
+//! Settings → Updates: Melissa's release, its container image and the fixed update actions.
 
 use axum::{
     extract::{Form, Path, State},
@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use melissa_settings::updates::{
-    ago, now_secs, request, HostKind, ImageView, UpdateAction, UpdateEnv, UpdateState,
+    ago, now_secs, HostKind, ImageView, UpdateAction, UpdateEnv, UpdateState,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -18,16 +18,18 @@ use super::{
 };
 use crate::{components::Tone, is_htmx, ui::Ui};
 
-/// What container mode types on the host to update.
-const CONTAINER_UPDATE: &str =
-    "scripts/container-run.sh build && scripts/container-run.sh rm && scripts/container-run.sh up";
 /// What a from-source install does.
 const SOURCE_UPDATE: &str = "git pull && just demo";
+/// Where a container without the host helper gets a newer image (from the source folder).
+const CONTAINER_REBUILD: &str = "just container-build && just container-install";
 
 fn image_detail(i: &ImageView) -> String {
     let mut parts = Vec::new();
     if let Some(v) = &i.version {
         parts.push(format!("version {v}"));
+    }
+    if let Some(r) = &i.revision {
+        parts.push(format!("revision {r}"));
     }
     if let Some(t) = &i.timestamp {
         parts.push(format!("built {}", t.get(..10).unwrap_or(t)));
@@ -35,14 +37,25 @@ fn image_detail(i: &ImageView) -> String {
     if let Some(d) = i.short_digest() {
         parts.push(d);
     }
+    if parts.is_empty() {
+        parts.push("details after the download".into());
+    }
     parts.join(" · ")
 }
 
-fn images(state: &UpdateState) -> Vec<ImageLine> {
-    let Some(s) = &state.status else {
-        return Vec::new();
-    };
+fn images(env: &UpdateEnv, state: &UpdateState) -> Vec<ImageLine> {
     let mut out = Vec::new();
+    let Some(s) = &state.status else {
+        // No helper: podman still tells the container which image it runs.
+        if let Some(i) = env.container_image() {
+            out.push(ImageLine {
+                label: "Running",
+                image: i.image.clone(),
+                detail: image_detail(&i),
+            });
+        }
+        return out;
+    };
     let mut push = |label: &'static str, i: &Option<ImageView>| {
         if let Some(i) = i {
             out.push(ImageLine {
@@ -52,51 +65,57 @@ fn images(state: &UpdateState) -> Vec<ImageLine> {
             });
         }
     };
-    push("Running", &s.booted);
-    push("Ready for the next start", &s.staged);
+    push("Running", &s.running);
+    push("Downloaded, used at the next start", &s.staged);
     push("Update available", &s.available);
-    push("Previous (for a rollback)", &s.rollback);
+    push("Previous (for a rollback)", &s.previous);
     out
 }
 
 fn install_words(kind: HostKind) -> &'static str {
     match kind {
-        HostKind::Bootc => "Melissa system image (bootc)",
-        HostKind::Container => "Melissa image in a container (podman)",
+        HostKind::Container => "Melissa container (podman, started by systemd)",
         HostKind::Other => "From source on this computer",
     }
 }
 
 fn how(env: &UpdateEnv) -> &'static str {
     match env.kind {
-        HostKind::Bootc if env.helper_installed() => {
-            "Updates come as a new system image. Check for one, then apply it: the device restarts into it, and the image it ran before stays for a rollback."
-        }
-        HostKind::Bootc => {
-            "Updates come as a new system image. This image has no update helper yet, so run the commands below as an administrator."
+        HostKind::Container if env.helper_installed() => {
+            "Updates come as a new container image. Check for one, then apply it: Melissa restarts on it, and the image it ran before stays for a rollback. Apps, chats and settings are kept."
         }
         HostKind::Container => {
-            "In container mode you update by rebuilding and recreating the container on the host. Apps and chats in /var are kept."
+            "Updates come as a new container image. The host's update helper isn't connected to this container, so run the commands below on the host. Apps, chats and settings are kept."
         }
         HostKind::Other => {
-            "This computer isn't running a Melissa image, so there is no system image to update. Update Melissa from source instead."
+            "This computer isn't running the Melissa container, so there is no image to update. Update Melissa from source instead."
         }
     }
 }
 
+fn auto_words(state: &UpdateState) -> String {
+    match state.status.as_ref().and_then(|s| s.auto_update.as_deref()) {
+        Some("registry") => "Automatic updates: on (podman-auto-update.timer pulls a newer image daily and restarts Melissa on it).".into(),
+        Some("local") => "Automatic updates: on for images loaded on the host (podman-auto-update.timer, daily).".into(),
+        Some("off") => "Automatic updates: off (install.sh with AUTO_UPDATE=off).".into(),
+        _ => "Automatic updates: not set up here.".into(),
+    }
+}
+
 fn manual_commands(env: &UpdateEnv) -> Vec<(String, String)> {
-    let cmd = |label: &str, a: UpdateAction| (label.to_string(), a.manual_command().to_string());
+    let cmd = |label: &str, a: UpdateAction| (label.to_string(), a.manual_command());
     match env.kind {
-        HostKind::Bootc if env.helper_installed() => Vec::new(),
-        HostKind::Bootc => vec![
-            cmd("Check for an update:", UpdateAction::Check),
-            cmd("Apply it (the device restarts):", UpdateAction::Apply),
-            cmd("Roll back (the device restarts):", UpdateAction::Rollback),
+        HostKind::Container if env.helper_installed() => Vec::new(),
+        HostKind::Container => vec![
+            cmd("On the host, check for an update:", UpdateAction::Check),
+            cmd("Apply it (Melissa restarts):", UpdateAction::Apply),
+            cmd("Roll back (Melissa restarts):", UpdateAction::Rollback),
+            (
+                "Without the helper (a development container), in the Melissa source folder:"
+                    .into(),
+                CONTAINER_REBUILD.into(),
+            ),
         ],
-        HostKind::Container => vec![(
-            "On the host, in the Melissa source folder:".into(),
-            CONTAINER_UPDATE.into(),
-        )],
         HostKind::Other => vec![("In the Melissa source folder:".into(), SOURCE_UPDATE.into())],
     }
 }
@@ -110,16 +129,20 @@ fn last_flash(state: &UpdateState) -> Option<Flash> {
         "rollback" => "Last rollback",
         _ => "Last action",
     };
+    let msg = l.message.as_deref().filter(|m| !m.is_empty());
     Some(if l.ok {
         Flash {
-            text: format!("{what}: done {when}."),
+            text: match msg {
+                Some(m) => format!("{what}: done {when} ({m})."),
+                None => format!("{what}: done {when}."),
+            },
             tone: Tone::Muted,
         }
     } else {
         Flash {
             text: format!(
                 "{what} failed {when}: {}",
-                l.message.as_deref().unwrap_or("see the system log")
+                msg.unwrap_or("see the host's journal (journalctl -u melissa-update)")
             ),
             tone: Tone::Error,
         }
@@ -131,9 +154,9 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
     let env = &s.parts().updates;
     let state = env.state();
     let release = &s.parts().release;
-    let checked = match (env.kind, state.status_at) {
-        (HostKind::Bootc, Some(at)) => format!("Checked {}", ago(at, now_secs())),
-        (HostKind::Bootc, None) => "Not checked yet".into(),
+    let checked = match (env.helper_installed(), state.status_at) {
+        (true, Some(at)) => format!("Checked {}", ago(at, now_secs())),
+        (true, None) => "Not checked yet".into(),
         _ => "Nothing to check here".into(),
     };
     let status = state.status.as_ref();
@@ -148,10 +171,10 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
     }
     UpdatesView {
         version: release.version.clone(),
-        variant: release.variant.clone(),
+        revision: release.revision.clone(),
         install: install_words(env.kind).into(),
         how: how(env).into(),
-        images: images(&state),
+        images: images(env, &state),
         checked,
         last: last_flash(&state),
         flash,
@@ -159,9 +182,10 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
         can_apply: env.can(UpdateAction::Apply)
             && status.is_some_and(|s| s.available.is_some() || s.staged.is_some()),
         can_rollback: env.can(UpdateAction::Rollback)
-            && status.is_some_and(|s| s.rollback.is_some()),
+            && status.is_some_and(|s| s.previous.is_some()),
         confirm,
         commands: manual_commands(env),
+        automatic: auto_words(&state),
         agents: agent_versions(ui).await,
         restart: s.parts().store.restart_needed().then(|| restart_hint(s)),
     }
@@ -195,9 +219,11 @@ const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(750)
 fn started_text(action: UpdateAction) -> &'static str {
     match action {
         UpdateAction::Check => "Checking for updates. Reload this page in a minute for the result.",
-        UpdateAction::Apply => "Installing the update. The device restarts when it is ready.",
+        UpdateAction::Apply => {
+            "Installing the update. Melissa restarts on the new image when it is downloaded; reload this page in a few minutes."
+        }
         UpdateAction::Rollback => {
-            "Going back to the previous image. The device restarts in a moment."
+            "Going back to the previous image. Melissa restarts in a moment; reload this page in a minute."
         }
         UpdateAction::Restart => "Melissa is restarting. Reload this page in a few seconds.",
     }
@@ -208,18 +234,18 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
     let env = &s.parts().updates;
     if !env.can(action) {
         let text = match env.kind {
-            HostKind::Bootc => format!(
-                "Melissa can't do that from here on this image. Run: {}",
+            HostKind::Container => format!(
+                "Melissa can't do that from here. On the host, run: {}",
                 action.manual_command()
             ),
-            _ => "There is no system image to update on this device.".into(),
+            HostKind::Other => "There is no container image to update on this device.".into(),
         };
         return Outcome::NotHere(Flash {
             text,
             tone: Tone::Warn,
         });
     }
-    if action.reboots() && !confirmed {
+    if action.restarts_melissa() && !confirmed {
         return Outcome::Confirm(action.as_str());
     }
     s.audit(
@@ -234,7 +260,7 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
         let settings = s.clone();
         tokio::spawn(async move {
             tokio::time::sleep(RESTART_DELAY).await;
-            if let Err(e) = request(action).await {
+            if let Err(e) = settings.parts().updates.request(action).await {
                 tracing::warn!("restart request failed: {e}");
                 settings.audit("settings.update", "queen", "restart failed", None);
             }
@@ -244,7 +270,7 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
             tone: Tone::Info,
         });
     }
-    match request(action).await {
+    match env.request(action).await {
         Ok(()) => Outcome::Started(Flash {
             text: started_text(action).into(),
             tone: Tone::Info,
@@ -351,7 +377,7 @@ pub(super) async fn api_action(
             .into_response(),
         Outcome::Confirm(_) => (
             StatusCode::CONFLICT,
-            Json(json!({"error": "this restarts the device; send {\"confirm\": true}"})),
+            Json(json!({"error": "this restarts Melissa; send {\"confirm\": true}"})),
         )
             .into_response(),
         Outcome::NotHere(f) => {

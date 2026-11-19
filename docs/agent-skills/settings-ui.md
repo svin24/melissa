@@ -1,13 +1,13 @@
 # Settings pages (Providers, Updates)
 
-**When:** changing `/settings/...`, provider overrides (`providers.toml`), agent CLI versions, the OS update
-status/actions, or adding a Settings section. Load the `melissa-ui` skill first; read
+**When:** changing `/settings/...`, provider overrides (`providers.toml`), agent CLI versions, the image
+update status/actions, or adding a Settings section. Load the `melissa-ui` skill first; read
 [htmx-component.md](htmx-component.md) for the general patterns.
 
 ## Where things are (2026-11-19)
 - `crates/settings` (`melissa-settings`, no UI): `providers` (the `providers.toml` model, checks, secret
   rules, `ProviderStore`, `BackendFacts`), `version` (`--version` probe, cached 10 min, 5 s timeout, clean env),
-  `updates` (`Release`, `HostKind`, `bootc status` parser, helper files, `UpdateAction` → fixed unit).
+  `updates` (`Release`, `HostKind`, host helper `status.json` parser, request files, `UpdateAction`).
 - `crates/queen/src/config.rs`: `QueenConfig::apply_providers` (merge at startup), `check_provider` (a change
   checked against the real backend specs before saving), `BackendSpec::provider()`.
 - `crates/web/src/settings/`: `mod.rs` (context `Settings`/`SettingsParts`, routes, audit), `providers.rs`,
@@ -18,9 +18,10 @@ status/actions, or adding a Settings section. Load the `melissa-ui` skill first;
   shows only on keyboard focus for no-JS), `detail_head`, `facts` (dl), `group`, `text_field`, `lines_field`,
   `settings_form`, `var_list`/`VarRow` (secret → "set"), `command_block` (copy button via the existing
   `.copy-code` JS), `confirm_card`, `plain_action`, `actions`, `region`. Rail: `Nav::Settings`.
-- Image: `rootfs/usr/libexec/melissa/melissa-update`, `melissa-update-{status,check,apply,rollback}.service`,
-  `rootfs/usr/share/polkit-1/rules.d/50-melissa.rules`, `tmpfiles.d/melissa-update.conf`, `polkit` package;
-  `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`).
+- Packaging: `packaging/common/usr/share/polkit-1/rules.d/50-melissa.rules` (restart the queen only),
+  `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`); container: the host helper
+  `packaging/container/host/melissa-host-update` + `melissa-update.{path,service}`, the Quadlet's two update
+  mounts, the queen drop-in `ReadWritePaths=-/run/melissa-update-request` ([container-image.md](container-image.md)).
 
 ## Adding a section
 1. A view + handlers file in `crates/web/src/settings/` (copy `updates.rs`' shape: `view()`, `page()`, a
@@ -51,39 +52,40 @@ status/actions, or adding a Settings section. Load the `melissa-ui` skill first;
   NAME=VALUE|--env NAME (stdin)|--unset NAME]`.
 
 ## Updates: rules
-- Host kind: `/run/.containerenv` or `/run/systemd/container` → container; `/run/ostree-booted` → bootc; else
-  "from source". Release: `/usr/lib/melissa/release`, else `MELISSA_VERSION`, else the cargo version.
-- The queen can't run `bootc` (root even to read). The root helper writes `/run/melissa-update/status.json` and
-  `last.json` (root:melissa 0640); `melissa-update-status.service` runs at boot. The queen asks for an action with
-  `systemctl start --no-block <fixed unit>`; polkit allows only user `melissa`, only those units (and `restart
-  melissa-queen.service`). Nothing from the request reaches the helper.
-- Apply and rollback reboot: the UI first returns a `confirm_card`; only `confirm=yes` (API: `{"confirm":
-  true}`, CLI `--yes`) starts them. Without the helper the page shows the `sudo bootc ...` commands; container
-  mode shows the rebuild command; from source says `git pull && just demo`.
-- Automatic updates stay off (the stock timer is masked, PLAN open question 20).
+- Host kind: `/run/.containerenv` or `/run/systemd/container` → container; else "from source". Release:
+  `/usr/lib/melissa/release` (version, revision, runtime), else `MELISSA_VERSION`, else the cargo version.
+- The queen can't run the host's podman. Check/apply/rollback: an empty file with that fixed name in
+  `/run/melissa-update-request` (bind mount); the host's path unit runs `melissa-host-update requests`, which acts
+  on those names only. Status comes back read-only in `/run/melissa-update/{status,last}.json`. Restart:
+  `systemctl restart --no-block melissa-queen.service`, allowed by polkit for user `melissa` only.
+- Apply and rollback restart Melissa: the UI first returns a `confirm_card`; only `confirm=yes` (API:
+  `{"confirm": true}`, CLI `--yes`) starts them. Without the helper mounts the page shows the host commands
+  (`sudo /usr/local/libexec/melissa/melissa-host-update check|apply|rollback`, and a rebuild for dev containers)
+  and the running image from `/run/.containerenv`; from source it says `git pull && just demo`.
+- Automatic updates: the install's `AUTO_UPDATE` (podman-auto-update.timer), shown on the page, not changeable there.
 - CLI: `melissa-queen update [status]`, `update check|apply|rollback|restart [--yes]`.
 
 ## Gotchas
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).
 - The toggle posts `enabled=on` or nothing; parse the form as `Vec<(String, String)>`.
 - `hx-current-url` keeps the open provider when "Check again" swaps the region.
-- **bootc only in `install_t`.** The helper never runs `bootc` itself: from a shell script (bin_t →
-  `unconfined_service_t`) bootc stays out of `install_t`, its chcon self-relabel is denied (AVC `mac_admin`)
-  and it carries on without it, which can break writing labels a newer policy brings. `bootc()` in the helper
-  runs each call as a transient unit (`systemd-run --wait`); output goes to files PID 1 opens in
-  `/run/melissa-update/.work` (0700). A pipe (`--pipe`) or `/tmp` from the helper's domain is denied to `init_t`.
 - **Restart answers first.** The queen has no graceful shutdown, so `systemctl restart` asked inline killed it
   before the reply (UI: dropped connection, CLI: "connection closed"). `run()` returns, then asks systemd
   750 ms later; a refusal is logged and audited.
 - **`/etc/melissa` must be `melissa`'s** (`tmpfiles.d/melissa-config.conf`): systemd's `ConfigurationDirectory=`
   never chowns, and saving `providers.toml` failed with EACCES. Container mode overrides that file (symlink).
-- The apply unit ends "Failed with result 'signal'" because the reboot stops it; expected.
-- After a rollback, bootc still lists the newer image as available (the tag still points at it); applying
-  again goes back to it.
+- After a rollback the newer image is the "previous" one (rollback toggles); with automatic updates on, the next
+  timer run may install the newer image again.
+- Restart through polkit works with logind masked in the container (verified 2026-11-19).
 
-## Verified on the headless bootc VM (2026-11-19, Secure Boot on, SELinux enforcing)
-Images `9dd9cc9` → `55a6086` (+ a `-v3` label bump) through the dev registry; see
-[bootc-vm-test.md](bootc-vm-test.md#settings--updates-on-the-vm-2026-11-19).
+## Verified in the rootful container (2026-11-19)
+Status (version, revision, digest; UI/API/CLI), check, apply (local image, restart on the new one), rollback and
+roll forward (UI/API and host CLI), previous image kept, Restart (new queen PID); without the mounts, host
+commands. Details: [container-image.md](container-image.md).
+
+## Verified earlier on the headless bootc VM (2026-11-19; bootc helper archived)
+Images `9dd9cc9` → `55a6086` through the dev registry (details at tag `bootc-archive-2026-11-19`). The
+Providers and polkit results still apply to the container (same rule, now restart-only).
 
 | Check | Result |
 |---|---|

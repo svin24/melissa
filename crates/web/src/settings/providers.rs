@@ -223,15 +223,20 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
         }
     }
     let host = s.parts().updates.kind;
-    let on_image = matches!(host, HostKind::Bootc | HostKind::Container);
+    // In the container, melissa-setup runs inside it: typed on the host through podman exec.
+    let on_image = host == HostKind::Container;
     let setup = if !installed && on_image && SETUP_AGENTS.contains(&id) {
-        Some(format!("sudo melissa-setup agent {id}"))
+        Some(format!(
+            "sudo podman exec -it melissa melissa-setup agent {id}"
+        ))
     } else if installed
         && reasons.contains(&"not_logged_in")
         && on_image
         && SETUP_AGENTS.contains(&id)
     {
-        Some(format!("sudo melissa-setup login {id}"))
+        Some(format!(
+            "sudo podman exec -it melissa melissa-setup login {id}"
+        ))
     } else {
         None
     };
@@ -290,7 +295,7 @@ pub(super) fn restart_hint(s: &Settings) -> RestartHint {
         button: env.can(UpdateAction::Restart),
         command: match env.kind {
             HostKind::Other => "# stop melissa-queen (Ctrl-C) and start it again".into(),
-            _ => UpdateAction::Restart.manual_command().into(),
+            HostKind::Container => UpdateAction::Restart.manual_command(),
         },
     }
 }

@@ -1,7 +1,0 @@
-
-  Melissa (pre-alpha: for trying out; don't keep data you care about here)
-
-    melissa-setup                       status, web UI address, next steps
-    sudo melissa-setup agent opencode   set up an agent (or: claude, grok)
-    melissa-queen chat                  talk to the Queen in this terminal
-

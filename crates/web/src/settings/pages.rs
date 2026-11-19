@@ -307,7 +307,7 @@ fn tone_class(t: Tone) -> &'static str {
 
 // --- Updates ------------------------------------------------------------------------------------
 
-/// One OS image line.
+/// One container image line.
 pub struct ImageLine {
     pub label: &'static str,
     pub image: String,
@@ -317,8 +317,9 @@ pub struct ImageLine {
 /// What the Updates page shows.
 pub struct UpdatesView {
     pub version: String,
-    pub variant: Option<String>,
-    /// "Melissa image", "container", "from source".
+    /// The source revision of the image, if recorded.
+    pub revision: Option<String>,
+    /// "container", "from source".
     pub install: String,
     /// One-line explanation of how this host updates.
     pub how: String,
@@ -335,6 +336,8 @@ pub struct UpdatesView {
     pub confirm: Option<&'static str>,
     /// Commands to type instead (label, command).
     pub commands: Vec<(String, String)>,
+    /// Whether and how the image updates by itself.
+    pub automatic: String,
     pub agents: Vec<(String, String)>,
     pub restart: Option<RestartHint>,
 }
@@ -348,8 +351,8 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
         ("Melissa", html! { (v.version) }),
         ("Installed as", html! { (v.install) }),
     ];
-    if let Some(variant) = &v.variant {
-        rows.push(("Variant", html! { (variant) }));
+    if let Some(revision) = &v.revision {
+        rows.push(("Revision", html! { (revision) }));
     }
     let images: Vec<(&str, Markup)> = v
         .images
@@ -370,7 +373,7 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
         div id=(UPDATES_ID) {
             (settings_head(
                 "Updates",
-                "This device's Melissa and its operating system image.",
+                "This device's Melissa and its container image.",
                 &v.checked,
                 "/ui/settings/updates/check",
                 UPDATES_ID,
@@ -381,8 +384,8 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
             @if let Some(action) = v.confirm {
                 @if action == "apply" {
                     (confirm_card(&ConfirmCard {
-                        title: "Install the update and restart?",
-                        text: "Melissa downloads the new system image, then the device restarts into it. Apps and chats stop for a few minutes. If something goes wrong you can roll back to the current image.",
+                        title: "Install the update and restart Melissa?",
+                        text: "Melissa downloads the new image, then restarts on it. Apps and chats stop for a few minutes; their data is kept. If the new image doesn't start, Melissa goes back to the current one, and you can roll back later too.",
                         action: "/ui/settings/updates/apply",
                         target: UPDATES_ID,
                         confirm: "Install and restart",
@@ -390,8 +393,8 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                     }))
                 } @else {
                     (confirm_card(&ConfirmCard {
-                        title: "Go back to the previous image and restart?",
-                        text: "The device restarts into the image it ran before the last update. Apps and chats stop for a few minutes. Data in apps is kept.",
+                        title: "Go back to the previous image and restart Melissa?",
+                        text: "Melissa restarts on the image it ran before the last update. Apps and chats stop for a few minutes. Data in apps is kept.",
                         action: "/ui/settings/updates/rollback",
                         target: UPDATES_ID,
                         confirm: "Roll back and restart",
@@ -414,7 +417,7 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                     p.quiet { (label) }
                     (command_block(cmd))
                 }
-                p.quiet { "Automatic updates: off. Melissa doesn't update by itself yet." }
+                p.quiet { (v.automatic) }
             }))
             (card("Agent programs", html! {
                 @if agent_rows.is_empty() { p.quiet { "None configured." } } @else { (facts(&agent_rows)) }

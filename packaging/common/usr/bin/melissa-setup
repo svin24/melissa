@@ -1,0 +1,221 @@
+#!/bin/bash
+# melissa-setup: one-time setup steps on a Melissa bee.
+#
+#   melissa-setup                         status and next steps (no root needed)
+#   sudo melissa-setup agent <claude|grok|opencode> [--yes] [--no-login]
+#                                         install that vendor's agent CLI with its official
+#                                         installer, then log it in
+#   sudo melissa-setup login <claude|grok|opencode>
+#                                         log an installed agent in again (e.g. after expiry)
+#
+# The agent CLIs are third-party software and are not part of the Melissa image (Claude Code is
+# proprietary; Melissa ships no vendor binaries). This command downloads each vendor's own
+# installer over HTTPS and runs it as the `melissa` system user, so the CLI and its login land in
+# /var/lib/melissa/home, where melissa-queen.service (User=melissa) finds them. Installer and
+# login run outside the agent sandbox, started by you (root): they need the vendor's download and
+# login hosts, which the sandboxed agents' egress allowlists deliberately do not include.
+set -euo pipefail
+
+user=melissa
+home=/var/lib/melissa/home
+release=/usr/lib/melissa/release
+listen=127.0.0.1:8080
+
+die() { echo "melissa-setup: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" = 0 ] || die "this step needs root: run it with sudo"; }
+
+# agent table: name -> installer URL, binary (relative to $home), login command, notes
+agent_url() {
+    case $1 in
+        claude) echo "https://claude.ai/install.sh" ;;
+        grok) echo "https://x.ai/cli/install.sh" ;;
+        opencode) echo "https://opencode.ai/install" ;;
+        *) return 1 ;;
+    esac
+}
+agent_bin() {
+    case $1 in
+        claude) echo "$home/.local/bin/claude" ;;
+        grok) echo "$home/.grok/bin/grok" ;;
+        opencode) echo "$home/.opencode/bin/opencode" ;;
+    esac
+}
+agent_vendor() {
+    case $1 in
+        claude) echo "Anthropic (Claude Code; proprietary, see https://code.claude.com/docs/en/legal-and-compliance)" ;;
+        grok) echo "xAI (Grok CLI)" ;;
+        opencode) echo "OpenCode (MIT licence)" ;;
+    esac
+}
+# Credential file the agent sandbox binds (crates/agent/src/sandbox.rs presets).
+agent_cred() {
+    case $1 in
+        claude) echo "$home/.claude/.credentials.json" ;;
+        grok) echo "$home/.grok/auth.json" ;;
+        opencode) echo "$home/.local/share/opencode/auth.json" ;;
+    esac
+}
+valid_agent() { agent_url "$1" >/dev/null 2>&1 || die "unknown agent '$1' (choose claude, grok or opencode)"; }
+
+# Run a command as the melissa user with a clean environment and its own home.
+as_melissa() {
+    runuser -u "$user" -- env -i HOME="$home" USER="$user" LOGNAME="$user" SHELL=/bin/bash \
+        PATH="$home/.local/bin:$home/.grok/bin:$home/.opencode/bin:/usr/bin" \
+        TERM="${TERM:-xterm-256color}" LANG="${LANG:-C.UTF-8}" "$@"
+}
+
+ensure_user() {
+    getent passwd "$user" >/dev/null || systemd-sysusers
+    getent passwd "$user" >/dev/null || die "system user '$user' is missing"
+    install -d -o "$user" -g "$user" -m 0750 /var/lib/melissa
+    install -d -o "$user" -g "$user" -m 0700 "$home"
+}
+
+confirm() {
+    [ "$yes" = 1 ] && return 0
+    local answer
+    read -r -p "$1 [y/N] " answer || return 1
+    case $answer in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+install_agent() {
+    local name=$1 url bin tmp
+    url=$(agent_url "$name")
+    bin=$(agent_bin "$name")
+    echo "Agent:     $name, by $(agent_vendor "$name")"
+    echo "Installer: $url (the vendor's official installer)"
+    echo "Runs as:   the '$user' system user; installs into $home"
+    echo "By installing and logging in you accept that vendor's terms. Melissa only runs the CLI."
+    confirm "Download and run it now?" || die "cancelled"
+    ensure_user
+    tmp=$(as_melissa mktemp "$home/.melissa-installer.XXXXXX")
+    # shellcheck disable=SC2064
+    trap "rm -f '$tmp'" EXIT
+    as_melissa curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$tmp" "$url" \
+        || die "download failed: $url"
+    echo "Downloaded installer, sha256 $(sha256sum "$tmp" | cut -d' ' -f1)"
+    as_melissa bash "$tmp" || die "the $name installer failed"
+    rm -f "$tmp"
+    trap - EXIT
+    [ -x "$bin" ] || die "the installer finished but $bin is missing"
+    echo "Installed: $(as_melissa "$bin" --version 2>/dev/null | head -n1 || echo "$bin")"
+}
+
+login_agent() {
+    local name=$1 bin
+    bin=$(agent_bin "$name")
+    [ -x "$bin" ] || die "$name is not installed: run 'sudo melissa-setup agent $name'"
+    echo
+    case $name in
+        claude)
+            echo "Logging in to Claude. Open the link it prints on your own computer, sign in, and"
+            echo "paste the code back here. (Claude subscription by default; see 'claude auth login --help'.)"
+            as_melissa "$bin" auth login || die "claude login failed"
+            ;;
+        grok)
+            echo "Logging in to Grok with a device code: open the link on your own computer and"
+            echo "enter the code it shows."
+            as_melissa "$bin" login --device-auth || die "grok login failed"
+            ;;
+        opencode)
+            echo "OpenCode works without an account using its free models (prompts then go to"
+            echo "OpenCode's hosted gateway). You can also connect your own provider now."
+            if [ "$yes" = 1 ] || ! confirm "Connect a provider account now?"; then
+                echo "Using OpenCode's free models."
+                return 0
+            fi
+            as_melissa "$bin" auth login || die "opencode login failed"
+            ;;
+    esac
+}
+
+restart_queen() {
+    # The queen looks for the agent CLIs when it starts.
+    if systemctl is-enabled --quiet melissa-queen.service 2>/dev/null; then
+        systemctl restart melissa-queen.service && echo "Restarted melissa-queen so it picks up $1."
+    fi
+}
+
+status() {
+    local version=unknown name bin state cred
+    [ -r "$release" ] && version=$(sed -n 's/^MELISSA_VERSION=//p' "$release")
+    echo "Melissa $version (pre-alpha: for trying out; don't keep data you care about on it)"
+    echo
+    printf '  %-10s %s\n' queen "$(systemctl is-active melissa-queen.service 2>/dev/null || true)"
+    printf '  %-10s %s\n' k3s "$(systemctl is-active k3s.service 2>/dev/null || true)"
+    local any=0
+    if [ "$(id -u)" != 0 ]; then
+        # The agents live in the melissa user's private home.
+        echo "  (agents: run 'sudo melissa-setup' to see which are set up)"
+        any=1
+    else
+        for name in claude grok opencode; do
+            bin=$(agent_bin "$name")
+            cred=$(agent_cred "$name")
+            if [ -x "$bin" ]; then
+                any=1
+                if [ -s "$cred" ]; then state="installed, logged in"
+                elif [ "$name" = opencode ]; then state="installed, free models (no account)"
+                else state="installed, NOT logged in: sudo melissa-setup login $name"; fi
+            else
+                state="not installed"
+            fi
+            printf '  %-10s %s\n' "$name" "$state"
+        done
+    fi
+    echo
+    if [ "$any" = 0 ]; then
+        echo "Next: set up one agent (one-time; needs that vendor's account, except OpenCode):"
+        echo "  sudo melissa-setup agent opencode    # free models, no account"
+        echo "  sudo melissa-setup agent claude      # Claude subscription"
+        echo "  sudo melissa-setup agent grok        # Grok / SuperGrok subscription"
+        echo
+    fi
+    if [ -r "$release" ] && grep -qx 'MELISSA_RUNTIME=container' "$release"; then
+        # Inside the Melissa container: the host publishes the UI (install.sh, UI_PORT).
+        echo "Melissa runs in a container. On the host, the web UI is at http://127.0.0.1:8080 (install.sh's"
+        echo "UI_PORT; no login yet, so it stays on the host's loopback)."
+        echo "From another computer: ssh -N -L 8080:127.0.0.1:8080 <you>@<the host>, then http://127.0.0.1:8080"
+        echo "Commands from the host: sudo podman exec -it melissa melissa-setup ... | melissa-queen chat"
+        echo "Guide: packaging/container/README.md and docs/QUICKSTART.md in the Melissa repository."
+        return
+    fi
+    echo "Web UI (no login yet, so it only listens on this machine at $listen)."
+    echo "From your own computer, tunnel it over SSH and open http://127.0.0.1:8080 :"
+    echo "  ssh -N -L 8080:$listen ${SUDO_USER:-${USER:-you}}@<this machine>"
+    echo "Or chat here in the terminal:  melissa-queen chat"
+    echo "Guide: docs/QUICKSTART.md in the Melissa repository."
+}
+
+yes=0
+login=1
+args=()
+for a in "$@"; do
+    case $a in
+        -y|--yes) yes=1 ;;
+        --no-login) login=0 ;;
+        -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) args+=("$a") ;;
+    esac
+done
+set -- "${args[@]+"${args[@]}"}"
+
+case ${1:-status} in
+    status) status ;;
+    agent)
+        [ $# = 2 ] || die "usage: sudo melissa-setup agent <claude|grok|opencode> [--yes] [--no-login]"
+        valid_agent "$2"; need_root
+        install_agent "$2"
+        [ "$login" = 1 ] && login_agent "$2"
+        restart_queen "$2"
+        echo
+        echo "Done. Open the web UI (see 'melissa-setup') or run 'melissa-queen chat'."
+        ;;
+    login)
+        [ $# = 2 ] || die "usage: sudo melissa-setup login <claude|grok|opencode>"
+        valid_agent "$2"; need_root
+        login_agent "$2"
+        restart_queen "$2"
+        ;;
+    *) die "unknown command '$1' (try: melissa-setup --help)" ;;
+esac

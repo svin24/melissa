@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run the Melissa headless image as a podman container, systemd as PID 1.
-# Docs: docs/QUICKSTART.md ("Try it in a container") and docs/agent-skills/container-mode.md.
+# Development/test driver for the Melissa container (systemd as PID 1). For a real install use
+# packaging/container/install.sh (Quadlet, systemd). Docs: packaging/container/README.md and
+# docs/agent-skills/container-image.md.
 #
-#   scripts/container-run.sh build      layer image/container on top of $IMAGE -> $CTR_IMAGE
+#   scripts/container-run.sh build      build packaging/container/Containerfile -> $CTR_IMAGE
 #   scripts/container-run.sh up         start (create on first use) the container
 #   scripts/container-run.sh status     unit states, k3s node, URLs
 #   scripts/container-run.sh shell      root shell inside (melissa-setup, melissa-queen chat, kubectl)
@@ -12,14 +13,14 @@
 #   scripts/container-run.sh purge      remove the container and its /var volume
 #   scripts/container-run.sh preflight  check the host (cgroup delegation, pasta, kernel modules)
 #   scripts/container-run.sh smoke      k3s Ready, Traefik, admission policies, RBAC, a NodePort from the host
+#                                       (also works against an install.sh container: NAME=melissa UI_PORT=8080)
 #
-# Rootless by default (pasta network). Run it as root (sudo) for a rootful container: its own image
-# storage (build there or `podman load`), the default bridge network, and the UI through a filtered
-# forward inside (docs/agent-skills/container-mode.md, "Rootful").
+# Rootful (run it as root) is the supported mode: root's own image storage (`podman load`), the default
+# bridge network, and the UI through a filtered forward inside. Rootless (pasta network) is
+# UNSUPPORTED: kept for experiments only, not tested since the move off bootc (container-image.md).
 # Environment:
 #   NAME=melissa              container name (volume: $NAME-var)
-#   IMAGE=localhost/melissa-headless:dev
-#   CTR_IMAGE=localhost/melissa-container:dev
+#   CTR_IMAGE=localhost/melissa:dev
 #   UI_PORT=18080             host port for the web UI (bound to 127.0.0.1 only)
 #   APP_PORT_BASE=30000       host port for app NodePort 30000; 80 ports are mapped (30000-30079).
 #                             Another base (e.g. 31000 next to a host k3s) is written to the queen's
@@ -34,8 +35,8 @@
 set -euo pipefail
 
 NAME=${NAME:-melissa}
-IMAGE=${IMAGE:-localhost/melissa-headless:dev}
-CTR_IMAGE=${CTR_IMAGE:-localhost/melissa-container:dev}
+CTR_IMAGE=${CTR_IMAGE:-localhost/melissa:dev}
+IMAGE=$CTR_IMAGE
 UI_PORT=${UI_PORT:-18080}
 APP_PORT_BASE=${APP_PORT_BASE:-30000}
 BIND=${BIND:-127.0.0.1}
@@ -142,7 +143,7 @@ app_addresses() {
 }
 
 # Write [apps] addresses and port_offset into the queen's config unless the owner already
-# has a config. /etc/melissa lives on the /var volume (see image/container/Containerfile).
+# has a config. /etc/melissa lives on the /var volume (see packaging/container/Containerfile).
 configure() {
     local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
     if in_ctr test -e /etc/melissa/queen.toml; then
@@ -211,14 +212,16 @@ smoke() {
     in_ctr kubectl -n kube-system create service nodeport melissa-smoke --tcp=80:8000 --node-port=30079 \
         --dry-run=client -o yaml | sed 's/app: melissa-smoke/app.kubernetes.io\/name: traefik/' \
         | podman exec -i "$NAME" kubectl apply -f - >/dev/null
+    local apphost=$BIND; case "$BIND" in 0.0.0.0|::|'') apphost=127.0.0.1 ;; esac
     code=000
     for _ in $(seq 1 20); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: smoke.invalid' "http://127.0.0.1:$last/" || true)
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: smoke.invalid' "http://$apphost:$last/" || true)
         [ "$code" = 404 ] && break; sleep 2
     done
-    [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at 127.0.0.1:$last" || bad "NodePort from the host: HTTP $code"
+    [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at $apphost:$last" || bad "NodePort from the host ($apphost:$last): HTTP $code"
     in_ctr kubectl -n kube-system delete service melissa-smoke --wait=false >/dev/null
     pod_isolation || fail=1
+    host_power || fail=1
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$UI_PORT/" || true)
     [ "$code" = 200 ] && pass "web UI http://127.0.0.1:$UI_PORT/" || bad "web UI: HTTP $code"
     [ "$fail" = 0 ] && echo "smoke test complete" || echo "smoke test FAILED"
@@ -246,10 +249,35 @@ pod_isolation() {
     return "$fail"
 }
 
+# Power is the host's: no logind or sleep units inside (a privileged container's logind would act on
+# the host's lid switch and suspend the host), and /dev/input is an empty nodev tmpfs.
+host_power() {
+    local u s fail=0 dev
+    for u in systemd-logind.service systemd-logind-varlink.socket sleep.target suspend.target \
+        hibernate.target hybrid-sleep.target suspend-then-hibernate.target systemd-suspend.service; do
+        s=$(in_ctr systemctl is-enabled "$u" 2>/dev/null || true)
+        if [ "$s" = masked ]; then echo "PASS: $u masked"; else echo "FAIL: $u is '$s', not masked"; fail=1; fi
+    done
+    in_ctr systemctl is-active -q systemd-logind.service && { echo "FAIL: systemd-logind runs inside"; fail=1; }
+    # Any device node that shows up under /dev/input must not open (nodev); none should be there.
+    dev=$(in_ctr find /dev/input -type c 2>/dev/null | head -1)
+    if [ -n "$dev" ] && in_ctr sh -c "exec 3<'$dev'" 2>/dev/null; then
+        echo "FAIL: $dev opens inside the container"; fail=1
+    elif in_ctr findmnt -n -o FSTYPE,OPTIONS /dev/input | grep -q '^tmpfs .*nodev'; then
+        echo "PASS: /dev/input is a nodev tmpfs (${dev:-no device nodes}); input devices can't be opened"
+    else
+        echo "FAIL: /dev/input is not a nodev tmpfs: $(in_ctr findmnt -n -o FSTYPE,OPTIONS /dev/input || echo host /dev)"; fail=1
+    fi
+    return "$fail"
+}
+
 case "${1:-}" in
 build)
-    podman build --network=none -f "$repo/image/container/Containerfile" \
-        --build-arg IMAGE="$IMAGE" -t "$CTR_IMAGE" "$repo"
+    # --network=host: the build fetches crates and k3s (rootless pasta may be denied by SELinux).
+    podman build --network=host -f "$repo/packaging/container/Containerfile" \
+        --build-arg MELISSA_VERSION="${MELISSA_VERSION:-dev}" \
+        --build-arg MELISSA_REVISION="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)" \
+        -t "$CTR_IMAGE" "$repo"
     ;;
 up)
     if podman container exists "$NAME"; then podman start "$NAME" >/dev/null
@@ -268,7 +296,7 @@ up)
         if [ "$ROOTFUL" = 1 ]; then net=(--network=bridge -p "127.0.0.1:$UI_PORT:8081")
         else net=(--network=pasta:--host-lo-to-ns-lo -p "127.0.0.1:$UI_PORT:8080"); fi
         podman run -d --name "$NAME" --hostname "$NAME" \
-            --privileged --systemd=always \
+            --privileged --systemd=always --tmpfs /dev/input -e XDG_CONFIG_HOME=/etc \
             "${net[@]}" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
             -v "$VOLUME:/var" \
@@ -276,11 +304,6 @@ up)
             "$CTR_IMAGE" /sbin/init >/dev/null
     fi
     wait_for 60 "systemd in the container" in_ctr test -d /var/lib/melissa-container/etc-melissa
-    if [ "$ROOTFUL" = 1 ]; then
-        # The flag survives restarts (it is on the volume); start the forward now on first use.
-        in_ctr touch /var/lib/melissa-container/ui-forward
-        in_ctr systemctl start melissa-ui-forward.socket
-    fi
     configure
     echo "Started '$NAME'. Web UI: http://127.0.0.1:$UI_PORT  (k3s takes a minute or two: '$0 status')"
     ;;

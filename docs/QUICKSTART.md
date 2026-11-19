@@ -7,7 +7,7 @@
 From source you get the Queen, her bees and the web UI on your own Linux machine. You chat with the
 Queen; she uses an AI coding CLI you are already logged in to (Claude Code, Grok CLI or OpenCode).
 Installing apps needs k3s, which a plain source checkout does not have (see [Apps and k3s](#apps-and-k3s)).
-For the full system with k3s, use the VM image instead.
+For the full system with k3s, run the container instead ([Run the full system in a container](#run-the-full-system-in-a-container-rootful-podman)).
 
 ## What you need
 
@@ -90,49 +90,59 @@ service. Anything risky waits for your approval in the confirmation inbox (in th
 ## Apps and k3s
 
 App installs need a k3s cluster. A source checkout looks for cluster credentials in
-`/run/melissa-kube/` (written by the Melissa images) or at `kubeconfig = "..."` in
+`/run/melissa-kube/` (written in the Melissa container) or at `kubeconfig = "..."` in
 `~/.config/melissa/queen.toml`, and app installs need a second, write-only identity
 (`[apps] kubeconfig`) with Melissa's admission policies. Setting that up by hand is not documented for
-strangers yet; use the VM image to try apps.
+strangers yet; use the container to try apps.
 
-## Try it in a container (Linux, podman) — experimental
+## Run the full system in a container (rootful podman)
 
-A third way besides the VM and `just demo`: the headless image itself, run by podman with systemd as PID 1.
-Needs podman 5+ with pasta, cgroup v2, and the image built from this checkout (`just image-build headless`).
+The whole of Melissa (Queen, agent sandbox, k3s and apps) as one container on your Linux machine, started by
+systemd. Needs root, podman 5+, cgroup v2 and free ports 8080 and 30000-30079. Full guide, settings and what it
+changes on the host: [packaging/container/README.md](../packaging/container/README.md).
 
 ```
-scripts/container-run.sh preflight   # checks cgroup delegation, kernel modules, pasta
-scripts/container-run.sh build       # adds the small container layer (image/container)
-scripts/container-run.sh up          # web UI: http://127.0.0.1:18080
-scripts/container-run.sh smoke       # k3s Ready, Traefik, policies, an app port from the host (~3 min first time)
-scripts/container-run.sh shell       # then: melissa-setup agent opencode, melissa-queen chat
-scripts/container-run.sh down        # stop; `purge` deletes the container and its data volume
+just container-build           # builds localhost/melissa:dev (no root)
+just container-install         # sudo: installs the Quadlet, starts melissa.service, prints the UI URL
+just container-smoke           # sudo: k3s, Traefik, policies, an app port, pods can't reach the UI
+sudo podman exec -it melissa melissa-setup agent opencode     # free models; or claude / grok (log in)
+sudo podman exec -it melissa melissa-queen chat               # or the web UI: http://127.0.0.1:8080
+systemctl status melissa
+just container-uninstall       # keeps your data; `just container-uninstall --purge` deletes it
 ```
 
-- **Status:** verified rootless on Fedora 45 (2026-11-19): web UI, agents (sandbox and network allowlist),
-  `melissa-setup`, k3s with Traefik, Nextcloud from the catalog at `http://127.0.0.1:30000`, stop/start of apps,
-  and a chat with the Queen. Rootful (`sudo`) verified the same day for the web UI, k3s, Nextcloud and
-  stop/start (agents and chat not tried rootful).
-- **Rootful:** run the same commands with `sudo` (root has its own image storage: `podman save` the image and
-  `sudo podman load -i` it, or build as root). It uses podman's bridge network instead of pasta and needs no
-  `cpuset` change; a small filtered forward inside the container passes the host's UI connections to the
-  Queen, and pods can't use it. Root in the container is root on your machine.
-- **Rootless k3s needs one host change** (as root, once): let your user's containers use the `cpuset` cgroup
-  controller, which Fedora does not delegate by default. `preflight` checks it and prints the commands:
-  ```
-  sudo mkdir -p /etc/systemd/system/user@.service.d
-  printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
-  sudo systemctl daemon-reload
-  ```
-- **App links** say `http://127.0.0.1:30000` (and up): `up` writes that address into the Queen's config. If you
-  move the app ports (`APP_PORT_BASE=31000`), the first `up` also writes `[apps] port_offset = 1000`, so the
-  links name 31000 and up.
-- **Security:** the container runs `--privileged` (k3s and the agent sandbox need namespaces, mounts and
-  netfilter). Rootless that is limited to your own user; run as root it is root on your machine. The web UI has
-  no login and is published on 127.0.0.1 only; app ports default to 127.0.0.1 too (`BIND=0.0.0.0` for the LAN).
-- **Not in a container:** Secure Boot, `bootc` updates and rollback (rebuild and recreate instead; `/var` is a
-  volume and survives), the first-boot account prompt, SSH, Tailscale. Host ports: `UI_PORT`, `APP_PORT_BASE`.
-- Details and gotchas: [agent-skills/container-mode.md](agent-skills/container-mode.md).
+- **Security:** the container is rootful and `--privileged` (k3s and the agent sandbox need namespaces, mounts
+  and netfilter): root in it is root on your machine. The kubelet needs a few host sysctls; install.sh sets them in
+  `/etc/sysctl.d/90-melissa-kubelet.conf`, tells you, and uninstall restores the old values.
+- **Updates:** Settings → Updates (check, apply, roll back) and a daily automatic update (`AUTO_UPDATE=off` to
+  skip). Apps, chats and agent logins live on the `melissa-var` volume and survive updates and reinstalls.
+- **Apps** answer on `BIND` (default 127.0.0.1) ports 30000-30079; `BIND=0.0.0.0` (LAN) or your Tailscale address
+  (`BIND=$(tailscale ip -4)`) to open them from other devices; app links use that address.
+- Rootless podman is not supported.
+
+### Use it from another machine
+
+The web UI listens on `127.0.0.1:8080` of the host only (it has no login yet). Reach it through SSH, which does the
+authentication. `<host>` is the machine running Melissa, `<user>` your account there; `-N` keeps the tunnel
+open without a shell:
+```
+ssh -N -L 8080:127.0.0.1:8080 <user>@<host>
+```
+then browse to http://127.0.0.1:8080 on the other computer (another local port if 8080 is taken there:
+`-L 18080:127.0.0.1:8080`). In `~/.ssh/config`: `Host melissa` / `HostName <host>` / `User <user>` /
+`LocalForward 8080 127.0.0.1:8080`, then `ssh -N melissa`.
+
+**Optional, Tailscale:** on the host, `tailscale serve` publishes the UI to your tailnet with a Tailscale
+certificate:
+```
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
+```
+It is then at `https://<host>.example.ts.net:8443` (your tailnet's name instead of `example.ts.net`);
+`tailscale serve --https=8443 off` turns it off.
+
+**Warning:** Melissa has no login yet. Everyone and every device that can reach that address on your tailnet can
+chat with the Queen and **approve her actions**, including deleting apps and their data. Only do this on a tailnet
+you alone use, or restrict who can reach the host on that port with Tailscale ACLs (grants) first.
 
 ## Stop, state and reset
 

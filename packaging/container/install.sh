@@ -1,0 +1,238 @@
+#!/bin/bash
+# Install Melissa as a rootful podman container started by systemd (Quadlet). Run as root.
+# Docs: packaging/container/README.md. Undo: packaging/container/uninstall.sh [--purge].
+#
+#   sudo packaging/container/install.sh               preflight, install, start, print the UI URL
+#   sudo packaging/container/install.sh --preflight   only check the host
+#
+# Environment (all optional):
+#   IMAGE=localhost/melissa:latest  image to run. A registry image is pulled; a localhost/ image must
+#                                   be in root's storage (podman load) or come from IMAGE_ARCHIVE.
+#   IMAGE_ARCHIVE=path.tar          `podman save` archive to load first (tagged as IMAGE)
+#   UI_PORT=8080                    host port of the web UI (on UI_BIND)
+#   UI_BIND=127.0.0.1               keep it on loopback: the UI has no login yet (README, "Remote")
+#   APP_PORT_BASE=30000             host port of app NodePort 30000 (80 ports: base..base+79)
+#   BIND=127.0.0.1                  host address for the app ports (0.0.0.0: reachable from the LAN)
+#   APP_ADDRESSES=                  [apps] addresses for app links (comma separated; default from BIND)
+#   AUTO_UPDATE=                    registry (default for registry images), local (default for
+#                                   localhost/ images) or off. Not off: enables podman-auto-update.timer.
+#   SET_SYSCTLS=yes                 write the kubelet's host sysctls to /etc/sysctl.d (see below)
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+IMAGE=${IMAGE:-localhost/melissa:latest}
+UI_PORT=${UI_PORT:-8080}
+UI_BIND=${UI_BIND:-127.0.0.1}
+APP_PORT_BASE=${APP_PORT_BASE:-30000}
+BIND=${BIND:-127.0.0.1}
+SET_SYSCTLS=${SET_SYSCTLS:-yes}
+case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
+APP_PORT_LAST=$((APP_PORT_BASE + 79))
+
+STATE=/var/lib/melissa-container
+QUADLET=/etc/containers/systemd/melissa.container
+UNITDIR=/etc/systemd/system
+LIBEXEC=/usr/local/libexec/melissa
+SHARE=/usr/local/share/melissa
+SYSCTL_FILE=/etc/sysctl.d/90-melissa-kubelet.conf
+MODULES_FILE=/etc/modules-load.d/melissa.conf
+# k3s's pod and service networks inside the container; the podman network must not overlap them.
+K3S_CIDRS="10.42.0.0/16 10.43.0.0/16"
+# The kubelet inside sets these host-wide (they are not namespaced). Values as the kubelet wants them.
+SYSCTLS="vm.overcommit_memory=1 vm.panic_on_oom=0 kernel.panic=10 kernel.panic_on_oops=1 kernel.keys.root_maxkeys=1000000 kernel.keys.root_maxbytes=25000000"
+
+say() { echo "melissa-install: $*"; }
+die() { echo "melissa-install: $*" >&2; exit 1; }
+
+# overlaps A/len B/len (IPv4 only; anything else: no)
+overlaps() {
+    local a=${1%/*} al=${1#*/} b=${2%/*} bl=${2#*/} m
+    case "$a$b" in *:*) return 1 ;; esac
+    # shellcheck disable=SC2086 # split the address at the dots
+    ip2n() { local IFS=.; set -- $1; echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 )); }
+    m=$(( al < bl ? al : bl ))
+    [ $(( ($(ip2n "$a") ^ $(ip2n "$b")) >> (32 - m) )) = 0 ]
+}
+
+version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
+
+preflight() {
+    local ok=0 v c sub p
+    [ "$(id -u)" = 0 ] || { echo "FAIL: run as root (rootful podman)"; return 1; }
+    command -v podman >/dev/null || { echo "FAIL: podman is not installed"; return 1; }
+    v=$(podman version --format '{{.Client.Version}}' 2>/dev/null || echo 0)
+    if version_ge "$v" 5.0; then echo "ok: podman $v"; else echo "FAIL: podman $v: need 5.0 or newer (Quadlet)"; ok=1; fi
+    [ -x /usr/libexec/podman/quadlet ] || [ -x /usr/lib/podman/quadlet ] \
+        || { echo "FAIL: no Quadlet generator (podman's systemd integration)"; ok=1; }
+    command -v systemctl >/dev/null && [ -d /run/systemd/system ] || { echo "FAIL: systemd is not PID 1"; ok=1; }
+    if [ -r /sys/fs/cgroup/cgroup.controllers ]; then
+        c=$(cat /sys/fs/cgroup/cgroup.controllers)
+        for want in cpu cpuset io memory pids; do
+            case " $c " in *" $want "*) ;; *) echo "FAIL: cgroup v2 controller '$want' missing"; ok=1 ;; esac
+        done
+        echo "ok: cgroup v2 ($c)"
+    else
+        echo "FAIL: not cgroup v2 (k3s in a container needs the unified hierarchy)"; ok=1
+    fi
+    for m in br_netfilter overlay; do
+        if grep -q "^$m " /proc/modules || modprobe "$m" 2>/dev/null; then echo "ok: kernel module $m"
+        else echo "FAIL: kernel module $m cannot be loaded"; ok=1; fi
+    done
+    if ! systemctl is-active -q melissa.service 2>/dev/null; then
+        for p in "$UI_PORT" "$APP_PORT_BASE" "$APP_PORT_LAST"; do
+            if ss -Hltn "sport = :$p" 2>/dev/null | grep -q .; then
+                echo "FAIL: host port $p is in use (UI_PORT=$UI_PORT, APP_PORT_BASE=$APP_PORT_BASE)"; ok=1
+            fi
+        done
+    fi
+    for sub in $(podman network inspect podman --format '{{range .Subnets}}{{.Subnet}} {{end}}' 2>/dev/null); do
+        for c in $K3S_CIDRS; do
+            if overlaps "$sub" "$c"; then echo "FAIL: podman network 'podman' ($sub) overlaps k3s's $c"; ok=1; fi
+        done
+    done
+    if systemctl is-active -q k3s.service 2>/dev/null; then
+        echo "note: a k3s runs on this host too; Melissa's k3s has its own network namespace (works, tested)."
+    fi
+    [ "$ok" = 0 ] && echo "preflight ok"
+    return "$ok"
+}
+
+image() {
+    if [ -n "${IMAGE_ARCHIVE:-}" ]; then
+        say "loading $IMAGE_ARCHIVE"
+        local loaded
+        loaded=$(podman load -q -i "$IMAGE_ARCHIVE" | sed -n 's/^Loaded image[^:]*: //p' | tail -1)
+        [ -n "$loaded" ] || die "podman load found no image in $IMAGE_ARCHIVE"
+        [ "$loaded" = "$IMAGE" ] || podman tag "$loaded" "$IMAGE"
+    elif ! podman image exists "$IMAGE"; then
+        case "$IMAGE" in
+        localhost/*) die "no $IMAGE in root's image storage. Build it (just container-build) and load it:
+  podman save -o melissa.tar localhost/melissa:dev && sudo IMAGE_ARCHIVE=melissa.tar $0" ;;
+        *) say "pulling $IMAGE"; podman pull "$IMAGE" ;;
+        esac
+    fi
+}
+
+sysctls() {
+    [ "$SET_SYSCTLS" = yes ] || {
+        say "SET_SYSCTLS=$SET_SYSCTLS: the kubelet inside will set these host sysctls itself at start: $SYSCTLS"
+        return 0
+    }
+    local kv k
+    if [ ! -e "$STATE/host-sysctl.before" ]; then
+        for kv in $SYSCTLS; do k=${kv%%=*}; echo "$k=$(sysctl -n "$k")"; done > "$STATE/host-sysctl.before"
+    fi
+    {
+        echo "# Melissa (packaging/container/install.sh): the kubelet of Melissa's k3s needs these and"
+        echo "# sets them anyway (they are host-wide). uninstall.sh removes this file and restores the"
+        echo "# values from $STATE/host-sysctl.before."
+        for kv in $SYSCTLS; do echo "${kv%%=*} = ${kv#*=}"; done
+    } > "$SYSCTL_FILE"
+    sysctl -q -p "$SYSCTL_FILE"
+    say "NOTICE: set host sysctls for the kubelet ($SYSCTL_FILE): $SYSCTLS"
+    say "  (before: $(paste -sd ' ' "$STATE/host-sysctl.before"); uninstall.sh restores them)"
+}
+
+install_files() {
+    local auto_line=
+    [ "$AUTO_UPDATE" = off ] || auto_line="AutoUpdate=$AUTO_UPDATE"
+    mkdir -p "$STATE/status" "$STATE/request" /etc/containers/systemd "$LIBEXEC" "$SHARE"
+    chmod 0755 "$STATE" "$STATE/status"; chmod 0700 "$STATE/request"
+    printf '%s\n' br_netfilter overlay > "$MODULES_FILE"
+    sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
+        -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
+        -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" "$here/melissa.container" > "$QUADLET"
+    install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
+    install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
+    install -m 0644 "$here/README.md" "$SHARE/README.md"
+    local timer_ours=${TIMER_OURS:-no}
+    [ -r "$STATE/install.env" ] && timer_ours=$(sed -n 's/^TIMER_OURS=//p' "$STATE/install.env")
+    if [ "$AUTO_UPDATE" != off ] && ! systemctl is-enabled -q podman-auto-update.timer 2>/dev/null; then
+        systemctl enable -q --now podman-auto-update.timer
+        timer_ours=yes
+        say "enabled podman-auto-update.timer (daily; it updates containers labelled for auto-update)"
+    fi
+    cat > "$STATE/install.env" <<EOF
+# Written by packaging/container/install.sh; read by melissa-host-update and uninstall.sh.
+IMAGE=$IMAGE
+AUTO_UPDATE=$AUTO_UPDATE
+UI_PORT=$UI_PORT
+UI_BIND=$UI_BIND
+BIND=$BIND
+APP_PORT_BASE=$APP_PORT_BASE
+TIMER_OURS=${timer_ours:-no}
+EOF
+    systemctl daemon-reload
+    [ -e /run/systemd/generator/melissa.service ] \
+        || die "Quadlet did not generate melissa.service (check: /usr/libexec/podman/quadlet -dryrun)"
+    systemctl enable -q --now melissa-update.path
+}
+
+# The app addresses for the queen's config: what people type before :port.
+app_addresses() {
+    if [ -n "${APP_ADDRESSES:-}" ]; then echo "$APP_ADDRESSES"; return; fi
+    case "$BIND" in
+    127.*|::1|localhost) echo 127.0.0.1 ;;
+    # The host's own address (route source towards a documentation address; nothing is sent).
+    0.0.0.0|::|'') ip -4 route get 203.0.113.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' ;;
+    *) echo "$BIND" ;;
+    esac
+}
+
+# Write [apps] addresses and port_offset into the queen's config unless one exists already.
+configure() {
+    local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
+    if podman exec melissa test -e /etc/melissa/queen.toml; then
+        if [ "$offset" != 0 ] && ! podman exec melissa grep -qsx "port_offset = $offset" /etc/melissa/queen.toml; then
+            say "note: /etc/melissa/queen.toml has no 'port_offset = $offset' under [apps]; app links name the wrong port"
+        fi
+        return 0
+    fi
+    list=$(app_addresses)
+    for a in ${list//,/ }; do toml+="${toml:+, }\"$a\""; done
+    [ -z "$toml" ] || body+="addresses = [$toml]"$'\n'
+    [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
+    [ -n "$body" ] || return 0
+    printf '# Written by install.sh: app links use these.\n[apps]\n%s' "$body" \
+        | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/queen.toml'
+    podman exec melissa systemctl try-restart melissa-queen
+    say "queen config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+}
+
+wait_for() { # seconds, description, command...
+    local end=$(( $(date +%s) + $1 )) what=$2; shift 2
+    until "$@" >/dev/null 2>&1; do
+        [ "$(date +%s)" -lt "$end" ] || die "timed out waiting for $what"
+        sleep 2
+    done
+}
+
+case "${1:-}" in
+--preflight) preflight; exit $? ;;
+"") ;;
+*) sed -n '2,22p' "$0"; exit 2 ;;
+esac
+
+preflight || die "preflight failed (see above)"
+mkdir -p "$STATE"
+image
+sysctls
+install_files
+say "starting melissa.service"
+systemctl restart melissa.service
+wait_for 120 "systemd in the container" podman exec melissa test -d /var/lib/melissa-container/etc-melissa
+configure
+wait_for 120 "the web UI" curl -fsS -o /dev/null "http://127.0.0.1:$UI_PORT/"
+cat <<EOF
+
+Melissa is running (systemctl status melissa). k3s needs a minute or two on the first start.
+  Web UI:     http://$UI_BIND:$UI_PORT/
+  Apps:       ports $APP_PORT_BASE-$APP_PORT_LAST on $BIND
+  Agents:     sudo podman exec -it melissa melissa-setup            (e.g. agent opencode)
+  Chat:       sudo podman exec -it melissa melissa-queen chat
+  Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
+              (automatic: $AUTO_UPDATE)
+  From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
+  (the UI has no login yet: only people you trust may reach it). See $SHARE/README.md.
+  --privileged rootful container: it has root on this host.
+EOF

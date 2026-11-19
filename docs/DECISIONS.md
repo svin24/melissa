@@ -482,14 +482,14 @@ Format: date — decision. Why. Alternatives considered.
   0640). Apply and rollback reboot, so the UI, API and CLI need an explicit yes. Alternatives: sudoers rule
   (needs setuid sudo, `NoNewPrivileges=yes` blocks it), a root daemon with a socket (more code, a long-running
   root process), running the queen as root (no). `polkit` is added to the image packages. Auto-update stays
-  off until the update policy (PLAN 20) exists.
+  off until the update policy (PLAN 20) exists. *(Superseded 2026-11-19: bootc archived; see the container update entry below.)*
 - **2026-11-19 — The update helper runs each `bootc` call as a transient systemd unit** (found testing PLAN
   60e on a bootc VM). bootc needs SELinux `install_t` to write labels the running policy may not know; systemd
   starts `/usr/bin/bootc` (`install_exec_t`) there, a shell script does not (AVC `mac_admin` on bootc's chcon
   fallback). `systemd-run --wait` with output to files in `/run/melissa-update/.work` keeps the fixed-verb
   helper and its error messages. Alternatives: an SELinux module or file-context rule labelling the helper
   `install_exec_t` (needs semanage/policy build in the image), one unit per bootc command with
-  `StandardOutput=` and `OnSuccess=` chains (more units, loses the error text in `last.json`).
+  `StandardOutput=` and `OnSuccess=` chains (more units, loses the error text in `last.json`). *(Superseded 2026-11-19: bootc archived; see the container update entry below.)*
 - **2026-11-19 — `/etc/melissa` belongs to the queen's user** (`tmpfiles.d/melissa-config.conf`, `melissa:melissa
   0750`), because Settings writes `providers.toml` there. systemd's `ConfigurationDirectory=` never chowns.
 - **2026-11-19 — Host-first: rootful container and/or Nix service before a reference distro** (owner). The
@@ -498,3 +498,51 @@ Format: date — decision. Why. Alternatives considered.
   Next: make Melissa install and run as a service on an existing Linux host, via a rootful podman container
   (container mode is already verified rootful) and/or a Nix flake with systemd units. The bootc images (headless,
   desktop) are kept but paused; a "reference distro" is built only after host-first works.
+- **2026-11-19 — The container never handles power: logind and the sleep units are masked, host input devices
+  hidden.** Found on the owner's laptop: the rootful `--privileged` container ran its own systemd-logind, which
+  saw the host's lid switch and suspended the HOST on lid close (audit subject `spc_t`), ignoring the host's KDE
+  and logind settings. The image masks `systemd-logind` (+ varlink socket), `sleep`/`suspend`/`hibernate`/
+  `hybrid-sleep`/`suspend-then-hibernate` targets and the matching services; the image lint fails if they are not
+  masked. The Quadlet (and `scripts/container-run.sh`) mounts a tmpfs on `/dev/input`: podman copies the nodes in,
+  but the mount is `nodev`, so they cannot be opened (checked: "Permission denied" on `event*`). Verified: lid
+  closed on AC no longer suspends; queen, k3s and the UI unaffected.
+- **2026-11-19 — Container-first: rootful podman via Quadlet; bootc images archived** (owner). Melissa targets an
+  existing Linux host as one rootful `--privileged` podman container with systemd as PID 1, started by
+  `/etc/containers/systemd/melissa.container` (`packaging/container/install.sh`). The image is built on
+  `registry.fedoraproject.org/fedora:45` (not bootc) with only what Melissa needs; the host provides networking,
+  time, SSH and Tailscale. Host-agnostic files live in `packaging/common/` (shared with the Nix packaging,
+  `packaging/nix/`). The bootc images, VM tooling and release disk are removed from the repo and kept at tag
+  `bootc-archive-2026-11-19` for a later reference distro. **Rootless is unsupported** (it worked with the old
+  image, but needs cpuset delegation and pasta, and SELinux denies the distro pasta on the dev laptop); the UI
+  forward socket is therefore always on (its nftables filter admits only the bridge gateway). Alternatives: keep
+  bootc as the main path (slow iteration: image + reboot per change), Docker (no Quadlet/systemd integration),
+  rootless as default (fragile host prerequisites).
+- **2026-11-19 — The kubelet's host sysctls are set openly by install.sh.** In a rootful privileged container the
+  kubelet writes `vm.overcommit_memory=1`, `vm.panic_on_oom=0`, `kernel.panic=10`, `kernel.panic_on_oops=1`,
+  `kernel.keys.root_maxkeys`/`root_maxbytes` on the host (not namespaced; it fails without them). install.sh writes
+  them to `/etc/sysctl.d/90-melissa-kubelet.conf`, applies them, prints a notice and saves the old values;
+  uninstall.sh removes the file and restores them. `SET_SYSCTLS=no` leaves them to the kubelet. Alternative:
+  document only (the change would happen silently at every start).
+- **2026-11-19 — Container updates: Quadlet AutoUpdate + a host helper triggered by fixed-name request files**
+  (replaces the bootc helper through polkit). The queen can't run the host's podman. It creates an empty file
+  named `check`, `apply` or `rollback` in `/run/melissa-update-request` (bind mount of
+  `/var/lib/melissa-container/request`, group-writable for `melissa` inside). A host path unit
+  (`DirectoryNotEmpty=`) starts `melissa-host-update requests`, which acts on those three names only, never reads
+  file contents, empties the directory, and writes `status.json`/`last.json` to a root-owned directory mounted
+  read-only at `/run/melissa-update`. Apply pulls (registry images), restarts `melissa.service` and goes back to
+  the old image if the queen doesn't come up within 3 min; the image Melissa ran before is tagged
+  `localhost/melissa-rollback:previous` whenever the running image changes (also after podman-auto-update), and
+  rollback retags it. Automatic updates: Quadlet `AutoUpdate=registry|local` + `podman-auto-update.timer`
+  (install.sh enables it if it was off and uninstall.sh turns it off again; `AUTO_UPDATE=off` to skip).
+  Restarting the queen stays a polkit-allowed `systemctl restart` inside the container. Alternatives: the podman
+  socket bind-mounted in (full root over the host's containers), SSH back to the host, a root daemon with an API
+  (more code), only showing host commands (kept as the fallback when the mounts are absent).
+- **2026-11-19 — Version info in the container image**: `/usr/lib/melissa/release` has `MELISSA_VERSION`,
+  `MELISSA_REVISION` (git short hash) and `MELISSA_RUNTIME=container`; the OCI labels carry version and revision.
+  The digest isn't known inside an image at build time: the host helper reports it, and without the helper the
+  queen reads the image name and ID from podman's `/run/.containerenv`.
+- **2026-11-19 — `podman exec` sessions get `XDG_CONFIG_HOME=/etc`** (Quadlet `Environment=`), so
+  `melissa-queen tool ...` run as root inside reads `/etc/melissa/queen.toml` like the service (app links used the
+  container's bridge address otherwise).
+- **2026-11-19 — The container image ships `iptables-nft`.** k3s's bundled iptables picked the legacy backend in a
+  fresh fedora container and needs the `ip_tables` module, which modern hosts don't load: kube-proxy exited.

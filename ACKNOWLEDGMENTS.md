@@ -1,7 +1,7 @@
 # Acknowledgments and third-party notices
 
 Melissa stands on the work of others. This file credits projects that shaped its design and lists third-party
-software that Melissa redistributes (in its binaries or OS images), with their licenses.
+software that Melissa redistributes (in its binaries or container image), with their licenses.
 
 ## Design inspiration (ideas only, no code copied)
 
@@ -14,8 +14,10 @@ and license notice must be kept with it and listed below under "Included third-p
   Protocol (ACP) flow, mapping agents' permission requests onto an approval policy, and testing with recorded,
   replayed agent sessions.
 - **Universal Blue** (ublue-os) — <https://github.com/ublue-os>, Apache License 2.0, by the Universal Blue
-  contributors. Inspired how Melissa builds and maintains its bootc images: Containerfile structure and layer order,
+  contributors. Inspired how Melissa built and maintained its bootc images: Containerfile structure and layer order,
   image linting, signing and update practices, and the choice to stay on Fedora's signed kernel for Secure Boot.
+  That bootc work is archived (git tag `bootc-archive-2026-11-19`); the container image keeps the Containerfile
+  layering and image-lint ideas.
 
 - **Hermes Agent** (Nous Research) — <https://github.com/NousResearch/hermes-agent>, MIT License, Copyright (c)
   2025 Nous Research. Inspired how Melissa plans to delegate work to short-lived sub-agents: a child gets only its
@@ -53,7 +55,7 @@ licenses under `/usr/share/licenses`):
 - `/usr/share/licenses/melissa/ACKNOWLEDGMENTS.md`: this file (covers htmx, which is vendored, not a crate).
 - `/usr/share/licenses/melissa/LICENSE`: Melissa's own license (MIT, see docs/PLAN.md section 8).
 - `/usr/share/licenses/k3s/LICENSE`: the k3s Apache-2.0 LICENSE from the pinned release tag, verified by sha256
-  (`K3S_LICENSE_SHA256` in `image/k3s.lock`). k3s has no NOTICE file (checked at v1.37.2+k3s1).
+  (`K3S_LICENSE_SHA256` in `packaging/common/usr/lib/melissa/k3s.lock`). k3s has no NOTICE file (checked at v1.37.2+k3s1).
 - Fedora packages, k3s-selinux, Tailscale and bubblewrap: their RPMs install their own files under
   `/usr/share/licenses/<package>/`.
 

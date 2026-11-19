@@ -1,0 +1,23 @@
+#!/bin/sh
+# Container: only the host may use the web UI forward on :8081 (see
+# melissa-ui-forward.socket). Allowed: TCP to 8081 that arrives on the default-route interface from
+# the default gateway (podman's bridge address; host loopback forwards are masqueraded to it). Dropped:
+# everything else to 8081, i.e. k3s pods (they arrive on cni0), other containers on the bridge, IPv6.
+set -eu
+# shellcheck disable=SC2046 # split the route into words on purpose
+set -- $(ip -4 route show default)
+[ "${1:-}" = default ] && [ "${2:-}" = via ] && [ "${4:-}" = dev ] \
+    || { echo "ui-forward-filter: no IPv4 default route" >&2; exit 1; }
+gw=$3 dev=$5
+nft -f - <<NFT
+table inet melissa_ui_forward
+delete table inet melissa_ui_forward
+table inet melissa_ui_forward {
+    chain input {
+        type filter hook input priority filter - 10; policy accept;
+        tcp dport 8081 iifname "$dev" ip saddr $gw accept
+        tcp dport 8081 drop
+    }
+}
+NFT
+echo "ui-forward-filter: :8081 open to $gw on $dev only"
