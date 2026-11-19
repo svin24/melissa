@@ -1,0 +1,18 @@
+# Installed into the container image on top of fedora (no weak deps). One per line; '#' starts a comment.
+systemd             # PID 1; systemd-socket-proxyd for the UI forward; sysusers/tmpfiles
+systemd-udev        # udev rules k3s/containerd expect (/dev setup); small
+bubblewrap          # sandbox for agent CLIs (crates/agent/src/sandbox.rs)
+nftables            # UI forward filter (ui-forward-filter); agent egress
+iproute             # k3s-prepare (node IP), ui-forward-filter (default route)
+util-linux          # mount, nsenter (k3s, smoke test)
+polkit              # lets the queen restart itself (Settings → Restart; 50-melissa.rules)
+ca-certificates
+curl                # agent installers (melissa-setup)
+tar
+gzip
+unzip
+xz
+findutils
+procps-ng
+which
+kmod                # modprobe in k3s.service (harmless no-op without /lib/modules)

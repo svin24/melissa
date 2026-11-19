@@ -1,5 +1,5 @@
 #!/bin/sh
-# Container mode, rootful: only the host may use the web UI forward on :8081 (see
+# Container: only the host may use the web UI forward on :8081 (see
 # melissa-ui-forward.socket). Allowed: TCP to 8081 that arrives on the default-route interface from
 # the default gateway (podman's bridge address; host loopback forwards are masqueraded to it). Dropped:
 # everything else to 8081, i.e. k3s pods (they arrive on cni0), other containers on the bridge, IPv6.

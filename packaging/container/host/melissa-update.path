@@ -1,0 +1,11 @@
+# Melissa: run the host update helper when the queen drops a request (an empty file named check,
+# apply or rollback) into /var/lib/melissa-container/request (bind-mounted into the container).
+[Unit]
+Description=Melissa update requests from Settings → Updates
+
+[Path]
+DirectoryNotEmpty=/var/lib/melissa-container/request
+Unit=melissa-update.service
+
+[Install]
+WantedBy=multi-user.target

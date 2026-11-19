@@ -1,19 +1,19 @@
-//! This device's Melissa release and OS image updates.
+//! This device's Melissa release and container image updates.
 //!
-//! The queen runs as the unprivileged `melissa` user; `bootc` needs root even to read its
-//! status. So a small root helper does the privileged part (image `rootfs`):
+//! Melissa runs as a rootful podman container (packaging/container). The queen inside it can't
+//! run the host's podman, so a small host helper does the privileged part:
 //!
-//! - `/usr/libexec/melissa/melissa-update <verb>` with a fixed verb, run only by four
-//!   oneshot units: `melissa-update-status.service` (at boot), `melissa-update-check.service`
-//!   (`bootc upgrade --check`), `melissa-update-apply.service` (`bootc upgrade --apply`:
-//!   downloads, stages and reboots) and `melissa-update-rollback.service` (`bootc rollback`,
-//!   then reboot). Each writes `bootc status --format=json` to
-//!   `/run/melissa-update/status.json` and the outcome to `last.json` (root:melissa 0640).
-//! - A polkit rule lets the `melissa` user start exactly those units (and restart
-//!   `melissa-queen.service` to apply settings). No arguments travel from the web: the
-//!   queen picks a unit from [`UpdateAction`], `systemctl` asks systemd over D-Bus.
+//! - The queen asks by creating an **empty file** named `check`, `apply` or `rollback` in
+//!   [`REQUEST_DIR`] (a bind mount of the host's `/var/lib/melissa-container/request`). A host
+//!   path unit starts `melissa-host-update requests`, which acts only on those three names and
+//!   never reads file contents. Nothing else travels from the web.
+//! - The helper writes `status.json` (running, staged, available and previous image) and
+//!   `last.json` (the outcome of its last action) to the host's
+//!   `/var/lib/melissa-container/status`, mounted read-only at [`STATE_DIR`].
+//! - Restarting the queen itself (to use saved settings) goes through systemd inside the
+//!   container: a polkit rule lets the `melissa` user restart `melissa-queen.service`, nothing else.
 //!
-//! On a host without the helper (a dev machine, container mode) the UI shows the commands.
+//! Without the helper (a dev container, a from-source run) the UI shows the host commands.
 
 use std::{
     path::{Path, PathBuf},
@@ -24,24 +24,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::{clean_text, SettingsError};
 
-/// Where the root helper writes (tmpfiles: root:melissa 0750).
+/// Where the host helper's status arrives (read-only bind mount).
 pub const STATE_DIR: &str = "/run/melissa-update";
+/// Where the queen drops requests for the host helper (bind mount, group `melissa` writable).
+pub const REQUEST_DIR: &str = "/run/melissa-update-request";
 /// Build facts written into the image.
 pub const RELEASE_FILE: &str = "/usr/lib/melissa/release";
+/// The host helper, for commands typed on the host.
+pub const HOST_HELPER: &str = "/usr/local/libexec/melissa/melissa-host-update";
 
 /// Which Melissa this is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Release {
     pub version: String,
-    /// `headless` or `desktop` (image builds only).
+    /// The source revision the image was built from, if recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<String>,
+    pub revision: Option<String>,
+    /// How it is packaged, e.g. `container` (image builds only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
     /// `image` (the release file), `env` (MELISSA_VERSION) or `source` (a cargo build).
     pub source: &'static str,
 }
 
 impl Release {
-    /// From the release file, else `MELISSA_VERSION`/`MELISSA_VARIANT`, else this build.
+    /// From the release file, else `MELISSA_VERSION`, else this build.
     pub fn read(file: &Path) -> Self {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         if let Ok(text) = std::fs::read_to_string(file) {
@@ -55,7 +62,8 @@ impl Release {
             if let Some(version) = get("MELISSA_VERSION") {
                 return Self {
                     version,
-                    variant: get("MELISSA_VARIANT"),
+                    revision: get("MELISSA_REVISION"),
+                    runtime: get("MELISSA_RUNTIME"),
                     source: "image",
                 };
             }
@@ -63,13 +71,15 @@ impl Release {
         if let Some(v) = env("MELISSA_VERSION") {
             return Self {
                 version: clean_text(&v, 64),
-                variant: env("MELISSA_VARIANT").map(|v| clean_text(&v, 32)),
+                revision: None,
+                runtime: None,
                 source: "env",
             };
         }
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            variant: None,
+            revision: None,
+            runtime: None,
             source: "source",
         }
     }
@@ -79,9 +89,7 @@ impl Release {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostKind {
-    /// A Melissa bootc image (`bootc upgrade`, rollback).
-    Bootc,
-    /// Container mode: the image under podman; updated by rebuilding the container.
+    /// The Melissa container image under podman.
     Container,
     /// Anything else, e.g. a developer's machine running from source.
     Other,
@@ -93,155 +101,162 @@ impl HostKind {
         let run = root.join("run");
         if run.join(".containerenv").exists() || run.join("systemd/container").exists() {
             Self::Container
-        } else if run.join("ostree-booted").exists() {
-            Self::Bootc
         } else {
             Self::Other
         }
     }
 }
 
-// --- bootc status --format=json --------------------------------------------------------------
+/// What podman writes to `/run/.containerenv` for a privileged container: the image name and ID
+/// the container was created from (known even without the host helper).
+pub fn container_image(root: &Path) -> Option<ImageView> {
+    let text = std::fs::read_to_string(root.join("run/.containerenv")).ok()?;
+    let get = |key: &str| {
+        text.lines()
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .map(|(_, v)| clean_text(v.trim().trim_matches('"'), 200))
+            .filter(|v| !v.is_empty())
+    };
+    let image = get("image")?;
+    Some(ImageView {
+        image,
+        id: get("imageid").map(|i| clean_text(&i, 80)),
+        ..ImageView::default()
+    })
+}
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Host {
+// --- status.json (melissa-host-update) ------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct RawStatus {
     #[serde(default)]
-    status: Option<HostStatus>,
+    image: Option<String>,
+    #[serde(default)]
+    auto_update: Option<String>,
+    #[serde(default)]
+    running: Option<RawImage>,
+    #[serde(default)]
+    staged: Option<RawImage>,
+    #[serde(default)]
+    available: Option<RawImage>,
+    #[serde(default)]
+    previous: Option<RawImage>,
 }
 
 #[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct HostStatus {
+struct RawImage {
     #[serde(default)]
-    staged: Option<BootEntry>,
+    id: Option<String>,
     #[serde(default)]
-    booted: Option<BootEntry>,
+    digest: Option<String>,
     #[serde(default)]
-    rollback: Option<BootEntry>,
-    #[serde(default)]
-    rollback_queued: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BootEntry {
-    #[serde(default)]
-    image: Option<ImageStatus>,
-    #[serde(default)]
-    cached_update: Option<ImageStatus>,
-    #[serde(default)]
-    incompatible: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ImageStatus {
-    image: ImageReference,
+    created: Option<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    timestamp: Option<String>,
-    #[serde(default)]
-    image_digest: Option<String>,
+    revision: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ImageReference {
-    image: String,
-    #[serde(default)]
-    transport: Option<String>,
-}
-
-/// One OS image as the UI shows it (all text cleaned).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One container image as the UI shows it (all text cleaned).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ImageView {
-    /// e.g. `ghcr.io/example/melissa-headless:latest`.
+    /// e.g. `registry.example.com/melissa:latest`.
     pub image: String,
+    /// The local image ID (`sha256:…` or bare hex).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub transport: Option<String>,
+    pub id: Option<String>,
+    /// The manifest digest (`sha256:…`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Build time as bootc reports it (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// Build time (RFC 3339).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
 }
 
 impl ImageView {
-    fn from(s: ImageStatus) -> Self {
+    fn from(image: &str, raw: RawImage) -> Self {
         let opt = |v: Option<String>, n| v.map(|v| clean_text(&v, n)).filter(|v| !v.is_empty());
         Self {
-            image: clean_text(&s.image.image, 200),
-            transport: opt(s.image.transport, 40),
-            digest: opt(s.image_digest, 80),
-            version: opt(s.version, 64),
-            timestamp: opt(s.timestamp, 40),
+            image: image.to_string(),
+            id: opt(raw.id, 80),
+            digest: opt(raw.digest, 80),
+            version: opt(raw.version, 64),
+            revision: opt(raw.revision, 64),
+            timestamp: opt(raw.created, 40),
         }
     }
 
-    /// A short digest for people: `sha256:0123456789ab`.
+    /// A short digest for people: `sha256:0123456789ab` (the image ID if there is no digest).
     pub fn short_digest(&self) -> Option<String> {
-        self.digest
-            .as_ref()
-            .map(|d| d.chars().take("sha256:".len() + 12).collect())
+        let short = |d: &String| {
+            let d = if d.contains(':') {
+                d.clone()
+            } else {
+                format!("sha256:{d}")
+            };
+            d.chars().take("sha256:".len() + 12).collect()
+        };
+        self.digest.as_ref().or(self.id.as_ref()).map(short)
     }
 }
 
-/// What `bootc status` says, reduced to what the UI needs.
+/// What the host helper reports, reduced to what the UI needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct BootcView {
+pub struct ImageStatus {
+    /// The image name Melissa runs (the Quadlet's `Image=`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub booted: Option<ImageView>,
-    /// Downloaded and ready: used at the next boot.
+    pub image: Option<String>,
+    /// `registry`, `local` or `off`: podman-auto-update's policy for the container.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<ImageView>,
+    /// A newer image already downloaded: used at the next start (or Apply).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub staged: Option<ImageView>,
-    /// The previous image, which a rollback boots.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rollback: Option<ImageView>,
-    /// A newer image found by the last check (not downloaded yet).
+    /// A newer image found in the registry by the last check (not downloaded yet).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available: Option<ImageView>,
-    /// The next boot goes to the rollback image.
-    pub rollback_queued: bool,
-    /// The booted image can't be updated by bootc (e.g. not a container image).
-    pub incompatible: bool,
+    /// The image Melissa ran before, which a rollback returns to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<ImageView>,
 }
 
-/// Parse `bootc status --format=json` (`org.containers.bootc/v1` `BootcHost`). Unknown
-/// fields are ignored; a missing `status` is an empty view.
-pub fn parse_bootc_status(json: &str) -> Result<BootcView, SettingsError> {
-    let host: Host = serde_json::from_str(json).map_err(|e| SettingsError::Parse {
-        path: "bootc status".into(),
+/// Parse the host helper's `status.json`. Unknown fields are ignored.
+pub fn parse_status(json: &str) -> Result<ImageStatus, SettingsError> {
+    let raw: RawStatus = serde_json::from_str(json).map_err(|e| SettingsError::Parse {
+        path: "status.json".into(),
         message: e.to_string(),
     })?;
-    let status = host.status.unwrap_or_default();
-    let mut view = BootcView {
-        rollback_queued: status.rollback_queued,
-        ..BootcView::default()
+    let name = raw
+        .image
+        .map(|i| clean_text(&i, 200))
+        .filter(|i| !i.is_empty());
+    let img = |r: Option<RawImage>| r.map(|r| ImageView::from(name.as_deref().unwrap_or("?"), r));
+    let mut view = ImageStatus {
+        auto_update: raw
+            .auto_update
+            .map(|a| clean_text(&a, 20))
+            .filter(|a| !a.is_empty()),
+        running: img(raw.running),
+        staged: img(raw.staged),
+        available: img(raw.available),
+        previous: img(raw.previous),
+        image: name.clone(),
     };
-    if let Some(b) = status.booted {
-        view.incompatible = b.incompatible;
-        view.available = b.cached_update.map(ImageView::from);
-        view.booted = b.image.map(ImageView::from);
-    }
-    view.staged = status.staged.and_then(|s| s.image).map(ImageView::from);
-    view.rollback = status.rollback.and_then(|r| r.image).map(ImageView::from);
-    // A found update that is already staged, or the image already running, is not news.
-    if let Some(a) = &view.available {
-        let same = |i: &Option<ImageView>| {
-            i.as_ref()
-                .is_some_and(|i| i.digest.is_some() && i.digest == a.digest)
-        };
-        if same(&view.staged) || same(&view.booted) {
-            view.available = None;
-        }
+    // An update that is already downloaded is shown once, as staged.
+    if view.staged.is_some() {
+        view.available = None;
     }
     Ok(view)
 }
 
-// --- What the root helper wrote ----------------------------------------------------------------
+// --- What the host helper wrote ---------------------------------------------------------------------
 
 /// The outcome of the helper's last action (`last.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,11 +269,11 @@ pub struct LastAction {
     pub message: Option<String>,
 }
 
-/// Everything the Updates page shows about the OS image.
+/// Everything the Updates page shows about the image.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct UpdateState {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<BootcView>,
+    pub status: Option<ImageStatus>,
     /// When the status was written (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_at: Option<u64>,
@@ -274,7 +289,7 @@ pub fn read_state(dir: &Path) -> UpdateState {
     let mut state = UpdateState::default();
     let status_path = dir.join("status.json");
     match std::fs::read_to_string(&status_path) {
-        Ok(text) => match parse_bootc_status(&text) {
+        Ok(text) => match parse_status(&text) {
             Ok(v) => state.status = Some(v),
             Err(e) => state.error = Some(clean_text(&e.to_string(), 200)),
         },
@@ -299,15 +314,15 @@ pub fn read_state(dir: &Path) -> UpdateState {
 
 // --- Actions -------------------------------------------------------------------------------------
 
-/// The only things the queen may ask root for. Each maps to one fixed unit.
+/// The only things the queen may ask for. Each maps to one fixed request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateAction {
-    /// Look for a newer image (`bootc upgrade --check`).
+    /// Look for a newer image.
     Check,
-    /// Download, stage and reboot into the newer image.
+    /// Download the newer image and restart Melissa on it.
     Apply,
-    /// Boot the previous image.
+    /// Restart Melissa on the previous image.
     Rollback,
     /// Restart Melissa's queen (to use saved settings).
     Restart,
@@ -333,38 +348,43 @@ impl UpdateAction {
         }
     }
 
-    /// Reboots the device (needs the owner's explicit yes).
-    pub fn reboots(self) -> bool {
+    /// Restarts all of Melissa: chats in progress and apps pause (needs the owner's yes).
+    pub fn restarts_melissa(self) -> bool {
         matches!(self, Self::Apply | Self::Rollback)
     }
 
-    /// The `systemctl` arguments: a fixed verb and unit, nothing from the request.
-    pub fn systemctl_args(self) -> [&'static str; 3] {
+    /// The `systemctl` arguments for a restart of the queen: a fixed verb and unit.
+    pub fn systemctl_args(self) -> Option<[&'static str; 3]> {
         match self {
-            Self::Check => ["start", "--no-block", "melissa-update-check.service"],
-            Self::Apply => ["start", "--no-block", "melissa-update-apply.service"],
-            Self::Rollback => ["start", "--no-block", "melissa-update-rollback.service"],
-            Self::Restart => ["restart", "--no-block", "melissa-queen.service"],
+            Self::Restart => Some(["restart", "--no-block", "melissa-queen.service"]),
+            _ => None,
         }
     }
 
-    /// What to type instead, where the helper is missing.
-    pub fn manual_command(self) -> &'static str {
+    /// The request file name for the host helper (check, apply, rollback).
+    pub fn request_name(self) -> Option<&'static str> {
         match self {
-            Self::Check => "sudo bootc upgrade --check",
-            Self::Apply => "sudo bootc upgrade --apply",
-            Self::Rollback => "sudo bootc rollback && sudo systemctl reboot",
-            Self::Restart => "sudo systemctl restart melissa-queen",
+            Self::Check | Self::Apply | Self::Rollback => Some(self.as_str()),
+            Self::Restart => None,
+        }
+    }
+
+    /// What to type on the host instead, where the helper is missing.
+    pub fn manual_command(self) -> String {
+        match self {
+            Self::Restart => "sudo podman exec melissa systemctl restart melissa-queen".into(),
+            _ => format!("sudo {HOST_HELPER} {}", self.as_str()),
         }
     }
 }
 
-/// Where the helper is installed and writes; `root` is `/` except in tests.
+/// Where the helper writes and reads; `root` is `/` except in tests.
 #[derive(Debug, Clone)]
 pub struct UpdateEnv {
     pub root: PathBuf,
     pub kind: HostKind,
     pub state_dir: PathBuf,
+    pub request_dir: PathBuf,
 }
 
 impl UpdateEnv {
@@ -373,39 +393,75 @@ impl UpdateEnv {
         Self {
             kind: HostKind::detect(&root),
             state_dir: PathBuf::from(STATE_DIR),
+            request_dir: PathBuf::from(REQUEST_DIR),
             root,
         }
     }
 
-    /// The root helper and its polkit rule are installed (Melissa images).
+    /// The host helper's directories are mounted (installed with install.sh).
     pub fn helper_installed(&self) -> bool {
+        self.kind == HostKind::Container && self.request_dir.is_dir() && self.state_dir.is_dir()
+    }
+
+    /// The queen may restart itself (polkit rule from packaging/common).
+    pub fn can_restart(&self) -> bool {
         self.root
-            .join("usr/lib/systemd/system/melissa-update-check.service")
+            .join("usr/share/polkit-1/rules.d/50-melissa.rules")
             .exists()
-            && self
-                .root
-                .join("usr/share/polkit-1/rules.d/50-melissa.rules")
-                .exists()
     }
 
     /// Whether the UI may offer `action` as a button.
     pub fn can(&self, action: UpdateAction) -> bool {
         match action {
-            UpdateAction::Restart => self.helper_installed(),
-            _ => self.kind == HostKind::Bootc && self.helper_installed(),
+            UpdateAction::Restart => self.can_restart(),
+            _ => self.helper_installed(),
         }
     }
 
     pub fn state(&self) -> UpdateState {
         read_state(&self.state_dir)
     }
+
+    /// The running image from podman's `/run/.containerenv` (fallback when the helper is absent).
+    pub fn container_image(&self) -> Option<ImageView> {
+        container_image(&self.root)
+    }
+
+    /// Ask for `action`: a restart through systemd, anything else through the host helper.
+    /// Returns once the request is placed; the outcome lands in `last.json`.
+    pub async fn request(&self, action: UpdateAction) -> Result<(), SettingsError> {
+        match action.request_name() {
+            Some(name) => place_request(&self.request_dir, name),
+            None => systemctl(action).await,
+        }
+    }
 }
 
-/// Ask systemd (through polkit) to start the action's unit. Returns once systemd took the
-/// job (`--no-block`); the unit's outcome lands in `last.json`.
-pub async fn request(action: UpdateAction) -> Result<(), SettingsError> {
+/// Create the empty request file `dir/name` (the helper only looks at the name).
+fn place_request(dir: &Path, name: &str) -> Result<(), SettingsError> {
+    let path = dir.join(name);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map(|_| ())
+        .map_err(|source| SettingsError::Write {
+            path: path.display().to_string(),
+            source,
+        })
+}
+
+/// Ask systemd (through polkit) to restart the queen. Returns once systemd took the job.
+async fn systemctl(action: UpdateAction) -> Result<(), SettingsError> {
+    let Some(args) = action.systemctl_args() else {
+        return Err(SettingsError::Invalid(format!(
+            "{} is not a systemd action",
+            action.as_str()
+        )));
+    };
     let mut cmd = tokio::process::Command::new("systemctl");
-    cmd.args(action.systemctl_args())
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -454,54 +510,70 @@ mod tests {
         std::fs::read_to_string(&path).unwrap()
     }
 
-    #[test]
-    fn parses_a_booted_only_host() {
-        let v = parse_bootc_status(&fixture("bootc-status-booted.json")).unwrap();
-        let b = v.booted.as_ref().unwrap();
-        assert_eq!(b.image, "localhost/melissa-headless:dev");
-        assert_eq!(b.transport.as_deref(), Some("containers-storage"));
-        assert_eq!(b.short_digest().as_deref(), Some("sha256:5b0d3c1e9f2a"));
-        assert_eq!(b.version.as_deref(), Some("43.20261118.0"));
-        assert!(v.staged.is_none() && v.rollback.is_none() && v.available.is_none());
-        assert!(!v.rollback_queued);
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("melissa-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
-    fn parses_staged_rollback_and_found_update() {
-        let v = parse_bootc_status(&fixture("bootc-status-staged.json")).unwrap();
+    fn parses_a_running_only_status() {
+        let v = parse_status(&fixture("container-status-running.json")).unwrap();
+        let r = v.running.as_ref().unwrap();
+        assert_eq!(r.image, "localhost/melissa:latest");
+        assert_eq!(r.short_digest().as_deref(), Some("sha256:5b0d3c1e9f2a"));
+        assert_eq!(r.version.as_deref(), Some("0.1.0"));
+        assert_eq!(v.auto_update.as_deref(), Some("local"));
+        assert!(v.staged.is_none() && v.previous.is_none() && v.available.is_none());
+    }
+
+    #[test]
+    fn parses_staged_previous_and_found_update() {
+        let v = parse_status(&fixture("container-status-staged.json")).unwrap();
         assert_eq!(
             v.staged.as_ref().and_then(|s| s.version.as_deref()),
-            Some("43.20261119.0")
+            Some("0.1.1")
         );
         assert_eq!(
-            v.rollback.as_ref().map(|r| r.image.as_str()),
-            Some("ghcr.io/example/melissa-headless:latest")
+            v.previous.as_ref().map(|p| p.image.as_str()),
+            Some("registry.example.com/melissa:latest")
         );
-        // The found update is the staged one: not shown twice.
+        // Staged wins: the found update is not shown twice.
         assert!(v.available.is_none());
-        let v = parse_bootc_status(&fixture("bootc-status-update.json")).unwrap();
+        let v = parse_status(&fixture("container-status-update.json")).unwrap();
+        // The registry check knows only that there is something newer.
         assert_eq!(
-            v.available.as_ref().and_then(|a| a.version.as_deref()),
-            Some("43.20261120.0")
+            v.available,
+            Some(ImageView {
+                image: "registry.example.com/melissa:latest".into(),
+                ..ImageView::default()
+            })
         );
         assert!(v.staged.is_none());
     }
 
     #[test]
     fn bad_or_hostile_status_is_handled() {
-        assert!(parse_bootc_status("not json").is_err());
-        assert_eq!(parse_bootc_status("{}").unwrap(), BootcView::default());
-        let hostile = r#"{"status":{"booted":{"image":{"image":{"image":"<script>\u001b[31mx","transport":"registry"}}}}}"#;
-        let v = parse_bootc_status(hostile).unwrap();
-        assert_eq!(v.booted.unwrap().image, "<script>x");
+        assert!(parse_status("not json").is_err());
+        assert_eq!(parse_status("{}").unwrap(), ImageStatus::default());
+        let hostile =
+            r#"{"image":"<script>\u001b[31mx","running":{"version":"1\u0007"},"previous":null}"#;
+        let v = parse_status(hostile).unwrap();
+        let r = v.running.unwrap();
+        assert_eq!(r.image, "<script>x");
+        assert_eq!(r.version.as_deref(), Some("1"));
     }
 
     #[test]
     fn reads_the_helpers_files() {
-        let dir = std::env::temp_dir().join(format!("melissa-update-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("update");
         assert_eq!(read_state(&dir), UpdateState::default());
-        std::fs::write(dir.join("status.json"), fixture("bootc-status-update.json")).unwrap();
+        std::fs::write(
+            dir.join("status.json"),
+            fixture("container-status-update.json"),
+        )
+        .unwrap();
         std::fs::write(
             dir.join("last.json"),
             r#"{"action":"check","ok":false,"at":1763500000,"message":"registry unreachable"}"#,
@@ -519,57 +591,102 @@ mod tests {
 
     #[test]
     fn host_kind_and_helper_detection() {
-        let root = std::env::temp_dir().join(format!("melissa-root-{}", std::process::id()));
+        let root = temp("root");
         std::fs::create_dir_all(root.join("run")).unwrap();
         assert_eq!(HostKind::detect(&root), HostKind::Other);
-        std::fs::write(root.join("run/ostree-booted"), "").unwrap();
-        assert_eq!(HostKind::detect(&root), HostKind::Bootc);
         let env = UpdateEnv {
             root: root.clone(),
-            kind: HostKind::Bootc,
+            kind: HostKind::Container,
             state_dir: root.join("run/melissa-update"),
+            request_dir: root.join("run/melissa-update-request"),
         };
         assert!(!env.helper_installed() && !env.can(UpdateAction::Check));
-        std::fs::create_dir_all(root.join("usr/lib/systemd/system")).unwrap();
+        assert!(!env.can(UpdateAction::Restart));
+        std::fs::create_dir_all(&env.state_dir).unwrap();
+        std::fs::create_dir_all(&env.request_dir).unwrap();
         std::fs::create_dir_all(root.join("usr/share/polkit-1/rules.d")).unwrap();
-        std::fs::write(
-            root.join("usr/lib/systemd/system/melissa-update-check.service"),
-            "",
-        )
-        .unwrap();
         std::fs::write(root.join("usr/share/polkit-1/rules.d/50-melissa.rules"), "").unwrap();
         assert!(env.can(UpdateAction::Apply) && env.can(UpdateAction::Restart));
-        std::fs::write(root.join("run/.containerenv"), "").unwrap();
+        let other = UpdateEnv {
+            kind: HostKind::Other,
+            ..env.clone()
+        };
+        assert!(!other.can(UpdateAction::Check));
+        std::fs::write(
+            root.join("run/.containerenv"),
+            "engine=\"podman-6.1.3\"\nname=\"melissa\"\nimage=\"localhost/melissa:latest\"\nimageid=\"5b0d3c1e9f2a77\"\nrootless=0\n",
+        )
+        .unwrap();
         assert_eq!(HostKind::detect(&root), HostKind::Container);
+        let img = env.container_image().unwrap();
+        assert_eq!(img.image, "localhost/melissa:latest");
+        assert_eq!(img.short_digest().as_deref(), Some("sha256:5b0d3c1e9f2a"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn requests_are_empty_files_with_fixed_names() {
+        let root = temp("request");
+        let env = UpdateEnv {
+            root: root.clone(),
+            kind: HostKind::Container,
+            state_dir: root.join("state"),
+            request_dir: root.join("req"),
+        };
+        // No mount: the request fails instead of pretending.
+        assert!(env.request(UpdateAction::Check).await.is_err());
+        std::fs::create_dir_all(&env.request_dir).unwrap();
+        env.request(UpdateAction::Apply).await.unwrap();
+        let names: Vec<String> = std::fs::read_dir(&env.request_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["apply"]);
+        assert_eq!(
+            std::fs::metadata(env.request_dir.join("apply"))
+                .unwrap()
+                .len(),
+            0
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn actions_map_to_fixed_units() {
-        for (s, unit) in [
-            ("check", "melissa-update-check.service"),
-            ("apply", "melissa-update-apply.service"),
-            ("rollback", "melissa-update-rollback.service"),
-            ("restart", "melissa-queen.service"),
-        ] {
+    fn actions_map_to_fixed_requests() {
+        for s in ["check", "apply", "rollback"] {
             let a = UpdateAction::parse(s).unwrap();
             assert_eq!(a.as_str(), s);
-            assert_eq!(a.systemctl_args()[2], unit);
+            assert_eq!(a.request_name(), Some(s));
+            assert!(a.systemctl_args().is_none());
+            assert!(a
+                .manual_command()
+                .ends_with(&format!("melissa-host-update {s}")));
         }
+        let r = UpdateAction::Restart;
+        assert_eq!(r.request_name(), None);
+        assert_eq!(r.systemctl_args().unwrap()[2], "melissa-queen.service");
         assert_eq!(UpdateAction::parse("reboot; rm -rf /"), None);
-        assert!(UpdateAction::Apply.reboots() && !UpdateAction::Check.reboots());
+        assert!(UpdateAction::Apply.restarts_melissa() && !UpdateAction::Check.restarts_melissa());
     }
 
     #[test]
     fn release_file_wins_over_env_and_build() {
-        let dir = std::env::temp_dir().join(format!("melissa-release-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("release");
         let file = dir.join("release");
-        std::fs::write(&file, "MELISSA_VERSION=0.3.1\nMELISSA_VARIANT=headless\n").unwrap();
+        std::fs::write(
+            &file,
+            "MELISSA_VERSION=0.3.1\nMELISSA_REVISION=abc1234\nMELISSA_RUNTIME=container\n",
+        )
+        .unwrap();
         let r = Release::read(&file);
         assert_eq!(
-            (r.version.as_str(), r.variant.as_deref(), r.source),
-            ("0.3.1", Some("headless"), "image")
+            (
+                r.version.as_str(),
+                r.revision.as_deref(),
+                r.runtime.as_deref(),
+                r.source
+            ),
+            ("0.3.1", Some("abc1234"), Some("container"), "image")
         );
         let r = Release::read(&dir.join("missing"));
         assert!(r.source == "source" || r.source == "env");

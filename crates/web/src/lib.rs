@@ -671,13 +671,11 @@ mod tests {
                 };
                 let root = self.dir.join("root");
                 if helper {
-                    for f in [
-                        "usr/lib/systemd/system/melissa-update-check.service",
-                        "usr/share/polkit-1/rules.d/50-melissa.rules",
-                    ] {
-                        std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-                        std::fs::write(root.join(f), "").unwrap();
-                    }
+                    let f = root.join("usr/share/polkit-1/rules.d/50-melissa.rules");
+                    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                    std::fs::write(f, "").unwrap();
+                    std::fs::create_dir_all(self.dir.join("update")).unwrap();
+                    std::fs::create_dir_all(self.dir.join("update-request")).unwrap();
                 }
                 let check: CheckFn = Arc::new(|_, o| {
                     if o.args.iter().any(|a| a == "--bad") {
@@ -710,10 +708,12 @@ mod tests {
                         root,
                         kind,
                         state_dir: self.dir.join("update"),
+                        request_dir: self.dir.join("update-request"),
                     },
                     release: Release {
                         version: "0.3.1".into(),
-                        variant: Some("headless".into()),
+                        revision: Some("abc1234".into()),
+                        runtime: Some("container".into()),
                         source: "image",
                     },
                     home: Some("/var/lib/melissa/home".into()),
@@ -773,7 +773,7 @@ mod tests {
         #[tokio::test]
         async fn secrets_are_write_only_everywhere() {
             let fx = SettingsFixture::new("secrets");
-            let (app, _) = app_with(Some(fx.settings(HostKind::Bootc, false)));
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
             let secret = "xai-very-secret-123";
             let (status, _, html) = send(
                 &app,
@@ -938,7 +938,7 @@ mod tests {
             std::fs::create_dir_all(fx.dir.join("update")).unwrap();
             std::fs::write(
                 fx.dir.join("update/status.json"),
-                include_str!("../../settings/tests/fixtures/bootc-status-staged.json"),
+                include_str!("../../settings/tests/fixtures/container-status-staged.json"),
             )
             .unwrap();
             std::fs::write(
@@ -946,20 +946,22 @@ mod tests {
                 r#"{"action":"check","ok":false,"at":1,"message":"<i>registry down</i>"}"#,
             )
             .unwrap();
-            let (app, _) = app_with(Some(fx.settings(HostKind::Bootc, true)));
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, true)));
             let (_, _, html) = send(&app, get("/settings/updates")).await;
             for want in [
-                "Ready for the next start",
-                "43.20261119.0",
+                "Downloaded, used at the next start",
+                "0.1.1",
                 "sha256:5b0d3c1e9f2a",
                 "Previous (for a rollback)",
                 "Apply update (restarts)",
                 "Roll back (restarts)",
                 "&lt;i&gt;registry down",
+                "Automatic updates: on",
+                "abc1234",
             ] {
                 assert!(html.contains(want), "missing {want}");
             }
-            // Apply without a yes: the confirmation card, nothing started.
+            // Apply without a yes: the confirmation card, nothing requested.
             let (status, _, html) = send(&app, form("/ui/settings/updates/apply", "", true)).await;
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("Install and restart") && html.contains("name=\"confirm\""));
@@ -968,20 +970,37 @@ mod tests {
             let (status, _) = send_json(&app, json_post("/api/settings/updates/apply", "{}")).await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert!(fx.audit().is_empty(), "nothing was requested");
+            assert_eq!(
+                std::fs::read_dir(fx.dir.join("update-request"))
+                    .unwrap()
+                    .count(),
+                0
+            );
             let (status, body) = send_json(&app, get("/api/settings/updates")).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body["host"], "bootc");
+            assert_eq!(body["host"], "container");
             assert_eq!(body["release"]["version"], "0.3.1");
             assert_eq!(
                 body["actions"],
                 serde_json::json!(["check", "apply", "rollback", "restart"])
             );
-            // Without the helper: only commands, and a 501 for actions.
+            // With a yes: an empty request file for the host helper, and an audit line.
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/updates/apply", r#"{"confirm": true}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            let req = fx.dir.join("update-request/apply");
+            assert_eq!(std::fs::metadata(&req).unwrap().len(), 0);
+            assert!(fx.audit().contains("apply requested"));
+            // Without the helper: only the host commands, and a 501 for actions.
             let fx2 = SettingsFixture::new("updates-nohelper");
-            let (app, _) = app_with(Some(fx2.settings(HostKind::Bootc, false)));
+            let (app, _) = app_with(Some(fx2.settings(HostKind::Container, false)));
             let (_, _, html) = send(&app, get("/settings/updates")).await;
             assert!(
-                html.contains("sudo bootc upgrade --apply")
+                html.contains("melissa-host-update apply")
+                    && html.contains("just container-build")
                     && !html.contains("Apply update (restarts)")
             );
             let (status, _) = send_json(
@@ -990,11 +1009,11 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-            // Container mode says how to update.
-            let fx3 = SettingsFixture::new("updates-container");
-            let (app, _) = app_with(Some(fx3.settings(HostKind::Container, false)));
+            // From source: no image to update.
+            let fx3 = SettingsFixture::new("updates-source");
+            let (app, _) = app_with(Some(fx3.settings(HostKind::Other, false)));
             let (_, _, html) = send(&app, get("/settings/updates")).await;
-            assert!(html.contains("container-run.sh build"));
+            assert!(html.contains("git pull"));
         }
 
         fn json_post(uri: &str, body: &str) -> axum::http::Request<Body> {

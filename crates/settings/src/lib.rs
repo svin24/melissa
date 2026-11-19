@@ -5,8 +5,8 @@
 //! - [`providers`]: per agent CLI (claude, grok, opencode, echo, ...) overrides in
 //!   `$XDG_CONFIG_HOME/melissa/providers.toml`, merged over `queen.toml` at startup.
 //! - [`version`]: the installed CLIs' `--version`, cached and timed out.
-//! - [`updates`]: this device's Melissa release and its bootc image state, read from what
-//!   the root helper units write; the fixed list of actions the queen may ask them for.
+//! - [`updates`]: this device's Melissa release and its container image state, read from what
+//!   the host helper writes; the fixed list of actions the queen may ask it for.
 
 pub mod providers;
 pub mod updates;

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run the Melissa headless image as a podman container, systemd as PID 1.
-# Docs: docs/QUICKSTART.md ("Try it in a container") and docs/agent-skills/container-mode.md.
+# Development/test driver for the Melissa container (systemd as PID 1). For a real install use
+# packaging/container/install.sh (Quadlet, systemd). Docs: packaging/container/README.md and
+# docs/agent-skills/container-image.md.
 #
-#   scripts/container-run.sh build      layer image/container on top of $IMAGE -> $CTR_IMAGE
+#   scripts/container-run.sh build      build packaging/container/Containerfile -> $CTR_IMAGE
 #   scripts/container-run.sh up         start (create on first use) the container
 #   scripts/container-run.sh status     unit states, k3s node, URLs
 #   scripts/container-run.sh shell      root shell inside (melissa-setup, melissa-queen chat, kubectl)
@@ -12,14 +13,14 @@
 #   scripts/container-run.sh purge      remove the container and its /var volume
 #   scripts/container-run.sh preflight  check the host (cgroup delegation, pasta, kernel modules)
 #   scripts/container-run.sh smoke      k3s Ready, Traefik, admission policies, RBAC, a NodePort from the host
+#                                       (also works against an install.sh container: NAME=melissa UI_PORT=8080)
 #
-# Rootless by default (pasta network). Run it as root (sudo) for a rootful container: its own image
-# storage (build there or `podman load`), the default bridge network, and the UI through a filtered
-# forward inside (docs/agent-skills/container-mode.md, "Rootful").
+# Rootful (run it as root) is the supported mode: root's own image storage (`podman load`), the default
+# bridge network, and the UI through a filtered forward inside. Rootless (pasta network) is
+# UNSUPPORTED: kept for experiments only, not tested since the move off bootc (container-image.md).
 # Environment:
 #   NAME=melissa              container name (volume: $NAME-var)
-#   IMAGE=localhost/melissa-headless:dev
-#   CTR_IMAGE=localhost/melissa-container:dev
+#   CTR_IMAGE=localhost/melissa:dev
 #   UI_PORT=18080             host port for the web UI (bound to 127.0.0.1 only)
 #   APP_PORT_BASE=30000       host port for app NodePort 30000; 80 ports are mapped (30000-30079).
 #                             Another base (e.g. 31000 next to a host k3s) is written to the queen's
@@ -34,8 +35,8 @@
 set -euo pipefail
 
 NAME=${NAME:-melissa}
-IMAGE=${IMAGE:-localhost/melissa-headless:dev}
-CTR_IMAGE=${CTR_IMAGE:-localhost/melissa-container:dev}
+CTR_IMAGE=${CTR_IMAGE:-localhost/melissa:dev}
+IMAGE=$CTR_IMAGE
 UI_PORT=${UI_PORT:-18080}
 APP_PORT_BASE=${APP_PORT_BASE:-30000}
 BIND=${BIND:-127.0.0.1}
@@ -142,7 +143,7 @@ app_addresses() {
 }
 
 # Write [apps] addresses and port_offset into the queen's config unless the owner already
-# has a config. /etc/melissa lives on the /var volume (see image/container/Containerfile).
+# has a config. /etc/melissa lives on the /var volume (see packaging/container/Containerfile).
 configure() {
     local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
     if in_ctr test -e /etc/melissa/queen.toml; then
@@ -248,8 +249,11 @@ pod_isolation() {
 
 case "${1:-}" in
 build)
-    podman build --network=none -f "$repo/image/container/Containerfile" \
-        --build-arg IMAGE="$IMAGE" -t "$CTR_IMAGE" "$repo"
+    # --network=host: the build fetches crates and k3s (rootless pasta may be denied by SELinux).
+    podman build --network=host -f "$repo/packaging/container/Containerfile" \
+        --build-arg MELISSA_VERSION="${MELISSA_VERSION:-dev}" \
+        --build-arg MELISSA_REVISION="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)" \
+        -t "$CTR_IMAGE" "$repo"
     ;;
 up)
     if podman container exists "$NAME"; then podman start "$NAME" >/dev/null
@@ -276,11 +280,6 @@ up)
             "$CTR_IMAGE" /sbin/init >/dev/null
     fi
     wait_for 60 "systemd in the container" in_ctr test -d /var/lib/melissa-container/etc-melissa
-    if [ "$ROOTFUL" = 1 ]; then
-        # The flag survives restarts (it is on the volume); start the forward now on first use.
-        in_ctr touch /var/lib/melissa-container/ui-forward
-        in_ctr systemctl start melissa-ui-forward.socket
-    fi
     configure
     echo "Started '$NAME'. Web UI: http://127.0.0.1:$UI_PORT  (k3s takes a minute or two: '$0 status')"
     ;;

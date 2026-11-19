@@ -1,4 +1,4 @@
-# Container mode (image/container). SELinux confinement is the outer container's business: the
+# Container (packaging/container). SELinux confinement is the outer container's business: the
 # kernel reports SELinux as disabled inside, so k3s must not try to label.
 selinux: false
 kubelet-arg:

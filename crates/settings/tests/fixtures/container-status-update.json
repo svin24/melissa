@@ -1,0 +1,1 @@
+{"image":"registry.example.com/melissa:latest","auto_update":"registry","running":{"id":"7e1a0c3f55d2","digest":"sha256:5b0d3c1e9f2a4b6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e","created":"2026-11-19T10:00:00Z","version":"0.1.0","revision":""},"staged":null,"available":{},"previous":null}

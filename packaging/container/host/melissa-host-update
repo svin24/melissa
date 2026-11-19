@@ -1,0 +1,215 @@
+#!/bin/bash
+# melissa-host-update: the host side of Settings → Updates for the Melissa container. Runs as root on
+# the host (installed by packaging/container/install.sh to /usr/local/libexec/melissa/).
+#
+#   melissa-host-update status     write the image status for Settings (also after every start)
+#   melissa-host-update check      look for a newer image (registry: podman auto-update --dry-run,
+#                                  or a pull without restarting when automatic updates are off)
+#   melissa-host-update apply      pull the newer image and restart Melissa on it; if it does not
+#                                  come up, go back to the image it ran before
+#   melissa-host-update rollback   restart Melissa on the previous image
+#   melissa-host-update requests   melissa-update.service: carry out what the queen asked for
+#
+# The queen (inside the container, unprivileged) asks by creating an empty file named check, apply
+# or rollback in /var/lib/melissa-container/request (bind-mounted at /run/melissa-update-request).
+# Only those names are acted on; file contents are never read and nothing else travels from the web.
+# Results go to /var/lib/melissa-container/status (root, read-only inside at /run/melissa-update):
+#   status.json  {"image", "auto_update", "running", "staged", "available", "previous"}
+#   last.json    {"action", "ok", "at", "message"}
+set -u
+umask 022
+
+NAME=melissa
+UNIT=melissa.service
+STATE=/var/lib/melissa-container
+STATUS=$STATE/status
+REQUESTS=$STATE/request
+# The image Melissa ran before the current one (for a rollback). A local tag, never pushed.
+PREVIOUS=localhost/melissa-rollback:previous
+
+# install.sh records the settings it used (IMAGE, AUTO_UPDATE, ...).
+IMAGE=
+AUTO_UPDATE=off
+# shellcheck source=/dev/null
+[ -r "$STATE/install.env" ] && . "$STATE/install.env"
+
+mkdir -p "$STATUS"
+
+clean() { printf '%s' "$1" | tr -d '\000-\037"\\' | cut -c1-"${2:-300}"; }
+
+write() { # write <name>: stdin -> $STATUS/<name>, atomically, 0644
+    local tmp
+    tmp=$(mktemp "$STATUS/.$1.XXXXXX") || return 1
+    cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATUS/$1"
+}
+
+last() { # last <action> <ok:true|false> [message]
+    printf '{"action":"%s","ok":%s,"at":%s,"message":"%s"}\n' \
+        "$1" "$2" "$(date +%s)" "$(clean "${3:-}")" | write last.json
+    echo "melissa-host-update: $1 ok=$2 ${3:-}"
+}
+
+running_id() { podman container inspect "$NAME" --format '{{.Image}}' 2>/dev/null; }
+image_id() { podman image inspect "$1" --format '{{.Id}}' 2>/dev/null; }
+ref() { # the image the Quadlet runs
+    [ -n "$IMAGE" ] && { echo "$IMAGE"; return; }
+    podman container inspect "$NAME" --format '{{.ImageName}}' 2>/dev/null
+}
+
+image_json() { # image_json <image ref or id> -> {"id","digest","created","version","revision"} or null
+    local out id digest created version revision
+    out=$(podman image inspect "$1" --format \
+        '{{.Id}}|{{.Digest}}|{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}|{{index .Labels "org.opencontainers.image.version"}}|{{index .Labels "org.opencontainers.image.revision"}}' \
+        2>/dev/null) || { echo null; return; }
+    IFS='|' read -r id digest created version revision <<<"$out"
+    [ "$version" = "<no value>" ] && version=
+    [ "$revision" = "<no value>" ] && revision=
+    printf '{"id":"%s","digest":"%s","created":"%s","version":"%s","revision":"%s"}' \
+        "$(clean "$id" 80)" "$(clean "$digest" 80)" "$(clean "$created" 40)" \
+        "$(clean "$version" 64)" "$(clean "$revision" 64)"
+}
+
+# Remember which image ran last; when it changes (apply, rollback, the podman-auto-update timer),
+# keep the one before under $PREVIOUS so a rollback can return to it.
+note_running() {
+    local cur seen old
+    cur=$(running_id) || return 0
+    [ -n "$cur" ] || return 0
+    seen=$(cat "$STATE/running-id" 2>/dev/null || true)
+    if [ -n "$seen" ] && [ "$seen" != "$cur" ] && podman image exists "$seen"; then
+        old=$(image_id "$PREVIOUS" || true)
+        podman tag "$seen" "$PREVIOUS"
+        # The image before that is no longer needed (refused if anything else still uses it).
+        if [ -n "$old" ] && [ "$old" != "$seen" ] && [ "$old" != "$cur" ]; then
+            podman rmi "$old" >/dev/null 2>&1 || true
+        fi
+    fi
+    printf '%s\n' "$cur" > "$STATE/running-id"
+}
+
+status() { # status [available-json]
+    local r cur staged=null prev=null avail=${1:-}
+    note_running
+    r=$(ref)
+    cur=$(running_id || true)
+    # A newer image already in local storage under the same name: used at the next start.
+    local refid; refid=$(image_id "$r" || true)
+    if [ -n "$refid" ] && [ -n "$cur" ] && [ "$refid" != "$cur" ]; then staged=$(image_json "$refid"); fi
+    if podman image exists "$PREVIOUS" && [ "$(image_id "$PREVIOUS")" != "$cur" ]; then
+        prev=$(image_json "$PREVIOUS")
+    fi
+    # Keep a found update until something changes the running image.
+    if [ -z "$avail" ] && [ -r "$STATUS/status.json" ] && [ -r "$STATE/available-for" ] \
+        && [ "$(cat "$STATE/available-for")" = "$cur" ]; then
+        avail='{}'
+    fi
+    [ -n "$avail" ] || avail=null
+    printf '{"image":"%s","auto_update":"%s","running":%s,"staged":%s,"available":%s,"previous":%s}\n' \
+        "$(clean "$r" 200)" "$(clean "$AUTO_UPDATE" 20)" \
+        "$( [ -n "$cur" ] && image_json "$cur" || echo null)" "$staged" "$avail" "$prev" \
+        | write status.json
+}
+
+wait_up() { # wait until Melissa runs <image id> and its queen is active (or time out)
+    local want=$1 end=$(( $(date +%s) + 180 ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        if systemctl is-active -q "$UNIT" && [ "$(running_id)" = "$want" ] \
+            && podman exec "$NAME" systemctl is-active -q melissa-queen.service 2>/dev/null; then
+            return 0
+        fi
+        sleep 3
+    done
+    return 1
+}
+
+check() {
+    local r cur out
+    r=$(ref); cur=$(running_id || true)
+    rm -f "$STATE/available-for"
+    case "$r" in
+    localhost/*)
+        # A local image (built here or `podman load`ed): nothing to download.
+        status; last check true "local image: load a newer one with podman load, then apply"; return 0 ;;
+    esac
+    if [ "$AUTO_UPDATE" = registry ]; then
+        out=$(podman auto-update --dry-run --format '{{.Unit}} {{.Updated}}' 2>&1) \
+            || { status; last check false "$out"; return 1; }
+        if grep -q "^$UNIT pending" <<<"$out"; then
+            printf '%s\n' "$cur" > "$STATE/available-for"
+            status '{}'; last check true "an update is available"
+        else
+            status; last check true "up to date"
+        fi
+    else
+        # No auto-update label: download the newest image (no restart); it shows as staged.
+        out=$(podman pull -q "$r" 2>&1) || { status; last check false "$out"; return 1; }
+        status
+        if [ "$(image_id "$r")" != "$cur" ]; then last check true "an update is downloaded"
+        else last check true "up to date"; fi
+    fi
+}
+
+apply() {
+    local r cur new out
+    r=$(ref); cur=$(running_id) || { last apply false "Melissa is not running"; return 1; }
+    case "$r" in
+    localhost/*) ;;
+    *) out=$(podman pull -q "$r" 2>&1) || { status; last apply false "$out"; return 1; } ;;
+    esac
+    new=$(image_id "$r")
+    if [ -z "$new" ] || [ "$new" = "$cur" ]; then
+        rm -f "$STATE/available-for"; status; last apply true "already up to date"; return 0
+    fi
+    echo "melissa-host-update: restarting Melissa on ${new:0:12} (was ${cur:0:12})"
+    systemctl restart "$UNIT"
+    if wait_up "$new"; then
+        rm -f "$STATE/available-for"; status; last apply true "running ${new:0:12}"
+        return 0
+    fi
+    # The new image did not come up: put the old one back under the name and restart on it.
+    podman tag "$cur" "$r"
+    systemctl restart "$UNIT"
+    wait_up "$cur" || true
+    status
+    last apply false "the new image (${new:0:12}) did not start; back on ${cur:0:12}"
+    return 1
+}
+
+rollback() {
+    local r cur prev
+    r=$(ref); cur=$(running_id || true)
+    prev=$(image_id "$PREVIOUS" || true)
+    if [ -z "$prev" ] || [ "$prev" = "$cur" ]; then
+        status; last rollback false "there is no previous image"; return 1
+    fi
+    podman tag "$prev" "$r"
+    systemctl restart "$UNIT"
+    if wait_up "$prev"; then
+        rm -f "$STATE/available-for"; status
+        msg="running ${prev:0:12}"
+        [ "$AUTO_UPDATE" = off ] || msg="$msg; automatic updates may install the newer image again"
+        last rollback true "$msg"
+    else
+        status; last rollback false "the previous image did not start"; return 1
+    fi
+}
+
+requests() {
+    local verb todo=() f
+    [ -d "$REQUESTS" ] || return 0
+    for verb in check apply rollback; do
+        f="$REQUESTS/$verb"
+        if [ -e "$f" ] || [ -L "$f" ]; then todo+=("$verb"); fi
+    done
+    # Empty the directory: known names were noted, anything else is ignored. rm never follows links.
+    find "$REQUESTS" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    for verb in "${todo[@]}"; do "$verb"; done
+}
+
+case "${1:-}" in
+status) status ;;
+check|apply|rollback|requests)
+    [ "$(id -u)" = 0 ] || { echo "melissa-host-update: run as root" >&2; exit 1; }
+    "$1" ;;
+*) sed -n '2,20p' "$0"; exit 2 ;;
+esac
