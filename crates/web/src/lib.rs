@@ -15,7 +15,7 @@ mod state;
 mod ui;
 
 use axum::{
-    extract::{Form, Path, Request, State},
+    extract::{Form, FromRef, Path, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
@@ -45,14 +45,14 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-
 
 /// The task UI, without agent tools or the Queen (`/` goes to the task list).
 pub fn router(board: TaskBoard) -> Router {
-    ui_routes(board)
+    ui_routes(board, None)
         .route("/", get(|| async { Redirect::to("/tasks") }))
         .layer(middleware::from_fn(security))
 }
 
 /// The task UI plus the MCP endpoint (`POST /mcp/{token}`) agent CLIs use to call tools.
 pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
-    ui_routes(board)
+    ui_routes(board, None)
         .route("/", get(|| async { Redirect::to("/tasks") }))
         .merge(
             Router::new()
@@ -81,7 +81,7 @@ pub fn router_with_settings(
         state::HiveCache::new(mcp.clone(), Some(queen.clone())),
         settings,
     );
-    ui_routes(board)
+    ui_routes(board, Some(ui.clone()))
         .merge(ui::routes(ui.clone()))
         .merge(settings::api_routes(ui))
         .merge(api::tool_routes(mcp.clone()))
@@ -94,7 +94,20 @@ pub fn router_with_settings(
         .layer(middleware::from_fn(security))
 }
 
-fn ui_routes(board: TaskBoard) -> Router {
+/// State of the task pages: the board, and the Queen's UI (for the rail) when there is one.
+#[derive(Clone)]
+struct Tasks {
+    board: TaskBoard,
+    ui: Option<ui::Ui>,
+}
+
+impl FromRef<Tasks> for TaskBoard {
+    fn from_ref(t: &Tasks) -> Self {
+        t.board.clone()
+    }
+}
+
+fn ui_routes(board: TaskBoard, ui: Option<ui::Ui>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/tasks", get(dashboard).post(create_task))
@@ -104,7 +117,7 @@ fn ui_routes(board: TaskBoard) -> Router {
         .route("/tasks/{id}/cancel", post(cancel_task))
         .route("/assets/{*path}", get(asset))
         .fallback(|| async { (StatusCode::NOT_FOUND, pages::not_found()) })
-        .with_state(board)
+        .with_state(Tasks { board, ui })
 }
 
 /// MCP streamable-HTTP endpoint, JSON responses only. The token in the path selects the
@@ -134,8 +147,15 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::R
     axum::serve(listener, app).await
 }
 
-async fn dashboard(State(board): State<TaskBoard>) -> Markup {
-    pages::dashboard(&board.backends(), &board.list())
+async fn dashboard(State(t): State<Tasks>) -> Markup {
+    let (backends, tasks) = (t.board.backends(), t.board.list());
+    match &t.ui {
+        Some(ui) => {
+            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks))
+                .await
+        }
+        None => pages::dashboard(None, &backends, &tasks),
+    }
 }
 
 async fn tasks_fragment(State(board): State<TaskBoard>) -> Markup {
@@ -155,26 +175,35 @@ async fn create_task(
 ) -> Response {
     let result = board.dispatch(&form.backend, &form.prompt);
     if is_htmx(&headers) {
-        let message = match &result {
-            Ok(id) => (format!("Dispatched task #{id}."), Tone::Ok),
-            Err(e) => (format!("Could not dispatch: {e}."), Tone::Error),
+        return match &result {
+            // Open the new task, as a plain form post does.
+            Ok(id) => [("hx-redirect", format!("/tasks/{id}"))].into_response(),
+            Err(e) => {
+                let message = format!("Couldn't start the task: {e}.");
+                pages::tasks_region(&board.list(), Some((&message, Tone::Error))).into_response()
+            }
         };
-        return pages::tasks_region(&board.list(), Some((&message.0, message.1))).into_response();
     }
     match result {
         Ok(id) => Redirect::to(&format!("/tasks/{id}")).into_response(),
         Err(e) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            pages::error_page("Could not dispatch", &e.to_string()),
+            pages::error_page("Couldn't start the task", &e.to_string()),
         )
             .into_response(),
     }
 }
 
-async fn task_page(State(board): State<TaskBoard>, Path(id): Path<TaskId>) -> Response {
-    match board.get(id) {
-        Some(task) => pages::task_page(&task).into_response(),
-        None => (StatusCode::NOT_FOUND, pages::not_found()).into_response(),
+async fn task_page(State(t): State<Tasks>, Path(id): Path<TaskId>) -> Response {
+    let Some(task) = t.board.get(id) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    match &t.ui {
+        Some(ui) => ui
+            .framed(|f| pages::task_page(Some(f), &task))
+            .await
+            .into_response(),
+        None => pages::task_page(None, &task).into_response(),
     }
 }
 
@@ -336,7 +365,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("echo"));
+        assert!(body.contains("Agent tasks"));
         assert!(body.contains("/assets/htmx.min.js"));
         assert!(headers[header::CONTENT_SECURITY_POLICY]
             .to_str()
@@ -381,7 +410,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn htmx_dispatch_returns_task_list() {
+    async fn htmx_dispatch_opens_the_task() {
         let (app, board) = app();
         let body = "backend=echo&prompt=hello+hive";
         let req = post("/tasks")
@@ -389,9 +418,10 @@ mod tests {
             .header("sec-fetch-site", "same-origin")
             .body(Body::from(body))
             .unwrap();
-        let (status, _, html) = send(&app, req).await;
+        let (status, headers, html) = send(&app, req).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(html.contains("Dispatched task #1"));
+        assert!(html.is_empty());
+        assert_eq!(headers["hx-redirect"], "/tasks/1");
         assert_eq!(board.list().len(), 1);
     }
 
@@ -1559,6 +1589,27 @@ mod tests {
                 get_html(&app, "/bees/nobody").await.0,
                 StatusCode::NOT_FOUND
             );
+            // The task pages sit in the app, with "Agent tasks" current in the rail.
+            let req = axum::http::Request::post("/tasks")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from("backend=echo&prompt=hi"))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::SEE_OTHER);
+            let task = res.headers()[header::LOCATION]
+                .to_str()
+                .unwrap()
+                .to_string();
+            for uri in ["/tasks", task.as_str()] {
+                let (status, _, body) = get_html(&app, uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(body.contains("<nav class=\"rail\""), "{uri}");
+                assert!(
+                    body.contains("href=\"/tasks\" aria-current=\"page\""),
+                    "{uri}"
+                );
+            }
 
             // A message goes to her conversation, not the Queen's.
             let res = app
@@ -1959,6 +2010,66 @@ mod tests {
                 StatusCode::NOT_FOUND
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_built_in_echo_is_not_offered() {
+        let get = |app: Router| async move {
+            send(
+                &app,
+                axum::http::Request::get("/tasks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .2
+        };
+        // Only the built-in echo: nothing to offer, point to Providers.
+        let (app, _) = self::app();
+        let body = get(app).await;
+        assert!(!body.contains("<option"));
+        assert!(body.contains("No agent to try yet."));
+        assert!(body.contains("href=\"/settings/providers\""));
+        // An echo the user configured is offered; the built-in one still isn't.
+        let board = TaskBoard::new(
+            vec![
+                Arc::new(EchoBackend::new()),
+                Arc::new(melissa_agent::EchoSessionBackend::new(
+                    &melissa_agent::EchoSpec {
+                        name: "echo-b".into(),
+                    },
+                )),
+            ],
+            Duration::from_secs(5),
+            None,
+        );
+        let body = get(router(board)).await;
+        assert!(body.contains("<option value=\"echo-b\">echo-b</option>"));
+        assert!(!body.contains("<option value=\"echo\""));
+    }
+
+    #[tokio::test]
+    async fn task_page_renders_the_reply_as_markdown() {
+        let (app, board) = app();
+        let id = board
+            .dispatch("echo", "**bold** <script>x</script>")
+            .unwrap();
+        board.wait(id, Duration::from_secs(5)).await.unwrap();
+        let (status, _, body) = send(
+            &app,
+            axum::http::Request::get(format!("/tasks/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<div class=\"md\">"));
+        assert!(body.contains("<strong>bold</strong>"));
+        assert!(!body.contains("<script>x"));
+        assert!(body.contains("Done"));
+        assert!(body.contains("aria-label=\"Breadcrumb\""));
+        // Finished: the region no longer polls.
+        assert!(!body.contains(&format!("hx-get=\"/tasks/{id}/fragment\"")));
     }
 
     #[tokio::test]

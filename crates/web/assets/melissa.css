@@ -1420,6 +1420,9 @@ main.plain {
   border-radius: var(--radius);
   padding: 1.1rem 1.25rem;
   margin-bottom: 1.25rem;
+  /* Long words (paths, tokens) wrap instead of widening the page; unlike `anywhere`, this
+     leaves table columns their natural width. */
+  overflow-wrap: break-word;
 }
 
 .card > h2 {
@@ -1533,8 +1536,12 @@ form.inline {
   min-height: 44px;
 }
 
-.card > a,
-#task > a {
+/* A task's error or "cut off" note under its facts. */
+.card > .facts + .notice {
+  margin: 0.9rem 0 0;
+}
+
+.card > a {
   display: inline-block;
   margin-top: 0.75rem;
 }

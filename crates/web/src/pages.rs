@@ -8,12 +8,12 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 use crate::{
     components::{
         action_button, activity_row, add_app_cell, app_cell, app_page, app_strip, approval_card,
-        badge, card, chat_divider, code, composer, composer_status, device_card, empty_state, feed,
-        feed_entry, honeycomb, link, live_region, log_view, note, oob_inner, page, page_header,
-        post_form, queen_message, rail, relayed_message, section, select_field, table,
-        textarea_field, truncated, user_message, waiting_count, AppCell, ApprovalCard, Choice,
-        DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID,
-        COMPOSER_STATUS_ID, FEED_ID,
+        badge, card, chat_divider, composer, composer_status, crumbs, device_card, empty_state,
+        facts, feed, feed_entry, honeycomb, link, live_region, log_view, markdown, note, oob_inner,
+        page, page_header, plain_text, post_form, queen_message, rail, relayed_message, section,
+        select_field, table, textarea_field, truncated, user_message, waiting_count, AppCell,
+        ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripCell, Tone,
+        APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
@@ -668,54 +668,79 @@ pub fn approvals(f: &Frame<'_>, list: &[Approval], since: u64, epoch: u64) -> Ma
 
 // --- Agent tasks (developer view) -----------------------------------------------------------
 
-pub fn dashboard(backends: &[BackendInfo], tasks: &[TaskSnapshot]) -> Markup {
-    page(
+/// Agents offered on the task page. The built-in one-shot `echo` (no LLM, always there) is a
+/// test double, not an agent people pick; an echo the user configured has its own name and
+/// is offered like any other agent.
+fn offered(b: &BackendInfo) -> bool {
+    !(b.kind == "echo" && b.name == "echo")
+}
+
+/// A task page: inside the app (with the rail) when `f` is given, else the bare page (the
+/// task UI without a Queen).
+fn tasks_page(f: Option<&Frame<'_>>, title: &str, content: Markup) -> Markup {
+    match f {
+        Some(f) => app_page(
+            title,
+            rail_for(Nav::Tasks, f, None),
+            html! { div.wide { (content) } },
+        ),
+        None => page(title, content),
+    }
+}
+
+pub fn dashboard(
+    f: Option<&Frame<'_>>,
+    backends: &[BackendInfo],
+    tasks: &[TaskSnapshot],
+) -> Markup {
+    let offered: Vec<&BackendInfo> = backends.iter().filter(|b| offered(b)).collect();
+    tasks_page(
+        f,
         "Agent tasks",
         html! {
-            (page_header("Agent tasks", Some("Run one agent on one prompt. For development; the chat is the normal way in.")))
-            (card("Agents", agents_table(backends)))
-            (card("New task", new_task_form(backends)))
+            (page_header("Agent tasks", Some(
+                "Give one agent one prompt and see its reply, outside the chat. For trying out \
+                 agents: they can look but not change apps, and the list is cleared when Melissa \
+                 restarts."
+            )))
+            (card("New task", new_task_form(&offered)))
             (card("Tasks", tasks_region(tasks, None)))
         },
     )
 }
 
-fn agents_table(backends: &[BackendInfo]) -> Markup {
-    let rows = backends
+fn new_task_form(backends: &[&BackendInfo]) -> Markup {
+    if !backends.iter().any(|b| b.available) {
+        return html! {
+            (empty_state("No agent to try yet.", "Turn one on in Settings, under Providers."))
+            (link("/settings/providers", "Open Providers"))
+        };
+    }
+    let labels: Vec<String> = backends
         .iter()
         .map(|b| {
-            vec![
-                html! { (b.name) },
-                html! { (b.kind) },
-                if b.available {
-                    badge("available", Tone::Ok)
-                } else {
-                    badge("not installed", Tone::Muted)
-                },
-                code(&b.detail),
-            ]
+            if b.available {
+                b.name.clone()
+            } else {
+                format!("{} (not installed)", b.name)
+            }
         })
         .collect();
-    table(
-        &["Name", "Kind", "Status", "Command"],
-        rows,
-        "No agent backends configured.",
-    )
-}
-
-fn new_task_form(backends: &[BackendInfo]) -> Markup {
-    let choices: Vec<Choice<'_>> = backends
+    // Usable agents first, so the default pick is one that runs.
+    let mut order: Vec<usize> = (0..backends.len()).collect();
+    order.sort_by_key(|&i| !backends[i].available);
+    let choices: Vec<Choice<'_>> = order
         .iter()
-        .map(|b| Choice {
-            value: &b.name,
-            label: &b.name,
-            enabled: b.available,
+        .map(|&i| Choice {
+            value: &backends[i].name,
+            label: &labels[i],
+            enabled: backends[i].available,
         })
         .collect();
     post_form(
         "/tasks",
         TASKS_ID,
-        "Dispatch",
+        "Run",
         html! {
             (select_field("backend", "Agent", &choices))
             (textarea_field("prompt", "Prompt", "What should the agent do?", MAX_PROMPT_BYTES))
@@ -723,16 +748,18 @@ fn new_task_form(backends: &[BackendInfo]) -> Markup {
     )
 }
 
-/// The self-refreshing task list. `message` is shown above it (e.g. a dispatch error).
+/// The task list. Polls itself while a task runs. `message` is shown above it (e.g. why a
+/// task could not start).
 pub fn tasks_region(tasks: &[TaskSnapshot], message: Option<(&str, Tone)>) -> Markup {
+    let running = tasks.iter().any(|t| t.status == TaskStatus::Running);
     let rows = tasks
         .iter()
         .map(|t| {
             vec![
                 link(&format!("/tasks/{}", t.id), &format!("#{}", t.id)),
-                html! { (t.backend) },
                 status_badge(t.status),
                 truncated(&t.prompt, 60),
+                html! { (t.backend) },
                 html! { (format_elapsed(t.elapsed)) },
             ]
         })
@@ -741,50 +768,91 @@ pub fn tasks_region(tasks: &[TaskSnapshot], message: Option<(&str, Tone)>) -> Ma
         TASKS_ID,
         "/tasks/fragment",
         2,
-        true,
+        running,
         html! {
             @if let Some((text, tone)) = message { (crate::components::notice(text, tone)) }
-            (table(&["Task", "Agent", "Status", "Prompt", "Time"], rows, "No tasks yet."))
+            (table(
+                &["Task", "Status", "Prompt", "Agent", "Time"],
+                rows,
+                "No tasks yet. Start one above.",
+            ))
         },
     )
 }
 
-pub fn task_page(task: &TaskSnapshot) -> Markup {
-    page(
-        &format!("Task #{}", task.id),
-        card(&format!("Task #{}", task.id), task_region(task)),
+pub fn task_page(f: Option<&Frame<'_>>, task: &TaskSnapshot) -> Markup {
+    let title = format!("Task #{}", task.id);
+    tasks_page(
+        f,
+        &title,
+        html! {
+            (crumbs(&[("/tasks", "Agent tasks")], &title))
+            (page_header(&title, None))
+            (task_region(task))
+        },
     )
 }
 
 /// The task detail region; polls itself until the task finishes.
 pub fn task_region(task: &TaskSnapshot) -> Markup {
     let running = task.status == TaskStatus::Running;
+    let time = if running {
+        format!("Running for {}", format_elapsed(task.elapsed))
+    } else {
+        format!("Took {}", format_elapsed(task.elapsed))
+    };
+    let reply: String = task
+        .output
+        .iter()
+        .filter(|l| l.stream == Stream::Stdout)
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let failed = task.status == TaskStatus::Failed;
+    let log: Vec<LogLine<'_>> = task
+        .output
+        .iter()
+        .filter(|l| l.stream == Stream::Stderr)
+        .map(|l| LogLine {
+            text: &l.text,
+            is_error: failed,
+        })
+        .collect();
     live_region(
         TASK_ID,
         &format!("/tasks/{}/fragment", task.id),
         1,
         running,
         html! {
-            (table(
-                &["Agent", "Status", "Time"],
-                vec![vec![
-                    html! { (task.backend) },
-                    status_badge(task.status),
-                    html! { (format_elapsed(task.elapsed)) },
-                ]],
-                "",
-            ))
-            (log_view([LogLine { text: &task.prompt, is_error: false }]))
-            @if let Some(error) = &task.error { (crate::components::notice(error, Tone::Error)) }
-            @if task.truncated { (crate::components::notice("Output was truncated.", Tone::Warn)) }
-            (log_view(task.output.iter().map(|l| LogLine {
-                text: &l.text,
-                is_error: l.stream == Stream::Stderr,
-            })))
-            @if running {
-                (action_button(&format!("/tasks/{}/cancel", task.id), TASK_ID, "Cancel", "Cancel this task?"))
+            (card("About", html! {
+                (facts(&[
+                    ("Agent", html! { (task.backend) }),
+                    ("Status", status_badge(task.status)),
+                    ("Time", html! { (time) }),
+                ]))
+                @if let Some(error) = &task.error {
+                    (crate::components::notice(&format!("The agent failed: {error}."), Tone::Error))
+                }
+                @if task.truncated {
+                    (crate::components::notice("The output was too long; the end is cut off.", Tone::Warn))
+                }
+                @if running {
+                    (action_button(&format!("/tasks/{}/cancel", task.id), TASK_ID, "Stop", "Stop this task?"))
+                }
+            }))
+            (card("Prompt", plain_text(&task.prompt)))
+            (card("Reply", html! {
+                @if !reply.trim().is_empty() {
+                    (markdown(&reply))
+                } @else if running {
+                    p.empty { "Waiting for the agent…" }
+                } @else {
+                    p.empty { "No reply." }
+                }
+            }))
+            @if !log.is_empty() {
+                (card("Agent log", log_view(log)))
             }
-            (link("/tasks", "All tasks"))
         },
     )
 }
@@ -816,15 +884,23 @@ fn status_badge(status: TaskStatus) -> Markup {
         TaskStatus::Failed => Tone::Error,
         TaskStatus::Cancelled => Tone::Muted,
     };
-    badge(status.as_str(), tone)
+    let label = match status {
+        TaskStatus::Running => "Running",
+        TaskStatus::Succeeded => "Done",
+        TaskStatus::Failed => "Failed",
+        TaskStatus::Cancelled => "Stopped",
+    };
+    badge(label, tone)
 }
 
 fn format_elapsed(d: Duration) -> String {
     let secs = d.as_secs_f64();
-    if secs < 60.0 {
-        format!("{secs:.1}s")
+    if secs < 0.1 {
+        "under 0.1 s".into()
+    } else if secs < 60.0 {
+        format!("{secs:.1} s")
     } else {
-        format!("{}m {:02}s", d.as_secs() / 60, d.as_secs() % 60)
+        format!("{} min {:02} s", d.as_secs() / 60, d.as_secs() % 60)
     }
 }
 
@@ -834,8 +910,9 @@ mod tests {
 
     #[test]
     fn elapsed_formatting() {
-        assert_eq!(format_elapsed(Duration::from_millis(1500)), "1.5s");
-        assert_eq!(format_elapsed(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(format_elapsed(Duration::from_millis(20)), "under 0.1 s");
+        assert_eq!(format_elapsed(Duration::from_millis(1500)), "1.5 s");
+        assert_eq!(format_elapsed(Duration::from_secs(125)), "2 min 05 s");
         assert_eq!(format_uptime(3 * 86_400 + 7200), "Up 3 d 2 h");
         assert_eq!(format_kib(8 * 1024 * 1024), "8.0 GB");
     }

@@ -530,7 +530,10 @@ Roadmap (rough, phases may overlap):
 46. ~~Tool name for the device description~~ Decided 2026-11-18: the tool that describes the comb (device) is
     `comb_info` (was `bee_info`), renamed everywhere incl. replay fixtures; no alias (pre-alpha, nothing depends on it).
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
-    Keep them, turn them into "ask a bee", or drop them when the chat UI lands?
+    Keep them, turn them into "ask a bee", or drop them when the chat UI lands? 2026-11-19: the pages now sit
+    in the app (rail, breadcrumb, reply as Markdown, stderr as "Agent log") and no longer offer the built-in
+    `echo`. Recommendation: move them under Settings as a "Developer" section (the rail link is hidden on
+    phones anyway) once the Providers work has landed; owner to decide.
 48. Web UI (2026-11-18): done: history comes back after a daemon restart (last 30 turns from the transcript),
     "New chat" archives the chat (past chats read-only under Conversations), `comb_info` reports disk space and
     the app strip/device card warn at 85% of `/var`. Open: past chats are never pruned (size cap or age?);
