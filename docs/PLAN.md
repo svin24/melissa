@@ -5,7 +5,7 @@ Status: draft v0. Agents may expand any section; keep decisions and open questio
 ## 1. Vision
 
 Melissa is an open source, clustered, agent-run, immutable self-hosting OS. A user installs it on one or more
-machines, and an AI agent runs the infrastructure: installing apps from a fixed catalog, updating, backing up,
+machines, and an AI agent runs the infrastructure: setting up any app the user asks for, updating, backing up,
 and healing.
 
 Naming:
@@ -118,26 +118,26 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   (`melissa-kubeconfig.service`) writes its kubeconfig to `/run/melissa-kube` (root:`melissa-kube` 0640); the
   lead agent service has that group, does not wait for k3s at boot and re-reads the file on each cluster call.
   Client: kube-rs over rustls in `crates/cluster`.
-- **App installs (2026-11-18, M2 core):** catalog of reviewed TOML manifests (`manifests/`, shipped in
-  `/usr/share/melissa/catalog/`; `crates/catalog`), rendered to Namespace `app-<name>` + RoleBinding +
-  Secret + PVC + Deployment + Service + Traefik Ingress (`<app>.melissa.home.arpa` by default,
-  `[apps] domain`) and server-side applied by a second identity, `melissa/melissa-apps`, whose writes
-  admission policies pin to `app-*` namespaces with Pod Security baseline (no Secret reads anywhere).
-  Tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `stop_app`, `start_app`,
-  `uninstall_app` (stop/start since 2026-11-19: stop keeps everything, always asks, never "destructive"). First app: Nextcloud
-  34.0.6 (official Apache image by digest, SQLite). Verified in the headless VM (bootc, archived) and again in the rootful container (2026-11-19): install with
-  confirmation, ready, `status.php` from the host, owner login, logs cap, keep-data uninstall +
-  reinstall, delete-data uninstall, RBAC denials, smoke test, no AVC denials. Details:
-  `docs/agent-skills/app-catalog.md`.
+- **App deploys (2026-11-19, replaces the 2026-11-18 catalog):** no catalog. Agents deploy any app from a
+  JSON spec they write (`crates/appspec`: containers with pinned images, env, generated secrets, files, TCP/UDP
+  ports, volumes, resources, probes, sidecars), rendered to Namespace `app-<name>` + RoleBinding + Secrets +
+  PVCs + Deployment + Services + Traefik Ingress (`<app>.melissa.home.arpa` by default, `[apps] domain`) and
+  server-side applied by a second identity, `melissa/melissa-apps`, whose writes admission policies pin to
+  `app-*` workspace namespaces with Pod Security baseline, never privileged or on the host (no Secret reads
+  anywhere). Every deploy and update is confirmed by the user with a summary of what runs. Tools: `deploy_app`,
+  `update_app`, `list_apps`, `app_status`, `app_logs`, `stop_app`, `start_app`, `uninstall_app`. The old
+  catalog's Nextcloud keeps running and is converted to a stored spec at startup. Details:
+  `docs/agent-skills/app-deploy.md`.
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).
-- **App links (2026-11-19):** by default `http://<device address>:<port>`: each app gets its own NodePort from
-  30000-30079 (`<app>-port` Service, recorded in `melissa.io/port`), reachable on the LAN and over Tailscale with no
-  DNS; the web UI builds links from the address the visitor used. See DECISIONS.md.
+- **App links (2026-11-19):** by default `http://<device address>:<port>`: an app's web port and each public
+  TCP/UDP port get their own NodePort from 30000-30079 (`<app>-port` Service, recorded in `melissa.io/port` and
+  `melissa.io/ports`), reachable on the LAN and over Tailscale with no DNS; the web UI builds links from the
+  address the visitor used and shows other ports as `address:port (TCP|UDP)`. See DECISIONS.md.
 - **Ingress:** wildcard `*.<domain>` (e.g. `nextcloud.<domain>`, `immich.<domain>`) via the k3s ingress controller, with automatic TLS (internal CA on LAN, ACME for public). Today an extra option for people with their own DNS (`dns_url`).
 - **HA virtual IP:** kube-vip or keepalived for the control-plane/ingress address.
 - **Storage:** Longhorn first (simple), Ceph (Rook) for larger clusters. Local-path for single-node M2.
-- **Apps:** Melissa's own app manifests (TOML, see above and DECISIONS.md) render to plain objects;
-  no Helm/kustomize. Initial catalog: Nextcloud (done, SQLite; Postgres later), Immich next.
+- **Apps:** agents write Melissa's own app spec (JSON, see above and DECISIONS.md), rendered to plain
+  objects; no Helm/kustomize, no catalog. Verified: Nextcloud (SQLite), a Minecraft server, plain web apps.
 - **Gaming node (later):** KubeVirt with GPU passthrough (VFIO) running SteamOS/Windows VMs, streamed through Sunshine/Moonlight.
 
 ## 4. Networking and access
@@ -176,8 +176,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   the laptop: claude + device_info, grok-acp + device_info, opencode, and the lead agent with a worker, all under
   `proxy`, with telemetry (Datadog, Mixpanel, grok.com) denied; `curl https://example.com` from a sandbox gets
   403. In both images (`/usr/bin/melissa-netbridge`). Details: `docs/agent-skills/agent-egress.md`.
-- **App tools (2026-11-18):** `list_catalog`, `app_status` (read-only), `app_logs` (untrusted), `install_app`
-  (Reversible), `uninstall_app` (Destructive) in `crates/cluster`, over separate `AppRead`/`AppDeployer`
+- **App tools (2026-11-18, deploy tools 2026-11-19):** `app_status`, `list_apps` (read-only), `app_logs`
+  (untrusted), `deploy_app`/`update_app` (always confirmed), `uninstall_app` (Destructive) in `crates/cluster`, over separate `AppRead`/`AppDeployer`
   traits. Generated secrets are never returned to agents; the owner reads them with
   `sudo melissa-server app-credentials <app>`. `melissa-server tool --wait <tool> [json]` runs a tool in the
   daemon and waits for its confirmation (`POST /api/tools/{name}`).
@@ -252,8 +252,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   stays in the image). Everything else (apps, their config) is set up through agents after first boot; a few
   preinstalled things are fine during development.
 - **Runtime app installs (owner, 2026-11-18):** apps are pulled live at runtime by agents that run in sandboxes.
-  Split of duties: the sandboxed agent decides and calls tools (`install_app`, `update_app`, ...); the lead agent validates
-  against the catalog manifest, applies the policy and creates the k3s objects; k3s/containerd pulls the images on
+  Split of duties: the sandboxed agent decides and calls tools (`deploy_app`, `update_app`, ...); the server validates
+  the agent's spec, applies the policy (the user confirms every deploy) and creates the k3s objects; k3s/containerd pulls the images on
   the node. Agents get no cluster credentials and no general network access (model endpoint + Melissa tools only).
   Apps run in k3s, one namespace each, with their own volumes and network policy. So: agent sandboxing moves up.
 - **Agents build apps in their own sandboxes (owner, 2026-11-18):** sub-agents may create apps (not only install
@@ -346,9 +346,8 @@ crates/device         # per-device daemon (device)
 crates/web          # axum + maud UI, embedded htmx (rust-embed)
 crates/agent        # backend trait, echo + CLI backends (claude, grok, opencode), task board, audit log
 crates/cluster         # k3s client (kube-rs, rustls) behind small traits, cluster + app tools, rendering
-crates/catalog      # app manifest schema, validation, config resolution
+crates/appspec      # the app spec agents write, validation, legacy catalog specs
 # planned: crates/mesh (tailscale/headscale/netbird adapters)
-manifests/          # app manifests (nextcloud; immich next)
 packaging/common/   # system files every packaging installs (units, manifests, k3s.lock, melissa-setup)
 packaging/container/ # Containerfile, Quadlet, install.sh/uninstall.sh, host update helper
 packaging/nix/      # Nix flake/module (parallel track)
@@ -485,7 +484,7 @@ Roadmap (rough, phases may overlap):
     the owner's copy), or a restore gets data with unknown credentials. Rotation (e.g. admin password) is
     app-specific and not modelled.
 36. Disk: images and app data share `/var` with the OS (8.6 GiB in the test VM filled up once). Should
-    `install_app` check free space against the image size + volume sizes first, and should apps get their
+    `deploy_app` check free space against the image size + volume sizes first, and should apps get their
     own volume/quota (local-path does not enforce PVC sizes)?
 37. `POST /api/tools/{name}` and the confirmation inbox are reachable by any local process until the
     loopback API has auth. Sandboxed agents no longer reach it (2026-11-18: deny-by-default egress, each
@@ -507,15 +506,16 @@ Roadmap (rough, phases may overlap):
     durable request the lead agent can pick up again instead of failing?
 42. Maintenance tools are missing (end-to-end test 2026-11-18): disk usage per app volume (free/total of `/`,
     `/var` and the k3s data dir is in `device_info` since 2026-11-18),
-    list/prune unused images, restart an app, update an app to the catalog's current digest, app events
+    list/prune unused images, restart an app, update an app's image to a newer pinned version, app events
     (pull progress, probe failures), bootc update status/stage/rollback, journal usage/vacuum. Most need
     root on the agent (crictl, bootc, journald), not the k3s API: a narrow privileged helper with fixed
     verbs, or k8s-only tools where possible? (`list_apps` added.) 2026-11-19: image status/check/apply/rollback is done for the
     owner (Settings → Updates) with a fixed-name request to the host's update helper (DECISIONS; was a bootc
     helper through polkit before the container move); the same pattern could carry crictl/journald verbs. Not for agents yet: should the lead agent get an `os_update_status`
     tool, and may it ever ask for an update (always with the owner's yes)?
-43. `install_app` from an attended, untainted lead agent needs no confirmation (decided 2026-11-18). It pulls
-    ~0.5 GB and fills `/var` (2.0 GB left in the test VM after Nextcloud): revisit together with 36.
+43. ~~`install_app` from an attended, untainted lead agent needs no confirmation (decided 2026-11-18).~~
+    Superseded 2026-11-19: with agent-written specs, every `deploy_app`/`update_app` is confirmed (the user sees
+    what runs). Disk (36) still open.
 20. Update policy: the container uses podman-auto-update.timer (daily, Quadlet `AutoUpdate=`; podman rolls back
     when the new container fails to start) and Settings' Apply (rolls back when the lead agent doesn't come up). Open:
     health checks beyond "the lead agent is active" (k3s Ready, apps), a schedule/maintenance window, and whether
@@ -546,7 +546,7 @@ Roadmap (rough, phases may overlap):
     workaround for bwrap is documented but untested on Ubuntu; check on a 24.04 VM before the release.
     (b) QUICKSTART has `<repo-url>` and "open an issue" without a link: fill in when the repo is public.
     (c) The dev shell pulls QEMU/OVMF/cargo-about for everyone; split a light "try it" shell from the
-    image/VM tooling? (d) A user's `tool --wait install_app` asks for confirmation before finding out that
+    image/VM tooling? (d) A user's `tool --wait deploy_app` asks for confirmation before finding out that
     k3s is missing (the lead agent's path fails first, through the owner lookup). (e) Asked to install without
     k3s, the lead agent (grok) created an agent before the install failed; the prompt could say "check
     cluster_health first".
@@ -577,7 +577,7 @@ Roadmap (rough, phases may overlap):
     per-app access limits (ties to 22 and 38); is 80 apps per device enough; at multi-device, should the port be
     unique cluster-wide so a link survives an app moving devices?
 57. Nextcloud's trusted hosts are the device's addresses at install time (no wildcards). If the address changes
-    (DHCP, new tailnet) Nextcloud refuses it until the next `install_app`. Decided 2026-11-19: later the lead agent
+    (DHCP, new tailnet) Nextcloud refuses it until the next `update_app`. Decided 2026-11-19: later the lead agent
     refreshes apps' trusted addresses when the device's addresses change; until then owners set `[apps]
     addresses` (e.g. a DHCP reservation or the MagicDNS name). Tailscale MagicDNS names
     (`<host>.<tailnet>.ts.net`) are not detected (no Tailscale API call); add them via `[apps] addresses`.
@@ -655,3 +655,17 @@ Roadmap (rough, phases may overlap):
     backend that is installed but not signed in (it used to end the turn with "Not logged in").
     (k) Container builds: the shared cargo target cache trusted file times and once shipped stale crates; the
     Containerfile now touches the workspace sources before building.
+64. Any app from an agent's spec (2026-11-19, catalog dropped; DECISIONS): (a) images come from any public
+    registry, pinned by tag, not by digest: a tag can be re-pushed. Resolve tags to digests at deploy time
+    (needs a registry client in the server) or pin digests in the spec? Image signature checks (cosign) later?
+    (b) No NetworkPolicy yet (38): a deployed app can reach the internet and other apps; default-deny with
+    per-spec egress? (c) Root inside containers is allowed (many images need it); should Melissa prefer
+    `run_as_user` when an image documents one, or try `restricted` Pod Security per app? (d) Resource limits
+    are per container, not per device: nothing stops agents from deploying more than the box can run
+    (scheduler requests only); a per-device budget? (e) Public ports are open to the LAN and tailnet like web
+    ports (56); per-port access limits? (f) Image size and disk (36) are not checked before a deploy.
+    (g) `update_app` takes the whole spec; a patch form (change one env var) would be easier for agents but
+    harder to show in the confirmation. (h) Without a probe, a crash-looping app shows `ready` between crashes
+    (seen live: 4 restarts, phase ready); count recent restarts as `failing`, or require a probe? (i) The lead
+    agent needed 4 tries to get a first spec past validation (OpenCode free model); a short example in the
+    tool description or an `example` tool may help.

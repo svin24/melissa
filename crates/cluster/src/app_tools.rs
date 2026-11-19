@@ -1,26 +1,39 @@
-//! The app tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`,
+//! The app tools: `deploy_app`, `update_app`, `list_apps`, `app_status`, `app_logs`,
 //! `stop_app`, `start_app`, `uninstall_app`.
 //!
-//! Labels (policy keys off them): `list_catalog`, `list_apps` and `app_status` read-only; `app_logs`
-//! reads untrusted content (app output is attacker-influenced); `install_app` and `start_app`
+//! There is no catalog: agents deploy any app the user asks for by writing an app spec
+//! (`melissa_appspec::AppSpec`: images, ports, volumes, env, files, resources, probe). The
+//! server validates it, asks the user (every deploy and update is confirmed, with a summary of
+//! the images, ports and volumes), renders it to locked-down objects in the app's own
+//! namespace and stores it there ([`SPEC_ANNOTATION`]) for `update_app` and `app_status`.
+//!
+//! Labels (policy keys off them): `list_apps` and `app_status` read-only; `app_logs` reads
+//! untrusted content (app output is attacker-influenced); `deploy_app` and `update_app`
+//! [`Effect::Deploy`] (always confirmed: they choose what software runs); `start_app`
 //! Reversible; `stop_app` Disruptive (always confirmed, never called destructive: nothing is
 //! deleted); `uninstall_app` Destructive (always confirmed, even when the data is kept).
 //! Generated secrets never appear in any tool's output.
 //!
-//! Links: every app with a web port gets its own port on the device (a NodePort from
-//! [`APP_PORTS`], recorded on its namespace), so it is reachable at
-//! `http://<device address>:<port>` on the LAN and over Tailscale without any DNS. The
-//! `<app>.<domain>` Ingress stays for people with their own DNS (`dns_url`).
+//! Ports: the web port and `public` ports (TCP or UDP) each get their own port on the device
+//! (a NodePort from [`APP_PORTS`], recorded on the namespace), so the app is reachable at
+//! `<device address>:<port>` on the LAN and over Tailscale without any DNS. The web port also
+//! gets `http://<app>.<domain>` for people with their own DNS (`dns_url`).
 //!
-//! Workspaces: an installed app is a workspace (docs/AGENT-MODEL.md) owned by one agent. Every tool
+//! Workspaces: a deployed app is a workspace (docs/AGENT-MODEL.md) owned by one agent. Every tool
 //! declares its `app` argument as its target (`Tool::target`), so the registry checks the
-//! caller's scope first (`melissa_agent::tools::scope`): `install_app`, `stop_app`,
-//! `start_app` and `uninstall_app` change the workspace, `app_logs` reads into it (scoped), `app_status` only reads names and
-//! phases. `install_app` records the device and the owning agent on a new workspace's namespace
-//! ([`Ownership`]): an agent's new workspace is its own, the lead agent names the agent (`agent`), the user
-//! may. An existing record is kept. [`Workspaces`] reads it back, lists workspaces and reassigns them.
+//! caller's scope first (`melissa_agent::tools::scope`): `deploy_app`, `update_app`,
+//! `stop_app`, `start_app` and `uninstall_app` change the workspace, `app_logs` reads into it
+//! (scoped), `app_status` only reads. `deploy_app` records the device and the owning agent on
+//! a new workspace's namespace ([`Ownership`]): an agent's new workspace is its own, the lead
+//! agent names the agent (`agent`), the user may. An existing record is kept. [`Workspaces`]
+//! reads it back, lists workspaces and reassigns them.
 
-use std::{collections::BTreeMap, io::Read, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Read,
+    sync::Arc,
+    time::Duration,
+};
 
 use k8s_openapi::api::{
     apps::v1::Deployment,
@@ -34,16 +47,18 @@ use melissa_agent::{
     },
     BoxFuture, TaskId,
 };
-use melissa_catalog::{namespace_of, valid_app_name, Catalog, Manifest};
+use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec, Protocol};
 use serde_json::{json, Map, Value};
 
 use crate::{
-    apps::{AppDeployer, AppObject, AppRead, LogRequest},
+    apps::{AppDeployer, AppObject, AppRead, LogRequest, NamedKind},
     device,
     health::reason_code,
     render::{
-        assign_patch, render, secret_object, Ownership, Placement, APP_PORTS, CONFIG_ANNOTATION,
-        PORT_ANNOTATION, REPLICAS_BEFORE_STOP_ANNOTATION,
+        assign_patch, files_name, parse_ports_annotation, port_service_name, render, secret_object,
+        AppObjects, Ownership, Placement, APP_PORTS, CONFIG_ANNOTATION, ORIGIN_SPEC,
+        PORTS_ANNOTATION, PORT_ANNOTATION, REPLICAS_BEFORE_STOP_ANNOTATION,
+        SHARED_SECRETS_ANNOTATION, SPEC_ANNOTATION,
     },
     ClusterError,
 };
@@ -59,10 +74,9 @@ const MAX_LOG_LINE_CHARS: usize = 2000;
 /// Most replicas `start_app` restores (apps are single-replica today).
 const MAX_RESTORED_REPLICAS: i32 = 10;
 
-/// Where the catalog lives, which domain ingress hosts use, and the device the workspaces are on.
+/// Which domain ingress hosts use, how links are built, and the device the workspaces are on.
 #[derive(Clone)]
 pub struct AppSettings {
-    pub catalog_dir: PathBuf,
     pub domain: String,
     /// Addresses (IPs or host names) people reach this device at, for app links
     /// (`http://<address>:<port>`), most useful first. `None`: found at call time (the LAN
@@ -74,23 +88,11 @@ pub struct AppSettings {
     pub port_offset: i32,
     /// This device's id, recorded on every new workspace.
     pub device: String,
-    /// Agent names, for the `agent` argument of `install_app` and for messages.
+    /// Agent names, for the `agent` argument of `deploy_app` and for messages.
     pub agents: Option<Arc<dyn AgentNames>>,
 }
 
 impl AppSettings {
-    /// The catalog is a handful of small files: load it per call, so a changed catalog
-    /// (image update, dev checkout) needs no restart.
-    fn catalog(&self) -> Catalog {
-        Catalog::load_dir(&self.catalog_dir)
-    }
-
-    fn manifest(&self, app: &str) -> Result<Manifest, ToolError> {
-        self.catalog().apps.remove(app).ok_or_else(|| {
-            ToolError::BadArgs(format!("`{app}` is not in the catalog (see list_catalog)"))
-        })
-    }
-
     /// `http://<app>.<domain>`: works only where that name resolves (the owner's own DNS).
     fn dns_url(&self, app: &str) -> String {
         format!("http://{app}.{}", self.domain)
@@ -105,14 +107,6 @@ impl AppSettings {
                 .map(ToString::to_string)
                 .collect(),
         }
-    }
-
-    /// Links to an app on `port`, one per address.
-    fn urls(&self, port: u16) -> Vec<String> {
-        self.addresses()
-            .iter()
-            .map(|a| device::url(a, port))
-            .collect()
     }
 
     /// Host names an app is reached at (builtin `device_hosts`): the addresses, and when
@@ -130,27 +124,142 @@ impl AppSettings {
     }
 }
 
-/// The app's port on the device, from its namespace (`None`: none recorded yet).
+/// The web port's NodePort, from the app's namespace (`None`: none recorded).
 fn port_of(ns: &Namespace) -> Option<u16> {
-    ns.metadata
-        .annotations
-        .as_ref()
-        .and_then(|a| a.get(PORT_ANNOTATION))
+    annotation(ns, PORT_ANNOTATION)
         .and_then(|p| p.parse().ok())
         .filter(|p| APP_PORTS.contains(p))
 }
 
-/// Link fields for an app on NodePort `node_port` (`None`: no port, e.g. uninstalled or no
-/// web port). `port` is where people reach it: the NodePort plus `[apps] port_offset`.
-fn link_fields(settings: &AppSettings, app: &str, node_port: Option<u16>, has_web: bool) -> Value {
-    let port = node_port.and_then(|p| device::published_port(p, settings.port_offset));
-    let urls = port.map(|p| settings.urls(p)).unwrap_or_default();
+/// The other public ports' NodePorts, from the app's namespace.
+fn ports_of(ns: &Namespace) -> BTreeMap<String, (u16, Protocol)> {
+    annotation(ns, PORTS_ANNOTATION)
+        .map(parse_ports_annotation)
+        .unwrap_or_default()
+}
+
+fn annotation<'a>(ns: &'a Namespace, key: &str) -> Option<&'a str> {
+    ns.metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(key))
+        .map(String::as_str)
+}
+
+/// Secret fields an old catalog install keeps in its shared `<app>-secrets`.
+fn shared_secrets_of(ns: &Namespace) -> BTreeSet<String> {
+    annotation(ns, SHARED_SECRETS_ANNOTATION)
+        .map(|v| v.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// The spec stored on the namespace, or for an app from the old catalog (no spec stored
+/// yet), the spec rebuilt from its name and install config.
+fn stored_spec(app: &str, ns: &Namespace, deployment: Option<&Deployment>) -> Option<AppSpec> {
+    if let Some(text) = annotation(ns, SPEC_ANNOTATION) {
+        return AppSpec::from_text(text).ok();
+    }
+    legacy::from_catalog(app, &legacy_config(deployment))
+}
+
+/// The config a catalog install recorded on its Deployment (empty if none).
+fn legacy_config(deployment: Option<&Deployment>) -> Map<String, Value> {
+    deployment
+        .and_then(|d| d.metadata.annotations.as_ref())
+        .and_then(|a| a.get(CONFIG_ANNOTATION))
+        .and_then(|c| serde_json::from_str::<Map<String, Value>>(c).ok())
+        .unwrap_or_default()
+}
+
+/// The patch that stores a catalog install's rebuilt spec on its namespace, with the record
+/// that its secrets live in the shared `<app>-secrets`. `None`: nothing to do (a spec is
+/// stored already, or the app is not one the catalog shipped).
+pub fn legacy_spec_patch(
+    app: &str,
+    ns: &Namespace,
+    deployment: Option<&Deployment>,
+) -> Option<Value> {
+    if annotation(ns, SPEC_ANNOTATION).is_some() {
+        return None;
+    }
+    let spec = legacy::from_catalog(app, &legacy_config(deployment))?;
+    let shared: Vec<String> = spec.secrets.iter().map(|s| s.name.clone()).collect();
+    Some(json!({"metadata": {"annotations": {
+        SPEC_ANNOTATION: spec.to_text(),
+        SHARED_SECRETS_ANNOTATION: shared.join(" "),
+    }}}))
+}
+
+/// One port of an app on the device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DevicePort {
+    name: String,
+    protocol: Protocol,
+    node_port: u16,
+    web: bool,
+}
+
+/// The app's ports on the device from its namespace records: the web port first.
+fn device_ports(ns: &Namespace, spec: Option<&AppSpec>) -> Vec<DevicePort> {
+    let web_name = spec.and_then(|s| s.web.clone());
+    let mut out: Vec<DevicePort> = Vec::new();
+    // A recorded web port counts only while the spec still has a web port (or there is no
+    // spec to say otherwise: a catalog install).
+    if let Some(p) = port_of(ns).filter(|_| spec.is_none() || web_name.is_some()) {
+        out.push(DevicePort {
+            name: web_name.unwrap_or_else(|| "http".into()),
+            protocol: Protocol::Tcp,
+            node_port: p,
+            web: true,
+        });
+    }
+    out.extend(
+        ports_of(ns)
+            .into_iter()
+            .map(|(name, (node_port, protocol))| DevicePort {
+                name,
+                protocol,
+                node_port,
+                web: false,
+            }),
+    );
+    out
+}
+
+/// Link fields for an app with `ports` on the device (empty: none, e.g. uninstalled). `port`
+/// and `url` are the web port's (where people reach it: the NodePort plus `[apps]
+/// port_offset`); `ports` lists every port with `address:port` and its protocol.
+fn link_fields(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value {
+    let addresses = settings.addresses();
+    let first = addresses.first();
+    let web = ports.iter().find(|p| p.web);
+    let published = |p: &DevicePort| device::published_port(p.node_port, settings.port_offset);
+    let web_port = web.and_then(published);
+    let urls: Vec<String> = web_port
+        .map(|p| addresses.iter().map(|a| device::url(a, p)).collect())
+        .unwrap_or_default();
+    let list: Vec<Value> = ports
+        .iter()
+        .filter_map(|p| {
+            let port = published(p)?;
+            Some(json!({
+                "name": p.name,
+                "protocol": p.protocol.lower(),
+                "port": port,
+                "node_port": p.node_port,
+                "web": p.web,
+                "address": first.map(|a| device::host_port(a, port)),
+                "url": (p.web).then(|| first.map(|a| device::url(a, port))).flatten(),
+            }))
+        })
+        .collect();
     json!({
         "url": urls.first(),
         "urls": urls,
-        "port": port,
-        "node_port": node_port,
-        "dns_url": has_web.then(|| settings.dns_url(app)),
+        "port": web_port,
+        "node_port": web.map(|p| p.node_port),
+        "dns_url": web.map(|_| settings.dns_url(app)),
+        "ports": list,
     })
 }
 
@@ -169,15 +278,14 @@ where
     let settings = Arc::new(settings);
     let read = cluster.clone().map(|c| c as Arc<dyn AppRead>);
     let deploy = cluster.map(|c| c as Arc<dyn AppDeployer>);
+    let deployer = Arc::new(Deployer {
+        settings: settings.clone(),
+        read: read.clone(),
+        deploy: deploy.clone(),
+    });
     vec![
-        Arc::new(ListCatalog {
-            settings: settings.clone(),
-        }),
-        Arc::new(InstallApp {
-            settings: settings.clone(),
-            read: read.clone(),
-            deploy: deploy.clone(),
-        }),
+        Arc::new(DeployApp(deployer.clone())),
+        Arc::new(UpdateApp(deployer)),
         Arc::new(ListApps(AppStatus {
             settings: settings.clone(),
             read: read.clone(),
@@ -338,19 +446,50 @@ impl Workspaces {
             .as_ref()
             .ok_or_else(|| no_cluster().to_string())?;
         let mut moved = 0;
-        for name in self.settings.catalog().apps.keys() {
-            let Some(ns) = read.namespace(name).await.map_err(|e| e.to_string())? else {
+        for name in read.app_names().await.map_err(|e| e.to_string())? {
+            let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
                 continue;
             };
             if let Some(patch) = crate::render::relabel_patch(&ns) {
                 deploy
-                    .patch_namespace(name, &patch)
+                    .patch_namespace(&name, &patch)
                     .await
                     .map_err(|e| format!("{name}: {e}"))?;
                 moved += 1;
             }
         }
         Ok(moved)
+    }
+
+    /// Store a spec on every app installed from the old catalog (dropped 2026-11-19), rebuilt
+    /// from its name and install config ([`legacy_spec_patch`]), so `update_app` and
+    /// `app_status` work on it like on any other app. Nothing is re-applied: the app keeps
+    /// running untouched. Returns how many were converted. Idempotent; until it has run, the
+    /// tools rebuild the spec on the fly.
+    pub async fn migrate_catalog_apps(&self) -> Result<usize, String> {
+        let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+        let deploy = self
+            .deploy
+            .as_ref()
+            .ok_or_else(|| no_cluster().to_string())?;
+        let mut converted = 0;
+        for name in read.app_names().await.map_err(|e| e.to_string())? {
+            let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
+                continue;
+            };
+            if is_terminating(&ns) {
+                continue;
+            }
+            let deployment = read.deployment(&name).await.map_err(|e| e.to_string())?;
+            if let Some(patch) = legacy_spec_patch(&name, &ns, deployment.as_ref()) {
+                deploy
+                    .patch_namespace(&name, &patch)
+                    .await
+                    .map_err(|e| format!("{name}: {e}"))?;
+                converted += 1;
+            }
+        }
+        Ok(converted)
     }
 }
 
@@ -380,14 +519,13 @@ impl WorkspaceStore for Workspaces {
         Box::pin(async move {
             let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
             let mut out = Vec::new();
-            // Per catalog app: the write identity may get namespaces but not list them.
-            for name in self.settings.catalog().apps.keys() {
-                let Some(ns) = read.namespace(name).await.map_err(|e| e.to_string())? else {
+            for name in read.app_names().await.map_err(|e| e.to_string())? {
+                let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
                     continue;
                 };
                 let o = Ownership::of(&ns);
                 out.push(WorkspaceInfo {
-                    name: name.clone(),
+                    name,
                     owner: o.owner,
                     device: o.device,
                     assigned_by: o.assigned_by,
@@ -477,88 +615,99 @@ fn is_terminating(ns: &Namespace) -> bool {
         || ns.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Terminating")
 }
 
-// ---- list_catalog ------------------------------------------------------------------------
+// ---- deploy_app / update_app ---------------------------------------------------------------
 
-struct ListCatalog {
-    settings: Arc<AppSettings>,
+/// The spec format, for the tool descriptions (kept short: agents read it on every turn).
+macro_rules! spec_help {
+    () => {
+        "`spec`: {description, version?, containers: [{name, image (pinned tag \
+    or digest, e.g. `docker.io/itzg/minecraft-server:java21`; Docker Hub short names are fine), \
+    command?, args?, env? {NAME: \"value\" | number | bool | {secret: name} | {builtin: \
+    device_hosts|ingress_host|ingress_url}}, ports? [{name, port, protocol? tcp|udp, public? \
+    (reachable from other devices)}], mounts? [{volume, path}], files? [{path, content, \
+    executable?}] (small config files, read-only), resources? {cpu, memory, cpu_request?, \
+    memory_request?} (limits; default 1 CPU, 512Mi), probe? {port, path? (HTTP; else TCP), \
+    startup_timeout_secs?}, run_as_user?, run_as_group?}], volumes? [{name, size}], secrets? \
+    [{name, length?}] (generated by the server, never shown), web? (the port name of the web \
+    UI: it gets a link), credentials? {user?, password: secret name}}. Containers share one \
+    pod: a database sidecar is at localhost."
+    };
 }
 
-impl Tool for ListCatalog {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "list_catalog",
-            description:
-                "Apps this device can install (Melissa's reviewed catalog): name, version, \
-                description, whether it has a web UI (it gets its own port on this device \
-                at install), volumes, and the config fields install_app \
-                accepts (type, default, allowed values). Secret fields are generated at \
-                install and can't be set or read by agents.",
-            labels: Labels::READ_ONLY,
-            params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
-        }
-    }
-
-    fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async move {
-            let catalog = self.settings.catalog();
-            let apps: Vec<Value> = catalog
-                .apps
-                .values()
-                .map(|m| {
-                    let config: Vec<Value> = m
-                        .config
-                        .iter()
-                        .map(|f| {
-                            json!({
-                                "name": f.name,
-                                "type": f.kind.as_str(),
-                                "description": f.description,
-                                "default": f.default,
-                                "options": f.options,
-                                "min": f.min,
-                                "max": f.max,
-                                "settable": f.kind != melissa_catalog::FieldType::Secret,
-                            })
-                        })
-                        .collect();
-                    json!({
-                        "name": m.name,
-                        "version": m.version,
-                        "description": m.description,
-                        "web_ui": m.ingress.is_some(),
-                        "dns_url": m.ingress.as_ref().map(|_| self.settings.dns_url(&m.name)),
-                        "volumes": m.volumes.iter().map(|v| json!({"name": v.name, "size": v.size})).collect::<Vec<_>>(),
-                        "config": config,
-                    })
-                })
-                .collect();
-            Ok(json!({
-                "apps": apps,
-                // File names only: the catalog is reviewed text, but keep errors short.
-                "invalid_manifests": catalog.errors.iter().map(|(p, e)| json!({
-                    "file": p.file_name().map(|f| f.to_string_lossy().into_owned()),
-                    "error": e,
-                })).collect::<Vec<_>>(),
-            }))
-        })
-    }
-}
-
-// ---- install_app -------------------------------------------------------------------------
-
-struct InstallApp {
+/// The shared deploy path of `deploy_app` and `update_app`.
+struct Deployer {
     settings: Arc<AppSettings>,
     read: Option<Arc<dyn AppRead>>,
     deploy: Option<Arc<dyn AppDeployer>>,
 }
 
-/// Who is installing, from the caller's scope (None: the plain `call`, i.e. the user).
+/// Who is deploying, from the caller's scope (`Scope::User` for the plain `call`).
 struct Installer<'a> {
     scope: &'a Scope,
     task: TaskId,
 }
 
-impl InstallApp {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// `deploy_app`: a new app, or one uninstalled with its data kept.
+    New,
+    /// `update_app`: a new spec for an existing app.
+    Update,
+}
+
+impl Mode {
+    fn allowed_args(self) -> &'static [&'static str] {
+        match self {
+            Self::New => &["app", "spec", "agent"],
+            Self::Update => &["app", "spec"],
+        }
+    }
+}
+
+/// The `spec` argument, validated (None: not given).
+fn spec_arg(args: &Map<String, Value>) -> Result<Option<AppSpec>, ToolError> {
+    match args.get("spec") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v @ Value::Object(_)) => AppSpec::from_json(v)
+            .map(Some)
+            .map_err(|e| ToolError::BadArgs(format!("spec: {e}"))),
+        // Some agents send the JSON as a string.
+        Some(Value::String(s)) => AppSpec::from_text(s)
+            .map(Some)
+            .map_err(|e| ToolError::BadArgs(format!("spec: {e}"))),
+        Some(_) => Err(ToolError::BadArgs("`spec` must be an object".into())),
+    }
+}
+
+/// Check the arguments before anyone is asked to confirm (a bad spec fails at once).
+fn check_deploy_args(args: &Value, mode: Mode) -> Result<(), ToolError> {
+    let args = arg_object(args)?;
+    reject_unknown(args, mode.allowed_args())?;
+    app_arg(args)?;
+    let spec = spec_arg(args)?;
+    if mode == Mode::Update && spec.is_none() {
+        return Err(ToolError::BadArgs(
+            "`spec` is required: the whole new spec (app_status shows the current one)".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The confirmation text: what will run.
+fn describe_deploy(args: &Value, mode: Mode) -> Option<String> {
+    let app = args.get("app")?.as_str()?;
+    let verb = match mode {
+        Mode::New => "deploy",
+        Mode::Update => "update",
+    };
+    let spec = arg_object(args).ok().and_then(|a| spec_arg(a).ok())?;
+    Some(match spec {
+        Some(spec) => format!("{verb} `{app}`: {}", spec.summary().join("; ")),
+        None => format!("bring `{app}` back with its last spec and its data"),
+    })
+}
+
+impl Deployer {
     /// The owner a new workspace gets: an agent's own new workspace is its; the lead agent names the agent that
     /// looks after it (`agent`, required); the user may name one (else unassigned).
     fn new_owner(&self, who: &Installer<'_>, agent_arg: Option<&str>) -> Result<Owner, ToolError> {
@@ -595,25 +744,18 @@ impl InstallApp {
         }
     }
 
-    /// An existing workspace keeps its record: reinstalling never changes the owner.
-    async fn install(&self, args: Value, who: Installer<'_>) -> Result<Value, ToolError> {
+    /// Deploy (`Mode::New`) or update (`Mode::Update`). An existing workspace keeps its
+    /// record: deploying never changes the owner.
+    async fn run(&self, args: Value, who: Installer<'_>, mode: Mode) -> Result<Value, ToolError> {
+        check_deploy_args(&args, mode)?;
         let args = arg_object(&args)?;
-        reject_unknown(args, &["app", "config", "agent"])?;
         let app = app_arg(args)?;
         let agent_arg = match args.get("agent") {
             None | Some(Value::Null) => None,
             Some(Value::String(b)) if !b.trim().is_empty() => Some(b.trim()),
             Some(_) => return Err(ToolError::BadArgs("`agent` must be an agent's name".into())),
         };
-        let overrides = match args.get("config") {
-            None | Some(Value::Null) => Map::new(),
-            Some(Value::Object(o)) => o.clone(),
-            Some(_) => return Err(ToolError::BadArgs("`config` must be an object".into())),
-        };
-        let manifest = self.settings.manifest(&app)?;
-        let config = manifest
-            .resolve_config(&overrides)
-            .map_err(|e| ToolError::BadArgs(e.to_string()))?;
+        let given = spec_arg(args)?;
         let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
             return Err(no_cluster());
         };
@@ -626,6 +768,36 @@ impl InstallApp {
                 )));
             }
         }
+        let current = match &existing {
+            Some(_) => read.deployment(&app).await.map_err(failed)?,
+            None => None,
+        };
+        match (mode, &existing, &current) {
+            (Mode::New, Some(_), Some(_)) => {
+                return Err(ToolError::BadArgs(format!(
+                    "`{app}` is already deployed; change it with update_app (or pick another \
+                     name for a second one)"
+                )))
+            }
+            (Mode::Update, None, _) => {
+                return Err(ToolError::Failed(format!(
+                    "`{app}` is not deployed; deploy_app deploys it"
+                )))
+            }
+            _ => {}
+        }
+        let spec = match given {
+            Some(spec) => spec,
+            None => existing
+                .as_ref()
+                .and_then(|ns| stored_spec(&app, ns, current.as_ref()))
+                .ok_or_else(|| {
+                    ToolError::BadArgs(format!(
+                        "`spec` is required: `{app}` has no earlier spec to bring back"
+                    ))
+                })?,
+        };
+
         let names = self.settings.agents.as_deref();
         let ownership = match &existing {
             Some(ns) => {
@@ -634,8 +806,8 @@ impl InstallApp {
                     let wanted = names.and_then(|n| n.resolve_id(b));
                     if wanted.as_deref() != o.owner.label_value() {
                         return Err(ToolError::BadArgs(format!(
-                            "`{app}` is already installed and looked after by {}; reinstall \
-                             without `agent` (moving a workspace is reassign_workspace)",
+                            "`{app}` exists and is looked after by {}; deploy without `agent` \
+                             (moving a workspace is reassign_workspace)",
                             match &o.owner {
                                 Owner::Agent(id) => describe_agent(names, id),
                                 Owner::Unassigned => "no agent".into(),
@@ -658,77 +830,98 @@ impl InstallApp {
                     owner,
                     installed_by: actor,
                     installed_at: now,
-                    origin: "catalog".into(),
+                    origin: ORIGIN_SPEC.into(),
                     legacy_owner: None,
                 }
             }
         };
-        // A stopped app stays stopped: installing over it (e.g. a config change) never
-        // undoes a stop the user confirmed; start_app does.
-        let stopped_from = match &existing {
-            Some(_) => read
-                .deployment(&app)
-                .await
-                .map_err(failed)?
-                .filter(|d| d.spec.replicas == Some(0))
-                .map(|d| replicas_before_stop(&d)),
-            None => None,
-        };
-        let recorded_port = existing.as_ref().and_then(port_of);
-        let mut port = match (&manifest.ingress, recorded_port) {
-            (None, _) => None,
-            (Some(_), Some(p)) => Some(p),
-            (Some(_), None) => Some(self.free_port(read.as_ref(), &app, &[]).await?),
-        };
-        let hosts = self.settings.device_hosts();
-        let placement = Placement {
-            port,
-            stopped_from,
-            hosts: &hosts,
-            ..Placement::domain(&self.settings.domain)
-        };
-        let mut objects = render(&manifest, &config, &placement);
-        ownership.apply_to(&app, &mut objects.namespace);
-        // A new port is recorded on the namespace only once its Service exists (the record
-        // never changes afterwards, see the namespaces admission policy).
-        let mut namespace_with_port = None;
-        if recorded_port.is_none() && port.is_some() {
-            namespace_with_port = Some(objects.namespace.clone());
-            if let Some(a) = objects.namespace.metadata.annotations.as_mut() {
-                a.remove(PORT_ANNOTATION);
+        // A stopped app stays stopped: an update never undoes a stop the user confirmed;
+        // start_app does.
+        let stopped_from = current
+            .as_ref()
+            .filter(|d| d.spec.replicas == Some(0))
+            .map(replicas_before_stop);
+
+        // Ports on the device: a port keeps its NodePort; new ones get free ones.
+        let recorded_web = existing.as_ref().and_then(port_of);
+        let recorded = existing.as_ref().map(ports_of).unwrap_or_default();
+        let mut node_ports: BTreeMap<String, u16> = BTreeMap::new();
+        let mut new_ports: Vec<String> = Vec::new();
+        for p in spec.public_ports() {
+            let is_web = spec.web.as_deref() == Some(p.name.as_str());
+            let kept = if is_web {
+                recorded_web
+            } else {
+                recorded.get(&p.name).map(|(n, _)| *n)
+            };
+            match kept {
+                Some(n) => {
+                    node_ports.insert(p.name.clone(), n);
+                }
+                None => new_ports.push(p.name.clone()),
             }
         }
+        let mut tried: Vec<u16> = Vec::new();
+        self.allocate(
+            read.as_ref(),
+            &app,
+            recorded_web,
+            &new_ports,
+            &tried,
+            &mut node_ports,
+        )
+        .await?;
+        let shared = existing.as_ref().map(shared_secrets_of).unwrap_or_default();
+        let hosts = self.settings.device_hosts();
+        let domain = self.settings.domain.clone();
+        let place = |node_ports: &BTreeMap<String, u16>| -> AppObjects {
+            render(
+                &app,
+                &spec,
+                &Placement {
+                    node_ports,
+                    recorded_web_port: recorded_web,
+                    stopped_from,
+                    hosts: &hosts,
+                    shared_secrets: &shared,
+                    ..Placement::domain(&domain)
+                },
+            )
+        };
+        let mut objects = place(&node_ports);
+        ownership.apply_to(&app, &mut objects.namespace);
+        // New ports are recorded on the namespace only once their Service exists (a web
+        // port's record never changes afterwards, see the namespaces admission policy).
+        let first_ports: BTreeMap<String, u16> = node_ports
+            .iter()
+            .filter(|(k, _)| !new_ports.contains(k))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let mut first_ns = place(&first_ports).namespace;
+        ownership.apply_to(&app, &mut first_ns);
 
         let mut applied = Vec::new();
         for object in [
-            AppObject::Namespace(objects.namespace),
+            AppObject::Namespace(first_ns),
             AppObject::RoleBinding(objects.role_binding),
         ] {
             deploy.apply(&object).await.map_err(failed)?;
             applied.push(object.kind());
         }
-        let secrets = match &objects.secret {
-            Some(plan) => {
-                let mut values = BTreeMap::new();
-                for (key, len) in &plan.keys {
-                    let value = generate_secret(*len).map_err(|e| {
-                        ToolError::Failed(format!("generating a secret failed: {e}"))
-                    })?;
-                    values.insert(key.clone(), value);
-                }
-                let created = deploy
-                    .create_secret(&secret_object(plan, values))
-                    .await
-                    .map_err(failed)?;
-                // The values go out of scope here; only the cluster keeps them.
-                Some(if created {
-                    "generated"
-                } else {
-                    "kept existing"
-                })
-            }
-            None => None,
-        };
+        let mut secret_states = BTreeMap::new();
+        for plan in &objects.secrets {
+            let value = generate_secret(plan.length)
+                .map_err(|e| ToolError::Failed(format!("generating a secret failed: {e}")))?;
+            let created = deploy
+                .create_secret(&secret_object(plan, value))
+                .await
+                .map_err(failed)?;
+            // The value goes out of scope here; only the cluster keeps it.
+            secret_states.insert(plan.key.clone(), if created { "generated" } else { "kept" });
+        }
+        let has_files = objects.files.is_some();
+        let has_service = objects.service.is_some();
+        let has_ingress = objects.ingress.is_some();
         let rest = objects
             .volumes
             .into_iter()
@@ -741,115 +934,167 @@ impl InstallApp {
             deploy.apply(&object).await.map_err(failed)?;
             applied.push(object.kind());
         }
+        let has_port_service = objects.port_service.is_some();
         if let Some(mut service) = objects.port_service {
-            let mut tried = Vec::new();
             loop {
                 match deploy.apply(&AppObject::Service(service.clone())).await {
                     Ok(()) => break,
-                    // Someone else holds this NodePort: take the next free one (a new port
-                    // only; a recorded one is this app's already).
+                    // Someone else holds a new NodePort: take other free ones (new ports
+                    // only; recorded ones are this app's already).
                     Err(ClusterError::Api(m))
                         if m.contains("already allocated")
-                            && recorded_port.is_none()
-                            && tried.len() < 5 =>
+                            && !new_ports.is_empty()
+                            && tried.len() < 5 * new_ports.len() =>
                     {
-                        tried.extend(port);
-                        let next = self.free_port(read.as_ref(), &app, &tried).await?;
-                        port = Some(next);
-                        set_node_port(&mut service, next);
+                        tried.extend(new_ports.iter().filter_map(|n| node_ports.get(n)));
+                        for n in &new_ports {
+                            node_ports.remove(n);
+                        }
+                        self.allocate(
+                            read.as_ref(),
+                            &app,
+                            recorded_web,
+                            &new_ports,
+                            &tried,
+                            &mut node_ports,
+                        )
+                        .await?;
+                        service = place(&node_ports).port_service.unwrap_or(service);
                     }
                     Err(e) => return Err(failed(e)),
                 }
             }
-            applied.push("Service (device port)");
+            applied.push("Service (device ports)");
         }
-        if let (Some(mut ns), Some(p)) = (namespace_with_port, port) {
-            ns.metadata
-                .annotations
-                .get_or_insert_with(BTreeMap::new)
-                .insert(PORT_ANNOTATION.into(), p.to_string());
-            deploy
-                .apply(&AppObject::Namespace(ns))
+        // The final namespace: all port records.
+        let mut ns = place(&node_ports).namespace;
+        ownership.apply_to(&app, &mut ns);
+        deploy
+            .apply(&AppObject::Namespace(ns))
+            .await
+            .map_err(failed)?;
+        // What an earlier spec had and this one doesn't.
+        let mut removed = Vec::new();
+        if existing.is_some() {
+            for (kind, name, keep) in [
+                (NamedKind::Ingress, app.clone(), has_ingress),
+                (
+                    NamedKind::Service,
+                    port_service_name(&app),
+                    has_port_service,
+                ),
+                (NamedKind::Service, app.clone(), has_service),
+                (NamedKind::ConfigMap, files_name(&app), has_files),
+            ] {
+                if !keep
+                    && deploy
+                        .delete_named(&app, kind, &name)
+                        .await
+                        .map_err(failed)?
+                {
+                    removed.push(kind.as_str());
+                }
+            }
+        }
+        let unused_volumes: Vec<String> = match &existing {
+            Some(_) => read
+                .volumes(&app)
                 .await
-                .map_err(failed)?;
-        }
-        let secret_fields: Vec<&String> = config.secrets.keys().collect();
+                .map_err(failed)?
+                .iter()
+                .filter_map(|v| v.metadata.name.clone())
+                .filter(|n| {
+                    !spec
+                        .volumes
+                        .iter()
+                        .any(|v| crate::render::pvc_name(&app, &v.name) == *n)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
         let mut out = json!({
             "app": app,
-            "version": manifest.version,
-            "namespace": manifest.namespace(),
+            "namespace": namespace_of(&app),
             "applied": applied,
+            "removed": removed,
+            "runs": spec.summary(),
             "stopped": stopped_from.is_some(),
             "agent": ownership.owner.label_value(),
             "agent_name": ownership.owner.label_value().and_then(|id| names.and_then(|n| n.name_of(id))),
             "device": ownership.device,
             "installed_by": ownership.installed_by,
-            "config": config.values,
-            "secrets": secrets.map(|state| json!({
-                "fields": secret_fields,
-                "state": state,
-                "note": "values are never shown to agents; the owner reads them with \
+            "secrets": (!secret_states.is_empty()).then(|| json!({
+                "fields": secret_states,
+                "note": "values are never shown to agents; the owner reads the credentials with \
                          `sudo melissa-server app-credentials <app>`",
             })),
+            "unused_volumes_kept": unused_volumes,
             "next": if stopped_from.is_some() {
-                "the app is stopped and stays stopped (its settings are updated); start_app \
-                 starts it"
+                "the app is stopped and stays stopped (its spec is updated); start_app starts it"
             } else {
-                "the image is pulled and the app starts in the background; poll app_status"
+                "images are pulled and the app starts in the background; poll app_status (a \
+                 failing pod's reason and app_logs tell what is wrong)"
             },
         });
-        merge(
-            &mut out,
-            link_fields(&self.settings, &app, port, manifest.ingress.is_some()),
-        );
+        let ports: Vec<DevicePort> = spec
+            .public_ports()
+            .into_iter()
+            .filter_map(|p| {
+                Some(DevicePort {
+                    name: p.name.clone(),
+                    protocol: p.protocol,
+                    node_port: *node_ports.get(&p.name)?,
+                    web: spec.web.as_deref() == Some(p.name.as_str()),
+                })
+            })
+            .collect();
+        merge(&mut out, link_fields(&self.settings, &app, &ports));
         Ok(out)
     }
 
-    /// The lowest port in [`APP_PORTS`] that no catalog app records and that is not in
-    /// `skip`. Per-app reads: the write identity may get namespaces but not list them.
-    async fn free_port(
+    /// Give each of `names` a free port from [`APP_PORTS`] (into `node_ports`): one no other
+    /// app records, not this app's recorded web port, not in `skip`, not taken already.
+    /// Per-app reads of the namespace records.
+    async fn allocate(
         &self,
         read: &dyn AppRead,
         app: &str,
+        recorded_web: Option<u16>,
+        names: &[String],
         skip: &[u16],
-    ) -> Result<u16, ToolError> {
-        let mut used: Vec<u16> = skip.to_vec();
-        for name in self.settings.catalog().apps.keys() {
+        node_ports: &mut BTreeMap<String, u16>,
+    ) -> Result<(), ToolError> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut used: BTreeSet<u16> = skip.iter().copied().collect();
+        used.extend(recorded_web);
+        used.extend(node_ports.values().copied());
+        for name in read.app_names().await.map_err(failed)? {
             if name == app {
                 continue;
             }
-            if let Some(p) = read
-                .namespace(name)
-                .await
-                .map_err(failed)?
-                .as_ref()
-                .and_then(port_of)
-            {
-                used.push(p);
+            if let Some(ns) = read.namespace(&name).await.map_err(failed)? {
+                used.extend(port_of(&ns));
+                used.extend(ports_of(&ns).values().map(|(n, _)| *n));
             }
         }
-        APP_PORTS
-            .clone()
-            .find(|p| !used.contains(p))
-            .ok_or_else(|| {
-                ToolError::Failed(format!(
-                    "no free app port left in {}-{}",
-                    APP_PORTS.start(),
-                    APP_PORTS.end()
-                ))
-            })
-    }
-}
-
-/// Point a rendered port Service at `port`.
-fn set_node_port(service: &mut k8s_openapi::api::core::v1::Service, port: u16) {
-    for p in service
-        .spec
-        .iter_mut()
-        .flat_map(|s| s.ports.iter_mut())
-        .flatten()
-    {
-        p.node_port = Some(i32::from(port));
+        for name in names {
+            let free = APP_PORTS
+                .clone()
+                .find(|p| !used.contains(p))
+                .ok_or_else(|| {
+                    ToolError::Failed(format!(
+                        "no free app port left in {}-{}",
+                        APP_PORTS.start(),
+                        APP_PORTS.end()
+                    ))
+                })?;
+            used.insert(free);
+            node_ports.insert(name.clone(), free);
+        }
+        Ok(())
     }
 }
 
@@ -864,24 +1109,34 @@ fn replicas_before_stop(d: &Deployment) -> i32 {
         .unwrap_or(1)
 }
 
-impl Tool for InstallApp {
+/// The deploy tools' labels: always confirmed (they choose what software runs here).
+const DEPLOY_LABELS: Labels = Labels {
+    effect: Effect::Deploy,
+    ..Labels::READ_ONLY
+};
+
+struct DeployApp(Arc<Deployer>);
+
+impl Tool for DeployApp {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "install_app",
-            description: "Install (or update the config of) an app from the catalog on this \
-                agent's k3s. `config` may override only the non-secret fields list_catalog \
-                shows. Secrets are generated on the first install and kept on reinstalls; \
-                they are never returned. Data volumes from an earlier install are reused. \
-                Returns at once; follow progress with app_status.",
-            labels: Labels {
-                effect: Effect::Reversible,
-                ..Labels::READ_ONLY
-            },
+            name: "deploy_app",
+            description: concat!(
+                "Deploy any app on this device's k3s from a spec you write: pick well-known \
+                 official images with a pinned version tag, its ports, volumes and settings. \
+                 The user confirms every deploy (they see the images, ports and storage). \
+                 Secrets are generated by the server and never returned. Over an app \
+                 uninstalled with its data kept, the spec may be left out to bring it back. \
+                 Returns at once with its address (`url` for a web UI; `ports` lists \
+                 address:port and protocol); follow progress with app_status. ",
+                spec_help!()
+            ),
+            labels: DEPLOY_LABELS,
             params: json!({
                 "type": "object",
                 "properties": {
-                    "app": {"type": "string", "description": "App name from list_catalog"},
-                    "config": {"type": "object", "description": "Overrides for declared, non-secret config fields"},
+                    "app": {"type": "string", "description": "App name: lowercase letters, digits, `-` (e.g. `minecraft`)"},
+                    "spec": {"type": "object", "description": "The app spec (see the tool description)"},
                     "agent": {"type": "string", "description": "The agent that will look after the new workspace (its name). The lead agent must name one; an agent's own new workspaces are its own (leave this out)."},
                 },
                 "required": ["app"],
@@ -892,12 +1147,13 @@ impl Tool for InstallApp {
 
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
         // Without a caller (direct use, tests): the user.
-        Box::pin(self.install(
+        Box::pin(self.0.run(
             args,
             Installer {
                 scope: &Scope::User,
                 task: 0,
             },
+            Mode::New,
         ))
     }
 
@@ -907,18 +1163,90 @@ impl Tool for InstallApp {
         ctx: &'a mut TaskContext,
         args: Value,
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(self.install(
+        Box::pin(self.0.run(
             args,
             Installer {
                 scope: &ctx.scope,
                 task,
             },
+            Mode::New,
         ))
     }
 
     fn target(&self) -> Option<Target> {
-        // Over an existing app: a change to it. A new name: creating (needs the create right).
-        Some(app_target(Access::Change, "install over"))
+        // A new name: creating (needs the create right). An existing one: a change to it.
+        Some(app_target(Access::Change, "deploy over"))
+    }
+
+    fn check_args(&self, args: &Value) -> Result<(), ToolError> {
+        check_deploy_args(args, Mode::New)
+    }
+
+    fn describe_call(&self, args: &Value) -> Option<String> {
+        describe_deploy(args, Mode::New)
+    }
+}
+
+struct UpdateApp(Arc<Deployer>);
+
+impl Tool for UpdateApp {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "update_app",
+            description: "Change a deployed app: `spec` is the whole new spec (start from \
+                the one app_status shows). Volumes, generated secrets and device ports are \
+                kept; the pod restarts with the new spec. The user confirms every update. A \
+                stopped app stays stopped. Same spec format as deploy_app.",
+            labels: DEPLOY_LABELS,
+            params: json!({
+                "type": "object",
+                "properties": {
+                    "app": {"type": "string"},
+                    "spec": {"type": "object", "description": "The whole new app spec"},
+                },
+                "required": ["app", "spec"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.0.run(
+            args,
+            Installer {
+                scope: &Scope::User,
+                task: 0,
+            },
+            Mode::Update,
+        ))
+    }
+
+    fn call_in<'a>(
+        &'a self,
+        task: TaskId,
+        ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.0.run(
+            args,
+            Installer {
+                scope: &ctx.scope,
+                task,
+            },
+            Mode::Update,
+        ))
+    }
+
+    fn target(&self) -> Option<Target> {
+        Some(app_target(Access::Change, "update"))
+    }
+
+    fn check_args(&self, args: &Value) -> Result<(), ToolError> {
+        check_deploy_args(args, Mode::Update)
+    }
+
+    fn describe_call(&self, args: &Value) -> Option<String> {
+        describe_deploy(args, Mode::Update)
     }
 }
 
@@ -1010,12 +1338,15 @@ impl AppStatus {
             &pods,
         );
         // Links only while the app is installed (stopped included: start_app brings the
-        // same link back).
-        let port = deployment.as_ref().and_then(|_| port_of(&ns));
-        merge(
-            &mut report,
-            link_fields(&self.settings, &app, port, ingress.is_some()),
-        );
+        // same links back).
+        let spec = stored_spec(&app, &ns, deployment.as_ref());
+        let ports = match &deployment {
+            Some(_) => device_ports(&ns, spec.as_ref()),
+            None => Vec::new(),
+        };
+        merge(&mut report, link_fields(&self.settings, &app, &ports));
+        report["description"] = json!(spec.as_ref().map(|s| s.description.clone()));
+        report["spec"] = json!(spec);
         if let (Some(id), Some(names)) = (report["agent"].as_str(), &self.settings.agents) {
             report["agent_name"] = json!(names.name_of(id));
         }
@@ -1027,13 +1358,14 @@ impl Tool for AppStatus {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "app_status",
-            description: "State of an installed app: phase (not_installed, starting, ready, \
-                failing, stopping, stopped, uninstalled_data_kept, deleting), ready replicas, \
-                `url` (http://<this device>:<its port>; `urls`: every address of the \
-                device; `dns_url` only works with the owner's own DNS), config, \
-                the agent that looks after the workspace (`agent`: id, `agent_name`; null = no agent) \
-                and who installed it, volumes, and pods with sanitized problem reasons (e.g. ImagePullBackOff, \
-                CrashLoopBackOff, OOMKilled).",
+            description: "State of an app: phase (not_installed, starting, ready, failing, \
+                stopping, stopped, uninstalled_data_kept, deleting), ready replicas, `url` \
+                (web UI: http://<this device>:<its port>; `urls`: every address of the \
+                device; `dns_url` only works with the owner's own DNS), `ports` (each port on \
+                the device: `address` host:port and `protocol`), its current `spec` (edit it \
+                for update_app), the agent that looks after the workspace (`agent`: id, \
+                `agent_name`; null = no agent) and who installed it, volumes, and pods with \
+                sanitized problem reasons (e.g. ImagePullBackOff, CrashLoopBackOff, OOMKilled).",
             // Names, counts, phases and kubelet reason codes only; no free text from the app.
             labels: Labels::READ_ONLY,
             params: json!({
@@ -1056,41 +1388,51 @@ impl Tool for AppStatus {
 
 // ---- list_apps ---------------------------------------------------------------------------
 
-/// Every catalog app that is on the device in some form (running, starting, failing, data kept
-/// after an uninstall, being deleted), with the same phases as `app_status`. Built from
-/// per-app reads, because the write identity may get namespaces but not list them.
+/// Every app on the device in some form (running, starting, failing, data kept after an
+/// uninstall, being deleted), with the same phases as `app_status`.
 struct ListApps(AppStatus);
 
 impl ListApps {
     async fn list(&self, args: Value) -> Result<Value, ToolError> {
         reject_unknown(arg_object(&args)?, &[])?;
         let mut apps = Vec::new();
-        let mut not_installed = Vec::new();
-        // BTreeMap: sorted by name.
-        for name in self.0.settings.catalog().apps.keys() {
+        let Some(read) = &self.0.read else {
+            return Ok(unreachable(&ClusterError::NotConfigured));
+        };
+        let names = match read.app_names().await {
+            Ok(names) => names,
+            Err(
+                e @ (ClusterError::Unreachable(_)
+                | ClusterError::NotConfigured
+                | ClusterError::Starting),
+            ) => return Ok(unreachable(&e)),
+            Err(e) => return Err(failed(e)),
+        };
+        for name in names {
             let report = self.0.status(json!({ "app": name })).await?;
             if report["k3s_reachable"] == false {
                 return Ok(report);
             }
             if report["phase"] == "not_installed" {
-                not_installed.push(name.clone());
                 continue;
             }
             apps.push(json!({
                 "app": name,
+                "description": report["description"],
                 "phase": report["phase"],
                 "ready_replicas": report["ready_replicas"],
                 "replicas": report["replicas"],
                 "url": report["url"],
                 "urls": report["urls"],
                 "port": report["port"],
+                "ports": report["ports"],
                 "volumes": report["volumes"],
                 "problem_pods": report["pods"].as_array().map(|p| {
                     p.iter().filter(|p| !p["reason"].is_null()).cloned().collect::<Vec<_>>()
                 }),
             }));
         }
-        Ok(json!({"apps": apps, "not_installed": not_installed}))
+        Ok(json!({ "apps": apps }))
     }
 }
 
@@ -1098,11 +1440,10 @@ impl Tool for ListApps {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_apps",
-            description: "Catalog apps present on this device: running, starting, failing, \
-                stopped, uninstalled with data kept, or being deleted (phase as in \
-                app_status), with ready replicas, URL (http://<this device>:<its port>), \
-                volumes and problem pods; plus the catalog apps that are \
-                not installed. Use it to find leftovers such as kept data.",
+            description: "Apps on this device: running, starting, failing, stopped, \
+                uninstalled with data kept, or being deleted (phase as in app_status), with \
+                ready replicas, URL (web UI), `ports` (address:port and protocol), volumes \
+                and problem pods. Use it to find leftovers such as kept data.",
             // Same content as app_status: names, counts, phases, reason codes.
             labels: Labels::READ_ONLY,
             params: json!({
@@ -1178,10 +1519,6 @@ pub(crate) fn status_report(
         (Some(_), Some(_)) if failing => "failing",
         (Some(_), Some(_)) => "starting",
     };
-    let config: Option<Value> = deployment
-        .and_then(|d| d.metadata.annotations.as_ref())
-        .and_then(|a| a.get(CONFIG_ANNOTATION))
-        .and_then(|c| serde_json::from_str(c).ok());
     let version = deployment
         .and_then(|d| d.metadata.labels.as_ref())
         .and_then(|l| l.get("app.kubernetes.io/version"))
@@ -1209,7 +1546,6 @@ pub(crate) fn status_report(
         "ready_replicas": ready,
         "url": Value::Null,
         "dns_url": dns_url,
-        "config": config,
         "volumes": volumes_json,
         "pods": pods_json,
     })
@@ -1467,7 +1803,7 @@ fn strip_controls(line: &str) -> String {
 // ---- stop_app / start_app ---------------------------------------------------------------
 
 /// The installed app's Deployment, or a clear error: not installed, uninstalled with data
-/// kept (install_app brings it back), or being deleted.
+/// kept (deploy_app brings it back), or being deleted.
 async fn installed_deployment(read: &dyn AppRead, app: &str) -> Result<Deployment, ToolError> {
     let Some(ns) = read.namespace(app).await.map_err(failed)? else {
         return Err(ToolError::Failed(format!("`{app}` is not installed")));
@@ -1477,7 +1813,7 @@ async fn installed_deployment(read: &dyn AppRead, app: &str) -> Result<Deploymen
     }
     read.deployment(app).await.map_err(failed)?.ok_or_else(|| {
         ToolError::Failed(format!(
-            "`{app}` is uninstalled (its data is kept); install_app brings it back"
+            "`{app}` is uninstalled (its data is kept); deploy_app brings it back"
         ))
     })
 }
@@ -1581,13 +1917,11 @@ impl StartApp {
             return Err(no_cluster());
         };
         let deployment = installed_deployment(read.as_ref(), &app).await?;
-        let port = read
-            .namespace(&app)
-            .await
-            .map_err(failed)?
+        let ns = read.namespace(&app).await.map_err(failed)?;
+        let ports = ns
             .as_ref()
-            .and_then(port_of);
-        let has_web = read.ingress(&app).await.map_err(failed)?.is_some();
+            .map(|ns| device_ports(ns, stored_spec(&app, ns, Some(&deployment)).as_ref()))
+            .unwrap_or_default();
         let replicas = deployment.spec.replicas.unwrap_or(1);
         let mut out = if replicas > 0 {
             json!({
@@ -1614,7 +1948,7 @@ impl StartApp {
                 "next": "it starts in the background with its data; poll app_status",
             })
         };
-        merge(&mut out, link_fields(&self.settings, &app, port, has_web));
+        merge(&mut out, link_fields(&self.settings, &app, &ports));
         Ok(out)
     }
 }
@@ -1625,7 +1959,7 @@ impl Tool for StartApp {
             name: "start_app",
             description: "Start (turn on again) an app that stop_app stopped, with the same \
                 data, settings and link. Does nothing to an app that is already running. An \
-                uninstalled app comes back with install_app instead.",
+                uninstalled app comes back with deploy_app instead.",
             // Brings back a state the user approved before (the install); uses resources
             // and puts the app back on the network, so it is not read-only: the normal
             // policy applies (attended, untainted: runs; unattended or tainted: asks).
@@ -1700,8 +2034,9 @@ impl UninstallApp {
             "app": app,
             "deleted": deleted,
             "kept": kept,
-            "note": "data and credentials are kept; install_app reuses them. \
-                     uninstall_app with delete_data=true removes them for good",
+            "note": "data, credentials and the spec are kept; deploy_app (the spec may be \
+                     left out) brings it back with them. uninstall_app with delete_data=true \
+                     removes them for good",
         }))
     }
 }
@@ -1713,7 +2048,7 @@ impl Tool for UninstallApp {
             description: "Uninstall (remove) an app. Only when someone explicitly asks to \
                 uninstall, remove or delete it; to turn an app off use stop_app. By default \
                 removes the app and keeps its data volumes and generated credentials, so \
-                install_app brings it back with its data. With `delete_data: true` the \
+                deploy_app brings it back with its data. With `delete_data: true` the \
                 app's namespace is deleted with all its data, for good.",
             labels: Labels {
                 effect: Effect::Destructive,

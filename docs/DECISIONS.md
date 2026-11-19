@@ -673,3 +673,47 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   release: `Alias=melissa-queen.service` (host update helpers installed earlier wait for that name), the old
   feed words for `comb_info`/`bee_info` in old chats. Alternatives: keep the metaphor and only explain it
   (rejected by the owner); aliases only, no migration (two names forever).
+- **2026-11-19 — No app catalog: agents deploy any app from a spec they write** (owner decision: "Abandon
+  the idea of an app catalog. Melissa must be extremely flexible."). Trigger: asked "Set up Minecraft server",
+  the lead agent refused because only Nextcloud was in the catalog. Now agents choose images and settings for
+  whatever the user asks for. **Format:** Melissa's own small JSON app spec (`crates/appspec`, was
+  `crates/catalog`), not a subset of Kubernetes YAML: containers (image, command/args, env with plain values,
+  `{secret}` or `{builtin}`, small read-only files), ports (`tcp`/`udp`, `public`, one `web` port), volumes,
+  generated secrets, resources (limits with defaults), probes (HTTP or TCP), sidecars in the same pod. Why not
+  YAML: an LLM writes this one shape reliably without Kubernetes boilerplate; there are no
+  privileged/hostPath/hostNetwork knobs to strip or forget (unknown keys are refused, not ignored); the
+  confirmation can say exactly what runs; it is stored on the namespace (`melissa.io/spec`) so `update_app`
+  edits a known shape. Alternatives: a validated K8s subset (bigger surface, every field a policy question),
+  Compose (another format to translate, port/volume semantics differ), Helm (templating, no). **Tools:**
+  `deploy_app {app, spec, agent?}` and `update_app {app, spec}` replace `list_catalog`/`install_app`; both are
+  `Effect::Deploy`, **always confirmed** (also for the attended lead agent; was: an attended untainted
+  `install_app` ran without asking), with a summary of images, public ports and storage; the spec is checked
+  before anyone is asked (`Tool::check_args`). Stop/start/uninstall/status/logs/list unchanged in use;
+  `list_apps` now lists app namespaces (the apps identity gained `list` on namespaces: names and labels only).
+  **Safety is server-side:** pinned images only (a version tag other than `latest`, or a digest; Docker Hub
+  short names expanded); the renderer only makes a single-replica Deployment, Services, PVCs, ConfigMaps,
+  per-field Secrets and an Ingress in the app's own namespace, every container `privileged: false`,
+  `allowPrivilegeEscalation: false`, limits always set (default 1 CPU / 512Mi), seccomp RuntimeDefault, no SA
+  token. Root inside a container is allowed by default (many official images start as root and drop
+  privileges; refusing it would break most of them), privileges never; `run_as_user`/`run_as_group` when an
+  image supports it. New admission policies hold the same independent of the server: `melissa-apps-workloads`
+  (workspace namespace with its labels, no host network/PID/IPC, only PVC/ConfigMap/Secret/emptyDir volumes,
+  no init/ephemeral containers, not privileged, added capabilities only from baseline's default set, no host
+  ports, CPU and memory limits, seccomp RuntimeDefault, no API token) and `melissa-apps-volumes` (local-path, no
+  `volumeName`/`dataSource`); PSA baseline stays enforced per namespace. It does not require
+  `allowPrivilegeEscalation: false`, because stop/start patches of Deployments rendered by older versions must
+  still pass. **Ports:** the web port and each `public` port (TCP or UDP) get their own NodePort from
+  30000-30079, allocated by the server (`melissa.io/port` for the web port, unchanged and still immutable;
+  `melissa.io/ports` = `name:port/proto` for the others, kept across updates); the `<app>-port` Service may
+  carry up to 6 TCP/UDP ports in the range. The container publishes the range for UDP too. Tools return
+  `ports` with `address` and protocol; the UI shows `host:port (TCP)` for non-web ports. **Images from any
+  public registry** are allowed (pre-alpha). Risk, accepted for now: a tag can be re-pushed and nothing checks
+  provenance (no digest resolution, no signatures), a malicious image runs with the limits above but with
+  network access to the internet and other apps (no NetworkPolicy yet); the user sees the image names before
+  approving. Open: PLAN.md question 64. **Migration:** apps installed from the catalog (Nextcloud) keep
+  running untouched; at startup the server stores their spec (`appspec::legacy`, rebuilt from the
+  Deployment's `melissa.io/config`) and records that their password lives in the shared `<app>-secrets`
+  (`melissa.io/shared-secrets`); the rebuilt spec renders the same volume, Secret, files and port, so
+  stop/start/update/uninstall keep working and keep the data and password. `[apps] catalog` and the Nix
+  option `apps.catalog` are accepted and ignored with a warning; `manifests/` and `/usr/share/melissa/catalog`
+  are gone.

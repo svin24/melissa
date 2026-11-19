@@ -1140,13 +1140,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "melissa-catalog"
+name = "melissa-appspec"
 version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "toml",
 ]
 
 [[package]]
@@ -1156,7 +1155,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "melissa-agent",
- "melissa-catalog",
+ "melissa-appspec",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
@@ -1179,7 +1178,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "melissa-agent",
- "melissa-catalog",
+ "melissa-appspec",
  "melissa-cluster",
  "melissa-settings",
  "melissa-web",

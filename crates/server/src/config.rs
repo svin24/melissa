@@ -37,16 +37,17 @@ pub struct ServerConfig {
     /// The lead agent and its agents. `[queen]` is the old name (alias, one release).
     #[serde(alias = "queen")]
     pub lead: LeadSection,
-    /// The app catalog and app installs.
+    /// App deploys.
     pub apps: AppsSection,
 }
 
-/// `[apps]`: where the catalog is, which domain apps get, the write identity's kubeconfig.
+/// `[apps]`: which domain apps get, how app links are built, the write identity's kubeconfig.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AppsSection {
-    /// Directory of app manifests (`<name>.toml`).
-    pub catalog: PathBuf,
+    /// Deprecated and ignored: the app catalog was dropped (agents deploy any app from a
+    /// spec they write). Still accepted so old config files load; the server warns.
+    pub catalog: Option<PathBuf>,
     /// Apps are also served at `<app>.<domain>` (for people with their own DNS).
     pub domain: String,
     /// Addresses (IPs or host names) people reach this device at, for app links
@@ -65,8 +66,8 @@ pub struct AppsSection {
 impl Default for AppsSection {
     fn default() -> Self {
         Self {
-            catalog: PathBuf::from(melissa_catalog::DEFAULT_CATALOG_DIR),
-            domain: melissa_catalog::DEFAULT_DOMAIN.into(),
+            catalog: None,
+            domain: melissa_appspec::DEFAULT_DOMAIN.into(),
             addresses: None,
             port_offset: 0,
             kubeconfig: None,
@@ -613,12 +614,14 @@ mod tests {
     fn apps_section_defaults_and_domain_check() {
         let config: ServerConfig = toml::from_str("").unwrap();
         assert_eq!(config.apps.domain, "melissa.home.arpa");
-        assert_eq!(config.apps.catalog, Path::new("/usr/share/melissa/catalog"));
+        assert_eq!(config.apps.catalog, None);
         let config: ServerConfig = toml::from_str(
             "[apps]\ndomain = \"home.example.com\"\ncatalog = \"/tmp/c\"\nkubeconfig = \"/tmp/k\"",
         )
         .unwrap();
         config.validate().unwrap();
+        // The old catalog setting still loads (ignored).
+        assert_eq!(config.apps.catalog.as_deref(), Some(Path::new("/tmp/c")));
         for bad in ["Home.Example", "localhost", "a..b", "-x.y", "x y.z"] {
             let config: ServerConfig =
                 toml::from_str(&format!("[apps]\ndomain = \"{bad}\"")).unwrap();

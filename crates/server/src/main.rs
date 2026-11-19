@@ -116,7 +116,7 @@ enum AppCommand {
 }
 
 enum Command {
-    /// `demo` = true: first run from a source checkout (quieter log, repo catalog).
+    /// `demo` = true: first run from a source checkout (quieter log).
     Serve {
         demo: bool,
     },
@@ -215,7 +215,12 @@ async fn main() -> anyhow::Result<()> {
     let provider_file = load_providers(&providers_path);
     let facts = config.apply_providers(&provider_file);
     config.validate()?;
-    use_repo_catalog(&mut config.apps);
+    if config.apps.catalog.is_some() && matches!(command, Command::Serve { .. }) {
+        tracing::warn!(
+            "[apps] catalog is ignored: the app catalog was dropped (agents deploy any app); \
+             remove the setting"
+        );
+    }
 
     let api = client::Client::new(config.listen);
     let to = |agent: &Option<String>| match agent {
@@ -280,7 +285,6 @@ async fn main() -> anyhow::Result<()> {
         Command::AppCredentials(app) => {
             return credentials::show(
                 app,
-                &config.apps.catalog,
                 &config.apps.domain,
                 std::path::Path::new(credentials::ADMIN_KUBECONFIG),
             )
@@ -307,7 +311,6 @@ async fn main() -> anyhow::Result<()> {
         config.apps.kubeconfig.as_deref(),
     )));
     let app_settings = AppSettings {
-        catalog_dir: config.apps.catalog.clone(),
         domain: config.apps.domain.clone(),
         addresses: config.apps.addresses.clone(),
         port_offset: config.apps.port_offset,
@@ -391,12 +394,24 @@ fn migrate_old_names(dirs: &Dirs) {
 async fn relabel_old_namespaces(workspaces: Arc<Workspaces>) {
     loop {
         match workspaces.relabel_old().await {
-            Ok(0) => return,
+            Ok(0) => break,
             Ok(n) => {
                 tracing::info!(namespaces = n, "moved app namespaces to the new label keys");
-                return;
+                break;
             }
             Err(e) => tracing::debug!("app namespace labels not migrated yet: {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+    // Apps from the old catalog get their spec stored, so update_app works on them.
+    loop {
+        match workspaces.migrate_catalog_apps().await {
+            Ok(0) => return,
+            Ok(n) => {
+                tracing::info!(apps = n, "stored specs for apps from the old catalog");
+                return;
+            }
+            Err(e) => tracing::debug!("catalog apps not converted yet: {e}"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
@@ -431,18 +446,6 @@ fn kubeconfig_candidates(
         .chain(configured.map(std::path::Path::to_path_buf))
         .chain([PathBuf::from(melissa_cluster::RUNTIME_DIR).join(melissa_cluster::RUNTIME_FILE)])
         .collect()
-}
-
-/// Run from a source checkout, the installed catalog (`/usr/share/melissa/catalog`) is usually
-/// missing; use the repo's `manifests/` instead, unless the config names a catalog.
-fn use_repo_catalog(apps: &mut config::AppsSection) {
-    let default = std::path::Path::new(melissa_catalog::DEFAULT_CATALOG_DIR);
-    let repo = std::path::Path::new("manifests");
-    if apps.catalog == default && !default.is_dir() && repo.is_dir() {
-        if let Ok(abs) = repo.canonicalize() {
-            apps.catalog = abs;
-        }
-    }
 }
 
 /// Who owns which workspace and what the agents are called, shared by the daemon and `tool`.
@@ -581,7 +584,6 @@ async fn serve(
         infos: &infos,
         lead_order: &q.backends,
         kubeconfigs: &start.kubeconfigs,
-        catalog: &config.apps.catalog,
     })
     .await;
     // The summary is for the person who started the daemon; stdout keeps it apart from the log.
@@ -1088,7 +1090,6 @@ mod tests {
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ClusterHealth::new(None))];
         let registry = AgentRegistry::open(&dir.join("agents"), "d-0a1b2c3d").unwrap();
         let settings = AppSettings {
-            catalog_dir: dir.join("catalog"),
             domain: "example.com".into(),
             addresses: None,
             port_offset: 0,

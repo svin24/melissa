@@ -1,0 +1,290 @@
+{
+  "namespace": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "annotations": {
+        "melissa.io/ports": "game:30001/tcp bedrock:30002/udp",
+        "melissa.io/spec": "{\"description\":\"Minecraft Java server\",\"containers\":[{\"name\":\"server\",\"image\":\"docker.io/itzg/minecraft-server:java21\",\"env\":{\"EULA\":\"TRUE\",\"MEMORY\":\"1G\"},\"ports\":[{\"name\":\"game\",\"port\":25565,\"public\":true},{\"name\":\"bedrock\",\"port\":19132,\"protocol\":\"udp\",\"public\":true},{\"name\":\"rcon\",\"port\":25575}],\"mounts\":[{\"volume\":\"data\",\"path\":\"/data\"}],\"resources\":{\"cpu\":\"2\",\"memory\":\"1536Mi\"},\"probe\":{\"port\":\"game\",\"startup_timeout_secs\":300,\"period_secs\":10},\"run_as_user\":1000}],\"volumes\":[{\"name\":\"data\",\"size\":\"5Gi\"}],\"secrets\":[{\"name\":\"rcon_password\"}]}"
+      },
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "melissa.io/app": "minecraft",
+        "melissa.io/managed": "true",
+        "pod-security.kubernetes.io/enforce": "baseline",
+        "pod-security.kubernetes.io/enforce-version": "latest"
+      },
+      "name": "app-minecraft"
+    }
+  },
+  "role_binding": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "minecraft",
+        "melissa.io/app": "minecraft"
+      },
+      "name": "melissa-apps",
+      "namespace": "app-minecraft"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "ClusterRole",
+      "name": "melissa-app-workload"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "melissa-apps",
+        "namespace": "melissa"
+      }
+    ]
+  },
+  "secrets": [
+    {
+      "namespace": "app-minecraft",
+      "name": "minecraft-secret-rcon-password",
+      "key": "rcon_password",
+      "length": 32,
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "minecraft",
+        "melissa.io/app": "minecraft"
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "app.kubernetes.io/name": "minecraft",
+          "melissa.io/app": "minecraft"
+        },
+        "name": "minecraft-data",
+        "namespace": "app-minecraft"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "5Gi"
+          }
+        },
+        "storageClassName": "local-path"
+      }
+    }
+  ],
+  "deployment": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "minecraft",
+        "melissa.io/app": "minecraft"
+      },
+      "name": "minecraft",
+      "namespace": "app-minecraft"
+    },
+    "spec": {
+      "replicas": 1,
+      "revisionHistoryLimit": 3,
+      "selector": {
+        "matchLabels": {
+          "melissa.io/app": "minecraft"
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "melissa",
+            "app.kubernetes.io/name": "minecraft",
+            "melissa.io/app": "minecraft"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "containers": [
+            {
+              "env": [
+                {
+                  "name": "EULA",
+                  "value": "TRUE"
+                },
+                {
+                  "name": "MEMORY",
+                  "value": "1G"
+                }
+              ],
+              "image": "docker.io/itzg/minecraft-server:java21",
+              "imagePullPolicy": "IfNotPresent",
+              "livenessProbe": {
+                "failureThreshold": 4,
+                "periodSeconds": 30,
+                "tcpSocket": {
+                  "port": "game"
+                },
+                "timeoutSeconds": 10
+              },
+              "name": "server",
+              "ports": [
+                {
+                  "containerPort": 25565,
+                  "name": "game",
+                  "protocol": "TCP"
+                },
+                {
+                  "containerPort": 19132,
+                  "name": "bedrock",
+                  "protocol": "UDP"
+                },
+                {
+                  "containerPort": 25575,
+                  "name": "rcon",
+                  "protocol": "TCP"
+                }
+              ],
+              "readinessProbe": {
+                "failureThreshold": 3,
+                "periodSeconds": 10,
+                "tcpSocket": {
+                  "port": "game"
+                },
+                "timeoutSeconds": 5
+              },
+              "resources": {
+                "limits": {
+                  "cpu": "2",
+                  "memory": "1536Mi"
+                },
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "384Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "privileged": false,
+                "runAsUser": 1000
+              },
+              "startupProbe": {
+                "failureThreshold": 30,
+                "periodSeconds": 10,
+                "tcpSocket": {
+                  "port": "game"
+                },
+                "timeoutSeconds": 5
+              },
+              "volumeMounts": [
+                {
+                  "mountPath": "/data",
+                  "name": "data"
+                }
+              ]
+            }
+          ],
+          "enableServiceLinks": false,
+          "securityContext": {
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "volumes": [
+            {
+              "name": "data",
+              "persistentVolumeClaim": {
+                "claimName": "minecraft-data"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "service": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "minecraft",
+        "melissa.io/app": "minecraft"
+      },
+      "name": "minecraft",
+      "namespace": "app-minecraft"
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "game",
+          "port": 25565,
+          "protocol": "TCP",
+          "targetPort": "game"
+        },
+        {
+          "name": "bedrock",
+          "port": 19132,
+          "protocol": "UDP",
+          "targetPort": "bedrock"
+        },
+        {
+          "name": "rcon",
+          "port": 25575,
+          "protocol": "TCP",
+          "targetPort": "rcon"
+        }
+      ],
+      "selector": {
+        "melissa.io/app": "minecraft"
+      },
+      "type": "ClusterIP"
+    }
+  },
+  "files": null,
+  "port_service": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/managed-by": "melissa",
+        "app.kubernetes.io/name": "minecraft",
+        "melissa.io/app": "minecraft"
+      },
+      "name": "minecraft-port",
+      "namespace": "app-minecraft"
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "game",
+          "nodePort": 30001,
+          "port": 25565,
+          "protocol": "TCP",
+          "targetPort": "game"
+        },
+        {
+          "name": "bedrock",
+          "nodePort": 30002,
+          "port": 19132,
+          "protocol": "UDP",
+          "targetPort": "bedrock"
+        }
+      ],
+      "selector": {
+        "melissa.io/app": "minecraft"
+      },
+      "type": "NodePort"
+    }
+  },
+  "ingress": null
+}

@@ -30,7 +30,6 @@ let
       {
         inherit (cfg) listen;
         apps = {
-          catalog = toString cfg.apps.catalog;
           port_offset = cfg.apps.portOffset;
         }
         // lib.optionalAttrs (cfg.apps.addresses != null) { inherit (cfg.apps) addresses; };
@@ -101,10 +100,13 @@ in
 
     apps = {
       catalog = lib.mkOption {
-        type = lib.types.either lib.types.path lib.types.str;
-        default = "${cfg.package}/share/melissa/catalog";
-        defaultText = lib.literalExpression ''"''${cfg.package}/share/melissa/catalog"'';
-        description = "Directory of app manifests (`<name>.toml`), `[apps] catalog`.";
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        visible = false;
+        description = ''
+          Deprecated, ignored: the app catalog was dropped (2026-11-19). Agents deploy any app
+          from a spec they write. Setting it only prints a warning.
+        '';
       };
 
       addresses = lib.mkOption {
@@ -132,7 +134,7 @@ in
       openFirewall = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "Open the app NodePorts 30000-30079 (TCP) in the firewall, for the LAN and Tailscale.";
+        description = "Open the app NodePorts 30000-30079 (TCP and UDP) in the firewall, for the LAN and Tailscale.";
       };
     };
 
@@ -212,6 +214,8 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
+        warnings = lib.optional (cfg.apps.catalog != null)
+          "services.melissa.apps.catalog is ignored: the app catalog was dropped (agents deploy any app from a spec). Remove the setting.";
         assertions = [
           {
             assertion = config.security.allowUserNamespaces;
@@ -259,6 +263,12 @@ in
         programs.nix-ld.enable = lib.mkIf cfg.agents.nixLd true;
 
         networking.firewall.allowedTCPPortRanges = lib.mkIf cfg.apps.openFirewall [
+          {
+            from = 30000;
+            to = 30079;
+          }
+        ];
+        networking.firewall.allowedUDPPortRanges = lib.mkIf cfg.apps.openFirewall [
           {
             from = 30000;
             to = 30079;

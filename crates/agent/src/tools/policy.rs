@@ -20,6 +20,9 @@ pub enum Effect {
     Disruptive,
     /// Can lose data or availability (remove an app, restore over data, delete a volume).
     Destructive,
+    /// Chooses what software runs on the device (deploy or change an app from an agent's
+    /// spec). Always confirmed, with a summary of the images, ports and storage.
+    Deploy,
     /// Changes who looks after a workspace (reassign). Always confirmed: only the user decides
     /// ownership, whoever asks.
     Ownership,
@@ -75,6 +78,10 @@ pub enum Decision {
 pub const STOPS_SERVICE: &str =
     "takes a running service offline (it can be started again; nothing is deleted)";
 
+/// The confirmation reason for [`Effect::Deploy`].
+pub const RUNS_SOFTWARE: &str =
+    "runs software on this device (check the images, ports and storage)";
+
 /// Decide whether `tool` (with `labels`) may run now in `ctx`.
 pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
     if labels.effect == Effect::Destructive {
@@ -82,6 +89,9 @@ pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
     }
     if labels.effect == Effect::Disruptive {
         return Decision::Confirm(STOPS_SERVICE.into());
+    }
+    if labels.effect == Effect::Deploy {
+        return Decision::Confirm(RUNS_SOFTWARE.into());
     }
     if labels.effect == Effect::Ownership {
         return Decision::Confirm(

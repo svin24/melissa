@@ -8,8 +8,8 @@
 # Checked: the server starts, the UI answers on loopback only, an echo chat turn, the sandbox and
 # egress integration tests as the `melissa` user (bwrap, own netns, netbridge, proxy), a
 # vendor-style binary (/lib64 loader) running in the sandbox through nix-ld, k3s Ready, Melissa's
-# RBAC and admission policies applied, an app install from the catalog whose NodePort answers
-# from the LAN, stop/start of the app, Settings → Providers writing providers.toml, Settings'
+# RBAC and admission policies applied, an app deployed from a spec (deploy_app) whose NodePort
+# answers from the LAN, stop/start of the app, Settings → Providers writing providers.toml, Settings'
 # restart through polkit.
 { self, pkgs }:
 let
@@ -17,8 +17,8 @@ let
   melissa = self.packages.${pkgs.stdenv.hostPlatform.system}.melissa;
   tests = self.packages.${pkgs.stdenv.hostPlatform.system}.melissa-integration-tests;
 
-  # The test app: busybox httpd serving one page. Imported into k3s at start; the catalog entry
-  # pins it by the digest k3s reports (written by the test script, see below).
+  # The test app: busybox httpd serving one page. Imported into k3s at start; the test deploys
+  # it with deploy_app, pinned by the digest k3s reports (see the test script).
   helloImage = pkgs.dockerTools.buildImage {
     name = "docker.io/melissa-test/hello";
     tag = "1";
@@ -38,34 +38,6 @@ let
       "/www"
     ];
   };
-
-  helloManifest = pkgs.writeText "hello.toml.in" ''
-    schema = 1
-    name = "hello"
-    version = "1"
-    description = "Test app of the NixOS VM test: one static page."
-    registries = ["docker.io"]
-
-    [[containers]]
-    name = "hello"
-    image = "docker.io/melissa-test/hello:1@@DIGEST@"
-    ports = [{ name = "http", port = 8080 }]
-
-    [containers.resources]
-    cpu_request = "10m"
-    cpu_limit = "200m"
-    memory_request = "16Mi"
-    memory_limit = "64Mi"
-
-    [containers.probe]
-    path = "/"
-    port = "http"
-    startup_timeout_secs = 120
-    period_secs = 5
-
-    [ingress]
-    port = "http"
-  '';
 
   # A prebuilt Linux binary as vendors ship them: loader /lib64/ld-linux-x86-64.so.2, no RPATH.
   # Runs on NixOS only through nix-ld (`services.melissa.agents.nixLd`).
@@ -93,7 +65,6 @@ pkgs.testers.runNixOSTest {
         apps = {
           openFirewall = true;
           addresses = [ serverIp ];
-          catalog = "/var/lib/melissa-test-catalog";
         };
         k3s = {
           airgapImages = true;
@@ -123,7 +94,6 @@ pkgs.testers.runNixOSTest {
         pkgs.jq
         tests
       ];
-      systemd.tmpfiles.rules = [ "d /var/lib/melissa-test-catalog 0755 root root -" ];
     };
 
   nodes.client =
@@ -238,17 +208,25 @@ pkgs.testers.runNixOSTest {
             print(server.execute("for p in $(k3s kubectl -n kube-system get pods -o name | grep helm-install); do echo == $p; k3s kubectl -n kube-system logs $p --tail=30; done")[1])
             raise
 
-    with subtest("app install from the catalog; NodePort answers from the LAN"):
+    with subtest("app deployed from a spec; NodePort answers from the LAN"):
         server.wait_until_succeeds("k3s crictl images | grep -q melissa-test/hello", timeout=180)
         digest = server.succeed(
             "k3s crictl inspecti docker.io/melissa-test/hello:1 | jq -r '.status.repoDigests[0]' | sed 's/.*@//'"
         ).strip()
         assert digest.startswith("sha256:"), digest
-        server.succeed(f"sed 's/@DIGEST@/{digest}/' ${helloManifest} > /var/lib/melissa-test-catalog/hello.toml")
-        server.succeed("cp ${melissa}/share/melissa/catalog/*.toml /var/lib/melissa-test-catalog/")
-        cat = tool("list_catalog", {})
-        assert "hello" in json.dumps(cat), cat
-        res = tool("install_app", {"app": "hello"}, confirm=True)
+        spec = {
+            "description": "Test app of the NixOS VM test: one static page.",
+            "version": "1",
+            "web": "http",
+            "containers": [{
+                "name": "hello",
+                "image": "docker.io/melissa-test/hello:1@" + digest,
+                "ports": [{"name": "http", "port": 8080}],
+                "resources": {"cpu": "200m", "memory": "64Mi", "cpu_request": "10m", "memory_request": "16Mi"},
+                "probe": {"port": "http", "path": "/", "startup_timeout_secs": 120, "period_secs": 5},
+            }],
+        }
+        res = tool("deploy_app", {"app": "hello", "spec": spec}, confirm=True)
         if "error" in res:
             raise Exception(res)
         server.wait_until_succeeds("k3s kubectl -n app-hello rollout status deploy --timeout=10s", timeout=240)

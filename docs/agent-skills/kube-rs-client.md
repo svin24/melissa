@@ -13,7 +13,7 @@
   that returns hand-built `Node`/`Pod` objects (all k8s-openapi structs implement `Default`).
 - Writes (2026-11-18): `apps.rs` has `AppRead` + `AppDeployer`, implemented by `KubeApps` over a second
   identity (`LazyCluster::for_apps`, `/run/melissa-kube/apps.kubeconfig`, RBAC in `apps-rbac.yaml`). Only
-  the app tools hold them; read-only tools keep `ClusterRead`. See [app-catalog.md](app-catalog.md).
+  the app tools hold them; read-only tools keep `ClusterRead`. See [app-deploy.md](app-deploy.md).
 - Server-side apply: `Api::patch(name, &PatchParams::apply("melissa").force(), &Patch::Apply(&obj))`;
   k8s-openapi types serialize `apiVersion`/`kind` themselves. Create-once: `Api::create` and treat 409
   as "exists". 404 from get/delete: `kube::Error::Api(s) if s.code == 404`. A fresh RoleBinding may take

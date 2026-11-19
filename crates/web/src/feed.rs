@@ -717,12 +717,15 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Checking the cluster",
         "Checked the cluster",
     ),
+    // Old tools from the app catalog days, still in recorded chats.
     (
         "list_catalog",
         "Looking at the app catalog",
         "Looked at the app catalog",
     ),
     ("list_apps", "Listing your apps", "Listed your apps"),
+    ("deploy_app", "Setting up an app", "Set up an app"),
+    ("update_app", "Changing an app", "Changed an app"),
     (
         "install_app",
         "Starting an app install",
@@ -838,6 +841,23 @@ pub fn approval_words(
         state: ApprovalState::Pending,
     };
     match tool_name(tool) {
+        "deploy_app" | "update_app" => {
+            let update = tool_name(tool) == "update_app";
+            a.title = match (&app, update) {
+                (Some(app), false) => format!("Set up {app}?"),
+                (Some(app), true) => format!("Change {app}?"),
+                (None, false) => "Set up an app?".into(),
+                (None, true) => "Change an app?".into(),
+            };
+            a.consequence = args
+                .and_then(|a| a.get("spec"))
+                .map(spec_words)
+                .filter(|w| !w.is_empty())
+                .unwrap_or_else(|| "Starts it again with its data.".into());
+            a.reason = "it runs software on this device".into();
+            a.yes = if update { "Change" } else { "Set up" };
+            a.no = "Not now";
+        }
         "install_app" => {
             a.title = match &app {
                 Some(app) => format!("Install {app}?"),
@@ -970,7 +990,47 @@ pub fn approval_words(
     a
 }
 
-/// A catalog app's display name (`nextcloud` → `Nextcloud`).
+/// What a deploy runs, in a few words, from its spec (unvalidated: only strings are read).
+/// `Runs docker.io/itzg/minecraft-server:java21. Open: game 25565/tcp. Storage: data 5Gi.`
+fn spec_words(spec: &Value) -> String {
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let containers = list(&spec["containers"]);
+    let images: Vec<&str> = containers
+        .iter()
+        .filter_map(|c| c["image"].as_str())
+        .collect();
+    let web = spec["web"].as_str();
+    let ports: Vec<String> = containers
+        .iter()
+        .flat_map(|c| list(&c["ports"]))
+        .filter(|p| p["public"] == true || (web.is_some() && p["name"].as_str() == web))
+        .filter_map(|p| {
+            Some(format!(
+                "{} {}/{}",
+                p["name"].as_str()?,
+                p["port"].as_u64()?,
+                p["protocol"].as_str().unwrap_or("tcp")
+            ))
+        })
+        .collect();
+    let volumes: Vec<String> = list(&spec["volumes"])
+        .iter()
+        .filter_map(|v| Some(format!("{} {}", v["name"].as_str()?, v["size"].as_str()?)))
+        .collect();
+    let mut out = Vec::new();
+    if !images.is_empty() {
+        out.push(format!("Runs {}.", images.join(", ")));
+    }
+    if !ports.is_empty() {
+        out.push(format!("Open: {}.", ports.join(", ")));
+    }
+    if !volumes.is_empty() {
+        out.push(format!("Storage: {}.", volumes.join(", ")));
+    }
+    out.join(" ")
+}
+
+/// An app's display name (`nextcloud` → `Nextcloud`).
 pub fn display_app(name: &str) -> String {
     let mut c = name.chars();
     match c.next() {
@@ -1437,6 +1497,39 @@ mod tests {
         );
         assert_eq!(a.title, "Install Immich?");
         assert_eq!(a.yes, "Install");
+    }
+
+    #[test]
+    fn a_deploy_card_says_what_runs() {
+        let spec = json!({
+            "description": "Minecraft",
+            "containers": [{"name": "server", "image": "docker.io/itzg/minecraft-server:java21",
+                "ports": [{"name": "game", "port": 25565, "public": true},
+                          {"name": "rcon", "port": 25575}]}],
+            "volumes": [{"name": "data", "size": "5Gi"}],
+        });
+        let a = approval_words(
+            3,
+            "mcp__melissa__deploy_app",
+            "deploy `minecraft`: ...; runs software on this device",
+            Some(&json!({"app": "minecraft", "spec": spec})),
+            &NoLookup,
+        );
+        assert_eq!(a.title, "Set up Minecraft?");
+        assert_eq!(
+            a.consequence,
+            "Runs docker.io/itzg/minecraft-server:java21. Open: game 25565/tcp. Storage: data 5Gi."
+        );
+        assert_eq!(a.yes, "Set up");
+        assert!(!a.destructive);
+        let a = approval_words(
+            4,
+            "update_app",
+            "x",
+            Some(&json!({"app": "minecraft"})),
+            &NoLookup,
+        );
+        assert_eq!(a.title, "Change Minecraft?");
     }
 
     #[test]

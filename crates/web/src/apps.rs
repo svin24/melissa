@@ -93,7 +93,7 @@ async fn call(ui: &Ui, tool: &str, args: Value, attended: bool) -> Result<Value,
 pub(crate) struct DetailsView {
     pub name: String,
     pub phase: String,
-    pub facts: Vec<(&'static str, String, Option<String>)>,
+    pub facts: Vec<(String, String, Option<String>)>,
 }
 
 pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
@@ -105,9 +105,9 @@ pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
         _ if status["legacy_owner"] == "owner" => "You".to_string(),
         _ => "Nobody".to_string(),
     };
-    facts.push(("Looked after by", keeper, None));
+    facts.push(("Looked after by".into(), keeper, None));
     if let Some(device) = status["device"].as_str() {
-        facts.push(("Device", device.to_string(), None));
+        facts.push(("Device".into(), device.to_string(), None));
     }
     let port = status["port"].as_u64();
     let link = match (host.and_then(host_name_of), port) {
@@ -115,18 +115,22 @@ pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
         _ => status["url"].as_str().map(str::to_string),
     };
     if let Some(link) = link.filter(|l| l.starts_with("http://") || l.starts_with("https://")) {
-        facts.push(("Link", link.clone(), Some(link)));
+        facts.push(("Link".into(), link.clone(), Some(link)));
+    }
+    // Other ports on the device: `address:port (TCP)`, at the address the visitor used.
+    for (name, address) in port_addresses(status, host) {
+        facts.push((display_app(&name), address, None));
     }
     if let Some(v) = status["version"].as_str() {
-        facts.push(("Version", v.to_string(), None));
+        facts.push(("Version".into(), v.to_string(), None));
     }
     if let Some(i) = status["image"].as_str() {
-        facts.push(("Image", i.to_string(), None));
+        facts.push(("Image".into(), i.to_string(), None));
     }
     if status["installed"] == true {
         let pods = status["pods"].as_array().cloned().unwrap_or_default();
         facts.push((
-            "Pods",
+            "Pods".into(),
             format!(
                 "{}/{} ready",
                 status["ready_replicas"].as_u64().unwrap_or(0),
@@ -135,9 +139,9 @@ pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
             None,
         ));
         let restarts: u64 = pods.iter().filter_map(|p| p["restarts"].as_u64()).sum();
-        facts.push(("Restarts", restarts.to_string(), None));
+        facts.push(("Restarts".into(), restarts.to_string(), None));
         if let Some(age) = pods.iter().filter_map(|p| p["age_secs"].as_u64()).min() {
-            facts.push(("Age", format_uptime(age), None));
+            facts.push(("Age".into(), format_uptime(age), None));
         }
     }
     DetailsView {
@@ -145,6 +149,31 @@ pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
         phase: status["phase"].as_str().unwrap_or("unknown").to_string(),
         facts,
     }
+}
+
+/// The app's ports on the device other than its web link, as (name, `host:port (TCP)`): the
+/// address the visitor reached the UI at when usable, else the tool's address.
+pub(crate) fn port_addresses(status: &Value, host: Option<&str>) -> Vec<(String, String)> {
+    let host = host.and_then(host_name_of);
+    status["ports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["web"] != true)
+        .filter_map(|p| {
+            let name = p["name"].as_str()?;
+            let port = p["port"].as_u64()?;
+            let proto = match p["protocol"].as_str() {
+                Some("udp") => "UDP",
+                _ => "TCP",
+            };
+            let address = match host {
+                Some(h) => format!("{h}:{port}"),
+                None => p["address"].as_str()?.to_string(),
+            };
+            Some((name.to_string(), format!("{address} ({proto})")))
+        })
+        .collect()
 }
 
 /// The dialog's content for `app`, with an optional message.
@@ -513,6 +542,7 @@ mod tests {
         let v = details_view(&status, Some("192.0.2.7:8080"));
         assert_eq!(v.name, "Nextcloud");
         let get = |l: &str| v.facts.iter().find(|f| f.0 == l).map(|f| f.1.clone());
+        assert_eq!(get("Game"), None);
         assert_eq!(get("Looked after by").as_deref(), Some("Ada"));
         assert_eq!(get("Device").as_deref(), Some("d-0a1b2c3d"));
         assert_eq!(get("Link").as_deref(), Some("http://192.0.2.7:30000"));
@@ -529,6 +559,27 @@ mod tests {
         );
         assert_eq!(v.facts.len(), 1);
         assert_eq!(v.facts[0].1, "Nobody");
+    }
+
+    #[test]
+    fn details_show_other_ports_with_their_protocol() {
+        let status = json!({
+            "app": "minecraft", "phase": "ready",
+            "ports": [
+                {"name": "game", "protocol": "tcp", "port": 30001, "web": false,
+                 "address": "203.0.113.10:30001"},
+                {"name": "voice", "protocol": "udp", "port": 30002, "web": false,
+                 "address": "203.0.113.10:30002"},
+            ],
+        });
+        let v = details_view(&status, Some("100.64.0.10:8080"));
+        let get = |l: &str| v.facts.iter().find(|f| f.0 == l).map(|f| f.1.clone());
+        assert_eq!(get("Game").as_deref(), Some("100.64.0.10:30001 (TCP)"));
+        assert_eq!(get("Voice").as_deref(), Some("100.64.0.10:30002 (UDP)"));
+        assert_eq!(get("Link"), None);
+        // No usable host: the tool's address.
+        let v = details_view(&status, None);
+        assert!(v.facts.iter().any(|f| f.1 == "203.0.113.10:30001 (TCP)"));
     }
 
     #[test]

@@ -71,9 +71,8 @@ RUN set -eu; . /usr/lib/melissa/k3s.lock; \
 COPY packaging/common/ /
 COPY packaging/container/rootfs/ /
 RUN rm -f /README.md
-# The app catalog: small reviewed manifests only. No app images ship; containerd pulls them
-# when an app is installed.
-COPY manifests/ /usr/share/melissa/catalog/
+# No app images or app list ship: agents write app specs and containerd pulls the images when
+# an app is deployed.
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
         melissa-ui-forward.socket; \

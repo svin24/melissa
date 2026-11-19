@@ -8,7 +8,7 @@ tool registry's scope check, `TaskContext.scope`, the workspace labels on app na
 Code: `crates/agent/src/tools/scope.rs` (model + the one check), `crates/agent/src/tools/mod.rs`
 (`ToolRegistry::call` → `check_scope`, `visible_to`, `describe_call`), `crates/agent/src/device.rs` (ids),
 `crates/agent/src/lead/registry.rs` (agents), `crates/agent/src/lead/agents.rs` (agent tools, reassign),
-`crates/cluster/src/app_tools.rs` (`Workspaces`: owner lookup, workspace list, reassign patch; `install_app`'s `agent`),
+`crates/cluster/src/app_tools.rs` (`Workspaces`: owner lookup, workspace list, reassign patch; `deploy_app`'s `agent`),
 `crates/cluster/src/render.rs` (`Ownership`, label names, `assign_patch`), `apps-rbac.yaml`.
 
 ## Model (2026-11-18, replaces the owner/job model)
@@ -26,7 +26,7 @@ Code: `crates/agent/src/tools/scope.rs` (model + the one check), `crates/agent/s
   (one confirmation, reasons joined with `; `: scope note, `describe_call`, policy reasons) → call → audit.
 
 ## Rules in model terms
-| who (scope) | read names/phases (`app_status`, `list_apps`, `list_catalog`) | read into a workspace (`app_logs`) | create a workspace | change its own workspace | change another agent's workspace | change an unassigned workspace | reassign a workspace |
+| who (scope) | read names/phases (`app_status`, `list_apps`) | read into a workspace (`app_logs`) | create a workspace | change its own workspace | change another agent's workspace | change an unassigned workspace | reassign a workspace |
 |---|---|---|---|---|---|---|---|
 | user (`User`) | yes | yes | yes; owner = `agent` arg or unassigned | — | yes (policy only) | yes (policy only) | `melissa-server workspace reassign <workspace> --to <agent>` (no confirmation) |
 | Lead agent (`Lead{device}`) | yes | yes (taints) | yes; **must name the agent** (`agent`) | — | allowed; when the policy asks (destructive always, tainted always) the reason starts "`x` is looked after by agent Ada (id)" | **confirmation** ("not assigned to any agent (only you decide about it)") | `reassign_workspace`: **always** the user's confirmation (`Effect::Ownership`) |
@@ -77,7 +77,7 @@ fn target(&self) -> Option<Target> {
     Some(Target { kind: ResourceKind::Workspace, arg: "app", access: Access::Change, verb: "restart" })
 }
 ```
-Examples: `install_app` ("install over"), `stop_app` ("stop"), `start_app` ("start"), `uninstall_app`
+Examples: `deploy_app` ("deploy over"), `update_app` ("update"), `stop_app` ("stop"), `start_app` ("start"), `uninstall_app`
 ("uninstall") are `Change`; `app_logs` is `ReadScoped`; `app_status` is `Read`. A stop by another agent is
 refused ("not yours", audited `tool.refused`, no confirmation); the lead agent's stop of Ada's workspace asks the
 user with "`nextcloud` is looked after by agent Ada (…); stop `nextcloud` (…)" (2026-11-19).

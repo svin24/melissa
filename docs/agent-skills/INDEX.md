@@ -24,10 +24,11 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [k3s-in-container.md](k3s-in-container.md) — k3s pinned + sha256-checked in the image, airgap images, iptables-nft, container config, Traefik telemetry off, smoke test,
   lead agent's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/cluster`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
-- [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app, reviewed
-  `files`), rendering, the app tools and their labels (incl. `stop_app`/`start_app`), app links
-  `http://<device>:<port>` (per-app NodePort 30000-30079), the `melissa-apps` write identity + admission policies, owner-only
-  `app-credentials`, Nextcloud verified in the VM.
+- [app-deploy.md](app-deploy.md) — no catalog: agents deploy any app from a JSON spec they write
+  (`deploy_app`/`update_app`; images, TCP/UDP ports, volumes, secrets, files, resources, probes), validation,
+  rendering, the always-confirmed deploy, app ports and links (per-port NodePorts 30000-30079), the
+  `melissa-apps` write identity + admission policies (workloads, services, volumes), owner-only
+  `app-credentials`, the migration of catalog installs (Nextcloud).
 - [workspaces-and-ownership.md](workspaces-and-ownership.md) — the cluster model in code: device/agent ids, workspaces owned by
   agents (`melissa.io/owner-agent`), scopes (User/Lead/Agent/Nothing), the one scope check in the registry
   (refused vs confirmation naming the agent), reassign path (Lead agent + user's yes, or the user's CLI),

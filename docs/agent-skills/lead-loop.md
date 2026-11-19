@@ -155,7 +155,7 @@ to, by). Agent text is untrusted: the web UI renders it with the safe `component
 - `melissa-server demo` (`just demo`): serve with a startup summary on stdout (URL, agents and why each is
   unusable, the lead agent's backend, bwrap namespace probe, k3s) and only warnings in the log. Code:
   `crates/server/src/preflight.rs`. `just build` also builds `melissa-netbridge` (`cargo run -p
-  melissa-server` alone does not). From a checkout the catalog falls back to `./manifests`.
+  melissa-server` alone does not).
 
 ## Config (`[lead]` in `server.toml`)
 ```toml

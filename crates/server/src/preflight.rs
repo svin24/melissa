@@ -48,9 +48,6 @@ pub struct Report {
     pub lead_order: Vec<String>,
     /// A cluster kubeconfig was found (k3s present or pointed at).
     pub k3s: bool,
-    /// The app catalog directory and how many manifests it holds.
-    pub catalog: PathBuf,
-    pub catalog_apps: usize,
     /// `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 23.10+).
     pub apparmor_userns_restricted: bool,
 }
@@ -159,11 +156,7 @@ impl Report {
             }
         }
         if self.k3s {
-            line(format!(
-                "  k3s:      found. Apps: {} in {}",
-                self.catalog_apps,
-                self.catalog.display()
-            ));
+            line("  k3s:      found. Agents can deploy apps.".into());
         } else {
             line(
                 "  k3s:      not found on this machine. Chat, agents and machine checks work; \
@@ -186,7 +179,6 @@ pub struct Inputs<'a> {
     pub infos: &'a [BackendInfo],
     pub lead_order: &'a [String],
     pub kubeconfigs: &'a [PathBuf],
-    pub catalog: &'a Path,
 }
 
 pub async fn gather(i: Inputs<'_>) -> Report {
@@ -198,7 +190,6 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         infos,
         lead_order,
         kubeconfigs,
-        catalog,
     } = i;
     let bwrap = melissa_agent::sandbox::find_bwrap();
     let sandbox = match &bwrap {
@@ -235,14 +226,6 @@ pub async fn gather(i: Inputs<'_>) -> Report {
             }
         })
         .collect();
-    let catalog_apps = std::fs::read_dir(catalog)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
-                .count()
-        })
-        .unwrap_or(0);
     Report {
         listen,
         state: state.to_path_buf(),
@@ -253,8 +236,6 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         backends,
         lead_order: lead_order.to_vec(),
         k3s: kubeconfigs.iter().any(|p| p.is_file()),
-        catalog: catalog.to_path_buf(),
-        catalog_apps,
         apparmor_userns_restricted: std::fs::read_to_string(
             "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
         )
@@ -340,8 +321,6 @@ mod tests {
             ],
             lead_order: vec!["grok-acp".into(), "claude-session".into()],
             k3s: false,
-            catalog: PathBuf::from("manifests"),
-            catalog_apps: 1,
             apparmor_userns_restricted: false,
         }
     }

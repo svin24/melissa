@@ -31,8 +31,9 @@ Environment=XDG_CONFIG_HOME=/etc
 # (melissa-ui-forward, nftables-filtered so pods can't reach it) → server on 127.0.0.1:8080.
 Network=podman
 PublishPort=@UI_BIND@:@UI_PORT@:8081
-# App NodePorts 30000-30079 (first app port on the host: APP_PORT_BASE).
+# App NodePorts 30000-30079 (first app port on the host: APP_PORT_BASE), TCP and UDP (game servers).
 PublishPort=@BIND@:@APP_PORT_BASE@-@APP_PORT_LAST@:30000-30079
+PublishPort=@BIND@:@APP_PORT_BASE@-@APP_PORT_LAST@:30000-30079/udp
 Volume=melissa-var:/var
 # Updates: the host helper writes status here (read-only inside) and picks up requests there.
 Volume=/var/lib/melissa-container/status:/run/melissa-update:ro,z

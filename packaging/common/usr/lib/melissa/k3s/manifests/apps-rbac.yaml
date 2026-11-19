@@ -1,10 +1,13 @@
 # Melissa: the write identity for app installs (ServiceAccount melissa/melissa-apps), separate
-# from the read-only melissa-server. Only the lead agent's app tools (install_app, stop_app,
-# start_app, uninstall_app, app_status, app_logs, list_apps) use it; see docs/agent-skills/app-catalog.md and docs/DECISIONS.md.
+# from the read-only melissa-server. Only the app tools (deploy_app, update_app, stop_app,
+# start_app, uninstall_app, app_status, app_logs, list_apps) use it; see docs/agent-skills/app-deploy.md and docs/DECISIONS.md.
+# Agents write the app specs (any image, any app); these policies are what holds whatever the
+# server renders from them to the rules below, independent of the server's own validation.
 #
 # Shape:
-# - Cluster-wide, this identity may only: create/patch/delete Namespaces and create/patch
-#   RoleBindings, and bind the melissa-app-workload ClusterRole. The admission policies below
+# - Cluster-wide, this identity may only: list/get/create/patch/delete Namespaces (listing finds
+#   the apps; it reads namespace metadata only) and create/patch RoleBindings, and bind the
+#   melissa-app-workload ClusterRole. The admission policies below
 #   pin all of that to namespaces named app-<name> labelled melissa.io/app=<name> with Pod
 #   Security "baseline" (or "restricted") enforced, and to RoleBindings that grant exactly
 #   melissa-app-workload to exactly this ServiceAccount.
@@ -17,10 +20,18 @@
 #   melissa.io/owner label (`owner`/`job-<key>`, before agents) may only be dropped. Which agent
 #   may act on which workspace is enforced in the server (agents hold no cluster credentials); see
 #   docs/agent-skills/workspaces-and-ownership.md.
-# - App ports (docs/DECISIONS.md, 2026-11-19): an app namespace may record its own port on the
+# - App ports (docs/DECISIONS.md, 2026-11-19): an app namespace may record its web port on the
 #   device (annotation melissa.io/port, 30000-30079), which never changes while the namespace
-#   exists; its one NodePort Service `<app>-port` must use exactly that range. Everything else
-#   stays ClusterIP.
+#   exists, and its other public ports (melissa.io/ports, `name:<port>/tcp|udp`, same range);
+#   its one NodePort Service `<app>-port` (TCP or UDP ports) must use exactly that range.
+#   Everything else stays ClusterIP.
+# - Workloads (Deployments, StatefulSets) only in app namespaces with their workspace labels;
+#   never privileged, no host network/PID/IPC, no hostPath or other node volumes, no host ports,
+#   added capabilities only from Pod Security baseline's default set, seccomp RuntimeDefault,
+#   CPU and memory limits on every container, no service account token. Root inside the
+#   container is allowed (many images need it), privileges never.
+# - Volumes: new PVCs use the local-path class and never bind a chosen PersistentVolume or
+#   copy another claim (volumeName, dataSource).
 # - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
 #   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
 #   generated credentials are for the owner); pods and logs read.
@@ -155,6 +166,11 @@ spec:
         (object.metadata.annotations['melissa.io/port'].matches('^300[0-7][0-9]$'))
       message: "melissa.io/port must be an app port (30000-30079)"
     - expression: >-
+        request.operation == 'DELETE' || !has(object.metadata.annotations) ||
+        !('melissa.io/ports' in object.metadata.annotations) ||
+        object.metadata.annotations['melissa.io/ports'].matches('^([a-z][a-z0-9-]{0,14}:300[0-7][0-9]/(tcp|udp))( [a-z][a-z0-9-]{0,14}:300[0-7][0-9]/(tcp|udp))*$')
+      message: "melissa.io/ports must list app ports (name:30000-30079/tcp|udp)"
+    - expression: >-
         request.operation != 'UPDATE' || !has(oldObject.metadata.annotations) ||
         !('melissa.io/port' in oldObject.metadata.annotations) ||
         (has(object.metadata.annotations) && 'melissa.io/port' in object.metadata.annotations &&
@@ -210,11 +226,11 @@ spec:
   policyName: melissa-apps-rolebindings
   validationActions: [Deny]
 ---
-# Services stay inside the cluster, except each app's one NodePort Service `<app>-port` on a
-# port from Melissa's app range (30000-30079, the static band of k3s's NodePort range): no
+# Services stay inside the cluster, except each app's one NodePort Service `<app>-port` with
+# its ports from Melissa's app range (30000-30079, the static band of k3s's NodePort range): no
 # LoadBalancer (k3s's service load balancer would open arbitrary host ports), no other
-# NodePorts, no externalIPs (CVE-2020-8554). Apps are reached at http://<device>:<port> and
-# through Ingress.
+# NodePorts, no externalIPs (CVE-2020-8554), TCP and UDP only. Apps are reached at
+# <device>:<port> and through Ingress.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -238,9 +254,11 @@ spec:
       message: "app Services must be ClusterIP, except the app's NodePort Service <app>-port"
     - expression: >-
         !has(object.spec.type) || object.spec.type != 'NodePort' ||
-        (object.spec.ports.size() == 1 && has(object.spec.ports[0].nodePort) &&
-         object.spec.ports[0].nodePort >= 30000 && object.spec.ports[0].nodePort <= 30079)
-      message: "an app's NodePort Service has one port with a nodePort in 30000-30079"
+        (object.spec.ports.size() <= 6 &&
+         object.spec.ports.all(p, has(p.nodePort) && p.nodePort >= 30000 && p.nodePort <= 30079))
+      message: "an app's NodePort Service has at most 6 ports, each with a nodePort in 30000-30079"
+    - expression: "object.spec.ports.all(p, !has(p.protocol) || p.protocol in ['TCP', 'UDP'])"
+      message: "app Services use TCP or UDP"
     - expression: "!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0"
       message: "app Services may not set externalIPs"
 ---
@@ -250,6 +268,126 @@ metadata:
   name: melissa-apps-services
 spec:
   policyName: melissa-apps-services
+  validationActions: [Deny]
+---
+# What app pods may be, whatever spec they come from. Pod Security "baseline" (enforced on every
+# app namespace, see above) checks the pods themselves; this checks the pod templates the write
+# identity writes, so a bad one is refused at once with a clear message.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-apps-workloads
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        resources: ["deployments", "statefulsets"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: melissa-apps-only
+      expression: "request.userInfo.username == 'system:serviceaccount:melissa:melissa-apps'"
+  variables:
+    - name: pod
+      expression: "object.spec.template.spec"
+    # Pod Security baseline's default capabilities: adding them changes nothing; nothing else.
+    - name: allowedCaps
+      expression: >-
+        ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'KILL', 'MKNOD',
+         'NET_BIND_SERVICE', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT']
+  validations:
+    - expression: >-
+        request.namespace.startsWith('app-') &&
+        has(namespaceObject.metadata.labels) &&
+        'melissa.io/app' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['melissa.io/app'] == request.namespace.substring(4) &&
+        ('melissa.io/workspace' in namespaceObject.metadata.labels ||
+         'melissa.io/cell' in namespaceObject.metadata.labels)
+      message: "app workloads run only in an app's own workspace namespace (melissa.io/app and melissa.io/workspace labels)"
+    - expression: >-
+        has(object.spec.template.metadata.labels) &&
+        'melissa.io/app' in object.spec.template.metadata.labels &&
+        object.spec.template.metadata.labels['melissa.io/app'] == request.namespace.substring(4)
+      message: "app pods carry melissa.io/app=<name>"
+    - expression: >-
+        !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork) &&
+        !(has(variables.pod.hostPID) && variables.pod.hostPID) &&
+        !(has(variables.pod.hostIPC) && variables.pod.hostIPC)
+      message: "app pods may not use the host's network, PID or IPC namespaces"
+    - expression: >-
+        !has(variables.pod.volumes) ||
+        variables.pod.volumes.all(v, has(v.persistentVolumeClaim) || has(v.configMap) ||
+                                     has(v.secret) || has(v.emptyDir))
+      message: "app volumes are PVCs, ConfigMaps, Secrets or emptyDir only (no hostPath)"
+    - expression: "!has(variables.pod.initContainers) && !has(variables.pod.ephemeralContainers)"
+      message: "app pods have no init or ephemeral containers"
+    - expression: >-
+        variables.pod.containers.all(c, !has(c.securityContext) ||
+          !has(c.securityContext.privileged) || !c.securityContext.privileged)
+      message: "app containers are never privileged"
+    - expression: >-
+        variables.pod.containers.all(c, !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
+          c.securityContext.capabilities.add.all(cap, cap in variables.allowedCaps))
+      message: "app containers may not add capabilities beyond the default set"
+    - expression: >-
+        variables.pod.containers.all(c, !has(c.ports) ||
+          c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
+      message: "app containers may not use host ports (device ports are NodePorts)"
+    - expression: >-
+        variables.pod.containers.all(c, has(c.resources) && has(c.resources.limits) &&
+          'cpu' in c.resources.limits && 'memory' in c.resources.limits)
+      message: "every app container has CPU and memory limits"
+    - expression: >-
+        has(variables.pod.securityContext) && has(variables.pod.securityContext.seccompProfile) &&
+        variables.pod.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        variables.pod.containers.all(c, !has(c.securityContext) ||
+          !has(c.securityContext.seccompProfile) ||
+          c.securityContext.seccompProfile.type == 'RuntimeDefault')
+      message: "app pods use the RuntimeDefault seccomp profile"
+    - expression: >-
+        (!has(variables.pod.serviceAccountName) || variables.pod.serviceAccountName == 'default') &&
+        has(variables.pod.automountServiceAccountToken) && !variables.pod.automountServiceAccountToken
+      message: "app pods get no Kubernetes API token"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-apps-workloads
+spec:
+  policyName: melissa-apps-workloads
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-apps-volumes
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["persistentvolumeclaims"]
+        operations: ["CREATE"]
+  matchConditions:
+    - name: melissa-apps-only
+      expression: "request.userInfo.username == 'system:serviceaccount:melissa:melissa-apps'"
+  validations:
+    - expression: "has(object.spec.storageClassName) && object.spec.storageClassName == 'local-path'"
+      message: "app volumes use the local-path storage class"
+    - expression: >-
+        !has(object.spec.volumeName) && !has(object.spec.dataSource) &&
+        !has(object.spec.dataSourceRef)
+      message: "app volumes never bind a chosen PersistentVolume or copy other data"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-apps-volumes
+spec:
+  policyName: melissa-apps-volumes
   validationActions: [Deny]
 ---
 apiVersion: v1
@@ -277,7 +415,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create", "patch", "delete"]
+    verbs: ["get", "list", "create", "patch", "delete"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["create", "patch"]

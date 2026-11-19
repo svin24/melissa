@@ -192,7 +192,8 @@ smoke() {
         && pass "containerd snapshotter: overlayfs" || echo "note: containerd is not on overlayfs"
     targs() { in_ctr kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q checkNewVersion=false; }
     wait_for 300 "Traefik update check disabled" targs && pass "Traefik update check disabled" || fail=1
-    for p in melissa-apps-namespaces melissa-apps-rolebindings melissa-apps-services; do
+    for p in melissa-apps-namespaces melissa-apps-rolebindings melissa-apps-services \
+             melissa-apps-workloads melissa-apps-volumes; do
         in_ctr kubectl get validatingadmissionpolicybinding "$p" >/dev/null 2>&1 \
             && pass "admission policy $p bound" || bad "admission policy $p missing"
     done
@@ -301,6 +302,7 @@ up)
             --privileged --systemd=always --tmpfs /dev/input -e XDG_CONFIG_HOME=/etc \
             "${net[@]}" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
+            -p "$BIND:$APP_PORT_BASE-$last:30000-30079/udp" \
             -v "$VOLUME:/var" \
             --stop-timeout 60 \
             "$CTR_IMAGE" /sbin/init >/dev/null

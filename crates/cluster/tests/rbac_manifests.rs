@@ -1,13 +1,13 @@
 //! Sanity checks on the RBAC manifests the image ships (text level: no YAML parser in the
 //! build). They guard the properties the app tools' security relies on; the VM test
-//! (`docs/agent-skills/app-catalog.md`) checks the same against a live API server.
+//! (`docs/agent-skills/app-deploy.md`) checks the same against a live API server.
 
 use std::path::PathBuf;
 
 use melissa_cluster::render::{
     port_service_name, APPS_SERVICE_ACCOUNT, APP_PORTS, ASSIGNED_AT_ANNOTATION, DEVICE_LABEL,
     LEGACY_OWNER_LABEL, MELISSA_NAMESPACE, OLD_DEVICE_LABEL, OLD_OWNER_LABEL, OLD_WORKSPACE_LABEL,
-    OWNER_AGENT_LABEL, PORT_ANNOTATION, WORKLOAD_ROLE, WORKSPACE_LABEL,
+    OWNER_AGENT_LABEL, PORTS_ANNOTATION, PORT_ANNOTATION, WORKLOAD_ROLE, WORKSPACE_LABEL,
 };
 
 fn manifest(name: &str) -> String {
@@ -162,6 +162,8 @@ fn admission_policies_guard_the_write_identity() {
         "melissa-apps-namespaces",
         "melissa-apps-rolebindings",
         "melissa-apps-services",
+        "melissa-apps-workloads",
+        "melissa-apps-volumes",
     ] {
         let policy = doc(&docs, "ValidatingAdmissionPolicy", name);
         assert!(policy.contains("failurePolicy: Fail"), "{name}");
@@ -228,10 +230,31 @@ fn admission_policies_guard_the_write_identity() {
     )));
     let svc = doc(&docs, "ValidatingAdmissionPolicy", "melissa-apps-services");
     assert!(svc.contains(&format!(
-        "object.spec.ports[0].nodePort >= {lo} && object.spec.ports[0].nodePort <= {hi}"
+        "object.spec.ports.all(p, has(p.nodePort) && p.nodePort >= {lo} && p.nodePort <= {hi})"
     )));
     assert!(svc.contains("request.namespace.substring(4) + '-port'"));
-    assert!(svc.contains("object.spec.ports.size() == 1"));
+    assert!(svc.contains("p.protocol in ['TCP', 'UDP']"));
+    assert!(ns.contains(&format!("'{PORTS_ANNOTATION}'")));
+    assert!(ns.contains(":300[0-7][0-9]/(tcp|udp))*$')"));
+    // Workloads: whatever spec an agent writes, never privileged or on the host.
+    let wl = doc(&docs, "ValidatingAdmissionPolicy", "melissa-apps-workloads");
+    for needle in [
+        "variables.pod.hostNetwork",
+        "variables.pod.hostPID",
+        "has(v.persistentVolumeClaim) || has(v.configMap)",
+        "!c.securityContext.privileged",
+        "cap in variables.allowedCaps",
+        "p.hostPort == 0",
+        "'cpu' in c.resources.limits && 'memory' in c.resources.limits",
+        "seccompProfile.type == 'RuntimeDefault'",
+        "!variables.pod.automountServiceAccountToken",
+        "'melissa.io/workspace' in namespaceObject.metadata.labels",
+    ] {
+        assert!(wl.contains(needle), "workloads policy lacks {needle}");
+    }
+    assert!(!wl.contains("SYS_ADMIN") && !wl.contains("NET_ADMIN"));
+    let vol = doc(&docs, "ValidatingAdmissionPolicy", "melissa-apps-volumes");
+    assert!(vol.contains("!has(object.spec.volumeName)"));
     assert!(!svc.contains("LoadBalancer"), "never allowed");
     assert_eq!(port_service_name("nextcloud"), "nextcloud-port");
     let rb = doc(

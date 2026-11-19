@@ -605,7 +605,6 @@ mod tests {
                             {"app": "nextcloud", "phase": "ready", "url": "http://nextcloud.example.com"},
                             {"app": "immich", "phase": "starting"},
                         ],
-                        "not_installed": ["jellyfin"],
                     }),
                 )),
                 Arc::new(Fixed(
@@ -2002,7 +2001,6 @@ mod tests {
             assert!(body.contains("class=\"hex h-busy\""));
             assert!(body.contains("href=\"http://nextcloud.example.com\""));
             assert!(body.contains("Add an app"));
-            assert!(body.contains("href=\"/?draft=Install%20jellyfin\""));
             assert!(body.contains("Fedora Linux 45"));
             assert!(body.contains("4.0 GB of 8.0 GB used"));
             // device_info's /var is 91% used: a storage meter and a warning on the card.
