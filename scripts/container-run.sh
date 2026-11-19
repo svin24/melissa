@@ -272,7 +272,7 @@ up)
         if [ "$ROOTFUL" = 1 ]; then net=(--network=bridge -p "127.0.0.1:$UI_PORT:8081")
         else net=(--network=pasta:--host-lo-to-ns-lo -p "127.0.0.1:$UI_PORT:8080"); fi
         podman run -d --name "$NAME" --hostname "$NAME" \
-            --privileged --systemd=always \
+            --privileged --systemd=always --tmpfs /dev/input \
             "${net[@]}" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
             -v "$VOLUME:/var" \

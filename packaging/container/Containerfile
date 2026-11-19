@@ -79,6 +79,13 @@ RUN set -eu; \
     systemctl mask sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
         proc-sys-fs-binfmt_misc.automount systemd-firstboot.service console-getty.service \
         getty@tty1.service 2>/dev/null; \
+    # Power is the host's business. The container is --privileged, so a logind inside would see the
+    # host's lid switch and power keys and suspend the HOST with its own defaults (seen 2026-11-19 on
+    # a laptop: lid closed on AC → host suspended, whatever the host's settings said).
+    systemctl mask systemd-logind.service systemd-logind-varlink.socket \
+        sleep.target suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target \
+        systemd-suspend.service systemd-hibernate.service systemd-hybrid-sleep.service \
+        systemd-suspend-then-hibernate.service 2>/dev/null; \
     # The container is recreated from the image at every start (Quadlet), and on updates; only /var is
     # a volume. Keep on it: k3s's node password (k3s refuses to rejoin its own datastore without it) and
     # the queen's config (/etc/melissa: queen.toml with [apps] addresses, Settings' providers.toml).
@@ -102,6 +109,8 @@ RUN set -eu; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-queen.service k3s.service melissa-ui-forward.socket; \
+    for u in systemd-logind.service sleep.target suspend.target hibernate.target; do \
+        [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-queen.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release

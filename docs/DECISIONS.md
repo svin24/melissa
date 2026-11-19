@@ -498,3 +498,11 @@ Format: date — decision. Why. Alternatives considered.
   Next: make Melissa install and run as a service on an existing Linux host, via a rootful podman container
   (container mode is already verified rootful) and/or a Nix flake with systemd units. The bootc images (headless,
   desktop) are kept but paused; a "reference distro" is built only after host-first works.
+- **2026-11-19 — The container never handles power: logind and the sleep units are masked, host input devices
+  hidden.** Found on the owner's laptop: the rootful `--privileged` container ran its own systemd-logind, which
+  saw the host's lid switch and suspended the HOST on lid close (audit subject `spc_t`), ignoring the host's KDE
+  and logind settings. The image masks `systemd-logind` (+ varlink socket), `sleep`/`suspend`/`hibernate`/
+  `hybrid-sleep`/`suspend-then-hibernate` targets and the matching services; the image lint fails if they are not
+  masked. The Quadlet (and `scripts/container-run.sh`) mounts a tmpfs on `/dev/input`: podman copies the nodes in,
+  but the mount is `nodev`, so they cannot be opened (checked: "Permission denied" on `event*`). Verified: lid
+  closed on AC no longer suspends; queen, k3s and the UI unaffected.

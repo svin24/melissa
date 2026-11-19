@@ -21,6 +21,9 @@ Image=@IMAGE@
 # k3s mounts, writes netfilter rules and creates pod network namespaces; the agent sandbox needs
 # nested namespaces. Rootful, this is root on the host (docs: "Security").
 PodmanArgs=--privileged --systemd=always
+# --privileged shares the host's /dev. Hide input devices (lid switch, power key, keyboards): nothing
+# in Melissa needs them, and logind (masked in the image) must never act on them.
+Tmpfs=/dev/input
 # The default rootful bridge. The UI: host 127.0.0.1:UI_PORT → container :8081
 # (melissa-ui-forward, nftables-filtered so pods can't reach it) → queen on 127.0.0.1:8080.
 Network=podman
