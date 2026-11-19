@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Run the Melissa headless image as a podman container, systemd as PID 1.
+# Docs: docs/QUICKSTART.md ("Try it in a container") and docs/agent-skills/container-mode.md.
+#
+#   scripts/container-run.sh build      layer image/container on top of $IMAGE -> $CTR_IMAGE
+#   scripts/container-run.sh up         start (create on first use) the container
+#   scripts/container-run.sh status     unit states, k3s node, URLs
+#   scripts/container-run.sh shell      root shell inside (melissa-setup, melissa-queen chat, kubectl)
+#   scripts/container-run.sh logs [unit]
+#   scripts/container-run.sh down       stop it (state stays in the volume)
+#   scripts/container-run.sh rm         remove the container (keeps the volume)
+#   scripts/container-run.sh purge      remove the container and its /var volume
+#   scripts/container-run.sh preflight  check the host (cgroup delegation, pasta, kernel modules)
+#   scripts/container-run.sh smoke      k3s Ready, Traefik, admission policies, RBAC, a NodePort from the host
+#
+# Rootless by default. Run it with sudo for a rootful container (its own image storage: build there).
+# Environment:
+#   NAME=melissa              container name (volume: $NAME-var)
+#   IMAGE=localhost/melissa-headless:dev
+#   CTR_IMAGE=localhost/melissa-container:dev
+#   UI_PORT=18080             host port for the web UI (bound to 127.0.0.1 only)
+#   APP_PORT_BASE=30000       host port for app NodePort 30000; 80 ports are mapped (30000-30079).
+#                             Keep 30000 unless taken: app links name the device port (30000+n).
+#   BIND=127.0.0.1            host address for the app ports (0.0.0.0 to reach apps from the LAN)
+#   APP_ADDRESSES=            [apps] addresses written to the queen's config at first `up`
+#                             (comma separated). Default: 127.0.0.1 when BIND is loopback,
+#                             BIND when it is one address, unset (found automatically) for 0.0.0.0.
+#   PASTA_DIR=                directory with a working `pasta` (on SELinux hosts where the distro
+#                             one is denied; e.g. "$(nix build --no-link --print-out-paths nixpkgs#passt)/bin")
+set -euo pipefail
+
+NAME=${NAME:-melissa}
+IMAGE=${IMAGE:-localhost/melissa-headless:dev}
+CTR_IMAGE=${CTR_IMAGE:-localhost/melissa-container:dev}
+UI_PORT=${UI_PORT:-18080}
+APP_PORT_BASE=${APP_PORT_BASE:-30000}
+BIND=${BIND:-127.0.0.1}
+VOLUME="$NAME-var"
+repo=$(cd "$(dirname "$0")/.." && pwd)
+
+die() { echo "container-run: $*" >&2; exit 1; }
+[ -n "${PASTA_DIR:-}" ] && export PATH="$PASTA_DIR:$PATH"
+in_ctr() { podman exec "$NAME" "$@"; }
+
+controllers() {
+    if [ "$(id -u)" = 0 ]; then cat /sys/fs/cgroup/cgroup.controllers
+    else cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"; fi
+}
+
+preflight() {
+    local ok=0 c
+    c=$(controllers 2>/dev/null || true)
+    for want in cpu cpuset io memory pids; do
+        case " $c " in *" $want "*) ;; *)
+            echo "MISSING cgroup controller '$want' for this user (k3s fails: \"failed to find cpuset cgroup (v2)\")."
+            echo "  Host prerequisite (root, one time; no reboot, usually no relogin):"
+            echo "    sudo mkdir -p /etc/systemd/system/user@.service.d"
+            # shellcheck disable=SC2028 # the \n are meant literally: the user runs this printf
+            echo "    printf '[Service]\\nDelegate=cpu cpuset io memory pids\\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf"
+            echo "    sudo systemctl daemon-reload"
+            echo "  then check: cat /sys/fs/cgroup/user.slice/user-\$(id -u).slice/user@\$(id -u).service/cgroup.controllers"
+            echo "  (log out and in again if cpuset is still missing)."
+            ok=1; break ;;
+        esac
+    done
+    if [ "$(id -u)" != 0 ] && [ ! -e /etc/systemd/system/user@.service.d/delegate.conf ] \
+        && ! grep -qs cpuset /usr/lib/systemd/system/user@.service.d/*.conf; then
+        echo "note: no Delegate= drop-in for user@.service found; cpuset may be gone after a reboot."
+    fi
+    if [ -r /proc/modules ]; then
+        for m in br_netfilter overlay; do
+            grep -q "^$m " /proc/modules || { echo "MISSING kernel module $m: sudo modprobe $m"; ok=1; }
+        done
+    fi
+    podman container exists "$NAME" 2>/dev/null || for p in "$UI_PORT" "$APP_PORT_BASE" "$((APP_PORT_BASE + 79))"; do
+        if ss -Hltn "sport = :$p" 2>/dev/null | grep -q .; then
+            echo "host port $p is in use (UI_PORT=$UI_PORT, APP_PORT_BASE=$APP_PORT_BASE): pick others"; ok=1
+        fi
+    done
+    if ! podman run --rm --network=pasta --entrypoint true "$IMAGE" >/dev/null 2>&1; then
+        echo "pasta networking fails here. On SELinux hosts where /usr/bin/pasta is denied, point"
+        echo "PASTA_DIR at another build, e.g. PASTA_DIR=\$(nix build --no-link --print-out-paths nixpkgs#passt)/bin"
+        ok=1
+    fi
+    [ "$ok" = 0 ] && echo "preflight ok (cgroups: $c)"
+    return "$ok"
+}
+
+# The app addresses for the queen's config: what people on the host (or LAN) type before :port.
+app_addresses() {
+    if [ -n "${APP_ADDRESSES:-}" ]; then echo "$APP_ADDRESSES"; return; fi
+    case "$BIND" in
+    127.*|::1|localhost) echo 127.0.0.1 ;;
+    0.0.0.0|::|'') ;; # pasta copies the host's LAN address into the container: found automatically
+    *) echo "$BIND" ;;
+    esac
+}
+
+# Write [apps] addresses into the queen's config unless the owner already has a config.
+# /etc/melissa lives on the /var volume (see image/container/Containerfile).
+configure() {
+    local list toml='' a
+    in_ctr test -e /etc/melissa/queen.toml && return 0
+    list=$(app_addresses)
+    [ -n "$list" ] || return 0
+    for a in ${list//,/ }; do toml+="${toml:+, }\"$a\""; done
+    printf '# Written by scripts/container-run.sh (container mode): app links use these.\n[apps]\naddresses = [%s]\n' "$toml" \
+        | podman exec -i "$NAME" sh -c 'umask 022; cat > /etc/melissa/queen.toml'
+    in_ctr systemctl try-restart melissa-queen
+    echo "Queen config: [apps] addresses = [$toml]"
+}
+
+wait_for() { # seconds, description, command...
+    local end=$(( $(date +%s) + $1 )) what=$2; shift 2
+    until "$@" >/dev/null 2>&1; do
+        [ "$(date +%s)" -lt "$end" ] || { echo "FAIL: $what (timed out)"; return 1; }
+        sleep 3
+    done
+}
+
+smoke() {
+    local fail=0 last=$((APP_PORT_BASE + 79)) code
+    pass() { echo "PASS: $*"; }
+    bad() { echo "FAIL: $*"; fail=1; }
+    wait_for 240 "k3s.service active" in_ctr systemctl is-active -q k3s || return 1
+    pass "k3s.service active ($(in_ctr k3s --version | head -1))"
+    wait_for 300 "node Ready" sh -c "podman exec $NAME kubectl get nodes --no-headers | grep -q ' Ready '" || return 1
+    pass "node Ready"
+    sys_ready() {
+        local pods; pods=$(in_ctr kubectl -n kube-system get pods --no-headers 2>/dev/null) || return 1
+        echo "$pods" | grep -q '^traefik-.* Running ' && ! echo "$pods" | grep -vqE ' (Running|Completed) '
+    }
+    if wait_for 300 "system pods running" sys_ready; then pass "system pods running (Traefik too)"
+    else in_ctr kubectl -n kube-system get pods; return 1; fi
+    in_ctr grep -q 'snapshotter = "overlayfs"' /var/lib/rancher/k3s/agent/etc/containerd/config.toml \
+        && pass "containerd snapshotter: overlayfs" || echo "note: containerd is not on overlayfs"
+    targs() { in_ctr kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q checkNewVersion=false; }
+    wait_for 300 "Traefik update check disabled" targs && pass "Traefik update check disabled" || fail=1
+    for p in melissa-apps-namespaces melissa-apps-rolebindings melissa-apps-services; do
+        in_ctr kubectl get validatingadmissionpolicybinding "$p" >/dev/null 2>&1 \
+            && pass "admission policy $p bound" || bad "admission policy $p missing"
+    done
+    wait_for 120 "melissa-kubeconfig" in_ctr test -s /run/melissa-kube/apps.kubeconfig || fail=1
+    local k=(kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig)
+    [ "$(in_ctr "${k[@]}" auth can-i create pods -n kube-system 2>/dev/null)" = no ] \
+        && pass "RBAC: melissa-apps cannot touch kube-system" || bad "RBAC: melissa-apps can create pods in kube-system"
+    # Policies and Traefik's service load balancer take a little while after the pods run.
+    denied() { # kubectl fails when denied: check its output, not its status (pipefail)
+        local out; out=$(in_ctr "${k[@]}" create namespace smoke-not-an-app --dry-run=server 2>&1 || true)
+        grep -q 'denied request' <<<"$out"
+    }
+    wait_for 120 "policy denies a non-app namespace" denied \
+        && pass "policy: melissa-apps may not create a non-app namespace" || fail=1
+    t404() { [ "$(in_ctr curl -s -o /dev/null -w '%{http_code}' -H 'Host: smoke.invalid' http://127.0.0.1/)" = 404 ]; }
+    wait_for 120 "Traefik answers on :80 inside" t404 && pass "Traefik answers on :80 inside (404 for an unknown host)" || fail=1
+    # A NodePort in front of Traefik on the last app port (no image pull needed), reached from
+    # the host through pasta's port forward.
+    in_ctr kubectl -n kube-system create service nodeport melissa-smoke --tcp=80:8000 --node-port=30079 \
+        --dry-run=client -o yaml | sed 's/app: melissa-smoke/app.kubernetes.io\/name: traefik/' \
+        | podman exec -i "$NAME" kubectl apply -f - >/dev/null
+    code=000
+    for _ in $(seq 1 20); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: smoke.invalid' "http://127.0.0.1:$last/" || true)
+        [ "$code" = 404 ] && break; sleep 2
+    done
+    [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at 127.0.0.1:$last" || bad "NodePort from the host: HTTP $code"
+    in_ctr kubectl -n kube-system delete service melissa-smoke --wait=false >/dev/null
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$UI_PORT/" || true)
+    [ "$code" = 200 ] && pass "web UI http://127.0.0.1:$UI_PORT/" || bad "web UI: HTTP $code"
+    [ "$fail" = 0 ] && echo "smoke test complete" || echo "smoke test FAILED"
+    return "$fail"
+}
+
+case "${1:-}" in
+build)
+    podman build --network=none -f "$repo/image/container/Containerfile" \
+        --build-arg IMAGE="$IMAGE" -t "$CTR_IMAGE" "$repo"
+    ;;
+up)
+    if podman container exists "$NAME"; then podman start "$NAME" >/dev/null
+    else
+        podman image exists "$CTR_IMAGE" || die "no $CTR_IMAGE: run '$0 build' first"
+        last=$((APP_PORT_BASE + 79))
+        # --privileged: k3s needs to mount, set up netfilter and namespaces for its pods, and the
+        #   agent sandbox needs nested namespaces. Rootless, "privileged" means only the
+        #   capabilities of your own user namespace; rootful, it is full root on the host.
+        # --systemd=always: tmpfs on /run, /tmp; cgroup writable; stop with SIGRTMIN+3.
+        # --network=pasta:--host-lo-to-ns-lo: host 127.0.0.1:UI_PORT reaches the queen on the
+        #   container's own 127.0.0.1:8080, so the UI stays loopback-only inside (pods cannot reach it).
+        podman run -d --name "$NAME" --hostname "$NAME" \
+            --privileged --systemd=always \
+            --network=pasta:--host-lo-to-ns-lo \
+            -p "127.0.0.1:$UI_PORT:8080" \
+            -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
+            -v "$VOLUME:/var" \
+            --stop-timeout 60 \
+            "$CTR_IMAGE" /sbin/init >/dev/null
+    fi
+    [ "$APP_PORT_BASE" = 30000 ] || echo "note: APP_PORT_BASE=$APP_PORT_BASE: app links say :30000+n; from the host use :$APP_PORT_BASE+n."
+    wait_for 60 "systemd in the container" in_ctr test -d /var/lib/melissa-container/etc-melissa && configure
+    echo "Started '$NAME'. Web UI: http://127.0.0.1:$UI_PORT  (k3s takes a minute or two: '$0 status')"
+    ;;
+status)
+    in_ctr systemctl is-system-running || true
+    for u in melissa-queen k3s melissa-kubeconfig; do printf '  %-20s %s\n' "$u" "$(in_ctr systemctl is-active "$u" || true)"; done
+    in_ctr kubectl get nodes 2>/dev/null || echo "  (k3s API not up yet)"
+    echo "Web UI: http://127.0.0.1:$UI_PORT   Apps: http://$BIND:$APP_PORT_BASE ..."
+    ;;
+shell) podman exec -it "$NAME" bash -l ;;
+logs) in_ctr journalctl --no-pager -n 200 ${2:+-u "$2"} ;;
+down) podman stop "$NAME" ;;
+rm) podman rm -f "$NAME" ;;
+purge) podman rm -f "$NAME" 2>/dev/null || true; podman volume rm -f "$VOLUME" ;;
+preflight) preflight ;;
+smoke) smoke ;;
+*) sed -n '2,30p' "$0"; exit 2 ;;
+esac
