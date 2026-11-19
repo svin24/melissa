@@ -21,7 +21,7 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 | `usr/lib/sysusers.d/melissa.conf` | User `melissa` (home `/var/lib/melissa/home`), group `melissa-kube` |
 | `usr/lib/tmpfiles.d/melissa-{config,home,kube}.conf` | `/etc/melissa`, `/var/lib/melissa{,/home}`, `/run/melissa-kube` |
 | `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-queen.service` (Settings → Restart), nothing else |
-| `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the queen's user |
+| `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the queen's user (`--yes`, `--no-login`, `--no-restart`) |
 | `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP (`k3s-node-ip`) |
 | `usr/libexec/melissa/k3s-node-ip` | Writes `MELISSA_K3S_ARGS=--node-ip=<default-route IPv4>` to the env file given (k3s-prepare; the NixOS module's k3s) |
 | `usr/libexec/melissa/melissa-kubeconfig` | ServiceAccount tokens → `/run/melissa-kube/{queen,apps}.kubeconfig` |
@@ -38,3 +38,12 @@ Packages the host or image needs at runtime: systemd, bubblewrap (agent sandbox)
 iproute (k3s, egress), polkit (Settings → Restart), ca-certificates, curl (agent installers).
 
 Checks: `crates/hive/tests/rbac_manifests.rs` parses the manifests here.
+
+**Release marker.** Each packaging writes `MELISSA_RUNTIME` in its release file (`/usr/lib/melissa/release`,
+or `$MELISSA_RELEASE_FILE`): `container` for the image, `nix` for the Nix package (`HostKind::Nix`).
+
+**Agent installs from Settings are container-only.** The Install / Sign in units
+(`melissa-agent-install@.service`, `melissa-agent-login@.service`), their tmpfiles rule and their polkit rule
+(`51-melissa-agent-install.rules`) live in `packaging/container/rootfs/`, not here, so the Nix packaging never
+installs them or grants the extra polkit rights. On Nix the Providers page says to add the agent via the Nix
+configuration.

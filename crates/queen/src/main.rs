@@ -523,6 +523,7 @@ async fn serve(
         enabled: true,
     });
     let check: melissa_web::CheckFn = Arc::new(move |id, o| base.check_provider(id, o));
+    let updates = UpdateEnv::system();
     let settings = melissa_web::Settings::new(melissa_web::SettingsParts {
         store: ProviderStore::new(path, file),
         backends: facts,
@@ -532,7 +533,8 @@ async fn serve(
             .or_else(|| q.backends.first().cloned()),
         check: Some(check),
         audit: Some(settings_audit),
-        updates: UpdateEnv::system(),
+        installer: melissa_settings::install::Installer::system(updates.kind),
+        updates,
         release: Release::read(&melissa_settings::updates::release_file()),
         home: std::env::var_os("HOME").map(PathBuf::from),
     });

@@ -624,3 +624,20 @@ Roadmap (rough, phases may overlap):
     from the agent session; verify it in a Fedora/Kinoite VM, incl. SELinux labels on `/nix/store` binaries
     run by systemd. (d) k3s on NixOS is nixpkgs' 1.37.x, not the sha256-pinned `k3s.lock` binary; pin through
     the flake lock only. (e) Publishing the flake (a public input URL) needs the owner's yes.
+63. Providers: install and sign in from the page (2026-11-19; DECISIONS). Done: Install button through
+    `melissa-agent-install@{claude,grok,opencode}` (polkit start-only), progress + log tail, retry, audit; Grok's
+    device-code sign-in through `melissa-agent-login@grok`; Claude/OpenCode keys as write-only variables; Echo
+    hidden; Nix note. Verified in a rootful test container 2026-11-19 (OpenCode install → chat turn; Claude and
+    Grok installed, guidance shown, Grok URL + code shown; polkit negatives). (a) Done (integration with 62):
+    install detection uses `HostKind` (Nix from `MELISSA_RUNTIME=nix` via `$MELISSA_RELEASE_FILE`); the two units,
+    their tmpfiles and their polkit rule (`51-melissa-agent-install.rules`) are container-only
+    (`packaging/container/rootfs`), so the Nix packaging neither installs them nor grants the rights. Open:
+    (b) Claude's `claude auth login` prints a URL but wants the code pasted back on stdin: a page flow would need
+    the code passed into the unit (a credential or socket, never an argument); for now `claude setup-token` on
+    the owner's computer → `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`. (c) OpenCode's `auth login` is
+    interactive; provider keys work as variables. (d) After an install Melissa needs a restart (backends resolve
+    programs at start); live re-detection would avoid it (60b). (e) No update/reinstall/uninstall button for an
+    installed CLI yet (re-running the unit reinstalls; the vendor CLIs self-update). (f) The audit records the
+    request, not the outcome (the unit's result is in its log and `systemctl show`). (g) The device code is
+    shown to anyone who reaches the UI (same trust as the UI itself, 28). (h) `melissa-queen provider install`
+    CLI verb not added (the API exists: `POST /api/settings/providers/<id>/install|login`).
