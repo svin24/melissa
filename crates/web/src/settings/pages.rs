@@ -7,7 +7,7 @@ use crate::{
     components::{
         actions, app_page, badge, card, code, command_block, confirm_card, detail_head, facts,
         group, lines_field, link, live_region, log_view, notice, pick_list, plain_action,
-        provider_mark, settings_form, settings_frame, settings_head, split_card, text_field,
+        provider_mark, settings_form, settings_frame_at, settings_head, split_card, text_field,
         toggle, var_list, ConfirmCard, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone,
         VarRow,
     },
@@ -16,10 +16,14 @@ use crate::{
 use melissa_settings::{install::InstallState, providers::EnvVarView};
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 2] = [
+pub const SECTIONS: [(&str, &str); 3] = [
     ("/settings/providers", "Providers"),
     ("/settings/updates", "Updates"),
+    (DEVELOPER_URL, "Developer"),
 ];
+
+/// The Developer section: Agent tasks (`/tasks` redirects here when the Queen is present).
+pub const DEVELOPER_URL: &str = "/settings/developer";
 
 /// DOM id of the Providers region (forms swap it).
 pub const PROVIDERS_ID: &str = "providers";
@@ -27,6 +31,16 @@ pub const PROVIDERS_ID: &str = "providers";
 pub const UPDATES_ID: &str = "updates";
 
 fn frame(f: &Frame<'_>, current: &str, content: Markup) -> Markup {
+    frame_at(f, current, None, content)
+}
+
+/// A Settings page: `current` is the section, `page` a page below it (its breadcrumb).
+pub(crate) fn frame_at(
+    f: &Frame<'_>,
+    current: &str,
+    page: Option<&str>,
+    content: Markup,
+) -> Markup {
     let sections: Vec<SettingsSection<'_>> = SECTIONS
         .iter()
         .map(|(href, label)| SettingsSection {
@@ -35,10 +49,14 @@ fn frame(f: &Frame<'_>, current: &str, content: Markup) -> Markup {
             current: *label == current,
         })
         .collect();
+    let title = match page {
+        Some(p) => format!("{p} · {current} · Settings"),
+        None => format!("{current} · Settings"),
+    };
     app_page(
-        &format!("{current} · Settings"),
+        &title,
         rail_for(Nav::Settings, f, None),
-        settings_frame(&sections, current, content),
+        settings_frame_at(&sections, current, page, content),
     )
 }
 

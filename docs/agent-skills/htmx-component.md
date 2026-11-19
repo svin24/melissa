@@ -25,7 +25,7 @@
 ## Components (2026-11-18)
 Shell: `app_page` (banner + rail + main), `page` (no rail: errors, and the task pages when there is no Queen), `banner`, `mark`, `rail`
 (nav, conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
-devices; a de-emphasised "Agent tasks" link), `waiting_count`, `page_header`, `section`, `empty_state`.
+devices; no task link: Agent tasks live in Settings → Developer), `waiting_count`, `page_header`, `section`, `empty_state`.
 Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
 "Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `queen_message`,
 `relayed_message` (a job or message Melissa passed into a helper's chat),
@@ -34,16 +34,19 @@ helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey 
 `approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
 "Can't be undone" variant), `composer`, `composer_status`, `agent_menu` (2026-11-19, owner-approved: "Runs on
 [Grok ▾]" in the composer status; a `details` panel with a native `select` of agents/models, unavailable agents
-disabled with a `melissa-setup` hint; the Switch button posts the composer form like Stop (`formaction` +
+disabled with a host-aware hint (container: Settings → Providers or `sudo podman exec -it melissa melissa-setup …`;
+Nix: the Nix note; from source: `sudo melissa-setup …`); the Switch button posts the composer form like Stop (`formaction` +
 `hx-post` to `/ui/backend` or `/ui/bees/{id}/backend`, form field `choice` = `<backend>[ <model>]`), htmx swaps
 the status line; built from `BackendView`s in `agents.rs`).
 Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
-`device_card` (facts, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
+`device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.md)): `settings_frame`,
-`settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts`, `group`,
+`settings_frame_at` (a page below a section: Settings / Section / page),
+`settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts` (`dl.facts`), `group`,
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
 `actions`, `region`; rail link "Settings" (`Nav::Settings`).
-Task pages (2026-11-19: in the app with the rail, `Nav::Tasks`; the built-in `echo` is not offered, a configured
+Task pages (2026-11-19; since the providers integration in Settings → Developer: `/settings/developer` is the
+list, `GET /tasks` redirects there, `/tasks/{id}` uses `settings_frame_at`; bare pages without a Queen; the built-in `echo` is not offered, a configured
 echo is; the reply (stdout) is `markdown`, stderr a `log_view` "Agent log"; htmx "Run" answers `HX-Redirect` to the
 new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
 `select_field`, `textarea_field`, `post_form`, `action_button`, `crumbs` (breadcrumb, Settings' look), `facts`.

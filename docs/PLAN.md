@@ -532,8 +532,9 @@ Roadmap (rough, phases may overlap):
 47. One-off UI tasks (`/tasks`) now get no scope (read-only on cells): they are neither the Queen nor a bee.
     Keep them, turn them into "ask a bee", or drop them when the chat UI lands? 2026-11-19: the pages now sit
     in the app (rail, breadcrumb, reply as Markdown, stderr as "Agent log") and no longer offer the built-in
-    `echo`. Recommendation: move them under Settings as a "Developer" section (the rail link is hidden on
-    phones anyway) once the Providers work has landed; owner to decide.
+    `echo`. Done 2026-11-19 (owner accepted): moved under Settings as a "Developer" section
+    (`/settings/developer`; `GET /tasks` redirects there; the rail link is gone, so phones reach it too).
+    Still open: keep, turn into "ask a bee", or drop.
 48. Web UI (2026-11-18): done: history comes back after a daemon restart (last 30 turns from the transcript),
     "New chat" archives the chat (past chats read-only under Conversations), `comb_info` reports disk space and
     the app strip/device card warn at 85% of `/var`. Open: past chats are never pruned (size cap or age?);
@@ -611,8 +612,8 @@ Roadmap (rough, phases may overlap):
     (Quadlet `IP=` on a dedicated podman network) would avoid it; needs a subnet choice that can't clash on
     testers' hosts. (b) The host's request directory gets the container's `melissa` GID; on a host where that GID
     is another group (on the dev laptop: `kube`), members of it can also create request files (fixed actions only,
-    still worth a dedicated GID via sysusers?). (c) The chat's agent hints say `sudo melissa-setup ...`; in the
-    container it is `sudo podman exec -it melissa melissa-setup ...` (Settings → Providers already says so).
+    still worth a dedicated GID via sysusers?). (c) Done 2026-11-19: the chat's agent hints follow `HostKind` (container:
+    Settings → Providers or `sudo podman exec -it melissa melissa-setup ...`; Nix: the Nix note).
     (d) `--privileged` lets root inside mknod and open any host device even with `/dev/input` hidden; the
     logind/sleep masking is the real protection against power handling. Narrower than `--privileged`
     (explicit caps + device list) is worth a spike.

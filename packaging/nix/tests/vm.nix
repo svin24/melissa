@@ -172,7 +172,7 @@ pkgs.testers.runNixOSTest {
         server.wait_for_unit("melissa-queen.service")
         server.wait_for_open_port(8080, addr="127.0.0.1")
         assert api("/healthz").strip() == "ok"
-        server.succeed("curl -sSf http://127.0.0.1:8080/tasks | grep -qi melissa")
+        server.succeed("curl -sSfL http://127.0.0.1:8080/tasks | grep -qi melissa")
         # Local addresses of every listener on 8080 (column 4): only loopback.
         listen = server.succeed("ss -Hltn 'sport = :8080' | awk '{print $4}'").split()
         assert listen == ["127.0.0.1:8080"], listen
@@ -282,6 +282,17 @@ pkgs.testers.runNixOSTest {
         assert any(c["command"] == "sudo nixos-rebuild switch" for c in updates["commands"]), updates["commands"]
         page = server.succeed("curl -sSf http://127.0.0.1:8080/settings/updates")
         assert "nix flake update" in page and "podman" not in page and "git pull" not in page
+        # Agent tasks moved into Settings → Developer.
+        page = server.succeed("curl -sSf http://127.0.0.1:8080/settings/developer")
+        assert "Agent tasks" in page and 'href="/settings/developer"' in page
+        # Agent installs from Settings are container-only: no Install button, no units, no
+        # extra polkit rights on Nix.
+        providers = json.loads(api("/api/settings/providers"))["providers"]
+        assert all((p.get("install") or {}).get("way") != "button" for p in providers), providers
+        server.fail("systemctl cat melissa-agent-install@claude.service")
+        server.fail("systemctl cat melissa-agent-login@grok.service")
+        server.succeed("test ! -e /etc/polkit-1/rules.d/51-melissa-agent-install.rules")
+        server.fail("runuser -u melissa -- systemctl start --no-block melissa-agent-install@claude.service")
 
     with subtest("melissa-setup on NixOS"):
         print(server.succeed("melissa-setup 2>&1"))

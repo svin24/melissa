@@ -108,9 +108,20 @@ impl FromRef<Tasks> for TaskBoard {
 }
 
 fn ui_routes(board: TaskBoard, ui: Option<ui::Ui>) -> Router {
-    Router::new()
+    let routes = Router::new();
+    // With a Queen the task list lives in Settings → Developer; GET /tasks redirects there.
+    let routes = if ui.is_some() {
+        routes
+            .route(settings::pages::DEVELOPER_URL, get(dashboard))
+            .route(
+                "/tasks",
+                get(|| async { Redirect::to(settings::pages::DEVELOPER_URL) }).post(create_task),
+            )
+    } else {
+        routes.route("/tasks", get(dashboard).post(create_task))
+    };
+    routes
         .route("/healthz", get(|| async { "ok" }))
-        .route("/tasks", get(dashboard).post(create_task))
         .route("/tasks/fragment", get(tasks_fragment))
         .route("/tasks/{id}", get(task_page))
         .route("/tasks/{id}/fragment", get(task_fragment))
@@ -1833,7 +1844,8 @@ mod tests {
                 get_html(&app, "/bees/nobody").await.0,
                 StatusCode::NOT_FOUND
             );
-            // The task pages sit in the app, with "Agent tasks" current in the rail.
+            // The task pages sit in Settings → Developer; GET /tasks redirects there and the
+            // rail has no Agent tasks link any more.
             let req = axum::http::Request::post("/tasks")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header("sec-fetch-site", "same-origin")
@@ -1845,15 +1857,30 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .to_string();
-            for uri in ["/tasks", task.as_str()] {
+            let res = app.clone().oneshot(get("/tasks")).await.unwrap();
+            assert_eq!(res.status(), StatusCode::SEE_OTHER);
+            assert_eq!(res.headers()[header::LOCATION], "/settings/developer");
+            for uri in ["/settings/developer", task.as_str()] {
                 let (status, _, body) = get_html(&app, uri).await;
                 assert_eq!(status, StatusCode::OK, "{uri}");
                 assert!(body.contains("<nav class=\"rail\""), "{uri}");
+                assert!(!body.contains("href=\"/tasks\""), "{uri}");
                 assert!(
-                    body.contains("href=\"/tasks\" aria-current=\"page\""),
+                    body.contains("href=\"/settings\" aria-current=\"page\""),
+                    "{uri}"
+                );
+                assert!(
+                    body.contains("href=\"/settings/developer\" aria-current=\"page\""),
                     "{uri}"
                 );
             }
+            let (_, _, body) = get_html(&app, task.as_str()).await;
+            // Breadcrumb: Settings / Developer (a link) / Task #n.
+            assert!(body.contains("<a href=\"/settings/developer\">Developer</a>"));
+            assert!(body.contains("<title>Task #") && body.contains("Developer · Settings"));
+            // Every Settings page lists the Developer section.
+            let (_, _, body) = get_html(&app, "/settings/updates").await;
+            assert!(body.contains("<a href=\"/settings/developer\">Developer</a>"));
 
             // A message goes to her conversation, not the Queen's.
             let res = app

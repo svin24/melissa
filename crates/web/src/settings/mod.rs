@@ -28,7 +28,7 @@
 //! Every change is audited (`settings.provider`, `settings.update`): what changed and the
 //! SHA-256 of the new value, never the value.
 
-mod pages;
+pub(crate) mod pages;
 mod providers;
 mod updates;
 
@@ -43,7 +43,7 @@ use melissa_agent::{AuditLog, AuditRecord};
 use melissa_settings::{
     install::Installer,
     providers::{BackendFacts, ProviderOverride, ProviderStore},
-    updates::{Release, UpdateEnv},
+    updates::{HostKind, Release, UpdateEnv},
     version::VersionProbe,
 };
 
@@ -89,6 +89,11 @@ impl Settings {
                 versions: VersionProbe::new(),
             }),
         }
+    }
+
+    /// What kind of host this is (container image, Nix, other), e.g. for setup hints.
+    pub(crate) fn host(&self) -> HostKind {
+        self.inner.parts.updates.kind
     }
 
     /// No settings file, no backends (routers built without a queen config).

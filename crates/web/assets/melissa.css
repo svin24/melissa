@@ -291,8 +291,7 @@ main:focus {
 }
 
 .nav a,
-.conversations a,
-.rail-foot {
+.conversations a {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -305,16 +304,14 @@ main:focus {
 }
 
 .nav a[aria-current="page"],
-.conversations a[aria-current="page"],
-.rail-foot[aria-current="page"] {
+.conversations a[aria-current="page"] {
   background: var(--ground);
   font-weight: 650;
 }
 
 @media (hover: hover) {
   .nav a:hover,
-  .conversations a:hover,
-  .rail-foot:hover {
+  .conversations a:hover {
     background: var(--ground);
   }
 }
@@ -395,14 +392,6 @@ main:focus {
 .rail .quiet {
   padding: 0 0.7rem;
   font-size: 0.9rem;
-}
-
-/* A developer page: kept, but out of the way. */
-.rail-foot {
-  margin-top: auto;
-  font-size: 0.8rem;
-  color: var(--muted);
-  opacity: 0.8;
 }
 
 .rail-sub {
@@ -1364,7 +1353,8 @@ a.hex-inner {
   color: var(--muted);
 }
 
-.facts {
+/* A device card's facts as pills (OS, CPUs, kernel, uptime). The Settings key/value list is dl.facts. */
+.device-facts {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1373,7 +1363,7 @@ a.hex-inner {
   gap: 0.35rem;
 }
 
-.facts li {
+.device-facts li {
   font-size: 0.82rem;
   padding: 0.15rem 0.55rem;
   border-radius: 999px;
@@ -2074,6 +2064,8 @@ a.button-like {
     display: flex;
     overflow-x: auto;
     gap: 0.25rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--idle) transparent;
   }
 
   .settings-nav a {
@@ -2126,11 +2118,15 @@ a.button-like {
     font-size: 1.1rem;
   }
 
+  /* Sideways-scrolling rows: a thin scrollbar in the theme's colours (the default track is
+     light even in dark mode, a white strip under the nav). */
   .rail .nav {
     display: flex;
     flex: 1 1 100%;
     overflow-x: auto;
     gap: 0.25rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--idle) transparent;
   }
 
   .nav a {
@@ -2138,8 +2134,7 @@ a.button-like {
     padding: 0 0.6rem;
   }
 
-  .rail-section,
-  .rail-foot {
+  .rail-section {
     display: none;
   }
 

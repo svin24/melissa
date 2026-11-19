@@ -59,7 +59,7 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   melissa-agent-install@<id>.service` (a fixed `&'static str`), then the region polls
   `/ui/settings/providers/poll?p=<open>` every 2 s (`live_region`) and shows the log tail (`log_view`); failure →
   error + "Try again". Success → "Installed · after a restart" + Restart button (the queen resolves programs at
-  start). `MELISSA_RUNTIME=nix` → only "This requires you add <Provider> via your Nix configuration." (no button,
+  start). `HostKind::Nix` (`MELISSA_RUNTIME=nix`) → only "This requires you add <Provider> via your Nix configuration." (no button,
   no command, the unit is never called). Neither: container → `sudo podman exec -it melissa melissa-setup agent
   <id>`; from source → a note.
 - **Sign in** (installed, no secret variable set, not logged in or just installed): Claude → `ANTHROPIC_API_KEY`
@@ -122,3 +122,8 @@ Providers and polkit results still apply to the container (same rule, now restar
 | AVC denials during status/check/apply/rollback | 0 after fix |
 | Providers: list, versions, display name, secret + plain variables via UI/API/CLI | works after fix |
 | Secrets in HTML, JSON, CLI output, journal, `audit.jsonl` | never; only `providers.toml` (0600 melissa) |
+
+**Developer section** (2026-11-19): the third section, `/settings/developer` (route in `lib.rs`, state `Tasks`): Agent
+  tasks (`pages::dashboard` in `frame_at(.., "Developer", ..)`); `/tasks/{id}` is a page below it (breadcrumb
+  Settings / Developer / Task #n). `GET /tasks` redirects there when a Queen is present; the task form and
+  fragments keep their `/tasks…` URLs.
