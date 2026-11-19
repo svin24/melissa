@@ -116,6 +116,9 @@ pub const CODE_FIFO: &str = "claude-login.code";
 /// Longest code accepted from the page.
 pub const CODE_MAX: usize = 1024;
 
+/// Longest log line kept for display and parsing.
+pub const LOG_LINE_MAX: usize = 4096;
+
 /// Claude's sign-in URL in a login log, only on Anthropic's own hosts.
 pub fn claude_login_url(log: &[String]) -> Option<String> {
     const HOSTS: [&str; 3] = [
@@ -125,7 +128,9 @@ pub fn claude_login_url(log: &[String]) -> Option<String> {
     ];
     log.iter().find_map(|l| {
         l.split_whitespace()
-            .find(|w| HOSTS.iter().any(|h| w.starts_with(h)) && w.contains("oauth"))
+            .find(|w| {
+                HOSTS.iter().any(|h| w.starts_with(h)) && w.contains("oauth") && !w.ends_with('…')
+            })
             .map(str::to_string)
     })
 }
@@ -446,7 +451,8 @@ pub fn read_log(path: &Path) -> Vec<String> {
         .split('\n')
         .skip(usize::from(start > 0)) // a partial first line
         .filter_map(|l| l.rsplit('\r').find(|s| !s.trim().is_empty()))
-        .map(|l| clean_text(l, 200))
+        // Long enough for a sign-in URL (Claude's is ~600 characters): a cut URL is useless.
+        .map(|l| clean_text(l, LOG_LINE_MAX))
         .filter(|l| !l.trim().is_empty())
         .collect();
     let cut = lines.len().saturating_sub(LOG_LINES);
@@ -531,6 +537,25 @@ mod tests {
             .map(String::from)
             .to_vec();
         assert_eq!(device_prompt(&evil), None);
+    }
+
+    #[test]
+    fn a_long_sign_in_url_survives_the_log_reader() {
+        let dir = temp("longurl");
+        let path = dir.join("claude-login.log");
+        let url = format!(
+            "https://claude.com/cai/oauth/authorize?code=true&scope={}&state=end",
+            "x".repeat(700)
+        );
+        std::fs::write(&path, format!("Opening browser…\nIf the browser didn't open, visit: {url}\nPaste code here if prompted >")).unwrap();
+        assert_eq!(
+            claude_login_url(&read_log(&path)).as_deref(),
+            Some(url.as_str())
+        );
+        assert_eq!(
+            claude_login_url(&["visit: https://claude.com/cai/oauth/auth…".to_string()]),
+            None
+        );
     }
 
     #[test]
