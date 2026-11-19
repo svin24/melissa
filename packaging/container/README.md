@@ -1,7 +1,7 @@
 # Melissa in a container (rootful podman, started by systemd)
 
 Melissa runs as one **rootful** podman container on an existing Linux host: systemd as PID 1 inside
-runs the queen (web UI), k3s (apps) and the agent sandbox (bubblewrap + egress proxy). systemd on the
+runs the server (web UI), k3s (apps) and the agent sandbox (bubblewrap + egress proxy). systemd on the
 host starts it through a Quadlet, so `systemctl start|stop|status melissa` works and it comes up at boot.
 
 Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files on top of
@@ -39,7 +39,7 @@ and no account; Claude and Grok then need an API key or token, added on the same
 ```
 sudo podman exec -it melissa melissa-setup agent opencode     # free models, no account
 sudo podman exec -it melissa melissa-setup agent claude       # Claude subscription (logs in)
-sudo podman exec -it melissa melissa-queen chat
+sudo podman exec -it melissa melissa-server chat
 ```
 
 ## What install.sh changes on the host
@@ -63,14 +63,14 @@ sudo packaging/container/uninstall.sh --purge    # also deletes melissa-var (app
 
 ## Network and the web UI
 The container sits on podman's default bridge (`podman`, 10.88.0.0/16; must not overlap k3s's
-10.42.0.0/16 and 10.43.0.0/16 inside). The queen listens on `127.0.0.1:8080` **inside** only. Host
+10.42.0.0/16 and 10.43.0.0/16 inside). The server listens on `127.0.0.1:8080` **inside** only. Host
 `UI_BIND:UI_PORT` is forwarded to the container's `:8081`, where `melissa-ui-forward.socket`
-(`systemd-socket-proxyd`) hands connections to the queen. An nftables table (`ui-forward-filter`) accepts
+(`systemd-socket-proxyd`) hands connections to the server. An nftables table (`ui-forward-filter`) accepts
 `:8081` only from the bridge gateway on the default-route interface, so **pods and other containers
 can't reach the UI**; the smoke test checks that from inside a pod's network namespace.
 
 Apps are reached by their NodePort: container 30000–30079 → host `BIND:APP_PORT_BASE…+79`. install.sh
-writes `[apps] addresses` (and `port_offset` for another base) into the queen's config so app links
+writes `[apps] addresses` (and `port_offset` for another base) into the server's config so app links
 name the right address. Traefik's :80/:443 inside are not published.
 
 ### From another machine
@@ -82,14 +82,14 @@ The UI has **no login yet**: anyone who reaches it controls Melissa. Keep `UI_BI
 
 ## Data and persistence
 The container is **recreated from the image at every start** (and on updates). Everything kept lives on
-the `melissa-var` volume (`/var`): k3s and app data, the queen's state, chats, agent installs and logins
-(`/var/lib/melissa/home`). Two things from `/etc` are symlinked onto it: `/etc/melissa` (queen.toml,
+the `melissa-var` volume (`/var`): k3s and app data, the server's state, chats, agent installs and logins
+(`/var/lib/melissa/home`). Two things from `/etc` are symlinked onto it: `/etc/melissa` (server.toml,
 Settings' providers.toml) and `/etc/rancher/node` (k3s's node password).
 
 ## Updates (Settings → Updates)
 - **Automatic**: Quadlet `AutoUpdate=registry` (registry images) or `local` (images loaded on the host),
   run daily by `podman-auto-update.timer`; podman rolls back by itself if the new container fails.
-- **Check / Apply / Roll back** in Settings. The queen can't run the host's podman. It creates an empty
+- **Check / Apply / Roll back** in Settings. The server can't run the host's podman. It creates an empty
   file named `check`, `apply` or `rollback` in `/run/melissa-update-request` (bind mount of
   `/var/lib/melissa-container/request`). `melissa-update.path` starts `melissa-host-update requests`, which
   acts on those three names only (never reads contents; anything else is deleted) and writes
@@ -97,7 +97,7 @@ Settings' providers.toml) and `/etc/rancher/node` (k3s's node password).
   `/run/melissa-update`).
   - check: registry + auto-update → `podman auto-update --dry-run`; `AUTO_UPDATE=off` → pulls (no restart);
     local image → nothing to fetch (load a newer one with `podman load`, tag it as the image name).
-  - apply: pull (registry), restart on the new image, wait for the queen; if it doesn't come up, retag
+  - apply: pull (registry), restart on the new image, wait for the server; if it doesn't come up, retag
     the old image and restart on it.
   - rollback: the image Melissa ran before is kept as `localhost/melissa-rollback:previous` (also after a
     timer update); rollback retags it and restarts. With automatic updates on, the next timer run may
@@ -109,7 +109,7 @@ Settings' providers.toml) and `/etc/rancher/node` (k3s's node password).
 
 ## Security
 - `--privileged` rootful: the container has **root on the host**. k3s needs mounts, netfilter and network
-  namespaces; the agent sandbox needs nested namespaces. Inside, the queen runs as the unprivileged
+  namespaces; the agent sandbox needs nested namespaces. Inside, the server runs as the unprivileged
   `melissa` user and each agent in its own bubblewrap sandbox with an egress proxy.
 - SELinux reads as disabled inside (k3s `selinux: false`); the host confines the container as podman does.
 - The update channel carries three fixed words as file names; the host helper takes no arguments from

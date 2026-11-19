@@ -21,7 +21,7 @@
   must handle errors (poisoned mutex: `lock().unwrap_or_else(|p| p.into_inner())`).
 - tokio features are set once in the root `[workspace.dependencies]`; `tokio::fs` needs `"fs"`.
 - `pkill -f <pattern>` inside a Bash tool call can match the calling shell's own command line and kill
-  it (exit 144). Use `pkill -x melissa-queen` or a pidfile.
+  it (exit 144). Use `pkill -x melissa-server` or a pidfile.
 - Long first builds inside a tool call may be cut off; run them with `run_in_background`.
 - `/tmp` (including the agent scratchpad) is wiped on reboot. Keep anything durable in the repo or in
   `~/.local/share/melissa`.

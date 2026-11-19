@@ -1,10 +1,10 @@
-//! The agent menu of a chat: which backend (and model) the Queen or a helper runs on, and
+//! The agent menu of a chat: which backend (and model) the lead agent or a helper runs on, and
 //! the choices the user has. Builds the fixed [`AgentMenu`] component from the API's
 //! [`BackendView`]s and holds the UI words for a backend that cannot be used yet (what fixes it
 //! depends on the host: Settings → Providers in the container and on Nix (installs there come
 //! from the Nix configuration), `melissa-setup` only for a run from source).
 
-use melissa_agent::queen::backends::BackendView;
+use melissa_agent::lead::backends::BackendView;
 use melissa_settings::updates::HostKind;
 
 use crate::{

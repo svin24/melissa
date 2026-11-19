@@ -1,6 +1,6 @@
 //! Agent Markdown as a small, safe document tree.
 //!
-//! Agents (the Queen and helpers) write Markdown. [`parse`] reads it as CommonMark plus the GFM
+//! Agents (the lead agent and helpers) write Markdown. [`parse`] reads it as CommonMark plus the GFM
 //! extensions (tables, strikethrough, task lists) with `pulldown-cmark` and folds the events into
 //! a [`Node`] tree that `components::markdown` renders with maud. This module has no markup of
 //! its own; every text in the tree is escaped when rendered.

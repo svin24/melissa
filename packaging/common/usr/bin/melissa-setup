@@ -1,19 +1,19 @@
 #!/bin/bash
-# melissa-setup: one-time setup steps on a Melissa bee.
+# melissa-setup: one-time setup steps on a Melissa agent.
 #
 #   melissa-setup                         status and next steps (no root needed)
 #   sudo melissa-setup agent <claude|grok|opencode> [--yes] [--no-login] [--no-restart]
 #                                         install that vendor's agent CLI with its official
-#                                         installer, then log it in and restart the queen
+#                                         installer, then log it in and restart the server
 #   sudo melissa-setup login <claude|grok|opencode>
 #                                         log an installed agent in again (e.g. after expiry)
 #   (--from-page: run by melissa-agent-login@claude.service for Settings → Providers; the code
-#    comes back through a FIFO only the queen's user can write, see login_claude_from_page)
+#    comes back through a FIFO only the server's user can write, see login_claude_from_page)
 #
 # The agent CLIs are third-party software and are not part of the Melissa image (Claude Code is
 # proprietary; Melissa ships no vendor binaries). This command downloads each vendor's own
 # installer over HTTPS and runs it as the `melissa` system user, so the CLI and its login land in
-# /var/lib/melissa/home, where melissa-queen.service (User=melissa) finds them. Installer and
+# /var/lib/melissa/home, where melissa-server.service (User=melissa) finds them. Installer and
 # login run outside the agent sandbox, started by you (root): they need the vendor's download and
 # login hosts, which the sandboxed agents' egress allowlists deliberately do not include.
 set -euo pipefail
@@ -107,7 +107,7 @@ install_agent() {
 # Claude's sign-in from Settings → Providers (melissa-agent-login@claude.service, container image).
 # `claude auth login` prints a URL and waits for a code on stdin. The URL goes to the unit's log,
 # which the page shows; the person signs in on their own device and pastes the code into the page.
-# The queen writes that one line into $code_fifo (root:melissa 0620 in a root:melissa 0750
+# The server writes that one line into $code_fifo (root:melissa 0620 in a root:melissa 0750
 # directory, made by tmpfiles), never as an argument, variable or log line. Reading it here keeps
 # it in this shell (printf is a builtin, so it is no process's argument either).
 # An empty line cancels. Exit status tells the page what happened, no text is parsed:
@@ -118,7 +118,7 @@ code_wait=600
 login_claude_from_page() {
     local bin=$1 code="" pid waited=0 tmp
     [ -p "$code_fifo" ] || die "$code_fifo is missing (systemd-tmpfiles)"
-    # Read-write: opening never blocks, and the queen's non-blocking write finds a reader only
+    # Read-write: opening never blocks, and the server's non-blocking write finds a reader only
     # while this runs. Closed once one line is read, so a second write fails.
     exec 3<>"$code_fifo"
     tmp=$(mktemp -d)
@@ -200,10 +200,10 @@ login_agent() {
     esac
 }
 
-restart_queen() {
-    # The queen looks for the agent CLIs when it starts.
-    if systemctl is-enabled --quiet melissa-queen.service 2>/dev/null; then
-        systemctl restart melissa-queen.service && echo "Restarted melissa-queen so it picks up $1."
+restart_server() {
+    # The server looks for the agent CLIs when it starts.
+    if systemctl is-enabled --quiet melissa-server.service 2>/dev/null; then
+        systemctl restart melissa-server.service && echo "Restarted melissa-server so it picks up $1."
     fi
 }
 
@@ -212,7 +212,7 @@ status() {
     [ -r "$release" ] && version=$(sed -n 's/^MELISSA_VERSION=//p' "$release")
     echo "Melissa $version (pre-alpha: for trying out; don't keep data you care about on it)"
     echo
-    printf '  %-10s %s\n' queen "$(systemctl is-active melissa-queen.service 2>/dev/null || true)"
+    printf '  %-10s %s\n' server "$(systemctl is-active melissa-server.service 2>/dev/null || true)"
     printf '  %-10s %s\n' k3s "$(systemctl is-active k3s.service 2>/dev/null || true)"
     local any=0
     if [ "$(id -u)" != 0 ]; then
@@ -247,14 +247,14 @@ status() {
         echo "Melissa runs in a container. On the host, the web UI is at http://127.0.0.1:8080 (install.sh's"
         echo "UI_PORT; no login yet, so it stays on the host's loopback)."
         echo "From another computer: ssh -N -L 8080:127.0.0.1:8080 <you>@<the host>, then http://127.0.0.1:8080"
-        echo "Commands from the host: sudo podman exec -it melissa melissa-setup ... | melissa-queen chat"
+        echo "Commands from the host: sudo podman exec -it melissa melissa-setup ... | melissa-server chat"
         echo "Guide: packaging/container/README.md and docs/QUICKSTART.md in the Melissa repository."
         return
     fi
     echo "Web UI (no login yet, so it only listens on this machine at $listen)."
     echo "From your own computer, tunnel it over SSH and open http://127.0.0.1:8080 :"
     echo "  ssh -N -L 8080:$listen ${SUDO_USER:-${USER:-you}}@<this machine>"
-    echo "Or chat here in the terminal:  melissa-queen chat"
+    echo "Or chat here in the terminal:  melissa-server chat"
     echo "Guide: docs/QUICKSTART.md in the Melissa repository."
 }
 
@@ -282,15 +282,15 @@ case ${1:-status} in
         valid_agent "$2"; need_root
         install_agent "$2"
         if [ "$login" = 1 ]; then login_agent "$2"; fi
-        if [ "$restart" = 1 ]; then restart_queen "$2"; fi
+        if [ "$restart" = 1 ]; then restart_server "$2"; fi
         echo
-        echo "Done. Open the web UI (see 'melissa-setup') or run 'melissa-queen chat'."
+        echo "Done. Open the web UI (see 'melissa-setup') or run 'melissa-server chat'."
         ;;
     login)
         [ $# = 2 ] || die "usage: sudo melissa-setup login <claude|grok|opencode>"
         valid_agent "$2"; need_root
         login_agent "$2"
-        if [ "$restart" = 1 ]; then restart_queen "$2"; fi
+        if [ "$restart" = 1 ]; then restart_server "$2"; fi
         ;;
     *) die "unknown command '$1' (try: melissa-setup --help)" ;;
 esac

@@ -1,20 +1,20 @@
-//! The Queen's web UI: the chat (home), apps and devices, the approvals list, and a chat
-//! with each helper (bee), with live updates over server-sent events.
+//! The lead agent's web UI: the chat (home), apps and devices, the approvals list, and a chat
+//! with each helper (agent), with live updates over server-sent events.
 //!
-//! - `GET /` the chat with Melissa (`?draft=` pre-fills the message box), `GET /hive`,
-//!   `GET /approvals`, `GET /bees/{bee}` (a helper's conversation; by id or name).
-//! - `GET /ui/stream?since=<seq>&view=chat|approvals` and `GET /ui/bees/{bee}/stream?since=`
+//! - `GET /` the chat with Melissa (`?draft=` pre-fills the message box), `GET /cluster`,
+//!   `GET /approvals`, `GET /agents/{agent}` (a helper's conversation; by id or name).
+//! - `GET /ui/stream?since=<seq>&view=chat|approvals` and `GET /ui/agents/{agent}/stream?since=`
 //!   (SSE). Each `feed` event carries server-rendered HTML: new entries (the htmx SSE
 //!   extension appends them to the list) and out-of-band replacements for entries that
 //!   changed (a growing reply, a finished tool call, a decided approval), the composer status
 //!   and the waiting count. The event id is the conversation's event sequence number; on
 //!   reconnect the browser sends it back as `Last-Event-ID` and the stream continues from
 //!   there. The stream re-folds the log up to the cursor first, so its keys match the page.
-//! - `GET /ui/strip`, `GET /ui/hive/apps`: fragments that poll (apps change slowly).
-//! - `POST /ui/messages` / `POST /ui/bees/{bee}/messages` (form `text`), `POST /ui/cancel` /
-//!   `POST /ui/bees/{bee}/cancel`, `POST /ui/confirmations/{id}/approve|deny`: the same calls
+//! - `GET /ui/strip`, `GET /ui/cluster/apps`: fragments that poll (apps change slowly).
+//! - `POST /ui/messages` / `POST /ui/agents/{agent}/messages` (form `text`), `POST /ui/cancel` /
+//!   `POST /ui/agents/{agent}/cancel`, `POST /ui/confirmations/{id}/approve|deny`: the same calls
 //!   as the JSON API. htmx gets a fragment; a plain form post gets a redirect.
-//! - `POST /ui/backend` / `POST /ui/bees/{bee}/backend` (form `choice`: `<backend>` or
+//! - `POST /ui/backend` / `POST /ui/agents/{agent}/backend` (form `choice`: `<backend>` or
 //!   `<backend> <model>`, posted with the composer like Stop): switch the agent from the
 //!   next turn. htmx gets the composer status (with the menu, or why it was refused);
 //!   a plain form post gets a redirect.
@@ -38,7 +38,7 @@ use axum::{
 use futures::Stream;
 use maud::Markup;
 use melissa_agent::{
-    queen::{bees::BeeView, events::EventLog, Queen, QueenError, QueenStatus},
+    lead::{agents::AgentView, events::EventLog, Lead, LeadError, LeadStatus},
     tools::Verdict,
 };
 use serde::Deserialize;
@@ -50,23 +50,27 @@ use crate::{
     feed::{approval_words, backend_label, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, Frame, View, Who},
-    state::HiveCache,
+    state::ClusterCache,
 };
 
 #[derive(Clone)]
 pub(crate) struct Ui {
-    pub(crate) queen: Queen,
-    pub(crate) hive: HiveCache,
+    pub(crate) lead: Lead,
+    pub(crate) cluster: ClusterCache,
     pub(crate) settings: crate::settings::Settings,
     /// One-shot agent tasks (Settings → Developer), to tell whether Melissa is busy.
     pub(crate) board: Option<melissa_agent::TaskBoard>,
 }
 
 impl Ui {
-    pub(crate) fn new(queen: Queen, hive: HiveCache, settings: crate::settings::Settings) -> Self {
+    pub(crate) fn new(
+        lead: Lead,
+        cluster: ClusterCache,
+        settings: crate::settings::Settings,
+    ) -> Self {
         Self {
-            queen,
-            hive,
+            lead,
+            cluster,
             settings,
             board: None,
         }
@@ -80,10 +84,10 @@ impl Ui {
     /// Something is running that a restart would cut off: a chat turn (Melissa's or a
     /// helper's), a helper's job or an agent task.
     pub(crate) fn busy(&self) -> bool {
-        self.queen.status().turn.is_some()
+        self.lead.status().turn.is_some()
             || self
-                .queen
-                .bees()
+                .lead
+                .agents()
                 .list()
                 .iter()
                 .any(|b| b.status == "working")
@@ -98,21 +102,21 @@ impl Ui {
 pub(crate) fn routes(ui: Ui) -> Router {
     Router::new()
         .route("/", get(home))
-        .route("/hive", get(hive_page))
+        .route("/cluster", get(cluster_page))
         .route("/approvals", get(approvals_page))
-        .route("/bees/{bee}", get(bee_page))
-        .route("/ui/stream", get(queen_stream))
-        .route("/ui/bees/{bee}/stream", get(bee_stream))
+        .route("/agents/{agent}", get(agent_page))
+        .route("/ui/stream", get(lead_stream))
+        .route("/ui/agents/{agent}/stream", get(agent_stream))
         .route("/ui/strip", get(strip))
-        .route("/ui/hive/apps", get(hive_apps))
-        .route("/ui/messages", post(queen_message))
-        .route("/ui/bees/{bee}/messages", post(bee_message))
-        .route("/ui/cancel", post(queen_cancel))
-        .route("/ui/bees/{bee}/cancel", post(bee_cancel))
+        .route("/ui/cluster/apps", get(cluster_apps))
+        .route("/ui/messages", post(lead_message))
+        .route("/ui/agents/{agent}/messages", post(agent_message))
+        .route("/ui/cancel", post(lead_cancel))
+        .route("/ui/agents/{agent}/cancel", post(agent_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
         .route("/ui/new-chat", post(new_chat))
-        .route("/ui/backend", post(queen_backend))
-        .route("/ui/bees/{bee}/backend", post(bee_backend))
+        .route("/ui/backend", post(lead_backend))
+        .route("/ui/agents/{agent}/backend", post(agent_backend))
         .route("/chats/{id}", get(past_chat_page))
         .merge(crate::settings::ui_routes())
         .with_state(ui)
@@ -120,34 +124,34 @@ pub(crate) fn routes(ui: Ui) -> Router {
 
 impl Lookup for Ui {
     fn confirmation_args(&self, id: u64) -> Option<Value> {
-        self.queen.confirmations().get(id).map(|c| c.args)
+        self.lead.confirmations().get(id).map(|c| c.args)
     }
 
-    fn bee_name(&self, bee: &str) -> Option<String> {
-        self.queen.bees().get(bee).map(|b| b.name)
+    fn agent_name(&self, agent: &str) -> Option<String> {
+        self.lead.agents().get(agent).map(|b| b.name)
     }
 }
 
 impl Ui {
     /// A conversation's event log.
-    fn log(&self, who: Who<'_>) -> Result<EventLog, QueenError> {
+    fn log(&self, who: Who<'_>) -> Result<EventLog, LeadError> {
         match who {
-            Who::Queen => Ok(self.queen.events().clone()),
-            Who::Bee(id) => self.queen.bees().events_of(id),
+            Who::Lead => Ok(self.lead.events().clone()),
+            Who::Agent(id) => self.lead.agents().events_of(id),
         }
     }
 
-    fn status(&self, who: Who<'_>) -> Option<QueenStatus> {
+    fn status(&self, who: Who<'_>) -> Option<LeadStatus> {
         match who {
-            Who::Queen => Some(self.queen.status()),
-            Who::Bee(id) => self.queen.bees().conversation_status(id).ok(),
+            Who::Lead => Some(self.lead.status()),
+            Who::Agent(id) => self.lead.agents().conversation_status(id).ok(),
         }
     }
 
     /// A conversation folded from every event in its log.
     fn feed(&self, who: Who<'_>, log: &EventLog) -> Feed {
         let page = log.since(0, EventLog::CAPACITY);
-        Feed::for_helper(matches!(who, Who::Bee(_))).fold(&page.events, self)
+        Feed::for_helper(matches!(who, Who::Agent(_))).fold(&page.events, self)
     }
 
     fn backend(&self, who: Who<'_>, feed: &Feed) -> Option<String> {
@@ -160,10 +164,10 @@ impl Ui {
     /// The agent menu of a conversation (None if it cannot be read).
     fn agents(&self, who: Who<'_>, error: Option<String>) -> Option<AgentMenu> {
         let (views, action) = match who {
-            Who::Queen => (self.queen.backends(), "/ui/backend".to_string()),
-            Who::Bee(id) => (
-                self.queen.bees().backends_of(id).ok()?,
-                format!("/ui/bees/{id}/backend"),
+            Who::Lead => (self.lead.backends(), "/ui/backend".to_string()),
+            Who::Agent(id) => (
+                self.lead.agents().backends_of(id).ok()?,
+                format!("/ui/agents/{id}/backend"),
             ),
         };
         let host = self.settings.host();
@@ -171,12 +175,12 @@ impl Ui {
     }
 
     fn waiting(&self) -> usize {
-        self.queen.confirmations().pending().len()
+        self.lead.confirmations().pending().len()
     }
 
-    /// The bee for a path segment (id or name).
-    fn bee(&self, bee: &str) -> Option<BeeView> {
-        self.queen.bees().get(bee)
+    /// The agent for a path segment (id or name).
+    fn agent(&self, agent: &str) -> Option<AgentView> {
+        self.lead.agents().get(agent)
     }
 
     /// Render a page with the rail.
@@ -190,13 +194,13 @@ impl Ui {
         host: Option<&str>,
         page: impl FnOnce(&Frame<'_>) -> Markup,
     ) -> Markup {
-        let snap = self.hive.get().await;
-        let bees = self.queen.bees().list();
-        let past = self.queen.past_chats();
+        let snap = self.cluster.get().await;
+        let agents = self.lead.agents().list();
+        let past = self.lead.past_chats();
         page(&Frame {
             waiting: self.waiting(),
             snap: &snap,
-            bees: &bees,
+            agents: &agents,
             past: &past,
             host,
         })
@@ -206,16 +210,16 @@ impl Ui {
     async fn chat_page(
         &self,
         who: Who<'_>,
-        bee: Option<&BeeView>,
+        agent: Option<&AgentView>,
         draft: &str,
         error: Option<&str>,
-    ) -> Result<Markup, QueenError> {
+    ) -> Result<Markup, LeadError> {
         let log = self.log(who)?;
         let feed = self.feed(who, &log);
         let backend = self.backend(who, &feed);
         // Learn the models of usable agents that never had a chat (rate-limited, no prompt);
         // they show in the menu from the next render.
-        self.queen.refresh_models_soon();
+        self.lead.refresh_models_soon();
         let agents = self.agents(who, None);
         let view = ChatView {
             who,
@@ -228,8 +232,8 @@ impl Ui {
             error,
         };
         Ok(self
-            .framed(|f| match bee {
-                Some(bee) => pages::bee_chat(f, bee, &view),
+            .framed(|f| match agent {
+                Some(agent) => pages::agent_chat(f, agent, &view),
                 None => pages::home(f, &view),
             })
             .await)
@@ -245,23 +249,26 @@ struct HomeQuery {
 async fn home(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
     // A draft is only a suggestion for the box; it is never sent by itself.
     let draft: String = q.draft.chars().take(200).collect();
-    match ui.chat_page(Who::Queen, None, &draft, None).await {
+    match ui.chat_page(Who::Lead, None, &draft, None).await {
         Ok(page) => page.into_response(),
         Err(e) => error_page(e),
     }
 }
 
-async fn bee_page(State(ui): State<Ui>, Path(bee): Path<String>) -> Response {
-    let Some(bee) = ui.bee(&bee) else {
+async fn agent_page(State(ui): State<Ui>, Path(agent): Path<String>) -> Response {
+    let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
-    match ui.chat_page(Who::Bee(&bee.id), Some(&bee), "", None).await {
+    match ui
+        .chat_page(Who::Agent(&agent.id), Some(&agent), "", None)
+        .await
+    {
         Ok(page) => page.into_response(),
         Err(e) => error_page(e),
     }
 }
 
-fn error_page(e: QueenError) -> Response {
+fn error_page(e: LeadError) -> Response {
     (
         StatusCode::BAD_GATEWAY,
         pages::error_page("Couldn't open the conversation", &e.to_string()),
@@ -274,28 +281,28 @@ pub(crate) fn host(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::HOST).and_then(|h| h.to_str().ok())
 }
 
-async fn hive_page(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
-    ui.framed_at(host(&headers), pages::hive).await
+async fn cluster_page(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
+    ui.framed_at(host(&headers), pages::cluster).await
 }
 
-async fn hive_apps(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
-    pages::hive_apps(&*ui.hive.get().await, host(&headers))
+async fn cluster_apps(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
+    pages::cluster_apps(&*ui.cluster.get().await, host(&headers))
 }
 
 async fn strip(State(ui): State<Ui>) -> Markup {
-    pages::strip(&*ui.hive.get().await)
+    pages::strip(&*ui.cluster.get().await)
 }
 
 async fn approvals_page(State(ui): State<Ui>) -> Markup {
-    let since = ui.queen.events().last_seq();
+    let since = ui.lead.events().last_seq();
     let list: Vec<_> = ui
-        .queen
+        .lead
         .confirmations()
         .pending()
         .into_iter()
         .map(|c| approval_words(c.id, &c.tool, &c.reason, Some(&c.args), &ui))
         .collect();
-    let epoch = ui.queen.events().epoch();
+    let epoch = ui.lead.events().epoch();
     ui.framed(|f| pages::approvals(f, &list, since, epoch))
         .await
 }
@@ -317,8 +324,8 @@ const STREAM_WAIT: Duration = Duration::from_secs(25);
 struct StreamState {
     ui: Ui,
     log: EventLog,
-    /// The helper whose conversation this is (None: the Queen's).
-    bee: Option<String>,
+    /// The helper whose conversation this is (None: the lead agent's).
+    agent: Option<String>,
     feed: Feed,
     cursor: u64,
     view: View,
@@ -327,14 +334,14 @@ struct StreamState {
 
 impl StreamState {
     fn who(&self) -> Who<'_> {
-        match &self.bee {
-            Some(id) => Who::Bee(id),
-            None => Who::Queen,
+        match &self.agent {
+            Some(id) => Who::Agent(id),
+            None => Who::Lead,
         }
     }
 }
 
-async fn queen_stream(
+async fn lead_stream(
     State(ui): State<Ui>,
     headers: HeaderMap,
     Query(q): Query<StreamQuery>,
@@ -343,26 +350,26 @@ async fn queen_stream(
         Some("approvals") => View::Approvals,
         _ => View::Chat,
     };
-    let log = ui.queen.events().clone();
+    let log = ui.lead.events().clone();
     let at = cursor(&headers, &q, log.epoch());
     stream(ui, log, None, view, at).into_response()
 }
 
-async fn bee_stream(
+async fn agent_stream(
     State(ui): State<Ui>,
-    Path(bee): Path<String>,
+    Path(agent): Path<String>,
     headers: HeaderMap,
     Query(q): Query<StreamQuery>,
 ) -> Response {
-    let Some(bee) = ui.bee(&bee) else {
+    let Some(agent) = ui.agent(&agent) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let log = match ui.log(Who::Bee(&bee.id)) {
+    let log = match ui.log(Who::Agent(&agent.id)) {
         Ok(log) => log,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let at = cursor(&headers, &q, log.epoch());
-    stream(ui, log, Some(bee.id), View::Chat, at).into_response()
+    stream(ui, log, Some(agent.id), View::Chat, at).into_response()
 }
 
 /// Where a stream starts: a reconnecting browser says where it got to (`<epoch>-<seq>`).
@@ -388,7 +395,7 @@ fn cursor(headers: &HeaderMap, q: &StreamQuery, epoch: u64) -> Option<u64> {
 fn stream(
     ui: Ui,
     log: EventLog,
-    bee: Option<String>,
+    agent: Option<String>,
     view: View,
     cursor: Option<u64>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -396,7 +403,7 @@ fn stream(
     // can't be updated.
     let reload = cursor.is_none_or(|c| c > log.last_seq());
     let cursor = cursor.unwrap_or(0);
-    let helper = bee.is_some();
+    let helper = agent.is_some();
     let feed = {
         let page = log.since(0, EventLog::CAPACITY);
         Feed::for_helper(helper).fold(page.events.iter().filter(|r| r.seq <= cursor), &ui)
@@ -404,7 +411,7 @@ fn stream(
     let state = StreamState {
         ui,
         log,
-        bee,
+        agent,
         feed,
         cursor,
         view,
@@ -466,29 +473,33 @@ struct NewMessage {
     text: String,
 }
 
-async fn queen_message(
+async fn lead_message(
     State(ui): State<Ui>,
     headers: HeaderMap,
     Form(form): Form<NewMessage>,
 ) -> Response {
-    let result = ui.queen.send(&form.text).map(|_| ());
-    message_reply(&ui, Who::Queen, None, &headers, &form.text, result).await
+    let result = ui.lead.send(&form.text).map(|_| ());
+    message_reply(&ui, Who::Lead, None, &headers, &form.text, result).await
 }
 
-async fn bee_message(
+async fn agent_message(
     State(ui): State<Ui>,
-    Path(bee): Path<String>,
+    Path(agent): Path<String>,
     headers: HeaderMap,
     Form(form): Form<NewMessage>,
 ) -> Response {
-    let Some(bee) = ui.bee(&bee) else {
+    let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
-    let result = ui.queen.bees().user_send(&bee.id, &form.text).map(|_| ());
+    let result = ui
+        .lead
+        .agents()
+        .user_send(&agent.id, &form.text)
+        .map(|_| ());
     message_reply(
         &ui,
-        Who::Bee(&bee.id),
-        Some(&bee),
+        Who::Agent(&agent.id),
+        Some(&agent),
         &headers,
         &form.text,
         result,
@@ -501,17 +512,17 @@ async fn bee_message(
 async fn message_reply(
     ui: &Ui,
     who: Who<'_>,
-    bee: Option<&BeeView>,
+    agent: Option<&AgentView>,
     headers: &HeaderMap,
     text: &str,
-    result: Result<(), QueenError>,
+    result: Result<(), LeadError>,
 ) -> Response {
     let error = match &result {
         Ok(()) => None,
-        Err(QueenError::Busy) => {
+        Err(LeadError::Busy) => {
             Some("Still working on your last message. Wait for it, or press Stop.".to_string())
         }
-        Err(QueenError::Empty) => Some("Type a message first.".to_string()),
+        Err(LeadError::Empty) => Some("Type a message first.".to_string()),
         Err(e) => Some(format!("Couldn't send that: {e}.")),
     };
     // Keep the text on failure so nothing typed is lost.
@@ -537,13 +548,13 @@ async fn message_reply(
         })
         .into_response();
     }
-    let back = match bee {
-        Some(b) => pages::bee_href(&b.id),
+    let back = match agent {
+        Some(b) => pages::agent_href(&b.id),
         None => "/".to_string(),
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, bee, draft, Some(&e)).await {
+        Some(e) => match ui.chat_page(who, agent, draft, Some(&e)).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -555,35 +566,35 @@ struct BackendForm {
     choice: String,
 }
 
-async fn queen_backend(
+async fn lead_backend(
     State(ui): State<Ui>,
     headers: HeaderMap,
     Form(form): Form<BackendForm>,
 ) -> Response {
     let (backend, model) = agents::parse_choice(&form.choice);
-    let result = ui.queen.use_backend(backend, model).map(|_| ());
-    backend_reply(&ui, Who::Queen, None, &headers, backend, result).await
+    let result = ui.lead.use_backend(backend, model).map(|_| ());
+    backend_reply(&ui, Who::Lead, None, &headers, backend, result).await
 }
 
-async fn bee_backend(
+async fn agent_backend(
     State(ui): State<Ui>,
-    Path(bee): Path<String>,
+    Path(agent): Path<String>,
     headers: HeaderMap,
     Form(form): Form<BackendForm>,
 ) -> Response {
-    let Some(bee) = ui.bee(&bee) else {
+    let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
     let (backend, model) = agents::parse_choice(&form.choice);
     let result = ui
-        .queen
-        .bees()
-        .user_use_backend(&bee.id, backend, model)
+        .lead
+        .agents()
+        .user_use_backend(&agent.id, backend, model)
         .map(|_| ());
     backend_reply(
         &ui,
-        Who::Bee(&bee.id),
-        Some(&bee),
+        Who::Agent(&agent.id),
+        Some(&agent),
         &headers,
         backend,
         result,
@@ -596,18 +607,18 @@ async fn bee_backend(
 async fn backend_reply(
     ui: &Ui,
     who: Who<'_>,
-    bee: Option<&BeeView>,
+    agent: Option<&AgentView>,
     headers: &HeaderMap,
     backend: &str,
-    result: Result<(), QueenError>,
+    result: Result<(), LeadError>,
 ) -> Response {
     let error = match result {
         Ok(()) => None,
-        Err(QueenError::Unavailable(_)) => Some(format!(
+        Err(LeadError::Unavailable(_)) => Some(format!(
             "{} isn't ready on this device yet.",
             backend_label(backend)
         )),
-        Err(QueenError::Failed(e)) => Some(format!("Couldn't switch: {e}.")),
+        Err(LeadError::Failed(e)) => Some(format!("Couldn't switch: {e}.")),
         Err(_) => Some("Couldn't switch: that agent or model isn't available here.".into()),
     };
     if is_htmx(headers) {
@@ -620,31 +631,35 @@ async fn backend_reply(
         let agents = ui.agents(who, error);
         return composer_status(&who.cancel_url(), label, busy, agents.as_ref()).into_response();
     }
-    let back = match bee {
-        Some(b) => pages::bee_href(&b.id),
+    let back = match agent {
+        Some(b) => pages::agent_href(&b.id),
         None => "/".to_string(),
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, bee, "", Some(&e)).await {
+        Some(e) => match ui.chat_page(who, agent, "", Some(&e)).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
     }
 }
 
-async fn queen_cancel(State(ui): State<Ui>, headers: HeaderMap) -> Response {
-    ui.queen.cancel().await;
+async fn lead_cancel(State(ui): State<Ui>, headers: HeaderMap) -> Response {
+    ui.lead.cancel().await;
     cancelled(&headers, "/")
 }
 
-async fn bee_cancel(State(ui): State<Ui>, Path(bee): Path<String>, headers: HeaderMap) -> Response {
-    let Some(bee) = ui.bee(&bee) else {
+async fn agent_cancel(
+    State(ui): State<Ui>,
+    Path(agent): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
     // Nothing running is fine: the button may be stale.
-    let _ = ui.queen.bees().user_cancel(&bee.id).await;
-    cancelled(&headers, &pages::bee_href(&bee.id))
+    let _ = ui.lead.agents().user_cancel(&agent.id).await;
+    cancelled(&headers, &pages::agent_href(&agent.id))
 }
 
 fn cancelled(headers: &HeaderMap, back: &str) -> Response {
@@ -665,7 +680,7 @@ async fn resolve(
         "deny" => Verdict::Denied,
         _ => return (StatusCode::NOT_FOUND, pages::not_found()).into_response(),
     };
-    let resolved = ui.queen.resolve_confirmation(id, verdict);
+    let resolved = ui.lead.resolve_confirmation(id, verdict);
     if !is_htmx(&headers) {
         return Redirect::to("/approvals").into_response();
     }
@@ -685,7 +700,7 @@ async fn resolve(
 }
 
 async fn new_chat(State(ui): State<Ui>) -> Response {
-    match ui.queen.new_chat().await {
+    match ui.lead.new_chat().await {
         Ok(_) => Redirect::to("/").into_response(),
         Err(e) => (
             StatusCode::CONFLICT,
@@ -697,8 +712,8 @@ async fn new_chat(State(ui): State<Ui>) -> Response {
 
 async fn past_chat_page(State(ui): State<Ui>, Path(id): Path<u64>) -> Response {
     let (Some(chat), Some(events)) = (
-        ui.queen.past_chats().into_iter().find(|c| c.id == id),
-        ui.queen.past_chat(id),
+        ui.lead.past_chats().into_iter().find(|c| c.id == id),
+        ui.lead.past_chat(id),
     ) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };

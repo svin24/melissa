@@ -10,7 +10,7 @@
 //!
 //! Network ([`NetworkMode`]): by default the sandbox has only loopback. A [`Bridge`]
 //! (`melissa-netbridge`, started first inside the sandbox) forwards loopback ports to Unix
-//! sockets served by the queen's egress proxy ([`crate::egress`]): an allowlisting HTTPS
+//! sockets served by the lead agent's egress proxy ([`crate::egress`]): an allowlisting HTTPS
 //! proxy (`HTTPS_PROXY` etc. point at it) and Melissa's MCP endpoint. No resolver is
 //! reachable inside; the proxy resolves names itself.
 //!
@@ -56,7 +56,7 @@ const RESERVED_ENV: &[&str] = &[
 /// Where the bridge's socket directory appears inside the sandbox.
 pub const BRIDGE_DIR: &str = "/run/melissa-net";
 
-/// Per-backend sandbox settings (`[backend.sandbox]` in the queen config).
+/// Per-backend sandbox settings (`[backend.sandbox]` in the lead agent config).
 ///
 /// Paths are relative to `$HOME`. Missing `ro`/`rw` paths are skipped, so a CLI that is
 /// not logged in simply sees no credentials. If the table is given, it replaces the
@@ -65,7 +65,7 @@ pub const BRIDGE_DIR: &str = "/run/melissa-net";
 #[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
     /// Run the CLI under bubblewrap. Turning this off runs it as a plain process of the
-    /// queen's user, with access to all of that user's files.
+    /// lead agent's user, with access to all of that user's files.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     /// Empty, writable, throw-away directories (tmpfs), e.g. a CLI's state directory.
@@ -278,7 +278,7 @@ impl Mount {
 pub struct Bridge {
     /// The `melissa-netbridge` binary on the host (bound read-only unless under `/usr`).
     pub netbridge: PathBuf,
-    /// Host directory with the queen-side sockets of this sandbox.
+    /// Host directory with the lead-side sockets of this sandbox.
     pub socket_dir: PathBuf,
     /// In-sandbox listen address → socket file name in `socket_dir`.
     pub ports: Vec<(std::net::SocketAddr, String)>,
@@ -972,17 +972,17 @@ mod tests {
     #[test]
     fn session_store_binds_land_inside_the_home_tmpfs() {
         let p = plan(vec![Mount::Tmpfs("/home/u/.grok".into())], "/usr/bin/x")
-            .with_binds(&[("/state/queen/store".into(), ".grok/sessions".into())])
+            .with_binds(&[("/state/lead/store".into(), ".grok/sessions".into())])
             .unwrap();
         let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
         let a = strs(&argv);
         assert!(has(
             &a,
-            &["--bind", "/state/queen/store", "/home/u/.grok/sessions"]
+            &["--bind", "/state/lead/store", "/home/u/.grok/sessions"]
         ));
         // After the tmpfs it lives in, so the tmpfs does not hide it.
         let tmpfs = a.iter().position(|x| *x == "/home/u/.grok").unwrap();
-        let bind = a.iter().position(|x| *x == "/state/queen/store").unwrap();
+        let bind = a.iter().position(|x| *x == "/state/lead/store").unwrap();
         assert!(bind > tmpfs);
         for bad in ["", "../x", "/abs", ".grok/../.."] {
             assert!(plan(vec![], "/usr/bin/x")

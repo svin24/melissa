@@ -16,12 +16,12 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub use builtin::CombInfo;
+pub use builtin::DeviceInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext};
 pub use scope::{
-    describe_bee, Access, BeeNames, CellInfo, CellStore, Owner, ResourceKind, ResourceOwners,
-    Scope, ScopeDecision, Target,
+    describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope, ScopeDecision,
+    Target, WorkspaceInfo, WorkspaceStore,
 };
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
@@ -60,7 +60,7 @@ pub trait Tool: Send + Sync {
 
     /// Like [`Tool::call`], for tools that need to know who is calling: the task and its
     /// policy context. A tool may set `ctx.tainted` when it hands back untrusted content
-    /// (e.g. the output of a tainted bee). Default: [`Tool::call`].
+    /// (e.g. the output of a tainted agent). Default: [`Tool::call`].
     fn call_in<'a>(
         &'a self,
         _task: TaskId,
@@ -70,9 +70,9 @@ pub trait Tool: Send + Sync {
         self.call(args)
     }
 
-    /// Only sessions that may delegate ([`TaskContext::delegate`], the Queen) see and may
-    /// call this tool (e.g. `start_bee`). Default: false.
-    fn queen_only(&self) -> bool {
+    /// Only sessions that may delegate ([`TaskContext::delegate`], the lead agent) see and may
+    /// call this tool (e.g. `start_agent`). Default: false.
+    fn lead_only(&self) -> bool {
         false
     }
 
@@ -83,24 +83,24 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// A short description of this call for the person asked to confirm it (e.g. "move cell
-    /// `nextcloud` to bee `Bo`"). Default: none (the arguments are shown anyway).
+    /// A short description of this call for the person asked to confirm it (e.g. "move workspace
+    /// `nextcloud` to agent `Bo`"). Default: none (the arguments are shown anyway).
     fn describe_call(&self, _args: &Value) -> Option<String> {
         None
     }
 }
 
-/// All tools available on this comb, plus the confirmation inbox.
+/// All tools available on this device, plus the confirmation inbox.
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<BTreeMap<&'static str, Arc<dyn Tool>>>,
     confirmations: ConfirmationStore,
     audit: Option<AuditLog>,
     confirm_timeout: Duration,
-    /// Who owns cells (None: every cell counts as existing and unassigned, the strictest).
+    /// Who owns workspaces (None: every workspace counts as existing and unassigned, the strictest).
     owners: Option<Arc<dyn ResourceOwners>>,
-    /// Bee names for messages and confirmations.
-    bees: Option<Arc<dyn BeeNames>>,
+    /// Agent names for messages and confirmations.
+    agents: Option<Arc<dyn AgentNames>>,
 }
 
 impl ToolRegistry {
@@ -112,29 +112,29 @@ impl ToolRegistry {
             audit,
             confirm_timeout: Duration::from_secs(15 * 60),
             owners: None,
-            bees: None,
+            agents: None,
         }
     }
 
-    /// Where the scope check learns who owns a cell. Without it, every cell is treated as
+    /// Where the scope check learns who owns a workspace. Without it, every workspace is treated as
     /// existing and unassigned (the strictest answer).
     pub fn with_owners(mut self, owners: Arc<dyn ResourceOwners>) -> Self {
         self.owners = Some(owners);
         self
     }
 
-    /// Where messages and confirmations look up bee names.
-    pub fn with_bees(mut self, bees: Arc<dyn BeeNames>) -> Self {
-        self.bees = Some(bees);
+    /// Where messages and confirmations look up agent names.
+    pub fn with_agents(mut self, agents: Arc<dyn AgentNames>) -> Self {
+        self.agents = Some(agents);
         self
     }
 
-    /// The bee names, if wired.
-    pub fn bee_names(&self) -> Option<&dyn BeeNames> {
-        self.bees.as_deref()
+    /// The agent names, if wired.
+    pub fn agent_names(&self) -> Option<&dyn AgentNames> {
+        self.agents.as_deref()
     }
 
-    /// Who owns cell `name` of `kind` now (`Ok(None)`: it does not exist).
+    /// Who owns workspace `name` of `kind` now (`Ok(None)`: it does not exist).
     pub async fn owner_of(&self, kind: ResourceKind, name: &str) -> Result<Option<Owner>, String> {
         match &self.owners {
             Some(o) => o.owner(kind, name).await,
@@ -147,16 +147,16 @@ impl ToolRegistry {
         self
     }
 
-    /// Every built-in tool that works on any bee.
+    /// Every built-in tool that works on any agent.
     pub fn builtin(audit: Option<AuditLog>) -> Self {
-        Self::new(vec![Arc::new(CombInfo::new())], audit)
+        Self::new(vec![Arc::new(DeviceInfo::new())], audit)
     }
 
     pub fn confirmations(&self) -> &ConfirmationStore {
         &self.confirmations
     }
 
-    /// Every tool spec, including Queen-only tools, limited by `allow` (None = all). For
+    /// Every tool spec, including Lead-only tools, limited by `allow` (None = all). For
     /// recognising Melissa's tool names; what an agent sees is [`ToolRegistry::visible_to`].
     pub fn visible(&self, allow: Option<&[&str]>) -> Vec<ToolSpec> {
         self.tools
@@ -167,14 +167,14 @@ impl ToolRegistry {
     }
 
     /// Tool specs an agent with policy context `ctx` may see. `allow` limits the set
-    /// (None = all); Queen-only tools need `ctx.delegate`. Hidden tools are not merely
+    /// (None = all); Lead-only tools need `ctx.delegate`. Hidden tools are not merely
     /// refused, the agent never learns they exist.
     /// Tools that change resources outside `ctx.scope` are hidden too, and a targeted tool's
     /// argument description lists the resources in scope.
     pub fn visible_to(&self, ctx: &TaskContext, allow: Option<&[&str]>) -> Vec<ToolSpec> {
         self.tools
             .values()
-            .filter(|t| ctx.delegate || !t.queen_only())
+            .filter(|t| ctx.delegate || !t.lead_only())
             .filter_map(|t| {
                 let mut spec = t.spec();
                 match t.target() {
@@ -191,9 +191,9 @@ impl ToolRegistry {
         self.tools.get_key_value(name).map(|(k, _)| *k)
     }
 
-    /// Is `name` a Queen-only tool?
-    pub fn is_queen_only(&self, name: &str) -> bool {
-        self.tools.get(name).is_some_and(|t| t.queen_only())
+    /// Is `name` a Lead-only tool?
+    pub fn is_lead_only(&self, name: &str) -> bool {
+        self.tools.get(name).is_some_and(|t| t.lead_only())
     }
 
     /// Call a tool for `task`, applying the policy. May wait for a human confirmation.
@@ -210,8 +210,8 @@ impl ToolRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
-        if tool.queen_only() && !ctx.delegate {
-            // Same answer as for a nonexistent tool: bees never learn these exist.
+        if tool.lead_only() && !ctx.delegate {
+            // Same answer as for a nonexistent tool: agents never learn these exist.
             return Err(ToolError::UnknownTool(name.to_string()));
         }
         if !args.is_object() && !args.is_null() {
@@ -236,7 +236,7 @@ impl ToolRegistry {
             reasons.push(reason);
         }
         if !reasons.is_empty() {
-            // Whoever answers sees whose cell it is first, then what the call does.
+            // Whoever answers sees whose workspace it is first, then what the call does.
             if let Some(d) = tool.describe_call(&args) {
                 reasons.insert(0, d);
             }
@@ -296,7 +296,7 @@ impl ToolRegistry {
             target,
             resource,
             owner.as_ref(),
-            self.bee_names(),
+            self.agent_names(),
         ) {
             ScopeDecision::Refuse(reason) => {
                 self.audit(task, "tool.refused", name, hash, &reason);
@@ -354,7 +354,7 @@ impl ToolRegistry {
         self.write_audit(task, backend, action, tool, &args_hash(args), detail);
     }
 
-    /// The audit log, if any (shared with the task board and the Queen).
+    /// The audit log, if any (shared with the task board and the lead agent).
     pub fn audit_log(&self) -> Option<&AuditLog> {
         self.audit.as_ref()
     }
@@ -575,11 +575,11 @@ mod tests {
         );
     }
 
-    struct QueenOnly;
-    impl Tool for QueenOnly {
+    struct LeadOnly;
+    impl Tool for LeadOnly {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "start_bee",
+                name: "start_agent",
                 description: "test",
                 labels: Labels::READ_ONLY,
                 params: json!({"type": "object"}),
@@ -588,32 +588,32 @@ mod tests {
         fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
             Box::pin(async { Ok(json!("started")) })
         }
-        fn queen_only(&self) -> bool {
+        fn lead_only(&self) -> bool {
             true
         }
     }
 
     #[tokio::test]
-    async fn queen_only_tools_need_delegation() {
-        let reg = ToolRegistry::new(vec![Arc::new(QueenOnly)], None);
-        let mut bee = attended();
-        assert!(reg.visible_to(&bee, None).is_empty());
+    async fn lead_only_tools_need_delegation() {
+        let reg = ToolRegistry::new(vec![Arc::new(LeadOnly)], None);
+        let mut agent = attended();
+        assert!(reg.visible_to(&agent, None).is_empty());
         assert_eq!(
-            reg.call(1, &mut bee, "start_bee", json!({})).await,
-            Err(ToolError::UnknownTool("start_bee".into()))
+            reg.call(1, &mut agent, "start_agent", json!({})).await,
+            Err(ToolError::UnknownTool("start_agent".into()))
         );
-        let mut queen = TaskContext {
+        let mut lead = TaskContext {
             delegate: true,
             ..attended()
         };
-        assert_eq!(reg.visible_to(&queen, None).len(), 1);
+        assert_eq!(reg.visible_to(&lead, None).len(), 1);
         assert_eq!(
-            reg.call(1, &mut queen, "start_bee", json!({})).await,
+            reg.call(1, &mut lead, "start_agent", json!({})).await,
             Ok(json!("started"))
         );
         // Name matching for permission requests still knows the tool.
         assert_eq!(reg.visible(None).len(), 1);
-        assert!(reg.is_queen_only("start_bee"));
+        assert!(reg.is_lead_only("start_agent"));
     }
 
     #[test]

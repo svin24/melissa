@@ -20,7 +20,7 @@ pub enum Effect {
     Disruptive,
     /// Can lose data or availability (remove an app, restore over data, delete a volume).
     Destructive,
-    /// Changes who looks after a cell (reassign). Always confirmed: only the user decides
+    /// Changes who looks after a workspace (reassign). Always confirmed: only the user decides
     /// ownership, whoever asks.
     Ownership,
 }
@@ -32,7 +32,7 @@ pub struct Labels {
     pub reads_private: bool,
     /// Returns content an outsider can influence (web pages, app logs, mail).
     pub reads_untrusted: bool,
-    /// Can send data off the comb (network requests, notifications, uploads).
+    /// Can send data off the device (network requests, notifications, uploads).
     pub egress: bool,
     pub effect: Effect,
 }
@@ -55,8 +55,8 @@ pub struct TaskContext {
     pub tainted: bool,
     /// Tools the owner pre-approved for this task (reversible effects only).
     pub preapproved: BTreeSet<String>,
-    /// May start bee agents (the Queen only). Tools marked [`crate::tools::Tool::queen_only`]
-    /// are hidden from, and refused for, every other session: bees cannot start bees.
+    /// May start agent agents (the lead agent only). Tools marked [`crate::tools::Tool::lead_only`]
+    /// are hidden from, and refused for, every other session: agents cannot start agents.
     pub delegate: bool,
     /// What this task may change ([`super::scope`]); checked before the label policy.
     pub scope: Scope,
@@ -84,7 +84,9 @@ pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
         return Decision::Confirm(STOPS_SERVICE.into());
     }
     if labels.effect == Effect::Ownership {
-        return Decision::Confirm("changes who looks after a cell (only you decide that)".into());
+        return Decision::Confirm(
+            "changes who looks after a workspace (only you decide that)".into(),
+        );
     }
     if ctx.tainted && (labels.egress || labels.effect != Effect::None) {
         return Decision::Confirm(
@@ -92,7 +94,7 @@ pub fn decide(tool: &str, labels: &Labels, ctx: &TaskContext) -> Decision {
         );
     }
     if labels.egress && labels.reads_private && !ctx.attended {
-        return Decision::Confirm("can send private data off the comb".into());
+        return Decision::Confirm("can send private data off the device".into());
     }
     if labels.effect == Effect::Reversible && !ctx.attended && !ctx.preapproved.contains(tool) {
         return Decision::Confirm("changes state while nobody is watching".into());

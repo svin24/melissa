@@ -57,7 +57,7 @@ pub struct TaskSnapshot {
     pub truncated: bool,
     pub error: Option<String>,
     pub elapsed: Duration,
-    /// The task that started this one (bees: the Queen).
+    /// The task that started this one (agents: the lead agent).
     pub parent: Option<TaskId>,
     /// The task's MCP session read untrusted content (known once the task finished).
     pub tainted: bool,
@@ -74,7 +74,7 @@ pub struct DispatchOptions {
     pub timeout: Option<Duration>,
     /// The task that started this one.
     pub parent: Option<TaskId>,
-    /// Who started it, for the audit log (`ui`, `queen`).
+    /// Who started it, for the audit log (`ui`, `lead`).
     pub actor: String,
 }
 
@@ -83,9 +83,9 @@ impl Default for DispatchOptions {
         Self {
             ctx: TaskContext {
                 attended: true,
-                // A one-off task the user starts in the UI is neither the Queen nor a bee:
-                // it may read, but cells are changed only by their bee, the Queen or the
-                // user (docs/HIVE-MODEL.md).
+                // A one-off task the user starts in the UI is neither the lead agent nor an agent:
+                // it may read, but workspaces are changed only by their agent, the lead agent or the
+                // user (docs/AGENT-MODEL.md).
                 scope: Scope::Nothing,
                 ..TaskContext::default()
             },
@@ -101,7 +101,7 @@ impl Default for DispatchOptions {
 pub enum DispatchError {
     #[error("unknown backend `{0}`")]
     UnknownBackend(String),
-    #[error("backend `{0}` is not available on this comb")]
+    #[error("backend `{0}` is not available on this device")]
     Unavailable(String),
     #[error("prompt is empty")]
     EmptyPrompt,
@@ -219,7 +219,7 @@ impl TaskBoard {
         self.inner.audit.as_ref()
     }
 
-    /// Take a task id without starting a task (e.g. for the Queen's session, so its audit
+    /// Take a task id without starting a task (e.g. for the lead agent's session, so its audit
     /// records and confirmations have an id no board task shares).
     pub fn reserve_id(&self) -> TaskId {
         let mut next = lock(&self.inner.next_id);
@@ -565,11 +565,11 @@ mod tests {
     #[tokio::test]
     async fn echo_task_succeeds_with_output() {
         let board = board(Duration::from_secs(5));
-        let id = board.dispatch("echo", "  hello\nhive ").unwrap();
+        let id = board.dispatch("echo", "  hello\ncluster ").unwrap();
         let snap = wait_until(&board, id, |s| s.status.is_finished()).await;
         assert_eq!(snap.status, TaskStatus::Succeeded);
         let text: Vec<_> = snap.output.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(text, ["echo: hello", "echo: hive"]);
+        assert_eq!(text, ["echo: hello", "echo: cluster"]);
         assert!(snap.output.iter().all(|l| l.stream == Stream::Stdout));
     }
 
@@ -655,27 +655,27 @@ mod tests {
             Duration::from_secs(60),
             Some(AuditLog::new(&path)),
         );
-        let queen = board.reserve_id();
+        let lead = board.reserve_id();
         let opts = DispatchOptions {
             timeout: Some(Duration::from_millis(50)),
-            parent: Some(queen),
-            actor: "queen".into(),
+            parent: Some(lead),
+            actor: "lead".into(),
             ..DispatchOptions::default()
         };
         let id = board.dispatch_with("hang", "wait", opts).unwrap();
-        assert!(id > queen);
+        assert!(id > lead);
         // Not finished within 1 ms; then the per-task timeout (50 ms) ends it.
         let snap = board.wait(id, Duration::from_millis(1)).await.unwrap();
         assert_eq!(snap.status, TaskStatus::Running);
         let snap = board.wait(id, Duration::from_secs(5)).await.unwrap();
         assert_eq!(snap.status, TaskStatus::Failed);
-        assert_eq!(snap.parent, Some(queen));
+        assert_eq!(snap.parent, Some(lead));
         assert!(board.wait(999, Duration::ZERO).await.is_none());
         let audit = std::fs::read_to_string(&path).unwrap();
         let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
         assert_eq!(line["action"], "task.dispatch");
-        assert_eq!(line["actor"], "queen");
-        assert_eq!(line["parent"], queen);
+        assert_eq!(line["actor"], "lead");
+        assert_eq!(line["parent"], lead);
         std::fs::remove_file(&path).unwrap();
     }
 

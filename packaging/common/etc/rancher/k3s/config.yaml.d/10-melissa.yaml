@@ -1,6 +1,6 @@
 # Shipped by every Melissa packaging (k3s reads config only from /etc/rancher/k3s).
 # SELinux is per packaging (the container sets `selinux: false` in 20-container.yaml).
-# The queen writes 50-*.yaml here; put local overrides in 90-local.yaml.
+# The server writes 50-*.yaml here; put local overrides in 90-local.yaml.
 write-kubeconfig-mode: "0600"
 node-label:
   - "melissa.io/managed=true"

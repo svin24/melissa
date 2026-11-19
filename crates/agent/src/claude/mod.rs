@@ -9,7 +9,7 @@
 //! Built-in tools are removed (`--tools ""`): Claude acts only through Melissa's MCP tools.
 //! The process runs under the bubblewrap sandbox and the egress proxy like every agent CLI.
 //! Resume: Claude keeps sessions in `~/.claude/projects`; for sessions with a
-//! [`OpenSession::state_dir`] (the Queen) that Melissa-owned directory is bound there, and
+//! [`OpenSession::state_dir`] (the lead agent) that Melissa-owned directory is bound there, and
 //! `--resume <id>` reopens the session after a restart. See [`client`] for the protocol.
 
 pub(crate) mod client;
@@ -42,14 +42,14 @@ pub const CLAUDE_SESSION_STORE: &str = ".claude/projects";
 
 /// How long Claude may wait for one of Melissa's MCP tools (`MCP_TOOL_TIMEOUT`, ms). In
 /// practice claude 2.1.327 gives up on an HTTP MCP call after 300 s regardless (and leaves
-/// the request open), which is why the queen's `confirm_timeout_secs` stays below that.
+/// the request open), which is why the lead agent's `confirm_timeout_secs` stays below that.
 const MCP_TOOL_TIMEOUT_MS: &str = "960000";
 
 /// Extra arguments a config may add (each followed by one value). Everything else is set by
 /// Melissa: permission mode, tools, MCP config and session flags must not be overridable.
 const ALLOWED_ARGS: &[&str] = &["--model", "--fallback-model", "--effort"];
 
-/// Configuration of one Claude session backend (`kind = "claude"` in the queen config).
+/// Configuration of one Claude session backend (`kind = "claude"` in the lead agent config).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClaudeSpec {
@@ -77,7 +77,7 @@ pub struct ClaudeSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_dir: Option<PathBuf>,
     /// Where Claude keeps its sessions, relative to `$HOME` (default `.claude/projects`).
-    /// The Queen's Melissa-owned session directory is bound here so it can resume.
+    /// The lead agent's Melissa-owned session directory is bound here so it can resume.
     #[serde(default = "default_store")]
     pub session_store: String,
 }

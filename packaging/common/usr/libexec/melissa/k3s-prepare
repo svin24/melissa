@@ -17,6 +17,13 @@ ln -sfn "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.
 for m in /usr/lib/melissa/k3s/manifests/*.yaml; do
     [ -e "$m" ] && install -m 0600 "$m" "$manifests/melissa-$(basename "$m")"
 done
+# Drop copies whose source is gone (renamed or removed, e.g. queen-rbac.yaml → server-rbac.yaml),
+# so k3s stops applying them.
+for m in "$manifests"/melissa-*.yaml; do
+    [ -e "$m" ] || continue
+    b=$(basename "$m")
+    [ -e "/usr/lib/melissa/k3s/manifests/${b#melissa-}" ] || rm -f "$m"
+done
 stamp=/var/lib/rancher/.melissa-relabeled
 if [ ! -e "$stamp" ]; then
     restorecon -R /var/lib/rancher /etc/rancher 2>/dev/null || true

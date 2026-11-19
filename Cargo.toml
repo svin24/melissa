@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agent", "crates/catalog", "crates/hive", "crates/queen", "crates/comb", "crates/settings", "crates/web"]
+members = ["crates/agent", "crates/catalog", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/web"]
 
 [workspace.package]
 edition = "2021"
@@ -10,7 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 melissa-agent = { path = "crates/agent" }
 melissa-web = { path = "crates/web" }
-melissa-hive = { path = "crates/hive" }
+melissa-cluster = { path = "crates/cluster" }
 melissa-catalog = { path = "crates/catalog" }
 melissa-settings = { path = "crates/settings" }
 # ACP (Agent Client Protocol) client: long-lived agent sessions (Grok `agent stdio`). Apache-2.0.
@@ -19,7 +19,7 @@ anyhow = "1"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 axum = "0.8"
 http-body-util = "0.1"
-# HTTP/1 client for the `melissa-queen` CLI talking to the daemon on loopback. Already in the
+# HTTP/1 client for the `melissa-server` CLI talking to the daemon on loopback. Already in the
 # build through kube-rs (same versions and features), so no new crates.
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -32,7 +32,7 @@ rust-embed = "8"
 # CommonMark + GFM parser for agent replies (MIT). No default features: no binary, no HTML
 # writer; `components::markdown` renders the events itself so every text goes through maud.
 pulldown-cmark = { version = "0.13", default-features = false }
-# Safe statvfs for disk usage in `comb_info` (no unsafe libc calls in our code). Apache-2.0 WITH
+# Safe statvfs for disk usage in `device_info` (no unsafe libc calls in our code). Apache-2.0 WITH
 # LLVM-exception OR Apache-2.0 OR MIT; only the fs module.
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }
 serde = { version = "1", features = ["derive"] }

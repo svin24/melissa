@@ -196,8 +196,8 @@ fn labels_for(kind: ToolKind) -> Option<Labels> {
 }
 
 /// Does `label` name tool `tool` of MCP server `server`? Agents spell MCP tool names in
-/// different ways (`melissa__comb_info`, `mcp__melissa__comb_info`, `melissa/comb_info`,
-/// `comb_info (melissa)`, OpenCode's `melissa_comb_info`), so accept the server name and the
+/// different ways (`melissa__device_info`, `mcp__melissa__device_info`, `melissa/device_info`,
+/// `device_info (melissa)`, OpenCode's `melissa_device_info`), so accept the server name and the
 /// exact tool name as separate words of the label, or one word `<server>_<tool>`.
 fn names_mcp_tool(label: &str, server: &str, tool: &str) -> bool {
     let words: Vec<&str> = label
@@ -214,7 +214,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use super::*;
-    use crate::tools::{CombInfo, Tool, Verdict};
+    use crate::tools::{DeviceInfo, Tool, Verdict};
 
     fn request(kind: ToolKind, title: &str, tool_name: Option<&str>) -> PermissionRequest {
         PermissionRequest {
@@ -227,7 +227,7 @@ mod tests {
     }
 
     fn perms(audit: Option<crate::AuditLog>, timeout: Duration) -> PolicyPermissions {
-        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CombInfo::new())];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(DeviceInfo::new())];
         let registry = ToolRegistry::new(tools, audit).with_confirm_timeout(timeout);
         let server = McpServer::new(registry.clone());
         let token = server
@@ -254,33 +254,33 @@ mod tests {
     #[test]
     fn mcp_tool_names_are_recognised() {
         for label in [
-            "melissa__comb_info",
-            "mcp__melissa__comb_info",
-            "melissa/comb_info",
-            "comb_info (melissa)",
-            "MCP: melissa.comb_info",
-            "melissa_comb_info",
+            "melissa__device_info",
+            "mcp__melissa__device_info",
+            "melissa/device_info",
+            "device_info (melissa)",
+            "MCP: melissa.device_info",
+            "melissa_device_info",
         ] {
             assert!(
-                names_mcp_tool(&label.to_lowercase(), "melissa", "comb_info"),
+                names_mcp_tool(&label.to_lowercase(), "melissa", "device_info"),
                 "{label}"
             );
         }
         for label in [
-            "comb_info",
-            "melissa__comb_infox",
-            "other__comb_info",
-            "melissa_comb_infox",
-            "xmelissa_comb_info",
+            "device_info",
+            "melissa__device_infox",
+            "other__device_info",
+            "melissa_device_infox",
+            "xmelissa_device_info",
         ] {
-            assert!(!names_mcp_tool(label, "melissa", "comb_info"), "{label}");
+            assert!(!names_mcp_tool(label, "melissa", "device_info"), "{label}");
         }
     }
 
     #[tokio::test]
     async fn melissa_tools_and_reads_are_allowed_once() {
         let p = perms(None, Duration::from_secs(5));
-        let mcp = request(ToolKind::Other, "melissa__comb_info", None);
+        let mcp = request(ToolKind::Other, "melissa__device_info", None);
         assert_eq!(p.decide(&mcp).await, PermissionDecision::AllowOnce);
         let read = request(ToolKind::Read, "Read file", None);
         assert_eq!(p.decide(&read).await, PermissionDecision::AllowOnce);
@@ -293,7 +293,7 @@ mod tests {
     async fn spoofed_titles_and_mode_switches_are_not_trusted() {
         let p = perms(None, Duration::from_millis(20));
         // A shell command that mentions the tool still needs a human (times out here).
-        let exec = request(ToolKind::Execute, "Execute `melissa__comb_info`", None);
+        let exec = request(ToolKind::Execute, "Execute `melissa__device_info`", None);
         assert_eq!(p.decide(&exec).await, PermissionDecision::Cancelled);
         let mode = request(ToolKind::SwitchMode, "Switch to bypassPermissions", None);
         assert_eq!(p.decide(&mode).await, PermissionDecision::RejectOnce);

@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     Json,
 };
-use melissa_agent::queen::backends::BackendView;
+use melissa_agent::lead::backends::BackendView;
 use melissa_settings::{
     clean_text,
     install::{
@@ -35,7 +35,7 @@ use super::{
 use crate::{components::Tone, is_htmx, ui::Ui};
 
 /// Melissa's built-in test partner: never listed as a provider (UI and API). Its backends
-/// still count as agents Melissa can run on (tests and `queen.toml` echo sessions).
+/// still count as agents Melissa can run on (tests and `server.toml` echo sessions).
 const HIDDEN: &str = "echo";
 
 /// The providers in display order (known ones first), each with its backends.
@@ -204,8 +204,8 @@ fn lock_reason(ui: &Ui, id: &str, views: &[BackendView]) -> Option<String> {
         );
     }
     let helpers: Vec<String> = ui
-        .queen
-        .bees()
+        .lead
+        .agents()
         .list()
         .into_iter()
         .filter(|b| of(&b.backend).as_deref() == Some(id))
@@ -307,7 +307,7 @@ async fn info(
     } else if !installed {
         ("Not installed", Tone::Warn, false)
     } else if reasons.contains(&"not_installed") {
-        // Found here, but not on the queen's own PATH (e.g. a custom path).
+        // Found here, but not on the lead agent's own PATH (e.g. a custom path).
         ("Not installed", Tone::Warn, false)
     } else if login_state == Some(InstallState::Running) {
         ("Signing in…", Tone::Info, false)
@@ -348,10 +348,10 @@ async fn info(
     if views.iter().any(|v| v.current && mine(&v.name)) {
         used_by.push("Melissa (now)".to_string());
     }
-    if s.parts().bee_default.as_deref().is_some_and(mine) {
+    if s.parts().agent_default.as_deref().is_some_and(mine) {
         used_by.push("New helpers".to_string());
     }
-    for b in ui.queen.bees().list() {
+    for b in ui.lead.agents().list() {
         if mine(&b.backend) {
             used_by.push(format!("Helper {}", b.name));
         }
@@ -410,7 +410,7 @@ async fn info(
 }
 
 async fn infos(ui: &Ui) -> Vec<Info> {
-    let views = ui.queen.backends();
+    let views = ui.lead.backends();
     let pending = apply::pending(ui).await;
     let mut out = Vec::new();
     for (id, facts) in grouped(&ui.settings) {
@@ -422,7 +422,7 @@ async fn infos(ui: &Ui) -> Vec<Info> {
 /// How to restart by hand, where Melissa can't (a run from source only).
 pub(super) fn manual_restart(s: &Settings) -> Option<String> {
     (s.parts().updates.kind == HostKind::Other)
-        .then(|| "# stop melissa-queen (Ctrl-C) and start it again".to_string())
+        .then(|| "# stop melissa-server (Ctrl-C) and start it again".to_string())
 }
 
 async fn view(ui: &Ui, selected: Option<&str>, flash: Option<Flash>) -> ProvidersView {
@@ -500,7 +500,7 @@ fn apply(ui: &Ui, id: &str, change: Change, actor: &str) -> Result<(), ChangeErr
         return Err(ChangeError::Unknown);
     }
     if change == Change::Enable(false) {
-        if let Some(why) = lock_reason(ui, id, &ui.queen.backends()) {
+        if let Some(why) = lock_reason(ui, id, &ui.lead.backends()) {
             return Err(ChangeError::Refused(format!("Can't disable it: {why}")));
         }
     }
@@ -675,7 +675,7 @@ async fn install_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
     Ok(format!("Installing {}…", default_label(id)))
 }
 
-/// Did `job` for `id` leave what it should: the program for an install, a login the queen
+/// Did `job` for `id` leave what it should: the program for an install, a login the lead agent
 /// accepts for a sign-in (its credential file, checked live)? systemd forgets a oneshot unit
 /// that ended well (its state reads as never run), so success is judged by the result.
 fn job_worked(ui: &Ui, job: Job, id: &str) -> bool {
@@ -689,7 +689,7 @@ fn job_worked(ui: &Ui, job: Job, id: &str) -> bool {
             .and_then(version::resolve)
             .is_some(),
         Job::Login => {
-            let views = ui.queen.backends();
+            let views = ui.lead.backends();
             let mine: Vec<&BackendView> = views
                 .iter()
                 .filter(|v| facts.iter().any(|f| f.name == v.name))
@@ -714,7 +714,7 @@ fn audit_failure(ui: &Ui, job: Job, id: &str, st: &InstallStatus) {
     let (action, what) = job_words(job);
     ui.settings.audit(
         action,
-        "queen",
+        "lead",
         &format!("{id}: {what} failed ({why})"),
         None,
     );
@@ -772,10 +772,10 @@ fn watch(ui: &Ui, job: Job, id: &str, before: u64) {
             };
             if let Some(outcome) = outcome {
                 let (action, what) = job_words(job);
-                s.audit(action, "queen", &format!("{id}: {what} {outcome}"), None);
+                s.audit(action, "lead", &format!("{id}: {what} {outcome}"), None);
             }
             if worked {
-                ui.queen.refresh_models_soon();
+                ui.lead.refresh_models_soon();
             }
             break;
         }
@@ -1289,7 +1289,7 @@ pub(super) async fn api_change(
             return (e.status(), Json(json!({"error": e.text()}))).into_response();
         }
     }
-    let views = ui.queen.backends();
+    let views = ui.lead.backends();
     let restart = ui.settings.parts().store.restart_needed();
     let pending = apply::pending(&ui).await;
     for (pid, facts) in grouped(&ui.settings) {

@@ -18,7 +18,7 @@
 - Config: k3s only reads `/etc/rancher/k3s/config.yaml(.d)`. Common `10-melissa.yaml` (kubeconfig 0600,
   `melissa.io/managed=true` label); container `20-container.yaml`: `selinux: false` (SELinux reads as disabled
   inside; the host confines the container), kubelet `KubeletInUserNamespace=true` (only matters rootless, a no-op
-  rootful), kube-proxy `conntrack-max-per-core=0` (leave the host's conntrack size alone, as kind does). Queen
+  rootful), kube-proxy `conntrack-max-per-core=0` (leave the host's conntrack size alone, as kind does). Lead agent
   writes `50-*.yaml`; local overrides `90-local.yaml`.
 - Inside the container: own network namespace, so k3s's `cni0`, `flannel.1`, VXLAN 8472, 6443/10250 and kube-proxy
   rules never touch the host's (verified next to a host k3s). containerd uses overlayfs on the `/var` volume. The
@@ -33,27 +33,27 @@
 - `k3s-prepare` reinstalls every manifest from `/usr` on each k3s start, so live edits under
   `/var/lib/rancher/k3s/server/manifests` don't survive a k3s restart.
 
-## Queen access to the API (read-only, 2026-11-18)
-- Manifest `packaging/common/usr/lib/melissa/k3s/manifests/queen-rbac.yaml` (installed by `k3s-prepare` as
-  `melissa-queen-rbac.yaml`): namespace `melissa`, ServiceAccount `melissa-queen`, Secret `melissa-queen-token`
-  (type `kubernetes.io/service-account-token`), ClusterRole/Binding `melissa-queen-read` = get/list/watch on
+## Lead agent access to the API (read-only, 2026-11-18)
+- Manifest `packaging/common/usr/lib/melissa/k3s/manifests/server-rbac.yaml` (installed by `k3s-prepare` as
+  `melissa-server-rbac.yaml`): namespace `melissa`, ServiceAccount `melissa-server`, Secret `melissa-server-token`
+  (type `kubernetes.io/service-account-token`), ClusterRole/Binding `melissa-server-read` = get/list/watch on
   nodes, namespaces, pods. No Secrets, no writes. Widen it only together with a reviewed tool.
 - `melissa-kubeconfig.service` (root oneshot, `WantedBy=k3s.service`, `Restart=on-failure`)
   runs `/usr/libexec/melissa/melissa-kubeconfig`: waits ≤300 s for the token, writes
-  `/run/melissa-kube/queen.kubeconfig` (root:`melissa-kube` 0640; dir 0750 from `tmpfiles.d/melissa-kube.conf`;
+  `/run/melissa-kube/server.kubeconfig` (root:`melissa-kube` 0640; dir 0750 from `tmpfiles.d/melissa-kube.conf`;
   group from `sysusers.d/melissa.conf`; server `https://127.0.0.1:6443`, CA + token from the Secret).
-- `melissa-queen.service` is **not** ordered after k3s or the oneshot (since 2026-11-18): system user `melissa` +
-  `SupplementaryGroups=melissa-kube`. The queen (`hive::LazyCluster`) looks for the file on every cluster call and
+- `melissa-server.service` is **not** ordered after k3s or the oneshot (since 2026-11-18): system user `melissa` +
+  `SupplementaryGroups=melissa-kube`. The lead agent (`cluster::LazyCluster`) looks for the file on every cluster call and
   rebuilds its client when the contents change, so it starts at once, attaches when k3s is up and follows rotations
-  without a restart. `cluster_health`: no dir → "k3s is not running on this bee"; dir but no file → "k3s is
+  without a restart. `cluster_health`: no dir → "k3s is not running on this agent"; dir but no file → "k3s is
   starting"; file but API down → `k3s_reachable: false` with the connect error.
 - Why not systemd credentials any more: `ImportCredential=`/`LoadCredential=` copy once at service start, so a late
-  or rotated kubeconfig needed a queen restart (kills agent tasks). See DECISIONS.md.
+  or rotated kubeconfig needed a lead agent restart (kills agent tasks). See DECISIONS.md.
 - Rotate/revoke: `sudo podman exec melissa /usr/libexec/melissa/melissa-kubeconfig rotate` (recreates the ServiceAccount, rewrites the
-  kubeconfig; the queen picks it up on its next cluster call).
-- Run a tool as the queen would (same file and group):
+  kubeconfig; the lead agent picks it up on its next cluster call).
+- Run a tool as the lead agent would (same file and group):
   `sudo podman exec melissa systemd-run --quiet --wait --pipe --collect -p User=melissa -p SupplementaryGroups=melissa-kube
-  -p PrivateTmp=yes -E XDG_STATE_HOME=/tmp -E XDG_CONFIG_HOME=/etc /usr/bin/melissa-queen tool cluster_health`.
+  -p PrivateTmp=yes -E XDG_STATE_HOME=/tmp -E XDG_CONFIG_HOME=/etc /usr/bin/melissa-server tool cluster_health`.
   Client details: [kube-rs-client.md](kube-rs-client.md).
 
 ## Bumping k3s
@@ -73,23 +73,23 @@ the datastore). Channel versions: `curl -s https://update.k3s.io/v1-release/chan
   a new bridge address: k3s restarts once ("NodeIPs changed") and recovers within ~1 min (PLAN question 61a).
 - Earlier, in the bootc VM (archived): k3s-selinux with SELinux enforcing, no AVC denials.
 
-## Verified: queen access (2026-11-18, bootc VM; same files in the container)
+## Verified: lead agent access (2026-11-18, bootc VM; same files in the container)
 - Fresh path (namespace deleted, image deployed): manifest applied, token filled, kubeconfig written 3.5 s after
-  the oneshot started; queen logged `k3s client configured`. `cluster_health` through the queen's credential:
+  the oneshot started; lead agent logged `k3s client configured`. `cluster_health` through the lead agent's credential:
   node Ready, `v1.37.2+k3s1`, kube-system 5 Running / 3 Succeeded; a pod with a bad image showed up as
   `Pending` / `ImagePullBackOff`. With k3s stopped: `k3s_reachable: false` (Connect error), no crash. Without a
-  credential: "k3s is not running on this bee".
+  credential: "k3s is not running on this agent".
 - With the minted token: get nodes/pods allowed; get secrets, create namespace, delete pods denied.
 - Smoke test still passes; no AVC denials.
 
-## Verified: queen starts before k3s (2026-11-18, bootc VM)
-- Boot probe (test-only unit polling `/healthz` and `cluster_health` every 2 s): queen `listening` 07:23:36.9,
+## Verified: lead agent starts before k3s (2026-11-18, bootc VM)
+- Boot probe (test-only unit polling `/healthz` and `cluster_health` every 2 s): lead agent `listening` 07:23:36.9,
   `/healthz` 200 at 07:23:39.1; k3s `Started` (notify, API up) 07:23:45.9; kubeconfig written 07:23:46.3.
-  `cluster_health`: "k3s is starting: the queen's cluster credentials are not issued yet" → `k3s_reachable: true`,
-  node ready, same queen PID, `NRestarts=0`.
-- Queen running throughout: `systemctl stop k3s` → `k3s_reachable: false` ("ServiceError: client error (Connect)");
-  start → healthy; `melissa-kubeconfig rotate` → new file hash, still healthy; queen PID and `NRestarts` unchanged.
-- `/run/melissa-kube` is `drwxr-x--- root melissa-kube`, file `-rw-r----- root melissa-kube`; the `bee` user and
+  `cluster_health`: "k3s is starting: the lead agent's cluster credentials are not issued yet" → `k3s_reachable: true`,
+  node ready, same lead agent PID, `NRestarts=0`.
+- Lead agent running throughout: `systemctl stop k3s` → `k3s_reachable: false` ("ServiceError: client error (Connect)");
+  start → healthy; `melissa-kubeconfig rotate` → new file hash, still healthy; lead agent PID and `NRestarts` unchanged.
+- `/run/melissa-kube` is `drwxr-x--- root melissa-kube`, file `-rw-r----- root melissa-kube`; the `agent` user and
   `nobody` get "Permission denied".
 - k3s: kubelet runs with the pinned IPv4 `--node-ip` while an IPv6 address is on the NIC; no `NodeIPs changed`.
 
@@ -105,14 +105,14 @@ the datastore). Channel versions: `curl -s https://update.k3s.io/v1-release/chan
   `/run/melissa/k3s.env` (`EnvironmentFile=`, which systemd re-reads per command, so ExecStartPre can write it for
   ExecStart). The cluster is single-stack IPv4 anyway, and changing IPv6 prefixes/privacy addresses would otherwise
   restart k3s at runtime too. A `node-ip` in `config.yaml.d/90-local.yaml` wins (k3s-prepare then adds nothing); no
-  IPv4 default route (IPv6-only bee) → k3s autodetects as before. The first boot after this update still restarts
+  IPv4 default route (IPv6-only agent) → k3s autodetects as before. The first boot after this update still restarts
   once (stored v4+v6 vs pinned v4). k3s has no `K3S_NODE_IP` env var; the flag is passed on the command line.
   Rejected: `ipv6.may-fail=no` in NetworkManager (breaks networks without IPv6), hard-coding an address.
   API clients must still treat short k3s outages as "unreachable" (k3s restarts on real IPv4 changes).
 - **Traefik chart 41.x** (k3s v1.37): telemetry is `global.checkNewVersion` (default **true** → Traefik checks online
   for new versions) and `global.sendAnonymousUsage` (default false). The old `globalArguments` key is ignored. Melissa's
   HelmChartConfig sets both false; the smoke test asserts `--global.checkNewVersion=false` in Traefik's args.
-- Anyone who can create HelmChart objects is effectively cluster-admin; only the queen should, from reviewed manifests.
+- Anyone who can create HelmChart objects is effectively cluster-admin; only the lead agent should, from reviewed manifests.
 - An image rollback restores the old k3s binary but not `/var` (datastore, on the volume). Rolling back across a Kubernetes minor needs
   a datastore snapshot taken before staging the update (back up `server/db` **and** `server/token`).
 - App images (e.g. the smoke test's `traefik/whoami`) are pulled from public registries; that's a third-party call

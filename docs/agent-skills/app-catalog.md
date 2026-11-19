@@ -4,18 +4,18 @@
 (`list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `stop_app`, `start_app`,
 `uninstall_app`), app links and ports, the write identity
 `melissa-apps` or its admission policies, or the owner's `app-credentials` command.
-Code: `crates/catalog` (schema, validation), `crates/hive/src/{render,apps,app_tools}.rs`,
-`crates/queen/src/credentials.rs`, `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`,
+Code: `crates/catalog` (schema, validation), `crates/cluster/src/{render,apps,app_tools}.rs`,
+`crates/server/src/credentials.rs`, `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`,
 `packaging/common/usr/libexec/melissa/melissa-kubeconfig`. Manifests: `manifests/*.toml` (shipped at
 `/usr/share/melissa/catalog/`).
 
 ## Split of duties
 - Agents pick an app and may override its declared, non-secret config fields. They never write
   manifests, never see generated secrets, and hold no cluster credentials.
-- The queen validates against the manifest, applies policy (labels below) and renders/applies
+- The lead agent validates against the manifest, applies policy (labels below) and renders/applies
   the objects with the `melissa-apps` identity. containerd pulls the image when the pod starts
   (runtime pull from the manifest's registries; the box ships no app images).
-- The owner reads generated credentials with `sudo melissa-queen app-credentials <app>`.
+- The owner reads generated credentials with `sudo melissa-server app-credentials <app>`.
 
 ## Manifest schema (TOML, `schema = 1`, every table `deny_unknown_fields`)
 ```toml
@@ -69,25 +69,25 @@ Validation errors name the field (`containers[0].image: must be pinned by digest
 name must be `<name>.toml`. `Catalog::load_dir` never lets one broken file hide the others
 (`list_catalog` reports them under `invalid_manifests`).
 
-Why TOML: same as `queen.toml`, no implicit typing (YAML's `no`/`1.10` surprises), comments,
+Why TOML: same as `server.toml`, no implicit typing (YAML's `no`/`1.10` surprises), comments,
 `toml` is already a dependency (`serde_yaml` is unmaintained). Why our own format and not
-Helm/Compose: a tiny reviewed surface the queen fully understands and can validate (no
+Helm/Compose: a tiny reviewed surface the lead agent fully understands and can validate (no
 templating, no hostPath/privileged knobs to forget), rendered to plain objects.
 
 ## Adding an app
-1. Copy `manifests/nextcloud.toml`, pick resources that fit a 3 GiB bee, keep secrets as `secret`
+1. Copy `manifests/nextcloud.toml`, pick resources that fit a 3 GiB agent, keep secrets as `secret`
    fields, use a probe the app answers without login.
-2. Pin the image by digest (multi-arch index, so arm64 bees work later):
+2. Pin the image by digest (multi-arch index, so arm64 agents work later):
    `skopeo inspect docker://docker.io/library/<image>:<tag> | jq -r .Digest` (the `Digest` of the
    tag, not of `--override-arch`). Check the version with `skopeo inspect --override-os linux
    --override-arch amd64 ... | jq .Env,.Created`, note the compressed size
    (`... | jq '[.LayersData[].Size]|add'`).
 3. `devenv shell -- cargo nextest run -p melissa-catalog` (the repo catalog must load without
-   errors), add a golden test in `crates/hive/src/render.rs` if the app needs new rendering, and
+   errors), add a golden test in `crates/cluster/src/render.rs` if the app needs new rendering, and
    update goldens with `MELISSA_UPDATE_GOLDEN=1` after reviewing the diff.
 4. Test in the VM (below). Check disk: the image is pulled into `/var` at install time.
 
-## Rendering (`crates/hive/src/render.rs`, pure)
+## Rendering (`crates/cluster/src/render.rs`, pure)
 Namespace `app-<name>` (labels `melissa.io/app=<name>`, `melissa.io/managed=true`, Pod Security
 `enforce=baseline`) → RoleBinding `melissa-apps` (ClusterRole `melissa-app-workload` →
 ServiceAccount `melissa/melissa-apps`) → Secret `<name>-secrets` (created once, POST, 409 = keep)
@@ -105,7 +105,7 @@ so "keep data" and "delete data" are explicit, and `Recreate` never runs two pod
   NodePort range), the lowest one no catalog app's namespace records. Fixed while the namespace
   exists (admission): survives stop, keep-data uninstall, reinstall; freed by a delete-data uninstall.
 - Tools return `url` (first address), `urls` (all), `port`, `dns_url` (`http://<name>.<domain>`, only
-  with the owner's DNS). Addresses: `[apps] addresses` in `queen.toml`, else found per call: the LAN
+  with the owner's DNS). Addresses: `[apps] addresses` in `server.toml`, else found per call: the LAN
   address of the default route (UDP `connect` to 203.0.113.1, nothing sent) and Tailscale addresses
   (100.64.0.0/10 from `/proc/net/fib_trie`); k3s's 10.42/10.43, loopback and link-local skipped.
 - `device_hosts` (Nextcloud's trusted domains) = ingress host + those addresses + the kernel host
@@ -119,28 +119,28 @@ so "keep data" and "delete data" are explicit, and `Recreate` never runs two pod
 | tool | labels | notes |
 |---|---|---|
 | `list_catalog` | read-only | works without k3s |
-| `install_app {app, config?, bee?}` | Reversible, target `app` (Change) | attended Queen: allowed for a new cell (she must name the `bee` that looks after it) and over a bee's cell; over an unassigned cell: confirmation; a bee: its own/new cells only; unattended or tainted: confirmation. Records `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` (+ assigned-by/at, installed-by/at, origin) on a new namespace, keeps an existing record. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
-| `app_status {app}` | read-only, target `app` (Read) | reports `bee`, `bee_name`, `comb`, `assigned_by`, `installed_by`, `installed_at`, `legacy_owner`, `url`/`urls`/`port`/`dns_url`; phases `not_installed`, `starting`, `ready`, `failing`, `stopping`, `stopped`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
+| `install_app {app, config?, agent?}` | Reversible, target `app` (Change) | attended lead agent: allowed for a new workspace (it must name the `agent` that looks after it) and over an agent's workspace; over an unassigned workspace: confirmation; an agent: its own/new workspaces only; unattended or tainted: confirmation. Records `melissa.io/workspace`, `melissa.io/device`, `melissa.io/owner-agent` (+ assigned-by/at, installed-by/at, origin) on a new namespace, keeps an existing record. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
+| `app_status {app}` | read-only, target `app` (Read) | reports `agent`, `agent_name`, `device`, `assigned_by`, `installed_by`, `installed_at`, `legacy_owner`, `url`/`urls`/`port`/`dns_url`; phases `not_installed`, `starting`, `ready`, `failing`, `stopping`, `stopped`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
 | `stop_app {app}` | **Disruptive**, target `app` (Change) | always a confirmation whoever asks; reason "stop `x` (it can be started again; nothing is deleted); takes a running service offline (…)", never "destructive"; card "Stop Nextcloud? It can be started again; nothing is deleted." Merge-patches the Deployment: `replicas: 0` + `melissa.io/replicas-before-stop`. Already stopped: `changed: false`. |
-| `start_app {app}` | Reversible, target `app` (Change) | like `install_app`: attended untainted Queen runs it, unattended/tainted asks. Restores the recorded count (1-10, else 1), removes the annotation. Not stopped: `changed: false`. Uninstalled: "install_app brings it back". |
-| `app_logs {app, lines?, container?, previous?}` | reads_untrusted, target `app` (ReadScoped: a bee only for its own cells) | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
-| `uninstall_app {app, delete_data?}` | Destructive, target `app` (Change) | always a confirmation (the Queen's names the owning bee); a bee: refused on cells that are not its own. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
+| `start_app {app}` | Reversible, target `app` (Change) | like `install_app`: attended untainted lead agent runs it, unattended/tainted asks. Restores the recorded count (1-10, else 1), removes the annotation. Not stopped: `changed: false`. Uninstalled: "install_app brings it back". |
+| `app_logs {app, lines?, container?, previous?}` | reads_untrusted, target `app` (ReadScoped: an agent only for its own workspaces) | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
+| `uninstall_app {app, delete_data?}` | Destructive, target `app` (Change) | always a confirmation (the lead agent's names the owning agent); an agent: refused on workspaces that are not its own. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
 
-Before the labels, the registry checks the caller's scope against the cell's owning bee (see
-[cells-and-ownership.md](cells-and-ownership.md)): a bee touching a cell that isn't its own is refused
-outright (`tool.refused`), never asked. `melissa-queen tool` and `/api/tools` act as the user.
-| `list_apps` | read-only | catalog apps present on the bee (any phase but `not_installed`, incl. `uninstalled_data_kept`) + the rest as `not_installed`; per-app reads (the write identity can get but not list namespaces), so apps outside the catalog are invisible |
+Before the labels, the registry checks the caller's scope against the workspace's owning agent (see
+[workspaces-and-ownership.md](workspaces-and-ownership.md)): an agent touching a workspace that isn't its own is refused
+outright (`tool.refused`), never asked. `melissa-server tool` and `/api/tools` act as the user.
+| `list_apps` | read-only | catalog apps present on the agent (any phase but `not_installed`, incl. `uninstalled_data_kept`) + the rest as `not_installed`; per-app reads (the write identity can get but not list namespaces), so apps outside the catalog are invisible |
 - Installing over a **stopped** app applies the new config but renders 0 replicas and keeps the
   annotation (`stopped: true`, `next` says start_app). Keep-data uninstall also deletes `<name>-port`
   and `<name>-files` (the port stays recorded on the namespace).
 
-`melissa-queen tool --wait <name> [json]` runs a tool in the daemon (`POST /api/tools/{name}`) as
-an unattended operator call (task 0): reversible/destructive calls wait for `melissa-queen
-confirm approve <id>` from another shell. `melissa-queen tool <name>` (no `--wait`) runs in-process
+`melissa-server tool --wait <name> [json]` runs a tool in the daemon (`POST /api/tools/{name}`) as
+an unattended operator call (task 0): reversible/destructive calls wait for `melissa-server
+confirm approve <id>` from another shell. `melissa-server tool <name>` (no `--wait`) runs in-process
 and refuses anything that needs a confirmation.
 
-## RBAC: two identities (`apps-rbac.yaml`, `queen-rbac.yaml`)
-- `melissa-queen` (read-only, `queen.kubeconfig`): `cluster_health` etc. Unchanged.
+## RBAC: two identities (`apps-rbac.yaml`, `server-rbac.yaml`)
+- `melissa-server` (read-only, `server.kubeconfig`): `cluster_health` etc. Unchanged.
 - `melissa-apps` (`apps.kubeconfig`, same dir/group, written by `melissa-kubeconfig`): cluster-wide
   only namespaces get/create/patch/delete, rolebindings create/patch, `bind` on
   `melissa-app-workload`. ValidatingAdmissionPolicies (fail closed, matched on the SA's username):
@@ -152,48 +152,48 @@ and refuses anything that needs a confirmation.
   only (no get/list)**, pods + pods/log read. No PVs, nodes, exec, other namespaces.
 - PSA baseline in app namespaces is what keeps the write identity off the host (no privileged
   pods, hostPath, host namespaces).
-- `rotate [queen|apps]` in `melissa-kubeconfig` (default both).
+- `rotate [lead|apps]` in `melissa-kubeconfig` (default both).
 
-## Cells and ownership (2026-11-18, hive model)
-An installed app is a cell owned by a bee: namespace labels `melissa.io/cell`, `melissa.io/comb`,
-`melissa.io/owner-bee` (absent = unassigned) + `melissa.io/assigned-by|at`. The namespaces admission policy
-requires cell + comb on create, freezes the comb, and lets the owner bee change only together with a new
-`assigned-at` (the reassign path: the Queen's `reassign_cell` after the user's approval, or
-`melissa-queen cell reassign <cell> --to <bee>`). Old `melissa.io/owner` labels count as unassigned and
+## Workspaces and ownership (2026-11-18, cluster model)
+An installed app is a workspace owned by an agent: namespace labels `melissa.io/workspace`, `melissa.io/device`,
+`melissa.io/owner-agent` (absent = unassigned) + `melissa.io/assigned-by|at`. The namespaces admission policy
+requires workspace + device on create, freezes the device, and lets the owner agent change only together with a new
+`assigned-at` (the reassign path: the lead agent's `reassign_workspace` after the user's approval, or
+`melissa-server workspace reassign <workspace> --to <agent>`). Old `melissa.io/owner` labels count as unassigned and
 are dropped at the next install/reassign. `app-adopt` is gone. Details:
-[cells-and-ownership.md](cells-and-ownership.md).
-Policy decision (2026-11-18, end-to-end test): `install_app` asked for in the Queen chat runs without
-a confirmation while the Queen is untainted (the owner asked; reversible; uninstall keeps data). Once
+[workspaces-and-ownership.md](workspaces-and-ownership.md).
+Policy decision (2026-11-18, end-to-end test): `install_app` asked for in the lead agent chat runs without
+a confirmation while the lead agent is untainted (the owner asked; reversible; uninstall keeps data). Once
 the conversation has read untrusted content (`app_logs`, a worker that did) it needs approval, and
 since 2026-11-18 that taint survives session reopens and daemon restarts. Confirmations wait at most
 `confirm_timeout_secs` (default 240 s) and are then withdrawn. Walkthrough:
-[e2e-queen-app-install.md](e2e-queen-app-install.md).
+[e2e-lead-app-install.md](e2e-lead-app-install.md).
 
 ## Owner credentials
-`sudo melissa-queen app-credentials nextcloud` reads `app-nextcloud/nextcloud-secrets` with k3s's
+`sudo melissa-server app-credentials nextcloud` reads `app-nextcloud/nextcloud-secrets` with k3s's
 admin kubeconfig (`/etc/rancher/k3s/k3s.yaml`, 0600 root). Not a tool, not an API route; neither
-queen identity can read Secrets; the queen and its agents run as the unprivileged system user `melissa`.
-Without root: "needs root". The Secret is the single source of truth (no copy in the queen's state).
-In the container: `sudo podman exec melissa melissa-queen app-credentials <app>`; the admin kubeconfig stays
+lead agent identity can read Secrets; the lead agent and its agents run as the unprivileged system user `melissa`.
+Without root: "needs root". The Secret is the single source of truth (no copy in the lead agent's state).
+In the container: `sudo podman exec melissa melissa-server app-credentials <app>`; the admin kubeconfig stays
 inside.
 
 ## Test in the container
 ```
-q='sudo podman exec melissa melissa-queen'
+q='sudo podman exec melissa melissa-server'
 $q tool --wait install_app '{"app":"nextcloud"}' &   # prints the confirmation id
 $q confirm list; $q confirm approve <id>
 $q tool app_status '{"app":"nextcloud"}'            # until "phase": "ready"; "url" = http://<BIND>:30000
 curl http://<BIND>:30000/status.php
 $q tool --wait stop_app '{"app":"nextcloud"}' &      # always asks: confirm approve <id>
-sudo podman exec melissa melissa-queen app-credentials nextcloud
+sudo podman exec melissa melissa-server app-credentials nextcloud
 ```
 Negative RBAC checks (inside: `sudo podman exec melissa ...`): `kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig ...` (create
 namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in default, ...).
 
 ## Verified (2026-11-18, headless bootc VM (archived), 3 GiB RAM, 8.6 GiB /var, k3s v1.37.2)
-- **Confirmation flow:** `melissa-queen tool --wait install_app '{"app":"nextcloud"}'` printed
+- **Confirmation flow:** `melissa-server tool --wait install_app '{"app":"nextcloud"}'` printed
   "waiting for confirmation #2 (changes state while nobody is watching): approve with
-  `melissa-queen confirm approve 2`"; `confirm list` showed `#2 task 0 install_app`; after
+  `melissa-server confirm approve 2`"; `confirm list` showed `#2 task 0 install_app`; after
   `confirm approve 2` from a second shell the call returned (applied Namespace, RoleBinding, PVC,
   Deployment, Service, Ingress; secrets `generated`). `uninstall_app` asked for confirmation
   ("destructive action") even with data kept; a `deny` returned 403 "denied by a human" and
@@ -207,10 +207,10 @@ namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in d
 - **From the host:** `curl --resolve nextcloud.melissa.home.arpa:18080:127.0.0.1
   http://nextcloud.melissa.home.arpa:18080/status.php` →
   `{"installed":true,"maintenance":false,"needsDbUpgrade":false,"version":"34.0.6.2",...}`.
-- **Credentials:** `sudo melissa-queen app-credentials nextcloud` printed URL, `user: admin`,
-  `password: <32 chars>`; as `bee` and as the queen's DynamicUser (+ `melissa-kube`): "needs root".
+- **Credentials:** `sudo melissa-server app-credentials nextcloud` printed URL, `user: admin`,
+  `password: <32 chars>`; as `agent` and as the lead agent's DynamicUser (+ `melissa-kube`): "needs root".
   OCS `GET /ocs/v2.php/cloud/user` with them → 200, id `admin`, groups `[admin]`; wrong password
-  → 401. The password appears 0 times in the audit log and the queen's journal.
+  → 401. The password appears 0 times in the audit log and the lead agent's journal.
 - **Logs cap:** `lines: 501` → 422 "`lines` must be 1-500"; `lines: 500` after 700 requests →
   exactly 500 lines, 51,951 bytes, no control characters; default 100 lines.
 - **Uninstall/reinstall:** keep-data uninstall deleted Ingress, Service, Deployment, kept
@@ -225,7 +225,7 @@ namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in d
   to `app-nextcloud:default`, to two subjects, to a user, or of ClusterRole `admin` (RBAC
   escalation check), ClusterRoleBindings, PVs, nodes, kube-system logs.
 - `vm-k3s-smoke.sh` passes; SELinux enforcing, 0 `avc:  denied` this boot; volume directory
-  labelled `container_file_t` with MCS categories; k3s and queen `NRestarts=0`.
+  labelled `container_file_t` with MCS categories; k3s and lead agent `NRestarts=0`.
 - Deploying the change moved 11 layers / 580 MB the first time (base layers had moved on), 7 layers
   / 9 MB for the fix.
 
@@ -244,14 +244,14 @@ namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in d
   with nodePort 31000, a LoadBalancer → all denied with the policy messages. `vm-k3s-smoke.sh` passes,
   0 AVC denials.
 - Not verified on a VM: the desktop image's firewall path (FedoraWorkstation zone, expected open),
-  Tailscale address detection (no tailnet in the VM; unit-tested parser), the Queen/bee choosing
+  Tailscale address detection (no tailnet in the VM; unit-tested parser), the lead agent/agent choosing
   `stop_app` from a real chat (prompt change only), the web UI links in a browser (unit-tested).
 
 ## Gotchas
 - **CEL field names:** Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as
   `s.namespace`. The older escaped form `s.__namespace__` is "no such key", and
   `has(s.__namespace__)` is silently false (the policy denied every binding).
-  `crates/hive/tests/rbac_manifests.rs` guards against it.
+  `crates/cluster/tests/rbac_manifests.rs` guards against it.
 - **Live-patching a k3s manifest doesn't stick:** `k3s-prepare` reinstalls
   `/usr/lib/melissa/k3s/manifests/*` on every k3s start, so a hot fix in
   `/var/lib/rancher/k3s/server/manifests` is reverted by the next k3s restart. Rebuild the image.

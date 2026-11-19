@@ -64,7 +64,7 @@ pub enum NoteTone {
     Guard,
 }
 
-/// Status colour of an app cell or a device dot.
+/// Status colour of an app workspace or a device dot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
     /// Running fine.
@@ -92,9 +92,9 @@ impl Health {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
     Chat,
-    /// A conversation with a helper (bee).
+    /// A conversation with a helper (agent).
     Helper,
-    Hive,
+    Cluster,
     Waiting,
     /// An archived chat with Melissa.
     PastChat,
@@ -236,7 +236,7 @@ pub fn rail(
             a.brand href="/" { (mark("mark")) span { "Melissa" } }
             ul.nav {
                 (item(Nav::Chat, "/", "Chat", html! {}))
-                (item(Nav::Hive, "/hive", "Apps and devices", html! {}))
+                (item(Nav::Cluster, "/cluster", "Apps and devices", html! {}))
                 (item(Nav::Waiting, "/approvals", "Waiting for you", waiting_count(waiting, false)))
                 (item(Nav::Settings, "/settings", "Settings", html! {}))
             }
@@ -335,10 +335,10 @@ pub fn empty_state(title: &str, text: &str) -> Markup {
     }
 }
 
-// --- Apps as honeycomb cells ---------------------------------------------------------
+// --- Apps as app_grid workspaces ---------------------------------------------------------
 
-/// One app as a hexagon cell.
-pub struct AppCell<'a> {
+/// One app as a hexagon workspace.
+pub struct AppWorkspace<'a> {
     pub name: &'a str,
     pub health: Health,
     /// Short status, e.g. "Running".
@@ -351,21 +351,21 @@ pub struct AppCell<'a> {
     pub details: Option<&'a str>,
 }
 
-/// A hexagon cell for an app.
-pub fn app_cell(cell: &AppCell<'_>) -> Markup {
+/// A hexagon workspace for an app.
+pub fn app_tile(workspace: &AppWorkspace<'_>) -> Markup {
     html! {
-        li class={ "hex " (cell.health.class()) } {
+        li class={ "hex " (workspace.health.class()) } {
             div.hex-inner {
-                @if let Some(url) = cell.url {
-                    a.hex-name href=(url) rel="noreferrer" { (cell.name) }
+                @if let Some(url) = workspace.url {
+                    a.hex-name href=(url) rel="noreferrer" { (workspace.name) }
                 } @else {
-                    span.hex-name { (cell.name) }
+                    span.hex-name { (workspace.name) }
                 }
-                span.hex-status { (cell.status) }
-                @if let Some(detail) = cell.detail { span.hex-detail { (detail) } }
-                @if let Some(details) = cell.details {
+                span.hex-status { (workspace.status) }
+                @if let Some(detail) = workspace.detail { span.hex-detail { (detail) } }
+                @if let Some(details) = workspace.details {
                     button.hex-more type="button" hx-get=(details) hx-target="#app-dialog"
-                        hx-swap="innerHTML" aria-haspopup="dialog" aria-label={ "Details: " (cell.name) } {
+                        hx-swap="innerHTML" aria-haspopup="dialog" aria-label={ "Details: " (workspace.name) } {
                         "Details"
                     }
                 }
@@ -532,8 +532,8 @@ pub fn app_logs(l: &AppLogs<'_>) -> Markup {
     }
 }
 
-/// The "Add an app" cell: a link into the chat.
-pub fn add_app_cell(href: &str) -> Markup {
+/// The "Add an app" workspace: a link into the chat.
+pub fn add_app_tile(href: &str) -> Markup {
     html! {
         li.hex.hex-add {
             a.hex-inner href=(href) {
@@ -544,13 +544,13 @@ pub fn add_app_cell(href: &str) -> Markup {
     }
 }
 
-/// A honeycomb of cells (from [`app_cell`] and [`add_app_cell`]).
-pub fn honeycomb(label: &str, cells: Markup) -> Markup {
-    html! { ul.honeycomb aria-label=(label) { (cells) } }
+/// A app_grid of workspaces (from [`app_tile`] and [`add_app_tile`]).
+pub fn app_grid(label: &str, workspaces: Markup) -> Markup {
+    html! { ul.app_grid aria-label=(label) { (workspaces) } }
 }
 
-/// A mini cell in the app strip.
-pub struct StripCell<'a> {
+/// A mini workspace in the app strip.
+pub struct StripTile<'a> {
     pub name: &'a str,
     pub health: Health,
 }
@@ -558,15 +558,15 @@ pub struct StripCell<'a> {
 /// The compact app-state strip at the top of the chat. Refreshes itself from `url`.
 pub fn app_strip(
     url: &str,
-    cells: &[StripCell<'_>],
+    workspaces: &[StripTile<'_>],
     summary: &str,
     warning: Option<&str>,
 ) -> Markup {
     html! {
         section.strip #app-strip aria-label="Your apps" hx-get=(url) hx-trigger="every 15s" hx-swap="outerHTML" {
-            @if !cells.is_empty() {
-                ul.mini-cells aria-hidden="true" {
-                    @for c in cells {
+            @if !workspaces.is_empty() {
+                ul.mini-tiles aria-hidden="true" {
+                    @for c in workspaces {
                         li class={ "mini " (c.health.class()) } title=(c.name) {}
                     }
                 }
@@ -575,7 +575,7 @@ pub fn app_strip(
                 span { (summary) }
                 @if let Some(w) = warning { span.strip-warn { (w) } }
             }
-            a.strip-link href="/hive" { "Apps and devices" }
+            a.strip-link href="/cluster" { "Apps and devices" }
         }
     }
 }
@@ -728,7 +728,7 @@ fn external_link(href: &str, content: Markup, image: bool) -> Markup {
     }
 }
 
-/// Agent prose (the Queen's or a helper's reply, a job, a job's summary): Markdown with
+/// Agent prose (the lead agent's or a helper's reply, a job, a job's summary): Markdown with
 /// the GFM extensions, rendered from the safe tree of `crate::markdown`. Headings are
 /// scaled down for chat (`#` becomes `h4`), code blocks get a copy button (shown by
 /// `melissa.js` when the clipboard is available), wide tables scroll.
@@ -860,10 +860,10 @@ pub fn relayed_message(from: &str, text: &str) -> Markup {
     }
 }
 
-/// A message from the Queen (left, honey hexagon avatar, no bubble).
-pub fn queen_message(text: &str) -> Markup {
+/// A message from the lead agent (left, honey hexagon avatar, no bubble).
+pub fn lead_message(text: &str) -> Markup {
     html! {
-        div.msg.msg-queen {
+        div.msg.msg-lead {
             (mark("avatar"))
             h3.visually-hidden { "Melissa" }
             div.body { (markdown(text)) }
@@ -996,7 +996,7 @@ pub fn approval_card(c: &ApprovalCard<'_>) -> Markup {
     }
 }
 
-/// Where a composer sends to: the Queen or one helper.
+/// Where a composer sends to: the lead agent or one helper.
 pub struct ComposerTarget<'a> {
     /// POST URL for a message (form field `text`).
     pub send: &'a str,
@@ -1165,7 +1165,7 @@ pub fn table(headers: &[&str], rows: Vec<Vec<Markup>>, empty: &str) -> Markup {
                     thead { tr { @for h in headers { th scope="col" { (h) } } } }
                     tbody {
                         @for row in rows {
-                            tr { @for cell in row { td { (cell) } } }
+                            tr { @for workspace in row { td { (workspace) } } }
                         }
                     }
                 }
@@ -1691,7 +1691,7 @@ mod tests {
     #[test]
     fn agent_text_is_markdown_with_html_escaped() {
         let evil = "Hi <img src=x onerror=alert(1)>\n\n**bold** [link](http://example.com)\n- one\n- <b>two</b>";
-        let out = queen_message(evil).into_string();
+        let out = lead_message(evil).into_string();
         assert!(!out.contains("<img"));
         assert!(!out.contains("<b>"));
         assert!(out.contains("&lt;img src=x onerror=alert(1)&gt;"), "{out}");
@@ -1706,7 +1706,7 @@ mod tests {
         let out = relayed_message("A job from Melissa", "<b>x</b>").into_string();
         assert!(out.contains("&lt;b&gt;x&lt;/b&gt;"));
         assert!(out.contains("A job from Melissa"));
-        let out = queen_message("run `<ls>` and `x").into_string();
+        let out = lead_message("run `<ls>` and `x").into_string();
         assert!(out.contains("run <code>&lt;ls&gt;</code> and `x"), "{out}");
     }
 
@@ -1972,8 +1972,8 @@ mod tests {
     }
 
     #[test]
-    fn app_cells_are_hexagons_with_status() {
-        let out = app_cell(&AppCell {
+    fn app_tiles_are_hexagons_with_status() {
+        let out = app_tile(&AppWorkspace {
             details: None,
             name: "Nextcloud",
             health: Health::Ok,
@@ -1985,12 +1985,12 @@ mod tests {
         assert!(out.starts_with("<li class=\"hex h-ok\">"));
         assert!(out.contains("href=\"http://nextcloud.example.com\""));
         assert!(out.contains("Looked after by you"));
-        let add = add_app_cell("/?draft=Install").into_string();
+        let add = add_app_tile("/?draft=Install").into_string();
         assert!(add.contains("hex hex-add"));
         assert!(add.contains("Add an app"));
         let strip = app_strip(
             "/ui/strip",
-            &[StripCell {
+            &[StripTile {
                 name: "Immich",
                 health: Health::Busy,
             }],

@@ -1,6 +1,6 @@
 # packaging/common: files every Melissa packaging installs
 
-Host-agnostic system files for running Melissa: the queen and k3s as systemd services, the queen's
+Host-agnostic system files for running Melissa: the server and k3s as systemd services, the server's
 user and directories, the k3s config and Melissa's k3s manifests. Every packaging uses this tree:
 
 - `packaging/container/` copies it into the container image (`COPY packaging/common/ /`);
@@ -15,21 +15,21 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 
 | Path | What |
 |---|---|
-| `usr/lib/systemd/system/melissa-queen.service` | The queen (web UI on 127.0.0.1:8080), fixed user `melissa`, XDG dirs mapped to `/etc`, `/var/lib`, `/run` |
+| `usr/lib/systemd/system/melissa-server.service` | The server (web UI on 127.0.0.1:8080), fixed user `melissa`, XDG dirs mapped to `/etc`, `/var/lib`, `/run` |
 | `usr/lib/systemd/system/k3s.service` | k3s server; `ExecStartPre=k3s-prepare` |
-| `usr/lib/systemd/system/melissa-kubeconfig.service` | Writes the queen's two read-only/app-install kubeconfigs after k3s |
+| `usr/lib/systemd/system/melissa-kubeconfig.service` | Writes the server's two read-only/app-install kubeconfigs after k3s |
 | `usr/lib/sysusers.d/melissa.conf` | User `melissa` (home `/var/lib/melissa/home`), group `melissa-kube` |
 | `usr/lib/tmpfiles.d/melissa-{config,home,kube}.conf` | `/etc/melissa`, `/var/lib/melissa{,/home}`, `/run/melissa-kube` |
-| `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-queen.service` (Settings → Restart), nothing else |
-| `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the queen's user (`--yes`, `--no-login`, `--no-restart`) |
+| `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-server.service` (Settings → Restart), nothing else |
+| `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the server's user (`--yes`, `--no-login`, `--no-restart`) |
 | `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP (`k3s-node-ip`) |
 | `usr/libexec/melissa/k3s-node-ip` | Writes `MELISSA_K3S_ARGS=--node-ip=<default-route IPv4>` to the env file given (k3s-prepare; the NixOS module's k3s) |
-| `usr/libexec/melissa/melissa-kubeconfig` | ServiceAccount tokens → `/run/melissa-kube/{queen,apps}.kubeconfig` |
+| `usr/libexec/melissa/melissa-kubeconfig` | ServiceAccount tokens → `/run/melissa-kube/{server,apps}.kubeconfig` |
 | `usr/lib/melissa/k3s.lock` | Pinned k3s version and sha256 sums (binary, airgap images, LICENSE; k3s-selinux for SELinux hosts) |
-| `usr/lib/melissa/k3s/manifests/*.yaml` | Deploy-on-start manifests: queen RBAC, app RBAC and ValidatingAdmissionPolicies, Traefik HelmChartConfig |
+| `usr/lib/melissa/k3s/manifests/*.yaml` | Deploy-on-start manifests: server RBAC, app RBAC and ValidatingAdmissionPolicies, Traefik HelmChartConfig |
 | `etc/rancher/k3s/config.yaml.d/10-melissa.yaml` | k3s defaults (kubeconfig mode, node label); no SELinux setting |
 
-Not here (built or fetched by each packaging): the Rust binaries `melissa-queen`, `melissa-comb`
+Not here (built or fetched by each packaging): the Rust binaries `melissa-server`, `melissa-device`
 and `melissa-netbridge` (installed as `/usr/bin/…`), k3s itself and its airgap images (from
 `k3s.lock`; `k3s-prepare` expects them in `/usr/lib/melissa/k3s/images/`), and the app catalog
 (`manifests/` → `/usr/share/melissa/catalog/`).
@@ -37,7 +37,7 @@ and `melissa-netbridge` (installed as `/usr/bin/…`), k3s itself and its airgap
 Packages the host or image needs at runtime: systemd, bubblewrap (agent sandbox), nftables and
 iproute (k3s, egress), polkit (Settings → Restart), ca-certificates, curl (agent installers).
 
-Checks: `crates/hive/tests/rbac_manifests.rs` parses the manifests here.
+Checks: `crates/cluster/tests/rbac_manifests.rs` parses the manifests here.
 
 **Release marker.** Each packaging writes `MELISSA_RUNTIME` in its release file (`/usr/lib/melissa/release`,
 or `$MELISSA_RELEASE_FILE`): `container` for the image, `nix` for the Nix package (`HostKind::Nix`).

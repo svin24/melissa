@@ -1150,11 +1150,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "melissa-comb"
-version = "0.0.1"
-
-[[package]]
-name = "melissa-hive"
+name = "melissa-cluster"
 version = "0.0.1"
 dependencies = [
  "k8s-openapi",
@@ -1169,7 +1165,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "melissa-queen"
+name = "melissa-device"
+version = "0.0.1"
+
+[[package]]
+name = "melissa-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -1180,7 +1180,7 @@ dependencies = [
  "kube",
  "melissa-agent",
  "melissa-catalog",
- "melissa-hive",
+ "melissa-cluster",
  "melissa-settings",
  "melissa-web",
  "serde",

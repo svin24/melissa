@@ -6,11 +6,11 @@
 //!   `User`, attended). A confirmation the policy asks for shows in the dialog; `POST
 //!   /ui/apps/{app}/confirmations/{id}/approve|deny` answers it (the same inbox as the chat).
 //! - `POST /ui/apps/{app}/force-delete` (form `confirm` = the app's name): the user's force
-//!   delete ([`melissa_agent::queen::Queen::user_force_delete`]). Not a tool: no agent can
+//!   delete ([`melissa_agent::lead::Lead::user_force_delete`]). Not a tool: no agent can
 //!   reach it.
 //! - JSON: `GET /api/apps/{app}` (`app_status`), `GET /api/apps/{app}/logs?lines=&container=`
 //!   (`app_logs`), `POST /api/apps/{app}/force-delete` `{"confirm": "<app>"}` → the
-//!   [`ForceDeleted`] report; 422 without the right `confirm`, a bad name or no such cell,
+//!   [`ForceDeleted`] report; 422 without the right `confirm`, a bad name or no such workspace,
 //!   502 on a cluster failure.
 //!
 //! Reads and stop/start go through the tool registry, so they are policy-checked and audited
@@ -27,7 +27,7 @@ use axum::{
 };
 use maud::Markup;
 use melissa_agent::{
-    queen::{bees::ForceDeleted, QueenError},
+    lead::{agents::ForceDeleted, LeadError},
     tools::{Scope, TaskContext, ToolError, Verdict},
 };
 use serde::Deserialize;
@@ -80,7 +80,7 @@ async fn call(ui: &Ui, tool: &str, args: Value, attended: bool) -> Result<Value,
         attended,
         ..TaskContext::default()
     };
-    let call = ui.queen.server().registry().call(0, &mut ctx, tool, args);
+    let call = ui.lead.server().registry().call(0, &mut ctx, tool, args);
     match tokio::time::timeout(READ_TIMEOUT, call).await {
         Ok(r) => r,
         Err(_) => Err(ToolError::Failed("no answer in time".into())),
@@ -99,15 +99,15 @@ pub(crate) struct DetailsView {
 pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
     let app = status["app"].as_str().unwrap_or_default();
     let mut facts = Vec::new();
-    let keeper = match (status["bee_name"].as_str(), status["bee"].as_str()) {
+    let keeper = match (status["agent_name"].as_str(), status["agent"].as_str()) {
         (Some(name), _) => name.to_string(),
         (None, Some(id)) => id.to_string(),
         _ if status["legacy_owner"] == "owner" => "You".to_string(),
         _ => "Nobody".to_string(),
     };
     facts.push(("Looked after by", keeper, None));
-    if let Some(comb) = status["comb"].as_str() {
-        facts.push(("Device", comb.to_string(), None));
+    if let Some(device) = status["device"].as_str() {
+        facts.push(("Device", device.to_string(), None));
     }
     let port = status["port"].as_u64();
     let link = match (host.and_then(host_name_of), port) {
@@ -289,9 +289,9 @@ async fn start(State(ui): State<Ui>, Path(app): Path<String>, headers: HeaderMap
     toggle(ui, app, "start_app", headers).await
 }
 
-/// The dialog content, telling the hive region to refresh.
+/// The dialog content, telling the cluster region to refresh.
 fn changed(markup: Markup) -> Response {
-    ([("hx-trigger", "hive-changed")], markup).into_response()
+    ([("hx-trigger", "cluster-changed")], markup).into_response()
 }
 
 /// Run `tool` for `app` as the user. If the policy asks first (stop always does), the
@@ -300,9 +300,9 @@ async fn toggle(ui: Ui, app: String, tool: &'static str, headers: HeaderMap) -> 
     if !valid(&app) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let confirmations = ui.queen.confirmations().clone();
+    let confirmations = ui.lead.confirmations().clone();
     let before: Vec<u64> = confirmations.pending().iter().map(|c| c.id).collect();
-    let server = ui.queen.server().clone();
+    let server = ui.lead.server().clone();
     let args = json!({ "app": app });
     let mut task = tokio::spawn(async move {
         let mut ctx = TaskContext {
@@ -321,7 +321,7 @@ async fn toggle(ui: Ui, app: String, tool: &'static str, headers: HeaderMap) -> 
                 Ok(Err(e)) => Some(e.to_string()),
                 Err(e) => Some(e.to_string()),
             };
-            ui.hive.refresh_now().await;
+            ui.cluster.refresh_now().await;
             let msg = message.as_deref().map(|m| (m, Tone::Error));
             return changed(render_details(&ui, &app, host, msg).await);
         }
@@ -372,10 +372,10 @@ async fn answer(
     }
     let host = host(&headers);
     // Only the dialog's own question: stop/start of this app.
-    let ours = ui.queen.confirmations().get(id).is_some_and(|c| {
+    let ours = ui.lead.confirmations().get(id).is_some_and(|c| {
         matches!(c.tool.as_str(), "stop_app" | "start_app") && c.args["app"] == app.as_str()
     });
-    if !ours || ui.queen.resolve_confirmation(id, verdict).is_none() {
+    if !ours || ui.lead.resolve_confirmation(id, verdict).is_none() {
         let msg = Some(("That question was already answered.", Tone::Info));
         return render_details(&ui, &app, host, msg).await.into_response();
     }
@@ -383,7 +383,7 @@ async fn answer(
         // The tool runs right after the approval; give it a moment to change the state.
         tokio::time::sleep(Duration::from_millis(600)).await;
     }
-    ui.hive.refresh_now().await;
+    ui.cluster.refresh_now().await;
     changed(render_details(&ui, &app, host, None).await)
 }
 
@@ -417,13 +417,13 @@ async fn force_delete(
             .into_response();
     }
     let name = display_app(&app);
-    match ui.queen.user_force_delete(&app).await {
+    match ui.lead.user_force_delete(&app).await {
         Ok(_) => {
-            ui.hive.refresh_now().await;
+            ui.cluster.refresh_now().await;
             changed(app_gone(&name, &format!("{name} and its data are gone.")))
         }
         Err(e) => {
-            ui.hive.refresh_now().await;
+            ui.cluster.refresh_now().await;
             let msg = format!("Couldn't delete it: {e}");
             changed(render_details(&ui, &app, host, Some((&msg, Tone::Error))).await)
         }
@@ -488,11 +488,11 @@ async fn api_force_delete(
             format!("force delete needs {{\"confirm\": \"{app}\"}}"),
         );
     }
-    let result: Result<ForceDeleted, QueenError> = ui.queen.user_force_delete(&app).await;
-    ui.hive.refresh_now().await;
+    let result: Result<ForceDeleted, LeadError> = ui.lead.user_force_delete(&app).await;
+    ui.cluster.refresh_now().await;
     match result {
         Ok(done) => Json(done).into_response(),
-        Err(e @ QueenError::Failed(_)) => error(StatusCode::BAD_GATEWAY, e),
+        Err(e @ LeadError::Failed(_)) => error(StatusCode::BAD_GATEWAY, e),
         Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
     }
 }
@@ -504,8 +504,8 @@ mod tests {
     #[test]
     fn details_read_the_status_and_build_the_link_from_the_host() {
         let status = json!({
-            "app": "nextcloud", "phase": "ready", "bee": "c.b1", "bee_name": "Ada",
-            "comb": "c-0a1b2c3d", "port": 30000, "url": "http://203.0.113.10:30000",
+            "app": "nextcloud", "phase": "ready", "agent": "d.a1", "agent_name": "Ada",
+            "device": "d-0a1b2c3d", "port": 30000, "url": "http://203.0.113.10:30000",
             "version": "34.0.6", "image": "docker.io/library/nextcloud:34.0.6",
             "installed": true, "replicas": 1, "ready_replicas": 1,
             "pods": [{"restarts": 2, "age_secs": 3700}, {"restarts": 1, "age_secs": 90000}],
@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(v.name, "Nextcloud");
         let get = |l: &str| v.facts.iter().find(|f| f.0 == l).map(|f| f.1.clone());
         assert_eq!(get("Looked after by").as_deref(), Some("Ada"));
-        assert_eq!(get("Device").as_deref(), Some("c-0a1b2c3d"));
+        assert_eq!(get("Device").as_deref(), Some("d-0a1b2c3d"));
         assert_eq!(get("Link").as_deref(), Some("http://192.0.2.7:30000"));
         assert_eq!(get("Pods").as_deref(), Some("1/1 ready"));
         assert_eq!(get("Restarts").as_deref(), Some("3"));

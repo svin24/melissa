@@ -6,27 +6,27 @@ sandbox's network setup (`crates/agent/src/sandbox.rs`).
 
 ## Design (verified 2026-11-18 on the dev laptop, Kinoite 45, SELinux enforcing, bwrap 0.13.1)
 ```
- sandbox (bwrap --unshare-all: own netns, loopback only, no resolver)        queen (melissa-queen)
+ sandbox (bwrap --unshare-all: own netns, loopback only, no resolver)        lead agent (melissa-server)
  ┌──────────────────────────────────────────────────────────────┐
  │ melissa-netbridge (starts first, runs the CLI as its child)  │
  │   127.0.0.1:3128 ──► /run/melissa-net/egress.sock ───────────┼──► CONNECT proxy: allowlist, own DNS,
- │   <queen listen addr> ─► /run/melissa-net/mcp.sock ──────────┼──► public IPs only, audit ──► internet
+ │   <lead listen addr> ─► /run/melissa-net/mcp.sock ──────────┼──► public IPs only, audit ──► internet
  │ agent CLI: HTTPS_PROXY=http://127.0.0.1:3128, NO_PROXY=lo    │    MCP only: POST /mcp/<own token>
  └──────────────────────────────────────────────────────────────┘
 ```
 - No root, no iptables/nftables, no pasta/slirp4netns: an unprivileged network namespace (bwrap brings up `lo`
   with 127.0.0.1 and ::1) plus Unix sockets bound in. Works where rootless podman networking does not.
-- Per sandbox, the queen creates a lease directory `$XDG_RUNTIME_DIR/melissa/egress/<16 hex>/` (0700; headless:
+- Per sandbox, the lead agent creates a lease directory `$XDG_RUNTIME_DIR/melissa/egress/<16 hex>/` (0700; headless:
   `/run/melissa/egress`, `RuntimeDirectory=melissa`) with `egress.sock` and/or `mcp.sock`, bound read-only at
   `/run/melissa-net` (connecting to a socket needs no write access to its mount). The socket identifies the
   sandbox (backend, task); nothing to authenticate or spoof. Dropping the lease (CLI exited, task cancelled,
   ACP session closed or aborted) closes both sockets and every open tunnel and removes the directory.
-- The MCP port inside the sandbox is the queen's own `listen` address, so `mcp.json` and ACP `mcpServers` URLs
+- The MCP port inside the sandbox is the lead agent's own `listen` address, so `mcp.json` and ACP `mcpServers` URLs
   are identical inside and outside. `mcp.sock` serves only `POST /mcp/<token>` for the tokens of that sandbox
-  (404 for anything else, e.g. `/api/queen/messages` or `/api/confirmations/*/approve`, which a host-network
+  (404 for anything else, e.g. `/api/lead/messages` or `/api/confirmations/*/approve`, which a host-network
   agent could reach before).
 - The proxy: `CONNECT host:port` only (plain `GET http://...` is refused), no TLS interception. Allowlist match
-  on the normalized name (lowercase, no trailing dot) → DNS by the queen → drop non-public addresses (loopback,
+  on the normalized name (lowercase, no trailing dot) → DNS by the lead agent → drop non-public addresses (loopback,
   RFC 1918, link-local incl. 169.254.169.254, CGNAT 100.64/10 = tailnet, ULA incl. `fd7a:115c:a1e0::/48`,
   multicast, reserved, documentation, and IPv4 hidden in mapped/NAT64/6to4/compat IPv6) → connect. A name
   that resolves only to such addresses is denied, so DNS rebinding cannot reach the LAN.
@@ -38,7 +38,7 @@ sandbox's network setup (`crates/agent/src/sandbox.rs`).
   next record or when the sandbox ends: `grok.com:443: not in the allowlist (+40 repeats)`. Attempts that go
   around the proxy (direct connect, DNS) never leave the namespace and are not audited.
 
-## Config (`queen.toml`, per `[[backend]]`)
+## Config (`server.toml`, per `[[backend]]`)
 ```toml
 [[backend]]
 name = "claude"
@@ -59,7 +59,7 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
   and a run is refused; never a fallback to the host network.
 
 ## Adding a host / a new CLI
-1. Give the backend `network = "learn"` in a scratch queen (temp `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, a short
+1. Give the backend `network = "learn"` in a scratch lead agent (temp `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, a short
    `XDG_RUNTIME_DIR`: Unix socket paths max 107 bytes, the scratchpad path is too long), run one short prompt.
 2. Read the audit: `grep '"egress' $XDG_STATE_HOME/melissa/audit.jsonl`. Classify each host: model API, auth,
    catalogue (allow) vs telemetry, analytics, update checks, crash reports (deny).
@@ -72,12 +72,12 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
 ## What each CLI contacts (dev laptop, 2026-11-18, learn mode then proxy mode; per mode of the CLI)
 | CLI (version) | Allowed (built-in) | Seen and denied | Breaks when denied? |
 |---|---|---|---|
-| claude 2.1.327 (`-p`, MCP) | `api.anthropic.com` (~25 tunnels per prompt: a new CONNECT per request), `platform.claude.com` (OAuth token endpoint, from the binary; refresh not observed) | `http-intake.logs.us5.datadoghq.com` (Datadog logs) | No: comb_info + answer in ~6 s |
-| grok 1.0.89 (`-p` and `agent stdio`) | `cli-chat-proxy.grok.com` (chat model, subscription login), `api.x.ai` (used by ACP mode; API-key logins), `auth.x.ai` (issuer in `auth.json`; refresh not observed) | `grok.com` (~40 retries per prompt), `api.mixpanel.com` (analytics, ~40 retries) | No: one-shot even works without `api.x.ai`; ACP + Queen + worker fine |
+| claude 2.1.327 (`-p`, MCP) | `api.anthropic.com` (~25 tunnels per prompt: a new CONNECT per request), `platform.claude.com` (OAuth token endpoint, from the binary; refresh not observed) | `http-intake.logs.us5.datadoghq.com` (Datadog logs) | No: device_info + answer in ~6 s |
+| grok 1.0.89 (`-p` and `agent stdio`) | `cli-chat-proxy.grok.com` (chat model, subscription login), `api.x.ai` (used by ACP mode; API-key logins), `auth.x.ai` (issuer in `auth.json`; refresh not observed) | `grok.com` (~40 retries per prompt), `api.mixpanel.com` (analytics, ~40 retries) | No: one-shot even works without `api.x.ai`; ACP + Lead agent + worker fine |
 | opencode 2.3.2 (`run`, free default model) | `opencode.ai` (gateway), `models.opencode.ai` (model catalogue) | none | Without `models.opencode.ai`: works, ~3 s slower |
-| claude 2.1.327 (`claude-session`, stream-json, with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`) | `api.anthropic.com` only (3 tunnels for a comb_info task) | none (no Datadog intake any more) | No: learn mode then proxy, Queen + worker in 11.8 s |
-| opencode 2.3.2 (`opencode acp`, flavor opencode) | `opencode.ai`, `models.opencode.ai` (same as `run`) | none | No: learn mode then proxy, Queen + worker in 23.6 s |
-| opencode 1.19.6 (`opencode acp`, official installer's release on 2026-11-18, in the headless VM's system service) | `opencode.ai`, `models.opencode.ai` | `registry.npmjs.org` | No: Queen + bee_info in 13 s |
+| claude 2.1.327 (`claude-session`, stream-json, with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`) | `api.anthropic.com` only (3 tunnels for a device_info task) | none (no Datadog intake any more) | No: learn mode then proxy, lead agent + worker in 11.8 s |
+| opencode 2.3.2 (`opencode acp`, flavor opencode) | `opencode.ai`, `models.opencode.ai` (same as `run`) | none | No: learn mode then proxy, lead agent + worker in 23.6 s |
+| opencode 1.19.6 (`opencode acp`, official installer's release on 2026-11-18, in the headless VM's system service) | `opencode.ai`, `models.opencode.ai` | `registry.npmjs.org` | No: lead agent + agent_info in 13 s |
 
 All three honour `HTTPS_PROXY` (no CLI needed DNS inside the sandbox). Proxy env also set: `HTTP_PROXY`,
 `ALL_PROXY` and lowercase forms; `NO_PROXY=localhost,127.0.0.1,::1` keeps MCP off the proxy.
@@ -98,11 +98,11 @@ All three honour `HTTPS_PROXY` (no CLI needed DNS inside the sandbox). Proxy env
 - A dev-shell build of `melissa-netbridge` has its ELF interpreter in `/nix/store`; the proxy reads `PT_INTERP`
   and binds `/nix/store` read-only only in that case (image builds use `/usr/lib64`). Without it bwrap says
   `execvp .../melissa-netbridge: No such file or directory`.
-- `melissa-netbridge` is found next to `melissa-queen` (dev: `target/<profile>/`), then `/usr/bin`, then
+- `melissa-netbridge` is found next to `melissa-server` (dev: `target/<profile>/`), then `/usr/bin`, then
   `PATH`. Integration tests use `env!("CARGO_BIN_EXE_melissa-netbridge")`, which is why it is a binary of
   `melissa-agent` rather than its own crate.
 - Exit codes: the bridge exits with the CLI's code (128+signal if killed); 125 = bridge setup failed (listen,
   arguments), 126/127 = CLI could not be started.
-- Killing the queen (SIGTERM) leaves its lease directories; the next start removes those whose sockets no
-  longer accept connections (a second queen sharing the directory keeps its own).
+- Killing the lead agent (SIGTERM) leaves its lease directories; the next start removes those whose sockets no
+  longer accept connections (a second lead agent sharing the directory keeps its own).
 - The pre-commit hook's clippy does not lint test targets; run `just check` (it caught an unused variable).

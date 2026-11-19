@@ -16,7 +16,7 @@ pub struct BackendInfo {
     pub kind: &'static str,
     /// Human-readable detail, such as the command line template.
     pub detail: String,
-    /// Whether the backend can run on this comb right now (e.g. its binary was found).
+    /// Whether the backend can run on this device right now (e.g. its binary was found).
     pub available: bool,
     /// Whether the backend can use Melissa's tools (via an MCP config).
     pub tools: bool,
@@ -62,7 +62,7 @@ impl RunRequest {
 /// Errors a backend can report while running a task.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
-    #[error("backend is not available on this comb: {0}")]
+    #[error("backend is not available on this device: {0}")]
     Unavailable(String),
     #[error("prompt rejected: {0}")]
     BadPrompt(&'static str),

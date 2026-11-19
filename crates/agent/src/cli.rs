@@ -25,7 +25,7 @@ pub const PROMPT_PLACEHOLDER: &str = "{prompt}";
 /// Placeholder in [`CliSpec::mcp_args`] that is replaced by the MCP config file path.
 pub const MCP_CONFIG_PLACEHOLDER: &str = "{mcp_config}";
 
-/// Configuration for one CLI backend (deserialized from the queen config file).
+/// Configuration for one CLI backend (deserialized from the lead agent config file).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CliSpec {
@@ -218,7 +218,7 @@ pub(crate) fn warn_host_network(name: &str, sandbox: &SandboxSpec) {
     } else if !sandbox.enabled {
         tracing::warn!(
             backend = name,
-            "sandbox disabled: this agent runs with the queen's files and network"
+            "sandbox disabled: this agent runs with the lead's files and network"
         );
     }
 }

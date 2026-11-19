@@ -1,7 +1,7 @@
 [Unit]
 Description=Melissa web UI forward (to 127.0.0.1:8080)
 Requires=melissa-ui-forward.socket
-After=melissa-ui-forward.socket melissa-queen.service
+After=melissa-ui-forward.socket melissa-server.service
 
 [Service]
 ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8080

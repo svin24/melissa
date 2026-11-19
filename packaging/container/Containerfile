@@ -1,4 +1,4 @@
-# Melissa as a container: systemd as PID 1 runs the queen, k3s and the agent sandbox. Rootful podman,
+# Melissa as a container: systemd as PID 1 runs the server, k3s and the agent sandbox. Rootful podman,
 # started by systemd through a Quadlet (packaging/container/melissa.container, install.sh).
 # Docs: packaging/container/README.md, docs/agent-skills/container-image.md.
 # Build (from the repo root): `just container-build`, or
@@ -26,8 +26,8 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     # dependencies stay cached.
     # melissa-agent's only binary is melissa-netbridge (runs inside every agent sandbox).
     find crates -type f -exec touch {} + \
- && cargo build --release --locked -p melissa-queen -p melissa-comb -p melissa-agent \
- && install -D -m 0755 target/release/melissa-queen target/release/melissa-comb \
+ && cargo build --release --locked -p melissa-server -p melissa-device -p melissa-agent \
+ && install -D -m 0755 target/release/melissa-server target/release/melissa-device \
         target/release/melissa-netbridge -t /out/bin/ \
  && mkdir -p /out/licenses && cargo fetch --locked \
  && cargo about generate --workspace --frozen --fail -o /out/licenses/THIRD-PARTY-LICENSES.md about.hbs
@@ -75,7 +75,7 @@ RUN rm -f /README.md
 # when an app is installed.
 COPY manifests/ /usr/share/melissa/catalog/
 RUN set -eu; \
-    systemctl enable melissa-queen.service k3s.service melissa-kubeconfig.service \
+    systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
         melissa-ui-forward.socket; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
@@ -93,7 +93,7 @@ RUN set -eu; \
         systemd-suspend-then-hibernate.service 2>/dev/null; \
     # The container is recreated from the image at every start (Quadlet), and on updates; only /var is
     # a volume. Keep on it: k3s's node password (k3s refuses to rejoin its own datastore without it) and
-    # the queen's config (/etc/melissa: queen.toml with [apps] addresses, Settings' providers.toml).
+    # the server's config (/etc/melissa: server.toml with [apps] addresses, Settings' providers.toml).
     mkdir -p /etc/rancher; rm -rf /etc/rancher/node /etc/melissa; \
     ln -s /var/lib/melissa-container/rancher-node /etc/rancher/node; \
     ln -s /var/lib/melissa-container/etc-melissa /etc/melissa
@@ -108,22 +108,22 @@ RUN printf 'MELISSA_VERSION=%s\nMELISSA_REVISION=%s\nMELISSA_RUNTIME=container\n
 
 # Image lint: what this image must and must not contain.
 RUN set -eu; \
-    for f in /usr/bin/melissa-queen /usr/bin/melissa-comb /usr/bin/melissa-netbridge /usr/bin/k3s \
+    for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
         /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
-    systemctl is-enabled -q melissa-queen.service k3s.service melissa-ui-forward.socket; \
+    systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket; \
     for u in systemd-logind.service sleep.target suspend.target hibernate.target; do \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
-    systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-queen.service \
+    systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release
 
 LABEL org.opencontainers.image.title="melissa" \
       org.opencontainers.image.version="${MELISSA_VERSION}" \
       org.opencontainers.image.revision="${MELISSA_REVISION}" \
-      org.opencontainers.image.description="Melissa: queen, k3s and agent sandbox under systemd (pre-alpha)" \
+      org.opencontainers.image.description="Melissa: server, k3s and agent sandbox under systemd (pre-alpha)" \
       org.opencontainers.image.licenses="MIT"
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

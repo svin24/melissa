@@ -24,8 +24,8 @@ use axum::{
 };
 use maud::Markup;
 use melissa_agent::{
+    lead::Lead,
     mcp::{McpServer, UnknownSession},
-    queen::Queen,
     TaskBoard, TaskId,
 };
 use rust_embed::RustEmbed;
@@ -44,7 +44,7 @@ struct Assets;
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
-/// The task UI, without agent tools or the Queen (`/` goes to the task list).
+/// The task UI, without agent tools or the lead agent (`/` goes to the task list).
 pub fn router(board: TaskBoard) -> Router {
     ui_routes(board, None)
         .route("/", get(|| async { Redirect::to("/tasks") }))
@@ -63,23 +63,23 @@ pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
         .layer(middleware::from_fn(security))
 }
 
-/// The full UI: the chat with the Queen as home (see [`ui`]), the task pages, the MCP
-/// endpoint and the Queen's JSON API (`/api/...`, see [`api`]).
-pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Router {
-    router_with_settings(board, mcp, queen, Settings::detached())
+/// The full UI: the chat with the lead agent as home (see [`ui`]), the task pages, the MCP
+/// endpoint and the lead agent's JSON API (`/api/...`, see [`api`]).
+pub fn router_with_lead(board: TaskBoard, mcp: McpServer, lead: Lead) -> Router {
+    router_with_settings(board, mcp, lead, Settings::detached())
 }
 
-/// [`router_with_queen`] plus the Settings pages and API (`/settings/...`,
-/// `/api/settings/...`) backed by the queen's provider settings and update helper.
+/// [`router_with_lead`] plus the Settings pages and API (`/settings/...`,
+/// `/api/settings/...`) backed by the lead agent's provider settings and update helper.
 pub fn router_with_settings(
     board: TaskBoard,
     mcp: McpServer,
-    queen: Queen,
+    lead: Lead,
     settings: Settings,
 ) -> Router {
     let ui = ui::Ui::new(
-        queen.clone(),
-        state::HiveCache::new(mcp.clone(), Some(queen.clone())),
+        lead.clone(),
+        state::ClusterCache::new(mcp.clone(), Some(lead.clone())),
         settings,
     )
     .with_board(board.clone());
@@ -93,11 +93,11 @@ pub fn router_with_settings(
                 .route("/mcp/{token}", post(mcp_post).get(mcp_get))
                 .with_state(mcp),
         )
-        .merge(api::routes(queen))
+        .merge(api::routes(lead))
         .layer(middleware::from_fn(security))
 }
 
-/// State of the task pages: the board, and the Queen's UI (for the rail) when there is one.
+/// State of the task pages: the board, and the lead agent's UI (for the rail) when there is one.
 #[derive(Clone)]
 struct Tasks {
     board: TaskBoard,
@@ -112,7 +112,7 @@ impl FromRef<Tasks> for TaskBoard {
 
 fn ui_routes(board: TaskBoard, ui: Option<ui::Ui>) -> Router {
     let routes = Router::new();
-    // With a Queen the task list lives in Settings → Developer; GET /tasks redirects there.
+    // With a lead agent the task list lives in Settings → Developer; GET /tasks redirects there.
     let routes = if ui.is_some() {
         routes
             .route(settings::pages::DEVELOPER_URL, get(dashboard))
@@ -286,7 +286,7 @@ pub(crate) fn is_htmx(headers: &HeaderMap) -> bool {
 /// Until accounts and session tokens exist, CSRF protection relies on the browser's
 /// `Sec-Fetch-Site` and `Origin` headers: a mutating request is rejected unless it
 /// comes from this origin. Non-browser clients that send neither header are allowed
-/// (the queen only binds to loopback for now).
+/// (the lead agent only binds to loopback for now).
 async fn security(req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     if !safe && !same_origin(req.headers()) {
@@ -363,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn dashboard_lists_backends_and_sets_csp() {
         let (app, _) = app();
-        // Without a Queen, home is the task list.
+        // Without a lead agent, home is the task list.
         let (status, headers, _) = send(
             &app,
             axum::http::Request::get("/").body(Body::empty()).unwrap(),
@@ -428,7 +428,7 @@ mod tests {
     #[tokio::test]
     async fn htmx_dispatch_opens_the_task() {
         let (app, board) = app();
-        let body = "backend=echo&prompt=hello+hive";
+        let body = "backend=echo&prompt=hello+cluster";
         let req = post("/tasks")
             .header("hx-request", "true")
             .header("sec-fetch-site", "same-origin")
@@ -497,7 +497,7 @@ mod tests {
         let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let (status, _, body) = send(&app, call(format!("/mcp/{token}"), list)).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("comb_info"));
+        assert!(body.contains("device_info"));
         let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         assert_eq!(
             send(&app, call(format!("/mcp/{token}"), note)).await.0,
@@ -513,14 +513,14 @@ mod tests {
         );
     }
 
-    mod queen_api {
+    mod lead_api {
         use melissa_agent::{
-            queen::{
-                bees::{BeeLimits, BeePool},
-                events::{EventLog, QueenEvent},
-                registry::BeeRegistry,
+            lead::{
+                agents::{AgentLimits, AgentPool},
+                events::{EventLog, LeadEvent},
+                registry::AgentRegistry,
                 transcript::Transcript,
-                QueenSettings,
+                LeadSettings,
             },
             session::{OpenSession, OpenedSession, SessionBackend},
             tools::{Tool, ToolRegistry},
@@ -530,7 +530,7 @@ mod tests {
 
         use super::*;
 
-        /// A Queen backend whose session never finishes opening.
+        /// A Lead agent backend whose session never finishes opening.
         /// Melissa's first backend (provider claude in the Settings fixture); `signed_out`:
         /// it reports no login, like a Claude CLI without credentials.
         struct Stuck {
@@ -577,7 +577,7 @@ mod tests {
             }
         }
 
-        /// A read-only tool with a fixed answer (stands in for the hive's tools).
+        /// A read-only tool with a fixed answer (stands in for the cluster's tools).
         struct Fixed(&'static str, Value);
         impl Tool for Fixed {
             fn spec(&self) -> melissa_agent::tools::ToolSpec {
@@ -596,7 +596,7 @@ mod tests {
             }
         }
 
-        fn hive_tools() -> Vec<Arc<dyn Tool>> {
+        fn cluster_tools() -> Vec<Arc<dyn Tool>> {
             vec![
                 Arc::new(Fixed(
                     "list_apps",
@@ -612,7 +612,7 @@ mod tests {
                     "app_status",
                     serde_json::json!({
                         "k3s_reachable": true, "app": "nextcloud", "phase": "ready",
-                        "bee": "c-0a1b2c3d.b1", "bee_name": "Ada", "comb": "c-0a1b2c3d",
+                        "agent": "d-0a1b2c3d.a1", "agent_name": "Ada", "device": "d-0a1b2c3d",
                         "port": 30000, "url": "http://203.0.113.10:30000",
                         "version": "34.0.6", "image": "docker.io/library/nextcloud:34.0.6",
                         "installed": true, "replicas": 1, "ready_replicas": 1,
@@ -629,10 +629,10 @@ mod tests {
                 )),
                 Arc::new(Fixed(
                     "cluster_health",
-                    serde_json::json!({"nodes": [{"name": "comb-1", "ready": true, "allocatable": {"cpu": "4"}}]}),
+                    serde_json::json!({"nodes": [{"name": "device-1", "ready": true, "allocatable": {"cpu": "4"}}]}),
                 )),
                 Arc::new(Fixed(
-                    "comb_info",
+                    "device_info",
                     serde_json::json!({"os": "Fedora Linux 45", "mem_total_kib": 8_388_608, "mem_available_kib": 4_194_304,
                         "disks": [{"path": "/", "total_bytes": 10_000_000_000u64, "available_bytes": 5_000_000_000u64, "used_percent": 50},
                                   {"path": "/var", "total_bytes": 20_000_000_000u64, "available_bytes": 1_800_000_000u64, "used_percent": 91}]}),
@@ -640,31 +640,31 @@ mod tests {
             ]
         }
 
-        fn app_with(page_settings: Option<Settings>) -> (Router, Queen) {
+        fn app_with(page_settings: Option<Settings>) -> (Router, Lead) {
             app_full(page_settings, None, false)
         }
 
         fn app_full(
             page_settings: Option<Settings>,
-            cells: Option<Arc<dyn melissa_agent::tools::CellStore>>,
+            workspaces: Option<Arc<dyn melissa_agent::tools::WorkspaceStore>>,
             signed_out: bool,
-        ) -> (Router, Queen) {
+        ) -> (Router, Lead) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "melissa-web-queen-{}-{}",
+                "melissa-web-lead-{}-{}",
                 std::process::id(),
                 N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             ));
             let _ = std::fs::remove_dir_all(&dir);
             let events = EventLog::new(Some(Transcript::new(
-                dir.join("queen/transcript.jsonl"),
+                dir.join("lead/transcript.jsonl"),
                 1 << 20,
             )));
-            let registry = BeeRegistry::open(&dir.join("bees"), "c-0a1b2c3d").unwrap();
-            let pool = BeePool::new(BeeLimits::default(), events.clone(), registry, cells);
+            let registry = AgentRegistry::open(&dir.join("agents"), "d-0a1b2c3d").unwrap();
+            let pool = AgentPool::new(AgentLimits::default(), events.clone(), registry, workspaces);
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
             tools.push(Arc::new(Touch));
-            tools.extend(hive_tools());
+            tools.extend(cluster_tools());
             let mcp = McpServer::new(ToolRegistry::new(tools, None));
             let board = TaskBoard::with_tools(
                 vec![Arc::new(EchoBackend::new())],
@@ -676,18 +676,18 @@ mod tests {
                     workroot: dir.join("work"),
                 },
             );
-            let settings = QueenSettings {
+            let settings = LeadSettings {
                 // `gone` is not configured: shown as not installed.
                 backends: vec!["stuck".into(), "echo-b".into(), "gone".into()],
                 system_prompt: "test".into(),
-                bee_prompt: "test".into(),
-                bee_backend: Some("stuck".into()),
-                state_dir: dir.join("queen"),
-                workdir: dir.join("work/queen"),
+                agent_prompt: "test".into(),
+                agent_backend: Some("stuck".into()),
+                state_dir: dir.join("lead"),
+                workdir: dir.join("work/lead"),
                 tools: None,
-                comb: "c-0a1b2c3d".into(),
+                device: "d-0a1b2c3d".into(),
             };
-            let queen = Queen::new(
+            let lead = Lead::new(
                 settings,
                 vec![
                     Arc::new(Stuck { signed_out }),
@@ -703,13 +703,13 @@ mod tests {
             )
             .unwrap();
             let router = match page_settings {
-                Some(s) => router_with_settings(board, mcp, queen.clone(), s),
-                None => router_with_queen(board, mcp, queen.clone()),
+                Some(s) => router_with_settings(board, mcp, lead.clone(), s),
+                None => router_with_lead(board, mcp, lead.clone()),
             };
-            (router, queen)
+            (router, lead)
         }
 
-        fn app() -> (Router, Queen) {
+        fn app() -> (Router, Lead) {
             app_with(None)
         }
 
@@ -816,7 +816,7 @@ mod tests {
                         Default::default(),
                     ),
                     backends: vec![
-                        // The Queen's first backend: Melissa runs on Claude.
+                        // The lead agent's first backend: Melissa runs on Claude.
                         fact("stuck", "claude", true, Some(claude.into())),
                         fact(
                             "grok-acp",
@@ -827,7 +827,7 @@ mod tests {
                         fact("echo-b", "echo", true, None),
                         fact("echo", "echo", false, None),
                     ],
-                    bee_default: Some("stuck".into()),
+                    agent_default: Some("stuck".into()),
                     check: Some(check),
                     audit: Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
                     updates: UpdateEnv {
@@ -1089,7 +1089,7 @@ mod tests {
             assert_eq!(status, StatusCode::FORBIDDEN);
         }
 
-        /// A fake installed Claude (its login is checked by the queen, which has no such
+        /// A fake installed Claude (its login is checked by the lead agent, which has no such
         /// backend here, so the page treats it as installed and the sign-in as possible).
         fn fake_claude(fx: &SettingsFixture) -> Settings {
             use std::os::unix::fs::PermissionsExt;
@@ -1678,38 +1678,29 @@ mod tests {
         #[tokio::test]
         async fn messages_events_busy_and_cancel() {
             let (app, _) = app();
-            let (status, body) = send_json(
-                &app,
-                json_post("/api/queen/messages", r#"{"text":"Hello"}"#),
-            )
-            .await;
+            let (status, body) =
+                send_json(&app, json_post("/api/lead/messages", r#"{"text":"Hello"}"#)).await;
             assert_eq!(status, StatusCode::ACCEPTED);
             assert_eq!(body["turn"], 1);
             let since = body["since"].as_u64().unwrap();
 
             // One turn at a time.
-            let (status, body) = send_json(
-                &app,
-                json_post("/api/queen/messages", r#"{"text":"Again"}"#),
-            )
-            .await;
+            let (status, body) =
+                send_json(&app, json_post("/api/lead/messages", r#"{"text":"Again"}"#)).await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert!(body["error"].as_str().unwrap().contains("previous message"));
             let (status, _) =
-                send_json(&app, json_post("/api/queen/messages", r#"{"text":"  "}"#)).await;
+                send_json(&app, json_post("/api/lead/messages", r#"{"text":"  "}"#)).await;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-            let (_, st) = send_json(&app, get("/api/queen/status")).await;
+            let (_, st) = send_json(&app, get("/api/lead/status")).await;
             assert_eq!(st["turn"], 1);
 
-            let (status, body) = send_json(&app, json_post("/api/queen/cancel", "")).await;
+            let (status, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["cancelled"], true);
 
-            let (status, page) = send_json(
-                &app,
-                get(&format!("/api/queen/events?since={since}&wait=1")),
-            )
-            .await;
+            let (status, page) =
+                send_json(&app, get(&format!("/api/lead/events?since={since}&wait=1"))).await;
             assert_eq!(status, StatusCode::OK);
             let types: Vec<&str> = page["events"]
                 .as_array()
@@ -1721,47 +1712,47 @@ mod tests {
             assert_eq!(page["events"][1]["stop_reason"], "cancelled");
             assert_eq!(page["missed"], false);
             let next = page["next"].as_u64().unwrap();
-            let (_, page) = send_json(&app, get(&format!("/api/queen/events?since={next}"))).await;
+            let (_, page) = send_json(&app, get(&format!("/api/lead/events?since={next}"))).await;
             assert_eq!(page["events"], serde_json::json!([]));
-            let (_, body) = send_json(&app, json_post("/api/queen/cancel", "")).await;
+            let (_, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;
             assert_eq!(body["cancelled"], false);
-            let (_, body) = send_json(&app, get("/api/bees")).await;
-            assert_eq!(body["bees"], serde_json::json!([]));
+            let (_, body) = send_json(&app, get("/api/agents")).await;
+            assert_eq!(body["agents"], serde_json::json!([]));
         }
 
         #[tokio::test]
-        async fn the_user_talks_to_a_bee_directly() {
-            let (app, queen) = app();
-            let ada = queen
-                .bees()
+        async fn the_user_talks_to_a_agent_directly() {
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
                 .registry()
-                .create("Ada", "stuck", None, "the Queen (task 1)")
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
                 .unwrap();
-            let (_, body) = send_json(&app, get("/api/bees")).await;
-            assert_eq!(body["bees"][0]["name"], "Ada");
-            assert_eq!(body["bees"][0]["status"], "idle");
+            let (_, body) = send_json(&app, get("/api/agents")).await;
+            assert_eq!(body["agents"][0]["name"], "Ada");
+            assert_eq!(body["agents"][0]["status"], "idle");
 
-            // By name (any case) or id; same shapes as the Queen's chat.
+            // By name (any case) or id; same shapes as the lead agent's chat.
             let (status, body) = send_json(
                 &app,
-                json_post("/api/bees/ada/messages", r#"{"text":"Hello Ada"}"#),
+                json_post("/api/agents/ada/messages", r#"{"text":"Hello Ada"}"#),
             )
             .await;
             assert_eq!(status, StatusCode::ACCEPTED, "{body}");
             assert_eq!(body["turn"], 1);
             let since = body["since"].as_u64().unwrap();
-            let uri = format!("/api/bees/{}/messages", ada.id);
+            let uri = format!("/api/agents/{}/messages", ada.id);
             let (status, _) = send_json(&app, json_post(&uri, r#"{"text":"Again"}"#)).await;
             assert_eq!(status, StatusCode::CONFLICT);
-            let (_, st) = send_json(&app, get("/api/bees/Ada/status")).await;
+            let (_, st) = send_json(&app, get("/api/agents/Ada/status")).await;
             assert_eq!(st["turn"], 1);
-            let (_, b) = send_json(&app, get("/api/bees/Ada")).await;
+            let (_, b) = send_json(&app, get("/api/agents/Ada")).await;
             assert_eq!(b["status"], "working");
-            let (_, body) = send_json(&app, json_post("/api/bees/Ada/cancel", "")).await;
+            let (_, body) = send_json(&app, json_post("/api/agents/Ada/cancel", "")).await;
             assert_eq!(body["cancelled"], true);
             let (status, page) = send_json(
                 &app,
-                get(&format!("/api/bees/Ada/events?since={since}&wait=1")),
+                get(&format!("/api/agents/Ada/events?since={since}&wait=1")),
             )
             .await;
             assert_eq!(status, StatusCode::OK);
@@ -1773,39 +1764,38 @@ mod tests {
                 .collect();
             assert_eq!(types, ["user_message", "turn_finished"]);
             assert_eq!(page["events"][0]["text"], "Hello Ada");
-            // The Queen's log did not get the bee's conversation.
-            let (_, page) = send_json(&app, get("/api/queen/events?since=0")).await;
+            // The lead agent's log did not get the agent's conversation.
+            let (_, page) = send_json(&app, get("/api/lead/events?since=0")).await;
             assert_eq!(page["events"], serde_json::json!([]));
 
             // The user renames; names stay unique.
             let (status, body) = send_json(
                 &app,
-                json_post("/api/bees/Ada/rename", r#"{"name":"Ada Lovelace"}"#),
+                json_post("/api/agents/Ada/rename", r#"{"name":"Ada Lovelace"}"#),
             )
             .await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["id"], ada.id.as_str());
-            queen
-                .bees()
+            lead.agents()
                 .registry()
                 .create("Bo", "stuck", None, "the user")
                 .unwrap();
             let (status, _) = send_json(
                 &app,
-                json_post("/api/bees/Bo/rename", r#"{"name":"ada lovelace"}"#),
+                json_post("/api/agents/Bo/rename", r#"{"name":"ada lovelace"}"#),
             )
             .await;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
             for (req, code) in [
-                (get("/api/bees/nobody"), StatusCode::NOT_FOUND),
+                (get("/api/agents/nobody"), StatusCode::NOT_FOUND),
                 (
-                    json_post("/api/bees/nobody/messages", r#"{"text":"hi"}"#),
+                    json_post("/api/agents/nobody/messages", r#"{"text":"hi"}"#),
                     StatusCode::NOT_FOUND,
                 ),
-                // No cell store here (no k3s).
-                (get("/api/cells"), StatusCode::BAD_GATEWAY),
+                // No workspace store here (no k3s).
+                (get("/api/workspaces"), StatusCode::BAD_GATEWAY),
                 (
-                    json_post("/api/cells/nextcloud/reassign", r#"{"to":"nobody"}"#),
+                    json_post("/api/workspaces/nextcloud/reassign", r#"{"to":"nobody"}"#),
                     StatusCode::NOT_FOUND,
                 ),
             ] {
@@ -1815,8 +1805,8 @@ mod tests {
 
         #[tokio::test]
         async fn confirmations_can_be_listed_and_resolved() {
-            let (app, queen) = app();
-            let (c, rx) = queen.confirmations().request(
+            let (app, lead) = app();
+            let (c, rx) = lead.confirmations().request(
                 7,
                 "agent:execute",
                 &serde_json::json!({"title": "Execute `ls`"}),
@@ -1842,9 +1832,9 @@ mod tests {
 
         #[tokio::test]
         async fn operator_tool_calls_wait_for_the_inbox() {
-            let (app, queen) = app();
-            // Unknown and Queen-only tools look the same: not found.
-            for name in ["nope", "create_bee", "reassign_cell"] {
+            let (app, lead) = app();
+            // Unknown and Lead-only tools look the same: not found.
+            for name in ["nope", "create_agent", "reassign_workspace"] {
                 let (status, _) =
                     send_json(&app, json_post(&format!("/api/tools/{name}"), "{}")).await;
                 assert_eq!(status, StatusCode::NOT_FOUND, "{name}");
@@ -1856,7 +1846,7 @@ mod tests {
                 })
             };
             let pending = loop {
-                if let Some(c) = queen.confirmations().pending().first().cloned() {
+                if let Some(c) = lead.confirmations().pending().first().cloned() {
                     break c;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1877,7 +1867,7 @@ mod tests {
                 )
             };
             let pending = loop {
-                if let Some(c) = queen.confirmations().pending().first().cloned() {
+                if let Some(c) = lead.confirmations().pending().first().cloned() {
                     break c;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1889,13 +1879,13 @@ mod tests {
 
         #[tokio::test]
         async fn cross_site_api_calls_are_rejected() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             for uri in [
-                "/api/queen/messages",
-                "/api/queen/cancel",
-                "/api/bees/Ada/messages",
-                "/api/bees/Ada/rename",
-                "/api/cells/nextcloud/reassign",
+                "/api/lead/messages",
+                "/api/lead/cancel",
+                "/api/agents/Ada/messages",
+                "/api/agents/Ada/rename",
+                "/api/workspaces/nextcloud/reassign",
                 "/api/confirmations/1/approve",
                 "/api/tools/touch",
             ] {
@@ -1907,9 +1897,9 @@ mod tests {
                     .unwrap();
                 assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN, "{uri}");
             }
-            assert_eq!(queen.status().turn, None);
+            assert_eq!(lead.status().turn, None);
             // A form post (no JSON content type) is not a message either.
-            let req = post("/api/queen/messages")
+            let req = post("/api/lead/messages")
                 .body(Body::from("text=hi"))
                 .unwrap();
             assert_eq!(send(&app, req).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -1939,7 +1929,7 @@ mod tests {
 
         #[tokio::test]
         async fn home_is_the_chat_with_the_app_strip() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             let (status, headers, body) = get_html(&app, "/").await;
             assert_eq!(status, StatusCode::OK);
             assert!(headers[header::CONTENT_SECURITY_POLICY]
@@ -1950,11 +1940,11 @@ mod tests {
             assert!(body.contains("Hi, I'm Melissa."));
             assert!(body.contains(&format!(
                 "sse-connect=\"/ui/stream?since=0&amp;epoch={}\"",
-                queen.events().epoch()
+                lead.events().epoch()
             )));
             assert!(body.contains("/assets/htmx-ext-sse.min.js"));
             assert!(body.contains("Nextcloud running, Immich starting"));
-            assert!(body.contains("comb-1"));
+            assert!(body.contains("device-1"));
             // Before the first message: the agent it will start on, as a menu.
             assert!(
                 body.contains("Runs on <details class=\"agent-menu\">"),
@@ -1965,23 +1955,23 @@ mod tests {
             assert!(!body.contains("<script>"), "no inline scripts");
 
             // A conversation with a tool call and a pending confirmation.
-            queen.events().push(QueenEvent::UserMessage {
+            lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Install <b>Immich</b>".into(),
             });
-            queen.events().push(QueenEvent::ToolCall {
+            lead.events().push(LeadEvent::ToolCall {
                 turn: Some(1),
                 id: "x\" onclick=\"alert(1)".into(),
                 title: "melissa__list_apps".into(),
                 status: "done".into(),
             });
-            let (c, _rx) = queen.confirmations().request(
+            let (c, _rx) = lead.confirmations().request(
                 1,
                 "install_app",
                 &serde_json::json!({"app": "immich"}),
                 "this task has read untrusted content",
             );
-            queen.events().push(QueenEvent::ConfirmationNeeded {
+            lead.events().push(LeadEvent::ConfirmationNeeded {
                 id: c.id,
                 task: 1,
                 tool: "install_app".into(),
@@ -2004,9 +1994,9 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn hive_and_strip_show_apps_and_devices() {
+        async fn cluster_and_strip_show_apps_and_devices() {
             let (app, _) = app();
-            let (status, _, body) = get_html(&app, "/hive").await;
+            let (status, _, body) = get_html(&app, "/cluster").await;
             assert_eq!(status, StatusCode::OK);
             assert!(body.contains("class=\"hex h-ok\""));
             assert!(body.contains("class=\"hex h-busy\""));
@@ -2015,7 +2005,7 @@ mod tests {
             assert!(body.contains("href=\"/?draft=Install%20jellyfin\""));
             assert!(body.contains("Fedora Linux 45"));
             assert!(body.contains("4.0 GB of 8.0 GB used"));
-            // comb_info's /var is 91% used: a storage meter and a warning on the card.
+            // device_info's /var is 91% used: a storage meter and a warning on the card.
             assert!(body.contains("<span>Storage</span>"));
             assert!(body.contains("value=\"91\""));
             assert!(body.contains("Storage is almost full: 1.7 GB left."));
@@ -2024,27 +2014,30 @@ mod tests {
             assert!(body.starts_with("<section class=\"strip\""));
             assert!(body
                 .contains("<span class=\"strip-warn\">Storage almost full (1.7 GB left)</span>"));
-            let (_, _, body) = get_html(&app, "/ui/hive/apps").await;
-            assert!(body.starts_with("<div id=\"hive-apps\""));
+            let (_, _, body) = get_html(&app, "/ui/cluster/apps").await;
+            assert!(body.starts_with("<div id=\"cluster-apps\""));
         }
 
         // --- App details --------------------------------------------------------------------
 
-        /// One cell, `nextcloud`, owned by a bee that does not exist (the Queen only is told).
+        /// One workspace, `nextcloud`, owned by an agent that does not exist (the lead agent only is told).
         #[derive(Default)]
-        struct OneCell {
+        struct OneWorkspace {
             deleted: std::sync::Mutex<Vec<String>>,
         }
-        impl melissa_agent::tools::CellStore for OneCell {
-            fn cells(&self) -> BoxFuture<'_, Result<Vec<melissa_agent::tools::CellInfo>, String>> {
+        impl melissa_agent::tools::WorkspaceStore for OneWorkspace {
+            fn workspaces(
+                &self,
+            ) -> BoxFuture<'_, Result<Vec<melissa_agent::tools::WorkspaceInfo>, String>>
+            {
                 Box::pin(async move {
                     if !self.deleted.lock().unwrap().is_empty() {
                         return Ok(Vec::new());
                     }
-                    Ok(vec![melissa_agent::tools::CellInfo {
+                    Ok(vec![melissa_agent::tools::WorkspaceInfo {
                         name: "nextcloud".into(),
-                        owner: melissa_agent::tools::Owner::Bee("c-0a1b2c3d.b7".into()),
-                        comb: Some("c-0a1b2c3d".into()),
+                        owner: melissa_agent::tools::Owner::Agent("d-0a1b2c3d.a7".into()),
+                        device: Some("d-0a1b2c3d".into()),
                         assigned_by: None,
                         assigned_at: None,
                         legacy_owner: None,
@@ -2061,10 +2054,10 @@ mod tests {
             }
             fn force_delete<'a>(
                 &'a self,
-                cell: &'a str,
+                workspace: &'a str,
             ) -> BoxFuture<'a, Result<Vec<String>, String>> {
                 Box::pin(async move {
-                    self.deleted.lock().unwrap().push(cell.into());
+                    self.deleted.lock().unwrap().push(workspace.into());
                     Ok(vec!["Namespace (all objects, volumes and data)".into()])
                 })
             }
@@ -2073,13 +2066,13 @@ mod tests {
         #[tokio::test]
         async fn app_tiles_open_details_with_status_logs_and_actions() {
             let (app, _) = app();
-            let (_, _, body) = get_html(&app, "/hive").await;
+            let (_, _, body) = get_html(&app, "/cluster").await;
             assert!(
                 body.contains("<dialog class=\"sheet\" id=\"app-dialog\""),
                 "{body}"
             );
             assert!(body.contains("hx-get=\"/ui/apps/nextcloud\""));
-            assert!(body.contains("hive-changed from:body"));
+            assert!(body.contains("cluster-changed from:body"));
 
             let req = axum::http::Request::get("/ui/apps/nextcloud")
                 .header(header::HOST, "192.0.2.7:8080")
@@ -2128,13 +2121,13 @@ mod tests {
             assert_eq!(v["pod"], "nc-1");
             let (status, v) = send_json(&app, get("/api/apps/nextcloud")).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(v["bee_name"], "Ada");
+            assert_eq!(v["agent_name"], "Ada");
         }
 
         #[tokio::test]
-        async fn force_delete_needs_the_name_and_then_removes_and_tells_the_queen() {
-            let cells = Arc::new(OneCell::default());
-            let (app, queen) = app_full(None, Some(cells.clone()), false);
+        async fn force_delete_needs_the_name_and_then_removes_and_tells_the_lead() {
+            let workspaces = Arc::new(OneWorkspace::default());
+            let (app, lead) = app_full(None, Some(workspaces.clone()), false);
             // No or wrong confirmation: refused, nothing deleted.
             let (status, _, html) = send(
                 &app,
@@ -2154,7 +2147,7 @@ mod tests {
                 .body(Body::from(r#"{"confirm":"nextcloud"}"#))
                 .unwrap();
             assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
-            assert!(cells.deleted.lock().unwrap().is_empty());
+            assert!(workspaces.deleted.lock().unwrap().is_empty());
 
             let (status, headers, html) = send(
                 &app,
@@ -2163,18 +2156,18 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("Nextcloud and its data are gone."), "{html}");
-            assert_eq!(headers["hx-trigger"], "hive-changed");
+            assert_eq!(headers["hx-trigger"], "cluster-changed");
             assert_eq!(
-                *cells.deleted.lock().unwrap(),
+                *workspaces.deleted.lock().unwrap(),
                 vec!["nextcloud".to_string()]
             );
-            // The owning bee no longer exists: only the Queen hears of it.
-            assert!(queen
+            // The owning agent no longer exists: only the lead agent hears of it.
+            assert!(lead
                 .events()
                 .since(0, 100)
                 .events
                 .iter()
-                .any(|r| matches!(&r.event, QueenEvent::CellForceDeleted { cell, bee: None } if cell == "nextcloud")));
+                .any(|r| matches!(&r.event, LeadEvent::WorkspaceForceDeleted { workspace, agent: None } if workspace == "nextcloud")));
             // Gone now.
             let (status, _) = send_json(
                 &app,
@@ -2189,19 +2182,18 @@ mod tests {
 
         #[tokio::test]
         async fn approvals_page_and_approve_deny() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             let (_, _, body) = get_html(&app, "/approvals").await;
             assert!(body.contains("Nothing waiting."));
 
-            let (a, rx_a) = queen.confirmations().request(
+            let (a, rx_a) = lead.confirmations().request(
                 1,
                 "uninstall_app",
                 &serde_json::json!({"app": "nextcloud", "delete_data": true}),
                 "destructive action",
             );
             let (b, rx_b) =
-                queen
-                    .confirmations()
+                lead.confirmations()
                     .request(1, "touch", &serde_json::json!({}), "because");
             let (_, _, body) = get_html(&app, "/approvals").await;
             assert!(body.contains("Remove Nextcloud?"));
@@ -2235,13 +2227,13 @@ mod tests {
 
         #[tokio::test]
         async fn sending_a_message_from_the_composer() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             let (status, _, html) = send(&app, htmx_post("/ui/messages", "text=Hello+there")).await;
             assert_eq!(status, StatusCode::OK);
             assert!(html.starts_with("<form class=\"composer\" id=\"composer\""));
             assert!(html.contains("Working on it"));
             assert!(html.contains("></textarea>"), "box is cleared");
-            assert_eq!(queen.status().turn, Some(1));
+            assert_eq!(lead.status().turn, Some(1));
 
             // Busy: the text stays and the reason is shown.
             let (_, _, html) = send(&app, htmx_post("/ui/messages", "text=Second")).await;
@@ -2251,7 +2243,7 @@ mod tests {
             // Stop.
             let (status, _, _) = send(&app, htmx_post("/ui/cancel", "")).await;
             assert_eq!(status, StatusCode::NO_CONTENT);
-            assert_eq!(queen.status().turn, None);
+            assert_eq!(lead.status().turn, None);
 
             // Plain form post: redirect home.
             let req = post("/ui/messages").body(Body::from("text=Hi")).unwrap();
@@ -2266,7 +2258,7 @@ mod tests {
         /// stream's updates swap the status's children, which `hx-preserve` doesn't block.
         #[tokio::test]
         async fn a_late_send_reply_does_not_overwrite_the_live_status() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             let res = app
                 .clone()
                 .oneshot(get("/ui/stream?since=0"))
@@ -2282,7 +2274,7 @@ mod tests {
             );
             // The turn ends before the reply is swapped in.
             send(&app, htmx_post("/ui/cancel", "")).await;
-            assert_eq!(queen.status().turn, None);
+            assert_eq!(lead.status().turn, None);
             let mut idle = String::new();
             while !idle.contains(swap) {
                 idle = next_frame(&mut stream).await;
@@ -2299,29 +2291,29 @@ mod tests {
 
         #[tokio::test]
         async fn chatting_with_a_helper() {
-            let (app, queen) = app();
-            let ada = queen
-                .bees()
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
                 .registry()
-                .create("Ada", "stuck", None, "the Queen (task 1)")
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
                 .unwrap();
             // The rail lists her; her page is a chat.
             let (_, _, home) = get_html(&app, "/").await;
-            assert!(home.contains(&format!("href=\"/bees/{}\"", ada.id)));
+            assert!(home.contains(&format!("href=\"/agents/{}\"", ada.id)));
             assert!(home.contains(">Ada<"));
-            for uri in [format!("/bees/{}", ada.id), "/bees/ada".to_string()] {
+            for uri in [format!("/agents/{}", ada.id), "/agents/ada".to_string()] {
                 let (status, _, body) = get_html(&app, &uri).await;
                 assert_eq!(status, StatusCode::OK, "{uri}");
                 assert!(body.contains("Nothing here yet with Ada."));
                 assert!(body.contains(&format!(
-                    "sse-connect=\"/ui/bees/{}/stream?since=0&amp;epoch=",
+                    "sse-connect=\"/ui/agents/{}/stream?since=0&amp;epoch=",
                     ada.id
                 )));
-                assert!(body.contains(&format!("hx-post=\"/ui/bees/{}/messages\"", ada.id)));
+                assert!(body.contains(&format!("hx-post=\"/ui/agents/{}/messages\"", ada.id)));
                 assert!(body.contains("aria-current=\"page\""));
             }
             assert_eq!(
-                get_html(&app, "/bees/nobody").await.0,
+                get_html(&app, "/agents/nobody").await.0,
                 StatusCode::NOT_FOUND
             );
             // The task pages sit in Settings → Developer; GET /tasks redirects there and the
@@ -2362,34 +2354,37 @@ mod tests {
             let (_, _, body) = get_html(&app, "/settings/updates").await;
             assert!(body.contains("<a href=\"/settings/developer\">Developer</a>"));
 
-            // A message goes to her conversation, not the Queen's.
+            // A message goes to her conversation, not the lead agent's.
             let res = app
                 .clone()
-                .oneshot(get(&format!("/ui/bees/{}/stream?since=0", ada.id)))
+                .oneshot(get(&format!("/ui/agents/{}/stream?since=0", ada.id)))
                 .await
                 .unwrap();
             let mut body = res.into_body();
-            let uri = format!("/ui/bees/{}/messages", ada.id);
+            let uri = format!("/ui/agents/{}/messages", ada.id);
             let (status, _, html) = send(&app, htmx_post(&uri, "text=Hello+Ada")).await;
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("Working on it"));
-            assert!(html.contains(&format!("hx-post=\"/ui/bees/{}/cancel\"", ada.id)));
+            assert!(html.contains(&format!("hx-post=\"/ui/agents/{}/cancel\"", ada.id)));
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("Hello Ada"), "{frame}");
-            assert_eq!(queen.status().turn, None);
-            let (status, _, _) =
-                send(&app, htmx_post(&format!("/ui/bees/{}/cancel", ada.id), "")).await;
+            assert_eq!(lead.status().turn, None);
+            let (status, _, _) = send(
+                &app,
+                htmx_post(&format!("/ui/agents/{}/cancel", ada.id), ""),
+            )
+            .await;
             assert_eq!(status, StatusCode::NO_CONTENT);
 
-            // The Queen's feed links a helper's job to her conversation.
-            queen.events().push(QueenEvent::BeeStarted {
-                bee: ada.id.clone(),
+            // The lead agent's feed links a helper's job to her conversation.
+            lead.events().push(LeadEvent::AgentStarted {
+                agent: ada.id.clone(),
                 name: "Ada".into(),
                 goal: "Check <the> device".into(),
             });
             let (_, _, home) = get_html(&app, "/").await;
             assert!(home.contains(&format!(
-                "<a href=\"/bees/{}\">Ada is looking into it</a>",
+                "<a href=\"/agents/{}\">Ada is looking into it</a>",
                 ada.id
             )));
             assert!(home.contains("Check &lt;the&gt; device"));
@@ -2397,8 +2392,8 @@ mod tests {
 
         #[tokio::test]
         async fn the_taint_note_shows_in_the_chat() {
-            let (app, queen) = app();
-            queen.events().push(QueenEvent::Tainted {
+            let (app, lead) = app();
+            lead.events().push(LeadEvent::Tainted {
                 tool: Some("app_logs".into()),
                 subject: Some("nextcloud".into()),
             });
@@ -2412,31 +2407,30 @@ mod tests {
 
         #[tokio::test]
         async fn a_new_chat_archives_the_old_one_and_reloads_pages() {
-            let (app, queen) = app();
-            queen.events().push(QueenEvent::UserMessage {
+            let (app, lead) = app();
+            lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi <there>".into(),
             });
-            queen.events().push(QueenEvent::TurnFinished {
+            lead.events().push(LeadEvent::TurnFinished {
                 turn: 1,
                 stop_reason: "end_turn".into(),
             });
-            let (c, _rx) = queen.confirmations().request(
-                queen.task_id(),
+            let (c, _rx) = lead.confirmations().request(
+                lead.task_id(),
                 "touch",
                 &serde_json::json!({}),
                 "because",
             );
             let (other, _rx2) =
-                queen
-                    .confirmations()
-                    .request(99, "touch", &serde_json::json!({}), "a bee's");
+                lead.confirmations()
+                    .request(99, "touch", &serde_json::json!({}), "an agent's");
             let res = app
                 .clone()
                 .oneshot(get(&format!(
                     "/ui/stream?since={}&epoch={}",
-                    queen.events().last_seq(),
-                    queen.events().epoch()
+                    lead.events().last_seq(),
+                    lead.events().epoch()
                 )))
                 .await
                 .unwrap();
@@ -2449,8 +2443,8 @@ mod tests {
             let (status, headers, _) = send(&app, req).await;
             assert_eq!(status, StatusCode::SEE_OTHER);
             assert_eq!(headers[header::LOCATION], "/");
-            // The Queen's confirmation is withdrawn, a bee's stays.
-            let pending: Vec<u64> = queen
+            // The lead agent's confirmation is withdrawn, an agent's stays.
+            let pending: Vec<u64> = lead
                 .confirmations()
                 .pending()
                 .iter()
@@ -2464,7 +2458,7 @@ mod tests {
             assert!(!home.contains("<li class=\"entry\""), "{home}");
             assert!(home.contains("Past chats"));
             assert!(home.contains("Hi &lt;there&gt;"));
-            let chats = queen.past_chats();
+            let chats = lead.past_chats();
             assert_eq!(chats.len(), 1);
             let (status, _, past) = get_html(&app, &format!("/chats/{}", chats[0].id)).await;
             assert_eq!(status, StatusCode::OK);
@@ -2481,15 +2475,15 @@ mod tests {
                 .unwrap();
             assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
             // The JSON API does the same.
-            let (status, body) = send_json(&app, json_post("/api/queen/new-chat", "{}")).await;
+            let (status, body) = send_json(&app, json_post("/api/lead/new-chat", "{}")).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["archived"], Value::Null, "nothing said since");
         }
 
         #[tokio::test]
         async fn a_stream_from_another_epoch_reloads() {
-            let (app, queen) = app();
-            queen.events().push(QueenEvent::UserMessage {
+            let (app, lead) = app();
+            lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi".into(),
             });
@@ -2510,17 +2504,16 @@ mod tests {
 
         #[tokio::test]
         async fn ui_posts_need_the_same_origin() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             let (c, _rx) =
-                queen
-                    .confirmations()
+                lead.confirmations()
                     .request(1, "touch", &serde_json::json!({}), "because");
             for uri in [
                 "/ui/messages".to_string(),
                 "/ui/cancel".to_string(),
                 format!("/ui/confirmations/{}/approve", c.id),
-                "/ui/bees/ada/messages".to_string(),
-                "/ui/bees/ada/cancel".to_string(),
+                "/ui/agents/ada/messages".to_string(),
+                "/ui/agents/ada/cancel".to_string(),
             ] {
                 let req = post(&uri)
                     .header("sec-fetch-site", "cross-site")
@@ -2528,18 +2521,18 @@ mod tests {
                     .unwrap();
                 assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN, "{uri}");
             }
-            assert_eq!(queen.status().turn, None);
-            assert_eq!(queen.confirmations().pending().len(), 1);
+            assert_eq!(lead.status().turn, None);
+            assert_eq!(lead.confirmations().pending().len(), 1);
         }
 
         #[tokio::test]
         async fn the_stream_sends_rendered_updates() {
-            let (app, queen) = app();
-            queen.events().push(QueenEvent::UserMessage {
+            let (app, lead) = app();
+            lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi".into(),
             });
-            queen.events().push(QueenEvent::Text {
+            lead.events().push(LeadEvent::Text {
                 turn: 1,
                 text: "Hello".into(),
             });
@@ -2556,27 +2549,27 @@ mod tests {
             let mut body = res.into_body();
 
             // More reply text updates the existing bubble out of band.
-            queen.events().push(QueenEvent::Text {
+            lead.events().push(LeadEvent::Text {
                 turn: 1,
                 text: " <there>".into(),
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.starts_with("event: feed\n"), "{frame}");
-            assert!(frame.contains(&format!("id: {}-3\n", queen.events().epoch())));
+            assert!(frame.contains(&format!("id: {}-3\n", lead.events().epoch())));
             assert!(frame.contains("hx-swap-oob=\"innerHTML:#f-r2\""));
             assert!(frame.contains("Hello &lt;there&gt;"));
 
             // A new entry is appended; the turn's end updates the composer status.
-            queen.events().push(QueenEvent::ToolCall {
+            lead.events().push(LeadEvent::ToolCall {
                 turn: Some(1),
                 id: "1".into(),
-                title: "melissa__bee_info".into(),
+                title: "melissa__device_info".into(),
                 status: "running".into(),
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("<li class=\"entry\" id=\"f-t1\">"));
             assert!(frame.contains("Checking this device"));
-            queen.events().push(QueenEvent::TurnFinished {
+            lead.events().push(LeadEvent::TurnFinished {
                 turn: 1,
                 stop_reason: "end_turn".into(),
             });
@@ -2595,24 +2588,24 @@ mod tests {
 
         #[tokio::test]
         async fn the_approvals_stream_only_sends_approvals() {
-            let (app, queen) = app();
+            let (app, lead) = app();
             let res = app
                 .clone()
                 .oneshot(get("/ui/stream?since=0&view=approvals"))
                 .await
                 .unwrap();
             let mut body = res.into_body();
-            queen.events().push(QueenEvent::UserMessage {
+            lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi".into(),
             });
-            let (c, _rx) = queen.confirmations().request(
+            let (c, _rx) = lead.confirmations().request(
                 1,
                 "install_app",
                 &serde_json::json!({"app": "immich"}),
                 "because",
             );
-            queen.events().push(QueenEvent::ConfirmationNeeded {
+            lead.events().push(LeadEvent::ConfirmationNeeded {
                 id: c.id,
                 task: 1,
                 tool: "install_app".into(),
@@ -2626,8 +2619,8 @@ mod tests {
 
         #[tokio::test]
         async fn backends_are_listed_switched_between_turns_and_refused_when_unusable() {
-            let (app, queen) = app();
-            let (status, body) = send_json(&app, get("/api/queen/backends")).await;
+            let (app, lead) = app();
+            let (status, body) = send_json(&app, get("/api/lead/backends")).await;
             assert_eq!(status, StatusCode::OK);
             let list = body["backends"].as_array().unwrap();
             let names: Vec<&str> = list.iter().map(|b| b["name"].as_str().unwrap()).collect();
@@ -2640,43 +2633,37 @@ mod tests {
 
             // Refused: not installed, unknown, a model nobody reported, cross-site.
             let (status, body) =
-                send_json(&app, json_post("/api/queen/backend", r#"{"name":"gone"}"#)).await;
+                send_json(&app, json_post("/api/lead/backend", r#"{"name":"gone"}"#)).await;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
             assert!(body["error"].as_str().unwrap().contains("not installed"));
             for bad in [r#"{"name":"nope"}"#, r#"{"name":"echo-b","model":"x"}"#] {
-                let (status, _) = send_json(&app, json_post("/api/queen/backend", bad)).await;
+                let (status, _) = send_json(&app, json_post("/api/lead/backend", bad)).await;
                 assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
             }
-            let mut cross = json_post("/api/queen/backend", r#"{"name":"echo-b"}"#);
+            let mut cross = json_post("/api/lead/backend", r#"{"name":"echo-b"}"#);
             cross
                 .headers_mut()
                 .insert(header::ORIGIN, "http://evil.example.com".parse().unwrap());
             assert_eq!(send(&app, cross).await.0, StatusCode::FORBIDDEN);
-            assert_eq!(queen.backend_choice(), None);
+            assert_eq!(lead.backend_choice(), None);
 
             // A turn is running (its session never opens): the switch waits for it.
-            let (status, _) = send_json(
-                &app,
-                json_post("/api/queen/messages", r#"{"text":"hello"}"#),
-            )
-            .await;
+            let (status, _) =
+                send_json(&app, json_post("/api/lead/messages", r#"{"text":"hello"}"#)).await;
             assert_eq!(status, StatusCode::ACCEPTED);
-            let (status, body) = send_json(
-                &app,
-                json_post("/api/queen/backend", r#"{"name":"echo-b"}"#),
-            )
-            .await;
+            let (status, body) =
+                send_json(&app, json_post("/api/lead/backend", r#"{"name":"echo-b"}"#)).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["changed"], true);
             assert_eq!(body["after_turn"], true);
-            let (_, body) = send_json(&app, get("/api/queen/backends")).await;
+            let (_, body) = send_json(&app, get("/api/lead/backends")).await;
             assert_eq!(body["backends"][1]["current"], true);
-            assert!(queen
+            assert!(lead
                 .events()
                 .since(0, 100)
                 .events
                 .iter()
-                .any(|r| matches!(&r.event, QueenEvent::BackendSwitched { backend, .. } if backend == "echo-b")));
+                .any(|r| matches!(&r.event, LeadEvent::BackendSwitched { backend, .. } if backend == "echo-b")));
 
             // The chat shows it quietly, and the menu has the new current agent.
             let (_, _, page) = send(&app, get("/")).await;
@@ -2719,13 +2706,12 @@ mod tests {
             assert_eq!(status, StatusCode::SEE_OTHER);
             assert_eq!(headers[header::LOCATION], "/");
 
-            // A bee: any session backend; saved in the registry.
-            queen
-                .bees()
+            // An agent: any session backend; saved in the registry.
+            lead.agents()
                 .registry()
                 .create("Ada", "stuck", None, "the user")
                 .unwrap();
-            let (status, body) = send_json(&app, get("/api/bees/ada/backends")).await;
+            let (status, body) = send_json(&app, get("/api/agents/ada/backends")).await;
             assert_eq!(status, StatusCode::OK);
             let names: Vec<&str> = body["backends"]
                 .as_array()
@@ -2736,25 +2722,25 @@ mod tests {
             assert_eq!(names, ["stuck", "echo-b"]);
             let (status, body) = send_json(
                 &app,
-                json_post("/api/bees/Ada/backend", r#"{"name":"echo-b"}"#),
+                json_post("/api/agents/Ada/backend", r#"{"name":"echo-b"}"#),
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["changed"], true);
-            let (_, bee) = send_json(&app, get("/api/bees/Ada")).await;
-            assert_eq!(bee["backend"], "echo-b");
-            let (_, _, page) = send(&app, get("/bees/Ada")).await;
-            assert!(page.contains("action=\"/ui/bees/"), "{page}");
+            let (_, agent) = send_json(&app, get("/api/agents/Ada")).await;
+            assert_eq!(agent["backend"], "echo-b");
+            let (_, _, page) = send(&app, get("/agents/Ada")).await;
+            assert!(page.contains("action=\"/ui/agents/"), "{page}");
 
-            // Bees: unknown ones are 404.
+            // Agents: unknown ones are 404.
             assert_eq!(
-                send(&app, get("/api/bees/nobody/backends")).await.0,
+                send(&app, get("/api/agents/nobody/backends")).await.0,
                 StatusCode::NOT_FOUND
             );
             assert_eq!(
                 send(
                     &app,
-                    json_post("/api/bees/nobody/backend", r#"{"name":"echo-b"}"#)
+                    json_post("/api/agents/nobody/backend", r#"{"name":"echo-b"}"#)
                 )
                 .await
                 .0,

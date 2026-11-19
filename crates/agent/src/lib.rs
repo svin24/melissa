@@ -2,12 +2,12 @@
 //! Agent layer for Melissa.
 //!
 //! One interface ([`Backend`]) over pluggable agent backends: a built-in [`EchoBackend`]
-//! (no LLM, for "dumb box" combs and tests) and a generic [`CliBackend`] that drives
+//! (no LLM, for "dumb box" devices and tests) and a generic [`CliBackend`] that drives
 //! headless agent CLIs such as Claude Code, Grok or OpenCode. The [`TaskBoard`]
 //! dispatches prompts to backends, collects their output, supports cancellation and
 //! timeouts, and writes every mutating action to an [`AuditLog`]. Long-lived agent sessions
 //! ([`session`]) run over ACP ([`acp`], e.g. `grok agent stdio`, `opencode acp`) or Claude
-//! Code's stream-json protocol ([`claude`]); both also serve one-prompt tasks on the board. Agents act on the hive only
+//! Code's stream-json protocol ([`claude`]); both also serve one-prompt tasks on the board. Agents act on the cluster only
 //! through the narrow [`tools`] API, whose policy decides when a human must confirm.
 
 pub mod acp;
@@ -16,11 +16,12 @@ mod backend;
 mod board;
 pub mod claude;
 mod cli;
-pub mod comb;
+pub mod device;
 mod echo;
 pub mod egress;
+pub mod lead;
 pub mod mcp;
-pub mod queen;
+pub mod migrate;
 pub mod sandbox;
 pub mod session;
 pub mod tools;

@@ -40,7 +40,7 @@ impl Verdict {
     }
 }
 
-/// A change in the inbox, for live views (the Queen's event stream, a future UI).
+/// A change in the inbox, for live views (the lead agent's event stream, a future UI).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmationEvent {
     Requested(Confirmation),

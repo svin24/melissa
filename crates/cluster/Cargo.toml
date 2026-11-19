@@ -1,0 +1,21 @@
+[package]
+name = "melissa-cluster"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Melissa cluster layer: the lead's client for the local k3s API and the cluster tools"
+
+[dependencies]
+melissa-agent = { workspace = true }
+melissa-catalog = { workspace = true }
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

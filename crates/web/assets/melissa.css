@@ -1,5 +1,5 @@
 /* Melissa's styles. Used only by the component library in src/components.rs.
-   Calm by default; the one bold element is apps as honeycomb cells. */
+   Calm by default; the one bold element is apps as app_grid workspaces. */
 
 @font-face {
   font-family: "Atkinson Hyperlegible Next";
@@ -472,7 +472,7 @@ main:focus {
   font-size: 0.925rem;
 }
 
-.mini-cells {
+.mini-tiles {
   display: flex;
   list-style: none;
   margin: 0;
@@ -786,7 +786,7 @@ main:focus {
   margin-bottom: 0.25rem;
 }
 
-.msg-queen {
+.msg-lead {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
   gap: 0.75rem;
@@ -800,7 +800,7 @@ main:focus {
   margin-top: 0.1rem;
 }
 
-.msg-queen .body {
+.msg-lead .body {
   overflow-wrap: anywhere;
 }
 
@@ -1182,9 +1182,9 @@ button.send svg {
   }
 }
 
-/* --- Honeycomb -------------------------------------------------------------------------- */
+/* --- App grid -------------------------------------------------------------------------- */
 
-.honeycomb {
+.app_grid {
   --n: 4;
   --w: 150px;
   --h: calc(var(--w) * 1.1547);
@@ -1207,7 +1207,7 @@ button.send svg {
   background: var(--idle);
 }
 
-/* Every second row starts half a cell in (4 cells per row). */
+/* Every second row starts half a workspace in (4 workspaces per row). */
 .hex:nth-child(8n + 5) {
   margin-left: calc(var(--w) / 2 + var(--gap) / 2);
 }
@@ -2301,7 +2301,7 @@ ol.steps > li::marker {
     margin-left: 0;
   }
 
-  .honeycomb {
+  .app_grid {
     --n: 2;
     --w: 128px;
   }
@@ -2318,7 +2318,7 @@ ol.steps > li::marker {
     margin-left: calc(var(--gap) / 2);
   }
 
-  /* Two cells per row: every second row starts half a cell in. */
+  /* Two workspaces per row: every second row starts half a workspace in. */
   .hex:nth-child(4n + 3) {
     margin-left: calc(var(--w) / 2 + var(--gap) / 2);
   }

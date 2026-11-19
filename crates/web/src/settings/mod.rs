@@ -24,7 +24,7 @@
 //! - `GET /api/settings/providers` → `{"providers": [...], "restart_needed": bool}`.
 //! - `POST /api/settings/providers/{id}` `{"enabled"?, "display_name"?, "command"?, "args"?,
 //!   "set_env"?: {"NAME": "value"}, "remove_env"?: ["NAME"]}` → the provider. 404 unknown
-//!   provider, 409 refused (e.g. disabling the agent the Queen runs on), 422 invalid.
+//!   provider, 409 refused (e.g. disabling the agent the lead agent runs on), 422 invalid.
 //! - `POST /api/settings/providers/refresh` → the list again, versions re-read.
 //! - `GET /api/settings/updates` → release, host kind, OS image state, available actions.
 //! - `POST /api/settings/updates/{check|apply|rollback|restart}` `{"confirm": true}` (needed
@@ -66,22 +66,22 @@ use melissa_settings::{
 
 use crate::ui::Ui;
 
-/// Checks a provider change against the real backend config (the queen's merge + its
+/// Checks a provider change against the real backend config (the lead agent's merge + its
 /// backends' own checks) before it is saved.
 pub type CheckFn = Arc<dyn Fn(&str, &ProviderOverride) -> Result<(), String> + Send + Sync>;
 
-/// What the queen hands the Settings pages.
+/// What the lead agent hands the Settings pages.
 pub struct SettingsParts {
     pub store: ProviderStore,
     /// Every configured backend, also those of disabled providers, plus the built-in echo.
     pub backends: Vec<BackendFacts>,
-    /// The backend new bees get when the Queen names none.
-    pub bee_default: Option<String>,
+    /// The backend new agents get when the lead agent names none.
+    pub agent_default: Option<String>,
     pub check: Option<CheckFn>,
     pub audit: Option<AuditLog>,
     pub updates: UpdateEnv,
     pub release: Release,
-    /// The agents' home (`$HOME` of the queen's user).
+    /// The agents' home (`$HOME` of the lead agent's user).
     pub home: Option<PathBuf>,
     /// Installs agent CLIs (Settings → Providers → Install), where the packaging allows it.
     pub installer: Installer,
@@ -126,13 +126,13 @@ impl Settings {
         self.inner.parts.updates.kind
     }
 
-    /// No settings file, no backends (routers built without a queen config).
+    /// No settings file, no backends (routers built without a lead agent config).
     pub fn detached() -> Self {
         let updates = UpdateEnv::system();
         Self::new(SettingsParts {
             store: ProviderStore::in_memory(),
             backends: Vec::new(),
-            bee_default: None,
+            agent_default: None,
             check: None,
             audit: None,
             installer: Installer::system(updates.kind),

@@ -7,7 +7,7 @@
 # IPv4 DHCP lease is enough for NetworkManager-wait-online). k3s then sees "NodeIPs changed" and
 # exits, twice (v4 -> v4+v6, then the stored v4 vs the new v4+v6). The cluster is single-stack
 # IPv4, and changing IPv6 prefixes/privacy addresses would restart it at runtime too. A local
-# `node-ip` in config.yaml(.d) wins; with no IPv4 default route (IPv6-only bee) k3s autodetects.
+# `node-ip` in config.yaml(.d) wins; with no IPv4 default route (IPv6-only agent) k3s autodetects.
 set -eu
 env=${1:?usage: k3s-node-ip ENV_FILE}
 mkdir -p "$(dirname "$env")"

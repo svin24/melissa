@@ -7,13 +7,13 @@
 **A clustered, agent-run, immutable self-hosting OS.**
 
 Melissa turns a handful of ordinary machines (a laptop, a mini PC, a NAS, a VPS) into one self-hosting
-cluster that AI agents run for you. You chat with the Queen; she and her bees install apps like Nextcloud,
+cluster that AI agents run for you. You chat with the lead agent; it and its agents install apps like Nextcloud,
 keep them healthy and tidy up, asking you before anything risky.
 
-- **Hive**: all your devices together. **Comb**: one device, with one **Queen** (the lead agent).
-- **Bees**: worker agents; each looks after its own **cells** (apps and their services).
-- You can talk to any Queen or bee. Only a Queen, or you, can hand a cell to another bee.
-  Full model: [docs/HIVE-MODEL.md](docs/HIVE-MODEL.md).
+- **Cluster**: all your devices together. **Device**: one device, with one **Lead agent** (the lead agent).
+- **Agents**: worker agents; each looks after its own **workspaces** (apps and their services).
+- You can talk to any lead agent or agent. Only a lead agent, or you, can hand a workspace to another agent.
+  Full model: [docs/AGENT-MODEL.md](docs/AGENT-MODEL.md).
 
 Principles: runs on an existing Linux host (a rootful podman container started by systemd; a Nix service is
 in progress), **Rust** almost everywhere (agents work better with a safe,
@@ -24,8 +24,8 @@ without internet, and open source so others can build on top.
 
 ```
 crates/agent   agent layer: backend trait, echo + CLI backends, task board, audit log
-crates/queen   queen bee (coordinator + agent layer entrypoint)
-crates/comb    per-device daemon (a comb = one device)
+crates/server   lead agent agent (coordinator + agent layer entrypoint)
+crates/device    per-device daemon (a device = one device)
 crates/web     web UI (axum + maud + embedded htmx)
 packaging/     common/ (system files every packaging installs), container/ (image, Quadlet, install.sh),
                nix/ (Nix flake/module)
@@ -51,7 +51,7 @@ direnv allow      # or: devenv shell
 just check        # fmt, clippy, tests
 ```
 
-Run the queen and open http://127.0.0.1:8080: `devenv shell -- just run-web` (full log) or `just demo` (short summary). Agents found on `PATH`
+Run the lead agent and open http://127.0.0.1:8080: `devenv shell -- just run-web` (full log) or `just demo` (short summary). Agents found on `PATH`
 (`claude`, `grok`, `opencode`) show up as backends; a built-in `echo` backend always works.
 
 Full system (k3s, apps) as a container: `just container-build && just container-install`, then

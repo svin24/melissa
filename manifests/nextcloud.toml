@@ -16,7 +16,7 @@ max_len = 64
 [[config]]
 name = "admin_password"
 type = "secret"
-description = "Password of the admin user. Generated at install; only the owner can read it (`sudo melissa-queen app-credentials nextcloud`)."
+description = "Password of the admin user. Generated at install; only the owner can read it (`sudo melissa-server app-credentials nextcloud`)."
 length = 32
 
 [[config]]
