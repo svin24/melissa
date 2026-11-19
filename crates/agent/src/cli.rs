@@ -258,7 +258,7 @@ pub(crate) fn not_ready(
         Some("grok") => Some(".grok/auth.json"),
         _ => None,
     };
-    let checkable = sandbox.enabled && sandbox.env.is_empty();
+    let checkable = sandbox.enabled && sandbox.env.is_empty() && sandbox.vars.is_empty();
     if let (Some(file), Some(home), true) = (login, home, checkable) {
         if sandbox.rw.iter().any(|p| p == file) && !home.join(file).is_file() {
             return Some(NotReady::NotLoggedIn);
@@ -347,6 +347,7 @@ pub(crate) fn sandboxed_command(
     // Resolved per run: the CLI may have updated itself (new binary path) since startup.
     let plan = SandboxPlan::resolve(sandbox, bwrap, home, program)?
         .with_binds(binds)?
+        .with_env(&sandbox.vars)?
         .with_env(env)?
         .with_bridge(bridge);
     Ok(sandbox::command(&plan, workdir, extra_ro, &args))
@@ -411,7 +412,11 @@ impl Backend for CliBackend {
             let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
             let (program, args) = self.command_line(program, &workdir, req, bridge, args)?;
 
-            let mut child = tokio::process::Command::new(&program)
+            let mut command = tokio::process::Command::new(&program);
+            if !self.sandbox.enabled {
+                command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+            }
+            let mut child = command
                 .args(args)
                 .current_dir(&workdir)
                 // Ask CLIs for plain text; any remaining escape codes are stripped in `pump`.

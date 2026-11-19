@@ -76,7 +76,8 @@ RUN set -eu; \
     systemctl mask bootc-fetch-apply-updates.timer 2>/dev/null || true; \
     # Both variants run the full server at boot, whoever is logged in (DECISIONS 2026-11-18): the
     # system queen as the fixed `melissa` user (web UI on 127.0.0.1:8080), k3s, its kubeconfig.
-    systemctl enable melissa-queen.service k3s.service melissa-kubeconfig.service; \
+    systemctl enable melissa-queen.service k3s.service melissa-kubeconfig.service \
+        melissa-update-status.service; \
     if [ "$VARIANT" = headless ]; then \
         # Console account prompt for downloaded VM disks (no user in the image). Not on desktop:
         # a desktop has a human user already or Plasma's own first-run setup.

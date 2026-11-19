@@ -55,11 +55,22 @@ use crate::{
 
 #[derive(Clone)]
 pub(crate) struct Ui {
-    queen: Queen,
+    pub(crate) queen: Queen,
     hive: HiveCache,
+    pub(crate) settings: crate::settings::Settings,
 }
 
-pub(crate) fn routes(queen: Queen, hive: HiveCache) -> Router {
+impl Ui {
+    pub(crate) fn new(queen: Queen, hive: HiveCache, settings: crate::settings::Settings) -> Self {
+        Self {
+            queen,
+            hive,
+            settings,
+        }
+    }
+}
+
+pub(crate) fn routes(ui: Ui) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/hive", get(hive_page))
@@ -78,7 +89,8 @@ pub(crate) fn routes(queen: Queen, hive: HiveCache) -> Router {
         .route("/ui/backend", post(queen_backend))
         .route("/ui/bees/{bee}/backend", post(bee_backend))
         .route("/chats/{id}", get(past_chat_page))
-        .with_state(Ui { queen, hive })
+        .merge(crate::settings::ui_routes())
+        .with_state(ui)
 }
 
 impl Lookup for Ui {
@@ -142,7 +154,7 @@ impl Ui {
     }
 
     /// Render a page with the rail.
-    async fn framed(&self, page: impl FnOnce(&Frame<'_>) -> Markup) -> Markup {
+    pub(crate) async fn framed(&self, page: impl FnOnce(&Frame<'_>) -> Markup) -> Markup {
         self.framed_at(None, page).await
     }
 

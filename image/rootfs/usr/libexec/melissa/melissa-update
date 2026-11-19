@@ -1,0 +1,66 @@
+#!/bin/sh
+# Melissa's root helper for OS image updates (bootc). Runs as root, only from the oneshot units
+# melissa-update-{status,check,apply,rollback}.service, which the queen (user melissa) may start
+# through polkit (/usr/share/polkit-1/rules.d/50-melissa.rules). Each unit passes one fixed verb;
+# nothing from the web UI reaches this script.
+#
+#   melissa-update status    write `bootc status --format=json` to /run/melissa-update/status.json
+#   melissa-update check     `bootc upgrade --check` (metadata only), then status
+#   melissa-update apply     `bootc upgrade --apply`: download, stage, reboot into it
+#   melissa-update rollback  `bootc rollback`, then reboot
+#
+# Files in /run/melissa-update (tmpfiles: root:melissa 0750) are root:melissa 0640:
+#   status.json   the last `bootc status --format=json`
+#   last.json     {"action": "...", "ok": true|false, "at": <unix secs>, "message": "..."}
+set -u
+
+dir=/run/melissa-update
+mkdir -p "$dir"
+
+write() { # write <name>: stdin -> $dir/<name>, atomically, root:melissa 0640
+    tmp=$(mktemp "$dir/.$1.XXXXXX") || return 1
+    cat > "$tmp" && chgrp melissa "$tmp" && chmod 0640 "$tmp" && mv -f "$tmp" "$dir/$1"
+}
+
+last() { # last <action> <ok:true|false> [message]
+    msg=$(printf '%s' "${3:-}" | tr -d '\000-\037"\\' | cut -c1-300)
+    printf '{"action":"%s","ok":%s,"at":%s,"message":"%s"}\n' "$1" "$2" "$(date +%s)" "$msg" | write last.json
+}
+
+status() {
+    out=$(bootc status --format=json 2>/dev/null) || return 1
+    printf '%s\n' "$out" | write status.json
+}
+
+case "${1:-}" in
+    status)
+        if status; then last status true; else last status false "bootc status failed"; exit 1; fi
+        ;;
+    check)
+        if err=$(bootc upgrade --check 2>&1); then
+            status; last check true
+        else
+            status; last check false "$(printf '%s' "$err" | tail -n 1)"; exit 1
+        fi
+        ;;
+    apply)
+        last apply true "started"
+        if ! err=$(bootc upgrade --apply 2>&1); then
+            status; last apply false "$(printf '%s' "$err" | tail -n 1)"; exit 1
+        fi
+        # No reboot means nothing newer was found.
+        status; last apply true "no newer image"
+        ;;
+    rollback)
+        if err=$(bootc rollback 2>&1); then
+            status; last rollback true "restarting"
+            systemctl reboot
+        else
+            status; last rollback false "$(printf '%s' "$err" | tail -n 1)"; exit 1
+        fi
+        ;;
+    *)
+        echo "usage: melissa-update status|check|apply|rollback" >&2
+        exit 2
+        ;;
+esac

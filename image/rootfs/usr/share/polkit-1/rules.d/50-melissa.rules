@@ -1,0 +1,23 @@
+// Melissa: the queen runs as the unprivileged user `melissa`. It may start exactly these
+// units (fixed actions of the root update helper) and restart itself to apply settings.
+// Nothing else: no other units, verbs or arguments. See docs/DECISIONS.md (2026-11-19).
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "melissa") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    var start = [
+        "melissa-update-check.service",
+        "melissa-update-apply.service",
+        "melissa-update-rollback.service",
+        "melissa-update-status.service"
+    ];
+    if (verb === "start" && start.indexOf(unit) >= 0) {
+        return polkit.Result.YES;
+    }
+    if (verb === "restart" && unit === "melissa-queen.service") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

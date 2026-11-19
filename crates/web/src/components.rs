@@ -99,6 +99,8 @@ pub enum Nav {
     Tasks,
     /// An archived chat with Melissa.
     PastChat,
+    /// The Settings pages.
+    Settings,
 }
 
 /// DOM id of the pending-confirmations count in the rail (updated live).
@@ -237,6 +239,7 @@ pub fn rail(
                 (item(Nav::Chat, "/", "Chat", html! {}))
                 (item(Nav::Hive, "/hive", "Apps and devices", html! {}))
                 (item(Nav::Waiting, "/approvals", "Waiting for you", waiting_count(waiting, false)))
+                (item(Nav::Settings, "/settings", "Settings", html! {}))
             }
             section.rail-section aria-labelledby="conv-h" {
                 h2 #conv-h { "Conversations" }
@@ -1113,6 +1116,320 @@ pub fn action_button(action: &str, target: &str, label: &str, confirm: &str) -> 
             button.secondary type="submit" { (label) }
         }
     }
+}
+
+// --- Settings (2026-11-19) ---------------------------------------------------------------
+//
+// The Settings pages: a list of sections on the left (tabs on phones), a breadcrumb
+// header, and each section's content. Built for more sections than Providers and Updates.
+
+/// One section in the Settings navigation.
+pub struct SettingsSection<'a> {
+    pub href: &'a str,
+    pub label: &'a str,
+    pub current: bool,
+}
+
+/// The Settings frame: section navigation, breadcrumb ("Settings / Providers") and content.
+pub fn settings_frame(sections: &[SettingsSection<'_>], current: &str, content: Markup) -> Markup {
+    html! {
+        div.settings {
+            nav.settings-nav aria-label="Settings sections" {
+                p.settings-title { "Settings" }
+                ul {
+                    @for s in sections {
+                        li { a href=(s.href) aria-current=[s.current.then_some("page")] { (s.label) } }
+                    }
+                }
+            }
+            div.settings-main {
+                nav.crumbs aria-label="Breadcrumb" {
+                    ol {
+                        li { a href="/settings" { "Settings" } }
+                        li aria-current="page" { (current) }
+                    }
+                }
+                (content)
+            }
+        }
+    }
+}
+
+/// A heading row with an action on the right, e.g. "Providers" and "Checked just now · Check
+/// again". `action` posts to `action_url`, and htmx swaps the response into `#target`.
+pub fn settings_head(
+    title: &str,
+    lead: &str,
+    checked: &str,
+    action_url: &str,
+    target: &str,
+    action: &str,
+) -> Markup {
+    html! {
+        header.settings-head {
+            div {
+                h1 { (title) }
+                p.lead { (lead) }
+            }
+            form.checked method="post" action=(action_url) hx-post=(action_url)
+                hx-target={ "#" (target) } hx-swap="outerHTML" {
+                span { (checked) }
+                button.link type="submit" { (action) }
+            }
+        }
+    }
+}
+
+/// Two panes in one card: a list to pick from and the picked item's details. Stacks on
+/// phones. Has `id` so forms inside can swap the whole thing.
+pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup {
+    html! {
+        section.split-card id=(id) aria-label=(label) {
+            div.split-list { (list) }
+            div.split-detail { (detail) }
+        }
+    }
+}
+
+/// A provider's mark: a hexagon with a letter (no vendor logos).
+pub fn provider_mark(letter: &str, muted: bool) -> Markup {
+    html! {
+        span class={ "pmark" @if muted { " muted" } } aria-hidden="true" {
+            svg viewBox="0 0 24 24" focusable="false" {
+                polygon points="12,1.5 21.1,6.75 21.1,17.25 12,22.5 2.9,17.25 2.9,6.75" {}
+            }
+            span { (letter) }
+        }
+    }
+}
+
+/// A styled native checkbox that saves on change (htmx) or with its own button (no JS).
+pub struct Toggle<'a> {
+    pub action: &'a str,
+    pub target: &'a str,
+    /// What it switches, for screen readers ("Use Claude Code").
+    pub label: &'a str,
+    pub on: bool,
+    /// Why it can't be switched (shown as the tooltip), if it can't.
+    pub locked: Option<&'a str>,
+}
+
+pub fn toggle(t: &Toggle<'_>) -> Markup {
+    html! {
+        form.toggle method="post" action=(t.action) hx-post=(t.action) hx-trigger="change"
+            hx-target={ "#" (t.target) } hx-swap="outerHTML" title=[t.locked] {
+            label {
+                input type="checkbox" name="enabled" value="on" role="switch" checked[t.on]
+                    disabled[t.locked.is_some()];
+                span.visually-hidden { (t.label) }
+            }
+            button.toggle-save.secondary type="submit" disabled[t.locked.is_some()] { "Save" }
+        }
+    }
+}
+
+/// One entry in a [`split_card`] list.
+pub struct PickRow<'a> {
+    pub href: &'a str,
+    pub mark: Markup,
+    pub name: &'a str,
+    /// e.g. "v2.1.3" (empty: none).
+    pub version: &'a str,
+    pub status: &'a str,
+    pub tone: Tone,
+    pub current: bool,
+    pub toggle: Option<Markup>,
+}
+
+/// The list of a [`split_card`], with an optional footer (e.g. how to add one).
+pub fn pick_list(label: &str, rows: &[PickRow<'_>], footer: Option<Markup>) -> Markup {
+    html! {
+        ul.pick-list aria-label=(label) {
+            @for r in rows {
+                li class={ "pick" @if r.current { " current" } } {
+                    a href=(r.href) aria-current=[r.current.then_some("true")] {
+                        (r.mark)
+                        span.pick-text {
+                            span.pick-name { (r.name) @if !r.version.is_empty() { " " span.pick-version { (r.version) } } }
+                            span class={ "pick-status " (r.tone.class()) } { (r.status) }
+                        }
+                    }
+                    @if let Some(t) = &r.toggle { (t) }
+                }
+            }
+        }
+        @if let Some(f) = footer { div.pick-foot { (f) } }
+    }
+}
+
+/// A detail pane's header: mark, name, a quiet line and badges.
+pub fn detail_head(mark: Markup, name: &str, sub: &str, badges: Markup) -> Markup {
+    html! {
+        header.detail-head {
+            (mark)
+            div {
+                h2 { (name) }
+                p.quiet { (sub) }
+            }
+            div.badges { (badges) }
+        }
+    }
+}
+
+/// Label/value rows.
+pub fn facts(rows: &[(&str, Markup)]) -> Markup {
+    html! {
+        dl.facts {
+            @for (k, v) in rows {
+                div { dt { (k) } dd { (v) } }
+            }
+        }
+    }
+}
+
+/// A titled group inside a detail pane ("Runtime", "Environment").
+pub fn group(title: &str, hint: Option<&str>, content: Markup) -> Markup {
+    html! {
+        section.group {
+            h3 { (title) }
+            @if let Some(h) = hint { p.quiet { (h) } }
+            (content)
+        }
+    }
+}
+
+/// A one-line text input. `kind`: `text` or `password`.
+pub fn text_field(
+    name: &str,
+    label: &str,
+    value: &str,
+    placeholder: &str,
+    kind: &str,
+    hint: Option<&str>,
+) -> Markup {
+    html! {
+        label.field {
+            span { (label) }
+            input type=(kind) name=(name) value=(value) placeholder=(placeholder)
+                autocomplete="off" spellcheck="false" maxlength="4096";
+            @if let Some(h) = hint { small.hint { (h) } }
+        }
+    }
+}
+
+/// A multi-line input with a value, one item per line.
+pub fn lines_field(name: &str, label: &str, value: &str, hint: Option<&str>) -> Markup {
+    html! {
+        label.field {
+            span { (label) }
+            textarea name=(name) rows="3" spellcheck="false" autocomplete="off" { (value) }
+            @if let Some(h) = hint { small.hint { (h) } }
+        }
+    }
+}
+
+/// A form that saves settings and swaps `#target` (htmx) or posts normally.
+pub fn settings_form(action: &str, target: &str, submit: &str, fields: Markup) -> Markup {
+    html! {
+        form.stack.settings-form method="post" action=(action) hx-post=(action)
+            hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (fields)
+            div { button.secondary type="submit" { (submit) } }
+        }
+    }
+}
+
+/// An environment variable in a [`var_list`].
+pub struct VarRow<'a> {
+    pub name: &'a str,
+    /// None: a secret (shown as "set", never echoed).
+    pub value: Option<&'a str>,
+    pub remove_action: &'a str,
+}
+
+/// Variables with a remove button each; secret values show only "set".
+pub fn var_list(rows: &[VarRow<'_>], target: &str, empty: &str) -> Markup {
+    html! {
+        @if rows.is_empty() {
+            p.quiet { (empty) }
+        } @else {
+            ul.vars {
+                @for r in rows {
+                    li {
+                        code.var-name { (r.name) }
+                        @match r.value {
+                            Some(v) => span.var-value { (v) },
+                            None => span.var-secret { "set" span.visually-hidden { " (hidden)" } },
+                        }
+                        form.var-remove method="post" action=(r.remove_action) hx-post=(r.remove_action)
+                            hx-target={ "#" (target) } hx-swap="outerHTML"
+                            hx-confirm={ "Remove " (r.name) "?" } {
+                            input type="hidden" name="name" value=(r.name);
+                            button.link type="submit" { "Remove" span.visually-hidden { " " (r.name) } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A command to type, with a copy button (shown where the clipboard works).
+pub fn command_block(cmd: &str) -> Markup {
+    html! {
+        div.md-code.command {
+            pre tabindex="0" { code { (cmd) } }
+            button.copy-code.secondary type="button" aria-label="Copy command" { "Copy" }
+        }
+    }
+}
+
+/// An explicit yes for something big (a reboot): what happens, and two buttons. The
+/// confirm button posts `confirm=yes`; "Keep as is" goes back to `cancel_href`.
+pub struct ConfirmCard<'a> {
+    pub title: &'a str,
+    pub text: &'a str,
+    pub action: &'a str,
+    pub target: &'a str,
+    pub confirm: &'a str,
+    pub cancel_href: &'a str,
+}
+
+pub fn confirm_card(c: &ConfirmCard<'_>) -> Markup {
+    html! {
+        section.approval.destructive.confirm role="alertdialog" aria-labelledby="confirm-h" {
+            h3 #confirm-h { (c.title) }
+            p { (c.text) }
+            div.actions {
+                form.inline method="post" action=(c.action) hx-post=(c.action)
+                    hx-target={ "#" (c.target) } hx-swap="outerHTML" {
+                    input type="hidden" name="confirm" value="yes";
+                    button.primary.danger type="submit" { (c.confirm) }
+                }
+                a.button-like href=(c.cancel_href) { "Keep as is" }
+            }
+        }
+    }
+}
+
+/// A form with one button (no confirmation), e.g. "Check for updates".
+pub fn plain_action(action: &str, target: &str, label: &str, primary: bool) -> Markup {
+    html! {
+        form.inline method="post" action=(action) hx-post=(action)
+            hx-target={ "#" (target) } hx-swap="outerHTML" {
+            button class=(if primary { "primary" } else { "secondary" }) type="submit" { (label) }
+        }
+    }
+}
+
+/// A row of buttons.
+pub fn actions(items: Markup) -> Markup {
+    html! { div.action-row { (items) } }
+}
+
+/// A region with a stable id that forms swap.
+pub fn region(id: &str, content: Markup) -> Markup {
+    html! { div id=(id) { (content) } }
 }
 
 #[cfg(test)]

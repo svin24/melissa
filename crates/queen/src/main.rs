@@ -55,6 +55,10 @@ use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
 use config::{BackendSpec, Dirs, QueenConfig};
+use melissa_settings::{
+    providers::{BackendFacts, ProviderFile, ProviderStore},
+    updates::{Release, UpdateEnv},
+};
 
 /// The Queen's system prompt and every bee's (reviewed text files).
 const QUEEN_PROMPT: &str = include_str!("../prompts/queen.md");
@@ -83,7 +87,19 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
                               switch the Queen (or a bee) to that agent from its next message
   cell list                   every cell (installed app) and the bee that looks after it
   cell reassign <cell> --to <bee>
-                              give a cell to another bee (your decision, no confirmation)";
+                              give a cell to another bee (your decision, no confirmation)
+  provider [list]             the agent programs (providers): installed, version, logged in,
+                              enabled, who uses them, their settings (secret values are never shown)
+  provider enable|disable <id>
+  provider set <id> [--name <text>] [--command <path>] [--arg <a>]... [--no-args]
+                    [--env NAME=VALUE] [--env NAME] [--unset NAME]
+                              change a provider's settings (providers.toml, used after a
+                              restart); `--env NAME` reads the value from stdin (secrets stay
+                              out of shell history)
+  update [status]             Melissa's version and the OS image (booted, staged, rollback)
+  update check|apply|rollback|restart [--yes]
+                              ask the root helper; apply and rollback restart the device
+                              and need --yes";
 
 enum Command {
     /// `demo` = true: first run from a source checkout (quieter log, repo catalog).
@@ -120,6 +136,19 @@ enum Command {
         cell: String,
         to: String,
     },
+    Providers,
+    /// `provider enable|disable|set`: the JSON change, and variables whose value comes
+    /// from stdin.
+    ProviderChange {
+        id: String,
+        change: Value,
+        read_env: Vec<String>,
+    },
+    /// `update [status]` (None) or `update <action> [--yes]`.
+    Update {
+        action: Option<String>,
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -141,6 +170,12 @@ async fn main() -> anyhow::Result<()> {
     let dirs = Dirs::from_env()?;
     let config_path = config_path.unwrap_or_else(|| dirs.config.join("queen.toml"));
     let mut config = QueenConfig::load(&config_path)?;
+    config.validate()?;
+    // The owner's provider settings (web UI, `provider set`) win over queen.toml.
+    let base = config.clone();
+    let providers_path = dirs.config.join(melissa_settings::providers::FILE_NAME);
+    let provider_file = load_providers(&providers_path);
+    let facts = config.apply_providers(&provider_file);
     config.validate()?;
     use_repo_catalog(&mut config.apps);
 
@@ -171,6 +206,29 @@ async fn main() -> anyhow::Result<()> {
             };
         }
         Command::Reassign { cell, to } => return client::reassign(&api, cell, to).await,
+        Command::Providers => return client::providers(&api).await,
+        Command::ProviderChange {
+            id,
+            change,
+            read_env,
+        } => {
+            let mut change = change.clone();
+            for name in read_env {
+                eprint!("Value for {name} (one line): ");
+                let mut line = String::new();
+                std::io::stdin()
+                    .read_line(&mut line)
+                    .context("reading the value from stdin")?;
+                change["set_env"][name] = Value::String(line.trim_end_matches(['\n', '\r']).into());
+            }
+            return client::provider_change(&api, id, change).await;
+        }
+        Command::Update { action, yes } => {
+            return match action {
+                None => client::update_status(&api).await,
+                Some(a) => client::update_action(&api, a, *yes).await,
+            }
+        }
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
         Command::AppCredentials(app) => {
             return credentials::show(
@@ -226,6 +284,12 @@ async fn main() -> anyhow::Result<()> {
             let start = Startup {
                 config_path,
                 kubeconfigs,
+                providers: ProviderSetup {
+                    path: providers_path,
+                    file: provider_file,
+                    facts,
+                    base,
+                },
             };
             serve(config, dirs, audit, tools, wiring, start).await
         }
@@ -237,6 +301,35 @@ struct Startup {
     config_path: PathBuf,
     /// Where the queen looks for cluster credentials (any present = k3s is there).
     kubeconfigs: Vec<PathBuf>,
+    providers: ProviderSetup,
+}
+
+/// The provider settings as loaded, for the Settings pages.
+struct ProviderSetup {
+    path: PathBuf,
+    file: ProviderFile,
+    /// Every backend, also those left out because their provider is disabled.
+    facts: Vec<BackendFacts>,
+    /// The config before the provider settings, to check a change against.
+    base: QueenConfig,
+}
+
+/// Read `providers.toml`. A broken file must not keep the box from starting (the UI is how
+/// the owner fixes things): it is moved aside, logged, and Melissa starts without it.
+fn load_providers(path: &std::path::Path) -> ProviderFile {
+    match ProviderFile::load(path) {
+        Ok(f) => f,
+        Err(e) => {
+            let aside = path.with_extension("toml.broken");
+            let moved = std::fs::rename(path, &aside).is_ok();
+            tracing::error!(
+                aside = %aside.display(),
+                moved,
+                "ignoring the provider settings: {e}"
+            );
+            ProviderFile::default()
+        }
+    }
 }
 
 /// The same candidates `LazyCluster::for_queen` checks, for the startup summary.
@@ -365,6 +458,7 @@ async fn serve(
         base_url: format!("http://{}/mcp/", config.listen),
         workroot: workdir.clone(),
     };
+    let settings_audit = audit.clone();
     let board = TaskBoard::with_tools(backends, config.task_timeout(), Some(audit), link);
     let settings = QueenSettings {
         backends: q.backends.clone(),
@@ -404,9 +498,39 @@ async fn serve(
     .await;
     // The summary is for the person who started the daemon; stdout keeps it apart from the log.
     print!("{}", report.render());
+    let ProviderSetup {
+        path,
+        file,
+        mut facts,
+        base,
+    } = start.providers;
+    // The built-in one-shot echo is always there (not a config entry).
+    facts.push(BackendFacts {
+        name: "echo".into(),
+        provider: "echo".into(),
+        session: false,
+        command: None,
+        enabled: true,
+    });
+    let check: melissa_web::CheckFn = Arc::new(move |id, o| base.check_provider(id, o));
+    let settings = melissa_web::Settings::new(melissa_web::SettingsParts {
+        store: ProviderStore::new(path, file),
+        backends: facts,
+        bee_default: q
+            .bee_backend
+            .clone()
+            .or_else(|| q.backends.first().cloned()),
+        check: Some(check),
+        audit: Some(settings_audit),
+        updates: UpdateEnv::system(),
+        release: Release::read(std::path::Path::new(
+            melissa_settings::updates::RELEASE_FILE,
+        )),
+        home: std::env::var_os("HOME").map(PathBuf::from),
+    });
     melissa_web::serve(
         listener,
-        melissa_web::router_with_queen(board, mcp, queen.clone()),
+        melissa_web::router_with_settings(board, mcp, queen.clone(), settings),
     )
     .await?;
     queen.close().await;
@@ -520,6 +644,25 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             Command::RenameBee(bee.clone(), words.join(" "))
         }
         [c, tail @ ..] if c == "backend" || c == "backends" => parse_backend(tail)?,
+        [c, tail @ ..] if c == "provider" || c == "providers" => parse_provider(tail)?,
+        [c] if c == "update" => Command::Update {
+            action: None,
+            yes: false,
+        },
+        [c, a] if c == "update" && a == "status" => Command::Update {
+            action: None,
+            yes: false,
+        },
+        [c, a, rest @ ..]
+            if c == "update"
+                && ["check", "apply", "rollback", "restart"].contains(&a.as_str())
+                && rest.iter().all(|r| r == "--yes") =>
+        {
+            Command::Update {
+                action: Some(a.clone()),
+                yes: !rest.is_empty(),
+            }
+        }
         [c] if c == "cell" => Command::Cells,
         [c, a] if c == "cell" && a == "list" => Command::Cells,
         [c, a, cell, flag, to] if c == "cell" && a == "reassign" && flag == "--to" => {
@@ -541,6 +684,65 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
         _ => bail!("{USAGE}"),
     };
     Ok((config, command))
+}
+
+/// `provider [list]`, `provider enable|disable <id>`, `provider set <id> [options]`.
+fn parse_provider(args: &[String]) -> anyhow::Result<Command> {
+    match args {
+        [] => Ok(Command::Providers),
+        [l] if l == "list" => Ok(Command::Providers),
+        [a, id] if a == "enable" || a == "disable" => Ok(Command::ProviderChange {
+            id: id.clone(),
+            change: json!({"enabled": a == "enable"}),
+            read_env: Vec::new(),
+        }),
+        [a, id, rest @ ..] if a == "set" && !rest.is_empty() => {
+            let mut change = json!({});
+            let (mut args, mut set, mut unset, mut read) =
+                (Vec::new(), serde_json::Map::new(), Vec::new(), Vec::new());
+            let mut no_args = false;
+            let mut it = rest.iter();
+            while let Some(flag) = it.next() {
+                let mut value = |what: &str| {
+                    it.next()
+                        .cloned()
+                        .with_context(|| format!("{flag} needs {what}"))
+                };
+                match flag.as_str() {
+                    "--name" => change["display_name"] = Value::String(value("a name")?),
+                    "--command" => change["command"] = Value::String(value("a path")?),
+                    "--arg" => args.push(value("an argument")?),
+                    "--no-args" => no_args = true,
+                    "--unset" => unset.push(value("a variable name")?),
+                    "--env" => {
+                        let v = value("NAME=VALUE or NAME")?;
+                        match v.split_once('=') {
+                            Some((k, val)) => {
+                                set.insert(k.to_string(), Value::String(val.to_string()));
+                            }
+                            None => read.push(v),
+                        }
+                    }
+                    _ => bail!("{USAGE}"),
+                }
+            }
+            if no_args || !args.is_empty() {
+                change["args"] = json!(args);
+            }
+            if !set.is_empty() || !read.is_empty() {
+                change["set_env"] = Value::Object(set);
+            }
+            if !unset.is_empty() {
+                change["remove_env"] = json!(unset);
+            }
+            Ok(Command::ProviderChange {
+                id: id.clone(),
+                change,
+                read_env: read,
+            })
+        }
+        _ => bail!("{USAGE}"),
+    }
 }
 
 /// `backend [list] [--bee <bee>]`, `backend use <name> [--model <id>] [--bee <bee>]`.
@@ -570,6 +772,66 @@ fn parse_backend(args: &[String]) -> anyhow::Result<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_provider_and_update_commands() {
+        assert!(matches!(
+            parse(&["provider"]).unwrap().1,
+            Command::Providers
+        ));
+        let Command::ProviderChange { id, change, .. } =
+            parse(&["provider", "disable", "grok"]).unwrap().1
+        else {
+            panic!("not a change")
+        };
+        assert_eq!((id.as_str(), &change), ("grok", &json!({"enabled": false})));
+        let Command::ProviderChange {
+            change, read_env, ..
+        } = parse(&[
+            "provider",
+            "set",
+            "claude",
+            "--name",
+            "Mine",
+            "--arg",
+            "--effort",
+            "--arg",
+            "high",
+            "--env",
+            "ANTHROPIC_BASE_URL=https://llm.example.com",
+            "--env",
+            "ANTHROPIC_API_KEY",
+            "--unset",
+            "OLD",
+        ])
+        .unwrap()
+        .1
+        else {
+            panic!("not a change")
+        };
+        assert_eq!(change["display_name"], "Mine");
+        assert_eq!(change["args"], json!(["--effort", "high"]));
+        assert_eq!(
+            change["set_env"]["ANTHROPIC_BASE_URL"],
+            "https://llm.example.com"
+        );
+        assert_eq!(change["remove_env"], json!(["OLD"]));
+        // A value without `=` is read from stdin, not taken from the command line.
+        assert_eq!(read_env, ["ANTHROPIC_API_KEY"]);
+        assert!(parse(&["provider", "set", "claude"]).is_err());
+        assert!(parse(&["provider", "set", "claude", "--bogus"]).is_err());
+        assert!(matches!(
+            parse(&["update"]).unwrap().1,
+            Command::Update { action: None, .. }
+        ));
+        let Command::Update { action, yes } = parse(&["update", "apply", "--yes"]).unwrap().1
+        else {
+            panic!("not update")
+        };
+        assert_eq!((action.as_deref(), yes), (Some("apply"), true));
+        assert!(parse(&["update", "reboot"]).is_err());
+        assert!(parse(&["update", "check", "--force"]).is_err());
+    }
 
     #[test]
     fn parses_backend_commands() {

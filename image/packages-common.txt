@@ -1,3 +1,4 @@
 # Installed into both variants. One package per line; '#' starts a comment.
 tailscale       # mesh (PLAN section 4); repo in rootfs/etc/yum.repos.d/tailscale.repo
 bubblewrap      # sandbox for agent CLIs (crates/agent/src/sandbox.rs); also in the base images, listed so it stays
+polkit          # lets the queen (user melissa) start the fixed update units (rootfs/usr/share/polkit-1/rules.d/50-melissa.rules)

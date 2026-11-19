@@ -85,6 +85,11 @@ pub struct SandboxSpec {
     /// Egress allowlist (set from the backend's `allow` key, not from this table).
     #[serde(skip)]
     pub allow: Option<Vec<String>>,
+    /// Fixed variables (name, value) from Melissa's provider settings (`providers.toml`),
+    /// set inside the sandbox, or on the process when the sandbox is off. Never in the
+    /// config file's `[backend.sandbox]` table.
+    #[serde(skip)]
+    pub vars: Vec<(String, String)>,
 }
 
 fn enabled_by_default() -> bool {
@@ -101,6 +106,7 @@ impl Default for SandboxSpec {
             env: Vec::new(),
             network: NetworkMode::default(),
             allow: None,
+            vars: Vec::new(),
         }
     }
 }

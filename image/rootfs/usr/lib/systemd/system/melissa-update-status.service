@@ -1,0 +1,16 @@
+[Unit]
+Description=Melissa: write the OS image status for Melissa's Settings page
+Documentation=file:///usr/libexec/melissa/melissa-update
+ConditionPathExists=/run/ostree-booted
+After=network-online.target
+# Started by the queen (user melissa) via polkit (50-melissa.rules); one fixed verb, no input.
+# Two at once would race on bootc; systemd runs one job per unit, bootc locks the sysroot.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/melissa/melissa-update status
+TimeoutStartSec=15min
+
+[Install]
+# Status after every boot (staged/rollback state changes at boot).
+WantedBy=multi-user.target

@@ -414,3 +414,29 @@ Format: date — decision. Why. Alternatives considered.
   and automatic detection finds it). Why not a code change for host ports that differ from 30000+n
   (`APP_PORT_BASE`): it only matters next to another k3s; the default maps ports 1:1. Base image unchanged.
 
+- **2026-11-19 — Provider settings live in `providers.toml`, merged over `queen.toml` at startup.** The web UI and
+  `melissa-queen provider` write `$XDG_CONFIG_HOME/melissa/providers.toml` (0600, `/etc/melissa` on the image);
+  precedence defaults < `queen.toml` < `providers.toml`; a provider is an agent program by file name and its
+  overrides apply to all its backends. Changes apply at the next restart (the UI says so and offers a restart).
+  Why: `queen.toml` stays the owner's hand-written file (no rewriting comments), the UI never edits it, and the
+  backends are built once at startup. A broken file is moved aside, never fatal; an override a backend refuses
+  is dropped for that backend. Secrets: names with KEY/TOKEN/SECRET/PASSWORD/... are write-only (never in HTML,
+  JSON, logs; audit has a SHA-256). Program paths must keep the provider's file name (sandbox preset, egress
+  allowlist, login check depend on it); extra arguments go before Melissa's own and a denylist refuses
+  permission/tool/mode flags. Alternatives: editing `queen.toml` in place (loses comments, mixes owner and UI
+  edits), settings in the state dir (it is config, and survives a state reset), live backend re-creation
+  (larger change in the agent crate; follow-up).
+- **2026-11-19 — Disabling the agent Melissa runs on is refused.** Also refused while a helper uses it, or when
+  no other Queen agent would be left. Why: "switch at the next turn" would silently move the Queen (or a bee)
+  to an agent the owner didn't pick; switching first is one click in the chat. Disabled providers' backends are
+  left out at startup (and from `[queen] backends`/`bee_backend`), never all of the Queen's.
+- **2026-11-19 — OS updates through a fixed-verb root helper started via polkit** (narrow answer to PLAN 42 for
+  bootc). `/usr/libexec/melissa/melissa-update status|check|apply|rollback` runs as root only from four oneshot
+  units; `50-melissa.rules` lets user `melissa` `start` exactly those units and `restart melissa-queen.service`.
+  The queen runs `systemctl start --no-block <unit>` for a value of its `UpdateAction` enum; nothing from a
+  request reaches root. Status goes the other way through `/run/melissa-update/{status,last}.json` (root:melissa
+  0640). Apply and rollback reboot, so the UI, API and CLI need an explicit yes. Alternatives: sudoers rule
+  (needs setuid sudo, `NoNewPrivileges=yes` blocks it), a root daemon with a socket (more code, a long-running
+  root process), running the queen as root (no). `polkit` is added to the image packages. Auto-update stays
+  off until the update policy (PLAN 20) exists.
+
