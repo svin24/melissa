@@ -296,6 +296,7 @@ pub(super) fn restart_hint(s: &Settings) -> RestartHint {
         command: match env.kind {
             HostKind::Other => "# stop melissa-queen (Ctrl-C) and start it again".into(),
             HostKind::Container => UpdateAction::Restart.manual_command(),
+            HostKind::Nix => "sudo systemctl restart melissa-queen".into(),
         },
     }
 }

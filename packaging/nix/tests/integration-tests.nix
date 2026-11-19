@@ -9,7 +9,7 @@
 }:
 rustPlatform.buildRustPackage {
   pname = "melissa-integration-tests";
-  inherit (melissa) version src cargoDeps;
+  inherit (melissa.unwrapped) version src cargoDeps;
 
   nativeBuildInputs = [ jq ];
   dontCargoBuild = true;

@@ -97,9 +97,7 @@ impl Settings {
             check: None,
             audit: None,
             updates: UpdateEnv::system(),
-            release: Release::read(std::path::Path::new(
-                melissa_settings::updates::RELEASE_FILE,
-            )),
+            release: Release::read(&melissa_settings::updates::release_file()),
             home: std::env::var_os("HOME").map(PathBuf::from),
         })
     }

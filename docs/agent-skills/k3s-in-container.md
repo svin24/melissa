@@ -101,7 +101,7 @@ the datastore). Channel versions: `curl -s https://update.k3s.io/v1-release/chan
   (`NRestarts=2`). Root cause: k3s advertises the default interface's IPv4 *and* global IPv6 address, but SLAAC adds
   the IPv6 one ~2 s after `network-online.target` (an IPv4 lease is enough for NetworkManager-wait-online). Run 1
   starts with v4 while the stored Node has v4+v6 → updates it to v4 and exits; run 2 sees v4+v6 vs the stored v4 →
-  exits; run 3 is stable. Fix: `k3s-prepare` writes `MELISSA_K3S_ARGS=--node-ip=<IPv4 of the default route>` to
+  exits; run 3 is stable. Fix: `k3s-prepare` (through the shared `k3s-node-ip`, which the NixOS module also uses) writes `MELISSA_K3S_ARGS=--node-ip=<IPv4 of the default route>` to
   `/run/melissa/k3s.env` (`EnvironmentFile=`, which systemd re-reads per command, so ExecStartPre can write it for
   ExecStart). The cluster is single-stack IPv4 anyway, and changing IPv6 prefixes/privacy addresses would otherwise
   restart k3s at runtime too. A `node-ip` in `config.yaml.d/90-local.yaml` wins (k3s-prepare then adds nothing); no

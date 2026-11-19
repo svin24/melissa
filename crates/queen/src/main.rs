@@ -533,9 +533,7 @@ async fn serve(
         check: Some(check),
         audit: Some(settings_audit),
         updates: UpdateEnv::system(),
-        release: Release::read(std::path::Path::new(
-            melissa_settings::updates::RELEASE_FILE,
-        )),
+        release: Release::read(&melissa_settings::updates::release_file()),
         home: std::env::var_os("HOME").map(PathBuf::from),
     });
     melissa_web::serve(

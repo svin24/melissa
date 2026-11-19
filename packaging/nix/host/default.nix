@@ -31,7 +31,7 @@ let
   dropIn = ''
     [Service]
     Environment=PATH=${home}/.local/bin:${home}/.grok/bin:${home}/.opencode/bin:/usr/bin:/usr/sbin
-    Environment=MELISSA_VERSION=${melissa.version}-nix
+    Environment=MELISSA_RELEASE_FILE=${profile}/lib/melissa/release
   '';
 
   kubeconfigUnit = ''
@@ -91,7 +91,7 @@ let
         systemctl daemon-reload
         systemctl enable melissa-queen.service
         systemctl restart melissa-queen.service
-        echo "melissa-host: installed $(cat "$base/lib/melissa/release"); web UI on http://127.0.0.1:8080"
+        echo "melissa-host: installed $(sed -n 's/^MELISSA_VERSION=//p' "$base/lib/melissa/release"); web UI on http://127.0.0.1:8080"
         ;;
       uninstall)
         systemctl disable --now melissa-queen.service melissa-kubeconfig.service 2>/dev/null || true

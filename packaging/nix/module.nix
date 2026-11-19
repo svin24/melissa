@@ -1,16 +1,18 @@
 # NixOS module: Melissa as a system service (`services.melissa`). See
 # docs/agent-skills/nix-service.md.
 #
-# What it sets up, matching the bootc images (image/rootfs, see common.nix):
+# What it sets up, from the files every packaging shares (packaging/common, see common.nix):
 # - users `melissa` (the queen and its agents) and group `melissa-kube`, tmpfiles from the package;
 # - melissa-queen.service: the shared unit (hardening, state/config/runtime dirs) with a drop-in
 #   for PATH (bubblewrap, the agent CLIs in /var/lib/melissa/home, the NixOS system profile);
 # - /etc/melissa/queen.toml generated from the options (providers.toml stays the queen's to write);
 # - k3s through nixpkgs' `services.k3s`, with Melissa's RBAC, admission policies and Traefik
-#   config as auto-deploy manifests, the node IP pinned like the images do, airgap images optional;
+#   config as auto-deploy manifests, the shared k3s config, the node IP pinned by the shared
+#   k3s-node-ip helper (as in the container), airgap images optional;
 # - melissa-kubeconfig.service: the queen's read-only and app-install kubeconfigs;
-# - the polkit rule that lets the queen restart itself (Settings → Providers);
-# - nix-ld, so the vendors' agent CLIs that `melissa-setup agent <name>` downloads can run.
+# - the polkit rule that lets the queen restart itself (Settings → Restart), nothing else;
+# - the release file (MELISSA_RUNTIME=nix) for Settings, through MELISSA_RELEASE_FILE;
+# - agent CLIs: `agents.packages` (the Nix way), or nix-ld for the vendors' installers.
 { self }:
 {
   config,
@@ -37,28 +39,6 @@ let
     ) cfg.settings
   );
 
-  # Pin k3s's node IP to the IPv4 address of the default route at each start, as the images'
-  # k3s-prepare does: otherwise a global IPv6 address that SLAAC adds after network-online makes
-  # k3s see "NodeIPs changed" and exit. Skipped when `k3s.nodeIp` is set.
-  k3sNodeIp = pkgs.writeShellScript "melissa-k3s-node-ip" ''
-    set -eu
-    PATH=${
-      lib.makeBinPath [
-        pkgs.iproute2
-        pkgs.gnused
-        pkgs.coreutils
-      ]
-    }
-    ip4=$(ip -4 -o route show default 2>/dev/null | sed -n '1s/.* src \([0-9.]*\).*/\1/p')
-    if [ -z "$ip4" ]; then
-      dev=$(ip -4 -o route show default 2>/dev/null | sed -n '1s/.* dev \([^ ]*\).*/\1/p')
-      if [ -n "$dev" ]; then
-        ip4=$(ip -4 -o addr show dev "$dev" scope global 2>/dev/null | sed -n '1s/.* inet \([0-9.]*\)\/.*/\1/p')
-      fi
-    fi
-    [ -n "$ip4" ] || echo "melissa: no IPv4 default route; k3s picks the node IP" >&2
-    printf 'MELISSA_K3S_ARGS=%s\n' "''${ip4:+--node-ip=$ip4}" > /run/melissa-k3s/env
-  '';
 
   manifestsDir = "${cfg.package}/share/melissa/k3s/manifests";
   # Names from the shared source tree (no import-from-derivation); files from the package.
@@ -195,8 +175,9 @@ in
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          Node IP for k3s. Null: the IPv4 address of the default route at each start, as the
-          Melissa images do.
+          Node IP for k3s. Null: the IPv4 address of the default route at each start (the shared
+          `k3s-node-ip` helper, as in the container), unless a `node-ip` is set in
+          /etc/rancher/k3s/config.yaml(.d).
         '';
       };
     };
@@ -206,20 +187,23 @@ in
         type = lib.types.bool;
         default = true;
         description = ''
-          Enable nix-ld, so the agent CLIs installed by `melissa-setup agent <name>` (the vendors'
-          prebuilt Linux binaries, linked against /lib64/ld-linux-x86-64.so.2) run on NixOS.
+          Enable nix-ld, so agent CLIs installed by hand with `melissa-setup agent <name>` (the
+          vendors' prebuilt Linux binaries, linked against /lib64/ld-linux-x86-64.so.2) run on
+          NixOS. The NixOS way to add agents is `agents.packages`.
         '';
       };
 
       packages = lib.mkOption {
         type = lib.types.listOf lib.types.package;
         default = [ ];
-        example = lib.literalExpression "[ pkgs.opencode ]";
+        example = lib.literalExpression "[ pkgs.claude-code pkgs.opencode ]";
         description = ''
-          Agent CLIs from Nix instead of the vendors' installers, put on the queen's PATH (after
-          the ones `melissa-setup` installs). The binary's file name decides its sandbox preset and
-          egress allowlist, so it must be called `claude`, `grok` or `opencode`. Logins still live in
-          /var/lib/melissa/home (`sudo melissa-setup login <name>`).
+          The agent CLIs (Claude Code, Grok, OpenCode), from Nix: the documented way to add a
+          provider on NixOS (Settings → Providers does not install agents on Nix installs). They are
+          put on the queen's PATH (after any that `melissa-setup` installed by hand). The binary's
+          file name decides its sandbox preset and egress allowlist, so it must be called `claude`,
+          `grok` or `opencode`. Logins live in /var/lib/melissa/home
+          (`sudo melissa-setup login <name>`).
         '';
       };
     };
@@ -263,12 +247,13 @@ in
           ]
           ++ cfg.agents.packages
           ++ [ "/run/current-system/sw" ];
-          environment.MELISSA_VERSION = "${cfg.package.version}-nix";
+          # The release file (version, revision, MELISSA_RUNTIME=nix) is in the store, not /usr.
+          environment.MELISSA_RELEASE_FILE = "${cfg.package}/lib/melissa/release";
           restartTriggers = [ queenToml ];
         };
 
-        # Settings → Providers restarts the queen through polkit (rule from the package; the
-        # update units it also names do not exist here, see nix-service.md).
+        # Settings restarts the queen through polkit (the shared rule from the package: restart
+        # melissa-queen.service, nothing else). Updates come from the NixOS configuration.
         security.polkit.enable = true;
 
         programs.nix-ld.enable = lib.mkIf cfg.agents.nixLd true;
@@ -286,12 +271,8 @@ in
           enable = true;
           inherit (cfg.k3s) package;
           role = "server";
-          nodeLabel = [ "melissa.io/managed=true" ];
           nodeIP = cfg.k3s.nodeIp;
-          extraFlags = [
-            "--write-kubeconfig-mode=0600"
-          ]
-          ++ lib.optional (cfg.k3s.nodeIp == null) "$MELISSA_K3S_ARGS";
+          extraFlags = lib.optional (cfg.k3s.nodeIp == null) "$MELISSA_K3S_ARGS";
           manifests = lib.listToAttrs (
             map (
               name:
@@ -304,9 +285,13 @@ in
           images = lib.optional cfg.k3s.airgapImages airgapImages ++ cfg.k3s.images;
         };
 
+        # The shared k3s config (kubeconfig mode, node label); no SELinux setting (per packaging).
+        environment.etc."rancher/k3s/config.yaml.d/10-melissa.yaml".source =
+          (import ./common.nix).root + "/etc/rancher/k3s/config.yaml.d/10-melissa.yaml";
+
         systemd.services.k3s.serviceConfig = lib.mkIf (cfg.k3s.nodeIp == null) {
           RuntimeDirectory = "melissa-k3s";
-          ExecStartPre = [ "${k3sNodeIp}" ];
+          ExecStartPre = [ "${cfg.package}/libexec/melissa/k3s-node-ip /run/melissa-k3s/env" ];
           EnvironmentFile = lib.mkForce (
             lib.optional (config.services.k3s.environmentFile != null) config.services.k3s.environmentFile
             ++ [ "-/run/melissa-k3s/env" ]

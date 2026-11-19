@@ -564,3 +564,11 @@ Format: date — decision. Why. Alternatives considered.
   (on SELinux hosts k3s-selinux labels `/usr/bin/k3s`; a store path would not be labelled). Why: no extra
   tool, idempotent, easy to remove. numtide's system-manager (v1.1.0) officially supports only
   Ubuntu/Debian/NixOS and mocks the firewall; revisit if that changes.
+- **2026-11-19 — Nix installs carry a release file; Settings keys on `MELISSA_RUNTIME=nix`.** The Nix package
+  ships `lib/melissa/release` (version, revision, `MELISSA_RUNTIME=nix`) like the container's
+  `/usr/lib/melissa/release`; the queen reads `$MELISSA_RELEASE_FILE` if set (the module and `melissa-host` set
+  it to the store copy), else the `/usr` path. `HostKind::Nix` shows the Nix update commands and no update
+  buttons; agents come from `services.melissa.agents.packages`. The node-IP pin moved from `k3s-prepare` into
+  the shared `k3s-node-ip`, which the NixOS module also runs. Alternatives: detect NixOS by `/etc/NIXOS` alone
+  (misses `melissa-host` on other distributions), a symlink at `/usr/lib/melissa/release` (NixOS has no /usr
+  to put it in declaratively).

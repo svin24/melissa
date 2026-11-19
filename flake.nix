@@ -32,6 +32,8 @@
         "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      # For the release file (MELISSA_REVISION); null outside git.
+      revision = self.shortRev or self.dirtyShortRev or null;
     in
     {
       # Melissa as a Nix service: see docs/agent-skills/nix-service.md.
@@ -39,7 +41,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          melissa = pkgs.callPackage ./packaging/nix/package.nix { };
+          melissa = pkgs.callPackage ./packaging/nix/package.nix { inherit revision; };
         in
         {
           inherit melissa;
@@ -53,7 +55,7 @@
       );
 
       overlays.default = final: _prev: {
-        melissa = final.callPackage ./packaging/nix/package.nix { };
+        melissa = final.callPackage ./packaging/nix/package.nix { inherit revision; };
       };
 
       nixosModules.melissa = import ./packaging/nix/module.nix { inherit self; };
