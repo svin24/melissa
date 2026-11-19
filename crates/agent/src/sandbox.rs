@@ -1,6 +1,7 @@
 //! Bubblewrap (`bwrap`) sandbox for agent CLI processes (defence in depth).
 //!
-//! Inside the sandbox the CLI sees: `/usr` and `/etc` read-only, a private `/tmp`, an
+//! Inside the sandbox the CLI sees: `/usr` and `/etc` read-only (plus, on NixOS, the Nix store
+//! and the current system profile: see [`SystemRoot`]), a private `/tmp`, an
 //! empty, read-only `$HOME` with only the paths its [`SandboxSpec`] names, the CLI binary
 //! (read-only), and the per-task working directory (the only writable host path). It gets
 //! its own user, PID, IPC, UTS, cgroup and (unless `network = "host"`) network namespaces,
@@ -312,6 +313,83 @@ pub struct SandboxPlan {
     pub env: Vec<(String, OsString)>,
     /// Network namespace and bridge.
     pub network: Network,
+    /// The host's system directories besides `/usr` and `/etc`.
+    pub system: SystemRoot,
+}
+
+/// A top-level system directory (`/bin`, `/lib64`, ...) inside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopDir {
+    /// A symlink to `usr/<name>`, as on usr-merged distributions (Fedora).
+    UsrLink(&'static str),
+    /// The host's directory, bound read-only (NixOS: `/bin/sh`, nix-ld's `/lib64`).
+    Bind(PathBuf),
+}
+
+/// What the sandbox shows of the host's system besides `/usr` and `/etc`. The default is a
+/// usr-merged distribution (Fedora, the Melissa images): `/bin`, `/sbin`, `/lib` and `/lib64`
+/// link into `/usr`. On NixOS programs live in `/nix/store` and are found through
+/// `/run/current-system/sw/bin`; the store holds no secrets (it is world-readable on the host).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemRoot {
+    /// Top-level directories, in mount order.
+    pub top: Vec<TopDir>,
+    /// Further host directories bound read-only (`/nix/store`, `/run/current-system`).
+    pub ro: Vec<PathBuf>,
+    /// `PATH` entries after the CLI's own directory and `/usr/bin`.
+    pub path: Vec<PathBuf>,
+}
+
+const TOP_DIRS: [&str; 4] = ["bin", "sbin", "lib", "lib64"];
+const NIX_STORE: &str = "/nix/store";
+const NIXOS_SYSTEM: &str = "/run/current-system";
+
+impl Default for SystemRoot {
+    fn default() -> Self {
+        Self {
+            top: TOP_DIRS.iter().map(|d| TopDir::UsrLink(d)).collect(),
+            ro: Vec::new(),
+            path: Vec::new(),
+        }
+    }
+}
+
+impl SystemRoot {
+    /// Look at the host: which top-level directories link into `/usr`, whether this is
+    /// NixOS, and whether `program` needs the Nix store (its ELF loader lives there).
+    pub fn detect(program: &Path) -> Self {
+        let top = TOP_DIRS
+            .iter()
+            .filter_map(|d| {
+                let host = Path::new("/").join(d);
+                match std::fs::read_link(&host) {
+                    Ok(t) if t == Path::new("usr").join(d) || t == Path::new("/usr").join(d) => {
+                        Some(TopDir::UsrLink(d))
+                    }
+                    _ if host.is_dir() => Some(TopDir::Bind(host)),
+                    // Missing on this host: nothing to show.
+                    _ => None,
+                }
+            })
+            .collect();
+        let nixos = Path::new(NIXOS_SYSTEM).is_dir();
+        let store_program = crate::egress::needs_nix_store(program);
+        Self::from_facts(top, nixos, store_program)
+    }
+
+    /// [`SystemRoot::detect`] without the host lookups.
+    pub fn from_facts(top: Vec<TopDir>, nixos: bool, store_program: bool) -> Self {
+        let mut ro = Vec::new();
+        let mut path = Vec::new();
+        if nixos || store_program {
+            ro.push(PathBuf::from(NIX_STORE));
+        }
+        if nixos {
+            ro.push(PathBuf::from(NIXOS_SYSTEM));
+            path.push(Path::new(NIXOS_SYSTEM).join("sw/bin"));
+        }
+        Self { top, ro, path }
+    }
 }
 
 impl SandboxPlan {
@@ -368,6 +446,7 @@ impl SandboxPlan {
             NetworkMode::Host => Network::Host,
             _ => Network::Isolated(None),
         };
+        let system = SystemRoot::detect(&program);
         Ok(Self {
             bwrap: bwrap.to_path_buf(),
             home,
@@ -375,6 +454,7 @@ impl SandboxPlan {
             mounts,
             env,
             network,
+            system,
         })
     }
 
@@ -450,7 +530,7 @@ pub fn command(
 
     // Environment: nothing from the host unless allowed.
     push(&[&"--clearenv"]);
-    let path_env = match plan.program.parent() {
+    let mut path_env = match plan.program.parent() {
         Some(dir) => {
             let mut p = dir.as_os_str().to_os_string();
             p.push(":/usr/bin");
@@ -458,6 +538,10 @@ pub fn command(
         }
         None => OsString::from("/usr/bin"),
     };
+    for dir in &plan.system.path {
+        path_env.push(":");
+        path_env.push(dir);
+    }
     push(&[&"--setenv", &"HOME", &plan.home]);
     push(&[&"--setenv", &"PATH", &path_env]);
     push(&[&"--setenv", &"NO_COLOR", &"1"]);
@@ -483,11 +567,18 @@ pub fn command(
         }
     }
 
-    // System: read-only /usr and /etc (Fedora is usr-merged), the resolver's runtime dir
-    // (/etc/resolv.conf links there on Fedora), fresh /proc, minimal /dev, private /tmp.
+    // System: read-only /usr and /etc (Fedora is usr-merged; NixOS adds its store and system
+    // profile), the resolver's runtime dir (/etc/resolv.conf links there on Fedora), fresh
+    // /proc, minimal /dev, private /tmp.
     push(&[&"--ro-bind", &"/usr", &"/usr"]);
-    for dir in ["bin", "sbin", "lib", "lib64"] {
-        push(&[&"--symlink", &format!("usr/{dir}"), &format!("/{dir}")]);
+    for dir in &plan.system.top {
+        match dir {
+            TopDir::UsrLink(d) => push(&[&"--symlink", &format!("usr/{d}"), &format!("/{d}")]),
+            TopDir::Bind(p) => push(&[&"--ro-bind", p, p]),
+        }
+    }
+    for dir in &plan.system.ro {
+        push(&[&"--ro-bind", dir, dir]);
     }
     push(&[&"--ro-bind", &"/etc", &"/etc"]);
     if plan.network == Network::Host {
@@ -531,7 +622,7 @@ pub fn command(
         if !bound(&b.netbridge) {
             push(&[&"--ro-bind", &b.netbridge, &b.netbridge]);
         }
-        for dir in &b.runtime {
+        for dir in b.runtime.iter().filter(|d| !plan.system.ro.contains(d)) {
             push(&[&"--ro-bind", dir, dir]);
         }
         // Read-only is enough: connecting to a socket needs no write access to its mount.
@@ -584,6 +675,7 @@ mod tests {
             mounts,
             env: vec![("LANG".into(), "C.UTF-8".into())],
             network: Network::Host,
+            system: SystemRoot::default(),
         }
     }
 
@@ -818,6 +910,46 @@ mod tests {
             &strs(&argv),
             &["--setenv", "PATH", "/usr/bin:/usr/bin"]
         ));
+    }
+
+    #[test]
+    fn nixos_layout_binds_the_store_and_system_profile() {
+        let mut p = plan(vec![], "/nix/store/abc-claude/bin/claude").with_bridge(Some(bridge()));
+        p.system = SystemRoot::from_facts(
+            vec![TopDir::Bind("/bin".into()), TopDir::Bind("/lib64".into())],
+            true,
+            false,
+        );
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(has(&a, &["--ro-bind", "/bin", "/bin"]));
+        assert!(has(&a, &["--ro-bind", "/lib64", "/lib64"]));
+        assert!(!a.contains(&"usr/lib64"), "{a:?}");
+        assert!(has(
+            &a,
+            &["--ro-bind", "/run/current-system", "/run/current-system"]
+        ));
+        // The bridge's runtime dir is the store too: bound once.
+        assert_eq!(a.iter().filter(|x| **x == "/nix/store").count(), 2, "{a:?}");
+        assert!(has(
+            &a,
+            &[
+                "--setenv",
+                "PATH",
+                "/nix/store/abc-claude/bin:/usr/bin:/run/current-system/sw/bin"
+            ]
+        ));
+        // A usr-merged host with a CLI from Nix (e.g. `nix profile`): the store, no profile.
+        let s = SystemRoot::from_facts(vec![TopDir::UsrLink("bin")], false, true);
+        assert_eq!(s.ro, [PathBuf::from("/nix/store")]);
+        assert!(s.path.is_empty());
+        assert_eq!(
+            SystemRoot::from_facts(vec![], false, false),
+            SystemRoot {
+                top: vec![],
+                ..SystemRoot::default()
+            }
+        );
     }
 
     #[test]
