@@ -417,3 +417,11 @@ Format: date — decision. Why. Alternatives considered.
 - **2026-11-19 — The agent menu offers every model the agent lists (q55b).** No curation: Melissa shows the
   list exactly as the agent reports it (Claude also lists older ids). Why: a curated list goes stale with every
   agent release and would mean Melissa picking models for the owner; the agent knows what it can run.
+
+- **2026-11-19 — New bees follow the Queen's switch (q55c); no Queen tool to move a bee (q55d).** After the user
+  switches the Queen's backend, a bee the Queen creates without naming a backend runs on the Queen's backend (the
+  model stays the backend's default). Before any switch `[queen] bee_backend` (else the first Queen backend)
+  applies as before. Existing bees keep their backend, and so does a bee the user moved, so a switch never changes
+  an agent that already has memory. Why: a user who moves the Queen to another agent (e.g. a subscription ran out)
+  expects new helpers there too; moving running bees behind the user's back would not be expected. Only the user
+  changes a bee's backend.

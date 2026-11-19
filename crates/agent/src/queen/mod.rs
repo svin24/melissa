@@ -46,6 +46,7 @@ pub struct QueenSettings {
     /// The system prompt of every bee (the bee's name and id are added).
     pub bee_prompt: String,
     /// Backend for new bees when the Queen names none (default: the first Queen backend).
+    /// Once the user switches the Queen, new bees follow the Queen's backend instead.
     pub bee_backend: Option<String>,
     /// Melissa's state for the Queen: `session.json`, the agent's session store.
     pub state_dir: PathBuf,
@@ -157,6 +158,7 @@ impl Queen {
             }
             known
         });
+        let choice_backend = choice.as_ref().map(|c| c.backend.clone());
         let spec = ConversationSpec {
             who: "the Queen".into(),
             audit_kind: "queen",
@@ -192,6 +194,7 @@ impl Queen {
             base_url: link.base_url,
             backends,
             default_backend: settings.bee_backend.clone().unwrap_or(first),
+            queen_choice: std::sync::Mutex::new(choice_backend),
             models: models.clone(),
             bee_prompt: settings.bee_prompt.clone(),
             queen_allow: allow,
@@ -299,6 +302,7 @@ impl Queen {
                 self.inner.choice_path.display()
             ))
         })?;
+        self.inner.pool.follow_queen(&choice.backend);
         Ok(self.inner.conv.switch(choice, "ui"))
     }
 

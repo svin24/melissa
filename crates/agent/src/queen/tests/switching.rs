@@ -253,3 +253,50 @@ async fn the_user_moves_a_bee_to_another_backend() {
     let reg = BeeRegistry::open(&s.dir.join("bees"), COMB).unwrap();
     assert_eq!(reg.get(ADA).map(|b| b.backend).as_deref(), Some("fake-acp"));
 }
+
+#[tokio::test]
+async fn new_bees_follow_the_queens_switch_and_existing_bees_keep_theirs() {
+    let s = setup_in(scratch("switch-follow"), Vec::new(), |q| {
+        q.backends = vec!["fake-acp".into(), "bee-acp".into()];
+        q.bee_backend = Some("bee-acp".into());
+    });
+    let q = s.queen_token();
+    let backend_of = |name: &str| s.pool().get(name).map(|b| b.backend);
+    // Before any switch: the configured bee backend.
+    create_bees(&s, &q, &["Ada"]).await;
+    assert_eq!(backend_of("Ada").as_deref(), Some("bee-acp"));
+
+    // The user switches the Queen: new bees follow, Ada keeps hers.
+    s.queen.use_backend("fake-acp", None).unwrap();
+    create_bees(&s, &q, &["Bo"]).await;
+    assert_eq!(backend_of("Bo").as_deref(), Some("fake-acp"));
+    assert_eq!(backend_of("Ada").as_deref(), Some("bee-acp"));
+    // A backend the Queen names explicitly still wins.
+    let r = call(
+        &s.server,
+        &q,
+        "create_bee",
+        json!({"name": "Cy", "backend": "bee-acp"}),
+    )
+    .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(backend_of("Cy").as_deref(), Some("bee-acp"));
+    // A bee the user moved keeps the user's choice when the Queen switches again.
+    s.pool().user_use_backend("Bo", "bee-acp", None).unwrap();
+    s.queen.use_backend("bee-acp", None).unwrap();
+    s.queen.use_backend("fake-acp", None).unwrap();
+    assert_eq!(backend_of("Bo").as_deref(), Some("bee-acp"));
+    s.close().await;
+
+    // After a restart the saved Queen choice still leads new bees.
+    let s = setup_in(s.dir.clone(), Vec::new(), |q| {
+        q.backends = vec!["fake-acp".into(), "bee-acp".into()];
+        q.bee_backend = Some("bee-acp".into());
+    });
+    let q = s.queen_token();
+    create_bees(&s, &q, &["Di"]).await;
+    assert_eq!(
+        s.pool().get("Di").map(|b| b.backend).as_deref(),
+        Some("fake-acp")
+    );
+}

@@ -122,6 +122,7 @@ pub struct QueenSection {
     /// direct bees, and `reassign_cell` to move cells. Bees never get more than this.
     pub tools: Option<Vec<String>>,
     /// Backend for new bees when the Queen names none (default: the first Queen backend).
+    /// Once the user switches the Queen's backend, new bees follow that instead.
     /// Must be a session backend (`kind = "acp"` or `"claude"`).
     #[serde(alias = "worker_backend")]
     pub bee_backend: Option<String>,

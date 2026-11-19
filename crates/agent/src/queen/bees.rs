@@ -83,7 +83,12 @@ pub(crate) struct Attached {
     pub server: McpServer,
     pub base_url: String,
     pub backends: Vec<Arc<dyn SessionBackend>>,
+    /// Backend for new bees when the Queen names none and the user never switched the
+    /// Queen (`[queen] bee_backend`, else the first Queen backend).
     pub default_backend: String,
+    /// The backend the user switched the Queen to, if any: new bees the Queen names no
+    /// backend for follow it (q55c). Existing bees keep theirs.
+    pub queen_choice: Mutex<Option<String>>,
     /// Models each backend reported (shared with the Queen).
     pub models: super::backends::ModelCache,
     pub bee_prompt: String,
@@ -200,6 +205,14 @@ impl BeePool {
     /// ignored.
     pub(crate) fn attach(&self, attached: Attached) {
         let _ = self.inner.attached.set(attached);
+    }
+
+    /// The user switched the Queen to `backend`: new bees with no backend of their own use
+    /// it from now on. Bees that exist keep their backend.
+    pub(crate) fn follow_queen(&self, backend: &str) {
+        if let Some(a) = self.inner.attached.get() {
+            *lock(&a.queen_choice) = Some(backend.to_string());
+        }
     }
 
     fn attached(&self) -> Result<&Attached, ToolError> {
@@ -549,7 +562,9 @@ impl BeePool {
         let args = object(args, &["name", "backend", "tools"])?;
         let name = str_arg(&args, "name")?;
         let backend = match args.get("backend") {
-            None | Some(Value::Null) => a.default_backend.clone(),
+            None | Some(Value::Null) => lock(&a.queen_choice)
+                .clone()
+                .unwrap_or_else(|| a.default_backend.clone()),
             Some(Value::String(b)) => b.clone(),
             Some(_) => return Err(ToolError::BadArgs("`backend` must be a string".into())),
         };
@@ -1034,7 +1049,7 @@ impl Tool for CreateBee {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Display name, unique on this comb (letters, digits, spaces, - _ .; at most 40)."},
-                    "backend": {"type": "string", "description": "Agent session backend (default: the configured bee backend)."},
+                    "backend": {"type": "string", "description": "Agent session backend (default: the backend the user chose for you, else the configured bee backend)."},
                     "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the bee may use, by plain names such as `comb_info`. Default: all of yours except the bee and cell tools."},
                 },
                 "required": ["name"],

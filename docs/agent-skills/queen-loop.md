@@ -16,8 +16,9 @@ bee, `mod.rs` the Queen, `bees.rs` bee pool + Queen-only tools, `registry.rs` pe
 - `Queen` (one per daemon) holds at most one agent session (`AgentSession`: ACP or Claude stream-json). Opened
   lazily on the first message from `[queen] backends` in order (default `grok-acp`, `claude-session`,
   `opencode-acp`); a backend that fails to start (missing CLI, not logged in, handshake error) emits
-  `backend_failed` and the next is tried. New bees default to the first Queen backend (`bee_backend`). Her
-  MCP session is attended (`attended = true`: the user is in the chat), may delegate
+  `backend_failed` and the next is tried. New bees default to the first Queen backend (`bee_backend`), or, once
+  the user switched the Queen, to the Queen's chosen backend (q55c; `BeePool::follow_queen`, also after a
+  restart; existing bees keep theirs). Her MCP session is attended (`attended = true`: the user is in the chat), may delegate
   (`TaskContext.delegate = true`, so she sees the bee tools) and has `Scope::Queen { comb }`.
 - One turn at a time: `send` while a turn runs → `QueenError::Busy` (HTTP 409). The event pump (one task
   per session, owns the session's event receiver) ends a turn when the agent's `TurnFinished` arrives, so
