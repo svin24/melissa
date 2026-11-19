@@ -85,6 +85,7 @@ async fn open_replay(
             recorder: None,
             stderr: StderrTail::default(),
             shutdown: None,
+            model: None,
         },
     )
     .await
@@ -280,6 +281,7 @@ async fn tool_turn_maps_events_and_asks_policy() {
         session,
         mut events,
         resumed,
+        ..
     } = opened;
     assert!(!resumed);
     assert_eq!(session.id(), "00000000-0000-4000-8000-000000000001");
@@ -493,6 +495,7 @@ async fn refused_handshake_is_an_error() {
             recorder: None,
             stderr: StderrTail::default(),
             shutdown: None,
+            model: None,
         },
     )
     .await
@@ -648,4 +651,29 @@ async fn resume_failure_starts_a_new_session() {
         .expect("the fake refuses --resume");
     // The stderr tail may or may not be read yet; the open fails either way.
     assert!(matches!(err, AgentError::Protocol(_)), "{err:?}");
+}
+
+#[test]
+fn models_come_from_the_handshake_and_the_choice_replaces_the_configs_model() {
+    let offered = client::offered_models(&json!([
+        {"value": "default", "displayName": "Default (recommended)", "description": "x"},
+        {"value": "sonnet", "displayName": "Sonnet"},
+        {"value": "--bad", "displayName": "Bad"},
+        {"displayName": "no value"}
+    ]));
+    let ids: Vec<&str> = offered.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["default", "sonnet"]);
+    assert_eq!(offered[0].label, "Default (recommended)");
+    assert!(client::offered_models(&json!(null)).is_empty());
+
+    let config: Vec<String> = ["--model", "opus", "--effort", "high"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(super::with_model(&config, None).unwrap(), config);
+    let chosen = super::with_model(&config, Some("sonnet")).unwrap();
+    assert_eq!(chosen, ["--effort", "high", "--model", "sonnet"]);
+    assert_eq!(super::model_arg(&chosen).as_deref(), Some("sonnet"));
+    assert!(super::with_model(&config, Some("--dangerously-skip-permissions")).is_err());
+    assert!(super::with_model(&config, Some("a b")).is_err());
 }

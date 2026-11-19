@@ -87,6 +87,16 @@ pub enum QueenEvent {
     /// The Queen's agent session started. `resumed`: the agent's previous session (and its
     /// context) was resumed; otherwise the Queen starts fresh.
     SessionOpened { backend: String, resumed: bool },
+    /// The user switched the conversation to another backend (or model). It takes over at
+    /// the next turn, with the conversation so far. `model_label`: the agent's own name
+    /// for the model.
+    BackendSwitched {
+        backend: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_label: Option<String>,
+    },
     /// A Queen backend could not start; the next one in the list is tried.
     BackendFailed { backend: String, error: String },
     /// The Queen's agent session ended unexpectedly (e.g. the agent process died). Its

@@ -34,8 +34,8 @@ use crate::{
         OPEN_TIMEOUT,
     },
     session::{
-        AgentSession, OpenedSession, PermissionDecision, PermissionHandler, PermissionRequest,
-        SessionCapabilities, SessionEvent, StopReason, ToolKind, ToolStatus,
+        AgentSession, ModelList, ModelOption, OpenedSession, PermissionDecision, PermissionHandler,
+        PermissionRequest, SessionCapabilities, SessionEvent, StopReason, ToolKind, ToolStatus,
     },
     AgentError, BoxFuture,
 };
@@ -59,7 +59,12 @@ pub(crate) struct Start {
     pub stderr: StderrTail,
     /// Runs after the agent's stdout closed (stop the process, close the egress sockets).
     pub shutdown: Option<Shutdown>,
+    /// The `--model` the process was started with, if any.
+    pub model: Option<String>,
 }
+
+/// What the handshake answer says: Claude Code's version and the models it offers.
+type InitInfo = (Option<String>, Vec<ModelOption>);
 
 enum Command {
     Prompt {
@@ -127,7 +132,7 @@ where
     });
     let abort = AbortOnDrop(task);
 
-    let version = match tokio::time::timeout(OPEN_TIMEOUT, init_rx).await {
+    let (version, offered) = match tokio::time::timeout(OPEN_TIMEOUT, init_rx).await {
         Ok(Ok(Ok(v))) => v,
         Ok(Ok(Err(e))) => return Err(AgentError::Protocol(format!("{e}{}", s.stderr.summary()))),
         Ok(Err(_)) => {
@@ -167,6 +172,19 @@ where
         }),
         events: events_rx,
         resumed: s.resumed,
+        models: (!offered.is_empty()).then(|| {
+            // No `--model`: Claude uses its default, which it lists as `default`.
+            let current = s.model.or_else(|| {
+                offered
+                    .iter()
+                    .any(|o| o.id == "default")
+                    .then(|| "default".into())
+            });
+            ModelList {
+                current,
+                options: offered,
+            }
+        }),
     })
 }
 
@@ -205,7 +223,7 @@ struct Actor {
     pending: HashMap<String, Pending>,
     /// Tool name per `tool_use` id seen in this session.
     tools: HashMap<String, String>,
-    init: Option<oneshot::Sender<Result<Option<String>, String>>>,
+    init: Option<oneshot::Sender<Result<InitInfo, String>>>,
     next_id: u64,
     session_id: String,
 }
@@ -369,9 +387,11 @@ impl Actor {
         }
         let Some(init) = self.init.take() else { return };
         let result = if response["subtype"] == "success" {
-            Ok(response["response"]["claude_code_version"]
-                .as_str()
-                .map(str::to_string))
+            let answer = &response["response"];
+            Ok((
+                answer["claude_code_version"].as_str().map(str::to_string),
+                offered_models(&answer["models"]),
+            ))
         } else {
             Err(format!(
                 "handshake refused: {}",
@@ -499,6 +519,29 @@ impl Actor {
 
 /// Map a `result` message to the turn's end. After an interrupt every ending counts as
 /// cancelled; errors (API errors, crashes inside Claude) fail the turn.
+/// The models in Claude's handshake answer (`[{value, displayName, ...}]`). Only the id and
+/// the display name are kept; anything that is not a usable model id is skipped.
+pub(crate) fn offered_models(models: &Value) -> Vec<ModelOption> {
+    models
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| {
+                    let id = m["value"].as_str()?;
+                    if !crate::session::valid_model_id(id) {
+                        return None;
+                    }
+                    let label = m["displayName"].as_str().unwrap_or(id);
+                    Some(ModelOption {
+                        id: id.into(),
+                        label: label.chars().take(80).collect(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn stop_reason(msg: &Value, interrupted: bool) -> Result<StopReason, AgentError> {
     if interrupted {
         return Ok(StopReason::Cancelled);

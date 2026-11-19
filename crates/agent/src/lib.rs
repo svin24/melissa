@@ -37,6 +37,6 @@ pub use board::{
 };
 pub use claude::{ClaudeBackend, ClaudeSpec};
 pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
-pub use echo::EchoBackend;
+pub use echo::{EchoBackend, EchoSessionBackend, EchoSpec};
 pub use egress::{EgressProxy, NetworkMode};
 pub use sandbox::SandboxSpec;

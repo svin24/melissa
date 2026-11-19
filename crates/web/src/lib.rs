@@ -4,6 +4,7 @@
 //! UI rule: only components defined in `components` may be rendered. Agents never
 //! generate markup; they select components and fill manifests.
 
+mod agents;
 mod api;
 pub mod components;
 mod feed;
@@ -578,7 +579,8 @@ mod tests {
                 },
             );
             let settings = QueenSettings {
-                backends: vec!["stuck".into()],
+                // `gone` is not configured: shown as not installed.
+                backends: vec!["stuck".into(), "echo-b".into(), "gone".into()],
                 system_prompt: "test".into(),
                 bee_prompt: "test".into(),
                 bee_backend: Some("stuck".into()),
@@ -589,7 +591,14 @@ mod tests {
             };
             let queen = Queen::new(
                 settings,
-                vec![Arc::new(Stuck)],
+                vec![
+                    Arc::new(Stuck),
+                    Arc::new(melissa_agent::EchoSessionBackend::new(
+                        &melissa_agent::EchoSpec {
+                            name: "echo-b".into(),
+                        },
+                    )),
+                ],
                 board.clone(),
                 events,
                 &pool,
@@ -895,7 +904,12 @@ mod tests {
             assert!(body.contains("/assets/htmx-ext-sse.min.js"));
             assert!(body.contains("Nextcloud running, Immich installing"));
             assert!(body.contains("comb-1"));
-            assert!(body.contains("Starts when you send a message."));
+            // Before the first message: the agent it will start on, as a menu.
+            assert!(
+                body.contains("Runs on <details class=\"agent-menu\">"),
+                "{body}"
+            );
+            assert!(body.contains("id=\"agent-choice\""));
             assert!(!body.contains("style="), "no inline styles");
             assert!(!body.contains("<script>"), "no inline scripts");
 
@@ -1324,6 +1338,144 @@ mod tests {
             assert!(!frame.contains("Hi"), "{frame}");
             assert!(frame.contains("Install Immich?"));
             assert!(frame.contains("hx-swap-oob=\"true\""), "waiting count");
+        }
+
+        #[tokio::test]
+        async fn backends_are_listed_switched_between_turns_and_refused_when_unusable() {
+            let (app, queen) = app();
+            let (status, body) = send_json(&app, get("/api/queen/backends")).await;
+            assert_eq!(status, StatusCode::OK);
+            let list = body["backends"].as_array().unwrap();
+            let names: Vec<&str> = list.iter().map(|b| b["name"].as_str().unwrap()).collect();
+            assert_eq!(names, ["stuck", "echo-b", "gone"]);
+            assert_eq!(list[0]["current"], true);
+            assert_eq!(list[1]["label"], "echo-b");
+            assert_eq!(list[2]["available"], false);
+            assert_eq!(list[2]["reason"], "not_installed");
+            assert!(list[1].get("models").is_none(), "no models invented");
+
+            // Refused: not installed, unknown, a model nobody reported, cross-site.
+            let (status, body) =
+                send_json(&app, json_post("/api/queen/backend", r#"{"name":"gone"}"#)).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(body["error"].as_str().unwrap().contains("not installed"));
+            for bad in [r#"{"name":"nope"}"#, r#"{"name":"echo-b","model":"x"}"#] {
+                let (status, _) = send_json(&app, json_post("/api/queen/backend", bad)).await;
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+            }
+            let mut cross = json_post("/api/queen/backend", r#"{"name":"echo-b"}"#);
+            cross
+                .headers_mut()
+                .insert(header::ORIGIN, "http://evil.example.com".parse().unwrap());
+            assert_eq!(send(&app, cross).await.0, StatusCode::FORBIDDEN);
+            assert_eq!(queen.backend_choice(), None);
+
+            // A turn is running (its session never opens): the switch waits for it.
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/queen/messages", r#"{"text":"hello"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/queen/backend", r#"{"name":"echo-b"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["changed"], true);
+            assert_eq!(body["after_turn"], true);
+            let (_, body) = send_json(&app, get("/api/queen/backends")).await;
+            assert_eq!(body["backends"][1]["current"], true);
+            assert!(queen
+                .events()
+                .since(0, 100)
+                .events
+                .iter()
+                .any(|r| matches!(&r.event, QueenEvent::BackendSwitched { backend, .. } if backend == "echo-b")));
+
+            // The chat shows it quietly, and the menu has the new current agent.
+            let (_, _, page) = send(&app, get("/")).await;
+            assert!(page.contains("Switched to echo-b, picking up where we left off"));
+            assert!(
+                page.contains("<option value=\"echo-b\" selected>"),
+                "{page}"
+            );
+            assert!(page.contains("gone (not set up)"));
+            assert!(
+                page.contains("gone isn&#39;t set up on this device.")
+                    || page.contains("gone isn't set up on this device."),
+                "{page}"
+            );
+
+            // The UI form: htmx gets the status line back; a refusal says why.
+            let ui_post = |choice: &str, htmx: bool| {
+                let mut b = post("/ui/backend");
+                if htmx {
+                    b = b.header("hx-request", "true");
+                }
+                b.body(Body::from(format!("text=&choice={choice}")))
+                    .unwrap()
+            };
+            let (status, _, body) = send(&app, ui_post("stuck", true)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                body.contains("Runs on <details class=\"agent-menu\">"),
+                "{body}"
+            );
+            assert!(!body.contains("agent-error"));
+            let (status, _, body) = send(&app, ui_post("gone", true)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                body.contains("gone isn&#39;t ready on this device yet.")
+                    || body.contains("gone isn't ready on this device yet."),
+                "{body}"
+            );
+            let (status, headers, _) = send(&app, ui_post("echo-b", false)).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/");
+
+            // A bee: any session backend; saved in the registry.
+            queen
+                .bees()
+                .registry()
+                .create("Ada", "stuck", None, "the user")
+                .unwrap();
+            let (status, body) = send_json(&app, get("/api/bees/ada/backends")).await;
+            assert_eq!(status, StatusCode::OK);
+            let names: Vec<&str> = body["backends"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, ["stuck", "echo-b"]);
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/bees/Ada/backend", r#"{"name":"echo-b"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["changed"], true);
+            let (_, bee) = send_json(&app, get("/api/bees/Ada")).await;
+            assert_eq!(bee["backend"], "echo-b");
+            let (_, _, page) = send(&app, get("/bees/Ada")).await;
+            assert!(page.contains("action=\"/ui/bees/"), "{page}");
+
+            // Bees: unknown ones are 404.
+            assert_eq!(
+                send(&app, get("/api/bees/nobody/backends")).await.0,
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                send(
+                    &app,
+                    json_post("/api/bees/nobody/backend", r#"{"name":"echo-b"}"#)
+                )
+                .await
+                .0,
+                StatusCode::NOT_FOUND
+            );
         }
     }
 

@@ -32,6 +32,8 @@ use crate::{
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
 };
 
+mod switching;
+
 const COMB: &str = "c-0a1b2c3d";
 /// A session backend that plays one scripted agent per `open`.
 struct Replay {

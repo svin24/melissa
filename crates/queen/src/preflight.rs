@@ -213,6 +213,7 @@ pub async fn gather(i: Inputs<'_>) -> Report {
                 BackendSpec::Cli(s) => (&s.name, &s.command),
                 BackendSpec::Acp(s) => (&s.name, &s.command),
                 BackendSpec::Claude(s) => (&s.name, &s.command),
+                BackendSpec::Echo(s) => (&s.name, &s.name),
             };
             let available = infos.iter().any(|i| i.name == *name && i.available);
             let reason = (!available).then(|| {

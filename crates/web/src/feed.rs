@@ -322,6 +322,28 @@ impl Feed {
                     Change::Status,
                 ]
             }
+            QueenEvent::BackendSwitched {
+                backend,
+                model,
+                model_label,
+            } => {
+                let name = match (model_label, model) {
+                    (Some(label), _) => format!("{} ({label})", backend_label(backend)),
+                    (None, Some(m)) => format!("{} ({m})", backend_label(backend)),
+                    (None, None) => backend_label(backend).to_string(),
+                };
+                vec![
+                    self.add(
+                        format!("n{}", rec.seq),
+                        Item::Note {
+                            text: format!("Switched to {name}, picking up where we left off"),
+                            detail: None,
+                            tone: NoteTone::Quiet,
+                        },
+                    ),
+                    Change::Status,
+                ]
+            }
             QueenEvent::BackendFailed { backend, error } => vec![self.add(
                 format!("n{}", rec.seq),
                 Item::Note {

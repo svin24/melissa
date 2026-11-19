@@ -225,6 +225,20 @@ impl Printer {
                 };
                 self.line(&format!("[session] {backend}: {how}"));
             }
+            QueenEvent::BackendSwitched {
+                backend,
+                model,
+                model_label,
+            } => {
+                let model = match (model_label, model) {
+                    (Some(l), _) => format!(" ({l})"),
+                    (None, Some(m)) => format!(" ({m})"),
+                    (None, None) => String::new(),
+                };
+                self.line(&format!(
+                    "[session] switched to {backend}{model}; it takes over from the next message"
+                ));
+            }
             QueenEvent::BackendFailed { backend, error } => {
                 self.line(&format!(
                     "[session] {backend} could not start: {}",
@@ -454,6 +468,65 @@ pub async fn bees(client: &Client) -> anyhow::Result<()> {
                 .as_str()
                 .map(|j| format!("  job: {}", one_line(j)))
                 .unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+/// `backend [list]`: the backends the Queen (or a bee) can use.
+pub async fn backends(client: &Client) -> anyhow::Result<()> {
+    let body = client.get(&format!("{}/backends", client.base)).await?;
+    let list = body["backends"].as_array().cloned().unwrap_or_default();
+    for b in &list {
+        let name = b["name"].as_str().unwrap_or("?");
+        let mark = if b["current"] == true { "*" } else { " " };
+        let state = match (b["available"].as_bool(), b["reason"].as_str()) {
+            (Some(true), _) => "ready".to_string(),
+            (_, Some("not_logged_in")) => "not logged in".to_string(),
+            (_, Some("sandbox")) => "sandbox cannot start".to_string(),
+            _ => "not installed".to_string(),
+        };
+        let model = b["model"]
+            .as_str()
+            .map(|m| format!("  model: {m}"))
+            .unwrap_or_default();
+        println!("{mark} {name:<16} {state}{model}");
+        if let Some(models) = b["models"].as_array() {
+            let ids: Vec<&str> = models.iter().filter_map(|m| m["id"].as_str()).collect();
+            println!("    models: {}", ids.join(", "));
+        }
+    }
+    println!(
+        "(* = what {} runs on, or will from its next message)",
+        client.who
+    );
+    Ok(())
+}
+
+/// `backend use <name> [--model <id>]`.
+pub async fn use_backend(client: &Client, name: &str, model: Option<&str>) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post(
+            &format!("{}/backend", client.base),
+            json!({"name": name, "model": model}),
+        )
+        .await?;
+    let body = ok(status, body)?;
+    let what = match body["model"].as_str() {
+        Some(m) => format!("{name} ({m})"),
+        None => name.to_string(),
+    };
+    if body["changed"] == false {
+        println!("{} already uses {what}.", client.who);
+    } else if body["after_turn"] == true {
+        println!(
+            "{} switches to {what} once the running turn has ended.",
+            client.who
+        );
+    } else {
+        println!(
+            "{} uses {what} from the next message, picking up where you left off.",
+            client.who
         );
     }
     Ok(())

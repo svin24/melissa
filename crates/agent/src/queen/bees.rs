@@ -27,6 +27,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::{
+    backends::{BackendChoice, BackendView, Switched},
     conversation::{lock, Conversation, ConversationSpec},
     events::{EventLog, QueenEvent, TurnId},
     registry::{BeeRecord, BeeRegistry, RegistryError},
@@ -83,6 +84,8 @@ pub(crate) struct Attached {
     pub base_url: String,
     pub backends: Vec<Arc<dyn SessionBackend>>,
     pub default_backend: String,
+    /// Models each backend reported (shared with the Queen).
+    pub models: super::backends::ModelCache,
     pub bee_prompt: String,
     /// The Queen's own tool allowlist (None = every tool).
     pub queen_allow: Option<Vec<&'static str>>,
@@ -125,6 +128,9 @@ pub struct BeeView {
     pub id: String,
     pub name: String,
     pub backend: String,
+    /// The model the user chose for it (None: the backend's default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// `idle`, `working` or `stopped`.
     pub status: &'static str,
     pub created_by: String,
@@ -260,6 +266,13 @@ impl BeePool {
             who: format!("bee {}", bee.name),
             audit_kind: "bee",
             backends: vec![bee.backend.clone()],
+            choices: a.backends.iter().map(|b| b.info().name).collect(),
+            choice: Some(BackendChoice {
+                backend: bee.backend.clone(),
+                model: bee.model.clone(),
+            }),
+            failover: false,
+            models: a.models.clone(),
             system_prompt,
             state_dir,
             workdir: a.workroot.join(&bee.id),
@@ -306,6 +319,7 @@ impl BeePool {
             id: bee.id.clone(),
             name: bee.name.clone(),
             backend: bee.backend.clone(),
+            model: bee.model.clone(),
             status: self.status_of(bee),
             created_by: bee.created_by.clone(),
             created_at: bee.created_at,
@@ -398,6 +412,36 @@ impl BeePool {
             .conversation(&bee)
             .map_err(|e| QueenError::Failed(e.to_string()))?
             .status())
+    }
+
+    /// The backends the user can switch a bee to (every session backend), as for the Queen.
+    pub fn backends_of(&self, name_or_id: &str) -> Result<Vec<BackendView>, QueenError> {
+        let bee = self.user_bee(name_or_id)?;
+        Ok(self
+            .conversation(&bee)
+            .map_err(|e| QueenError::Failed(e.to_string()))?
+            .backends())
+    }
+
+    /// The user switches a bee to another backend (and model). Saved in the bee registry,
+    /// audited `bee.backend`; the bee's next job or message runs on it, with its
+    /// conversation so far.
+    pub fn user_use_backend(
+        &self,
+        name_or_id: &str,
+        backend: &str,
+        model: Option<&str>,
+    ) -> Result<Switched, QueenError> {
+        let bee = self.user_bee(name_or_id)?;
+        let conv = self
+            .conversation(&bee)
+            .map_err(|e| QueenError::Failed(e.to_string()))?;
+        let choice = conv.check_choice(backend, model)?;
+        self.inner
+            .registry
+            .set_backend(&bee.id, &choice.backend, choice.model.as_deref())
+            .map_err(registry_error)?;
+        Ok(conv.switch(choice, "ui"))
     }
 
     fn user_bee(&self, name_or_id: &str) -> Result<BeeRecord, QueenError> {

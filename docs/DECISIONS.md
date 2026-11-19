@@ -318,6 +318,18 @@ Format: date — decision. Why. Alternatives considered.
   login run outside the agent sandbox, started by root: they need download and login hosts that the agents'
   egress allowlists deliberately exclude, and only the admin can start them. Alternatives: mirror the binaries
   (licence), npm installs (adds Node to the image), API keys only (no subscription use).
+- **2026-11-19 — The user switches the Queen's (or a bee's) backend and model at runtime; the choice lives in
+  Melissa's state, applies from the next turn, and context carries over through the existing resume/recap path.**
+  Queen: `$XDG_STATE_HOME/melissa/queen/backend.json`; bee: the bee registry. A running turn always finishes on the
+  backend it started on. Same backend + other model resumes the agent's session; another backend gets a new
+  session primed from Melissa's transcript (switching back never resumes the old, now stale session). Model lists
+  come only from the agents (ACP `configOptions` category `model`, Claude's `initialize` answer) and are cached
+  per backend once seen; Melissa never invents model ids, so a backend not yet used offers none. Unusable backends
+  (not installed, not logged in, no sandbox) are refused. UI: one fixed component in the composer status line,
+  native `details`/`select`, no new JS. Why: the owner set up several agents and asked for a visible switch;
+  state (not config) because it is a user choice the daemon writes. Alternatives: editing `[queen] backends`
+  (needs a restart, rewrites the owner's config), probing each CLI for models at startup (spawns agents, network
+  calls, slow), switching mid-turn (would lose the turn's tool state).
 - **2026-11-18 — Published VM image ships with no account; the tester creates one on first boot**
   (`melissa-firstboot.service` on tty1, before the console login; optional SSH key, or SSH password login on
   request). Why: never bake credentials into a downloadable image. Alternatives: a well-known password with forced

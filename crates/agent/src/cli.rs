@@ -232,6 +232,41 @@ pub(crate) fn network_ready(sandbox: &SandboxSpec, egress: Option<&EgressProxy>)
     }
 }
 
+/// Why a sandboxed agent CLI cannot run now ([`crate::session::SessionBackend::not_ready`]):
+/// not installed, its sandbox or network cannot start, or (for CLIs whose login is a file
+/// Melissa binds into the sandbox, and no API key variable is passed) not logged in.
+pub(crate) fn not_ready(
+    command: &str,
+    program: bool,
+    sandbox: &SandboxSpec,
+    bwrap: bool,
+    egress: Option<&EgressProxy>,
+    home: Option<&std::path::Path>,
+) -> Option<crate::session::NotReady> {
+    use crate::session::NotReady;
+    if !program {
+        return Some(NotReady::NotInstalled);
+    }
+    if (sandbox.enabled && !bwrap) || !network_ready(sandbox, egress) {
+        return Some(NotReady::Sandbox);
+    }
+    let login = match std::path::Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+    {
+        Some("claude") => Some(".claude/.credentials.json"),
+        Some("grok") => Some(".grok/auth.json"),
+        _ => None,
+    };
+    let checkable = sandbox.enabled && sandbox.env.is_empty();
+    if let (Some(file), Some(home), true) = (login, home, checkable) {
+        if sandbox.rw.iter().any(|p| p == file) && !home.join(file).is_file() {
+            return Some(NotReady::NotLoggedIn);
+        }
+    }
+    None
+}
+
 /// Short network description for backend details.
 pub(crate) fn network_label(sandbox: &SandboxSpec) -> String {
     if sandbox.enabled {
@@ -492,6 +527,38 @@ pub(crate) fn resolve_program(command: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_names_what_is_missing() {
+        use crate::session::NotReady;
+        let home = std::env::temp_dir().join(format!("melissa-ready-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let mut sandbox = SandboxSpec::preset("claude");
+        sandbox.network = NetworkMode::None;
+        let check = |program, sandbox: &SandboxSpec, bwrap| {
+            not_ready("claude", program, sandbox, bwrap, None, Some(&home))
+        };
+        assert_eq!(check(false, &sandbox, true), Some(NotReady::NotInstalled));
+        assert_eq!(check(true, &sandbox, false), Some(NotReady::Sandbox));
+        assert_eq!(check(true, &sandbox, true), Some(NotReady::NotLoggedIn));
+        std::fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+        assert_eq!(check(true, &sandbox, true), None);
+        // An API key variable may stand in for the login file: not checked then.
+        std::fs::remove_file(home.join(".claude/.credentials.json")).unwrap();
+        let mut keyed = sandbox.clone();
+        keyed.env = vec!["ANTHROPIC_API_KEY".into()];
+        assert_eq!(check(true, &keyed, true), None);
+        // OpenCode works without a login (free models).
+        let oc = SandboxSpec::preset("opencode");
+        let mut oc = oc;
+        oc.network = NetworkMode::None;
+        assert_eq!(
+            not_ready("opencode", true, &oc, true, None, Some(&home)),
+            None
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
     use crate::OutputLine;
 
     fn sh_backend(script: &str) -> CliBackend {

@@ -211,6 +211,36 @@ pub(crate) fn claude_args(
     args
 }
 
+/// The config's extra arguments with `--model` replaced by `model` (the user's choice).
+fn with_model(extra: &[String], model: Option<&str>) -> Result<Vec<String>, AgentError> {
+    let Some(model) = model else {
+        return Ok(extra.to_vec());
+    };
+    if !crate::session::valid_model_id(model) {
+        return Err(AgentError::Protocol(format!("`{model}` is not a model id")));
+    }
+    let mut out = Vec::new();
+    let mut args = extra.iter();
+    while let Some(flag) = args.next() {
+        if flag == "--model" {
+            args.next();
+            continue;
+        }
+        out.push(flag.clone());
+    }
+    out.push("--model".into());
+    out.push(model.into());
+    Ok(out)
+}
+
+/// The `--model` value in an argument list, if any.
+fn model_arg(args: &[String]) -> Option<String> {
+    args.iter()
+        .position(|a| a == "--model")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
 /// Fixed environment for the agent: a long MCP tool timeout (confirmations), and no
 /// auto-update, telemetry or error reports (they would only be denied by the egress proxy).
 fn claude_env() -> Vec<(String, String)> {
@@ -342,11 +372,8 @@ impl ClaudeBackend {
         )?;
         let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
         let env = claude_env();
-        let args = claude_args(
-            &self.spec.args,
-            mcp_file.as_ref().map(|f| f.path()),
-            &session,
-        );
+        let extra = with_model(&self.spec.args, open.model.as_deref())?;
+        let args = claude_args(&extra, mcp_file.as_ref().map(|f| f.path()), &session);
         let (program_path, argv) = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
@@ -416,6 +443,7 @@ impl ClaudeBackend {
                 session_id: id,
                 resumed,
                 persistent,
+                model: model_arg(&extra),
                 permissions: open.permissions.clone(),
                 recorder,
                 stderr: tail,
@@ -518,6 +546,17 @@ fn new_session_id() -> std::io::Result<String> {
 impl SessionBackend for ClaudeBackend {
     fn info(&self) -> BackendInfo {
         Backend::info(self)
+    }
+
+    fn not_ready(&self) -> Option<crate::session::NotReady> {
+        crate::cli::not_ready(
+            &self.spec.command,
+            self.program.is_some(),
+            &self.sandbox,
+            self.bwrap.is_some(),
+            self.egress.as_ref(),
+            self.home.as_deref(),
+        )
     }
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {

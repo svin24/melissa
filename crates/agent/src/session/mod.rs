@@ -80,6 +80,9 @@ pub struct OpenSession {
     pub resume: Option<String>,
     /// The task this session works for (audit records, e.g. of its network egress).
     pub task: Option<crate::TaskId>,
+    /// Model to use (an id from the backend's [`ModelList`]); None: the backend's default.
+    /// Backends that cannot choose a model ignore it.
+    pub model: Option<String>,
 }
 
 impl OpenSession {
@@ -96,6 +99,7 @@ impl OpenSession {
             state_dir: None,
             resume: None,
             task: None,
+            model: None,
         }
     }
 }
@@ -106,6 +110,71 @@ pub struct OpenedSession {
     pub events: mpsc::UnboundedReceiver<SessionEvent>,
     /// The session is the one asked for in [`OpenSession::resume`] (with its history).
     pub resumed: bool,
+    /// The models the agent offers, if it said so in the handshake.
+    pub models: Option<ModelList>,
+}
+
+/// Models an agent offers, as it reported them (Melissa never makes up model ids).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelList {
+    /// The model the session uses, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    pub options: Vec<ModelOption>,
+}
+
+/// One model an agent offers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelOption {
+    /// What the agent takes to select it (e.g. `sonnet`, `grok-code-fast-1`).
+    pub id: String,
+    /// The agent's own display name for it.
+    pub label: String,
+}
+
+impl ModelList {
+    pub fn contains(&self, id: &str) -> bool {
+        self.options.iter().any(|o| o.id == id)
+    }
+
+    pub fn label_of(&self, id: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|o| o.id == id)
+            .map(|o| o.label.as_str())
+    }
+}
+
+/// A model id Melissa passes to an agent (a command-line argument or a protocol value):
+/// short, printable, no spaces, not an option.
+pub fn valid_model_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && !id.starts_with('-')
+        && id.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | ':' | '[' | ']' | '@')
+        })
+}
+
+/// Why a backend cannot be used right now, as far as Melissa can tell without starting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotReady {
+    /// The agent's CLI was not found.
+    NotInstalled,
+    /// The CLI is there but its login (credentials file) is not.
+    NotLoggedIn,
+    /// The CLI is there, but the sandbox or its network cannot start.
+    Sandbox,
+}
+
+impl NotReady {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "not_installed",
+            Self::NotLoggedIn => "not_logged_in",
+            Self::Sandbox => "sandbox",
+        }
+    }
 }
 
 /// Why a turn ended.
@@ -303,6 +372,11 @@ pub trait AgentSession: Send + Sync {
 /// Something that can open agent sessions (e.g. an ACP agent command).
 pub trait SessionBackend: Send + Sync {
     fn info(&self) -> BackendInfo;
+
+    /// Why the backend cannot be used now (None: it can, as far as Melissa can tell).
+    fn not_ready(&self) -> Option<NotReady> {
+        (!self.info().available).then_some(NotReady::NotInstalled)
+    }
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>>;
 }

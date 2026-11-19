@@ -15,7 +15,7 @@ use crate::{
         DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID,
         COMPOSER_STATUS_ID, FEED_ID,
     },
-    components::{feed_archive, ComposerTarget, RailHelper, RailPastChat},
+    components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, Device, Disk, HiveSnapshot, Keeper},
 };
@@ -269,6 +269,7 @@ pub fn stream_update(
     view: View,
     who: Who<'_>,
     backend: Option<&str>,
+    agents: Option<&AgentMenu>,
     waiting: usize,
 ) -> String {
     let mut added = Vec::new();
@@ -294,7 +295,7 @@ pub fn stream_update(
             (oob_inner(&entry_id(&list[*i].key), entry_content(&list[*i])))
         }
         @if status && view == View::Chat {
-            (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), backend, feed.busy())))
+            (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), backend, feed.busy(), agents)))
         }
         @if count { (waiting_count(waiting, true)) }
     };
@@ -364,6 +365,8 @@ pub struct ChatView<'a> {
     pub epoch: u64,
     pub feed: &'a Feed,
     pub backend: Option<&'a str>,
+    /// The agent menu (switch backend or model), if the conversation has choices.
+    pub agents: Option<&'a AgentMenu>,
     pub busy: bool,
     pub draft: &'a str,
     pub error: Option<&'a str>,
@@ -444,7 +447,7 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
         },
         v.draft,
         v.error,
-        composer_status(&cancel, v.backend, v.busy),
+        composer_status(&cancel, v.backend, v.busy, v.agents),
     )
 }
 

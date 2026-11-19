@@ -7,6 +7,15 @@
 //!   seq, "missed": bool}`; waits up to `wait` (max 30) seconds for the first new event.
 //! - `POST /api/queen/cancel` → `{"cancelled": bool}`.
 //! - `GET /api/queen/status` → `{"turn": n|null, "backend": "..."|null, "last_seq": seq}`.
+//! - `GET /api/queen/backends` → `{"backends": [{name, label, available, reason?, current,
+//!   model?, models?: [{id, label}]}]}`: the session backends the Queen can switch to
+//!   (`[queen] backends`); `models` only once the agent has reported them.
+//! - `POST /api/queen/backend` `{"name": "...", "model": "..."?}` → `{backend, model?,
+//!   changed, after_turn}`: switch from the next turn on (saved, audited `queen.backend`);
+//!   422 unknown backend or model, or a backend that cannot run here (not installed, not
+//!   logged in).
+//! - `GET /api/bees/{bee}/backends`, `POST /api/bees/{bee}/backend`: the same for a bee
+//!   (any session backend; saved in the bee registry, audited `bee.backend`).
 //! - `GET /api/bees` → `{"bees": [...]}`: this comb's bees (id, name, backend, status, job).
 //! - `GET /api/bees/{bee}` (name or id) → one bee; 404 if there is none.
 //! - The user talks to a bee directly, same shapes as the Queen's: `POST
@@ -39,11 +48,13 @@ use axum::{
 };
 use melissa_agent::{
     mcp::McpServer,
-    queen::{Queen, QueenError},
+    queen::{backends::BackendView, Queen, QueenError},
     tools::{Scope, TaskContext, ToolError, Verdict},
     AuditRecord,
 };
 use serde::Deserialize;
+
+use crate::feed::backend_label;
 use serde_json::{json, Value};
 
 /// Longest long-poll wait for events.
@@ -57,6 +68,8 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/queen/status", get(status))
         .route("/api/queen/new-chat", post(new_chat))
         .route("/api/queen/chats", get(past_chats))
+        .route("/api/queen/backends", get(backends))
+        .route("/api/queen/backend", post(use_backend))
         .route("/api/bees", get(bees))
         .route("/api/bees/{bee}", get(bee))
         .route("/api/bees/{bee}/messages", post(bee_message))
@@ -64,6 +77,8 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/bees/{bee}/cancel", post(bee_cancel))
         .route("/api/bees/{bee}/status", get(bee_status))
         .route("/api/bees/{bee}/rename", post(bee_rename))
+        .route("/api/bees/{bee}/backends", get(bee_backends))
+        .route("/api/bees/{bee}/backend", post(bee_use_backend))
         .route("/api/cells", get(cells))
         .route("/api/cells/{cell}/reassign", post(reassign))
         .route("/api/confirmations", get(confirmations))
@@ -159,6 +174,58 @@ async fn new_chat(State(queen): State<Queen>) -> Response {
 /// Archived chats, newest first.
 async fn past_chats(State(queen): State<Queen>) -> Response {
     Json(json!({ "chats": queen.past_chats() })).into_response()
+}
+
+/// Backend views with their display names.
+fn backend_list(list: Vec<BackendView>) -> Response {
+    let list: Vec<Value> = list
+        .into_iter()
+        .map(|b| {
+            let mut v = json!(b);
+            v["label"] = json!(backend_label(&b.name));
+            v
+        })
+        .collect();
+    Json(json!({ "backends": list })).into_response()
+}
+
+#[derive(Deserialize)]
+struct UseBackend {
+    name: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+async fn backends(State(queen): State<Queen>) -> Response {
+    backend_list(queen.backends())
+}
+
+async fn use_backend(State(queen): State<Queen>, Json(body): Json<UseBackend>) -> Response {
+    match queen.use_backend(&body.name, body.model.as_deref()) {
+        Ok(s) => Json(s).into_response(),
+        Err(e) => queen_error(e),
+    }
+}
+
+async fn bee_backends(State(queen): State<Queen>, Path(bee): Path<String>) -> Response {
+    match queen.bees().backends_of(&bee) {
+        Ok(list) => backend_list(list),
+        Err(e) => queen_error(e),
+    }
+}
+
+async fn bee_use_backend(
+    State(queen): State<Queen>,
+    Path(bee): Path<String>,
+    Json(body): Json<UseBackend>,
+) -> Response {
+    match queen
+        .bees()
+        .user_use_backend(&bee, &body.name, body.model.as_deref())
+    {
+        Ok(s) => Json(s).into_response(),
+        Err(e) => queen_error(e),
+    }
 }
 
 async fn status(State(queen): State<Queen>) -> Response {

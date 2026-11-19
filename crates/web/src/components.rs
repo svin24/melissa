@@ -751,9 +751,14 @@ pub fn composer(
     }
 }
 
-/// The line under the composer: which backend, everything is logged, and a stop button
-/// (posting to `cancel`) while a turn runs.
-pub fn composer_status(cancel: &str, backend: Option<&str>, busy: bool) -> Markup {
+/// The line under the composer: which backend (a menu to switch it, when given), everything
+/// is logged, and a stop button (posting to `cancel`) while a turn runs.
+pub fn composer_status(
+    cancel: &str,
+    backend: Option<&str>,
+    busy: bool,
+    agents: Option<&AgentMenu>,
+) -> Markup {
     html! {
         @if busy {
             span.working { span.icon.spin aria-hidden="true" {} "Working on it" }
@@ -761,11 +766,94 @@ pub fn composer_status(cancel: &str, backend: Option<&str>, busy: bool) -> Marku
             span.sep aria-hidden="true" { "·" }
         }
         span {
-            @match backend {
-                Some(b) => { "Runs on " (b) ". " },
-                None => { "Starts when you send a message. " },
+            @match (agents, backend) {
+                (Some(m), _) => { "Runs on " (agent_menu(m)) ". " },
+                (None, Some(b)) => { "Runs on " (b) ". " },
+                (None, None) => { "Starts when you send a message. " },
             }
             "Everything is logged."
+        }
+        @if let Some(e) = agents.and_then(|m| m.error.as_deref()) {
+            span.agent-error role="alert" { (e) }
+        }
+    }
+}
+
+/// One entry of the agent menu: a backend, or one of its models.
+pub struct AgentOption {
+    /// Form value (`choice`).
+    pub value: String,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// One agent (backend) in the menu: its models, or one entry for the agent itself.
+pub struct AgentGroup {
+    pub label: String,
+    pub options: Vec<AgentOption>,
+}
+
+/// An agent that cannot be chosen now, and what to do about it.
+pub struct AgentHint {
+    pub label: String,
+    pub text: String,
+    /// A command that fixes it, shown as code.
+    pub command: Option<String>,
+}
+
+/// The agent menu in the composer status: which agent (and model) the chat runs on, and a
+/// native select to switch it. The switch posts the composer's form (`choice`) to `action`,
+/// like Stop, so there is no nested form; htmx swaps the status line with the answer.
+pub struct AgentMenu {
+    pub action: String,
+    /// What the chat runs on now, e.g. "Claude · Sonnet 5.5".
+    pub current: String,
+    pub groups: Vec<AgentGroup>,
+    pub unavailable: Vec<AgentHint>,
+    /// Why the last switch was refused.
+    pub error: Option<String>,
+}
+
+/// The agent menu (see [`AgentMenu`]): a `details` disclosure, no script of its own.
+pub fn agent_menu(m: &AgentMenu) -> Markup {
+    let target = format!("#{COMPOSER_STATUS_ID}");
+    html! {
+        details.agent-menu {
+            summary {
+                span.visually-hidden { "Agent: " }
+                (m.current)
+                span.caret aria-hidden="true" {}
+            }
+            div.agent-panel {
+                label for="agent-choice" { "Agent for this chat" }
+                div.agent-row {
+                    select #agent-choice name="choice" {
+                        @for g in &m.groups {
+                            @if g.options.len() == 1 && g.options[0].label == g.label {
+                                option value=(g.options[0].value) selected[g.options[0].selected] { (g.label) }
+                            } @else {
+                                optgroup label=(g.label) {
+                                    @for o in &g.options {
+                                        option value=(o.value) selected[o.selected] { (o.label) }
+                                    }
+                                }
+                            }
+                        }
+                        @for h in &m.unavailable {
+                            option disabled { (h.label) " (not set up)" }
+                        }
+                    }
+                    button.secondary type="submit" formaction=(m.action) formnovalidate
+                        hx-post=(m.action) hx-target=(target) hx-swap="innerHTML" { "Switch" }
+                }
+                p.agent-note { "Takes over from your next message and picks up where you left off." }
+                @for h in &m.unavailable {
+                    p.agent-hint {
+                        (h.text)
+                        @if let Some(c) = &h.command { " Run " code { (c) } " on this device." }
+                    }
+                }
+            }
         }
     }
 }
