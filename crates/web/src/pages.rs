@@ -690,12 +690,10 @@ pub fn dashboard(
     tasks: &[TaskSnapshot],
 ) -> Markup {
     let offered: Vec<&BackendInfo> = backends.iter().filter(|b| offered(b)).collect();
-    let lead = "Give one agent one prompt and see its reply, outside the chat. For trying out \
-                agents: they can look but not change apps, and the list is cleared when Melissa \
-                restarts.";
+    let lead = "Try one agent with one prompt, outside the chat.";
     let content = if f.is_some() {
         html! {
-            (page_header("Developer", Some(&format!("Agent tasks. {lead}"))))
+            (page_header("Developer", Some(lead)))
             (card("New agent task", new_task_form(&offered)))
             (card("Agent tasks", tasks_region(tasks, None)))
         }
@@ -712,7 +710,7 @@ pub fn dashboard(
 fn new_task_form(backends: &[&BackendInfo]) -> Markup {
     if !backends.iter().any(|b| b.available) {
         return html! {
-            (empty_state("No agent to try yet.", "Turn one on in Settings, under Providers."))
+            (empty_state("No agent to try yet.", "Set one up in Providers."))
             (link("/settings/providers", "Open Providers"))
         };
     }

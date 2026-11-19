@@ -608,3 +608,24 @@ Format: date — decision. Why. Alternatives considered.
   decides what is installed, not a runtime check inside a shared rule; the Nix side copies only
   `50-melissa.rules` already. Alternative: one rule that checks for a container marker (polkit JS can't read
   files; would rely on a unit's presence).
+- **2026-11-19 — Settings: graphical sign-in, Melissa applies changes herself, much less text.** Owner feedback
+  after installing Claude Code from the page ("this part needs to be graphical too", "way less text").
+  (1) **Claude signs in on the page**: `melissa-agent-login@claude` (polkit list now claude + grok, still
+  start-only) runs `claude auth login`; the page shows its URL (Anthropic hosts only) as a button and one
+  "Paste the code" field. The code reaches the CLI through stdin only: the queen writes one line into a FIFO
+  (`/run/melissa-agent-install/claude-login.code`, tmpfiles `p` root:melissa 0620 in a root:melissa 0750
+  directory, non-blocking open), `melissa-setup` reads it in its own shell and passes it on a private pipe.
+  Never an argument, environment variable, log or audit line. Success is `claude auth status` (exit 0), not
+  text; wrong code / cancel / timeout are exit statuses 3/4/5. Verified against the real CLI 2.1.x without an
+  account: URL printed, a fake code → "That code wasn't accepted" and exit 3; stdin EOF alone does not stop
+  it, so cancel kills it. Alternatives: a socket (more code for one line), `claude setup-token` on another
+  computer (a terminal), a PTY bridge (fragile). (2) **No manual restart**: an install or sign-in is picked up
+  live (backends look up a missing program again, `ProgramPath`; logins were already checked live). Saved
+  settings (API key, program, enable) still load at start, so Melissa restarts herself once idle (no chat
+  turn, helper job, agent task or install/sign-in unit running; 4 s quiet), audited `settings.apply`; the page
+  says "Ready after the current task". Re-reading `providers.toml` live was rejected for now: every backend's
+  sandbox spec would need rebuilding under running sessions. (3) **Less text**: one status word, at most one
+  primary action, one short sentence per section; internals behind "Details"; API keys behind "Use an API key
+  instead" with the variable name chosen by the server; no host commands in the container UI or the chat's
+  hints (only for runs from source); Updates and Developer shortened the same way. (4) Installs and sign-ins
+  are audited with their outcome, not only the request.

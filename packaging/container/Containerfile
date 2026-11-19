@@ -20,8 +20,13 @@ COPY Cargo.toml Cargo.lock clippy.toml about.toml about.hbs ./
 COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
+    # The target cache is shared between builds and cargo trusts file times: a build from an
+    # older checkout (e.g. `git archive`, whose files carry the commit time) left artifacts newer
+    # than these sources, and the image shipped stale crates. Touch ours so they always rebuild;
+    # dependencies stay cached.
     # melissa-agent's only binary is melissa-netbridge (runs inside every agent sandbox).
-    cargo build --release --locked -p melissa-queen -p melissa-comb -p melissa-agent \
+    find crates -type f -exec touch {} + \
+ && cargo build --release --locked -p melissa-queen -p melissa-comb -p melissa-agent \
  && install -D -m 0755 target/release/melissa-queen target/release/melissa-comb \
         target/release/melissa-netbridge -t /out/bin/ \
  && mkdir -p /out/licenses && cargo fetch --locked \

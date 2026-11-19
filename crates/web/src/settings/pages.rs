@@ -3,17 +3,18 @@
 
 use maud::{html, Markup};
 
+use super::apply::Pending;
 use crate::{
     components::{
-        actions, app_page, badge, card, code, command_block, confirm_card, detail_head, facts,
-        group, lines_field, link, live_region, log_view, notice, pick_list, plain_action,
-        provider_mark, settings_form, settings_frame_at, settings_head, split_card, text_field,
-        toggle, var_list, ConfirmCard, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone,
-        VarRow,
+        actions, app_page, badge, card, code, command_block, confirm_card, detail_head, disclosure,
+        external_button, facts, group, lines_field, live_region, log_view, notice, one_field_form,
+        pick_list, plain_action, provider_mark, settings_form, settings_frame_at, settings_head,
+        split_card, text_field, toggle, var_list, ConfirmCard, LogLine, Nav, PickRow,
+        SettingsSection, Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
-use melissa_settings::{install::InstallState, providers::EnvVarView};
+use melissa_settings::providers::EnvVarView;
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
 pub const SECTIONS: [(&str, &str); 3] = [
@@ -66,25 +67,65 @@ pub struct Flash {
     pub tone: Tone,
 }
 
-/// Whether saved settings wait for a restart, and how to do it.
-pub struct RestartHint {
-    /// Why a restart is needed.
-    pub text: &'static str,
-    /// The UI can restart Melissa (root helper installed).
-    pub button: bool,
-    /// Else: what to type.
-    pub command: String,
-}
-
 // --- Providers ----------------------------------------------------------------------------------
 
-/// One way Melissa runs a provider (a configured backend).
+/// One way Melissa runs a provider (a configured backend), for Details.
 pub struct BackendLine {
     pub name: String,
-    /// "chat session" or "one-shot task".
-    pub kind: &'static str,
-    /// "ready", "not logged in", "left out (disabled)", ...
+    /// "ready", "not signed in", "off", ...
     pub state: String,
+}
+
+/// The one thing to do for a provider now (at most one primary action).
+pub enum Step {
+    /// Nothing to do (ready, disabled, or a change waits to apply).
+    Nothing,
+    /// One short line, e.g. the Nix note.
+    Note(String),
+    /// A command to type: runs from source only, never in the container.
+    Command {
+        text: String,
+        command: String,
+    },
+    /// The Install button, after a failure with the reason and the installer's log.
+    Install {
+        vendor: &'static str,
+        failed: Option<String>,
+        log: Vec<String>,
+    },
+    Installing,
+    /// The Sign in button, after a failed try with a short reason.
+    SignIn {
+        again: Option<&'static str>,
+    },
+    /// A sign-in started; the vendor's link isn't there yet.
+    Starting,
+    /// Claude: open the link, sign in, paste the code here.
+    PasteCode {
+        url: String,
+    },
+    /// Claude: the code was sent; waiting for the CLI.
+    Checking,
+    /// Grok: open the link and confirm the code there.
+    DeviceCode {
+        url: String,
+        code: String,
+    },
+}
+
+/// The technical side of a provider, behind "Details".
+pub struct ProviderDetails {
+    pub used_by: Vec<String>,
+    pub backends: Vec<BackendLine>,
+    pub models: Vec<String>,
+    /// Where the program is (None: not found).
+    pub program: Option<String>,
+    /// Saved overrides (empty: none).
+    pub display_name: String,
+    pub command: String,
+    pub default_command: String,
+    pub args: Vec<String>,
+    pub env: Vec<EnvVarView>,
 }
 
 /// One provider as the Settings page shows it. All CLI-sourced text is already cleaned;
@@ -95,62 +136,17 @@ pub struct ProviderCard {
     pub version: Option<String>,
     /// The saved setting.
     pub enabled: bool,
+    /// One word or short phrase: Ready, Sign in needed, Not installed, Installing…, ...
     pub status: String,
     pub tone: Tone,
-    /// Where the program is ("not found" if it isn't).
-    pub program: Option<String>,
-    pub used_by: Vec<String>,
     /// Why it can't be disabled now.
     pub lock: Option<String>,
-    pub backends: Vec<BackendLine>,
-    pub models: Vec<String>,
-    /// Saved overrides (empty: none).
-    pub display_name: String,
-    pub command: String,
-    pub default_command: String,
-    pub args: Vec<String>,
-    pub env: Vec<EnvVarView>,
-    /// How to install it, while it isn't installed.
-    pub install: Option<InstallView>,
-    /// How to sign in, once it is installed and not signed in.
-    pub sign_in: Option<SignIn>,
-    /// Example variable name for the Environment form.
-    pub var_example: &'static str,
-}
-
-/// The Install section of a provider that isn't installed.
-pub enum InstallView {
-    /// The Install button and the install's progress (the install unit is there).
-    Button {
-        vendor: &'static str,
-        state: InstallState,
-        detail: Option<String>,
-        log: Vec<String>,
-    },
-    /// A Nix install: the agent comes from the Nix configuration.
-    Nix,
-    /// No install mechanism here: a note and maybe a command to run on the host.
-    Manual {
-        text: String,
-        command: Option<String>,
-    },
-}
-
-/// How to sign in to an installed agent: guidance, and a command for the device if there is one.
-pub struct SignIn {
-    pub text: &'static str,
-    pub command: Option<String>,
-    /// A device-code sign-in from the page (Grok, where the login unit is there).
-    pub device: Option<DeviceLogin>,
-}
-
-/// A device-code sign-in: its state and, once printed, the vendor's URL and code.
-pub struct DeviceLogin {
-    pub state: InstallState,
-    pub url: Option<String>,
-    pub code: Option<String>,
-    pub detail: Option<String>,
-    pub log: Vec<String>,
+    pub step: Step,
+    /// "Use an API key instead": Some(already set) where the CLI takes one.
+    pub key: Option<bool>,
+    /// Open the key field at once (there is no sign-in from the page here).
+    pub key_open: bool,
+    pub details: ProviderDetails,
 }
 
 pub struct ProvidersView {
@@ -158,13 +154,16 @@ pub struct ProvidersView {
     pub selected: usize,
     /// "Checked just now".
     pub checked: String,
-    pub restart: Option<RestartHint>,
+    /// Saved changes wait to apply.
+    pub pending: Option<Pending>,
+    /// Where Melissa can't restart herself and it is a run from source: how to.
+    pub manual_restart: Option<String>,
     pub flash: Option<Flash>,
     /// The agents' home directory (logins, config), e.g. `/var/lib/melissa/home`.
     pub home: Option<String>,
     /// The settings file.
     pub file: Option<String>,
-    /// An install is running: the region refreshes itself from this URL.
+    /// Something moves (install, sign-in, apply): the region refreshes itself from this URL.
     pub poll: Option<String>,
 }
 
@@ -227,12 +226,6 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
             })),
         })
         .collect();
-    let footer = html! {
-        p.quiet {
-            "Add a provider with a " (code("[[backend]]")) " entry in "
-            (code("queen.toml")) ", then restart Melissa."
-        }
-    };
     let detail = match v.cards.get(v.selected) {
         Some(c) => provider_detail(c, v),
         None => html! { p.quiet { "No agents are configured." } },
@@ -245,70 +238,160 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
         html! {
             (settings_head(
                 "Providers",
-                "The agent programs Melissa can run for her and her helpers.",
+                "The agents Melissa can use.",
                 &v.checked,
                 "/ui/settings/providers/refresh",
                 PROVIDERS_ID,
                 "Check again",
             ))
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
-            @if let Some(r) = &v.restart { (restart_note(r, PROVIDERS_ID)) }
-            (split_card("provider-card", "Providers", pick_list("Providers", &rows, Some(footer)), detail))
+            @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
+            (split_card("provider-card", "Providers", pick_list("Providers", &rows, None), detail))
         },
     )
 }
 
-fn restart_note(r: &RestartHint, target: &str) -> Markup {
+/// Saved changes that wait: one line (and, from source only, how to restart).
+pub(super) fn pending_note(p: Pending, manual: Option<&str>) -> Markup {
+    let text = match p {
+        Pending::AfterTask => "Applying after the current task.",
+        Pending::Now => "Applying… Melissa is back in a few seconds.",
+        Pending::Manual => "Restart Melissa to apply.",
+    };
     html! {
-        (notice(r.text, Tone::Info))
-        @if r.button {
-            (actions(plain_action("/ui/settings/restart", target, "Restart Melissa now", false)))
-        } @else {
-            (command_block(&r.command))
-        }
+        (notice(text, Tone::Info))
+        @if p == Pending::Manual { @if let Some(cmd) = manual { (command_block(cmd)) } }
     }
 }
 
 fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
     let url = provider_url(&c.id);
-    let badges = html! {
-        @if c.enabled { (badge("Enabled", Tone::Ok)) } @else { (badge("Disabled", Tone::Muted)) }
-    };
-    let sub = match &c.version {
-        Some(ver) => format!("{} · version {ver}", c.id),
-        None => c.id.clone(),
-    };
-    let used = if c.used_by.is_empty() {
-        html! { span.quiet { "Nothing right now" } }
+    let sub = c
+        .version
+        .as_deref()
+        .map(|v| format!("Version {v}"))
+        .unwrap_or_default();
+    html! {
+        (detail_head(provider_mark(&letter(&c.label), !c.enabled), &c.label, &sub,
+            html! { (badge(&c.status, c.tone)) }))
+        (step_view(c, &url))
+        @if let Some(set) = c.key { (key_view(set, c.key_open, &url)) }
+        (details_view(c, v, &url))
+    }
+}
+
+fn step_view(c: &ProviderCard, url: &str) -> Markup {
+    let login = format!("{url}/login");
+    match &c.step {
+        Step::Nothing => html! {},
+        Step::Note(text) => html! { p.quiet { (text) } },
+        Step::Command { text, command } => html! {
+            p.quiet { (text) }
+            (command_block(command))
+        },
+        Step::Install {
+            vendor,
+            failed,
+            log,
+        } => html! {
+            @if let Some(f) = failed { (notice(f, Tone::Error)) }
+            (actions(plain_action(&format!("{url}/install"), PROVIDERS_ID,
+                if failed.is_some() { "Try again" } else { "Install" }, true)))
+            @if failed.is_none() {
+                p.quiet.small { "Uses " (vendor) "'s official installer; you accept their terms." }
+            }
+            @if !log.is_empty() {
+                (disclosure("Log", false, log_view(log.iter().map(|l| LogLine {
+                    text: l,
+                    is_error: l.starts_with("melissa-setup:"),
+                }))))
+            }
+        },
+        Step::Installing => notice("Installing… This takes about a minute.", Tone::Info),
+        Step::SignIn { again } => html! {
+            @if let Some(a) = again { (notice(a, Tone::Error)) }
+            (actions(plain_action(&login, PROVIDERS_ID, "Sign in", true)))
+        },
+        Step::Starting => notice("Starting the sign-in…", Tone::Info),
+        Step::PasteCode { url: link } => html! {
+            ol.steps {
+                li { (external_button(link, "Open the sign-in page")) }
+                li {
+                    (one_field_form(&format!("{url}/login/code"), PROVIDERS_ID, "Continue",
+                        text_field("code", "Paste the code", "", "", "text", None)))
+                }
+            }
+            (actions(plain_action(&format!("{url}/login/cancel"), PROVIDERS_ID, "Cancel", false)))
+        },
+        Step::Checking => notice("Signing in…", Tone::Info),
+        Step::DeviceCode {
+            url: link,
+            code: dc,
+        } => html! {
+            (facts(&[("Code", code(dc))]))
+            (actions(external_button(link, "Open the sign-in page")))
+            p.quiet.small { "Confirm the code there. This page updates by itself." }
+        },
+    }
+}
+
+/// "Use an API key instead": one write-only field; the variable name stays out of sight.
+fn key_view(set: bool, open: bool, url: &str) -> Markup {
+    let action = format!("{url}/key");
+    if set {
+        return html! {
+            div.key-set {
+                span.quiet { "API key set" }
+                (plain_action(&action, PROVIDERS_ID, "Remove", false))
+            }
+        };
+    }
+    disclosure(
+        "Use an API key instead",
+        open,
+        one_field_form(
+            &action,
+            PROVIDERS_ID,
+            "Save",
+            text_field("value", "API key", "", "", "password", None),
+        ),
+    )
+}
+
+/// Everything technical, behind one "Details".
+fn details_view(c: &ProviderCard, v: &ProvidersView, url: &str) -> Markup {
+    let d = &c.details;
+    let used = if d.used_by.is_empty() {
+        html! { span.quiet { "Nothing" } }
     } else {
-        html! { (c.used_by.join(", ")) }
+        html! { (d.used_by.join(", ")) }
     };
     let ways = html! {
         ul.plain-list {
-            @for b in &c.backends {
-                li { (code(&b.name)) " · " (b.kind) " · " span.quiet { (b.state) } }
+            @for b in &d.backends {
+                li { (code(&b.name)) " " span.quiet { (b.state) } }
             }
         }
     };
-    let models = if c.models.is_empty() {
-        html! { span.quiet { "Not known yet: Melissa learns them when a chat first opens on it." } }
-    } else {
-        html! { span.badges { @for m in &c.models { (badge(m, Tone::Muted)) " " } } }
-    };
-    let mut rows = vec![
-        (
-            "Status",
-            html! { span class=(tone_class(c.tone)) { (c.status) } },
-        ),
-        ("Used by", used),
-        ("Runs as", ways),
-        ("Models", models),
-    ];
+    let mut rows = vec![("Used by", used), ("Backends", ways)];
+    if !d.models.is_empty() {
+        rows.push((
+            "Models",
+            html! { span.badges { @for m in &d.models { (badge(m, Tone::Muted)) " " } } },
+        ));
+    }
+    rows.push((
+        "Program",
+        html! { (d.program.as_deref().unwrap_or("not found")) },
+    ));
+    if let Some(h) = &v.home {
+        rows.push(("Home folder", code(h)));
+    }
     if let Some(lock) = &c.lock {
-        rows.push(("Can't disable", html! { (lock) }));
+        rows.push(("Can't turn off", html! { (lock) }));
     }
     let remove = format!("{url}/env/remove");
-    let var_rows: Vec<VarRow<'_>> = c
+    let var_rows: Vec<VarRow<'_>> = d
         .env
         .iter()
         .map(|e| VarRow {
@@ -317,164 +400,32 @@ fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
             remove_action: &remove,
         })
         .collect();
-    let home = v
-        .home
-        .as_deref()
-        .unwrap_or("the home folder of Melissa's user");
-    html! {
-        (detail_head(provider_mark(&letter(&c.label), !c.enabled), &c.label, &sub, badges))
-        (facts(&rows))
-        @if let Some(i) = &c.install { (install_section(c, i, &url)) }
-        @if let Some(si) = &c.sign_in {
-            (group("Sign in", Some(si.text), html! {
-                @if let Some(d) = &si.device { (device_login(d, &url)) }
-                @if let Some(cmd) = &si.command {
-                    p.quiet { "Or sign in with your account on the device (run on the host):" }
-                    (command_block(cmd))
-                }
+    disclosure(
+        "Details",
+        false,
+        html! {
+            (facts(&rows))
+            (settings_form(url, PROVIDERS_ID, "Save", html! {
+                (text_field("display_name", "Display name", &d.display_name, melissa_settings::providers::default_label(&c.id), "text", None))
+                (text_field("command", "Program path", &d.command, &d.default_command, "text",
+                    Some("Empty: the installed one.")))
+                (lines_field("args", "Extra launch arguments", &d.args.join("\n"),
+                    Some("One per line.")))
             }))
-        }
-        (settings_form(&url, PROVIDERS_ID, "Save", html! {
-            (group("Name", None, text_field("display_name", "Display name", &c.display_name, melissa_settings::providers::default_label(&c.id), "text", None)))
-            (group("Runtime", Some("Used after Melissa restarts."), html! {
-                (text_field("command", "Program path", &c.command, &c.default_command, "text",
-                    Some("Leave empty for the installed one. The file must be named like the provider.")))
-                (facts(&[("Program found", html! { (c.program.as_deref().unwrap_or("not found")) }),
-                         ("Home and config folder", html! { (code(home)) })]))
-                (lines_field("args", "Extra launch arguments", &c.args.join("\n"),
-                    Some("One per line. They come before Melissa's own; options that change permissions or tools are refused.")))
+            (group("Environment", Some("Secret values are never shown again."), html! {
+                (var_list(&var_rows, PROVIDERS_ID, "None."))
+                (settings_form(&format!("{url}/env"), PROVIDERS_ID, "Add", html! {
+                    div.field-row {
+                        (text_field("name", "Name", "", "", "text", None))
+                        (text_field("value", "Value", "", "", "password", None))
+                    }
+                }))
             }))
-        }))
-        (group("Environment", Some("Variables set for this agent inside its sandbox, such as an API key or a base URL. Values of names with KEY, TOKEN, SECRET or PASSWORD are never shown again."), html! {
-            (var_list(&var_rows, PROVIDERS_ID, "No variables set."))
-            (settings_form(&format!("{url}/env"), PROVIDERS_ID, "Add variable", html! {
-                div.field-row {
-                    (text_field("name", "Name", "", c.var_example, "text", None))
-                    (text_field("value", "Value", "", "", "password", None))
-                }
-            }))
-        }))
-        @if let Some(file) = &v.file {
-            p.quiet.small { "Saved in " (code(file)) ", over " (code("queen.toml")) "." }
-        }
-    }
-}
-
-fn device_login(d: &DeviceLogin, url: &str) -> Markup {
-    let action = format!("{url}/login");
-    let lines = |log: &[String]| {
-        log_view(log.iter().map(|l| LogLine {
-            text: l,
-            is_error: l.starts_with("melissa-setup:"),
-        }))
-    };
-    match d.state {
-        InstallState::Idle => actions(plain_action(
-            &action,
-            PROVIDERS_ID,
-            "Sign in with a code",
-            true,
-        )),
-        InstallState::Running => match (&d.url, &d.code) {
-            (Some(u), Some(c)) => html! {
-                (facts(&[("Open", link(u, u)), ("Code", code(c))]))
-                (notice("Waiting for you to confirm the code. This page updates by itself.", Tone::Info))
-            },
-            _ => html! {
-                (notice("Starting the sign-in…", Tone::Info))
-                @if !d.log.is_empty() { (lines(&d.log)) }
-            },
-        },
-        InstallState::Done => notice("Signed in.", Tone::Ok),
-        InstallState::Failed => html! {
-            (notice(&match &d.detail {
-                Some(x) => format!("The sign-in didn't finish ({x})."),
-                None => "The sign-in didn't finish.".to_string(),
-            }, Tone::Error))
-            // Not the log: it holds the expired code.
-            (actions(plain_action(&action, PROVIDERS_ID, "Try again", true)))
-        },
-    }
-}
-
-fn install_section(c: &ProviderCard, i: &InstallView, url: &str) -> Markup {
-    let action = format!("{url}/install");
-    let lines = |log: &[String]| {
-        log_view(log.iter().map(|l| LogLine {
-            text: l,
-            is_error: l.starts_with("melissa-setup:"),
-        }))
-    };
-    match i {
-        InstallView::Button {
-            vendor,
-            state,
-            detail,
-            log,
-        } => match state {
-            InstallState::Running => group(
-                "Install",
-                Some(&format!(
-                    "Installing {}… This usually takes a minute.",
-                    c.label
-                )),
-                lines(log),
-            ),
-            InstallState::Failed | InstallState::Done => {
-                let text = match (state, detail) {
-                    (InstallState::Failed, Some(d)) => format!("The install failed ({d})."),
-                    (InstallState::Failed, None) => "The install failed.".to_string(),
-                    _ => "The installer finished, but Melissa can't find the program.".to_string(),
-                };
-                group(
-                    "Install",
-                    None,
-                    html! {
-                        (notice(&text, Tone::Error))
-                        @if !log.is_empty() { (lines(log)) }
-                        (actions(plain_action(&action, PROVIDERS_ID, "Try again", true)))
-                    },
-                )
+            @if let Some(file) = &v.file {
+                p.quiet.small { "Saved in " (code(file)) "." }
             }
-            InstallState::Idle => group(
-                "Install",
-                Some(&format!(
-                    "Melissa downloads {vendor}'s official installer and installs {} on this \
-                     device. By installing it you accept {vendor}'s terms.",
-                    c.label
-                )),
-                actions(plain_action(
-                    &action,
-                    PROVIDERS_ID,
-                    &format!("Install {}", c.label),
-                    true,
-                )),
-            ),
         },
-        InstallView::Nix => group(
-            "Install",
-            Some(&format!(
-                "This requires you add {} via your Nix configuration.",
-                c.label
-            )),
-            html! {},
-        ),
-        InstallView::Manual { text, command } => group(
-            "Install",
-            Some(text),
-            html! { @if let Some(cmd) = command { (command_block(cmd)) } },
-        ),
-    }
-}
-
-fn tone_class(t: Tone) -> &'static str {
-    match t {
-        Tone::Ok => "tone-ok",
-        Tone::Info => "tone-info",
-        Tone::Warn => "tone-warn",
-        Tone::Error => "tone-error",
-        Tone::Muted => "tone-muted",
-    }
+    )
 }
 
 // --- Updates ------------------------------------------------------------------------------------
@@ -489,16 +440,14 @@ pub struct ImageLine {
 /// What the Updates page shows.
 pub struct UpdatesView {
     pub version: String,
-    /// The source revision of the image, if recorded.
-    pub revision: Option<String>,
-    /// "container", "from source".
-    pub install: String,
-    /// One-line explanation of how this host updates.
-    pub how: String,
-    /// The page's subtitle (what is updated here).
-    pub about: &'static str,
+    /// The image state in a word or two ("Up to date"), where the buttons work.
+    pub status: Option<(&'static str, Tone)>,
+    /// One short sentence where updating from here isn't the way.
+    pub note: Option<&'static str>,
+    /// Behind Details: installed as, revision, automatic updates.
+    pub details: Vec<(&'static str, String)>,
     pub images: Vec<ImageLine>,
-    /// "Checked 5 min ago", or why not.
+    /// "Checked 5 min ago" (empty: nothing to check here).
     pub checked: String,
     pub last: Option<Flash>,
     pub flash: Option<Flash>,
@@ -508,12 +457,12 @@ pub struct UpdatesView {
     pub can_rollback: bool,
     /// A pending confirmation for `apply` or `rollback`.
     pub confirm: Option<&'static str>,
-    /// Commands to type instead (label, command).
+    /// Commands to type (Nix and runs from source only): (label, command).
     pub commands: Vec<(String, String)>,
-    /// Whether and how the image updates by itself.
-    pub automatic: String,
-    pub agents: Vec<(String, String)>,
-    pub restart: Option<RestartHint>,
+    /// Show the commands at once (runs from source) instead of behind Details.
+    pub commands_open: bool,
+    pub pending: Option<Pending>,
+    pub manual_restart: Option<String>,
 }
 
 pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
@@ -521,81 +470,79 @@ pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
 }
 
 pub fn updates_region(v: &UpdatesView) -> Markup {
-    let mut rows = vec![
-        ("Melissa", html! { (v.version) }),
-        ("Installed as", html! { (v.install) }),
-    ];
-    if let Some(revision) = &v.revision {
-        rows.push(("Revision", html! { (revision) }));
+    let melissa = html! {
+        (v.version)
+        @if let Some((word, tone)) = v.status { " " (badge(word, tone)) }
+    };
+    let mut detail_rows: Vec<(&str, Markup)> = v
+        .details
+        .iter()
+        .map(|(k, val)| (*k, html! { (val) }))
+        .collect();
+    for i in &v.images {
+        detail_rows.push((
+            i.label,
+            html! { (code(&i.image)) br; span.quiet { (i.detail) } },
+        ));
     }
-    let images: Vec<(&str, Markup)> = v
-        .images
-        .iter()
-        .map(|i| {
-            (
-                i.label,
-                html! { (code(&i.image)) br; span.quiet { (i.detail) } },
-            )
-        })
-        .collect();
-    let agent_rows: Vec<(&str, Markup)> = v
-        .agents
-        .iter()
-        .map(|(name, ver)| (name.as_str(), html! { (ver) }))
-        .collect();
+    let commands = html! {
+        @for (label, cmd) in &v.commands {
+            p.quiet { (label) }
+            (command_block(cmd))
+        }
+    };
     html! {
         div id=(UPDATES_ID) {
-            (settings_head(
-                "Updates",
-                v.about,
-                &v.checked,
-                "/ui/settings/updates/check",
-                UPDATES_ID,
-                if v.can_check { "Check for updates" } else { "Look again" },
-            ))
+            @if v.checked.is_empty() {
+                header.settings-head { div { h1 { "Updates" } p.lead { "Melissa on this device." } } }
+            } @else {
+                (settings_head(
+                    "Updates",
+                    "Melissa on this device.",
+                    &v.checked,
+                    "/ui/settings/updates/check",
+                    UPDATES_ID,
+                    if v.can_check { "Check for updates" } else { "Look again" },
+                ))
+            }
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
-            @if let Some(r) = &v.restart { (restart_note(r, UPDATES_ID)) }
+            @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
             @if let Some(action) = v.confirm {
                 @if action == "apply" {
                     (confirm_card(&ConfirmCard {
-                        title: "Install the update and restart Melissa?",
-                        text: "Melissa downloads the new image, then restarts on it. Apps and chats stop for a few minutes; their data is kept. If the new image doesn't start, Melissa goes back to the current one, and you can roll back later too.",
+                        title: "Update and restart Melissa?",
+                        text: "Apps and chats pause for a few minutes. Data is kept, and you can roll back.",
                         action: "/ui/settings/updates/apply",
                         target: UPDATES_ID,
-                        confirm: "Install and restart",
+                        confirm: "Update",
                         cancel_href: "/settings/updates",
                     }))
                 } @else {
                     (confirm_card(&ConfirmCard {
-                        title: "Go back to the previous image and restart Melissa?",
-                        text: "Melissa restarts on the image it ran before the last update. Apps and chats stop for a few minutes. Data in apps is kept.",
+                        title: "Go back to the previous version?",
+                        text: "Melissa restarts on it. Apps and chats pause for a few minutes. Data is kept.",
                         action: "/ui/settings/updates/rollback",
                         target: UPDATES_ID,
-                        confirm: "Roll back and restart",
+                        confirm: "Roll back",
                         cancel_href: "/settings/updates",
                     }))
                 }
             }
             (card("This device", html! {
-                (facts(&rows))
-                p { (v.how) }
+                (facts(&[("Melissa", melissa)]))
+                @if let Some(n) = v.note { p.quiet { (n) } }
                 @if let Some(l) = &v.last { (notice(&l.text, l.tone)) }
-                @if !images.is_empty() { (facts(&images)) }
                 @if v.can_apply || v.can_rollback {
                     (actions(html! {
-                        @if v.can_apply { (plain_action("/ui/settings/updates/apply", UPDATES_ID, "Apply update (restarts)", true)) }
-                        @if v.can_rollback { (plain_action("/ui/settings/updates/rollback", UPDATES_ID, "Roll back (restarts)", false)) }
+                        @if v.can_apply { (plain_action("/ui/settings/updates/apply", UPDATES_ID, "Update", true)) }
+                        @if v.can_rollback { (plain_action("/ui/settings/updates/rollback", UPDATES_ID, "Roll back", false)) }
                     }))
                 }
-                @for (label, cmd) in &v.commands {
-                    p.quiet { (label) }
-                    (command_block(cmd))
-                }
-                p.quiet { (v.automatic) }
-            }))
-            (card("Agent programs", html! {
-                @if agent_rows.is_empty() { p.quiet { "None configured." } } @else { (facts(&agent_rows)) }
-                p { (link("/settings/providers", "Manage providers")) }
+                @if v.commands_open { (commands) }
+                (disclosure("Details", false, html! {
+                    (facts(&detail_rows))
+                    @if !v.commands_open { (commands) }
+                }))
             }))
         }
     }

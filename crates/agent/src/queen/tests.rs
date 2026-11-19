@@ -39,6 +39,8 @@ const COMB: &str = "c-0a1b2c3d";
 struct Replay {
     name: &'static str,
     fail: bool,
+    /// Installed but not signed in (`not_ready`); never opened.
+    signed_out: bool,
     scripts: Mutex<VecDeque<Vec<Step>>>,
     server: McpServer,
     agents: Mutex<Vec<tokio::task::JoinHandle<Result<(), String>>>>,
@@ -49,6 +51,7 @@ impl Replay {
         Arc::new(Self {
             name,
             fail: false,
+            signed_out: false,
             scripts: Mutex::new(scripts.into()),
             server,
             agents: Mutex::new(Vec::new()),
@@ -58,6 +61,13 @@ impl Replay {
     fn broken(name: &'static str, server: McpServer) -> Arc<Self> {
         Arc::new(Self {
             fail: true,
+            ..Arc::into_inner(Self::new(name, server, Vec::new())).unwrap()
+        })
+    }
+
+    fn signed_out(name: &'static str, server: McpServer) -> Arc<Self> {
+        Arc::new(Self {
+            signed_out: true,
             ..Arc::into_inner(Self::new(name, server, Vec::new())).unwrap()
         })
     }
@@ -83,8 +93,14 @@ impl SessionBackend for Replay {
         }
     }
 
+    fn not_ready(&self) -> Option<crate::session::NotReady> {
+        self.signed_out
+            .then_some(crate::session::NotReady::NotLoggedIn)
+    }
+
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {
         Box::pin(async move {
+            assert!(!self.signed_out, "a signed-out backend is never opened");
             if self.fail {
                 return Err(AgentError::Spawn {
                     command: self.name.into(),
@@ -341,7 +357,9 @@ fn setup_full(
         comb: COMB.into(),
     };
     tune(&mut settings);
-    let backends: Vec<Arc<dyn SessionBackend>> = vec![broken, replay.clone(), bees.clone()];
+    let signed_out = Replay::signed_out("signed-out-acp", server.clone());
+    let backends: Vec<Arc<dyn SessionBackend>> =
+        vec![broken, replay.clone(), bees.clone(), signed_out];
     let queen = Queen::new(settings, backends, board, events, &pool).unwrap();
     Setup {
         queen,
@@ -454,6 +472,31 @@ fn finished(events: &[QueenEvent]) -> &str {
 // --- tests ----------------------------------------------------------------------------
 
 // --- tests ----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_installed_but_signed_out_backend_is_skipped() {
+    let mut script = handshake("s-1");
+    script.extend([
+        prompt(2, "s-1", "<contains:You are the Queen (test).>"),
+        text("s-1", "pong"),
+        done(2, "end_turn"),
+    ]);
+    let s = setup_in(scratch("signed-out"), vec![script], |q| {
+        q.backends = vec!["signed-out-acp".into(), "fake-acp".into()];
+    });
+    let (turn, since) = s.queen.send("ping").unwrap();
+    let events = turn_events(&s.queen, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
+    assert!(events.contains(&QueenEvent::BackendFailed {
+        backend: "signed-out-acp".into(),
+        error: "not signed in".into(),
+    }));
+    assert!(events.contains(&QueenEvent::SessionOpened {
+        backend: "fake-acp".into(),
+        resumed: false,
+    }));
+    s.close().await;
+}
 
 #[tokio::test]
 async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {

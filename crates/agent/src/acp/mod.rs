@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
-    cli::{network_label, network_ready, open_egress, resolve_program, sandboxed_command},
+    cli::{network_label, network_ready, open_egress, sandboxed_command, ProgramPath},
     egress::EgressProxy,
     mcp::McpServer,
     sandbox::{self, SandboxError, SandboxSpec},
@@ -200,7 +200,7 @@ impl AcpSpec {
 pub struct AcpBackend {
     spec: AcpSpec,
     sandbox: SandboxSpec,
-    program: Option<PathBuf>,
+    program: ProgramPath,
     bwrap: Option<PathBuf>,
     home: Option<PathBuf>,
     workdir: PathBuf,
@@ -213,7 +213,7 @@ pub struct AcpBackend {
 impl AcpBackend {
     /// `workdir` is the default working directory (per-task dirs come from the board).
     pub fn new(spec: AcpSpec, workdir: PathBuf) -> Self {
-        let program = resolve_program(&spec.command);
+        let program = ProgramPath::new(&spec.command);
         let sandbox = spec.effective_sandbox();
         let bwrap = if sandbox.enabled {
             sandbox::find_bwrap()
@@ -259,7 +259,7 @@ impl AcpBackend {
     async fn spawn(&self, open: OpenSession) -> Result<OpenedSession, AgentError> {
         let program = self
             .program
-            .as_ref()
+            .get()
             .ok_or_else(|| AgentError::Unavailable(format!("`{}` not found", self.spec.command)))?;
         let cwd = std::path::absolute(&open.cwd)?;
         tokio::fs::create_dir_all(&cwd).await?;
@@ -305,7 +305,7 @@ impl AcpBackend {
             &self.sandbox,
             self.bwrap.as_deref(),
             self.home.as_deref(),
-            program,
+            &program,
             &cwd,
             &[],
             &binds,
@@ -411,7 +411,7 @@ impl SessionBackend for AcpBackend {
     fn not_ready(&self) -> Option<crate::session::NotReady> {
         crate::cli::not_ready(
             &self.spec.command,
-            self.program.is_some(),
+            self.program.get().is_some(),
             &self.sandbox,
             self.bwrap.is_some(),
             self.egress.as_ref(),
@@ -436,7 +436,7 @@ impl Backend for AcpBackend {
             name: self.spec.name.clone(),
             kind: "acp",
             detail,
-            available: self.program.is_some()
+            available: self.program.get().is_some()
                 && (!self.sandbox.enabled || self.bwrap.is_some())
                 && network_ready(&self.sandbox, self.egress.as_ref()),
             tools: self.spec.tools,

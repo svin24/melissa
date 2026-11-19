@@ -13,15 +13,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{
+    apply,
     pages::{self, Flash, ImageLine, UpdatesView},
-    providers::{self, agent_versions, restart_hint},
+    providers::{agent_versions, manual_restart},
 };
 use crate::{components::Tone, is_htmx, ui::Ui};
 
 /// What a from-source install does.
 const SOURCE_UPDATE: &str = "git pull && just demo";
-/// Where a container without the host helper gets a newer image (from the source folder).
-const CONTAINER_REBUILD: &str = "just container-build && just container-install";
 /// The `melissa-host` profile on a non-NixOS host with Nix (packaging/nix/host).
 const NIX_PROFILE: &str = "/nix/var/nix/profiles/melissa";
 
@@ -76,63 +75,59 @@ fn images(env: &UpdateEnv, state: &UpdateState) -> Vec<ImageLine> {
 
 fn install_words(env: &UpdateEnv) -> &'static str {
     match env.kind {
-        HostKind::Container => "Melissa container (podman, started by systemd)",
+        HostKind::Container => "Container",
         HostKind::Nix if env.nixos() => "Nix (part of this computer's NixOS configuration)",
         HostKind::Nix => "Nix (the melissa-host profile on this computer)",
         HostKind::Other => "From source on this computer",
     }
 }
 
-fn how(env: &UpdateEnv) -> &'static str {
+/// One short sentence where updating from here isn't the way (None: the buttons are).
+fn note(env: &UpdateEnv) -> Option<&'static str> {
     match env.kind {
-        HostKind::Container if env.helper_installed() => {
-            "Updates come as a new container image. Check for one, then apply it: Melissa restarts on it, and the image it ran before stays for a rollback. Apps, chats and settings are kept."
-        }
-        HostKind::Container => {
-            "Updates come as a new container image. The host's update helper isn't connected to this container, so run the commands below on the host. Apps, chats and settings are kept."
-        }
-        HostKind::Nix if env.nixos() => {
-            "Melissa updates with this computer's NixOS configuration, not from here. Update the flake inputs and rebuild with the commands below; a rebuild can be rolled back (also from the boot menu). Apps, chats and settings are kept."
-        }
-        HostKind::Nix => {
-            "Melissa is installed from Nix and updates with its Nix profile, not from here. Run the commands below on this computer. Apps, chats and settings are kept."
-        }
-        HostKind::Other => {
-            "This computer isn't running the Melissa container, so there is no image to update. Update Melissa from source instead."
-        }
+        HostKind::Container if env.helper_installed() => None,
+        HostKind::Container => Some("Updating from here isn't set up on this device."),
+        HostKind::Nix => Some("Melissa updates with your Nix configuration."),
+        HostKind::Other => Some("Running from source: update it in the source folder."),
     }
 }
 
-fn auto_words(env: &UpdateEnv, state: &UpdateState) -> String {
+/// The image state in a word or two (container with the helper only).
+fn status_words(env: &UpdateEnv, state: &UpdateState) -> Option<(&'static str, Tone)> {
+    if env.kind != HostKind::Container || !env.helper_installed() {
+        return None;
+    }
+    let s = state.status.as_ref()?;
+    Some(if s.staged.is_some() {
+        ("Ready to install", Tone::Info)
+    } else if s.available.is_some() {
+        ("Update available", Tone::Info)
+    } else {
+        ("Up to date", Tone::Ok)
+    })
+}
+
+fn auto_words(env: &UpdateEnv, state: &UpdateState) -> &'static str {
     if env.kind == HostKind::Nix {
         return if env.nixos() {
-            "Automatic updates: through the NixOS configuration (system.autoUpgrade), if it is set there.".into()
+            "Through the NixOS configuration (system.autoUpgrade), if set"
         } else {
-            "Automatic updates: not set up (the Nix profile is updated by hand).".into()
+            "Off (the Nix profile is updated by hand)"
         };
     }
     match state.status.as_ref().and_then(|s| s.auto_update.as_deref()) {
-        Some("registry") => "Automatic updates: on (podman-auto-update.timer pulls a newer image daily and restarts Melissa on it).".into(),
-        Some("local") => "Automatic updates: on for images loaded on the host (podman-auto-update.timer, daily).".into(),
-        Some("off") => "Automatic updates: off (install.sh with AUTO_UPDATE=off).".into(),
-        _ => "Automatic updates: not set up here.".into(),
+        Some("registry") => "On (daily)",
+        Some("local") => "On for images loaded on the host (daily)",
+        Some("off") => "Off",
+        _ => "Not set up",
     }
 }
 
+/// Commands for the page: Nix and runs from source only.
 fn manual_commands(env: &UpdateEnv) -> Vec<(String, String)> {
-    let cmd = |label: &str, a: UpdateAction| (label.to_string(), a.manual_command());
     match env.kind {
-        HostKind::Container if env.helper_installed() => Vec::new(),
-        HostKind::Container => vec![
-            cmd("On the host, check for an update:", UpdateAction::Check),
-            cmd("Apply it (Melissa restarts):", UpdateAction::Apply),
-            cmd("Roll back (Melissa restarts):", UpdateAction::Rollback),
-            (
-                "Without the helper (a development container), in the Melissa source folder:"
-                    .into(),
-                CONTAINER_REBUILD.into(),
-            ),
-        ],
+        // No host commands in the container's UI or API: the buttons are the way.
+        HostKind::Container => Vec::new(),
         HostKind::Nix if env.nixos() => vec![
             (
                 "In the folder of this computer's system flake, update its inputs:".into(),
@@ -202,7 +197,7 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
     let checked = match (env.helper_installed(), state.status_at) {
         (true, Some(at)) => format!("Checked {}", ago(at, now_secs())),
         (true, None) => "Not checked yet".into(),
-        _ => "Nothing to check here".into(),
+        _ => String::new(),
     };
     let status = state.status.as_ref();
     let mut flash = flash;
@@ -214,16 +209,17 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
             });
         }
     }
+    let mut details = vec![("Installed as", install_words(env).to_string())];
+    if let Some(r) = &release.revision {
+        details.push(("Revision", r.clone()));
+    }
+    details.push(("Automatic updates", auto_words(env, &state).to_string()));
     UpdatesView {
         version: release.version.clone(),
-        revision: release.revision.clone(),
-        install: install_words(env).into(),
-        how: how(env).into(),
-        about: match env.kind {
-            HostKind::Nix => "This device's Melissa and how its Nix install is updated.",
-            _ => "This device's Melissa and its container image.",
-        },
+        status: status_words(env, &state),
+        note: note(env),
         images: images(env, &state),
+        details,
         checked,
         last: last_flash(&state),
         flash,
@@ -234,13 +230,9 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
             && status.is_some_and(|s| s.previous.is_some()),
         confirm,
         commands: manual_commands(env),
-        automatic: auto_words(env, &state),
-        agents: agent_versions(ui).await,
-        restart: s
-            .parts()
-            .store
-            .restart_needed()
-            .then(|| restart_hint(s, providers::SAVED)),
+        commands_open: env.kind == HostKind::Other,
+        pending: apply::pending(ui).await,
+        manual_restart: manual_restart(s),
     }
 }
 
@@ -271,14 +263,10 @@ const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(750)
 
 fn started_text(action: UpdateAction) -> &'static str {
     match action {
-        UpdateAction::Check => "Checking for updates. Reload this page in a minute for the result.",
-        UpdateAction::Apply => {
-            "Installing the update. Melissa restarts on the new image when it is downloaded; reload this page in a few minutes."
-        }
-        UpdateAction::Rollback => {
-            "Going back to the previous image. Melissa restarts in a moment; reload this page in a minute."
-        }
-        UpdateAction::Restart => "Melissa is restarting. Reload this page in a few seconds.",
+        UpdateAction::Check => "Checking… Look again in a minute.",
+        UpdateAction::Apply => "Updating… Melissa restarts when it's ready.",
+        UpdateAction::Rollback => "Going back… Melissa restarts in a moment.",
+        UpdateAction::Restart => "Restarting…",
     }
 }
 
@@ -287,14 +275,9 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
     let env = &s.parts().updates;
     if !env.can(action) {
         let text = match env.kind {
-            HostKind::Container => format!(
-                "Melissa can't do that from here. On the host, run: {}",
-                action.manual_command()
-            ),
-            HostKind::Nix => {
-                "Melissa updates with this computer's Nix configuration; the commands are on Settings → Updates.".into()
-            }
-            HostKind::Other => "There is no container image to update on this device.".into(),
+            HostKind::Container => "Melissa can't do that from here.".into(),
+            HostKind::Nix => "Melissa updates with your Nix configuration.".into(),
+            HostKind::Other => "There is no container image to update here.".into(),
         };
         return Outcome::NotHere(Flash {
             text,

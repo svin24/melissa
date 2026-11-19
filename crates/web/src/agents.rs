@@ -1,8 +1,8 @@
 //! The agent menu of a chat: which backend (and model) the Queen or a helper runs on, and
 //! the choices the user has. Builds the fixed [`AgentMenu`] component from the API's
 //! [`BackendView`]s and holds the UI words for a backend that cannot be used yet (what fixes it
-//! depends on the host: Settings → Providers and `melissa-setup` in the container, the Nix
-//! configuration on Nix, `melissa-setup` on the host otherwise).
+//! depends on the host: Settings → Providers in the container and on Nix (installs there come
+//! from the Nix configuration), `melissa-setup` only for a run from source).
 
 use melissa_agent::queen::backends::BackendView;
 use melissa_settings::updates::HostKind;
@@ -53,34 +53,29 @@ fn model_label(view: &BackendView, model: &str) -> Option<String> {
     Some(label.to_string())
 }
 
-/// What to tell the user about an agent that isn't installed (`login`: it is, but isn't logged
-/// in), and the command that fixes it, for this kind of host.
+/// What to tell the user about an agent that isn't installed (`login`: it is, but isn't signed
+/// in): one short line, and a command only for a run from source (never in the container).
 fn setup_hint(label: &str, backend: &str, login: bool, host: HostKind) -> (String, Option<String>) {
     let name = setup_name(backend);
     let verb = if login { "login" } else { "agent" };
     match (host, login) {
-        (HostKind::Container, false) => (
-            format!("{label} isn't set up on this device. Install it in Settings → Providers."),
-            name.map(|a| format!("sudo podman exec -it melissa melissa-setup agent {a}")),
-        ),
-        (HostKind::Container, true) => (
-            format!("{label} isn't logged in. Settings → Providers shows how to sign in."),
-            name.map(|a| format!("sudo podman exec -it melissa melissa-setup login {a}")),
-        ),
         (HostKind::Nix, false) => (
             format!("This requires you add {label} via your Nix configuration."),
             None,
         ),
-        (HostKind::Nix, true) => (
-            format!("{label} isn't logged in. Settings → Providers shows how to sign in."),
+        (HostKind::Container, false) => (
+            format!("{label}: install it in Settings → Providers."),
             None,
         ),
+        (HostKind::Container | HostKind::Nix, true) => {
+            (format!("{label}: sign in from Settings → Providers."), None)
+        }
         (HostKind::Other, false) => (
-            format!("{label} isn't set up on this device."),
+            format!("{label} isn't installed."),
             name.map(|a| format!("sudo melissa-setup {verb} {a}")),
         ),
         (HostKind::Other, true) => (
-            format!("{label} isn't logged in."),
+            format!("{label} needs a sign-in."),
             name.map(|a| format!("sudo melissa-setup {verb} {a}")),
         ),
     }
@@ -111,10 +106,7 @@ pub(crate) fn menu(
         if !v.available {
             let (text, command) = match v.reason {
                 Some("not_logged_in") => setup_hint(&label, &v.name, true, host),
-                Some("sandbox") => (
-                    format!("{label} can't start its sandbox here; the log says why."),
-                    None,
-                ),
+                Some("sandbox") => (format!("{label} can't start here; the log says why."), None),
                 _ => setup_hint(&label, &v.name, false, host),
             };
             unavailable.push(AgentHint {
@@ -222,17 +214,14 @@ mod tests {
         );
         assert_eq!(parse_choice(" grok-acp "), ("grok-acp", None));
 
-        // In the container image: Settings → Providers, or melissa-setup through podman.
+        // In the container image: Settings → Providers, never a command.
         let m = menu(&views, "/ui/backend".into(), None, HostKind::Container);
         assert_eq!(
-            m.unavailable[0].command.as_deref(),
-            Some("sudo podman exec -it melissa melissa-setup login grok")
+            m.unavailable[0].text,
+            "Grok: sign in from Settings → Providers."
         );
         assert!(m.unavailable[1].text.contains("Settings → Providers"));
-        assert_eq!(
-            m.unavailable[1].command.as_deref(),
-            Some("sudo podman exec -it melissa melissa-setup agent opencode")
-        );
+        assert!(m.unavailable.iter().all(|h| h.command.is_none()));
         // On Nix: the Nix configuration, no melissa-setup.
         let m = menu(&views, "/ui/backend".into(), None, HostKind::Nix);
         assert_eq!(

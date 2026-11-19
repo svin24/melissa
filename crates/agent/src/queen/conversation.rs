@@ -680,10 +680,21 @@ impl Conversation {
                 .filter(|c| c.backend == *name)
                 .and_then(|c| c.model.clone());
             let backend = inner.backends.iter().find(|b| b.info().name == *name);
-            let Some(backend) = backend.filter(|b| b.info().available) else {
+            let Some(backend) = backend else {
                 self.backend_failed(name, "not available on this comb");
                 continue;
             };
+            // The same live check as the agent menu: an installed CLI that isn't signed in
+            // would only fail the turn, so the next backend gets it instead.
+            if let Some(why) = backend.not_ready() {
+                let words = match why {
+                    NotReady::NotInstalled => "not available on this comb",
+                    NotReady::NotLoggedIn => "not signed in",
+                    NotReady::Sandbox => "its sandbox cannot start",
+                };
+                self.backend_failed(name, words);
+                continue;
+            }
             let token = match inner
                 .server
                 .open_session(spec.task, ctx.clone(), spec.allow.clone())

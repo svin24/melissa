@@ -8,6 +8,7 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
@@ -141,7 +142,7 @@ impl CliSpec {
 pub struct CliBackend {
     spec: CliSpec,
     sandbox: SandboxSpec,
-    program: Option<PathBuf>,
+    program: ProgramPath,
     bwrap: Option<PathBuf>,
     home: Option<PathBuf>,
     workdir: PathBuf,
@@ -151,7 +152,7 @@ pub struct CliBackend {
 impl CliBackend {
     /// `workdir` is the working directory for the child process (created if missing).
     pub fn new(spec: CliSpec, workdir: PathBuf) -> Self {
-        let program = resolve_program(&spec.command);
+        let program = ProgramPath::new(&spec.command);
         let sandbox = spec.effective_sandbox();
         let bwrap = if sandbox.enabled {
             sandbox::find_bwrap()
@@ -365,7 +366,7 @@ impl Backend for CliBackend {
             name: self.spec.name.clone(),
             kind: "cli",
             detail,
-            available: self.program.is_some()
+            available: self.program.get().is_some()
                 && (!self.sandbox.enabled || self.bwrap.is_some())
                 && network_ready(&self.sandbox, self.egress.as_ref()),
             tools: !self.spec.mcp_args.is_empty(),
@@ -378,7 +379,7 @@ impl Backend for CliBackend {
         sink: EventSink,
     ) -> BoxFuture<'a, Result<(), AgentError>> {
         Box::pin(async move {
-            let program = self.program.as_ref().ok_or_else(|| {
+            let program = self.program.get().ok_or_else(|| {
                 AgentError::Unavailable(format!("`{}` not found", self.spec.command))
             })?;
             let prompt = req.prompt.trim();
@@ -410,7 +411,7 @@ impl Backend for CliBackend {
                 req.mcp.iter().map(|m| m.token.clone()).collect(),
             )?;
             let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
-            let (program, args) = self.command_line(program, &workdir, req, bridge, args)?;
+            let (program, args) = self.command_line(&program, &workdir, req, bridge, args)?;
 
             let mut command = tokio::process::Command::new(&program);
             if !self.sandbox.enabled {
@@ -514,6 +515,34 @@ fn strip_ansi(input: &str) -> String {
         }
     }
     out
+}
+
+/// A backend's program, looked up again while it is missing: an agent CLI installed after
+/// Melissa started (Settings → Providers → Install) is used without a restart. Once found,
+/// the path is kept. Cheap to clone (clones share the lookup).
+#[derive(Debug, Clone)]
+pub(crate) struct ProgramPath {
+    command: Arc<str>,
+    found: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl ProgramPath {
+    pub(crate) fn new(command: &str) -> Self {
+        Self {
+            command: command.into(),
+            found: Arc::new(Mutex::new(resolve_program(command))),
+        }
+    }
+
+    /// The program, if it is there now.
+    pub(crate) fn get(&self) -> Option<PathBuf> {
+        // A poisoned lock only means a panic elsewhere mid-lookup; the value is still usable.
+        let mut found = self.found.lock().unwrap_or_else(|e| e.into_inner());
+        if found.is_none() {
+            *found = resolve_program(&self.command);
+        }
+        found.clone()
+    }
 }
 
 /// Find a program: paths are used as given, bare names are looked up on `PATH`.
@@ -622,6 +651,24 @@ mod tests {
     fn missing_program_is_unavailable() {
         let spec = CliSpec::new("x", "melissa-definitely-not-installed", &[]);
         assert!(!CliBackend::new(spec, std::env::temp_dir()).info().available);
+    }
+
+    #[test]
+    fn a_program_installed_later_is_found_without_a_restart() {
+        let dir = std::env::temp_dir().join(format!("melissa-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent");
+        let spec = CliSpec::new("x", path.to_str().unwrap(), &[]).without_sandbox();
+        let backend = CliBackend::new(spec, std::env::temp_dir());
+        let copy = backend.clone();
+        assert!(!backend.info().available);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        assert!(backend.info().available);
+        assert!(copy.info().available, "clones share the lookup");
+        // Once found it is kept.
+        assert_eq!(copy.program.get(), Some(path));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

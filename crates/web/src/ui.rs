@@ -58,6 +58,8 @@ pub(crate) struct Ui {
     pub(crate) queen: Queen,
     hive: HiveCache,
     pub(crate) settings: crate::settings::Settings,
+    /// One-shot agent tasks (Settings → Developer), to tell whether Melissa is busy.
+    pub(crate) board: Option<melissa_agent::TaskBoard>,
 }
 
 impl Ui {
@@ -66,7 +68,30 @@ impl Ui {
             queen,
             hive,
             settings,
+            board: None,
         }
+    }
+
+    pub(crate) fn with_board(mut self, board: melissa_agent::TaskBoard) -> Self {
+        self.board = Some(board);
+        self
+    }
+
+    /// Something is running that a restart would cut off: a chat turn (Melissa's or a
+    /// helper's), a helper's job or an agent task.
+    pub(crate) fn busy(&self) -> bool {
+        self.queen.status().turn.is_some()
+            || self
+                .queen
+                .bees()
+                .list()
+                .iter()
+                .any(|b| b.status == "working")
+            || self.board.as_ref().is_some_and(|b| {
+                b.list()
+                    .iter()
+                    .any(|t| t.status == melissa_agent::TaskStatus::Running)
+            })
     }
 }
 

@@ -1464,6 +1464,41 @@ pub fn region(id: &str, content: Markup) -> Markup {
     html! { div id=(id) { (content) } }
 }
 
+/// Something that stays out of the way until asked for ("Details", "Use an API key
+/// instead"): a native `<details>`, keyboard and screen-reader friendly, no script.
+pub fn disclosure(summary: &str, open: bool, content: Markup) -> Markup {
+    html! {
+        details.disclosure open[open] {
+            summary { (summary) }
+            div.disclosure-body { (content) }
+        }
+    }
+}
+
+/// A link to a vendor's page (a sign-in), styled as the primary button. Opens in a new tab
+/// without handing over this page (`noopener noreferrer`). Only for http(s) URLs Melissa
+/// checked (e.g. `install::claude_login_url`); anything else renders as plain text.
+pub fn external_button(href: &str, label: &str) -> Markup {
+    if !(href.starts_with("https://") || href.starts_with("http://")) {
+        return html! { span { (label) } };
+    }
+    html! {
+        a.button-like.primary href=(href) target="_blank" rel="noopener noreferrer" { (label) }
+    }
+}
+
+/// One field and a primary button on one row, e.g. "Paste the code" + Continue. Swaps
+/// `#target` (htmx) or posts normally.
+pub fn one_field_form(action: &str, target: &str, submit: &str, field: Markup) -> Markup {
+    html! {
+        form.one-field method="post" action=(action) hx-post=(action)
+            hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (field)
+            button.primary type="submit" { (submit) }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

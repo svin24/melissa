@@ -8,6 +8,7 @@ description = "Melissa settings: provider overrides (providers.toml), agent CLI 
 
 [dependencies]
 melissa-agent = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
