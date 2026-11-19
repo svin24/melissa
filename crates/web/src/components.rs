@@ -1051,11 +1051,10 @@ pub fn composer_status(
         }
         span {
             @match (agents, backend) {
-                (Some(m), _) => { "Runs on " (agent_menu(m)) ". " },
-                (None, Some(b)) => { "Runs on " (b) ". " },
-                (None, None) => { "Starts when you send a message. " },
+                (Some(m), _) => { (agent_menu(m)) },
+                (None, Some(b)) => { (b) },
+                (None, None) => {},
             }
-            "Everything is logged."
         }
         @if let Some(e) = agents.and_then(|m| m.error.as_deref()) {
             span.agent-error role="alert" { (e) }
@@ -1109,32 +1108,23 @@ pub fn agent_menu(m: &AgentMenu) -> Markup {
                 span.caret aria-hidden="true" {}
             }
             div.agent-panel {
-                label for="agent-choice" { "Agent for this chat" }
-                div.agent-row {
-                    select #agent-choice name="choice" {
-                        @for g in &m.groups {
-                            @if g.options.len() == 1 && g.options[0].label == g.label {
-                                option value=(g.options[0].value) selected[g.options[0].selected] { (g.label) }
-                            } @else {
-                                optgroup label=(g.label) {
-                                    @for o in &g.options {
-                                        option value=(o.value) selected[o.selected] { (o.label) }
-                                    }
+                // Picking an agent switches at once (from the next message); no extra text.
+                label.visually-hidden for="agent-choice" { "Agent for this chat" }
+                select #agent-choice name="choice" hx-post=(m.action) hx-trigger="change"
+                    hx-target=(target) hx-swap="innerHTML" {
+                    @for g in &m.groups {
+                        @if g.options.len() == 1 && g.options[0].label == g.label {
+                            option value=(g.options[0].value) selected[g.options[0].selected] { (g.label) }
+                        } @else {
+                            optgroup label=(g.label) {
+                                @for o in &g.options {
+                                    option value=(o.value) selected[o.selected] { (o.label) }
                                 }
                             }
                         }
-                        @for h in &m.unavailable {
-                            option disabled { (h.label) " (not set up)" }
-                        }
                     }
-                    button.secondary type="submit" formaction=(m.action) formnovalidate
-                        hx-post=(m.action) hx-target=(target) hx-swap="innerHTML" { "Switch" }
-                }
-                p.agent-note { "Takes over from your next message and picks up where you left off." }
-                @for h in &m.unavailable {
-                    p.agent-hint {
-                        (h.text)
-                        @if let Some(c) = &h.command { " Run " code { (c) } " on this device." }
+                    @for h in &m.unavailable {
+                        option disabled { (h.label) }
                     }
                 }
             }

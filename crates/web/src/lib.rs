@@ -1946,10 +1946,7 @@ mod tests {
             assert!(body.contains("Nextcloud running, Immich starting"));
             assert!(body.contains("device-1"));
             // Before the first message: the agent it will start on, as a menu.
-            assert!(
-                body.contains("Runs on <details class=\"agent-menu\">"),
-                "{body}"
-            );
+            assert!(body.contains("<details class=\"agent-menu\">"), "{body}");
             assert!(body.contains("id=\"agent-choice\""));
             assert!(!body.contains("style="), "no inline styles");
             assert!(!body.contains("<script>"), "no inline scripts");
@@ -2575,7 +2572,7 @@ mod tests {
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("innerHTML:#composer-status"));
-            assert!(frame.contains("Everything is logged."));
+            assert!(!frame.contains("Working on it"));
 
             // A reconnect (Last-Event-ID) from the future asks the page to reload.
             let req = axum::http::Request::get("/ui/stream")
@@ -2672,12 +2669,9 @@ mod tests {
                 page.contains("<option value=\"echo-b\" selected>"),
                 "{page}"
             );
-            assert!(page.contains("gone (not set up)"));
-            assert!(
-                page.contains("gone isn&#39;t installed.")
-                    || page.contains("gone isn't installed."),
-                "{page}"
-            );
+            assert!(page.contains("<option disabled>gone</option>"));
+            // The menu shows agent names only; no hint text.
+            assert!(!page.contains("isn&#39;t installed") && !page.contains("isn't installed"));
 
             // The UI form: htmx gets the status line back; a refusal says why.
             let ui_post = |choice: &str, htmx: bool| {
@@ -2690,10 +2684,7 @@ mod tests {
             };
             let (status, _, body) = send(&app, ui_post("stuck", true)).await;
             assert_eq!(status, StatusCode::OK);
-            assert!(
-                body.contains("Runs on <details class=\"agent-menu\">"),
-                "{body}"
-            );
+            assert!(body.contains("<details class=\"agent-menu\">"), "{body}");
             assert!(!body.contains("agent-error"));
             let (status, _, body) = send(&app, ui_post("gone", true)).await;
             assert_eq!(status, StatusCode::OK);
