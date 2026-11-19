@@ -49,6 +49,10 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
   10.42.0.0/16 and service 10.43.0.0/16 sources so pods reach CoreDNS/API; nothing opens to the LAN), and
   `/usr/lib/firewalld/services/melissa-apps.xml` (apps' ports 30000-30079/tcp; FedoraWorkstation already
   accepts 1025-65535, so it is only needed in stricter zones: `firewall-cmd --add-service=melissa-apps`).
+  Also `/usr/lib/systemd/system/user@.service.d/delegate.conf` (`Delegate=cpu cpuset io memory pids`): rootless
+  container mode (`scripts/container-run.sh`) needs cpuset delegated to the user's manager. Not on headless
+  (DECISIONS 2026-11-19). Placement checked against the Containerfile's `COPY image/${VARIANT}/ /`; the desktop
+  image was not rebuilt for it.
 - **Plasma Setup** (Kinoite's first-run wizard, `plasma-setup.service`) runs before the login screen unless
   `/etc/plasma-setup-done` exists; it does not look at existing users. A bib disk with a user (the test VM) shows it;
   `sudo touch /etc/plasma-setup-done` to get the login screen. A laptop already set up keeps its `/etc` flag.

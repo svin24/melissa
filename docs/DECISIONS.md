@@ -425,3 +425,11 @@ Format: date — decision. Why. Alternatives considered.
   an agent that already has memory. Why: a user who moves the Queen to another agent (e.g. a subscription ran out)
   expects new helpers there too; moving running bees behind the user's back would not be expected. Only the user
   changes a bee's backend.
+
+- **2026-11-19 — The desktop image delegates cpuset to users' systemd managers; headless does not (q59a).**
+  Desktop ships `/usr/lib/systemd/system/user@.service.d/delegate.conf` with `Delegate=cpu cpuset io memory
+  pids`, so rootless container mode works there with no host step. It only lets a user's own containers use
+  two more cgroup controllers (cpuset, io) next to what systemd already delegates. Headless gets nothing: it is
+  the image that runs *inside* container mode, and on a server box nothing runs rootless containers (k3s is a
+  system service), so the drop-in would widen the box for no use. An admin can still add the `/etc` drop-in, and
+  `container-run.sh` keeps its preflight hint.
