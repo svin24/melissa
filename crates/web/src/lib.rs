@@ -1946,7 +1946,10 @@ mod tests {
             assert!(body.contains("Nextcloud running, Immich starting"));
             assert!(body.contains("device-1"));
             // Before the first message: the agent it will start on, as a menu.
-            assert!(body.contains("<details class=\"agent-menu\">"), "{body}");
+            assert!(
+                body.contains("Runs on <details class=\"agent-menu\">"),
+                "{body}"
+            );
             assert!(body.contains("id=\"agent-choice\""));
             assert!(!body.contains("style="), "no inline styles");
             assert!(!body.contains("<script>"), "no inline scripts");
@@ -2572,7 +2575,7 @@ mod tests {
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("innerHTML:#composer-status"));
-            assert!(!frame.contains("Working on it"));
+            assert!(frame.contains("Everything is logged."));
 
             // A reconnect (Last-Event-ID) from the future asks the page to reload.
             let req = axum::http::Request::get("/ui/stream")
@@ -2684,7 +2687,10 @@ mod tests {
             };
             let (status, _, body) = send(&app, ui_post("stuck", true)).await;
             assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("<details class=\"agent-menu\">"), "{body}");
+            assert!(
+                body.contains("Runs on <details class=\"agent-menu\">"),
+                "{body}"
+            );
             assert!(!body.contains("agent-error"));
             let (status, _, body) = send(&app, ui_post("gone", true)).await;
             assert_eq!(status, StatusCode::OK);
