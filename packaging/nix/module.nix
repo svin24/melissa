@@ -134,7 +134,7 @@ in
       openFirewall = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "Open the app NodePorts 30000-30079 (TCP) in the firewall, for the LAN and Tailscale.";
+        description = "Open the app NodePorts 30000-30079 (TCP and UDP) in the firewall, for the LAN and Tailscale.";
       };
     };
 
@@ -263,6 +263,12 @@ in
         programs.nix-ld.enable = lib.mkIf cfg.agents.nixLd true;
 
         networking.firewall.allowedTCPPortRanges = lib.mkIf cfg.apps.openFirewall [
+          {
+            from = 30000;
+            to = 30079;
+          }
+        ];
+        networking.firewall.allowedUDPPortRanges = lib.mkIf cfg.apps.openFirewall [
           {
             from = 30000;
             to = 30079;

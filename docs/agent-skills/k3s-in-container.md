@@ -29,7 +29,7 @@
 ## App installs: second identity (2026-11-18)
 - `apps-rbac.yaml` (installed as `melissa-apps-rbac.yaml`): ServiceAccount `melissa/melissa-apps` with
   admission policies that pin it to `app-*` namespaces; `melissa-kubeconfig` also writes
-  `/run/melissa-kube/apps.kubeconfig`. Details and verified results: [app-catalog.md](app-catalog.md).
+  `/run/melissa-kube/apps.kubeconfig`. Details and verified results: [app-deploy.md](app-deploy.md).
 - `k3s-prepare` reinstalls every manifest from `/usr` on each k3s start, so live edits under
   `/var/lib/rancher/k3s/server/manifests` don't survive a k3s restart.
 

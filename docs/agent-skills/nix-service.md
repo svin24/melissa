@@ -9,7 +9,7 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
   - `packages.<system>.melissa` (= `default`): two derivations. `passthru.unwrapped` is
     `rustPlatform.buildRustPackage` from `Cargo.lock` (`-p melissa-server -p melissa-device -p melissa-agent`;
     rust-embed reads `crates/web/assets` at build time, so the UI is in the binary). The outer one links
-    its binaries and adds the catalog, the k3s manifests, the shared lead agent unit (ExecStart pointed at the
+    its binaries and adds the k3s manifests, the shared lead agent unit (ExecStart pointed at the
     store), tmpfiles, the polkit rule, `melissa-setup`, `libexec/melissa/{melissa-kubeconfig,k3s-node-ip}`
     (paths substituted, tools wrapped) and `lib/melissa/release`. A new revision or packaging change
     rebuilds only the outer one.
@@ -41,10 +41,10 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
 | `listen` | `127.0.0.1:8080` | `listen` (the lead agent refuses non-loopback: no login yet) |
 | `backends` | `[]` | extra `[[backend]]` entries |
 | `settings` | `{}` | free-form server.toml, merged last |
-| `apps.catalog` | package's catalog | `[apps] catalog` |
+| `apps.catalog` | null | deprecated no-op (warns): the catalog was dropped 2026-11-19 |
 | `apps.addresses` | null (auto) | `[apps] addresses` |
 | `apps.portOffset` | 0 | `[apps] port_offset` |
-| `apps.openFirewall` | false | TCP 30000-30079 |
+| `apps.openFirewall` | false | TCP and UDP 30000-30079 |
 | `k3s.enable` | true | nixpkgs `services.k3s` (server) |
 | `k3s.package` | `pkgs.k3s_1_37` | the API version Melissa's client is built for |
 | `k3s.airgapImages` | false | `services.k3s.images` += k3s's airgap tarball (needed offline) |
@@ -110,16 +110,16 @@ write into the home, which is fine.
 | sandbox / egress | `melissa-it-sandbox`, `melissa-it-egress` as `melissa`: bwrap, own netns, netbridge, proxy allowlist, MCP, no leaks, no skips |
 | vendor CLI via nix-ld | a /lib64-loader binary as a CLI backend task, inside the sandbox |
 | k3s | node Ready (v1.37.1), `melissa.io/managed` label, Traefik rolled out offline (airgap images) |
-| policies | ServiceAccounts, 3 admission policies + bindings, kubeconfigs root:melissa-kube 0640, RBAC negatives |
-| app install + NodePort | test app from the catalog (digest-pinned), `install_app` (confirmed), NodePort 3000x answers from the client VM, `app_status` link |
+| policies | ServiceAccounts, 5 admission policies + bindings, kubeconfigs root:melissa-kube 0640, RBAC negatives |
+| app deploy + NodePort | test app deployed from a spec (`deploy_app`, image pinned by digest, confirmed), NodePort 3000x answers from the client VM, `app_status` link |
 | stop/start | `stop_app` (port stops answering), `start_app` (answers again) |
 | settings | providers.toml written melissa 0600; restart through polkit (new InvocationID) |
 | melissa-setup | status runs on NixOS (agent download needs internet: not in the test) |
 `nix build .#checks.x86_64-linux.melissa-nixos -L` (KVM; untrusted users can run it: the daemon has
 `kvm nixos-test`). Two VMs, no internet: `server` (4 GiB, 4 cores, k3s airgap images, test app image
 built with dockerTools) and `client` (the LAN). Debug: `nix run .#checks.x86_64-linux.melissa-nixos.driverInteractive`.
-The test app's catalog entry is written at test time with the digest k3s reports for the imported image
-(`crictl inspecti`), because the catalog requires `@sha256:` pins.
+The test app's spec pins the image by the digest k3s reports for the imported image (`crictl inspecti`), so
+nothing is pulled (there is no internet in the test).
 
 ## Other distributions with Nix (prototype: `melissa-host`)
 `packages.<system>.melissa-host` = the package + sysusers file + a PATH drop-in (vendor CLIs, `/usr/bin`
@@ -149,7 +149,7 @@ unit or option should check it.
 
 ## Gotchas
 - `nix build` of the package is ~3 min cold (full release build); the integration tests build it again.
-- The local tool API (`POST /api/tools/<name>`) is unattended: `install_app`, `stop_app`, `start_app` wait in the
+- The local tool API (`POST /api/tools/<name>`) is unattended: `deploy_app`, `stop_app`, `start_app` wait in the
   confirmation inbox; the VM test approves them through `/api/confirmations/<id>/approve`.
 - The built-in `echo` is a task backend only; a lead agent chat on echo needs a `[[backend]] kind = "echo"` entry.
 - Settings' restart button needs only Melissa's polkit rule (`UpdateEnv::can_restart`: `/usr/share`,

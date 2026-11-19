@@ -10,7 +10,10 @@ and `install_app` from the lead agent names the agent that looks after the new w
 ([workspaces-and-ownership.md](workspaces-and-ownership.md)). Not re-run end to end since.
 
 Note (2026-11-19): apps now have `stop_app`/`start_app` ("turn off" must never become an uninstall) and
-links `http://<device>:<port>` instead of `<app>.<domain>` (see app-catalog.md, "Links and ports").
+links `http://<device>:<port>` instead of `<app>.<domain>`.
+
+Note (2026-11-19, later): the catalog is gone. `list_catalog`/`install_app` below are history; agents now
+write a spec and call `deploy_app`, which always asks the user ([app-deploy.md](app-deploy.md)).
 
 ## Setup (the installed container, 2026-11-19)
 Everything runs inside the rootful container from `packaging/container/install.sh`

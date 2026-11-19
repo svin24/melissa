@@ -79,9 +79,9 @@ Without k3s these work:
 2. **"Create an agent named Ada and have her check this machine, then tell me what she found."** The lead agent
    creates a persistent agent, gives her a job and reports back (20-30 s). Talk to Ada directly afterwards:
    `just chat` then type, or `cargo run -q -p melissa-server -- ask --agent Ada "what did you find?"`.
-3. **"Which apps can you install?"** She lists the catalog (Nextcloud for now).
-4. **"Install Nextcloud."** Without k3s she answers that k3s is not running on this machine. Nothing is
-   installed. That is expected from source.
+3. **"Set up a Minecraft server."** There is no fixed app list: Melissa picks the image, ports and storage
+   and asks you to approve what will run. Without k3s she answers that k3s is not running on this machine.
+   Nothing is installed. That is expected from source.
 
 Agents act only through Melissa's tools: no shell, no file access, and network only to their own AI
 service. Anything risky waits for your approval in the confirmation inbox (in the UI, or
@@ -116,7 +116,8 @@ just container-uninstall       # keeps your data; `just container-uninstall --pu
   `/etc/sysctl.d/90-melissa-kubelet.conf`, tells you, and uninstall restores the old values.
 - **Updates:** Settings → Updates (check, apply, roll back) and a daily automatic update (`AUTO_UPDATE=off` to
   skip). Apps, chats and agent logins live on the `melissa-var` volume and survive updates and reinstalls.
-- **Apps** answer on `BIND` (default 127.0.0.1) ports 30000-30079; `BIND=0.0.0.0` (LAN) or your Tailscale address
+- **Apps** (web UIs and other ports such as a game server's, TCP or UDP) answer on `BIND` (default
+  127.0.0.1) ports 30000-30079; `BIND=0.0.0.0` (LAN) or your Tailscale address
   (`BIND=$(tailscale ip -4)`) to open them from other devices; app links use that address.
 - Rootless podman is not supported.
 
