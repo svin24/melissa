@@ -513,3 +513,7 @@ Roadmap (rough, phases may overlap):
 58. `stop_app` always asks the user, even the owner bee's own cell and even when the user asked for it in chat
     (decided 2026-11-19, like destructive). Should an explicit, attended "turn it off" skip the card? Should a stop
     be automatic on low disk/memory (needs the unattended-Queen marking, 27)?
+59. Container mode (`scripts/container-run.sh`, spike 2026-11-19): UI, agents and setup work rootless; k3s needs
+    `cpuset` delegated to the user (a root-owned drop-in). Should the desktop image ship
+    `user@.service.d/delegate.conf`, and is container mode a supported third way to try Melissa (published
+    container image, rootful as well) once k3s and apps are verified in it?

@@ -95,6 +95,30 @@ App installs need a k3s cluster. A source checkout looks for cluster credentials
 (`[apps] kubeconfig`) with Melissa's admission policies. Setting that up by hand is not documented for
 strangers yet; use the VM image to try apps.
 
+## Try it in a container (Linux, podman) — experimental
+
+A third way besides the VM and `just demo`: the headless image itself, run by podman with systemd as PID 1.
+Needs podman 5+ with pasta, cgroup v2, and the image built from this checkout (`just image-build headless`).
+
+```
+scripts/container-run.sh preflight   # checks cgroup delegation, kernel modules, pasta
+scripts/container-run.sh build       # adds the small container layer (image/container)
+scripts/container-run.sh up          # web UI: http://127.0.0.1:18080
+scripts/container-run.sh shell       # then: melissa-setup agent opencode, melissa-queen chat
+scripts/container-run.sh down        # stop; `purge` deletes the container and its data volume
+```
+
+- **Status:** the web UI, agents (sandbox and network allowlist) and `melissa-setup` work rootless. k3s, and so
+  app installs, is not verified in a container yet.
+- **Rootless k3s needs one host change** (as root, once): let your user's containers use the `cpuset` cgroup
+  controller, which Fedora does not delegate by default. `preflight` prints the commands.
+- **Security:** the container runs `--privileged` (k3s and the agent sandbox need namespaces, mounts and
+  netfilter). Rootless that is limited to your own user; run as root it is root on your machine. The web UI has
+  no login and is published on 127.0.0.1 only; app ports default to 127.0.0.1 too (`BIND=0.0.0.0` for the LAN).
+- **Not in a container:** Secure Boot, `bootc` updates and rollback (rebuild and recreate instead; `/var` is a
+  volume and survives), the first-boot account prompt, SSH, Tailscale. Host ports: `UI_PORT`, `APP_PORT_BASE`.
+- Details and gotchas: [agent-skills/container-mode.md](agent-skills/container-mode.md).
+
 ## Stop, state and reset
 
 - **Stop:** Ctrl-C in the terminal running `just demo`. Agents stop with it.

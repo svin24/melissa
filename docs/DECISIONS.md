@@ -396,3 +396,11 @@ Format: date — decision. Why. Alternatives considered.
   the new one until the next `install_app` (or a fixed `[apps] addresses`). Security trade-off for pre-alpha: plain
   HTTP on the LAN/tailnet (Tailscale encrypts its leg; the LAN leg is cleartext, including the login), and the
   host name is trusted as given by the kernel.
+- **2026-11-19 — Container mode is a thin layer over the unchanged headless image** (`image/container`), run by
+  podman with systemd as PID 1, `--privileged`, `/var` as a volume and `--network=pasta:--host-lo-to-ns-lo`.
+  Why: one image to maintain; the queen keeps its loopback-only UI (pasta delivers host loopback to the
+  container's loopback, so pods can't reach the unauthenticated UI). Alternatives: `--network=host` (collides with
+  a host k3s, and rootless k3s can't make interfaces there), slirp4netns (removed in podman 6), a socket proxy on
+  the container's address (exposes the UI to pods), a separate non-bootc image (two images to keep in step).
+  Status: spike; k3s in a container is unverified (rootless needs `cpuset` delegation).
+
