@@ -30,7 +30,6 @@ let
       {
         inherit (cfg) listen;
         apps = {
-          catalog = toString cfg.apps.catalog;
           port_offset = cfg.apps.portOffset;
         }
         // lib.optionalAttrs (cfg.apps.addresses != null) { inherit (cfg.apps) addresses; };
@@ -101,10 +100,13 @@ in
 
     apps = {
       catalog = lib.mkOption {
-        type = lib.types.either lib.types.path lib.types.str;
-        default = "${cfg.package}/share/melissa/catalog";
-        defaultText = lib.literalExpression ''"''${cfg.package}/share/melissa/catalog"'';
-        description = "Directory of app manifests (`<name>.toml`), `[apps] catalog`.";
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        visible = false;
+        description = ''
+          Deprecated, ignored: the app catalog was dropped (2026-11-19). Agents deploy any app
+          from a spec they write. Setting it only prints a warning.
+        '';
       };
 
       addresses = lib.mkOption {
@@ -212,6 +214,8 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
+        warnings = lib.optional (cfg.apps.catalog != null)
+          "services.melissa.apps.catalog is ignored: the app catalog was dropped (agents deploy any app from a spec). Remove the setting.";
         assertions = [
           {
             assertion = config.security.allowUserNamespaces;

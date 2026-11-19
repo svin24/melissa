@@ -26,7 +26,7 @@ use crate::{components::Health, feed::display_app};
 /// One installed app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
-    /// Catalog name (`nextcloud`).
+    /// App name (`nextcloud`).
     pub name: String,
     /// Phase as `app_status` reports it.
     pub phase: String,
@@ -38,6 +38,9 @@ pub struct App {
     pub port: Option<u16>,
     /// Who looks after it.
     pub keeper: Option<Keeper>,
+    /// Its first port on the device that is not the web link (a game server's TCP port):
+    /// the port people use and `TCP`/`UDP`.
+    pub other_port: Option<(u16, &'static str)>,
 }
 
 /// Who looks after an app (workspace).
@@ -81,6 +84,17 @@ impl App {
             _ => self.url.clone(),
         }
     }
+
+    /// Where to reach an app without a web link (a game server): `host:port (TCP)` at the
+    /// address the visitor used. `None` for apps with a link or without such a port.
+    pub fn address(&self, host: Option<&str>) -> Option<String> {
+        if self.port.is_some() {
+            return None;
+        }
+        let (port, proto) = self.other_port?;
+        let h = host.and_then(host_name_of)?;
+        Some(format!("{h}:{port} ({proto})"))
+    }
 }
 
 /// The host part of a `Host` header value (`192.0.2.15:8080` → `192.0.2.15`, `[::1]:8080` →
@@ -122,8 +136,6 @@ pub enum Apps {
     Unreachable,
     Known {
         installed: Vec<App>,
-        /// Catalog apps that are not installed.
-        available: Vec<String>,
     },
 }
 
@@ -226,14 +238,18 @@ impl ClusterSnapshot {
                             url: a["url"].as_str().map(str::to_string),
                             port: a["port"].as_u64().and_then(|p| u16::try_from(p).ok()),
                             keeper: None,
+                            other_port: a["ports"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .find(|p| p["web"] != true)
+                                .and_then(|p| {
+                                    let port = u16::try_from(p["port"].as_u64()?).ok()?;
+                                    let proto = if p["protocol"] == "udp" { "UDP" } else { "TCP" };
+                                    Some((port, proto))
+                                }),
                         })
                     })
-                    .collect(),
-                available: v["not_installed"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|n| n.as_str().map(str::to_string))
                     .collect(),
             },
         };
@@ -442,6 +458,7 @@ mod tests {
             url: Some("http://192.0.2.15:30000".into()),
             port: Some(30000),
             keeper: None,
+            other_port: None,
         };
         for (host, link) in [
             (Some("192.0.2.15:8080"), "http://192.0.2.15:30000"),
@@ -483,17 +500,12 @@ mod tests {
                 {"app": "nextcloud", "phase": "ready", "url": "http://192.0.2.15:30000", "port": 30000},
                 {"app": "immich", "phase": "stopped", "url": null},
             ],
-            "not_installed": ["jellyfin"],
         });
         let cluster =
             json!({"nodes": [{"name": "device-1", "ready": true, "allocatable": {"cpu": "4"}}]});
         let agent = json!({"os": "Fedora Linux 45", "mem_total_kib": 8_000_000, "mem_available_kib": 2_000_000});
         let s = ClusterSnapshot::from_tools(Some(&apps), Some(&cluster), Some(&agent));
-        let Apps::Known {
-            installed,
-            available,
-        } = &s.apps
-        else {
+        let Apps::Known { installed } = &s.apps else {
             panic!()
         };
         assert_eq!(installed.len(), 2);
@@ -501,7 +513,6 @@ mod tests {
         assert_eq!(installed[0].port, Some(30000));
         assert_eq!(installed[1].port, None);
         assert_eq!(phase_words(&installed[1].phase).1, "Stopped");
-        assert_eq!(available, &["jellyfin"]);
         assert_eq!(s.devices.len(), 1);
         assert_eq!(s.devices[0].name, "device-1");
         assert_eq!(s.devices[0].os.as_deref(), Some("Fedora Linux 45"));

@@ -31,8 +31,8 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 
 Not here (built or fetched by each packaging): the Rust binaries `melissa-server`, `melissa-device`
 and `melissa-netbridge` (installed as `/usr/bin/…`), k3s itself and its airgap images (from
-`k3s.lock`; `k3s-prepare` expects them in `/usr/lib/melissa/k3s/images/`), and the app catalog
-(`manifests/` → `/usr/share/melissa/catalog/`).
+`k3s.lock`; `k3s-prepare` expects them in `/usr/lib/melissa/k3s/images/`). No app list ships:
+agents deploy apps from specs they write.
 
 Packages the host or image needs at runtime: systemd, bubblewrap (agent sandbox), nftables and
 iproute (k3s, egress), polkit (Settings → Restart), ca-certificates, curl (agent installers).

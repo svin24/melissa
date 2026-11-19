@@ -17,7 +17,7 @@ use crate::{
         FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
-    feed::{display_app, Approval, Change, Entry, Feed, Item},
+    feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
 };
 use melissa_agent::lead::{agents::AgentView, transcript::PastChat};
@@ -585,22 +585,22 @@ pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
             (app_grid("Apps", add_app_tile("/?draft=Install%20")))
             p.quiet { "The app platform isn't answering right now. Melissa keeps trying." }
         },
-        Apps::Known {
-            installed,
-            available,
-        } => {
+        Apps::Known { installed } => {
             let names: Vec<String> = installed.iter().map(|a| a.display_name()).collect();
             let details: Vec<String> = installed
                 .iter()
                 .map(|a| format!("/ui/apps/{}", a.name))
                 .collect();
             let links: Vec<Option<String>> = installed.iter().map(|a| a.link(host)).collect();
+            // An app without a web link shows where to reach it instead (`host:port (TCP)`).
             let keepers: Vec<Option<String>> = installed
                 .iter()
-                .map(|a| match &a.keeper {
-                    Some(Keeper::Agent { name, .. }) => Some(format!("Looked after by {name}")),
-                    Some(Keeper::Owner) => Some("Looked after by you".to_string()),
-                    None => None,
+                .map(|a| {
+                    a.address(host).or_else(|| match &a.keeper {
+                        Some(Keeper::Agent { name, .. }) => Some(format!("Looked after by {name}")),
+                        Some(Keeper::Owner) => Some("Looked after by you".to_string()),
+                        None => None,
+                    })
                 })
                 .collect();
             html! {
@@ -611,15 +611,6 @@ pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
                     }
                     (add_app_tile("/?draft=Install%20"))
                 }))
-                @if !available.is_empty() {
-                    p.quiet {
-                        "Ready to install: "
-                        @for (i, n) in available.iter().enumerate() {
-                            @if i > 0 { ", " }
-                            (link(&format!("/?draft=Install%20{n}"), &display_app(n)))
-                        }
-                    }
-                }
             }
         }
     };
@@ -940,6 +931,7 @@ mod tests {
                         url: None,
                         port: None,
                         keeper: None,
+                        other_port: None,
                     },
                     App {
                         name: "immich".into(),
@@ -947,9 +939,9 @@ mod tests {
                         url: None,
                         port: None,
                         keeper: None,
+                        other_port: None,
                     },
                 ],
-                available: vec![],
             },
             devices: vec![],
         };

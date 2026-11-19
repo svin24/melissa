@@ -1,16 +1,15 @@
 [package]
-name = "melissa-catalog"
+name = "melissa-appspec"
 version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Melissa app catalog: the app manifest schema, validation and config resolution"
+description = "Melissa app spec: the format agents write to deploy any app, and its validation"
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-toml = { workspace = true }
 
 [lints]
 workspace = true

@@ -26,7 +26,7 @@ use kube::{
     Resource,
 };
 use melissa_agent::BoxFuture;
-use melissa_catalog::namespace_of;
+use melissa_appspec::{namespace_of, valid_app_name};
 
 use crate::{
     cluster::map_err,
@@ -62,6 +62,25 @@ impl AppObject {
     }
 }
 
+/// Kinds of app objects an update may delete by name (what an earlier spec had and the new
+/// one doesn't).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedKind {
+    Ingress,
+    Service,
+    ConfigMap,
+}
+
+impl NamedKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ingress => "Ingress",
+            Self::Service => "Service",
+            Self::ConfigMap => "ConfigMap",
+        }
+    }
+}
+
 /// Log request limits (enforced again by the API server).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRequest {
@@ -74,6 +93,9 @@ pub struct LogRequest {
 
 /// Read access to one app's namespace.
 pub trait AppRead: Send + Sync {
+    /// The names of all apps (namespaces `app-<name>` labelled `melissa.io/app=<name>`),
+    /// sorted, including ones being deleted or uninstalled with their data kept.
+    fn app_names(&self) -> BoxFuture<'_, Result<Vec<String>, ClusterError>>;
     /// The app's namespace, if it exists.
     fn namespace(&self, app: &str) -> BoxFuture<'_, Result<Option<Namespace>, ClusterError>>;
     fn deployment(&self, app: &str) -> BoxFuture<'_, Result<Option<Deployment>, ClusterError>>;
@@ -97,12 +119,19 @@ pub trait AppDeployer: Send + Sync {
     fn create_secret<'a>(&'a self, secret: &'a Secret)
         -> BoxFuture<'a, Result<bool, ClusterError>>;
     /// Delete the app's Deployment, Services (incl. the port Service) and Ingress (missing
-    /// ones are fine). Keeps the namespace (with its port), PVCs and Secret. Returns the
+    /// ones are fine). Keeps the namespace (with its ports and spec), PVCs and Secrets. Returns the
     /// kinds that were deleted.
     fn delete_workload<'a>(
         &'a self,
         app: &'a str,
     ) -> BoxFuture<'a, Result<Vec<&'static str>, ClusterError>>;
+    /// Delete one object in the app's namespace; `Ok(false)` if it was not there.
+    fn delete_named<'a>(
+        &'a self,
+        app: &'a str,
+        kind: NamedKind,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<bool, ClusterError>>;
     /// Delete the app's namespace and everything in it, including its volumes' data.
     fn delete_namespace<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<bool, ClusterError>>;
     /// Force delete only: delete every pod in the app's namespace at once (grace period 0).
@@ -212,6 +241,27 @@ where
 }
 
 impl AppRead for KubeApps {
+    fn app_names(&self) -> BoxFuture<'_, Result<Vec<String>, ClusterError>> {
+        Box::pin(async move {
+            let api: Api<Namespace> = Api::all(self.client().await?);
+            let list = api
+                .list_metadata(&ListParams::default().labels(APP_LABEL))
+                .await
+                .map_err(map_err)?;
+            let mut names: Vec<String> = list
+                .items
+                .iter()
+                .filter_map(|ns| {
+                    let name = ns.metadata.name.as_deref()?.strip_prefix("app-")?;
+                    let label = ns.metadata.labels.as_ref()?.get(APP_LABEL)?;
+                    (label == name && valid_app_name(name)).then(|| name.to_string())
+                })
+                .collect();
+            names.sort();
+            Ok(names)
+        })
+    }
+
     fn namespace(&self, app: &str) -> BoxFuture<'_, Result<Option<Namespace>, ClusterError>> {
         let name = namespace_of(app);
         Box::pin(async move {
@@ -348,6 +398,29 @@ impl AppDeployer for KubeApps {
                 deleted.push("ConfigMap");
             }
             Ok(deleted)
+        })
+    }
+
+    fn delete_named<'a>(
+        &'a self,
+        app: &'a str,
+        kind: NamedKind,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<bool, ClusterError>> {
+        Box::pin(async move {
+            let dp = DeleteParams::background();
+            Ok(match kind {
+                NamedKind::Ingress => {
+                    optional(self.ns_api::<Ingress>(app).await?.delete(name, &dp).await)?.is_some()
+                }
+                NamedKind::Service => {
+                    optional(self.ns_api::<Service>(app).await?.delete(name, &dp).await)?.is_some()
+                }
+                NamedKind::ConfigMap => {
+                    optional(self.ns_api::<ConfigMap>(app).await?.delete(name, &dp).await)?
+                        .is_some()
+                }
+            })
         })
     }
 

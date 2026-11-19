@@ -105,10 +105,15 @@ pub fn published_port(node_port: u16, offset: i32) -> Option<u16> {
 }
 
 pub fn url(address: &str, port: u16) -> String {
+    format!("http://{}", host_port(address, port))
+}
+
+/// `address:port`, with IPv6 addresses in brackets (`[fd7a::1]:30001`).
+pub fn host_port(address: &str, port: u16) -> String {
     if address.contains(':') && !address.starts_with('[') {
-        format!("http://[{address}]:{port}")
+        format!("[{address}]:{port}")
     } else {
-        format!("http://{address}:{port}")
+        format!("{address}:{port}")
     }
 }
 

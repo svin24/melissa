@@ -9,11 +9,17 @@
 use std::path::Path;
 
 use anyhow::{bail, Context};
-use k8s_openapi::api::{apps::v1::Deployment, core::v1::Secret};
-use kube::Api;
-use melissa_catalog::{namespace_of, valid_app_name, Catalog};
-use melissa_cluster::{render::CONFIG_ANNOTATION, KubeCluster};
-use serde_json::Value;
+use k8s_openapi::api::{
+    apps::v1::Deployment,
+    core::v1::{Namespace, Secret},
+};
+use kube::{api::ListParams, Api};
+use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec};
+use melissa_cluster::{
+    render::{APP_LABEL, CONFIG_ANNOTATION, SPEC_ANNOTATION},
+    KubeCluster,
+};
+use serde_json::{Map, Value};
 
 /// k3s's admin kubeconfig (mode 0600, root), see `config.yaml.d/10-melissa.yaml`.
 pub const ADMIN_KUBECONFIG: &str = "/etc/rancher/k3s/k3s.yaml";
@@ -46,43 +52,57 @@ pub async fn admin_client(
     Ok(cluster.client().clone())
 }
 
-pub async fn show(
-    app: &str,
-    catalog_dir: &Path,
-    domain: &str,
-    kubeconfig: &Path,
-) -> anyhow::Result<()> {
+pub async fn show(app: &str, domain: &str, kubeconfig: &Path) -> anyhow::Result<()> {
     let client = admin_client(app, kubeconfig, "app-credentials").await?;
-    let ns = namespace_of(app);
-    let manifest = Catalog::load_dir(catalog_dir).apps.remove(app);
-    let secret_name = format!("{app}-secrets");
-    let secret = Api::<Secret>::namespaced(client.clone(), &ns)
-        .get_opt(&secret_name)
+    let ns_name = namespace_of(app);
+    let ns = Api::<Namespace>::all(client.clone())
+        .get_opt(&ns_name)
         .await
-        .with_context(|| format!("reading {ns}/{secret_name}"))?
-        .with_context(|| format!("`{app}` has no generated credentials (not installed?)"))?;
-    let deployment = Api::<Deployment>::namespaced(client, &ns)
+        .with_context(|| format!("reading namespace {ns_name}"))?
+        .with_context(|| format!("`{app}` is not deployed"))?;
+    let deployment = Api::<Deployment>::namespaced(client.clone(), &ns_name)
         .get_opt(app)
         .await
-        .with_context(|| format!("reading {ns}/{app}"))?;
-    let config: Value = deployment
-        .as_ref()
-        .and_then(|d| d.metadata.annotations.as_ref())
-        .and_then(|a| a.get(CONFIG_ANNOTATION))
-        .and_then(|c| serde_json::from_str(c).ok())
-        .unwrap_or(Value::Null);
-
-    let mut secrets: Vec<(String, String)> = secret
-        .data
-        .unwrap_or_default()
+        .with_context(|| format!("reading {ns_name}/{app}"))?;
+    // The stored spec, or for an app from the old catalog, the one rebuilt from its config.
+    let annotation = |key: &str| {
+        ns.metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get(key))
+            .cloned()
+    };
+    let spec = match annotation(SPEC_ANNOTATION) {
+        Some(text) => AppSpec::from_text(&text).ok(),
+        None => {
+            let config: Map<String, Value> = deployment
+                .as_ref()
+                .and_then(|d| d.metadata.annotations.as_ref())
+                .and_then(|a| a.get(CONFIG_ANNOTATION))
+                .and_then(|c| serde_json::from_str(c).ok())
+                .unwrap_or_default();
+            legacy::from_catalog(app, &config)
+        }
+    };
+    // Every generated Secret of the app (one per field; one shared one for catalog installs).
+    let list = Api::<Secret>::namespaced(client, &ns_name)
+        .list(&ListParams::default().labels(&format!("{APP_LABEL}={app}")))
+        .await
+        .with_context(|| format!("reading the Secrets in {ns_name}"))?;
+    let mut secrets: Vec<(String, String)> = list
+        .items
         .into_iter()
+        .flat_map(|s| s.data.unwrap_or_default())
         .map(|(k, v)| (k, String::from_utf8_lossy(&v.0).into_owned()))
         .collect();
     secrets.sort();
-    let has_ingress = manifest.as_ref().is_none_or(|m| m.ingress.is_some());
+    if secrets.is_empty() {
+        bail!("`{app}` has no generated credentials");
+    }
+    let has_web = spec.as_ref().is_none_or(|s| s.web.is_some());
     println!(
         "{app}{}{}",
-        if has_ingress {
+        if has_web {
             format!("  http://{app}.{domain}")
         } else {
             String::new()
@@ -93,9 +113,8 @@ pub async fn show(
             ""
         }
     );
-    let creds = manifest.as_ref().and_then(|m| m.credentials.as_ref());
-    if let Some(user_field) = creds.and_then(|c| c.user.as_ref()) {
-        let user = config[user_field.as_str()].as_str().unwrap_or("?");
+    let creds = spec.as_ref().and_then(|s| s.credentials.as_ref());
+    if let Some(user) = creds.and_then(|c| c.user.as_ref()) {
         println!("  user:     {user}");
     }
     for (key, value) in &secrets {

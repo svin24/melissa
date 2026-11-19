@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 pub use builtin::DeviceInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
-pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext};
+pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext, RUNS_SOFTWARE};
 pub use scope::{
     describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope, ScopeDecision,
     Target, WorkspaceInfo, WorkspaceStore,
@@ -81,6 +81,12 @@ pub trait Tool: Send + Sync {
     /// that changes or reads into a resource with an owner must declare it. Default: none.
     fn target(&self) -> Option<Target> {
         None
+    }
+
+    /// Check the arguments before a confirmation is asked for, so a call that would fail
+    /// anyway fails at once instead of after someone approved it. Default: nothing to check.
+    fn check_args(&self, _args: &Value) -> Result<(), ToolError> {
+        Ok(())
     }
 
     /// A short description of this call for the person asked to confirm it (e.g. "move workspace
@@ -219,6 +225,7 @@ impl ToolRegistry {
         }
         let spec = tool.spec();
         let hash = args_hash(&args);
+        tool.check_args(&args)?;
 
         let mut reasons = Vec::new();
         let mut note = None;

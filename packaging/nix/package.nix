@@ -1,4 +1,4 @@
-# Melissa as a Nix package: the Rust binaries (built from Cargo.lock), the app catalog, and the
+# Melissa as a Nix package: the Rust binaries (built from Cargo.lock) and the
 # host-agnostic system files from `common.nix` with their /usr paths pointed at the store.
 #
 #   bin/melissa-server, melissa-device, melissa-netbridge   the workspace binaries
@@ -7,7 +7,6 @@
 #   libexec/melissa/k3s-node-ip                           pins k3s's node IP (shared with k3s-prepare)
 #   lib/systemd/system/melissa-server.service              the shared unit, ExecStart in the store
 #   lib/tmpfiles.d/melissa-{config,home,kube}.conf        the shared tmpfiles rules
-#   share/melissa/catalog/*.toml                          the reviewed app manifests
 #   share/melissa/k3s/manifests/*.yaml                    RBAC, admission policies, Traefik config
 #   share/polkit-1/rules.d/50-melissa.rules               lets the server restart itself (Settings)
 #   lib/melissa/release                                   MELISSA_VERSION/REVISION, MELISSA_RUNTIME=nix
@@ -113,7 +112,6 @@ stdenvNoCC.mkDerivation {
     mkdir -p $out/bin
     # Copies, not links: the sandbox bind-mounts melissa-netbridge, and bwrap can't mount on a symlink.
     install -m0755 -t $out/bin ${bins}/bin/*
-    install -Dm0644 -t $out/share/melissa/catalog ${repo + "/manifests"}/*.toml
     install -Dm0644 -t $out/share/melissa/k3s/manifests ${root + "/usr/lib/melissa/k3s/manifests"}/*.yaml
     install -Dm0644 ${root + "/usr/share/polkit-1/rules.d/50-melissa.rules"} \
       $out/share/polkit-1/rules.d/50-melissa.rules
