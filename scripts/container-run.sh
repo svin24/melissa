@@ -212,14 +212,16 @@ smoke() {
     in_ctr kubectl -n kube-system create service nodeport melissa-smoke --tcp=80:8000 --node-port=30079 \
         --dry-run=client -o yaml | sed 's/app: melissa-smoke/app.kubernetes.io\/name: traefik/' \
         | podman exec -i "$NAME" kubectl apply -f - >/dev/null
+    local apphost=$BIND; case "$BIND" in 0.0.0.0|::|'') apphost=127.0.0.1 ;; esac
     code=000
     for _ in $(seq 1 20); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: smoke.invalid' "http://127.0.0.1:$last/" || true)
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: smoke.invalid' "http://$apphost:$last/" || true)
         [ "$code" = 404 ] && break; sleep 2
     done
-    [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at 127.0.0.1:$last" || bad "NodePort from the host: HTTP $code"
+    [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at $apphost:$last" || bad "NodePort from the host ($apphost:$last): HTTP $code"
     in_ctr kubectl -n kube-system delete service melissa-smoke --wait=false >/dev/null
     pod_isolation || fail=1
+    host_power || fail=1
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$UI_PORT/" || true)
     [ "$code" = 200 ] && pass "web UI http://127.0.0.1:$UI_PORT/" || bad "web UI: HTTP $code"
     [ "$fail" = 0 ] && echo "smoke test complete" || echo "smoke test FAILED"
@@ -244,6 +246,28 @@ pod_isolation() {
         if [ "$code" = 000 ]; then echo "PASS: a pod cannot reach $a"
         else echo "FAIL: a pod reaches $a (HTTP $code)"; fail=1; fi
     done
+    return "$fail"
+}
+
+# Power is the host's: no logind or sleep units inside (a privileged container's logind would act on
+# the host's lid switch and suspend the host), and /dev/input is an empty nodev tmpfs.
+host_power() {
+    local u s fail=0 dev
+    for u in systemd-logind.service systemd-logind-varlink.socket sleep.target suspend.target \
+        hibernate.target hybrid-sleep.target suspend-then-hibernate.target systemd-suspend.service; do
+        s=$(in_ctr systemctl is-enabled "$u" 2>/dev/null || true)
+        if [ "$s" = masked ]; then echo "PASS: $u masked"; else echo "FAIL: $u is '$s', not masked"; fail=1; fi
+    done
+    in_ctr systemctl is-active -q systemd-logind.service && { echo "FAIL: systemd-logind runs inside"; fail=1; }
+    # Any device node that shows up under /dev/input must not open (nodev); none should be there.
+    dev=$(in_ctr find /dev/input -type c 2>/dev/null | head -1)
+    if [ -n "$dev" ] && in_ctr sh -c "exec 3<'$dev'" 2>/dev/null; then
+        echo "FAIL: $dev opens inside the container"; fail=1
+    elif in_ctr findmnt -n -o FSTYPE,OPTIONS /dev/input | grep -q '^tmpfs .*nodev'; then
+        echo "PASS: /dev/input is a nodev tmpfs (${dev:-no device nodes}); input devices can't be opened"
+    else
+        echo "FAIL: /dev/input is not a nodev tmpfs: $(in_ctr findmnt -n -o FSTYPE,OPTIONS /dev/input || echo host /dev)"; fail=1
+    fi
     return "$fail"
 }
 
@@ -272,7 +296,7 @@ up)
         if [ "$ROOTFUL" = 1 ]; then net=(--network=bridge -p "127.0.0.1:$UI_PORT:8081")
         else net=(--network=pasta:--host-lo-to-ns-lo -p "127.0.0.1:$UI_PORT:8080"); fi
         podman run -d --name "$NAME" --hostname "$NAME" \
-            --privileged --systemd=always --tmpfs /dev/input \
+            --privileged --systemd=always --tmpfs /dev/input -e XDG_CONFIG_HOME=/etc \
             "${net[@]}" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
             -v "$VOLUME:/var" \

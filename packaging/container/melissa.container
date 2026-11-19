@@ -24,6 +24,9 @@ PodmanArgs=--privileged --systemd=always
 # --privileged shares the host's /dev. Hide input devices (lid switch, power key, keyboards): nothing
 # in Melissa needs them, and logind (masked in the image) must never act on them.
 Tmpfs=/dev/input
+# For `podman exec melissa melissa-queen ...` run as root: read the queen's config (/etc/melissa,
+# [apps] addresses) like melissa-queen.service does, not root's empty ~/.config.
+Environment=XDG_CONFIG_HOME=/etc
 # The default rootful bridge. The UI: host 127.0.0.1:UI_PORT → container :8081
 # (melissa-ui-forward, nftables-filtered so pods can't reach it) → queen on 127.0.0.1:8080.
 Network=podman

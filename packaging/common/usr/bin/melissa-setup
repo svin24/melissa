@@ -171,19 +171,20 @@ status() {
         echo "  sudo melissa-setup agent grok        # Grok / SuperGrok subscription"
         echo
     fi
-    local ip4
-    ip4=$(ip -4 -o route get 203.0.113.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
-    echo "This machine's address: ${ip4:-unknown} (SSH on port 22)"
-    echo
-    echo "Web UI (no login yet, so it only listens inside this machine on $listen)."
-    if [ -r "$release" ] && grep -qx 'MELISSA_VARIANT=desktop' "$release"; then
-        echo "On this machine: open http://$listen in the browser."
+    if [ -r "$release" ] && grep -qx 'MELISSA_RUNTIME=container' "$release"; then
+        # Inside the Melissa container: the host publishes the UI (install.sh, UI_PORT).
+        echo "Melissa runs in a container. On the host, the web UI is at http://127.0.0.1:8080 (install.sh's"
+        echo "UI_PORT; no login yet, so it stays on the host's loopback)."
+        echo "From another computer: ssh -N -L 8080:127.0.0.1:8080 <you>@<the host>, then http://127.0.0.1:8080"
+        echo "Commands from the host: sudo podman exec -it melissa melissa-setup ... | melissa-queen chat"
+        echo "Guide: packaging/container/README.md and docs/QUICKSTART.md in the Melissa repository."
+        return
     fi
+    echo "Web UI (no login yet, so it only listens on this machine at $listen)."
     echo "From your own computer, tunnel it over SSH and open http://127.0.0.1:8080 :"
-    echo "  ssh -L 8080:$listen ${SUDO_USER:-${USER:-you}}@<this machine>"
-    echo "  (QEMU with port forwarding: ssh -p 2222 -L 8080:$listen ${SUDO_USER:-${USER:-you}}@127.0.0.1)"
+    echo "  ssh -N -L 8080:$listen ${SUDO_USER:-${USER:-you}}@<this machine>"
     echo "Or chat here in the terminal:  melissa-queen chat"
-    echo "Guide: docs/TRY-THE-VM.md in the Melissa repository."
+    echo "Guide: docs/QUICKSTART.md in the Melissa repository."
 }
 
 yes=0

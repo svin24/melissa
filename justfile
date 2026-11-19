@@ -55,8 +55,9 @@ container-uninstall purge="":
     sudo packaging/container/uninstall.sh {{purge}}
 
 # k3s, Traefik, policies, RBAC, NodePort and pod isolation checks against the installed container.
+# Uses the installation's settings (UI_PORT, BIND, APP_PORT_BASE from /var/lib/melissa-container/install.env).
 container-smoke:
-    sudo env NAME=melissa UI_PORT=${UI_PORT:-8080} APP_PORT_BASE=${APP_PORT_BASE:-30000} scripts/container-run.sh smoke
+    sudo sh -c 'set -a; . /var/lib/melissa-container/install.env; NAME=melissa exec scripts/container-run.sh smoke'
 
 # --- third-party licenses -------------------------------------------------------------
 # License report for the Rust crates in melissa-queen/-comb (cargo-about, allowlist in about.toml).
