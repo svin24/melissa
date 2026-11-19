@@ -433,3 +433,17 @@ Format: date — decision. Why. Alternatives considered.
   the image that runs *inside* container mode, and on a server box nothing runs rootless containers (k3s is a
   system service), so the drop-in would widen the box for no use. An admin can still add the `/etc` drop-in, and
   `container-run.sh` keeps its preflight hint.
+
+- **2026-11-19 — Model lists on demand (q55a).** Melissa learns a backend's models with a probe: a session opened
+  through the backend's own code path (same sandbox and egress rules), models read from what the agent reports
+  (Claude's `initialize` answer, ACP `session/new`), closed without a prompt. Cached per backend with a
+  timestamp; automatic probes (chat page, backend list) only when the list is missing or older than a day, at
+  most once per backend per 10 minutes; a forced refresh (CLI `backend refresh`, `POST
+  /api/queen/backends/refresh`) skips the limits; 15 s timeout. Why not parse `--help` or vendor model APIs: the
+  ids would not be what the agent accepts, and Melissa never makes up model ids.
+- **2026-11-19 — Defaults the owner accepted for apps and container mode (q56–q59).** Plain HTTP for apps is fine
+  for pre-alpha; TLS comes later via Tailscale certificates with hardening. App ports stay per device until
+  multi-comb exists. Nextcloud's trusted addresses: the Queen will refresh them when the device's addresses change;
+  until then `[apps] addresses`. `stop_app` keeps its confirmation card for the demo. Container mode becomes a
+  supported try-it path once rootful is verified; publishing a container image needs the owner's explicit yes.
+  Host ports other than 30000+n are handled by `[apps] port_offset` (supersedes "no code change" above).
