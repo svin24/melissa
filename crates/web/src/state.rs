@@ -343,6 +343,12 @@ impl HiveCache {
         }
     }
 
+    /// Read everything again now (after the user changed an app), so the next page or
+    /// fragment shows it.
+    pub async fn refresh_now(&self) {
+        self.refresh().await;
+    }
+
     async fn refresh(&self) -> Arc<HiveSnapshot> {
         let (apps, cluster, bee, cells) = tokio::join!(
             self.call("list_apps"),

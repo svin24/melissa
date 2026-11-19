@@ -7,13 +7,14 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 
 use crate::{
     components::{
-        action_button, activity_row, add_app_cell, app_cell, app_page, app_strip, approval_card,
-        badge, card, chat_divider, composer, composer_status, crumbs, device_card, empty_state,
-        facts, feed, feed_entry, honeycomb, link, live_region, log_view, markdown, note, oob_inner,
-        page, page_header, plain_text, post_form, queen_message, rail, relayed_message, section,
-        select_field, table, textarea_field, truncated, user_message, waiting_count, AppCell,
-        ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripCell, Tone,
-        APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
+        action_button, activity_row, add_app_cell, app_cell, app_dialog, app_page, app_strip,
+        approval_card, badge, card, chat_divider, composer, composer_status, crumbs, device_card,
+        empty_state, facts, feed, feed_entry, honeycomb, link, live_region, live_region_on,
+        log_view, markdown, note, oob_inner, page, page_header, plain_text, post_form,
+        queen_message, rail, relayed_message, section, select_field, table, textarea_field,
+        truncated, user_message, waiting_count, AppCell, ApprovalCard, Choice, DeviceCard, Health,
+        LogLine, Meter, Nav, RailDevice, StripCell, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
+        FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
     feed::{display_app, Approval, Change, Entry, Feed, Item},
@@ -492,7 +493,7 @@ fn format_kib(kib: u64) -> String {
     }
 }
 
-fn format_uptime(secs: u64) -> String {
+pub(crate) fn format_uptime(secs: u64) -> String {
     let (d, h, m) = (secs / 86_400, (secs % 86_400) / 3600, (secs % 3600) / 60);
     match (d, h) {
         (0, 0) => format!("Up {m} min"),
@@ -586,6 +587,10 @@ pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
             available,
         } => {
             let names: Vec<String> = installed.iter().map(|a| a.display_name()).collect();
+            let details: Vec<String> = installed
+                .iter()
+                .map(|a| format!("/ui/apps/{}", a.name))
+                .collect();
             let links: Vec<Option<String>> = installed.iter().map(|a| a.link(host)).collect();
             let keepers: Vec<Option<String>> = installed
                 .iter()
@@ -597,9 +602,9 @@ pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
                 .collect();
             html! {
                 (honeycomb("Apps", html! {
-                    @for (((a, name), keeper), link) in installed.iter().zip(&names).zip(&keepers).zip(&links) {
+                    @for ((((a, name), keeper), link), details) in installed.iter().zip(&names).zip(&keepers).zip(&links).zip(&details) {
                         @let (health, status) = phase_words(&a.phase);
-                        (app_cell(&AppCell { name, health, status, detail: keeper.as_deref(), url: link.as_deref() }))
+                        (app_cell(&AppCell { name, health, status, detail: keeper.as_deref(), url: link.as_deref(), details: Some(details) }))
                     }
                     (add_app_cell("/?draft=Install%20"))
                 }))
@@ -615,7 +620,8 @@ pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
             }
         }
     };
-    live_region("hive-apps", "/ui/hive/apps", 15, true, content)
+    // Also refreshed at once after a change from the app dialog (`hive-changed`).
+    live_region_on("hive-apps", "/ui/hive/apps", 15, "hive-changed", content)
 }
 
 pub fn hive(f: &Frame<'_>) -> Markup {
@@ -627,6 +633,7 @@ pub fn hive(f: &Frame<'_>) -> Markup {
             div.wide {
                 (page_header("Apps and devices", Some("What runs where. Ask in the chat to change anything.")))
                 (section("Apps", hive_apps(snap, f.host)))
+                (app_dialog())
                 (section("Devices", html! {
                     @if snap.devices.is_empty() {
                         p.quiet { "Couldn't read device details yet." }

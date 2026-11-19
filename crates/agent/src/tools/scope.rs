@@ -285,6 +285,11 @@ pub trait CellStore: Send + Sync {
         bee: &'a str,
         by: &'a str,
     ) -> BoxFuture<'a, Result<(), String>>;
+    /// Remove cell `cell` for good: its workloads, its namespace and all its data, waiting
+    /// until it is gone (stuck objects are forced; a clear error after a timeout). Only the
+    /// user's own force delete calls this; no agent tool reaches it. Returns what was
+    /// removed, in words.
+    fn force_delete<'a>(&'a self, cell: &'a str) -> BoxFuture<'a, Result<Vec<String>, String>>;
 }
 
 #[cfg(test)]

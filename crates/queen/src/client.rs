@@ -217,6 +217,12 @@ impl Printer {
                     from.as_deref().unwrap_or("no bee")
                 ));
             }
+            QueenEvent::CellForceDeleted { cell, bee } => {
+                self.line(&format!(
+                    "[cell {cell}] force-deleted by the user (told: {})",
+                    bee.as_deref().unwrap_or("the Queen only")
+                ));
+            }
             QueenEvent::SessionOpened { backend, resumed } => {
                 let how = if *resumed {
                     "resumed the previous session"
@@ -612,6 +618,75 @@ pub async fn reassign(client: &Client, cell: &str, to: &str) -> anyhow::Result<(
         .await?;
     let body = ok(status, body)?;
     print_cell(&body);
+    Ok(())
+}
+
+/// `app details <app>`: the app's status, as the app dialog shows it.
+pub async fn app_details(client: &Client, app: &str) -> anyhow::Result<()> {
+    let s = client
+        .get(&format!("/api/apps/{}", path_segment(app)))
+        .await?;
+    let field = |k: &str| s[k].as_str().map(str::to_string);
+    let pods = s["pods"].as_array().cloned().unwrap_or_default();
+    let restarts: u64 = pods.iter().filter_map(|p| p["restarts"].as_u64()).sum();
+    println!("{app}: {}", s["phase"].as_str().unwrap_or("unknown"));
+    let bee = field("bee_name").or_else(|| field("bee"));
+    println!("  looked after by  {}", bee.as_deref().unwrap_or("no bee"));
+    for (label, key) in [
+        ("comb", "comb"),
+        ("link", "url"),
+        ("version", "version"),
+        ("image", "image"),
+    ] {
+        if let Some(v) = field(key) {
+            println!("  {label:<16} {v}");
+        }
+    }
+    if s["installed"] == true {
+        println!(
+            "  pods             {}/{} ready, {restarts} restart(s)",
+            s["ready_replicas"].as_u64().unwrap_or(0),
+            s["replicas"].as_u64().unwrap_or(0)
+        );
+    }
+    Ok(())
+}
+
+/// `app logs <app>`: the last log lines (untrusted app output, printed as plain text).
+pub async fn app_logs(client: &Client, app: &str) -> anyhow::Result<()> {
+    let v = client
+        .get(&format!("/api/apps/{}/logs?lines=200", path_segment(app)))
+        .await?;
+    eprintln!(
+        "{} / {} (last {} lines)",
+        v["pod"].as_str().unwrap_or("?"),
+        v["container"].as_str().unwrap_or("?"),
+        v["lines"]
+    );
+    // Already stripped of control characters by the tool.
+    println!("{}", v["log"].as_str().unwrap_or_default());
+    Ok(())
+}
+
+/// `app force-delete <app> --yes`: remove the app and its data; its bee and the Queen are told.
+pub async fn app_force_delete(client: &Client, app: &str) -> anyhow::Result<()> {
+    eprintln!("Deleting {app} and all its data (this can take a minute)…");
+    let (status, body) = client
+        .post(
+            &format!("/api/apps/{}/force-delete", path_segment(app)),
+            json!({"confirm": app}),
+        )
+        .await?;
+    let body = ok(status, body)?;
+    println!("{app}: deleted");
+    for r in body["removed"].as_array().into_iter().flatten() {
+        println!("  removed  {}", r.as_str().unwrap_or("?"));
+    }
+    let told = match (body["bee_name"].as_str(), body["bee_notice"].as_str()) {
+        (Some(name), Some(n)) => format!("bee {name} ({n}) and the Queen"),
+        _ => "the Queen".into(),
+    };
+    println!("  told     {told}");
     Ok(())
 }
 

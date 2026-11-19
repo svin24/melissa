@@ -84,6 +84,9 @@ pub enum QueenEvent {
         to: String,
         by: String,
     },
+    /// The user force-deleted a cell and its data. `bee`: the bee that looked after it and
+    /// was told (None: it had none, or that bee no longer exists).
+    CellForceDeleted { cell: String, bee: Option<String> },
     /// The Queen's agent session started. `resumed`: the agent's previous session (and its
     /// context) was resumed; otherwise the Queen starts fresh.
     SessionOpened { backend: String, resumed: bool },

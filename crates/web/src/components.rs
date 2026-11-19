@@ -347,6 +347,8 @@ pub struct AppCell<'a> {
     pub detail: Option<&'a str>,
     /// Where the app is served, if known.
     pub url: Option<&'a str>,
+    /// The app's details ([`app_details`]), loaded into the page's [`app_dialog`].
+    pub details: Option<&'a str>,
 }
 
 /// A hexagon cell for an app.
@@ -361,6 +363,170 @@ pub fn app_cell(cell: &AppCell<'_>) -> Markup {
                 }
                 span.hex-status { (cell.status) }
                 @if let Some(detail) = cell.detail { span.hex-detail { (detail) } }
+                @if let Some(details) = cell.details {
+                    button.hex-more type="button" hx-get=(details) hx-target="#app-dialog"
+                        hx-swap="innerHTML" aria-haspopup="dialog" aria-label={ "Details: " (cell.name) } {
+                        "Details"
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- App details (a modal dialog) -----------------------------------------------------------
+
+/// The page's one app dialog, empty until a Details button loads [`app_details`] into it
+/// (melissa.js then opens it as a modal; Escape and Close shut it, focus goes back).
+pub fn app_dialog() -> Markup {
+    html! { dialog #app-dialog .sheet aria-labelledby="app-dialog-h" {} }
+}
+
+/// One fact in a details list.
+pub struct Fact<'a> {
+    pub label: &'a str,
+    pub value: &'a str,
+    /// Shown as a link (http/https only; the caller checks).
+    pub href: Option<&'a str>,
+}
+
+/// What the app dialog shows.
+pub struct AppDetails<'a> {
+    pub name: &'a str,
+    pub health: Health,
+    pub status: &'a str,
+    pub facts: &'a [Fact<'a>],
+    /// The logs region's URL ([`app_logs`]); loads when the dialog opens.
+    pub logs_url: &'a str,
+    /// Stop or Start: (label, POST url). None while neither applies.
+    pub toggle: Option<(&'a str, &'a str)>,
+    /// The force delete form's POST url.
+    pub delete_url: &'a str,
+    /// The word to type to confirm the force delete (the app's name).
+    pub delete_word: &'a str,
+    /// A short message after an action (e.g. why it failed).
+    pub message: Option<(&'a str, Tone)>,
+}
+
+fn dialog_head(name: &str, status: Option<(Health, &str)>) -> Markup {
+    html! {
+        header.sheet-head {
+            h2 #app-dialog-h { (name) }
+            @if let Some((health, status)) = status {
+                span class={ "pill " (health.class()) } { (status) }
+            }
+            form method="dialog" { button.secondary type="submit" autofocus { "Close" } }
+        }
+    }
+}
+
+/// The inside of the app dialog: status, logs and actions.
+pub fn app_details(d: &AppDetails<'_>) -> Markup {
+    html! {
+        (dialog_head(d.name, Some((d.health, d.status))))
+        @if let Some((text, tone)) = d.message {
+            p class={ "sheet-msg " (tone.class()) } role="status" { (text) }
+        }
+        dl.facts {
+            @for f in d.facts {
+                div {
+                    dt { (f.label) }
+                    dd {
+                        @if let Some(href) = f.href {
+                            a href=(href) rel="noreferrer" target="_blank" { (f.value) }
+                        } @else { (f.value) }
+                    }
+                }
+            }
+        }
+        section.sheet-logs aria-labelledby="app-logs-h" {
+            h3 #app-logs-h { "Logs" }
+            div #app-logs hx-get=(d.logs_url) hx-trigger="load" hx-swap="outerHTML" {
+                p.quiet { "Loading…" }
+            }
+        }
+        div.action-row {
+            @if let Some((label, url)) = d.toggle {
+                button.secondary type="button" hx-post=(url) hx-target="#app-dialog"
+                    hx-swap="innerHTML" hx-disabled-elt="this" { (label) }
+            }
+        }
+        details.danger-zone {
+            summary { "Force delete" }
+            form hx-post=(d.delete_url) hx-target="#app-dialog" hx-swap="innerHTML"
+                hx-disabled-elt="find button" {
+                p { "Deletes " (d.name) " and all its data." }
+                label.field {
+                    span { "Type " strong { (d.delete_word) } " to confirm" }
+                    input type="text" name="confirm" required autocomplete="off"
+                        autocapitalize="off" spellcheck="false" pattern=(d.delete_word);
+                }
+                button.primary.danger type="submit" { "Force delete" }
+            }
+        }
+    }
+}
+
+/// The app dialog while a stop waits for the user's OK (the confirmation the tool asked for).
+pub fn app_confirm(name: &str, question: &str, label: &str, approve: &str, deny: &str) -> Markup {
+    html! {
+        (dialog_head(name, None))
+        section.approval.confirm {
+            p { (question) }
+            div.action-row {
+                button.primary type="button" hx-post=(approve) hx-target="#app-dialog"
+                    hx-swap="innerHTML" hx-disabled-elt="this" { (label) }
+                button.secondary type="button" hx-post=(deny) hx-target="#app-dialog"
+                    hx-swap="innerHTML" autofocus { "Cancel" }
+            }
+        }
+    }
+}
+
+/// The app dialog after a force delete.
+pub fn app_gone(name: &str, text: &str) -> Markup {
+    html! {
+        (dialog_head(name, None))
+        p.sheet-msg role="status" { (text) }
+    }
+}
+
+/// The logs region of the app dialog. Log text is untrusted: it is only ever escaped text.
+pub struct AppLogs<'a> {
+    pub url: &'a str,
+    /// The containers to choose from (shown when there are several) and the current one.
+    pub containers: &'a [String],
+    pub container: Option<&'a str>,
+    pub lines: &'a [&'a str],
+    /// Shown instead of lines (no pods, an error).
+    pub empty: Option<&'a str>,
+}
+
+pub fn app_logs(l: &AppLogs<'_>) -> Markup {
+    html! {
+        div #app-logs {
+            form.action-row hx-get=(l.url) hx-target="#app-logs" hx-swap="outerHTML" {
+                @if l.containers.len() > 1 {
+                    label.inline-field {
+                        span { "Container" }
+                        select name="container" hx-get=(l.url) hx-trigger="change"
+                            hx-target="#app-logs" hx-swap="outerHTML" hx-include="this" {
+                            @for c in l.containers {
+                                option value=(c) selected[l.container == Some(c.as_str())] { (c) }
+                            }
+                        }
+                    }
+                } @else if let Some(c) = l.container {
+                    input type="hidden" name="container" value=(c);
+                }
+                button.secondary type="submit" { "Refresh" }
+            }
+            @if let Some(text) = l.empty {
+                p.quiet { (text) }
+            } @else {
+                div.sheet-log tabindex="0" aria-label="Log lines" {
+                    (log_view(l.lines.iter().map(|t| LogLine { text: t, is_error: false })))
+                }
             }
         }
     }
@@ -1058,6 +1224,17 @@ pub fn live_region(id: &str, url: &str, seconds: u32, live: bool, content: Marku
             }
         } @else {
             div id=(id) { (content) }
+        }
+    }
+}
+
+/// A region that refreshes itself from `url` every `seconds`, and at once when the page
+/// receives the event `event` (an `HX-Trigger` response header from another request).
+pub fn live_region_on(id: &str, url: &str, seconds: u32, event: &str, content: Markup) -> Markup {
+    html! {
+        div id=(id) hx-get=(url) hx-trigger={ "every " (seconds) "s, " (event) " from:body" }
+            hx-swap="outerHTML" {
+            (content)
         }
     }
 }
@@ -1762,6 +1939,7 @@ mod tests {
     #[test]
     fn app_cells_are_hexagons_with_status() {
         let out = app_cell(&AppCell {
+            details: None,
             name: "Nextcloud",
             health: Health::Ok,
             status: "Running",

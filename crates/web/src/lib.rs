@@ -6,6 +6,7 @@
 
 mod agents;
 mod api;
+mod apps;
 pub mod components;
 mod feed;
 mod markdown;
@@ -83,6 +84,7 @@ pub fn router_with_settings(
     );
     ui_routes(board, Some(ui.clone()))
         .merge(ui::routes(ui.clone()))
+        .merge(apps::routes(ui.clone()))
         .merge(settings::api_routes(ui))
         .merge(api::tool_routes(mcp.clone()))
         .merge(
@@ -598,6 +600,25 @@ mod tests {
                     }),
                 )),
                 Arc::new(Fixed(
+                    "app_status",
+                    serde_json::json!({
+                        "k3s_reachable": true, "app": "nextcloud", "phase": "ready",
+                        "bee": "c-0a1b2c3d.b1", "bee_name": "Ada", "comb": "c-0a1b2c3d",
+                        "port": 30000, "url": "http://203.0.113.10:30000",
+                        "version": "34.0.6", "image": "docker.io/library/nextcloud:34.0.6",
+                        "installed": true, "replicas": 1, "ready_replicas": 1,
+                        "pods": [{"name": "nc-1", "restarts": 2, "age_secs": 120}],
+                    }),
+                )),
+                Arc::new(Fixed(
+                    "app_logs",
+                    serde_json::json!({
+                        "app": "nextcloud", "pod": "nc-1", "container": "nextcloud",
+                        "containers": ["nextcloud", "cron"], "lines": 2, "truncated": false,
+                        "log": "<script>alert(1)</script>\n**bold** <img src=x onerror=alert(2)>",
+                    }),
+                )),
+                Arc::new(Fixed(
                     "cluster_health",
                     serde_json::json!({"nodes": [{"name": "comb-1", "ready": true, "allocatable": {"cpu": "4"}}]}),
                 )),
@@ -611,6 +632,13 @@ mod tests {
         }
 
         fn app_with(page_settings: Option<Settings>) -> (Router, Queen) {
+            app_full(page_settings, None)
+        }
+
+        fn app_full(
+            page_settings: Option<Settings>,
+            cells: Option<Arc<dyn melissa_agent::tools::CellStore>>,
+        ) -> (Router, Queen) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "melissa-web-queen-{}-{}",
@@ -623,7 +651,7 @@ mod tests {
                 1 << 20,
             )));
             let registry = BeeRegistry::open(&dir.join("bees"), "c-0a1b2c3d").unwrap();
-            let pool = BeePool::new(BeeLimits::default(), events.clone(), registry, None);
+            let pool = BeePool::new(BeeLimits::default(), events.clone(), registry, cells);
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
             tools.push(Arc::new(Touch));
             tools.extend(hive_tools());
@@ -1705,6 +1733,165 @@ mod tests {
                 .contains("<span class=\"strip-warn\">Storage almost full (1.7 GB left)</span>"));
             let (_, _, body) = get_html(&app, "/ui/hive/apps").await;
             assert!(body.starts_with("<div id=\"hive-apps\""));
+        }
+
+        // --- App details --------------------------------------------------------------------
+
+        /// One cell, `nextcloud`, owned by a bee that does not exist (the Queen only is told).
+        #[derive(Default)]
+        struct OneCell {
+            deleted: std::sync::Mutex<Vec<String>>,
+        }
+        impl melissa_agent::tools::CellStore for OneCell {
+            fn cells(&self) -> BoxFuture<'_, Result<Vec<melissa_agent::tools::CellInfo>, String>> {
+                Box::pin(async move {
+                    if !self.deleted.lock().unwrap().is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    Ok(vec![melissa_agent::tools::CellInfo {
+                        name: "nextcloud".into(),
+                        owner: melissa_agent::tools::Owner::Bee("c-0a1b2c3d.b7".into()),
+                        comb: Some("c-0a1b2c3d".into()),
+                        assigned_by: None,
+                        assigned_at: None,
+                        legacy_owner: None,
+                    }])
+                })
+            }
+            fn assign<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a str,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async { Err("no".into()) })
+            }
+            fn force_delete<'a>(
+                &'a self,
+                cell: &'a str,
+            ) -> BoxFuture<'a, Result<Vec<String>, String>> {
+                Box::pin(async move {
+                    self.deleted.lock().unwrap().push(cell.into());
+                    Ok(vec!["Namespace (all objects, volumes and data)".into()])
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn app_tiles_open_details_with_status_logs_and_actions() {
+            let (app, _) = app();
+            let (_, _, body) = get_html(&app, "/hive").await;
+            assert!(
+                body.contains("<dialog class=\"sheet\" id=\"app-dialog\""),
+                "{body}"
+            );
+            assert!(body.contains("hx-get=\"/ui/apps/nextcloud\""));
+            assert!(body.contains("hive-changed from:body"));
+
+            let req = axum::http::Request::get("/ui/apps/nextcloud")
+                .header(header::HOST, "192.0.2.7:8080")
+                .body(Body::empty())
+                .unwrap();
+            let (status, _, body) = send(&app, req).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                body.contains("<h2 id=\"app-dialog-h\">Nextcloud</h2>"),
+                "{body}"
+            );
+            assert!(body.contains("Running"));
+            assert!(body.contains("<dd>Ada</dd>"));
+            assert!(body.contains("href=\"http://192.0.2.7:30000\""));
+            assert!(body.contains("<dd>1/1 ready</dd>"));
+            assert!(body.contains("docker.io/library/nextcloud:34.0.6"));
+            assert!(body.contains("hx-get=\"/ui/apps/nextcloud/logs\""));
+            assert!(body.contains(">Stop</button>"));
+            assert!(body.contains("Deletes Nextcloud and all its data."));
+            assert!(body.contains("<form method=\"dialog\">"));
+            // Bad names never reach a tool.
+            assert_eq!(
+                get_html(&app, "/ui/apps/..%2Fx").await.0,
+                StatusCode::NOT_FOUND
+            );
+        }
+
+        #[tokio::test]
+        async fn hostile_log_lines_are_only_ever_text() {
+            let (app, _) = app();
+            let (status, _, body) = get_html(&app, "/ui/apps/nextcloud/logs").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+                "{body}"
+            );
+            assert!(body.contains("**bold** &lt;img src=x onerror=alert(2)&gt;"));
+            assert!(
+                !body.contains("<script>") && !body.contains("<img") && !body.contains("<strong>")
+            );
+            // Several containers: a choice.
+            assert!(body.contains("<option value=\"cron\">cron</option>"));
+            // The JSON mirror.
+            let (status, v) = send_json(&app, get("/api/apps/nextcloud/logs")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(v["pod"], "nc-1");
+            let (status, v) = send_json(&app, get("/api/apps/nextcloud")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(v["bee_name"], "Ada");
+        }
+
+        #[tokio::test]
+        async fn force_delete_needs_the_name_and_then_removes_and_tells_the_queen() {
+            let cells = Arc::new(OneCell::default());
+            let (app, queen) = app_full(None, Some(cells.clone()));
+            // No or wrong confirmation: refused, nothing deleted.
+            let (status, _, html) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/force-delete", "confirm=yes"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Type nextcloud to confirm."));
+            let (status, v) =
+                send_json(&app, json_post("/api/apps/nextcloud/force-delete", r#"{}"#)).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+            // Cross-site: rejected before anything runs.
+            let req = axum::http::Request::post("/api/apps/nextcloud/force-delete")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://evil.example.com")
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(Body::from(r#"{"confirm":"nextcloud"}"#))
+                .unwrap();
+            assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
+            assert!(cells.deleted.lock().unwrap().is_empty());
+
+            let (status, headers, html) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/force-delete", "confirm=nextcloud"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Nextcloud and its data are gone."), "{html}");
+            assert_eq!(headers["hx-trigger"], "hive-changed");
+            assert_eq!(
+                *cells.deleted.lock().unwrap(),
+                vec!["nextcloud".to_string()]
+            );
+            // The owning bee no longer exists: only the Queen hears of it.
+            assert!(queen
+                .events()
+                .since(0, 100)
+                .events
+                .iter()
+                .any(|r| matches!(&r.event, QueenEvent::CellForceDeleted { cell, bee: None } if cell == "nextcloud")));
+            // Gone now.
+            let (status, _) = send_json(
+                &app,
+                json_post(
+                    "/api/apps/nextcloud/force-delete",
+                    r#"{"confirm":"nextcloud"}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         }
 
         #[tokio::test]

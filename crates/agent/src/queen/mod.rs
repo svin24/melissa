@@ -234,6 +234,21 @@ impl Queen {
         &self.inner.pool
     }
 
+    /// The user force-deletes a cell ([`BeePool::user_force_delete`]: removed, audited, its
+    /// bee told). The Queen learns it with her next message (a note, never a turn of its
+    /// own, so nothing runs behind the user's back).
+    pub async fn user_force_delete(&self, cell: &str) -> Result<bees::ForceDeleted, QueenError> {
+        let done = self.inner.pool.user_force_delete(cell).await?;
+        self.inner.conv.note(&bees::force_deleted_text(&done.cell));
+        Ok(done)
+    }
+
+    /// The MCP server the Queen's tools run on (the web UI's own reads and the user's
+    /// direct actions go through its registry, policy-checked and audited).
+    pub fn server(&self) -> &McpServer {
+        &self.inner.server
+    }
+
     /// A human approves or denies a pending confirmation (audited, actor `ui`). `None` if
     /// it no longer exists.
     pub fn resolve_confirmation(

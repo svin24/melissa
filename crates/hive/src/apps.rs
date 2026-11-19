@@ -105,6 +105,15 @@ pub trait AppDeployer: Send + Sync {
     ) -> BoxFuture<'a, Result<Vec<&'static str>, ClusterError>>;
     /// Delete the app's namespace and everything in it, including its volumes' data.
     fn delete_namespace<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<bool, ClusterError>>;
+    /// Force delete only: delete every pod in the app's namespace at once (grace period 0).
+    /// Returns how many were deleted.
+    fn force_delete_pods<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<usize, ClusterError>>;
+    /// Force delete only: drop the finalizers of the app's volumes that are being deleted
+    /// (their data goes with the namespace anyway). Returns how many were changed.
+    fn clear_volume_finalizers<'a>(
+        &'a self,
+        app: &'a str,
+    ) -> BoxFuture<'a, Result<usize, ClusterError>>;
     /// Merge-patch the app's Deployment (stop/start: replicas and the
     /// replicas-before-stop annotation).
     fn patch_deployment<'a>(
@@ -350,6 +359,62 @@ impl AppDeployer for KubeApps {
                     .await,
             )?
             .is_some())
+        })
+    }
+
+    fn force_delete_pods<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<usize, ClusterError>> {
+        Box::pin(async move {
+            let api = self.ns_api::<Pod>(app).await?;
+            let pods = api
+                .list(&ListParams::default())
+                .await
+                .map_err(map_err)?
+                .items;
+            let now = DeleteParams {
+                grace_period_seconds: Some(0),
+                ..DeleteParams::background()
+            };
+            let mut n = 0;
+            for name in pods.iter().filter_map(|p| p.metadata.name.as_deref()) {
+                if optional(api.delete(name, &now).await)?.is_some() {
+                    n += 1;
+                }
+            }
+            Ok(n)
+        })
+    }
+
+    fn clear_volume_finalizers<'a>(
+        &'a self,
+        app: &'a str,
+    ) -> BoxFuture<'a, Result<usize, ClusterError>> {
+        Box::pin(async move {
+            let api = self.ns_api::<PersistentVolumeClaim>(app).await?;
+            let claims = api
+                .list(&ListParams::default())
+                .await
+                .map_err(map_err)?
+                .items;
+            let params = PatchParams {
+                field_manager: Some(FIELD_MANAGER.into()),
+                ..PatchParams::default()
+            };
+            let patch = serde_json::json!({"metadata": {"finalizers": null}});
+            let mut n = 0;
+            for c in &claims {
+                let stuck = c.metadata.deletion_timestamp.is_some()
+                    && c.metadata
+                        .finalizers
+                        .as_ref()
+                        .is_some_and(|f| !f.is_empty());
+                let Some(name) = c.metadata.name.as_deref().filter(|_| stuck) else {
+                    continue;
+                };
+                if optional(api.patch(name, &params, &Patch::Merge(&patch)).await)?.is_some() {
+                    n += 1;
+                }
+            }
+            Ok(n)
         })
     }
 

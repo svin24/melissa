@@ -16,6 +16,9 @@
 //!   `melissa-queen [--config <path>] confirm list|approve <id>|deny <id>`
 //!   `melissa-queen [--config <path>] bee list|rename <bee> <name>`  this comb's bees
 //!   `melissa-queen [--config <path>] cell list|reassign <cell> --to <bee>`  cells and owners
+//!   `melissa-queen [--config <path>] app details|logs <app>`  an app's status, its last log lines
+//!   `melissa-queen [--config <path>] app force-delete <app> --yes`  remove it and its data now;
+//!                                                            its bee and the Queen are told
 //!
 //! The client commands talk to the running daemon on its configured `listen` address.
 //!
@@ -104,6 +107,13 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
                               ask the host's update helper; apply and rollback restart
                               Melissa and need --yes";
 
+#[derive(Debug, PartialEq, Eq)]
+enum AppCommand {
+    Details,
+    Logs,
+    ForceDelete,
+}
+
 enum Command {
     /// `demo` = true: first run from a source checkout (quieter log, repo catalog).
     Serve {
@@ -120,6 +130,8 @@ enum Command {
         args: Value,
     },
     AppCredentials(String),
+    /// `app details|logs|force-delete <app>`: the same as the app dialog.
+    App(AppCommand, String),
     /// Talk to the Queen (None) or a bee.
     Chat(Option<String>),
     /// Start a new chat with the Queen (`true`: then talk).
@@ -215,6 +227,11 @@ async fn main() -> anyhow::Result<()> {
             return client::backends(&to(bee)).await;
         }
         Command::Reassign { cell, to } => return client::reassign(&api, cell, to).await,
+        Command::App(AppCommand::Details, app) => return client::app_details(&api, app).await,
+        Command::App(AppCommand::Logs, app) => return client::app_logs(&api, app).await,
+        Command::App(AppCommand::ForceDelete, app) => {
+            return client::app_force_delete(&api, app).await
+        }
         Command::Providers => return client::providers(&api).await,
         Command::ProviderChange {
             id,
@@ -625,6 +642,20 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
         [c, app] if c == "app-credentials" => Command::AppCredentials(app.clone()),
+        [c, a, app] if c == "app" && a == "details" => {
+            Command::App(AppCommand::Details, app.clone())
+        }
+        [c, a, app] if c == "app" && a == "logs" => Command::App(AppCommand::Logs, app.clone()),
+        [c, a, app, yes] if c == "app" && a == "force-delete" && yes == "--yes" => {
+            Command::App(AppCommand::ForceDelete, app.clone())
+        }
+        [c, a, ..] if c == "app" && a == "force-delete" => bail!(
+            "force-delete removes the app and all its data for good: \
+             `melissa-queen app force-delete <app> --yes`"
+        ),
+        [c, ..] if c == "app" => {
+            bail!("usage: melissa-queen app details|logs <app>, app force-delete <app> --yes")
+        }
         [c, ..] if c == "app-adopt" => bail!(
             "app-adopt is gone: cells now belong to bees. Use `melissa-queen cell list` and \
              `melissa-queen cell reassign <cell> --to <bee>`"
@@ -922,6 +953,23 @@ mod tests {
             matches!(parse(&["app-credentials", "nextcloud"]).unwrap().1, Command::AppCredentials(a) if a == "nextcloud")
         );
         assert!(parse(&["app-credentials"]).is_err());
+        assert!(
+            matches!(parse(&["app", "details", "nextcloud"]).unwrap().1, Command::App(AppCommand::Details, a) if a == "nextcloud")
+        );
+        assert!(matches!(
+            parse(&["app", "logs", "nextcloud"]).unwrap().1,
+            Command::App(AppCommand::Logs, _)
+        ));
+        assert!(matches!(
+            parse(&["app", "force-delete", "nextcloud", "--yes"])
+                .unwrap()
+                .1,
+            Command::App(AppCommand::ForceDelete, _)
+        ));
+        // Never without --yes.
+        assert!(parse(&["app", "force-delete", "nextcloud"]).is_err());
+        assert!(parse(&["app", "force-delete", "nextcloud", "-y"]).is_err());
+        assert!(parse(&["app", "remove", "nextcloud"]).is_err());
         // Replaced by `cell reassign`.
         assert!(parse(&["app-adopt", "blog"]).is_err());
         assert!(parse(&["bogus"]).is_err());

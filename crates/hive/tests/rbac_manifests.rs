@@ -67,6 +67,9 @@ fn the_read_only_identity_stays_read_only() {
             "{rule}"
         );
         assert!(!rule.contains("secrets"), "{rule}");
+        // Cluster-wide: no logs of system pods. App logs are read through the write
+        // identity, bound per app namespace only.
+        assert!(!rule.contains("pods/log"), "{rule}");
     }
 }
 
@@ -130,6 +133,16 @@ fn the_write_identity_is_narrow() {
     assert!(workload.contains(
         "resources: [\"pods\", \"pods/log\"]\n    verbs: [\"get\", \"list\", \"watch\"]"
     ));
+    // Force delete: pods may be deleted (stuck ones), never created.
+    let pod_rules: Vec<_> = rules(workload)
+        .into_iter()
+        .filter(|r| r.contains("\"pods\""))
+        .collect();
+    assert_eq!(pod_rules.len(), 2, "{pod_rules:?}");
+    assert!(pod_rules
+        .iter()
+        .any(|r| r.contains("resources: [\"pods\"]\n    verbs: [\"delete\"]")));
+    assert!(!pod_rules.iter().any(|r| r.contains("\"create\"")));
     for word in [
         "pods/exec",
         "pods/attach",

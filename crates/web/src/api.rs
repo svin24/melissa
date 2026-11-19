@@ -41,6 +41,8 @@
 //!   reachable. The caller is the user (scope `User`: no ownership checks). Errors: 404 unknown
 //!   tool, 422 bad arguments, 403 denied or refused, 408 confirmation
 //!   timeout, 502 tool failure.
+//! - `GET /api/apps/{app}`, `GET /api/apps/{app}/logs`, `POST /api/apps/{app}/force-delete`: see
+//!   [`crate::apps`].
 
 use std::time::{Duration, UNIX_EPOCH};
 

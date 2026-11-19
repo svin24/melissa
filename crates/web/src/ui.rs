@@ -56,7 +56,7 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct Ui {
     pub(crate) queen: Queen,
-    hive: HiveCache,
+    pub(crate) hive: HiveCache,
     pub(crate) settings: crate::settings::Settings,
 }
 
@@ -245,7 +245,7 @@ fn error_page(e: QueenError) -> Response {
 }
 
 /// The `Host` header, for app links built from the address the visitor used.
-fn host(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn host(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::HOST).and_then(|h| h.to_str().ok())
 }
 

@@ -44,6 +44,15 @@
     }
   });
 
+  // App details: a Details button loads the dialog's content; open it as a modal. The
+  // browser handles Escape, focus containment and returning focus to the button.
+  document.addEventListener("htmx:afterSwap", function (e) {
+    var dialog = e.detail && e.detail.target;
+    if (dialog && dialog.id === "app-dialog" && !dialog.open && dialog.showModal) {
+      dialog.showModal();
+    }
+  });
+
   // After sending, the composer is replaced: put the cursor back in it.
   document.addEventListener("htmx:afterSwap", function (e) {
     if (e.detail && e.detail.target && e.detail.target.id === "composer") {
