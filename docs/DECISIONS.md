@@ -335,3 +335,7 @@ Format: date — decision. Why. Alternatives considered.
   default features needed. Why not its HTML writer or an HTML sanitizer (ammonia): rendering our own tree keeps
   every text in maud escaping and the allowed elements in `components.rs`; a sanitizer would add html5ever and
   still start from raw HTML. Alternatives: `comrak` (heavier, its own HTML), `markdown-rs`, keeping `plain_text`.
+- **2026-11-19 — Melissa is MIT-licensed.** Owner decision. `LICENSE` (copyright "The Melissa authors"), `license =
+  "MIT"` for every crate via `[workspace.package]`, OCI label `org.opencontainers.image.licenses="MIT"`; the image
+  already ships `LICENSE*` in `/usr/share/licenses/melissa/`. Why: the owner leaned towards MIT; simple, permissive,
+  matches the dependencies' licenses. Alternatives: AGPL-3.0 + commercial dual license (needs a CLA), Apache-2.0.

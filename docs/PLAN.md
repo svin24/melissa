@@ -296,12 +296,13 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 ## 8. Licensing and legal
 
-- **Owner decision (2026-11-18): license decided later; no LICENSE file for now.** The AGPL declaration was removed
-  from Cargo.toml and the image label; the README says no license has been chosen. (Owner had leaned towards MIT.)
+- **Owner decision (2026-11-19): Melissa is MIT-licensed** (`LICENSE`, `license = "MIT"` in the workspace, the image
+  label `org.opencontainers.image.licenses`). Replaces the 2026-11-18 "decide later" and the earlier AGPL + commercial
+  idea. Copyright line: "The Melissa authors" (no personal names in the repo).
   Attributions for design inspiration (T3 Code, Universal Blue) and redistributed third-party software live in
   `ACKNOWLEDGMENTS.md` regardless of the final license.
-- Open source so others can build on it. Earlier candidate: **AGPL-3.0 plus a commercial license/EULA (dual license)** for those who cannot use AGPL. Alternatives (Apache-2.0/MPL) if community growth matters more than protecting the commercial path.
-- Dual licensing requires owning the copyright: either a **CLA** (e.g. CLA Assistant) for outside contributors, or keep development internal-only until the license is settled. Decide before accepting external PRs.
+- Open source so others can build on it. MIT needs no CLA for dual licensing; outside contributions come in under MIT
+  (inbound = outbound).
 - **Name risk:** Melissa Data holds MELISSA trademarks in classes 9 and 42 (US/UK/EU). Get a legal/trademark check before any commercial launch; have a fallback name ready (the owner decides any rename; agents must not rename the project).
 - Candidate identifiers (appeared unregistered on 2026-11-17, not reserved): domain `getmelissa.dev`, GitHub org `getmelissa`. Re-check availability before relying on them.
 - Keep the project separate from any employer: no outside code or assets.
@@ -340,7 +341,7 @@ Roadmap (rough, phases may overlap):
 
 ## 10. Open questions
 
-1. Final license (AGPL + commercial vs. alternatives) and CLA vs. internal-only development.
+1. ~~Final license~~ Decided 2026-11-19: MIT.
 2. Trademark clearance for "Melissa" and the fallback name; confirm domain/org choices.
 3. Hosted relay mode: build our own or integrate an existing service? Who runs it and what does it store?
 4. Mesh default: Tailscale (easy, third-party control plane) vs. Headscale/NetBird (self-hosted). What is the default for new users?
