@@ -20,7 +20,8 @@
 #   CTR_IMAGE=localhost/melissa-container:dev
 #   UI_PORT=18080             host port for the web UI (bound to 127.0.0.1 only)
 #   APP_PORT_BASE=30000       host port for app NodePort 30000; 80 ports are mapped (30000-30079).
-#                             Keep 30000 unless taken: app links name the device port (30000+n).
+#                             Another base (e.g. 31000 next to a host k3s) is written to the queen's
+#                             config at first `up` as `[apps] port_offset`, so app links name it.
 #   BIND=127.0.0.1            host address for the app ports (0.0.0.0 to reach apps from the LAN)
 #   APP_ADDRESSES=            [apps] addresses written to the queen's config at first `up`
 #                             (comma separated). Default: 127.0.0.1 when BIND is loopback,
@@ -96,18 +97,26 @@ app_addresses() {
     esac
 }
 
-# Write [apps] addresses into the queen's config unless the owner already has a config.
-# /etc/melissa lives on the /var volume (see image/container/Containerfile).
+# Write [apps] addresses and port_offset into the queen's config unless the owner already
+# has a config. /etc/melissa lives on the /var volume (see image/container/Containerfile).
 configure() {
-    local list toml='' a
-    in_ctr test -e /etc/melissa/queen.toml && return 0
+    local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
+    if in_ctr test -e /etc/melissa/queen.toml; then
+        if [ "$offset" != 0 ] && ! in_ctr grep -qsx "port_offset = $offset" /etc/melissa/queen.toml; then
+            echo "note: APP_PORT_BASE=$APP_PORT_BASE but /etc/melissa/queen.toml has no 'port_offset = $offset'"
+            echo "  under [apps]: app links name the wrong port until you add it ('$0 shell')."
+        fi
+        return 0
+    fi
     list=$(app_addresses)
-    [ -n "$list" ] || return 0
     for a in ${list//,/ }; do toml+="${toml:+, }\"$a\""; done
-    printf '# Written by scripts/container-run.sh (container mode): app links use these.\n[apps]\naddresses = [%s]\n' "$toml" \
+    [ -z "$toml" ] || body+="addresses = [$toml]"$'\n'
+    [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
+    [ -n "$body" ] || return 0
+    printf '# Written by scripts/container-run.sh (container mode): app links use these.\n[apps]\n%s' "$body" \
         | podman exec -i "$NAME" sh -c 'umask 022; cat > /etc/melissa/queen.toml'
     in_ctr systemctl try-restart melissa-queen
-    echo "Queen config: [apps] addresses = [$toml]"
+    echo "Queen config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
 }
 
 wait_for() { # seconds, description, command...
@@ -196,7 +205,6 @@ up)
             --stop-timeout 60 \
             "$CTR_IMAGE" /sbin/init >/dev/null
     fi
-    [ "$APP_PORT_BASE" = 30000 ] || echo "note: APP_PORT_BASE=$APP_PORT_BASE: app links say :30000+n; from the host use :$APP_PORT_BASE+n."
     wait_for 60 "systemd in the container" in_ctr test -d /var/lib/melissa-container/etc-melissa && configure
     echo "Started '$NAME'. Web UI: http://127.0.0.1:$UI_PORT  (k3s takes a minute or two: '$0 status')"
     ;;

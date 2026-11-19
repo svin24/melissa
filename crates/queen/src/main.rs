@@ -81,6 +81,8 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
                               and the models each offers
   backend use <name> [--model <id>] [--bee <bee>]
                               switch the Queen (or a bee) to that agent from its next message
+  backend refresh [--bee <bee>]
+                              ask every usable agent for its models now (no prompt), then list
   cell list                   every cell (installed app) and the bee that looks after it
   cell reassign <cell> --to <bee>
                               give a cell to another bee (your decision, no confirmation)";
@@ -116,6 +118,8 @@ enum Command {
         /// `use <name> [--model <id>]`; None: list.
         switch: Option<(String, Option<String>)>,
     },
+    /// `backend refresh`: probe every usable backend's models (forced), then list.
+    RefreshModels(Option<String>),
     Reassign {
         cell: String,
         to: String,
@@ -170,6 +174,10 @@ async fn main() -> anyhow::Result<()> {
                 Some((name, model)) => client::use_backend(&to, name, model.as_deref()).await,
             };
         }
+        Command::RefreshModels(bee) => {
+            client::refresh_models(&api).await?;
+            return client::backends(&to(bee)).await;
+        }
         Command::Reassign { cell, to } => return client::reassign(&api, cell, to).await,
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
         Command::AppCredentials(app) => {
@@ -205,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
         catalog_dir: config.apps.catalog.clone(),
         domain: config.apps.domain.clone(),
         addresses: config.apps.addresses.clone(),
+        port_offset: config.apps.port_offset,
         comb: comb.id.clone(),
         bees: Some(names.clone()),
     };
@@ -543,7 +552,8 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
     Ok((config, command))
 }
 
-/// `backend [list] [--bee <bee>]`, `backend use <name> [--model <id>] [--bee <bee>]`.
+/// `backend [list] [--bee <bee>]`, `backend use <name> [--model <id>] [--bee <bee>]`,
+/// `backend refresh [--bee <bee>]`.
 fn parse_backend(args: &[String]) -> anyhow::Result<Command> {
     let mut words = Vec::new();
     let (mut bee, mut model) = (None, None);
@@ -559,6 +569,7 @@ fn parse_backend(args: &[String]) -> anyhow::Result<Command> {
         [] => None,
         [l] if l == "list" => None,
         [u, name] if u == "use" => Some((name.clone(), model.take())),
+        [r] if r == "refresh" && model.is_none() => return Ok(Command::RefreshModels(bee)),
         _ => bail!("{USAGE}"),
     };
     if model.is_some() {
@@ -593,6 +604,11 @@ mod tests {
             Command::Backend { bee: Some(b), switch: Some((n, Some(m))) }
                 if b == "Ada" && n == "claude-session" && m == "sonnet"
         ));
+        assert!(matches!(
+            parse(&["backend", "refresh", "--bee", "Ada"]).unwrap().1,
+            Command::RefreshModels(Some(b)) if b == "Ada"
+        ));
+        assert!(parse(&["backend", "refresh", "--model", "x"]).is_err());
         assert!(parse(&["backend", "use"]).is_err());
         assert!(parse(&["backend", "list", "--model", "x"]).is_err());
         assert!(parse(&["backend", "use", "x", "--model"]).is_err());
@@ -700,6 +716,7 @@ mod tests {
             catalog_dir: dir.join("catalog"),
             domain: "example.com".into(),
             addresses: None,
+            port_offset: 0,
             comb: "c-0a1b2c3d".into(),
             bees: None,
         };

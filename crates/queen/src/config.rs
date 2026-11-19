@@ -51,6 +51,10 @@ pub struct AppsSection {
     /// `http://<address>:<port>`, most useful first. Unset: found automatically (the LAN
     /// address of the default route and Tailscale addresses).
     pub addresses: Option<Vec<String>>,
+    /// Added to an app's NodePort (30000-30079) in app links, when the host publishes the
+    /// NodePorts at other ports: container mode with `APP_PORT_BASE=31000` publishes 30000+n
+    /// as 31000+n, so the offset is 1000. Default 0.
+    pub port_offset: i32,
     /// Kubeconfig of the write identity (`melissa-apps`); default
     /// `/run/melissa-kube/apps.kubeconfig`. Re-read on every call.
     pub kubeconfig: Option<PathBuf>,
@@ -62,6 +66,7 @@ impl Default for AppsSection {
             catalog: PathBuf::from(melissa_catalog::DEFAULT_CATALOG_DIR),
             domain: melissa_catalog::DEFAULT_DOMAIN.into(),
             addresses: None,
+            port_offset: 0,
             kubeconfig: None,
         }
     }
@@ -122,6 +127,7 @@ pub struct QueenSection {
     /// direct bees, and `reassign_cell` to move cells. Bees never get more than this.
     pub tools: Option<Vec<String>>,
     /// Backend for new bees when the Queen names none (default: the first Queen backend).
+    /// Once the user switches the Queen's backend, new bees follow that instead.
     /// Must be a session backend (`kind = "acp"` or `"claude"`).
     #[serde(alias = "worker_backend")]
     pub bee_backend: Option<String>,
@@ -325,6 +331,13 @@ impl QueenConfig {
                 bail!("[apps] addresses: `{a}` must be an IP address or a host name");
             }
         }
+        let offset = self.apps.port_offset;
+        if !(1 - 30000..=65535 - 30079).contains(&offset) {
+            bail!(
+                "[apps] port_offset {offset} puts app ports outside 1-65535 (NodePorts are \
+                 30000-30079)"
+            );
+        }
         let mut names = vec!["echo"];
         for b in &self.backends {
             if names.contains(&b.name()) {
@@ -439,6 +452,14 @@ mod tests {
         .unwrap();
         config.validate().unwrap();
         assert_eq!(config.apps.addresses.as_ref().map(Vec::len), Some(4));
+        assert_eq!(config.apps.port_offset, 0);
+        let shifted: QueenConfig = toml::from_str("[apps]\nport_offset = 1000").unwrap();
+        shifted.validate().unwrap();
+        assert_eq!(shifted.apps.port_offset, 1000);
+        for bad in ["40000", "-30000"] {
+            let c: QueenConfig = toml::from_str(&format!("[apps]\nport_offset = {bad}")).unwrap();
+            assert!(c.validate().is_err(), "{bad}");
+        }
         for bad in ["a b", "http://x", "x..y", ""] {
             let config: QueenConfig =
                 toml::from_str(&format!("[apps]\naddresses = [\"{bad}\"]")).unwrap();

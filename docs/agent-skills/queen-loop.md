@@ -16,8 +16,9 @@ bee, `mod.rs` the Queen, `bees.rs` bee pool + Queen-only tools, `registry.rs` pe
 - `Queen` (one per daemon) holds at most one agent session (`AgentSession`: ACP or Claude stream-json). Opened
   lazily on the first message from `[queen] backends` in order (default `grok-acp`, `claude-session`,
   `opencode-acp`); a backend that fails to start (missing CLI, not logged in, handshake error) emits
-  `backend_failed` and the next is tried. New bees default to the first Queen backend (`bee_backend`). Her
-  MCP session is attended (`attended = true`: the user is in the chat), may delegate
+  `backend_failed` and the next is tried. New bees default to the first Queen backend (`bee_backend`), or, once
+  the user switched the Queen, to the Queen's chosen backend (q55c; `BeePool::follow_queen`, also after a
+  restart; existing bees keep theirs). Her MCP session is attended (`attended = true`: the user is in the chat), may delegate
   (`TaskContext.delegate = true`, so she sees the bee tools) and has `Scope::Queen { comb }`.
 - One turn at a time: `send` while a turn runs → `QueenError::Busy` (HTTP 409). The event pump (one task
   per session, owns the session's event receiver) ends a turn when the agent's `TurnFinished` arrives, so
@@ -94,17 +95,25 @@ Code: `queen/backends.rs` (choice, model cache, views), `Conversation::{backends
   back later does **not** resume that backend's old session (it would miss the turns in between).
 - **Models are only what the agent reports** (`OpenedSession.models`): ACP `configOptions` with `category:
   "model"` (select; grouped options flattened) in `session/new`/`session/resume`; Claude's `initialize` answer
-  `models[].value/displayName`. Kept per backend in `queen/models.json` (0600, shared by Queen and bees) once a
-  session on that backend has opened; before that a backend shows no models and a model can't be chosen. Claude's
-  `--model` from the user replaces the config's `--model`; ids are checked with `session::valid_model_id`.
+  `models[].value/displayName`. Kept per backend with an `updated` time in `queen/models.json` (0600, shared by
+  Queen and bees; the older bare-list form still reads) whenever a session opens; until then a backend shows no
+  models and a model can't be chosen. The agent's whole list is offered, uncurated (q55b). Claude's `--model`
+  from the user replaces the config's `--model`; ids are checked with `session::valid_model_id`.
+- **Model probes** (q55a, `backends::probe`, `ModelCache::refresh`): open a session through the backend's own
+  `open` (same sandbox/egress as real sessions; no MCP servers, every permission refused, empty cwd
+  `<workdir>/../probe/<backend>`), read `OpenedSession.models`, close it; **no prompt is sent**. 15 s timeout.
+  Only usable backends (`info().available`, `not_ready()` none). Automatic (chat page render, `GET
+  /api/queen/backends`): only when the list is missing or older than 24 h, at most once per backend per 10 min.
+  Forced: `POST /api/queen/backends/refresh` / `melissa-queen backend refresh` (still one probe per backend at a
+  time). A list found by a probe shows in the menu from the next render.
 - Verified: grok 1.0.89's binary contains `configOptions`/`set_config_option` (strings; not yet run live); claude
   2.1.327's `initialize` answer lists `default, opus, fable, sonnet, haiku, …` with display names (live, no prompt
   sent); OpenCode sends `configOptions` (fixture `opencode_comb_info.jsonl`).
 - `kind = "echo"` session backends (`[[backend]] kind = "echo"`, `name = "echo-a"`; not `echo`): no LLM, repeat the
   message and say how many earlier messages Melissa handed over. For demos and trying switching.
 - API: `GET /api/queen/backends`, `POST /api/queen/backend {name, model?}`, `GET /api/bees/{bee}/backends`, `POST
-  /api/bees/{bee}/backend`. CLI: `melissa-queen backend [list] [--bee <bee>]`, `backend use <name> [--model <id>]
-  [--bee <bee>]`.
+  /api/bees/{bee}/backend`, `POST /api/queen/backends/refresh`. CLI: `melissa-queen backend [list] [--bee <bee>]`,
+  `backend use <name> [--model <id>] [--bee <bee>]`, `backend refresh [--bee <bee>]`.
 - Verified 2026-11-19 (dev laptop, temp XDG dirs, port 18093, echo-a/echo-b + claude-session with a seeded
   model list + a missing opencode): message on echo-a, switch in the UI → feed line, next message "Connected to
   echo-b" and the echo said it got 2 earlier messages; switch to Claude · Sonnet 5.5 shown, not sent; CLI list/use

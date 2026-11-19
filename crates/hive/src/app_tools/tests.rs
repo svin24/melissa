@@ -249,9 +249,38 @@ fn settings() -> AppSettings {
         catalog_dir: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../manifests"),
         domain: "melissa.home.arpa".into(),
         addresses: Some(vec!["203.0.113.10".into(), "100.64.0.10".into()]),
+        port_offset: 0,
         comb: COMB.into(),
         bees: Some(Arc::new(Names)),
     }
+}
+
+#[test]
+fn links_add_the_port_offset() {
+    let shifted = AppSettings {
+        port_offset: 1000,
+        ..settings()
+    };
+    let f = link_fields(&shifted, "nextcloud", Some(30002), true);
+    assert_eq!(f["port"], 31002);
+    assert_eq!(f["node_port"], 30002);
+    assert_eq!(f["url"], "http://203.0.113.10:31002");
+    assert_eq!(
+        f["urls"],
+        json!(["http://203.0.113.10:31002", "http://100.64.0.10:31002"])
+    );
+    assert_eq!(f["dns_url"], "http://nextcloud.melissa.home.arpa");
+    // No offset: the NodePort itself.
+    let f = link_fields(&settings(), "nextcloud", Some(30002), false);
+    assert_eq!(
+        (f["port"].clone(), f["url"].clone()),
+        (json!(30002), json!("http://203.0.113.10:30002"))
+    );
+    assert_eq!(f["dns_url"], Value::Null);
+    // No port: no links.
+    let f = link_fields(&shifted, "nextcloud", None, true);
+    assert_eq!(f["urls"], json!([]));
+    assert_eq!(f["port"], Value::Null);
 }
 
 fn tools(fake: Option<Arc<Fake>>) -> BTreeMap<&'static str, Arc<dyn Tool>> {

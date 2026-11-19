@@ -1051,6 +1051,43 @@ mod tests {
             assert_eq!(headers[header::LOCATION], "/");
         }
 
+        /// The send reply can reach the browser after the stream already ended the turn
+        /// (seen with the echo backend: "Working on it" stuck). The stream owns the status:
+        /// the reply's copy is marked `hx-preserve` so htmx keeps the live one, and the
+        /// stream's updates swap the status's children, which `hx-preserve` doesn't block.
+        #[tokio::test]
+        async fn a_late_send_reply_does_not_overwrite_the_live_status() {
+            let (app, queen) = app();
+            let res = app
+                .clone()
+                .oneshot(get("/ui/stream?since=0"))
+                .await
+                .unwrap();
+            let mut stream = res.into_body();
+            let swap = "hx-swap-oob=\"innerHTML:#composer-status\"";
+            let (_, _, reply) = send(&app, htmx_post("/ui/messages", "text=Hello")).await;
+            let busy = next_frame(&mut stream).await;
+            assert!(
+                busy.contains(swap) && busy.contains("Working on it"),
+                "{busy}"
+            );
+            // The turn ends before the reply is swapped in.
+            send(&app, htmx_post("/ui/cancel", "")).await;
+            assert_eq!(queen.status().turn, None);
+            let mut idle = String::new();
+            while !idle.contains(swap) {
+                idle = next_frame(&mut stream).await;
+            }
+            assert!(!idle.contains("Working on it"), "{idle}");
+            assert!(!busy.contains("hx-preserve") && !idle.contains("hx-preserve"));
+
+            let status_div = "id=\"composer-status\" hx-preserve";
+            assert!(reply.contains(status_div), "{reply}");
+            // The page renders the same element, so the reply's copy is always discarded.
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains(status_div));
+        }
+
         #[tokio::test]
         async fn chatting_with_a_helper() {
             let (app, queen) = app();

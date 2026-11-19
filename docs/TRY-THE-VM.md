@@ -127,6 +127,46 @@ Keep that SSH session open and browse to **http://127.0.0.1:8080**. (If 8080 is 
 
 You can also chat without a browser, in the VM's terminal: `melissa-queen chat`.
 
+### Use it from another machine
+
+The UI listens on `127.0.0.1:8080` only, so another computer reaches it through SSH as well. In the commands
+below, `<laptop>` is the computer that runs the VM (or runs Melissa directly), `<user>` your account there, and
+`<vm user>` your account in the VM. `-N` keeps the tunnel open without a shell.
+
+- **Melissa runs on `<laptop>` itself** (desktop image, or `just demo`): from the other computer,
+  ```
+  ssh -N -L 8080:127.0.0.1:8080 <user>@<laptop>
+  ```
+  then browse to http://127.0.0.1:8080 on the other computer.
+- **Melissa runs in a VM on `<laptop>`:** jump through `<laptop>` into the VM with `-J` (ProxyJump). With the
+  QEMU port forward from step 2 the VM's SSH is `127.0.0.1:2222` as `<laptop>` sees it:
+  ```
+  ssh -N -J <user>@<laptop> -p 2222 -L 8080:127.0.0.1:8080 <vm user>@127.0.0.1
+  ```
+  (virt-manager: `ssh -N -J <user>@<laptop> -L 8080:127.0.0.1:8080 <vm user>@<vm address>`.) The same in
+  `~/.ssh/config` on the other computer:
+  ```
+  Host melissa-vm
+      HostName 127.0.0.1
+      Port 2222
+      User <vm user>
+      ProxyJump <user>@<laptop>
+      LocalForward 8080 127.0.0.1:8080
+  ```
+  and then `ssh -N melissa-vm`.
+- **Optional, Tailscale:** on the machine where `127.0.0.1:8080` is the Melissa UI (`<laptop>` with Melissa, or
+  with one of the tunnels above running), `tailscale serve` can publish it to your tailnet with a Tailscale
+  certificate:
+  ```
+  tailscale serve --https=8443 http://127.0.0.1:8080
+  ```
+  It is then at `https://<laptop>.example.ts.net:8443` (your tailnet's name instead of `example.ts.net`).
+  `tailscale serve reset` turns it off.
+
+  **Warning:** Melissa has no login yet. Everyone and every device that can reach that address on your tailnet
+  can chat with the Queen and **approve her actions**, including deleting apps and their data. Only do this on a
+  tailnet you alone use, or restrict who can reach `<laptop>` on port 8443 with Tailscale ACLs (grants) first.
+
 ## 6. Things to ask the Queen
 
 - "What can you do here?"
@@ -160,7 +200,8 @@ Remove the `/etc/hosts` line when you're done.
 ## Known limitations (pre-alpha)
 
 - No updates: this image does not update itself. New versions come as a new image.
-- No login on the web UI; it is only reachable through SSH on purpose. Don't forward it to other machines.
+- No login on the web UI; it is only reachable through SSH on purpose. If you open it to other machines (see
+  "Use it from another machine"), anyone who reaches it can approve the Queen's actions.
 - Plain HTTP for apps; no TLS and no LAN name service yet (hence the `/etc/hosts` line).
 - One machine only; the multi-device hive, backups and Tailscale setup are not part of this demo.
 - Agent programs install their makers' latest versions, which may behave differently from the versions we tested.

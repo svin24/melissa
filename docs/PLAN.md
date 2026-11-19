@@ -496,28 +496,31 @@ Roadmap (rough, phases may overlap):
     in the VM vs 2.3.2 on the laptop needed a sandbox change). Pin versions or checksums per Melissa release?
 54. Agent logins on the headless box: Grok tokens expire after 7 days; Claude's OAuth refresh under the sandbox's
     bind mount is unverified (24). How does a tester learn a login expired (UI notice, `melissa-setup` status)?
-55. Backend switch (2026-11-19): (a) model lists appear only after a backend has had a session (Grok's list is
-    still unverified live); should Melissa probe a CLI's models on demand (a short handshake, no prompt)? (b) The
-    UI offers every model the agent lists (Claude also lists older ids); curate or keep the agent's list? (c) Should
-    a bee follow the Queen's switch, or the Queen's switch also change `bee_backend` for new bees? (today: no, each
-    is separate). (d) A tool for the Queen to change a bee's backend (today only the user can).
+55. ~~Backend switch (2026-11-19)~~ Decided 2026-11-19: (a) Melissa probes usable backends' models on demand: a
+    session opened like a real one (sandboxed), models read from Claude's handshake or ACP `session/new`, closed
+    without a prompt; cached with a timestamp, automatic at most once per backend per 10 minutes (only when the
+    list is missing or older than a day), forced by `backend refresh` / `POST /api/queen/backends/refresh`, 15 s
+    timeout. Grok's list is still unverified live. (b) Keep the agent's whole list, no curation. (c) Once the user
+    switches the Queen, new bees the Queen names no backend for use the Queen's backend; existing bees, and bees
+    whose backend the user set, keep theirs. (d) No tool for the Queen to change a bee's backend (only the user).
 56. App ports (2026-11-19): apps are plain HTTP on `http://<device>:<port>` (30000-30079), open to the LAN and the
-    tailnet. TLS for these (Tailscale certs for `*.ts.net`, the comb's own CA) and per-app access limits are open
-    (ties to 22 and 38). Is 80 apps per comb enough? Ports are per comb: in a multi-comb hive, should the port be
+    tailnet. Decided 2026-11-19: plain HTTP is fine for pre-alpha; TLS comes later via Tailscale certificates
+    (`*.ts.net`), together with hardening; ports stay per device (per comb) until multi-comb exists. Still open:
+    per-app access limits (ties to 22 and 38); is 80 apps per comb enough; at multi-comb, should the port be
     unique hive-wide so a link survives an app moving combs?
 57. Nextcloud's trusted hosts are the device's addresses at install time (no wildcards). If the address changes
-    (DHCP, new tailnet) Nextcloud refuses it until the next `install_app`; should the Queen refresh apps
-    automatically when the device's addresses change, or should owners set `[apps] addresses` (e.g. a DHCP
-    reservation or the MagicDNS name)? Tailscale MagicDNS names (`<host>.<tailnet>.ts.net`) are not detected
-    (no Tailscale API call); add them via `[apps] addresses` for now.
+    (DHCP, new tailnet) Nextcloud refuses it until the next `install_app`. Decided 2026-11-19: later the Queen
+    refreshes apps' trusted addresses when the device's addresses change; until then owners set `[apps]
+    addresses` (e.g. a DHCP reservation or the MagicDNS name). Tailscale MagicDNS names
+    (`<host>.<tailnet>.ts.net`) are not detected (no Tailscale API call); add them via `[apps] addresses`.
 58. `stop_app` always asks the user, even the owner bee's own cell and even when the user asked for it in chat
-    (decided 2026-11-19, like destructive). Should an explicit, attended "turn it off" skip the card? Should a stop
-    be automatic on low disk/memory (needs the unattended-Queen marking, 27)?
+    (decided 2026-11-19, like destructive). Decided 2026-11-19: keep the confirmation card for the demo, also for an
+    explicit, attended "turn it off". Still open: an automatic stop on low disk/memory (needs the
+    unattended-Queen marking, 27).
 59. Container mode (`scripts/container-run.sh`): verified rootless 2026-11-19 (k3s + Traefik + policies, Nextcloud
-    install, stop/start, NodePort from the host, chat turn). Needs `cpuset` delegated to the user (root-owned
-    drop-in `/etc/systemd/system/user@.service.d/delegate.conf`). Open: (a) should the desktop image ship that
-    drop-in (as `/usr/lib/systemd/system/user@.service.d/`)? Recommended yes: it only lets the user's own
-    containers use one more cgroup controller (cpuset), what systemd already does for cpu/io/memory/pids; it is
-    not added yet, pending owner review. (b) Is container mode a supported third way to try Melissa (published
-    container image, rootful verified too)? (c) App links when host ports differ from 30000+n
-    (`APP_PORT_BASE`): add an `[apps]` port offset, or keep 1:1 mapping only?
+    install, stop/start, NodePort from the host, chat turn). Needs `cpuset` delegated to the user. Decided
+    2026-11-19: (a) the desktop image ships `/usr/lib/systemd/system/user@.service.d/delegate.conf`
+    (`Delegate=cpu cpuset io memory pids`); headless does not (DECISIONS). (b) Container mode becomes a supported
+    way to try Melissa once rootful is verified too; publishing a container image needs the owner's explicit yes.
+    (c) `[apps] port_offset` (written by `container-run.sh up` from `APP_PORT_BASE`) shifts app links. Still open:
+    verify rootful; re-run the offset path in a live container.

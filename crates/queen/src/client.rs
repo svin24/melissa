@@ -503,6 +503,29 @@ pub async fn backends(client: &Client) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `backend refresh`: ask every usable agent for its models now (no prompt; each probe
+/// takes up to 15 s).
+pub async fn refresh_models(client: &Client) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post("/api/queen/backends/refresh", json!({}))
+        .await?;
+    let body = ok(status, body)?;
+    for p in body["probes"].as_array().cloned().unwrap_or_default() {
+        let name = p["backend"].as_str().unwrap_or("?");
+        let what = match p["result"].as_str() {
+            Some("refreshed") => format!("{} models", p["models"]),
+            Some("no_models") => "lists no models".into(),
+            Some("skipped") => "a check is already running".into(),
+            _ => format!(
+                "could not ask it: {}",
+                p["error"].as_str().unwrap_or("unknown error")
+            ),
+        };
+        println!("  {name:<16} {what}");
+    }
+    Ok(())
+}
+
 /// `backend use <name> [--model <id>]`.
 pub async fn use_backend(client: &Client, name: &str, model: Option<&str>) -> anyhow::Result<()> {
     let (status, body) = client

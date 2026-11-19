@@ -95,6 +95,15 @@ pub(crate) fn local_ipv4(trie: &str) -> Vec<Ipv4Addr> {
 }
 
 /// `http://<address>:<port>` (IPv6 in brackets).
+/// The port people use for an app whose NodePort is `node_port`, when the host publishes
+/// NodePort 30000+n as 30000+n+`offset` (container mode with another `APP_PORT_BASE`).
+/// `None` if that falls outside 1-65535.
+pub fn published_port(node_port: u16, offset: i32) -> Option<u16> {
+    u16::try_from(i32::from(node_port) + offset)
+        .ok()
+        .filter(|p| *p > 0)
+}
+
 pub fn url(address: &str, port: u16) -> String {
     if address.contains(':') && !address.starts_with('[') {
         format!("http://[{address}]:{port}")
@@ -106,6 +115,17 @@ pub fn url(address: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn published_ports_apply_the_offset() {
+        assert_eq!(published_port(30000, 0), Some(30000));
+        assert_eq!(published_port(30005, 1000), Some(31005));
+        assert_eq!(published_port(30079, -10000), Some(20079));
+        assert_eq!(published_port(30000, 40000), None);
+        assert_eq!(published_port(30000, -30000), None);
+        assert_eq!(url("203.0.113.10", 31005), "http://203.0.113.10:31005");
+        assert_eq!(url("2001:db8::1", 31005), "http://[2001:db8::1]:31005");
+    }
 
     const TRIE: &str = "Main:
   +-- 0.0.0.0/0 3 0 5

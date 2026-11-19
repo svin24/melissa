@@ -32,8 +32,9 @@ pub struct App {
     pub phase: String,
     /// The link `list_apps` gave (`http://<device address>:<port>`, as the queen sees it).
     pub url: Option<String>,
-    /// The app's own port on the device; pages build the link from the address the
-    /// visitor used to reach the UI ([`App::link`]).
+    /// The port people reach the app at (`list_apps`' `port`: its NodePort plus `[apps]
+    /// port_offset`); pages build the link from the address the visitor used to reach the
+    /// UI ([`App::link`]).
     pub port: Option<u16>,
     /// Who looks after it.
     pub keeper: Option<Keeper>,
@@ -457,6 +458,15 @@ mod tests {
             url: None,
             ..app
         };
+        // Behind a shifted port (`[apps] port_offset = 1000`): `port` is already shifted.
+        let shifted = App {
+            port: Some(31000),
+            ..no_port.clone()
+        };
+        assert_eq!(
+            shifted.link(Some("127.0.0.1:18080")).as_deref(),
+            Some("http://127.0.0.1:31000")
+        );
         assert_eq!(no_port.link(Some("192.0.2.15:8080")), None);
     }
 

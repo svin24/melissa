@@ -69,6 +69,9 @@ pub struct AppSettings {
     /// address of the default route, Tailscale addresses, and the host name for apps'
     /// trusted hosts).
     pub addresses: Option<Vec<String>>,
+    /// Added to an app's NodePort in links, for a host that publishes NodePort 30000+n at
+    /// another port (container mode with `APP_PORT_BASE`; `[apps] port_offset`). Usually 0.
+    pub port_offset: i32,
     /// This comb's id, recorded on every new cell.
     pub comb: String,
     /// Bee names, for the `bee` argument of `install_app` and for messages.
@@ -137,13 +140,16 @@ fn port_of(ns: &Namespace) -> Option<u16> {
         .filter(|p| APP_PORTS.contains(p))
 }
 
-/// Link fields for an app on `port` (`None`: no port, e.g. uninstalled or no web port).
-fn link_fields(settings: &AppSettings, app: &str, port: Option<u16>, has_web: bool) -> Value {
+/// Link fields for an app on NodePort `node_port` (`None`: no port, e.g. uninstalled or no
+/// web port). `port` is where people reach it: the NodePort plus `[apps] port_offset`.
+fn link_fields(settings: &AppSettings, app: &str, node_port: Option<u16>, has_web: bool) -> Value {
+    let port = node_port.and_then(|p| device::published_port(p, settings.port_offset));
     let urls = port.map(|p| settings.urls(p)).unwrap_or_default();
     json!({
         "url": urls.first(),
         "urls": urls,
         "port": port,
+        "node_port": node_port,
         "dns_url": has_web.then(|| settings.dns_url(app)),
     })
 }

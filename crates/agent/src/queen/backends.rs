@@ -9,22 +9,43 @@
 //!   its own session; another backend starts a new session primed with the last messages
 //!   of Melissa's transcript.
 //! - Models: only what the agents themselves report (ACP `configOptions` of category
-//!   `model`, Claude's handshake answer), remembered per backend in
-//!   `$XDG_STATE_HOME/melissa/queen/models.json` once a session on it has opened. Melissa
-//!   never makes up model ids; a backend whose models are unknown offers none.
+//!   `model`, Claude's handshake answer), remembered per backend with the time they were
+//!   seen in `$XDG_STATE_HOME/melissa/queen/models.json`, whenever a session on it opens.
+//!   Melissa never makes up model ids; a backend whose models are unknown offers none. The
+//!   agent's whole list is offered, uncurated (decided 2026-11-19).
+//! - Probes: to learn the models before any chat ran on a backend, Melissa opens a session
+//!   the way real sessions open (same sandbox and network rules), reads the models from the
+//!   handshake (Claude) or `session/new` (ACP), and closes it without sending a prompt
+//!   ([`probe`]). [`ModelCache::refresh`] probes usable backends: automatically when the
+//!   list is missing or older than [`STALE_AFTER`], at most once per backend per
+//!   [`PROBE_INTERVAL`] (a forced refresh skips both limits), each within [`PROBE_TIMEOUT`].
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     comb::write_private,
-    session::{ModelList, ModelOption, NotReady},
+    session::{
+        ModelList, ModelOption, NotReady, OpenSession, PermissionDecision, PermissionHandler,
+        PermissionRequest, SessionBackend,
+    },
+    BoxFuture,
 };
+
+/// How long one model probe may take (start the agent, handshake, open a session).
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// At most one probe per backend in this time, unless forced.
+pub const PROBE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// An automatic refresh probes a backend whose list is older than this (or missing).
+pub const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long closing a probe session may take before it is dropped (which kills the agent).
+const PROBE_CLOSE: Duration = Duration::from_secs(3);
 
 /// The backend (and model) the user chose for a conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,8 +87,9 @@ pub struct Switched {
     pub after_turn: bool,
 }
 
-/// Models each backend offered when a session last opened on it. Shared by the Queen and
-/// every bee; saved so the list is there after a restart. Cheap to clone.
+/// Models each backend offered when a session last opened on it (or a probe asked it).
+/// Shared by the Queen and every bee; saved so the list is there after a restart. Cheap to
+/// clone.
 #[derive(Clone, Default)]
 pub struct ModelCache {
     inner: Arc<ModelCacheInner>,
@@ -76,7 +98,45 @@ pub struct ModelCache {
 #[derive(Default)]
 struct ModelCacheInner {
     path: Option<PathBuf>,
-    lists: Mutex<BTreeMap<String, Vec<ModelOption>>>,
+    lists: Mutex<BTreeMap<String, Stored>>,
+    probes: Mutex<Probes>,
+}
+
+/// One backend's list as saved: the models and when they were seen (Unix seconds; 0 when
+/// unknown, from a file written before timestamps were kept).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Stored {
+    models: Vec<ModelOption>,
+    #[serde(default)]
+    updated: u64,
+}
+
+/// The saved form, or the older one (a bare list per backend).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OnDisk {
+    Stored(Stored),
+    Bare(Vec<ModelOption>),
+}
+
+/// Probe bookkeeping (in memory): when each backend was last probed, which run now.
+#[derive(Default)]
+struct Probes {
+    last: BTreeMap<String, Instant>,
+    running: BTreeSet<String>,
+}
+
+/// What a refresh did for one backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProbeOutcome {
+    pub backend: String,
+    /// `refreshed` (models saved), `no_models` (the agent listed none), `skipped` (fresh
+    /// enough, probed recently, or a probe is running), `failed`.
+    pub result: &'static str,
+    /// Models now known for the backend.
+    pub models: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl ModelCache {
@@ -85,34 +145,58 @@ impl ModelCache {
         Self::default()
     }
 
-    /// Kept in `path` (a JSON object: backend name → `[{id, label}]`, mode 0600).
+    /// Kept in `path` (a JSON object: backend name → `{models: [{id, label}], updated}`,
+    /// mode 0600). Also reads the older form (backend name → `[{id, label}]`).
     pub fn open(path: PathBuf) -> Self {
         let lists = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+            .and_then(|t| serde_json::from_str::<BTreeMap<String, OnDisk>>(&t).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| {
+                let stored = match v {
+                    OnDisk::Stored(s) => s,
+                    OnDisk::Bare(models) => Stored { models, updated: 0 },
+                };
+                (k, stored)
+            })
+            .collect();
         Self {
             inner: Arc::new(ModelCacheInner {
                 path: Some(path),
                 lists: Mutex::new(lists),
+                probes: Mutex::default(),
             }),
         }
     }
 
     pub fn get(&self, backend: &str) -> Option<Vec<ModelOption>> {
-        lock(&self.inner.lists).get(backend).cloned()
+        lock(&self.inner.lists)
+            .get(backend)
+            .map(|s| s.models.clone())
     }
 
-    /// Remember what a backend offered (saved if it changed).
+    /// When the backend's list was last seen, if known.
+    pub fn updated(&self, backend: &str) -> Option<SystemTime> {
+        lock(&self.inner.lists)
+            .get(backend)
+            .filter(|s| s.updated > 0)
+            .map(|s| UNIX_EPOCH + Duration::from_secs(s.updated))
+    }
+
+    /// Remember what a backend offered, now (saved).
     pub fn put(&self, backend: &str, models: &ModelList) {
         if models.options.is_empty() {
             return;
         }
         let mut lists = lock(&self.inner.lists);
-        if lists.get(backend) == Some(&models.options) {
-            return;
-        }
-        lists.insert(backend.to_string(), models.options.clone());
+        lists.insert(
+            backend.to_string(),
+            Stored {
+                models: models.options.clone(),
+                updated: unix_now(),
+            },
+        );
         if let Some(path) = &self.inner.path {
             match serde_json::to_vec_pretty(&*lists) {
                 Ok(json) => {
@@ -124,6 +208,138 @@ impl ModelCache {
             }
         }
     }
+
+    /// Whether to probe `backend` now; if so it is marked running (and probed now).
+    fn claim(&self, backend: &str, force: bool) -> bool {
+        let fresh = self
+            .updated(backend)
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age < STALE_AFTER);
+        let mut p = lock(&self.inner.probes);
+        if p.running.contains(backend) {
+            return false;
+        }
+        let recent = p
+            .last
+            .get(backend)
+            .is_some_and(|t| t.elapsed() < PROBE_INTERVAL);
+        if !force && (fresh || recent) {
+            return false;
+        }
+        p.running.insert(backend.to_string());
+        p.last.insert(backend.to_string(), Instant::now());
+        true
+    }
+
+    fn release(&self, backend: &str) {
+        lock(&self.inner.probes).running.remove(backend);
+    }
+
+    /// Probe the usable backends among `backends` for their models (in parallel), each in
+    /// its own empty directory under `workroot`. Without `force`, only backends whose list
+    /// is missing or stale and that were not probed in the last [`PROBE_INTERVAL`].
+    /// Backends that are not usable now (not installed, not logged in) are left out.
+    pub async fn refresh(
+        &self,
+        backends: &[Arc<dyn SessionBackend>],
+        workroot: &Path,
+        force: bool,
+    ) -> Vec<ProbeOutcome> {
+        let mut tasks = Vec::new();
+        for b in backends {
+            let info = b.info();
+            if !info.available || b.not_ready().is_some() {
+                continue;
+            }
+            let name = info.name;
+            if !self.claim(&name, force) {
+                tasks.push(tokio::spawn({
+                    let models = self.get(&name).map_or(0, |m| m.len());
+                    async move {
+                        ProbeOutcome {
+                            backend: name,
+                            result: "skipped",
+                            models,
+                            error: None,
+                        }
+                    }
+                }));
+                continue;
+            }
+            let (cache, backend) = (self.clone(), b.clone());
+            let cwd = workroot.join(&name);
+            tasks.push(tokio::spawn(async move {
+                let result = probe(backend.as_ref(), cwd).await;
+                cache.release(&name);
+                let (result, error) = match result {
+                    Ok(Some(list)) if !list.options.is_empty() => {
+                        cache.put(&name, &list);
+                        ("refreshed", None)
+                    }
+                    Ok(_) => ("no_models", None),
+                    Err(e) => {
+                        tracing::info!(backend = %name, "model probe failed: {e}");
+                        ("failed", Some(e))
+                    }
+                };
+                ProbeOutcome {
+                    models: cache.get(&name).map_or(0, |m| m.len()),
+                    backend: name,
+                    result,
+                    error,
+                }
+            }));
+        }
+        let mut out = Vec::new();
+        for t in tasks {
+            match t.await {
+                Ok(o) => out.push(o),
+                Err(e) => tracing::warn!("model probe task failed: {e}"),
+            }
+        }
+        out
+    }
+}
+
+/// Ask one backend which models it offers: open a session (sandboxed like every session,
+/// no tools, every permission refused) in `cwd`, read the list, close it. Sends no prompt.
+/// `Ok(None)`: the agent lists no models.
+pub async fn probe(
+    backend: &dyn SessionBackend,
+    cwd: PathBuf,
+) -> Result<Option<ModelList>, String> {
+    probe_within(backend, cwd, PROBE_TIMEOUT).await
+}
+
+async fn probe_within(
+    backend: &dyn SessionBackend,
+    cwd: PathBuf,
+    limit: Duration,
+) -> Result<Option<ModelList>, String> {
+    std::fs::create_dir_all(&cwd).map_err(|e| format!("cannot create {}: {e}", cwd.display()))?;
+    let open = OpenSession::new(cwd, Vec::new(), Arc::new(RefuseAll));
+    let opened = tokio::time::timeout(limit, backend.open(open))
+        .await
+        .map_err(|_| format!("no answer within {} s", limit.as_secs_f32()))?
+        .map_err(|e| e.to_string())?;
+    // Dropping the session kills the agent if closing takes too long.
+    let _ = tokio::time::timeout(PROBE_CLOSE, opened.session.close()).await;
+    Ok(opened.models)
+}
+
+/// A probe runs no prompt, so the agent has nothing to ask; refuse anything anyway.
+struct RefuseAll;
+
+impl PermissionHandler for RefuseAll {
+    fn decide<'a>(&'a self, _req: &'a PermissionRequest) -> BoxFuture<'a, PermissionDecision> {
+        Box::pin(async { PermissionDecision::RejectOnce })
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The Queen's saved choice, if any.
@@ -189,6 +405,153 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).map(|m| m.permissions().mode() & 0o777);
         assert_eq!(mode.ok(), Some(0o600));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A session backend that reports `models` (or hangs), counting opens and prompts.
+    struct Probed {
+        name: &'static str,
+        models: Option<ModelList>,
+        hang: bool,
+        ready: bool,
+        opens: std::sync::atomic::AtomicUsize,
+        echo: crate::EchoSessionBackend,
+    }
+
+    impl Probed {
+        fn new(name: &'static str, models: Option<ModelList>) -> Self {
+            Self {
+                name,
+                models,
+                hang: false,
+                ready: true,
+                opens: Default::default(),
+                echo: crate::EchoSessionBackend::new(&crate::EchoSpec { name: name.into() }),
+            }
+        }
+
+        fn opens(&self) -> usize {
+            self.opens.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl SessionBackend for Probed {
+        fn info(&self) -> crate::BackendInfo {
+            crate::BackendInfo {
+                name: self.name.into(),
+                kind: "test",
+                detail: String::new(),
+                available: true,
+                tools: true,
+            }
+        }
+
+        fn not_ready(&self) -> Option<NotReady> {
+            (!self.ready).then_some(NotReady::NotLoggedIn)
+        }
+
+        fn open(
+            &self,
+            req: OpenSession,
+        ) -> BoxFuture<'_, Result<crate::session::OpenedSession, crate::AgentError>> {
+            Box::pin(async move {
+                self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // A probe gives the agent no tools and a directory of its own.
+                assert!(req.mcp_servers.is_empty());
+                assert!(req.cwd.ends_with(self.name) && req.cwd.is_dir());
+                if self.hang {
+                    std::future::pending::<()>().await;
+                }
+                let mut opened = self.echo.open(req).await?;
+                opened.models = self.models.clone();
+                Ok(opened)
+            })
+        }
+    }
+
+    fn results(out: &[ProbeOutcome]) -> Vec<(&str, &str)> {
+        out.iter().map(|o| (o.backend.as_str(), o.result)).collect()
+    }
+
+    #[tokio::test]
+    async fn probes_fill_the_cache_without_a_prompt_and_are_rate_limited() {
+        let dir = std::env::temp_dir().join(format!("melissa-probe-{}", std::process::id()));
+        let cache = ModelCache::open(dir.join("models.json"));
+        let claude = Arc::new(Probed::new(
+            "claude-session",
+            Some(list(&["default", "opus"])),
+        ));
+        let grok = Arc::new(Probed::new("grok-acp", None));
+        let mut logged_out = Probed::new("opencode-acp", Some(list(&["x"])));
+        logged_out.ready = false;
+        let logged_out = Arc::new(logged_out);
+        let all: Vec<Arc<dyn SessionBackend>> =
+            vec![claude.clone(), grok.clone(), logged_out.clone()];
+        let work = dir.join("probe");
+
+        let out = cache.refresh(&all, &work, false).await;
+        assert_eq!(
+            results(&out),
+            [("claude-session", "refreshed"), ("grok-acp", "no_models")]
+        );
+        assert_eq!(out[0].models, 2);
+        // Not usable: never started.
+        assert_eq!(logged_out.opens(), 0);
+        let ids: Vec<String> = cache
+            .get("claude-session")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["default", "opus"], "exactly what the agent listed");
+        assert!(cache.updated("claude-session").is_some());
+        assert_eq!(cache.get("grok-acp"), None, "no list is made up");
+
+        // Fresh (Claude) or probed a moment ago (Grok): skipped, unless forced.
+        let out = cache.refresh(&all, &work, false).await;
+        assert_eq!(
+            results(&out),
+            [("claude-session", "skipped"), ("grok-acp", "skipped")]
+        );
+        assert_eq!((claude.opens(), grok.opens()), (1, 1));
+        let out = cache.refresh(&all, &work, true).await;
+        assert_eq!(
+            results(&out),
+            [("claude-session", "refreshed"), ("grok-acp", "no_models")]
+        );
+        assert_eq!((claude.opens(), grok.opens()), (2, 2));
+
+        // Saved with its time; a restart keeps both.
+        let again = ModelCache::open(dir.join("models.json"));
+        assert_eq!(again.get("claude-session").map(|m| m.len()), Some(2));
+        assert!(again.updated("claude-session").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_hangs_times_out() {
+        let dir = std::env::temp_dir().join(format!("melissa-probe-t-{}", std::process::id()));
+        let mut stuck = Probed::new("grok-acp", Some(list(&["a"])));
+        stuck.hang = true;
+        let limit = Duration::from_millis(50);
+        let err = probe_within(&stuck, dir.join("grok-acp"), limit)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no answer within 0.05 s"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_older_model_file_still_reads() {
+        let dir = std::env::temp_dir().join(format!("melissa-models-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("models.json");
+        std::fs::write(&path, r#"{"grok-acp": [{"id": "g", "label": "G"}]}"#).ok();
+        let cache = ModelCache::open(path);
+        assert_eq!(cache.get("grok-acp").map(|m| m.len()), Some(1));
+        // Age unknown: an automatic refresh probes it.
+        assert_eq!(cache.updated("grok-acp"), None);
+        assert!(cache.claim("grok-acp", false));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -30,7 +30,7 @@ use crate::{
     AuditRecord, TaskBoard, TaskId, MAX_PROMPT_BYTES,
 };
 
-use backends::{BackendChoice, BackendView, ModelCache, Switched};
+use backends::{BackendChoice, BackendView, ModelCache, ProbeOutcome, Switched};
 use bees::BeePool;
 use conversation::{Conversation, ConversationSpec};
 pub use conversation::{QueenStatus, TurnOutcome};
@@ -46,6 +46,7 @@ pub struct QueenSettings {
     /// The system prompt of every bee (the bee's name and id are added).
     pub bee_prompt: String,
     /// Backend for new bees when the Queen names none (default: the first Queen backend).
+    /// Once the user switches the Queen, new bees follow the Queen's backend instead.
     pub bee_backend: Option<String>,
     /// Melissa's state for the Queen: `session.json`, the agent's session store.
     pub state_dir: PathBuf,
@@ -91,6 +92,11 @@ struct Inner {
     server: McpServer,
     board: TaskBoard,
     pool: BeePool,
+    /// Every session backend (the Queen's and the bees'), for model probes.
+    backends: Vec<Arc<dyn SessionBackend>>,
+    models: ModelCache,
+    /// Model probes run in `<probe_dir>/<backend>` (empty directories).
+    probe_dir: PathBuf,
 }
 
 /// Handle to the Queen. Cheap to clone.
@@ -152,6 +158,7 @@ impl Queen {
             }
             known
         });
+        let choice_backend = choice.as_ref().map(|c| c.backend.clone());
         let spec = ConversationSpec {
             who: "the Queen".into(),
             audit_kind: "queen",
@@ -179,13 +186,16 @@ impl Queen {
             .workdir
             .parent()
             .map_or_else(|| settings.workdir.join("bees"), |p| p.join("bees"));
+        let probe_dir = workroot.with_file_name("probe");
+        let all_backends = backends.clone();
         pool.attach(bees::Attached {
             board: board.clone(),
             server: link.server.clone(),
             base_url: link.base_url,
             backends,
             default_backend: settings.bee_backend.clone().unwrap_or(first),
-            models,
+            queen_choice: std::sync::Mutex::new(choice_backend),
+            models: models.clone(),
             bee_prompt: settings.bee_prompt.clone(),
             queen_allow: allow,
             queen_task: task,
@@ -199,6 +209,9 @@ impl Queen {
                 server: link.server,
                 board,
                 pool: pool.clone(),
+                backends: all_backends,
+                models,
+                probe_dir,
             }),
         })
     }
@@ -256,6 +269,23 @@ impl Queen {
         self.inner.conv.backends()
     }
 
+    /// Ask the usable session backends which models they offer, without a prompt (see
+    /// [`backends::probe`]). Without `force` only backends whose list is missing or stale,
+    /// at most once per backend per [`backends::PROBE_INTERVAL`].
+    pub async fn refresh_models(&self, force: bool) -> Vec<ProbeOutcome> {
+        let i = &self.inner;
+        i.models.refresh(&i.backends, &i.probe_dir, force).await
+    }
+
+    /// [`Queen::refresh_models`] in the background, not forced (e.g. when a client shows
+    /// the agent menu). Must be called inside a Tokio runtime.
+    pub fn refresh_models_soon(&self) {
+        let queen = self.clone();
+        tokio::spawn(async move {
+            queen.refresh_models(false).await;
+        });
+    }
+
     /// The user's saved choice of backend for the Queen, if any.
     pub fn backend_choice(&self) -> Option<BackendChoice> {
         self.inner.conv.choice()
@@ -272,6 +302,7 @@ impl Queen {
                 self.inner.choice_path.display()
             ))
         })?;
+        self.inner.pool.follow_queen(&choice.backend);
         Ok(self.inner.conv.switch(choice, "ui"))
     }
 
