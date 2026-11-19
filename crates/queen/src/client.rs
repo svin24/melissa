@@ -778,13 +778,28 @@ pub async fn providers(client: &Client) -> anyhow::Result<()> {
             }
             None => {}
         }
-        if let Some(text) = p["sign_in"]["text"].as_str() {
-            println!("    sign in: {text}");
+        match p["sign_in"]["step"].as_str() {
+            Some("sign_in") => println!("    sign in: needed (Settings → Providers)"),
+            Some("paste_code") => println!(
+                "    sign in: open {} and paste the code in Settings → Providers",
+                p["sign_in"]["url"].as_str().unwrap_or("the link")
+            ),
+            Some("device_code") => println!(
+                "    sign in: open {} and confirm the code {}",
+                p["sign_in"]["url"].as_str().unwrap_or("the link"),
+                p["sign_in"]["code"].as_str().unwrap_or("?")
+            ),
+            Some("command") => println!(
+                "    sign in: {}",
+                p["sign_in"]["command"].as_str().unwrap_or("")
+            ),
+            Some(step) => println!("    sign in: {step}"),
+            None => {}
         }
     }
     println!("(- = disabled)");
     if body["restart_needed"] == true {
-        println!("Saved changes apply after Melissa restarts.");
+        println!("Saved changes apply once Melissa is idle (she restarts herself where she can).");
     }
     Ok(())
 }
@@ -805,7 +820,7 @@ pub async fn provider_change(client: &Client, id: &str, change: Value) -> anyhow
         body["status"].as_str().unwrap_or("saved")
     );
     if body["restart_needed"] == true {
-        println!("Saved. Melissa uses it after a restart.");
+        println!("Saved. Melissa applies it once she is idle.");
     }
     Ok(())
 }

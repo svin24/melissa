@@ -25,7 +25,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
     acp::{create_private_dir, one_turn, replay, task_permissions, MCP_SERVER_NAME},
-    cli::{network_label, network_ready, open_egress, resolve_program, sandboxed_command},
+    cli::{network_label, network_ready, open_egress, sandboxed_command, ProgramPath},
     egress::EgressProxy,
     mcp::McpServer,
     sandbox::{self, SandboxError, SandboxSpec},
@@ -259,7 +259,7 @@ fn claude_env() -> Vec<(String, String)> {
 pub struct ClaudeBackend {
     spec: ClaudeSpec,
     sandbox: SandboxSpec,
-    program: Option<PathBuf>,
+    program: ProgramPath,
     bwrap: Option<PathBuf>,
     home: Option<PathBuf>,
     workdir: PathBuf,
@@ -269,7 +269,7 @@ pub struct ClaudeBackend {
 
 impl ClaudeBackend {
     pub fn new(spec: ClaudeSpec, workdir: PathBuf) -> Self {
-        let program = resolve_program(&spec.command);
+        let program = ProgramPath::new(&spec.command);
         let sandbox = spec.effective_sandbox();
         let bwrap = if sandbox.enabled {
             sandbox::find_bwrap()
@@ -335,7 +335,7 @@ impl ClaudeBackend {
     ) -> Result<OpenedSession, AgentError> {
         let program = self
             .program
-            .as_ref()
+            .get()
             .ok_or_else(|| AgentError::Unavailable(format!("`{}` not found", self.spec.command)))?;
         let cwd = &open.cwd;
         let mut binds = Vec::new();
@@ -378,7 +378,7 @@ impl ClaudeBackend {
             &self.sandbox,
             self.bwrap.as_deref(),
             self.home.as_deref(),
-            program,
+            &program,
             cwd,
             &[],
             &binds,
@@ -553,7 +553,7 @@ impl SessionBackend for ClaudeBackend {
     fn not_ready(&self) -> Option<crate::session::NotReady> {
         crate::cli::not_ready(
             &self.spec.command,
-            self.program.is_some(),
+            self.program.get().is_some(),
             &self.sandbox,
             self.bwrap.is_some(),
             self.egress.as_ref(),
@@ -578,7 +578,7 @@ impl Backend for ClaudeBackend {
             name: self.spec.name.clone(),
             kind: "claude",
             detail,
-            available: self.program.is_some()
+            available: self.program.get().is_some()
                 && (!self.sandbox.enabled || self.bwrap.is_some())
                 && network_ready(&self.sandbox, self.egress.as_ref()),
             tools: self.spec.tools,

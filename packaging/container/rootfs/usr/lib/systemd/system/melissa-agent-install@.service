@@ -10,7 +10,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# No login (it needs a person) and no queen restart (the page offers one).
+# No login (the page offers it) and no queen restart (the queen finds a new CLI by itself).
 ExecStart=/usr/bin/melissa-setup agent %i --yes --no-login --no-restart
 Environment=TERM=dumb
 StandardInput=null

@@ -87,6 +87,12 @@ UI forward socket. Masked: systemd-logind and the sleep targets. `systemd-analyz
 | Rootless | unsupported (worked with the bootc-based image earlier the same day) |
 
 ## Gotchas
+- The build's cargo `target` cache (`id=melissa-target`) is shared by every build and cargo trusts file
+  times: a build from an older tree (e.g. `git archive` of another commit) once left artifacts newer than the
+  real sources, and the next image shipped stale crates. The Containerfile touches `crates/` before
+  `cargo build` (2026-11-19); podman's own layer cache ignores times, so change content to force a rebuild.
+- Several test containers: give each its own `NAME`, `UI_PORT`, `APP_PORT_BASE` and `CTR_IMAGE` tag
+  (e.g. `localhost/melissa-test:after`) so root's `localhost/melissa:*` stays untouched.
 - Root has its own image storage: build rootless, then `podman save` + `sudo podman load` (`just container-install`).
 - A `melissa-queen tool <name>` call that needs a confirmation blocks until approved
   (`melissa-queen confirm list|approve N`); right after a recreate k3s may be restarting ("k3s API unreachable").

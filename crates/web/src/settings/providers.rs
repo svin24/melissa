@@ -1,4 +1,9 @@
 //! Settings → Providers: the agent programs, their state and the owner's overrides.
+//!
+//! One status word per provider and at most one thing to do (Install, Sign in), everything
+//! technical behind "Details". Installs and sign-ins run in fixed systemd units
+//! (`melissa_settings::install`); Melissa picks up their result without a restart, and saved
+//! settings apply by themselves once she is idle (`apply.rs`).
 
 use std::collections::BTreeMap;
 
@@ -11,19 +16,20 @@ use axum::{
 use melissa_agent::queen::backends::BackendView;
 use melissa_settings::{
     clean_text,
-    install::{device_prompt, unit_name, InstallState, InstallStatus, InstallWay, Job},
+    install::{
+        claude_login_url, device_prompt, unit_name, valid_code, InstallState, InstallStatus,
+        InstallWay, Job, LoginEnd,
+    },
     providers::{default_label, BackendFacts, Change, ProviderOverride},
-    updates::{ago, now_secs, HostKind, UpdateAction},
+    updates::{ago, now_secs, HostKind},
     version,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{
-    pages::{
-        self, BackendLine, DeviceLogin, Flash, InstallView, ProviderCard, ProvidersView,
-        RestartHint, SignIn,
-    },
+    apply::{self, Pending},
+    pages::{self, BackendLine, Flash, ProviderCard, ProviderDetails, ProvidersView, Step},
     Settings,
 };
 use crate::{components::Tone, is_htmx, ui::Ui};
@@ -52,7 +58,7 @@ fn grouped(s: &Settings) -> Vec<(String, Vec<&BackendFacts>)> {
 fn reason_words(reason: &str) -> &'static str {
     match reason {
         "not_installed" => "not installed",
-        "not_logged_in" => "not logged in",
+        "not_logged_in" => "not signed in",
         "sandbox" => "its sandbox can't start",
         _ => "not ready",
     }
@@ -67,103 +73,105 @@ fn vendor(id: &str) -> &'static str {
     }
 }
 
-/// The Install section for a provider that isn't installed (None: nothing to offer).
-fn install_view(
-    id: &str,
-    label: &str,
-    way: InstallWay,
-    host: HostKind,
-    status: Option<InstallStatus>,
-) -> Option<InstallView> {
-    let known = unit_name(id).is_some();
-    match way {
-        InstallWay::Nix => Some(InstallView::Nix),
-        InstallWay::Button if known => {
-            let st = status.unwrap_or_else(InstallStatus::idle);
-            Some(InstallView::Button {
-                vendor: vendor(id),
-                state: st.state,
-                detail: st.detail,
-                log: st.log,
-            })
-        }
-        _ if !known => None,
-        _ => Some(match host {
-            // An image without the install unit: melissa-setup inside, typed on the host.
-            HostKind::Container => InstallView::Manual {
-                text: "Installing needs an administrator. Run this on the host, then press Check \
-                       again:"
-                    .into(),
-                command: Some(format!(
-                    "sudo podman exec -it melissa melissa-setup agent {id}"
-                )),
-            },
-            HostKind::Other => InstallView::Manual {
-                text: format!(
-                    "Install {label} on this computer so that {id} is on Melissa's PATH, then \
-                     restart Melissa."
-                ),
-                command: None,
-            },
-            // Unreachable in practice (a Nix host gives InstallWay::Nix), kept total.
-            HostKind::Nix => InstallView::Nix,
-        }),
-    }
-}
-
-/// How to sign in, for an installed provider without a key. `needed`: Melissa knows it isn't
-/// signed in (or it is new).
-fn sign_in(id: &str, host: HostKind, needed: bool) -> Option<SignIn> {
-    // A login on the device needs melissa-setup inside the container (not on Nix or from source).
-    let device = |id: &str| {
-        (host == HostKind::Container)
-            .then(|| format!("sudo podman exec -it melissa melissa-setup login {id}"))
-    };
+/// The variable "Use an API key instead" fills (only providers whose CLI reads one).
+pub(super) fn key_var(id: &str) -> Option<&'static str> {
     match id {
-        "claude" if needed => Some(SignIn {
-            text: "Claude Code needs an Anthropic account. Add an API key from the Anthropic \
-                   Console below as ANTHROPIC_API_KEY. With a Claude subscription, run \
-                   `claude setup-token` on your own computer and add the token it prints as \
-                   CLAUDE_CODE_OAUTH_TOKEN. Melissa never asks for your password.",
-            command: device(id),
-            device: None,
-        }),
-        "grok" if needed => Some(SignIn {
-            text: "Grok needs an xAI account. Sign in with a code you confirm on xAI's site (on \
-                   any device), or add an API key from the xAI Console below as XAI_API_KEY. \
-                   Melissa never asks for your password.",
-            command: device(id),
-            device: None,
-        }),
-        "opencode" => Some(SignIn {
-            text: "OpenCode works without an account, using its free models (your prompts go \
-                   to OpenCode's hosted service). To use your own provider instead, add its API \
-                   key below, e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY.",
-            command: None,
-            device: None,
-        }),
+        "claude" => Some("ANTHROPIC_API_KEY"),
+        "grok" => Some("XAI_API_KEY"),
         _ => None,
     }
 }
 
-/// A device-code sign-in's state for the page: the vendor's URL and code once printed.
-fn device_view(st: InstallStatus) -> DeviceLogin {
-    let prompt = device_prompt(&st.log);
-    DeviceLogin {
-        state: st.state,
-        url: prompt.as_ref().map(|p| p.0.clone()),
-        code: prompt.map(|p| p.1),
-        detail: st.detail,
-        log: st.log,
+/// What to do for a provider that isn't installed.
+fn install_step(id: &str, label: &str, way: InstallWay, status: Option<InstallStatus>) -> Step {
+    let known = unit_name(id).is_some();
+    match way {
+        InstallWay::Nix => Step::Note(format!(
+            "This requires you add {label} via your Nix configuration."
+        )),
+        InstallWay::Button if known => {
+            let st = status.unwrap_or_else(InstallStatus::idle);
+            match st.state {
+                InstallState::Running => Step::Installing,
+                InstallState::Idle => Step::Install {
+                    vendor: vendor(id),
+                    failed: None,
+                    log: Vec::new(),
+                },
+                InstallState::Failed => Step::Install {
+                    vendor: vendor(id),
+                    failed: Some("The install failed.".into()),
+                    log: st.log,
+                },
+                InstallState::Done => Step::Install {
+                    vendor: vendor(id),
+                    failed: Some("The installer finished, but the program wasn't found.".into()),
+                    log: st.log,
+                },
+            }
+        }
+        _ if !known => Step::Nothing,
+        // A run from source, or an image without the install unit: no commands in the UI.
+        _ => Step::Note(format!(
+            "Install {label} on this computer, then press Check again."
+        )),
     }
 }
 
-/// The example name in the Environment form.
-fn var_example(id: &str) -> &'static str {
-    match id {
-        "claude" => "e.g. ANTHROPIC_API_KEY",
-        "grok" => "e.g. XAI_API_KEY",
-        _ => "e.g. API_BASE_URL",
+/// The page's words for a sign-in that ended without signing in (None: say nothing).
+fn login_failed(end: LoginEnd) -> Option<&'static str> {
+    match end {
+        LoginEnd::WrongCode => Some("That code didn't work. Sign in again for a new one."),
+        LoginEnd::Cancelled => None,
+        LoginEnd::TimedOut => Some("The sign-in timed out."),
+        LoginEnd::Failed => Some("The sign-in didn't finish."),
+    }
+}
+
+/// The sign-in step while a sign-in unit runs.
+fn login_running(id: &str, st: &InstallStatus, code_sent: bool) -> Step {
+    if id == "claude" {
+        if code_sent {
+            return Step::Checking;
+        }
+        return match claude_login_url(&st.log) {
+            Some(url) => Step::PasteCode { url },
+            None => Step::Starting,
+        };
+    }
+    match device_prompt(&st.log) {
+        Some((url, code)) => Step::DeviceCode { url, code },
+        None => Step::Starting,
+    }
+}
+
+/// What to do for an installed provider that needs a sign-in.
+fn sign_in_step(id: &str, host: HostKind, login: Option<&InstallStatus>) -> Step {
+    match login {
+        Some(st) => match st.state {
+            InstallState::Failed => Step::SignIn {
+                again: login_failed(LoginEnd::of(st)),
+            },
+            // It ended fine, but Melissa still finds no login.
+            InstallState::Done => Step::SignIn {
+                again: Some("The sign-in didn't finish."),
+            },
+            // Running is handled by the caller.
+            _ => Step::SignIn { again: None },
+        },
+        // No sign-in unit: only a run from source gets a command (its own terminal).
+        None if host == HostKind::Other => match id {
+            "claude" => Step::Command {
+                text: "Or sign in from a terminal:".into(),
+                command: "claude auth login".into(),
+            },
+            "grok" => Step::Command {
+                text: "Or sign in from a terminal:".into(),
+                command: "grok login --device-auth".into(),
+            },
+            _ => Step::Nothing,
+        },
+        None => Step::Nothing,
     }
 }
 
@@ -173,8 +181,6 @@ struct Info {
     running: bool,
     installed: bool,
     ready: bool,
-    /// Installed after Melissa started (she uses it after a restart).
-    fresh: bool,
     install_state: Option<InstallState>,
     login_state: Option<InstallState>,
 }
@@ -220,7 +226,13 @@ fn lock_reason(ui: &Ui, id: &str, views: &[BackendView]) -> Option<String> {
     None
 }
 
-async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView]) -> Info {
+async fn info(
+    ui: &Ui,
+    id: &str,
+    facts: &[&BackendFacts],
+    views: &[BackendView],
+    pending: Option<Pending>,
+) -> Info {
     let s = &ui.settings;
     let saved = s.parts().store.get(id);
     let running = facts.iter().any(|f| f.enabled);
@@ -249,7 +261,7 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
         .iter()
         .map(|f| {
             let state = if !f.enabled {
-                "left out (disabled)".to_string()
+                "off".to_string()
             } else if let Some(v) = view(&f.name) {
                 match v.reason {
                     None => "ready".into(),
@@ -265,11 +277,6 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
             };
             BackendLine {
                 name: f.name.clone(),
-                kind: if f.session {
-                    "chat session"
-                } else {
-                    "one-shot task"
-                },
                 state,
             }
         })
@@ -278,47 +285,63 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
         .env
         .keys()
         .any(|k| melissa_settings::providers::is_secret_name(k));
-    let mut extras = Vec::new();
-    if saved.command.is_some() {
-        extras.push("Custom program".to_string());
-    }
-    if secret_set {
-        extras.push("API key set".to_string());
-    } else if !saved.env.is_empty() {
-        extras.push(match saved.env.len() {
-            1 => "1 variable".to_string(),
-            n => format!("{n} variables"),
-        });
-    }
-    // Installed after Melissa started: she finds it after a restart.
-    let fresh = installed && running && reasons.contains(&"not_installed");
-    let (mut status, tone, ready) = if install_state == Some(InstallState::Running) {
-        ("Installing…".to_string(), Tone::Info, false)
-    } else if !saved.is_enabled() {
-        let s = if running {
-            "Disabled · after a restart"
-        } else {
-            "Disabled"
-        };
-        (s.to_string(), Tone::Muted, false)
-    } else if !running {
-        ("Enabled · after a restart".into(), Tone::Info, false)
-    } else if !installed && install_state == Some(InstallState::Failed) {
-        ("Install failed".into(), Tone::Error, false)
-    } else if !installed {
-        ("Not installed".into(), Tone::Warn, false)
-    } else if fresh {
-        ("Installed · after a restart".into(), Tone::Info, false)
-    } else if reasons.contains(&"not_logged_in") {
-        ("Not logged in".into(), Tone::Warn, false)
-    } else if reasons.contains(&"sandbox") {
-        ("Sandbox can't start".into(), Tone::Error, false)
+    let needs_login = reasons.contains(&"not_logged_in");
+    let host = s.parts().updates.kind;
+    let login_status = if installed && way == InstallWay::Button && Job::Login.unit(id).is_some() {
+        Some(s.parts().installer.job_status(Job::Login, id).await)
     } else {
-        ("Ready".into(), Tone::Ok, true)
+        None
     };
-    if !extras.is_empty() && saved.is_enabled() {
-        status = format!("{status} · {}", extras.join(" · "));
-    }
+    let login_state = login_status.as_ref().map(|l| l.state);
+    // A saved change for this provider waits for Melissa to apply it.
+    let waiting =
+        pending.filter(|_| saved.is_enabled() && (!running || (needs_login && secret_set)));
+    let (status, tone, ready) = if !saved.is_enabled() {
+        ("Disabled", Tone::Muted, false)
+    } else if install_state == Some(InstallState::Running) {
+        ("Installing…", Tone::Info, false)
+    } else if let Some(p) = waiting {
+        (p.word(), Tone::Info, false)
+    } else if !installed && install_state == Some(InstallState::Failed) {
+        ("Failed", Tone::Error, false)
+    } else if !installed {
+        ("Not installed", Tone::Warn, false)
+    } else if reasons.contains(&"not_installed") {
+        // Found here, but not on the queen's own PATH (e.g. a custom path).
+        ("Not installed", Tone::Warn, false)
+    } else if login_state == Some(InstallState::Running) {
+        ("Signing in…", Tone::Info, false)
+    } else if needs_login {
+        ("Sign in needed", Tone::Warn, false)
+    } else if reasons.contains(&"sandbox") {
+        ("Failed", Tone::Error, false)
+    } else {
+        ("Ready", Tone::Ok, true)
+    };
+    let label = saved
+        .display_name
+        .clone()
+        .unwrap_or_else(|| default_label(id).to_string());
+    let step = if !saved.is_enabled() || waiting.is_some() {
+        Step::Nothing
+    } else if !installed {
+        install_step(id, &label, way, install_status)
+    } else if let Some(st) = login_status
+        .as_ref()
+        .filter(|l| l.state == InstallState::Running)
+    {
+        login_running(id, st, s.code_sent())
+    } else if needs_login {
+        sign_in_step(id, host, login_status.as_ref())
+    } else if id == "opencode" && ready {
+        Step::Note("Free models work without an account.".into())
+    } else {
+        Step::Nothing
+    };
+    // The API key option: where the CLI reads one and it is needed (or set already).
+    let key =
+        (key_var(id).is_some() && installed && saved.is_enabled() && (needs_login || secret_set))
+            .then_some(secret_set);
     // Who uses it.
     let mine = |name: &str| facts.iter().any(|f| f.name == name);
     let mut used_by = Vec::new();
@@ -345,31 +368,6 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
             }
         }
     }
-    let label = saved
-        .display_name
-        .clone()
-        .unwrap_or_else(|| default_label(id).to_string());
-    let host = s.parts().updates.kind;
-    let install = if installed {
-        None
-    } else {
-        install_view(id, &label, way, host, install_status)
-    };
-    let mut sign_in = if installed && !secret_set {
-        sign_in(id, host, reasons.contains(&"not_logged_in") || fresh)
-    } else {
-        None
-    };
-    // A device-code sign-in from the page where the unit is there (Grok only).
-    let mut login_state = None;
-    if let Some(si) = sign_in.as_mut() {
-        if way == InstallWay::Button && Job::Login.unit(id).is_some() {
-            let st = s.parts().installer.job_status(Job::Login, id).await;
-            login_state = Some(st.state);
-            si.command = None;
-            si.device = Some(device_view(st));
-        }
-    }
     let lock = if saved.is_enabled() {
         lock_reason(ui, id, views)
     } else {
@@ -385,26 +383,27 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
             label,
             version,
             enabled: saved.is_enabled(),
-            status,
+            status: status.to_string(),
             tone,
-            program: program.map(|p| p.display().to_string()),
-            used_by,
             lock,
-            backends,
-            models,
-            display_name: saved.display_name.clone().unwrap_or_default(),
-            command: saved.command.clone().unwrap_or_default(),
-            default_command,
-            args: saved.args.clone(),
-            env: saved.env_view(),
-            install,
-            sign_in,
-            var_example: var_example(id),
+            step,
+            key,
+            key_open: key == Some(false) && way != InstallWay::Button,
+            details: ProviderDetails {
+                used_by,
+                backends,
+                models,
+                program: program.map(|p| p.display().to_string()),
+                display_name: saved.display_name.clone().unwrap_or_default(),
+                command: saved.command.clone().unwrap_or_default(),
+                default_command,
+                args: saved.args.clone(),
+                env: saved.env_view(),
+            },
         },
         running,
         installed,
         ready,
-        fresh,
         install_state,
         login_state,
     }
@@ -412,50 +411,37 @@ async fn info(ui: &Ui, id: &str, facts: &[&BackendFacts], views: &[BackendView])
 
 async fn infos(ui: &Ui) -> Vec<Info> {
     let views = ui.queen.backends();
+    let pending = apply::pending(ui).await;
     let mut out = Vec::new();
     for (id, facts) in grouped(&ui.settings) {
-        out.push(info(ui, &id, &facts, &views).await);
+        out.push(info(ui, &id, &facts, &views, pending).await);
     }
     out
 }
 
-/// Why a restart is needed for saved settings.
-pub(super) const SAVED: &str = "Saved. Melissa uses the new provider settings after a restart.";
-const INSTALLED: &str = "Installed. Melissa starts using it after a restart.";
-
-pub(super) fn restart_hint(s: &Settings, text: &'static str) -> RestartHint {
-    let env = &s.parts().updates;
-    RestartHint {
-        text,
-        button: env.can(UpdateAction::Restart),
-        command: match env.kind {
-            HostKind::Other => "# stop melissa-queen (Ctrl-C) and start it again".into(),
-            HostKind::Container => UpdateAction::Restart.manual_command(),
-            HostKind::Nix => "sudo systemctl restart melissa-queen".into(),
-        },
-    }
+/// How to restart by hand, where Melissa can't (a run from source only).
+pub(super) fn manual_restart(s: &Settings) -> Option<String> {
+    (s.parts().updates.kind == HostKind::Other)
+        .then(|| "# stop melissa-queen (Ctrl-C) and start it again".to_string())
 }
 
 async fn view(ui: &Ui, selected: Option<&str>, flash: Option<Flash>) -> ProvidersView {
     let s = &ui.settings;
     let all = infos(ui).await;
-    let installing = all.iter().any(|i| {
-        i.install_state == Some(InstallState::Running)
-            || i.login_state == Some(InstallState::Running)
-    });
-    let fresh = all.iter().any(|i| i.fresh);
     let cards: Vec<ProviderCard> = all.into_iter().map(|i| i.card).collect();
     let selected = selected
         .and_then(|id| cards.iter().position(|c| c.id == id))
         .unwrap_or(0);
-    let restart = if s.parts().store.restart_needed() {
-        Some(restart_hint(s, SAVED))
-    } else if fresh {
-        Some(restart_hint(s, INSTALLED))
-    } else {
-        None
-    };
-    let poll = installing.then(|| match cards.get(selected) {
+    let pending = apply::pending(ui).await;
+    // Refresh while something moves; never while a code field waits for the owner.
+    let moving = pending.is_some_and(|p| p != Pending::Manual)
+        || cards.iter().any(|c| {
+            matches!(
+                c.step,
+                Step::Installing | Step::Starting | Step::Checking | Step::DeviceCode { .. }
+            )
+        });
+    let poll = moving.then(|| match cards.get(selected) {
         Some(c) => format!("/ui/settings/providers/poll?p={}", c.id),
         None => "/ui/settings/providers/poll".into(),
     });
@@ -473,7 +459,8 @@ async fn view(ui: &Ui, selected: Option<&str>, flash: Option<Flash>) -> Provider
         cards,
         selected,
         checked,
-        restart,
+        pending,
+        manual_restart: manual_restart(s),
         flash,
         home: s.parts().home.as_ref().map(|h| h.display().to_string()),
         file: s.parts().store.path().map(|p| p.display().to_string()),
@@ -530,6 +517,8 @@ fn apply(ui: &Ui, id: &str, change: Change, actor: &str) -> Result<(), ChangeErr
         .map_err(|e| ChangeError::Invalid(e.to_string()))?;
     let (what, hash) = change.describe();
     s.audit("settings.provider", actor, &format!("{id}: {what}"), hash);
+    // Melissa applies it herself once she is idle.
+    apply::schedule(ui);
     Ok(())
 }
 
@@ -541,28 +530,30 @@ async fn reply(
     result: Result<String, ChangeError>,
 ) -> Response {
     let (flash, status) = match &result {
+        // An empty text: the page itself shows what happened.
+        Ok(text) if text.is_empty() => (None, StatusCode::OK),
         Ok(text) => (
-            Flash {
+            Some(Flash {
                 text: text.clone(),
                 tone: Tone::Ok,
-            },
+            }),
             StatusCode::OK,
         ),
         Err(e) => (
-            Flash {
+            Some(Flash {
                 text: e.text(),
                 tone: Tone::Error,
-            },
+            }),
             e.status(),
         ),
     };
     if is_htmx(headers) {
-        return pages::providers_region(&view(ui, Some(id), Some(flash)).await).into_response();
+        return pages::providers_region(&view(ui, Some(id), flash).await).into_response();
     }
     if result.is_ok() {
         return Redirect::to(&format!("/settings/providers?p={id}")).into_response();
     }
-    let v = view(ui, Some(id), Some(flash)).await;
+    let v = view(ui, Some(id), flash).await;
     (status, ui.framed(|f| pages::providers_page(f, &v)).await).into_response()
 }
 
@@ -666,10 +657,14 @@ async fn install_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
     if installer.status(id).await.state == InstallState::Running {
         return Err(ChangeError::Refused("It's being installed now.".into()));
     }
+    let previous = installer.status(id).await;
+    audit_previous(ui, Job::Install, id, &previous);
+    let before = previous.ended;
     installer
         .start(id)
         .await
         .map_err(|e| ChangeError::Refused(format!("Can't start the install: {e}")))?;
+    watch(ui, Job::Install, id, before);
     // `--no-block` returns before the unit starts: wait briefly so the page shows it running.
     for _ in 0..20 {
         if installer.status(id).await.state != InstallState::Idle {
@@ -677,19 +672,123 @@ async fn install_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     }
-    Ok(format!("Installing {}.", default_label(id)))
+    Ok(format!("Installing {}…", default_label(id)))
+}
+
+/// Did `job` for `id` leave what it should: the program for an install, a login the queen
+/// accepts for a sign-in (its credential file, checked live)? systemd forgets a oneshot unit
+/// that ended well (its state reads as never run), so success is judged by the result.
+fn job_worked(ui: &Ui, job: Job, id: &str) -> bool {
+    let Some((_, facts)) = grouped(&ui.settings).into_iter().find(|(p, _)| p == id) else {
+        return false;
+    };
+    match job {
+        Job::Install => facts
+            .iter()
+            .find_map(|f| f.command.as_deref())
+            .and_then(version::resolve)
+            .is_some(),
+        Job::Login => {
+            let views = ui.queen.backends();
+            let mine: Vec<&BackendView> = views
+                .iter()
+                .filter(|v| facts.iter().any(|f| f.name == v.name))
+                .collect();
+            !mine.is_empty() && mine.iter().all(|v| v.reason != Some("not_logged_in"))
+        }
+    }
+}
+
+fn job_words(job: Job) -> (&'static str, &'static str) {
+    match job {
+        Job::Install => ("settings.provider.install", "install"),
+        Job::Login => ("settings.provider.login", "sign-in"),
+    }
+}
+
+fn audit_failure(ui: &Ui, job: Job, id: &str, st: &InstallStatus) {
+    let why = match job {
+        Job::Login => LoginEnd::of(st).as_str().to_string(),
+        Job::Install => st.detail.clone().unwrap_or_else(|| "unknown reason".into()),
+    };
+    let (action, what) = job_words(job);
+    ui.settings.audit(
+        action,
+        "queen",
+        &format!("{id}: {what} failed ({why})"),
+        None,
+    );
+}
+
+/// Before a new run: audit the last one's failure if the watcher didn't get to it (a quick
+/// retry starts before its next look).
+fn audit_previous(ui: &Ui, job: Job, id: &str, st: &InstallStatus) {
+    if st.state == InstallState::Failed
+        && st.ended != 0
+        && ui.settings.mark_audited(&format!("{job:?}:{id}"), st.ended)
+    {
+        audit_failure(ui, job, id, st);
+    }
+}
+
+/// Audit how an install or sign-in ended, once it has (whether or not anyone watches the
+/// page). After a success Melissa looks up the new agent's models.
+fn watch(ui: &Ui, job: Job, id: &str, before: u64) {
+    let key = format!("{job:?}:{id}");
+    if !ui.settings.watching().insert(key.clone()) {
+        return;
+    }
+    let ui = ui.clone();
+    let id = id.to_string();
+    tokio::spawn(async move {
+        let s = &ui.settings;
+        let mut seen = false;
+        // The units give up after 15 minutes; look a little longer.
+        for round in 0..(16 * 60 / 2) {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let st = s.parts().installer.job_status(job, &id).await;
+            if st.state == InstallState::Running {
+                seen = true;
+                continue;
+            }
+            let ended_now = st.ended != 0 && st.ended != before;
+            // Not started yet (systemd queues it): give it a moment.
+            if !seen && !ended_now && round < 15 {
+                continue;
+            }
+            let worked = job_worked(&ui, job, &id);
+            let outcome = if st.state == InstallState::Failed && ended_now {
+                if s.mark_audited(&key, st.ended) {
+                    audit_failure(&ui, job, &id, &st);
+                }
+                None
+            } else if worked {
+                Some("succeeded")
+            } else {
+                Some(match job {
+                    Job::Install => "failed (the program wasn't found)",
+                    Job::Login => "failed (still not signed in)",
+                })
+            };
+            if let Some(outcome) = outcome {
+                let (action, what) = job_words(job);
+                s.audit(action, "queen", &format!("{id}: {what} {outcome}"), None);
+            }
+            if worked {
+                ui.queen.refresh_models_soon();
+            }
+            break;
+        }
+        s.watching().remove(&key);
+    });
 }
 
 /// Check, start and audit a device-code sign-in (Grok). The same path for the UI and the API.
 async fn start_login(ui: &Ui, id: &str, actor: &str) -> Result<String, ChangeError> {
     let result = login_checked(ui, id).await;
     let detail = match &result {
-        Ok(_) => format!("{}: device sign-in requested", clean_text(id, 40)),
-        Err(e) => format!(
-            "{}: device sign-in refused: {}",
-            clean_text(id, 40),
-            e.text()
-        ),
+        Ok(_) => format!("{}: sign-in requested", clean_text(id, 40)),
+        Err(e) => format!("{}: sign-in refused: {}", clean_text(id, 40), e.text()),
     };
     ui.settings
         .audit("settings.provider.login", actor, &detail, None);
@@ -704,7 +803,7 @@ async fn login_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
     };
     if Job::Login.unit(id).is_none() {
         return Err(ChangeError::Invalid(
-            "Melissa can't sign this provider in from here; add an API key instead.".into(),
+            "Melissa can't sign this provider in from here.".into(),
         ));
     }
     if installer.way != InstallWay::Button {
@@ -720,24 +819,170 @@ async fn login_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
     if !installed {
         return Err(ChangeError::Refused("Install it first.".into()));
     }
-    if installer.job_status(Job::Login, id).await.state == InstallState::Running {
+    let current = installer.job_status(Job::Login, id).await;
+    if current.state == InstallState::Running {
         return Err(ChangeError::Refused("A sign-in is waiting already.".into()));
     }
+    audit_previous(ui, Job::Login, id, &current);
+    s.set_code_sent(false);
     installer
         .start_job(Job::Login, id)
         .await
         .map_err(|e| ChangeError::Refused(format!("Can't start the sign-in: {e}")))?;
-    // Wait for the vendor's URL and code (a few seconds), so the page shows them at once.
-    for _ in 0..30 {
+    watch(ui, Job::Login, id, current.ended);
+    // Wait for the vendor's URL (a few seconds), so the page shows it at once. Only from this
+    // run: until the unit runs, the log is the last run's (and Claude's FIFO has no reader).
+    for _ in 0..40 {
         let st = installer.job_status(Job::Login, id).await;
-        if st.state != InstallState::Running && st.state != InstallState::Idle
-            || device_prompt(&st.log).is_some()
-        {
+        let shown = st.state == InstallState::Running
+            && match id {
+                "claude" => claude_login_url(&st.log).is_some(),
+                _ => device_prompt(&st.log).is_some(),
+            };
+        let ended = st.state == InstallState::Failed && st.ended != current.ended;
+        if shown || ended {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    Ok("Open the link and confirm the code to sign in.".into())
+    Ok(String::new())
+}
+
+/// Hand the pasted code to Claude's waiting sign-in (empty: cancel it). The same path for
+/// the UI and the API. The code is never stored, logged or audited.
+async fn send_code(ui: &Ui, id: &str, code: &str, actor: &str) -> Result<String, ChangeError> {
+    let s = &ui.settings;
+    let cancel = code.is_empty();
+    let result = send_code_checked(ui, id, code).await;
+    let what = if cancel {
+        "sign-in cancel"
+    } else {
+        "sign-in code"
+    };
+    let detail = match &result {
+        Ok(_) => format!("{}: {what} sent", clean_text(id, 40)),
+        Err(e) => format!("{}: {what} refused: {}", clean_text(id, 40), e.text()),
+    };
+    s.audit("settings.provider.login", actor, &detail, None);
+    result
+}
+
+async fn send_code_checked(ui: &Ui, id: &str, code: &str) -> Result<String, ChangeError> {
+    let s = &ui.settings;
+    let installer = &s.parts().installer;
+    if !grouped(s).iter().any(|(p, _)| p == id) {
+        return Err(ChangeError::Unknown);
+    }
+    if id != "claude" || installer.way != InstallWay::Button {
+        return Err(ChangeError::Invalid("No code is needed here.".into()));
+    }
+    if !code.is_empty() && !valid_code(code) {
+        return Err(ChangeError::Invalid(
+            "That doesn't look like a sign-in code.".into(),
+        ));
+    }
+    if installer.job_status(Job::Login, id).await.state != InstallState::Running {
+        return Err(ChangeError::Refused(
+            "No sign-in is waiting. Sign in again.".into(),
+        ));
+    }
+    installer
+        .send_code(code)
+        .map_err(|e| ChangeError::Refused(e.to_string()))?;
+    if code.is_empty() {
+        // Give the unit a moment to end, so the page shows the Sign in button again.
+        for _ in 0..15 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if installer.job_status(Job::Login, id).await.state != InstallState::Running {
+                break;
+            }
+        }
+        return Ok("Cancelled.".into());
+    }
+    s.set_code_sent(true);
+    Ok(String::new())
+}
+
+#[derive(Deserialize)]
+pub(super) struct CodeForm {
+    #[serde(default)]
+    code: String,
+}
+
+pub(super) async fn login_code(
+    State(ui): State<Ui>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<CodeForm>,
+) -> Response {
+    let code = form.code.trim();
+    let result = if code.is_empty() {
+        Err(ChangeError::Invalid("Paste the code first.".into()))
+    } else {
+        send_code(&ui, &id, code, "ui").await
+    };
+    reply(&ui, &headers, &id, result).await
+}
+
+pub(super) async fn login_cancel(
+    State(ui): State<Ui>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let result = send_code(&ui, &id, "", "ui").await;
+    reply(&ui, &headers, &id, result).await
+}
+
+#[derive(Deserialize)]
+pub(super) struct CodeBody {
+    #[serde(default)]
+    code: String,
+}
+
+pub(super) async fn api_login_code(
+    State(ui): State<Ui>,
+    Path(id): Path<String>,
+    Json(body): Json<CodeBody>,
+) -> Response {
+    match send_code(&ui, &id, body.code.trim(), "api").await {
+        Ok(_) => (StatusCode::ACCEPTED, api_install_json(&ui, &id).await).into_response(),
+        Err(e) => (e.status(), Json(json!({"error": e.text()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct KeyForm {
+    #[serde(default)]
+    value: String,
+}
+
+/// "Use an API key instead": the key goes under the provider's fixed variable name (write-
+/// only, like every secret); an empty value removes it.
+pub(super) async fn set_key(
+    State(ui): State<Ui>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<KeyForm>,
+) -> Response {
+    let result = match key_var(&id) {
+        None => Err(ChangeError::Invalid(
+            "This provider takes no API key here.".into(),
+        )),
+        Some(var) if form.value.trim().is_empty() => {
+            apply(&ui, &id, Change::RemoveVar(var.to_string()), "ui").map(|()| "Removed.".into())
+        }
+        Some(var) => apply(
+            &ui,
+            &id,
+            Change::SetVar {
+                name: var.to_string(),
+                value: form.value.trim().to_string(),
+            },
+            "ui",
+        )
+        .map(|()| "Saved.".into()),
+    };
+    reply(&ui, &headers, &id, result).await
 }
 
 pub(super) async fn login(
@@ -796,8 +1041,8 @@ async fn api_install_json(ui: &Ui, id: &str) -> Json<Value> {
             "installed": i.installed,
             "version": i.card.version,
             "status": i.card.status,
-            "install": install_json(&i.card),
-            "sign_in": sign_in_json(&i.card),
+            "install": install_json(&i),
+            "sign_in": sign_in_json(&i),
         }),
         None => json!({"provider": id}),
     })
@@ -901,10 +1146,11 @@ pub(super) async fn remove_var(
 
 fn info_json(i: &Info) -> Value {
     let c = &i.card;
-    let backends: Vec<Value> = c
+    let d = &c.details;
+    let backends: Vec<Value> = d
         .backends
         .iter()
-        .map(|b| json!({"name": b.name, "kind": b.kind, "state": b.state}))
+        .map(|b| json!({"name": b.name, "state": b.state}))
         .collect();
     json!({
         "id": c.id,
@@ -913,48 +1159,68 @@ fn info_json(i: &Info) -> Value {
         "running": i.running,
         "installed": i.installed,
         "ready": i.ready,
-        "program": c.program,
+        "program": d.program,
         "version": c.version,
         "status": c.status,
-        "used_by": c.used_by,
+        "used_by": d.used_by,
         "can_disable": c.lock.is_none(),
         "lock": c.lock,
         "backends": backends,
-        "models": c.models,
-        "install": install_json(c),
-        "sign_in": sign_in_json(c),
+        "models": d.models,
+        "install": install_json(i),
+        "sign_in": sign_in_json(i),
+        "api_key": c.key.map(|set| json!({"set": set})),
         "settings": {
-            "display_name": (!c.display_name.is_empty()).then_some(&c.display_name),
-            "command": (!c.command.is_empty()).then_some(&c.command),
-            "args": c.args,
-            "env": c.env,
+            "display_name": (!d.display_name.is_empty()).then_some(&d.display_name),
+            "command": (!d.command.is_empty()).then_some(&d.command),
+            "args": d.args,
+            "env": d.env,
         },
     })
 }
 
-fn sign_in_json(c: &ProviderCard) -> Value {
-    let Some(si) = &c.sign_in else {
-        return Value::Null;
+/// The sign-in step for the API (null when there is nothing to do).
+fn sign_in_json(i: &Info) -> Value {
+    let (step, url, code, text) = match &i.card.step {
+        Step::SignIn { again } => ("sign_in", None, None, again.map(str::to_string)),
+        Step::Starting => ("starting", None, None, None),
+        Step::PasteCode { url } => ("paste_code", Some(url.clone()), None, None),
+        Step::Checking => ("checking", None, None, None),
+        Step::DeviceCode { url, code } => {
+            ("device_code", Some(url.clone()), Some(code.clone()), None)
+        }
+        Step::Command { text, command } if i.installed => {
+            return json!({"step": "command", "text": text, "command": command});
+        }
+        _ => return Value::Null,
     };
-    let device = si.device.as_ref().map(
-        |d| json!({"state": d.state.as_str(), "url": d.url, "code": d.code, "detail": d.detail}),
-    );
-    json!({"text": si.text, "command": si.command, "device": device})
+    json!({
+        "step": step,
+        "state": i.login_state.map(InstallState::as_str),
+        "url": url,
+        "code": code,
+        "text": text,
+    })
 }
 
-fn install_json(c: &ProviderCard) -> Value {
-    match &c.install {
-        None => Value::Null,
-        Some(InstallView::Button {
-            state, detail, log, ..
-        }) => json!({"way": "button", "state": state.as_str(), "detail": detail, "log": log}),
-        Some(InstallView::Nix) => json!({
-            "way": "nix",
-            "text": format!("This requires you add {} via your Nix configuration.", c.label),
+/// The install step for the API (null once installed).
+fn install_json(i: &Info) -> Value {
+    if i.installed {
+        return Value::Null;
+    }
+    match &i.card.step {
+        Step::Install { failed, log, .. } => json!({
+            "way": "button",
+            "state": i.install_state.map_or("idle", InstallState::as_str),
+            "text": failed,
+            "log": log,
         }),
-        Some(InstallView::Manual { text, command }) => {
-            json!({"way": "manual", "text": text, "command": command})
-        }
+        Step::Installing => json!({"way": "button", "state": "running"}),
+        Step::Note(text) => json!({
+            "way": if text.contains("Nix") { "nix" } else { "manual" },
+            "text": text,
+        }),
+        _ => Value::Null,
     }
 }
 
@@ -1025,9 +1291,10 @@ pub(super) async fn api_change(
     }
     let views = ui.queen.backends();
     let restart = ui.settings.parts().store.restart_needed();
+    let pending = apply::pending(&ui).await;
     for (pid, facts) in grouped(&ui.settings) {
         if pid == id {
-            let i = info(&ui, &pid, &facts, &views).await;
+            let i = info(&ui, &pid, &facts, &views, pending).await;
             let mut v = info_json(&i);
             v["restart_needed"] = json!(restart);
             return Json(v).into_response();

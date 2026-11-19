@@ -598,8 +598,8 @@ Roadmap (rough, phases may overlap):
     so they are visible in `/proc/<pid>/cmdline` to other local users while an agent runs (the existing
     `sandbox.env` pass-through has the same gap). Fix: pass them through a file descriptor (`bwrap --args FD`)
     or a 0600 env file bound into the sandbox; needs a small agent-crate change. (b) Provider changes apply at
-    the next restart ("Restart Melissa now" through polkit); live re-creation of backends would avoid the
-    restart. (c) Extra launch arguments use a denylist of permission/tool flags, which can miss a vendor's new
+    a restart, which Melissa now does herself once idle (63, `apply.rs`); live re-creation of backends would
+    avoid even that. (c) Extra launch arguments use a denylist of permission/tool flags, which can miss a vendor's new
     flag; an allowlist per CLI (like Claude sessions') is stricter but less useful. (d) Automatic updates: on/off is
     an install setting (`AUTO_UPDATE`), shown in Settings, not changeable there (question 20).
     (e) Verified on the headless bootc VM 2026-11-19 (status, check, apply, rollback, restart, polkit negatives,
@@ -633,12 +633,23 @@ Roadmap (rough, phases may overlap):
     install detection uses `HostKind` (Nix from `MELISSA_RUNTIME=nix` via `$MELISSA_RELEASE_FILE`); the two units,
     their tmpfiles and their polkit rule (`51-melissa-agent-install.rules`) are container-only
     (`packaging/container/rootfs`), so the Nix packaging neither installs them nor grants the rights. Open:
-    (b) Claude's `claude auth login` prints a URL but wants the code pasted back on stdin: a page flow would need
-    the code passed into the unit (a credential or socket, never an argument); for now `claude setup-token` on
-    the owner's computer → `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`. (c) OpenCode's `auth login` is
-    interactive; provider keys work as variables. (d) After an install Melissa needs a restart (backends resolve
-    programs at start); live re-detection would avoid it (60b). (e) No update/reinstall/uninstall button for an
-    installed CLI yet (re-running the unit reinstalls; the vendor CLIs self-update). (f) The audit records the
-    request, not the outcome (the unit's result is in its log and `systemctl show`). (g) The device code is
-    shown to anyone who reaches the UI (same trust as the UI itself, 28). (h) `melissa-queen provider install`
-    CLI verb not added (the API exists: `POST /api/settings/providers/<id>/install|login`).
+    (b) Done 2026-11-19 (owner: "graphical", "way less text"; DECISIONS): Claude signs in on the page
+    (`melissa-agent-login@claude`, URL button + one code field; the code goes through a root:melissa 0620 FIFO to
+    the CLI's stdin, never an argument/env/log; exit statuses for wrong code/cancel/timeout; verified with the real
+    CLI: URL shown, fake code → "That code didn't work", cancel leaves no process). API keys behind "Use an API key
+    instead" (server picks `ANTHROPIC_API_KEY`/`XAI_API_KEY`). (c) OpenCode: free models need nothing; its own
+    provider keys stay under Details → variables. (d) Done: installs and sign-ins apply live (backends look up a
+    missing program again; logins were already live); saved settings restart Melissa by herself once idle
+    (`apply.rs`, audited `settings.apply`), no restart button in the normal flow. Open: re-reading
+    `providers.toml` without a restart. (e) No update/reinstall/uninstall button for an installed CLI yet.
+    (f) Done: outcomes are audited (success judged by the result: systemd forgets a oneshot that ended well).
+    (g) The device code and Claude's sign-in URL are shown to anyone who reaches the UI (same trust as the UI
+    itself, 28). (h) `melissa-queen provider install|login` CLI verbs not added (the API exists, incl.
+    `POST /api/settings/providers/claude/login/code`). (i) Less text across Settings (one status word, one
+    action, internals behind Details, no host commands in the container UI or chat hints); the section list is a
+    panel so nav + content read as one centred block. Verified in a rootful test container 2026-11-19 (OpenCode
+    install → live pickup → chat turn with signed-out Claude/Grok skipped; Claude URL + fake code + cancel; Grok
+    device code; API key → automatic restart when idle; polkit and FIFO negatives). (j) A session now skips a
+    backend that is installed but not signed in (it used to end the turn with "Not logged in").
+    (k) Container builds: the shared cargo target cache trusted file times and once shipped stale crates; the
+    Containerfile now touches the workspace sources before building.

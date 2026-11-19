@@ -80,9 +80,10 @@ pub fn unit_name(id: &str) -> Option<&'static str> {
     }
 }
 
-/// What a unit does: install a CLI, or sign it in with a device code (Grok only: its
-/// `login --device-auth` prints a URL and a code and waits, no input needed; Claude's login
-/// wants a code pasted back, OpenCode's is interactive).
+/// What a unit does: install a CLI, or sign it in. Sign-in: Grok's `login --device-auth`
+/// prints a URL and a code and waits (no input); Claude's `auth login` prints a URL and waits
+/// for the code the person pastes on the page ([`Installer::send_code`]). OpenCode needs no
+/// sign-in for its free models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
     Install,
@@ -95,6 +96,7 @@ impl Job {
         match self {
             Self::Install => unit_name(id),
             Self::Login => match id {
+                "claude" => Some("melissa-agent-login@claude.service"),
                 "grok" => Some("melissa-agent-login@grok.service"),
                 _ => None,
             },
@@ -107,6 +109,64 @@ impl Job {
             Self::Login => format!("{id}-login.log"),
         }
     }
+}
+
+/// Where Claude's sign-in reads the pasted code (tmpfiles: a FIFO, root:melissa 0620).
+pub const CODE_FIFO: &str = "claude-login.code";
+/// Longest code accepted from the page.
+pub const CODE_MAX: usize = 1024;
+
+/// Claude's sign-in URL in a login log, only on Anthropic's own hosts.
+pub fn claude_login_url(log: &[String]) -> Option<String> {
+    const HOSTS: [&str; 3] = [
+        "https://claude.com/",
+        "https://claude.ai/",
+        "https://platform.claude.com/",
+    ];
+    log.iter().find_map(|l| {
+        l.split_whitespace()
+            .find(|w| HOSTS.iter().any(|h| w.starts_with(h)) && w.contains("oauth"))
+            .map(str::to_string)
+    })
+}
+
+/// How a sign-in unit ended, from its exit status (melissa-setup login_claude_from_page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginEnd {
+    /// 3: the vendor did not accept the code.
+    WrongCode,
+    /// 4: the person cancelled.
+    Cancelled,
+    /// 5 (or the unit's timeout): no code in time.
+    TimedOut,
+    /// Anything else.
+    Failed,
+}
+
+impl LoginEnd {
+    pub fn of(status: &InstallStatus) -> Self {
+        match status.exit {
+            Some(3) => Self::WrongCode,
+            Some(4) => Self::Cancelled,
+            Some(5) => Self::TimedOut,
+            _ if status.timed_out => Self::TimedOut,
+            _ => Self::Failed,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WrongCode => "code not accepted",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed out",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A pasted sign-in code: one line of visible ASCII, no spaces, at most [`CODE_MAX`] bytes.
+pub fn valid_code(code: &str) -> bool {
+    !code.is_empty() && code.len() <= CODE_MAX && code.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// A device-code sign-in in a login log: the vendor's URL (only on its own host) and the code.
@@ -155,6 +215,12 @@ pub struct InstallStatus {
     pub state: InstallState,
     /// For a failure: "exit status 1", "timeout", …
     pub detail: Option<String>,
+    /// The program's exit status, when it exited with one.
+    pub exit: Option<i32>,
+    /// systemd stopped it at its time limit.
+    pub timed_out: bool,
+    /// When the last run ended (systemd's monotonic µs; 0: not yet). Tells runs apart.
+    pub ended: u64,
     /// The last lines of the output, cleaned for display.
     pub log: Vec<String>,
 }
@@ -164,6 +230,9 @@ impl InstallStatus {
         Self {
             state: InstallState::Idle,
             detail: None,
+            exit: None,
+            timed_out: false,
+            ended: 0,
             log: Vec::new(),
         }
     }
@@ -250,16 +319,59 @@ impl Installer {
                 Duration::from_secs(5),
             )
             .await;
-        let (state, detail) = match shown {
-            Ok(out) if out.status.success() => parse_show(&String::from_utf8_lossy(&out.stdout)),
-            Ok(_) | Err(_) => (InstallState::Idle, None),
+        let text = match shown {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Ok(_) | Err(_) => String::new(),
         };
+        let (state, detail) = parse_show(&text);
+        let field = |key: &str| show_field(&text, key);
+        let exit = (state == InstallState::Failed && field("Result") == "exit-code")
+            .then(|| field("ExecMainStatus").parse().ok())
+            .flatten();
         let log = if state == InstallState::Idle {
             Vec::new()
         } else {
             read_log(&self.log_dir.join(job.log_file(id)))
         };
-        InstallStatus { state, detail, log }
+        InstallStatus {
+            state,
+            detail,
+            exit,
+            timed_out: field("Result") == "timeout",
+            ended: field("ExecMainExitTimestampMonotonic").parse().unwrap_or(0),
+            log,
+        }
+    }
+
+    /// Hand the code the person pasted to Claude's waiting sign-in (an empty `code` cancels
+    /// it). The code goes only into the FIFO the login unit reads; it is never logged. Fails
+    /// when no sign-in is waiting (nobody reads the FIFO).
+    pub fn send_code(&self, code: &str) -> Result<(), SettingsError> {
+        use std::{
+            io::Write,
+            os::unix::fs::{FileTypeExt, OpenOptionsExt},
+        };
+        if !code.is_empty() && !valid_code(code) {
+            return Err(SettingsError::Invalid(
+                "That doesn't look like a sign-in code.".into(),
+            ));
+        }
+        let waiting = || SettingsError::Failed("No sign-in is waiting. Start again.".into());
+        // Non-blocking: with no reader the open fails at once (ENXIO) instead of hanging.
+        let mut fifo = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(self.log_dir.join(CODE_FIFO))
+            .map_err(|_| waiting())?;
+        // Only ever into the FIFO, never into a file someone put there.
+        if !fifo.metadata().is_ok_and(|m| m.file_type().is_fifo()) {
+            return Err(waiting());
+        }
+        // One write below PIPE_BUF is atomic: the reader gets the whole line or nothing.
+        let mut line = Vec::with_capacity(code.len() + 1);
+        line.extend_from_slice(code.as_bytes());
+        line.push(b'\n');
+        fifo.write_all(&line).map_err(|_| waiting())
     }
 
     async fn systemctl(
@@ -283,14 +395,16 @@ impl Installer {
     }
 }
 
+fn show_field<'a>(text: &'a str, key: &str) -> &'a str {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+        .map(str::trim)
+        .unwrap_or("")
+}
+
 /// `systemctl show` output (KEY=value lines) → state and, for a failure, why.
 pub fn parse_show(text: &str) -> (InstallState, Option<String>) {
-    let get = |key: &str| {
-        text.lines()
-            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
-            .map(str::trim)
-            .unwrap_or("")
-    };
+    let get = |key: &str| show_field(text, key);
     if get("LoadState") == "not-found" {
         return (InstallState::Idle, None);
     }
@@ -377,12 +491,23 @@ mod tests {
     }
 
     #[test]
-    fn login_is_grok_only_and_the_device_prompt_is_found() {
+    fn login_is_claude_and_grok_only_and_the_device_prompt_is_found() {
         assert_eq!(
             Job::Login.unit("grok"),
             Some("melissa-agent-login@grok.service")
         );
-        for id in ["claude", "opencode", "echo", "..", "grok.service"] {
+        assert_eq!(
+            Job::Login.unit("claude"),
+            Some("melissa-agent-login@claude.service")
+        );
+        for id in [
+            "opencode",
+            "echo",
+            "..",
+            "grok.service",
+            "Claude",
+            "claude ",
+        ] {
             assert_eq!(Job::Login.unit(id), None, "{id}");
         }
         let log: Vec<String> = [
@@ -406,6 +531,89 @@ mod tests {
             .map(String::from)
             .to_vec();
         assert_eq!(device_prompt(&evil), None);
+    }
+
+    #[test]
+    fn claude_url_only_from_anthropic_hosts() {
+        let log: Vec<String> = [
+            "Opening browser to sign in…",
+            "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&state=x",
+            "Paste code here if prompted >",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            claude_login_url(&log).as_deref(),
+            Some("https://claude.com/cai/oauth/authorize?code=true&state=x")
+        );
+        for bad in [
+            "visit: https://claude.com.evil.example/oauth/x",
+            "visit: http://claude.com/oauth/x",
+            "visit: https://evil.example/https://claude.com/oauth",
+            "visit: https://claude.com/download",
+        ] {
+            assert_eq!(claude_login_url(&[bad.to_string()]), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn codes_are_one_visible_line() {
+        assert!(valid_code("AbC-123_x#yZ.9"));
+        for bad in ["", "a b", "a\nb", "a\rb", "ä", &"x".repeat(CODE_MAX + 1)] {
+            assert!(!valid_code(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn login_end_follows_the_exit_status() {
+        let mut st = InstallStatus::idle();
+        st.state = InstallState::Failed;
+        for (code, end) in [
+            (3, LoginEnd::WrongCode),
+            (4, LoginEnd::Cancelled),
+            (5, LoginEnd::TimedOut),
+            (1, LoginEnd::Failed),
+        ] {
+            st.exit = Some(code);
+            assert_eq!(LoginEnd::of(&st), end);
+        }
+        st.exit = None;
+        st.timed_out = true;
+        assert_eq!(LoginEnd::of(&st), LoginEnd::TimedOut);
+    }
+
+    #[test]
+    fn the_code_goes_only_to_a_waiting_fifo() {
+        use std::io::BufRead;
+        let dir = temp("fifo");
+        let inst = Installer::new(InstallWay::Button, dir.clone(), PathBuf::from("false"));
+        // Nothing there, or a plain file: refused, nothing written.
+        assert!(inst.send_code("abc").is_err());
+        std::fs::write(dir.join(CODE_FIFO), "").unwrap();
+        assert!(inst.send_code("abc").is_err());
+        assert_eq!(std::fs::read_to_string(dir.join(CODE_FIFO)).unwrap(), "");
+        std::fs::remove_file(dir.join(CODE_FIFO)).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.join(CODE_FIFO))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        // A FIFO nobody reads: refused at once, no hang.
+        assert!(inst.send_code("abc").is_err());
+        // Bad codes never reach it.
+        assert!(inst.send_code("a b").is_err());
+        // A reader (read-write, like melissa-setup): the whole line arrives.
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join(CODE_FIFO))
+            .unwrap();
+        inst.send_code("code#state").unwrap();
+        inst.send_code("").unwrap();
+        let mut lines = std::io::BufReader::new(reader).lines();
+        assert_eq!(lines.next().unwrap().unwrap(), "code#state");
+        assert_eq!(lines.next().unwrap().unwrap(), "");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

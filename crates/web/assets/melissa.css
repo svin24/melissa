@@ -1587,6 +1587,35 @@ form.inline {
   }
 }
 
+/* Desktop: the section list is a panel of its own, so the list and the content read as one
+   centred block (a bare list looked like empty space and the block looked pushed right; owner,
+   2026-11-19). Phones keep the compact top bar below. */
+@media (min-width: 761px) {
+  .settings {
+    max-width: 1200px;
+    gap: 1.5rem;
+  }
+
+  .settings-nav {
+    align-self: start;
+    position: sticky;
+    top: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.85rem 0.6rem;
+  }
+
+  .settings-nav a[aria-current="page"] {
+    background: var(--ground);
+    box-shadow: none;
+  }
+
+  .settings-nav a:hover {
+    background: var(--ground);
+  }
+}
+
 .crumbs ol {
   list-style: none;
   display: flex;
@@ -2042,6 +2071,114 @@ a.button-like {
 
 .settings .card .facts + p {
   margin-top: 0.25rem;
+}
+
+/* --- Disclosure, sign-in steps, one-field forms (2026-11-19) ----------------------------- */
+
+a.button-like.primary {
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--action-ink);
+  font-weight: 600;
+}
+
+.disclosure {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+
+.disclosure > summary {
+  cursor: pointer;
+  color: var(--muted);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: max-content;
+  max-width: 100%;
+}
+
+.disclosure > summary {
+  list-style: none;
+}
+
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure > summary::before {
+  content: "\203A";
+  display: inline-block;
+  width: 0.8em;
+  font-weight: 700;
+  transition: transform 0.15s ease;
+}
+
+.disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .disclosure > summary::before {
+    transition: none;
+  }
+}
+
+.disclosure > summary:hover {
+  color: var(--ink);
+}
+
+.disclosure[open] > summary {
+  color: var(--ink);
+}
+
+.disclosure-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  padding-top: 0.5rem;
+}
+
+.one-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  margin: 0;
+}
+
+.one-field .field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.one-field button {
+  flex: none;
+}
+
+ol.steps {
+  margin: 0;
+  padding-left: 1.4rem;
+  display: grid;
+  gap: 1rem;
+}
+
+ol.steps > li::marker {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.key-set {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+@media (max-width: 520px) {
+  .one-field {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 @media (max-width: 760px) {
