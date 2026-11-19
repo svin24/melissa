@@ -51,8 +51,7 @@ licenses under `/usr/share/licenses`):
   [cargo-about](https://github.com/EmbarkStudios/cargo-about) from `Cargo.lock` (config `about.toml`, template
   `about.hbs`); run `just licenses` to produce the same file locally (`target/THIRD-PARTY-LICENSES.md`).
 - `/usr/share/licenses/melissa/ACKNOWLEDGMENTS.md`: this file (covers htmx, which is vendored, not a crate).
-- `/usr/share/licenses/melissa/LICENSE`: Melissa's own license, once the repo has one (project license still open,
-  see docs/PLAN.md section 8).
+- `/usr/share/licenses/melissa/LICENSE`: Melissa's own license (MIT, see docs/PLAN.md section 8).
 - `/usr/share/licenses/k3s/LICENSE`: the k3s Apache-2.0 LICENSE from the pinned release tag, verified by sha256
   (`K3S_LICENSE_SHA256` in `image/k3s.lock`). k3s has no NOTICE file (checked at v1.37.2+k3s1).
 - Fedora packages, k3s-selinux, Tailscale and bubblewrap: their RPMs install their own files under

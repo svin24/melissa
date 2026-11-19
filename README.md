@@ -58,4 +58,4 @@ Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md)
 
 Credits and third-party notices: [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
 
-License: not chosen yet (Melissa is meant to become open source). Until a license is added, no rights to reuse the code are granted.
+License: [MIT](LICENSE).

@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
         target/release/melissa-netbridge -t /out/bin/ \
  && mkdir -p /out/licenses && cargo fetch --locked \
  && cargo about generate --workspace --frozen --fail -o /out/licenses/THIRD-PARTY-LICENSES.md about.hbs
-# Melissa's own license (LICENSE*, once the project has one) and the acknowledgments ship with the report.
+# Melissa's own license (LICENSE, MIT) and the acknowledgments ship with the report.
 COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 
 # ---- stage 2: fetch and verify k3s (versions and hashes pinned in image/k3s.lock) ---------
@@ -96,7 +96,8 @@ ARG MELISSA_VERSION=dev
 RUN mkdir -p /usr/lib/melissa && printf 'MELISSA_VERSION=%s\nMELISSA_VARIANT=%s\n' "$MELISSA_VERSION" "$VARIANT" > /usr/lib/melissa/release
 
 LABEL org.opencontainers.image.title="melissa" \
-      org.opencontainers.image.description="Melissa OS image (pre-alpha)"
+      org.opencontainers.image.description="Melissa OS image (pre-alpha)" \
+      org.opencontainers.image.licenses="MIT"
 # Secure Boot guard: keep Fedora's signed kernel and modules. Exactly one kernel, signed with
 # a Fedora key, and no out-of-tree kmods (they would need MOK enrollment).
 RUN set -eu; \

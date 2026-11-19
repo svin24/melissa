@@ -5,6 +5,7 @@ members = ["crates/agent", "crates/catalog", "crates/hive", "crates/queen", "cra
 [workspace.package]
 edition = "2021"
 publish = false
+license = "MIT"
 
 [workspace.dependencies]
 melissa-agent = { path = "crates/agent" }
