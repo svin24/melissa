@@ -378,6 +378,14 @@ impl UpdateAction {
     }
 }
 
+/// Melissa's polkit rule file and the directories polkit reads it from (relative to `root`).
+const POLKIT_RULE: &str = "50-melissa.rules";
+const POLKIT_RULE_DIRS: [&str; 3] = [
+    "usr/share/polkit-1/rules.d",
+    "etc/polkit-1/rules.d",
+    "run/current-system/sw/share/polkit-1/rules.d",
+];
+
 /// Where the helper writes and reads; `root` is `/` except in tests.
 #[derive(Debug, Clone)]
 pub struct UpdateEnv {
@@ -403,11 +411,13 @@ impl UpdateEnv {
         self.kind == HostKind::Container && self.request_dir.is_dir() && self.state_dir.is_dir()
     }
 
-    /// The queen may restart itself (polkit rule from packaging/common).
+    /// The queen may restart itself: Melissa's polkit rule (restart the queen, nothing else) is
+    /// installed, by the container image in /usr, by the non-NixOS Nix bundle in /etc, or by the
+    /// NixOS module in the system profile.
     pub fn can_restart(&self) -> bool {
-        self.root
-            .join("usr/share/polkit-1/rules.d/50-melissa.rules")
-            .exists()
+        POLKIT_RULE_DIRS
+            .iter()
+            .any(|d| self.root.join(d).join(POLKIT_RULE).exists())
     }
 
     /// Whether the UI may offer `action` as a button.
@@ -648,6 +658,25 @@ mod tests {
                 .len(),
             0
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restart_needs_only_the_polkit_rule() {
+        // NixOS: the rule comes with the system profile; no host helper, no container.
+        let root = temp("nixos-root");
+        let env = UpdateEnv {
+            root: root.clone(),
+            kind: HostKind::Other,
+            state_dir: root.join("run/melissa-update"),
+            request_dir: root.join("run/melissa-update-request"),
+        };
+        assert!(!env.can(UpdateAction::Restart));
+        let dir = root.join("run/current-system/sw/share/polkit-1/rules.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("50-melissa.rules"), "").unwrap();
+        assert!(env.can(UpdateAction::Restart));
+        assert!(!env.helper_installed() && !env.can(UpdateAction::Check));
         let _ = std::fs::remove_dir_all(root);
     }
 

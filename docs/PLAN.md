@@ -79,6 +79,23 @@ git tag **`bootc-archive-2026-11-19`** (`image/`, `scripts/vm-*`, the `bootc-ima
 `k3s-on-bootc` skills, `docs/TRY-THE-VM.md`). It comes back "far later", built on `packaging/common/` like the
 other packagings.
 
+### 2b. Nix service (host-first track 2)
+
+Kept separate from the container-first text above on purpose (two tracks, two authors).
+
+- **Flake outputs (2026-11-19):** `packages.<system>.melissa` (workspace from `Cargo.lock`, UI embedded),
+  `nixosModules.melissa` (`services.melissa`), `checks.x86_64-linux.melissa-nixos` (NixOS VM test), and a
+  prototype `melissa-host` bundle for other distributions with Nix. Details:
+  `docs/agent-skills/nix-service.md`.
+- **NixOS module:** the shared queen unit, tmpfiles, polkit rule, k3s manifests and helpers (no copies;
+  `packaging/nix/common.nix` names their root), nixpkgs' `services.k3s` (1.37), UI on loopback, app ports
+  30000-30079 behind `apps.openFirewall`, nix-ld for the vendors' agent CLIs from `melissa-setup`.
+- **Updates on NixOS** are the system's: `nix flake update melissa` + `nixos-rebuild switch`, rollback with
+  `nixos-rebuild --rollback` or the boot menu. Melissa never rebuilds the system itself. Settings → Updates
+  should say so (see open question 62).
+- **Other distributions:** `melissa-host` (root Nix profile as GC root, `melissa-host install` links units into
+  `/etc`); k3s from the distribution. Not system-manager for now (Fedora unsupported upstream).
+
 ## 3. Cluster layer
 
 - **Status (2026-11-19):** k3s v1.37.2 ships in the container image, pinned by sha256 in
@@ -588,3 +605,12 @@ Roadmap (rough, phases may overlap):
     (d) `--privileged` lets root inside mknod and open any host device even with `/dev/input` hidden; the
     logind/sleep masking is the real protection against power handling. Narrower than `--privileged`
     (explicit caps + device list) is worth a spike.
+62. Nix service (2026-11-19): (a) Settings → Updates shows "From source on this computer" on NixOS
+    (`HostKind::Other`). Proposed: a `Nix` host kind (marker: `/etc/NIXOS` or `MELISSA_VERSION` ending in
+    `-nix`) that shows the running version and the commands (`nix flake update melissa`, `sudo nixos-rebuild
+    switch`, `--rollback`), no buttons; a UI change, so the owner decides first. (b) The node-IP pin of
+    `k3s-prepare` is re-implemented in the module (a few lines); fold it into a shared script once the
+    `packaging/common` move lands. (c) `melissa-host` was built but not run: podman cannot start containers
+    from the agent session; verify it in a Fedora/Kinoite VM, incl. SELinux labels on `/nix/store` binaries
+    run by systemd. (d) k3s on NixOS is nixpkgs' 1.37.x, not the sha256-pinned `k3s.lock` binary; pin through
+    the flake lock only. (e) Publishing the flake (a public input URL) needs the owner's yes.

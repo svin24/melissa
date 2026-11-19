@@ -34,20 +34,52 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// A host program: `/usr/bin/<name>` (Fedora) or the first `<name>` on `PATH` (NixOS).
+fn host_program(name: &str) -> Option<PathBuf> {
+    let usr = Path::new("/usr/bin").join(name);
+    if usr.is_file() {
+        return Some(usr);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Can bwrap create the sandbox's namespaces here? Probes with the host's root bound
+/// read-only, so the check does not depend on the distribution's layout.
+fn namespaces_work(bwrap: &Path, sh: &Path) -> bool {
+    std::process::Command::new(bwrap)
+        .args(["--unshare-all", "--ro-bind", "/", "/", "--"])
+        .arg(sh)
+        .args(["-c", "true"])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// `sh` and `curl` on this host, as strings for scripts and specs.
+fn sh_and_curl() -> (String, String) {
+    let path = |n| host_program(n).unwrap().to_str().unwrap().to_string();
+    (path("sh"), path("curl"))
+}
+
+/// `melissa-netbridge`: `MELISSA_NETBRIDGE` when set (test binaries run outside their
+/// build tree, e.g. in the NixOS VM test), else the one cargo built.
+fn netbridge() -> PathBuf {
+    std::env::var_os("MELISSA_NETBRIDGE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_melissa-netbridge").into())
+}
+
 fn tools_present() -> bool {
     let Some(bwrap) = sandbox::find_bwrap() else {
         eprintln!("SKIP: bwrap not found");
         return false;
     };
-    if !Path::new("/usr/bin/curl").is_file() {
-        eprintln!("SKIP: /usr/bin/curl not found");
+    let (Some(sh), Some(_)) = (host_program("sh"), host_program("curl")) else {
+        eprintln!("SKIP: sh or curl not found");
         return false;
-    }
-    let ok = std::process::Command::new(&bwrap)
-        .args(["--unshare-all", "--ro-bind", "/usr", "/usr"])
-        .args(["--symlink", "usr/lib64", "/lib64", "--", "/usr/bin/true"])
-        .status()
-        .is_ok_and(|s| s.success());
+    };
+    let ok = namespaces_work(&bwrap, &sh);
     if !ok {
         eprintln!("SKIP: bwrap cannot create namespaces here");
     }
@@ -96,12 +128,13 @@ async fn sandboxed_agent_reaches_only_allowlisted_hosts_and_mcp() {
 
     let proxy = EgressProxy::new(root.join("sockets"), Some(audit.clone()))
         .unwrap()
-        .with_netbridge(env!("CARGO_BIN_EXE_melissa-netbridge").into())
+        .with_netbridge(netbridge())
         .with_mcp(mcp.clone(), mcp_addr)
         .with_resolver_override("allowed.test.example", vec![server.ip()])
         .with_resolver_override("denied.test.example", vec![server.ip()]);
 
-    let curl = "/usr/bin/curl -sS --max-time 5";
+    let (sh, curl) = sh_and_curl();
+    let curl = format!("{curl} -sS --max-time 5");
     let script = format!(
         r#"
         echo "proxy=$HTTPS_PROXY"
@@ -122,7 +155,7 @@ async fn sandboxed_agent_reaches_only_allowlisted_hosts_and_mcp() {
         echo done
         "#
     );
-    let spec = CliSpec::new("sh", "/usr/bin/sh", &["-c", &script, "melissa", "{prompt}"])
+    let spec = CliSpec::new("sh", &sh, &["-c", &script, "melissa", "{prompt}"])
         .with_sandbox(SandboxSpec::default())
         .with_network(NetworkMode::Proxy)
         .with_allow(vec![format!("allowed.test.example:{port}")]);
@@ -207,12 +240,9 @@ async fn proxy_mode_without_the_egress_proxy_fails_closed() {
         return;
     }
     let root = scratch("closed");
-    let spec = CliSpec::new(
-        "sh",
-        "/usr/bin/sh",
-        &["-c", "echo ran", "melissa", "{prompt}"],
-    )
-    .with_sandbox(SandboxSpec::default());
+    let (sh, curl) = sh_and_curl();
+    let spec = CliSpec::new("sh", &sh, &["-c", "echo ran", "melissa", "{prompt}"])
+        .with_sandbox(SandboxSpec::default());
     let backend = CliBackend::new(spec, root.join("work")).with_home(root.clone());
     // Not available, and running anyway is refused rather than falling back to the host.
     assert!(!backend.info().available);
@@ -221,8 +251,10 @@ async fn proxy_mode_without_the_egress_proxy_fails_closed() {
     assert!(result.is_err(), "{result:?}");
 
     // `none`: runs, but with no network at all.
-    let script = "/usr/bin/curl -sS --max-time 3 --noproxy '*' http://1.1.1.1/ >/dev/null 2>&1 && echo LEAK; echo ok";
-    let spec = CliSpec::new("sh", "/usr/bin/sh", &["-c", script, "melissa", "{prompt}"])
+    let script = format!(
+        "{curl} -sS --max-time 3 --noproxy '*' http://1.1.1.1/ >/dev/null 2>&1 && echo LEAK; echo ok"
+    );
+    let spec = CliSpec::new("sh", &sh, &["-c", &script, "melissa", "{prompt}"])
         .with_sandbox(SandboxSpec::default())
         .with_network(NetworkMode::None);
     let backend = CliBackend::new(spec, root.join("work")).with_home(root.clone());
