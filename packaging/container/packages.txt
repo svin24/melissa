@@ -3,6 +3,8 @@ systemd             # PID 1; systemd-socket-proxyd for the UI forward; sysusers/
 systemd-udev        # udev rules k3s/containerd expect (/dev setup); small
 bubblewrap          # sandbox for agent CLIs (crates/agent/src/sandbox.rs)
 nftables            # UI forward filter (ui-forward-filter); agent egress
+iptables-nft        # k3s (kube-proxy, flannel, network policy) uses it from PATH; its bundled one
+                    # falls back to legacy iptables, which needs the ip_tables module (absent)
 iproute             # k3s-prepare (node IP), ui-forward-filter (default route)
 util-linux          # mount, nsenter (k3s, smoke test)
 polkit              # lets the queen restart itself (Settings → Restart; 50-melissa.rules)

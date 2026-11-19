@@ -97,7 +97,7 @@ RUN printf 'MELISSA_VERSION=%s\nMELISSA_REVISION=%s\nMELISSA_RUNTIME=container\n
 # Image lint: what this image must and must not contain.
 RUN set -eu; \
     for f in /usr/bin/melissa-queen /usr/bin/melissa-comb /usr/bin/melissa-netbridge /usr/bin/k3s \
-        /usr/bin/bwrap /usr/sbin/nft /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup; do \
+        /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
