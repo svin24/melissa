@@ -30,7 +30,7 @@ COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 
 # ---- stage 2: fetch and verify k3s (versions and hashes pinned in image/k3s.lock) ---------
 FROM ${BUILDER} AS k3s
-COPY image/k3s.lock /k3s.lock
+COPY packaging/common/usr/lib/melissa/k3s.lock /k3s.lock
 RUN set -eu; . /k3s.lock; mkdir -p /out; cd /out; \
     base="https://github.com/k3s-io/k3s/releases/download/$(printf %s "$K3S_VERSION" | sed 's/+/%2B/')"; \
     curl -fsSL --retry 3 -o k3s "$base/k3s"; \
@@ -54,7 +54,7 @@ RUN pkgs=$(cat /tmp/pkgs/*.txt | sed 's/#.*//' | xargs) \
 
 # k3s (rarely changes): binary + kubectl/crictl/ctr links, LICENSE, SELinux policy, airgap images in /usr.
 COPY --from=k3s /out/ /tmp/k3s/
-COPY image/k3s.lock /usr/lib/melissa/k3s.lock
+COPY packaging/common/usr/lib/melissa/k3s.lock /usr/lib/melissa/k3s.lock
 RUN set -eu; . /usr/lib/melissa/k3s.lock; \
     dnf -y install /tmp/k3s/k3s-selinux.rpm; \
     install -m 0755 /tmp/k3s/k3s /usr/bin/k3s; \
@@ -65,6 +65,7 @@ RUN set -eu; . /usr/lib/melissa/k3s.lock; \
     dnf clean all; rm -rf /tmp/k3s /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
 
 # Static config. Defaults go under /usr/lib so the /etc 3-way merge never strands them.
+COPY packaging/common/ /
 COPY image/rootfs/ /
 COPY image/${VARIANT}/ /
 # The app catalog: small reviewed manifests only. No app images ship; containerd pulls them

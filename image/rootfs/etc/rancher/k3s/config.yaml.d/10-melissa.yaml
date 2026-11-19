@@ -1,6 +1,0 @@
-# Shipped by the Melissa image (k3s reads config only from /etc/rancher/k3s).
-# The queen writes 50-*.yaml here; put local overrides in 90-local.yaml.
-selinux: true
-write-kubeconfig-mode: "0600"
-node-label:
-  - "melissa.io/managed=true"

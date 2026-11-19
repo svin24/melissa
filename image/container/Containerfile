@@ -4,7 +4,7 @@
 # Build: `scripts/container-run.sh build` (needs localhost/melissa-headless:dev or IMAGE=...).
 ARG IMAGE=localhost/melissa-headless:dev
 FROM ${IMAGE}
-COPY image/container/rootfs/ /
+COPY packaging/container/rootfs/ /
 RUN set -eu; \
     # podman gives the container its network and DNS (pasta: 169.254.1.1 in /etc/resolv.conf).
     # NetworkManager and resolved inside would take over the interface and hide that resolver.

@@ -4,7 +4,7 @@
 //! [`cluster`] holds the Kubernetes client (kube-rs over rustls) behind the small
 //! [`ClusterRead`] trait, so tools can be tested against a fake. [`ClusterHealth`] is the first
 //! cluster tool. The queen's credentials come from a kubeconfig for the `melissa-queen`
-//! ServiceAccount (see `image/rootfs/usr/libexec/melissa/melissa-kubeconfig`), loaded lazily by
+//! ServiceAccount (see `packaging/common/usr/libexec/melissa/melissa-kubeconfig`), loaded lazily by
 //! [`LazyCluster`] so the queen never waits for k3s; read-only tools use it. App installs go through [`AppDeployer`] over a second, narrower
 //! write identity (`melissa-apps`); see [`apps`], [`render`] and the app tools.
 

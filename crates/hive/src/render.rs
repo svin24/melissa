@@ -42,7 +42,7 @@ use sha2::{Digest, Sha256};
 pub const APP_LABEL: &str = "melissa.io/app";
 /// Field manager for server-side apply.
 pub const FIELD_MANAGER: &str = "melissa";
-/// The write identity (see `image/rootfs/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`).
+/// The write identity (see `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`).
 pub const APPS_SERVICE_ACCOUNT: &str = "melissa-apps";
 pub const MELISSA_NAMESPACE: &str = "melissa";
 /// ClusterRole bound per app namespace for [`APPS_SERVICE_ACCOUNT`].
