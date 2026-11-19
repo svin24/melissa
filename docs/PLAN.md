@@ -266,7 +266,13 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   Grotesque vendored (OFL). The UI says "helper" for a bee and "app" for a cell. Details:
   [htmx-component.md](agent-skills/htmx-component.md). Backend/model switch (2026-11-19): "Runs on Grok ▾" in the
   composer status of the Queen's and each helper's chat; API `/api/queen/backend(s)`, `/api/bees/{bee}/backend(s)`,
-  CLI `melissa-queen backend list|use`; see [queen-loop.md](agent-skills/queen-loop.md). Not yet: disk usage, upkeep line, several conversations with
+  CLI `melissa-queen backend list|use`; see [queen-loop.md](agent-skills/queen-loop.md). Settings (2026-11-19, owner-requested,
+  modelled on T3 Code's settings): `/settings/providers` (agent programs: installed, version, login, enabled,
+  who uses them, models; display name, program path, extra arguments, write-only secret variables; stored in
+  `providers.toml` over `queen.toml`, applied at restart) and `/settings/updates` (Melissa version and variant,
+  bootc booted/staged/rollback image, check/apply/rollback through a fixed-verb root helper, commands where
+  there is none); JSON API `/api/settings/...`, CLI `melissa-queen provider|update`; see
+  [settings-ui.md](agent-skills/settings-ui.md). Not yet: disk usage, upkeep line, several conversations with
   the Queen / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
 
 ## 6b. Clients (later)
@@ -451,7 +457,10 @@ Roadmap (rough, phases may overlap):
     list/prune unused images, restart an app, update an app to the catalog's current digest, app events
     (pull progress, probe failures), bootc update status/stage/rollback, journal usage/vacuum. Most need
     root on the bee (crictl, bootc, journald), not the k3s API: a narrow privileged helper with fixed
-    verbs, or k8s-only tools where possible? (`list_apps` added.)
+    verbs, or k8s-only tools where possible? (`list_apps` added.) 2026-11-19: bootc status/check/apply/rollback is done for the
+    owner (Settings → Updates) with a fixed-verb root helper started through polkit (DECISIONS); the same
+    pattern could carry crictl/journald verbs. Not for agents yet: should the Queen get an `os_update_status`
+    tool, and may she ever ask for an update (always with the owner's yes)?
 43. `install_app` from an attended, untainted Queen needs no confirmation (decided 2026-11-18). It pulls
     ~0.5 GB and fills `/var` (2.0 GB left in the test VM after Nextcloud): revisit together with 36.
 20. Update policy: the stock `bootc-fetch-apply-updates.timer` (download + reboot) is masked in Melissa images;
@@ -526,3 +535,13 @@ Roadmap (rough, phases may overlap):
     (bridge network + filtered UI forward; UI, k3s, policies, pod isolation, Nextcloud, stop/start); agents and chat
     not tried rootful. Still open: rootful lets the kubelet set host sysctls (overcommit, panic): acceptable for a
     tester's machine, or document only? Re-run the offset path in a live container.
+60. Settings (2026-11-19): (a) provider variables (API keys) reach the sandbox as bwrap `--setenv` arguments,
+    so they are visible in `/proc/<pid>/cmdline` to other local users while an agent runs (the existing
+    `sandbox.env` pass-through has the same gap). Fix: pass them through a file descriptor (`bwrap --args FD`)
+    or a 0600 env file bound into the sandbox; needs a small agent-crate change. (b) Provider changes apply at
+    the next restart ("Restart Melissa now" through polkit); live re-creation of backends would avoid the
+    restart. (c) Extra launch arguments use a denylist of permission/tool flags, which can miss a vendor's new
+    flag; an allowlist per CLI (like Claude sessions') is stricter but less useful. (d) Automatic updates
+    (on/off, schedule) are not built: they need the staged-update + health-check policy of question 20 first.
+    (e) The root helper, units and polkit rule are not verified on a bootc VM yet. (f) Settings has no login
+    gate beyond loopback-only (28); with accounts, only the owner may change providers or updates.

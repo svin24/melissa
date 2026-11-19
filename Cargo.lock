@@ -1181,6 +1181,7 @@ dependencies = [
  "melissa-agent",
  "melissa-catalog",
  "melissa-hive",
+ "melissa-settings",
  "melissa-web",
  "serde",
  "serde_json",
@@ -1188,6 +1189,20 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "melissa-settings"
+version = "0.0.1"
+dependencies = [
+ "melissa-agent",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -1199,6 +1214,7 @@ dependencies = [
  "http-body-util",
  "maud",
  "melissa-agent",
+ "melissa-settings",
  "pulldown-cmark",
  "rust-embed",
  "serde",

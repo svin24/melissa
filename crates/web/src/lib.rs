@@ -10,6 +10,7 @@ pub mod components;
 mod feed;
 mod markdown;
 mod pages;
+mod settings;
 mod state;
 mod ui;
 
@@ -30,6 +31,7 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 
 pub use axum::Router;
+pub use settings::{CheckFn, Settings, SettingsParts};
 
 use components::Tone;
 
@@ -63,11 +65,25 @@ pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
 /// The full UI: the chat with the Queen as home (see [`ui`]), the task pages, the MCP
 /// endpoint and the Queen's JSON API (`/api/...`, see [`api`]).
 pub fn router_with_queen(board: TaskBoard, mcp: McpServer, queen: Queen) -> Router {
+    router_with_settings(board, mcp, queen, Settings::detached())
+}
+
+/// [`router_with_queen`] plus the Settings pages and API (`/settings/...`,
+/// `/api/settings/...`) backed by the queen's provider settings and update helper.
+pub fn router_with_settings(
+    board: TaskBoard,
+    mcp: McpServer,
+    queen: Queen,
+    settings: Settings,
+) -> Router {
+    let ui = ui::Ui::new(
+        queen.clone(),
+        state::HiveCache::new(mcp.clone(), Some(queen.clone())),
+        settings,
+    );
     ui_routes(board)
-        .merge(ui::routes(
-            queen.clone(),
-            state::HiveCache::new(mcp.clone(), Some(queen.clone())),
-        ))
+        .merge(ui::routes(ui.clone()))
+        .merge(settings::api_routes(ui))
         .merge(api::tool_routes(mcp.clone()))
         .merge(
             Router::new()
@@ -551,7 +567,7 @@ mod tests {
             ]
         }
 
-        fn app() -> (Router, Queen) {
+        fn app_with(page_settings: Option<Settings>) -> (Router, Queen) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "melissa-web-queen-{}-{}",
@@ -605,7 +621,380 @@ mod tests {
                 &pool,
             )
             .unwrap();
-            (router_with_queen(board, mcp, queen.clone()), queen)
+            let router = match page_settings {
+                Some(s) => router_with_settings(board, mcp, queen.clone(), s),
+                None => router_with_queen(board, mcp, queen.clone()),
+            };
+            (router, queen)
+        }
+
+        fn app() -> (Router, Queen) {
+            app_with(None)
+        }
+
+        // --- Settings ------------------------------------------------------------------------
+
+        use melissa_settings::{
+            providers::{BackendFacts, ProviderStore},
+            updates::{HostKind, Release, UpdateEnv},
+        };
+
+        struct SettingsFixture {
+            dir: std::path::PathBuf,
+        }
+
+        impl SettingsFixture {
+            fn new(name: &str) -> Self {
+                let dir = std::env::temp_dir().join(format!(
+                    "melissa-web-settings-{name}-{}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(dir.join("bin")).unwrap();
+                // A fake `grok` that answers --version.
+                let grok = dir.join("bin/grok");
+                std::fs::write(&grok, "#!/bin/sh\necho 'grok 0.9.1'\n").unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&grok, std::fs::Permissions::from_mode(0o755)).unwrap();
+                Self { dir }
+            }
+
+            fn settings(&self, kind: HostKind, helper: bool) -> Settings {
+                let fact = |name: &str, provider: &str, session: bool, command: Option<String>| {
+                    BackendFacts {
+                        name: name.into(),
+                        provider: provider.into(),
+                        session,
+                        command,
+                        enabled: true,
+                    }
+                };
+                let root = self.dir.join("root");
+                if helper {
+                    for f in [
+                        "usr/lib/systemd/system/melissa-update-check.service",
+                        "usr/share/polkit-1/rules.d/50-melissa.rules",
+                    ] {
+                        std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+                        std::fs::write(root.join(f), "").unwrap();
+                    }
+                }
+                let check: CheckFn = Arc::new(|_, o| {
+                    if o.args.iter().any(|a| a == "--bad") {
+                        Err("claude-session: argument `--bad` is not allowed here".into())
+                    } else {
+                        Ok(())
+                    }
+                });
+                Settings::new(SettingsParts {
+                    store: ProviderStore::new(
+                        self.dir.join("config/providers.toml"),
+                        Default::default(),
+                    ),
+                    backends: vec![
+                        // The Queen's first backend: Melissa runs on Claude.
+                        fact("stuck", "claude", true, Some("/nonexistent/claude".into())),
+                        fact(
+                            "grok-acp",
+                            "grok",
+                            true,
+                            Some(self.dir.join("bin/grok").display().to_string()),
+                        ),
+                        fact("echo-b", "echo", true, None),
+                        fact("echo", "echo", false, None),
+                    ],
+                    bee_default: Some("stuck".into()),
+                    check: Some(check),
+                    audit: Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
+                    updates: UpdateEnv {
+                        root,
+                        kind,
+                        state_dir: self.dir.join("update"),
+                    },
+                    release: Release {
+                        version: "0.3.1".into(),
+                        variant: Some("headless".into()),
+                        source: "image",
+                    },
+                    home: Some("/var/lib/melissa/home".into()),
+                })
+            }
+
+            fn audit(&self) -> String {
+                std::fs::read_to_string(self.dir.join("audit.jsonl")).unwrap_or_default()
+            }
+        }
+
+        impl Drop for SettingsFixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+
+        fn form(uri: &str, body: &str, htmx: bool) -> axum::http::Request<Body> {
+            let mut b = post(uri);
+            if htmx {
+                b = b.header("hx-request", "true");
+            }
+            b.body(Body::from(body.to_string())).unwrap()
+        }
+
+        #[tokio::test]
+        async fn settings_pages_render_and_link_from_the_rail() {
+            let fx = SettingsFixture::new("render");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
+            let (status, headers, _) = send(&app, get("/settings")).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/settings/providers");
+            let (status, _, html) = send(&app, get("/settings/providers?p=grok")).await;
+            assert_eq!(status, StatusCode::OK);
+            for want in [
+                "href=\"/settings\"",
+                "Settings",
+                "Providers",
+                "Claude Code",
+                "Grok",
+                "v0.9.1",
+                "role=\"switch\"",
+                "Melissa runs on it now",
+                "Checked just now",
+            ] {
+                assert!(html.contains(want), "missing {want}");
+            }
+            // Claude isn't installed here, but this is no Melissa image: no melissa-setup line.
+            assert!(!html.contains("melissa-setup"));
+            let (status, _, html) = send(&app, get("/settings/updates")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("0.3.1") && html.contains("From source"));
+            assert!(html.contains("git pull"));
+            assert!(html.contains("version 0.9.1"));
+        }
+
+        #[tokio::test]
+        async fn secrets_are_write_only_everywhere() {
+            let fx = SettingsFixture::new("secrets");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Bootc, false)));
+            let secret = "xai-very-secret-123";
+            let (status, _, html) = send(
+                &app,
+                form(
+                    "/ui/settings/providers/grok/env",
+                    &format!("name=XAI_API_KEY&value={secret}"),
+                    true,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("XAI_API_KEY saved"));
+            assert!(html.contains("XAI_API_KEY") && !html.contains(secret));
+            let (_, _, html) = send(
+                &app,
+                form(
+                    "/ui/settings/providers/grok/env",
+                    "name=XAI_BASE_URL&value=https://llm.example.com",
+                    true,
+                ),
+            )
+            .await;
+            // Non-secret values are shown.
+            assert!(html.contains("https://llm.example.com"));
+            let (_, _, page) = send(&app, get("/settings/providers?p=grok")).await;
+            assert!(!page.contains(secret));
+            assert!(page.contains("API key set"));
+            let (status, list) = send_json(&app, get("/api/settings/providers")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(!list.to_string().contains(secret));
+            let grok = list["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == "grok")
+                .unwrap();
+            let env = grok["settings"]["env"].as_array().unwrap();
+            let key = env.iter().find(|v| v["name"] == "XAI_API_KEY").unwrap();
+            assert_eq!(key["secret"], true);
+            assert!(key.get("value").is_none());
+            assert_eq!(list["restart_needed"], true);
+            // The API too: set through JSON, never echoed back.
+            let (status, body) = send_json(
+                &app,
+                json_post(
+                    "/api/settings/providers/grok",
+                    r#"{"set_env": {"GROK_TOKEN": "tok-abc-999"}}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(!body.to_string().contains("tok-abc-999"));
+            // Audit: what changed and a hash, never the value.
+            let audit = fx.audit();
+            assert!(
+                audit.contains("settings.provider")
+                    && audit.contains("grok: variable XAI_API_KEY set")
+            );
+            assert!(audit.contains(&melissa_settings::sha256_hex(secret.as_bytes())));
+            assert!(!audit.contains(secret) && !audit.contains("tok-abc-999"));
+            // The file has it (0600), for the agent.
+            let path = fx.dir.join("config/providers.toml");
+            assert!(std::fs::read_to_string(&path).unwrap().contains(secret));
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+            // Remove.
+            let (_, _, html) = send(
+                &app,
+                form(
+                    "/ui/settings/providers/grok/env/remove",
+                    "name=XAI_API_KEY",
+                    true,
+                ),
+            )
+            .await;
+            assert!(html.contains("XAI_API_KEY removed"));
+        }
+
+        #[tokio::test]
+        async fn provider_changes_are_checked() {
+            let fx = SettingsFixture::new("checks");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
+            // Melissa runs on Claude: refused.
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/settings/providers/claude", r#"{"enabled": false}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(body["error"].as_str().unwrap().contains("runs on it now"));
+            // The toggle form gets the same answer in the region.
+            let (status, _, html) = send(
+                &app,
+                form("/ui/settings/providers/claude/enabled", "", true),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Can&#39;t disable it") || html.contains("Can't disable it"));
+            // Grok can go; it applies after a restart.
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/settings/providers/grok", r#"{"enabled": false}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["enabled"], false);
+            assert_eq!(body["running"], true);
+            assert_eq!(body["restart_needed"], true);
+            // Bad input: our own checks, then the backend's.
+            for (body, want) in [
+                (r#"{"args": ["--yolo"]}"#, "--yolo"),
+                (r#"{"args": ["--bad"]}"#, "--bad"),
+                (r#"{"command": "/usr/bin/other"}"#, "must be called"),
+                (r#"{"set_env": {"PATH": "/tmp"}}"#, "PATH"),
+            ] {
+                let (status, b) =
+                    send_json(&app, json_post("/api/settings/providers/claude", body)).await;
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+                assert!(b["error"].as_str().unwrap().contains(want), "{b}");
+            }
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/providers/nope", r#"{"enabled": false}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/providers/echo", r#"{"command": "/x/echo"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            // Saved settings and what is escaped.
+            let (status, _, _) = send(
+                &app,
+                form(
+                    "/ui/settings/providers/claude",
+                    "display_name=%3Cb%3EMine%3C%2Fb%3E&command=&args=--effort%0D%0Ahigh",
+                    false,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
+            assert!(html.contains("&lt;b&gt;Mine&lt;/b&gt;") && !html.contains("<b>Mine"));
+            assert!(html.contains("--effort\nhigh"));
+            assert!(fx.audit().contains("claude: extra arguments set (2)"));
+            // Cross-site posts are refused like every other.
+            let req = axum::http::Request::post("/api/settings/providers/grok")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(r#"{"enabled": true}"#))
+                .unwrap();
+            let (status, _, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+
+        #[tokio::test]
+        async fn updates_need_a_yes_and_the_helper() {
+            let fx = SettingsFixture::new("updates");
+            std::fs::create_dir_all(fx.dir.join("update")).unwrap();
+            std::fs::write(
+                fx.dir.join("update/status.json"),
+                include_str!("../../settings/tests/fixtures/bootc-status-staged.json"),
+            )
+            .unwrap();
+            std::fs::write(
+                fx.dir.join("update/last.json"),
+                r#"{"action":"check","ok":false,"at":1,"message":"<i>registry down</i>"}"#,
+            )
+            .unwrap();
+            let (app, _) = app_with(Some(fx.settings(HostKind::Bootc, true)));
+            let (_, _, html) = send(&app, get("/settings/updates")).await;
+            for want in [
+                "Ready for the next start",
+                "43.20261119.0",
+                "sha256:5b0d3c1e9f2a",
+                "Previous (for a rollback)",
+                "Apply update (restarts)",
+                "Roll back (restarts)",
+                "&lt;i&gt;registry down",
+            ] {
+                assert!(html.contains(want), "missing {want}");
+            }
+            // Apply without a yes: the confirmation card, nothing started.
+            let (status, _, html) = send(&app, form("/ui/settings/updates/apply", "", true)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Install and restart") && html.contains("name=\"confirm\""));
+            let (_, _, html) = send(&app, form("/ui/settings/updates/rollback", "", true)).await;
+            assert!(html.contains("Roll back and restart"));
+            let (status, _) = send_json(&app, json_post("/api/settings/updates/apply", "{}")).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(fx.audit().is_empty(), "nothing was requested");
+            let (status, body) = send_json(&app, get("/api/settings/updates")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["host"], "bootc");
+            assert_eq!(body["release"]["version"], "0.3.1");
+            assert_eq!(
+                body["actions"],
+                serde_json::json!(["check", "apply", "rollback", "restart"])
+            );
+            // Without the helper: only commands, and a 501 for actions.
+            let fx2 = SettingsFixture::new("updates-nohelper");
+            let (app, _) = app_with(Some(fx2.settings(HostKind::Bootc, false)));
+            let (_, _, html) = send(&app, get("/settings/updates")).await;
+            assert!(
+                html.contains("sudo bootc upgrade --apply")
+                    && !html.contains("Apply update (restarts)")
+            );
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/updates/apply", r#"{"confirm": true}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+            // Container mode says how to update.
+            let fx3 = SettingsFixture::new("updates-container");
+            let (app, _) = app_with(Some(fx3.settings(HostKind::Container, false)));
+            let (_, _, html) = send(&app, get("/settings/updates")).await;
+            assert!(html.contains("container-run.sh build"));
         }
 
         fn json_post(uri: &str, body: &str) -> axum::http::Request<Body> {

@@ -315,6 +315,8 @@ impl AcpBackend {
         )?;
         let mut command = tokio::process::Command::new(&program_path);
         if !self.sandbox.enabled {
+            // Provider settings first, so Melissa's own variables win.
+            command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
             command.envs(env.iter().map(|(k, v)| (k, v)));
         }
         let mut child = command

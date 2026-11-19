@@ -16,6 +16,7 @@
 - `state.rs`: apps and devices for the UI, read through the tool registry (audited `tool.call`, task 0,
   `Scope::Nothing`, read-only tools) plus who looks after each cell (`queen.bees().cells()`, i.e. the
   `melissa.io/owner-bee` labels), cached 30 s; the first request waits, later ones refresh in the background.
+- `settings/`: the Settings pages, forms and `/api/settings/...` (see [settings-ui.md](settings-ui.md)).
 - `ui.rs`: the UI routes (`/`, `/hive`, `/approvals`, `/bees/{bee}`, `/chats/{id}` (a past chat, read-only),
   `/ui/...`, `POST /ui/new-chat`); `pages::Who` picks the
   conversation (Queen or a bee) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
@@ -38,6 +39,10 @@ disabled with a `melissa-setup` hint; the Switch button posts the composer form 
 the status line; built from `BackendView`s in `agents.rs`).
 Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
 `device_card` (facts, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
+Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.md)): `settings_frame`,
+`settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts`, `group`,
+`text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
+`actions`, `region`; rail link "Settings" (`Nav::Settings`).
 Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
 `select_field`, `textarea_field`, `post_form`, `action_button`.
 

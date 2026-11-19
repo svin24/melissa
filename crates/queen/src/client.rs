@@ -647,3 +647,149 @@ pub async fn tool(client: &Client, name: &str, args: Value) -> anyhow::Result<()
     println!("{}", serde_json::to_string_pretty(&body["result"])?);
     Ok(())
 }
+
+// --- Settings: providers and updates ----------------------------------------------------------
+
+/// `provider list`: every agent program, its state and the owner's settings (secret values
+/// are never sent; they show as "set").
+pub async fn providers(client: &Client) -> anyhow::Result<()> {
+    let body = client.get("/api/settings/providers").await?;
+    for p in body["providers"].as_array().cloned().unwrap_or_default() {
+        let id = p["id"].as_str().unwrap_or("?");
+        let version = p["version"]
+            .as_str()
+            .map(|v| format!(" v{v}"))
+            .unwrap_or_default();
+        let mark = if p["enabled"] == true { " " } else { "-" };
+        println!(
+            "{mark} {id:<10}{version:<12} {}",
+            p["status"].as_str().unwrap_or("")
+        );
+        let used: Vec<&str> = p["used_by"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if !used.is_empty() {
+            println!("    used by: {}", used.join(", "));
+        }
+        let s = &p["settings"];
+        if let Some(c) = s["command"].as_str() {
+            println!("    program: {c}");
+        }
+        if let Some(a) = s["args"].as_array().filter(|a| !a.is_empty()) {
+            let a: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+            println!("    extra arguments: {}", a.join(" "));
+        }
+        for v in s["env"].as_array().cloned().unwrap_or_default() {
+            let name = v["name"].as_str().unwrap_or("?");
+            match v["value"].as_str() {
+                Some(val) => println!("    {name}={val}"),
+                None => println!("    {name} (set, hidden)"),
+            }
+        }
+        if let Some(setup) = p["setup"].as_str() {
+            println!("    set up: {setup}");
+        }
+    }
+    println!("(- = disabled)");
+    if body["restart_needed"] == true {
+        println!("Saved changes apply after Melissa restarts.");
+    }
+    Ok(())
+}
+
+/// `provider enable|disable|set <id> ...`: one change through the daemon (checked and
+/// audited there).
+pub async fn provider_change(client: &Client, id: &str, change: Value) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post(
+            &format!("/api/settings/providers/{}", path_segment(id)),
+            change,
+        )
+        .await?;
+    let body = ok(status, body)?;
+    println!(
+        "{}: {}",
+        body["id"].as_str().unwrap_or(id),
+        body["status"].as_str().unwrap_or("saved")
+    );
+    if body["restart_needed"] == true {
+        println!("Saved. Melissa uses it after a restart.");
+    }
+    Ok(())
+}
+
+/// `update status`.
+pub async fn update_status(client: &Client) -> anyhow::Result<()> {
+    let body = client.get("/api/settings/updates").await?;
+    let r = &body["release"];
+    println!(
+        "Melissa {} ({})",
+        r["version"].as_str().unwrap_or("?"),
+        r["variant"]
+            .as_str()
+            .unwrap_or(body["host"].as_str().unwrap_or("?"))
+    );
+    let st = &body["state"]["status"];
+    for (label, key) in [
+        ("running", "booted"),
+        ("staged", "staged"),
+        ("available", "available"),
+        ("rollback", "rollback"),
+    ] {
+        if let Some(img) = st[key]["image"].as_str() {
+            let ver = st[key]["version"].as_str().unwrap_or("");
+            println!("  {label:<10} {img} {ver}");
+        }
+    }
+    if let Some(last) = body["state"]["last"].as_object() {
+        println!(
+            "  last {}: {}",
+            last.get("action").and_then(Value::as_str).unwrap_or("?"),
+            if last.get("ok") == Some(&Value::Bool(true)) {
+                "ok"
+            } else {
+                "failed"
+            }
+        );
+    }
+    let actions: Vec<&str> = body["actions"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if actions.is_empty() {
+        for c in body["commands"].as_array().cloned().unwrap_or_default() {
+            println!(
+                "{}\n  {}",
+                c["label"].as_str().unwrap_or(""),
+                c["command"].as_str().unwrap_or("")
+            );
+        }
+    } else {
+        println!("  can: {}", actions.join(", "));
+    }
+    for a in body["agents"].as_array().cloned().unwrap_or_default() {
+        println!(
+            "  agent {}: {}",
+            a["name"].as_str().unwrap_or("?"),
+            a["version"].as_str().unwrap_or("?")
+        );
+    }
+    Ok(())
+}
+
+/// `update check|apply|rollback|restart [--yes]`.
+pub async fn update_action(client: &Client, action: &str, yes: bool) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post(
+            &format!("/api/settings/updates/{}", path_segment(action)),
+            json!({"confirm": yes}),
+        )
+        .await?;
+    if status == StatusCode::CONFLICT {
+        bail!("`update {action}` restarts the device; add --yes to confirm");
+    }
+    let body = ok(status, body)?;
+    println!("{}", body["message"].as_str().unwrap_or("started"));
+    Ok(())
+}

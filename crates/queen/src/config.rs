@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use melissa_agent::{AcpSpec, ClaudeSpec, CliSpec, EchoSpec};
+use melissa_settings::providers::{BackendFacts, ProviderFile, ProviderOverride};
 use serde::{de::Error as _, Deserialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -189,6 +190,72 @@ impl BackendSpec {
     /// Can hold a long-lived session (the Queen's).
     pub fn is_session(&self) -> bool {
         matches!(self, Self::Acp(_) | Self::Claude(_) | Self::Echo(_))
+    }
+
+    /// The program it runs (None for the built-in echo partner).
+    pub fn command(&self) -> Option<&str> {
+        match self {
+            Self::Cli(s) => Some(&s.command),
+            Self::Acp(s) => Some(&s.command),
+            Self::Claude(s) => Some(&s.command),
+            Self::Echo(_) => None,
+        }
+    }
+
+    /// The provider (agent program) behind it: the command's file name, or `echo`.
+    pub fn provider(&self) -> String {
+        self.command()
+            .map(melissa_settings::providers::provider_id)
+            .unwrap_or_else(|| "echo".into())
+    }
+
+    /// Put the owner's provider settings into this backend: another program path, extra
+    /// arguments before Melissa's own, and variables set inside the sandbox.
+    fn apply_override(&mut self, o: &ProviderOverride) {
+        fn args(own: &mut Vec<String>, extra: &[String]) {
+            if !extra.is_empty() {
+                let mut all = extra.to_vec();
+                all.append(own);
+                *own = all;
+            }
+        }
+        let vars = o.vars();
+        match self {
+            Self::Cli(s) => {
+                if !vars.is_empty() {
+                    let mut sb = s.effective_sandbox();
+                    sb.vars = vars;
+                    s.sandbox = Some(sb);
+                }
+                if let Some(c) = &o.command {
+                    s.command = c.clone();
+                }
+                args(&mut s.args, &o.args);
+            }
+            Self::Acp(s) => {
+                if !vars.is_empty() {
+                    let mut sb = s.effective_sandbox();
+                    sb.vars = vars;
+                    s.sandbox = Some(sb);
+                }
+                if let Some(c) = &o.command {
+                    s.command = c.clone();
+                }
+                args(&mut s.args, &o.args);
+            }
+            Self::Claude(s) => {
+                if !vars.is_empty() {
+                    let mut sb = s.effective_sandbox();
+                    sb.vars = vars;
+                    s.sandbox = Some(sb);
+                }
+                if let Some(c) = &o.command {
+                    s.command = c.clone();
+                }
+                args(&mut s.args, &o.args);
+            }
+            Self::Echo(_) => {}
+        }
     }
 
     #[cfg(test)]
@@ -380,6 +447,81 @@ impl QueenConfig {
         }
         if q.bee_timeout_secs == 0 || q.bee_timeout_secs > q.bee_timeout_max_secs {
             bail!("[queen] bee_timeout_secs must be between 1 and bee_timeout_max_secs");
+        }
+        Ok(())
+    }
+
+    /// Merge the owner's provider settings (`providers.toml`) over this config: they win over
+    /// `queen.toml`, which wins over the defaults. Backends of a disabled provider are left
+    /// out, and so are their names in `[queen] backends` and `bee_backend` (unless that would
+    /// leave the Queen with none: then the setting is ignored, with a warning). Returns every
+    /// backend before leaving any out, for the Settings page.
+    pub fn apply_providers(&mut self, file: &ProviderFile) -> Vec<BackendFacts> {
+        for b in &mut self.backends {
+            let o = file.get(&b.provider());
+            let before = b.clone();
+            b.apply_override(&o);
+            // A hand-edited file must not keep Melissa from starting: drop the override.
+            if let Err(e) = b.validate() {
+                tracing::warn!(
+                    backend = %b.name(),
+                    "ignoring providers.toml for this backend: {e}"
+                );
+                *b = before;
+            }
+        }
+        let facts = |b: &BackendSpec, enabled: bool| BackendFacts {
+            name: b.name().to_string(),
+            provider: b.provider(),
+            session: b.is_session(),
+            command: b.command().map(str::to_string),
+            enabled,
+        };
+        let disabled: Vec<String> = self
+            .backends
+            .iter()
+            .filter(|b| !file.get(&b.provider()).is_enabled())
+            .map(|b| b.name().to_string())
+            .collect();
+        let queen_left = self
+            .queen
+            .backends
+            .iter()
+            .filter(|n| !disabled.contains(n))
+            .count();
+        if !disabled.is_empty() && queen_left == 0 {
+            tracing::warn!(
+                ?disabled,
+                "providers.toml disables every Queen backend; ignoring that until one is enabled"
+            );
+            return self.backends.iter().map(|b| facts(b, true)).collect();
+        }
+        let all = self
+            .backends
+            .iter()
+            .map(|b| facts(b, !disabled.contains(&b.name().to_string())))
+            .collect();
+        self.backends
+            .retain(|b| !disabled.iter().any(|d| d == b.name()));
+        self.queen.backends.retain(|n| !disabled.contains(n));
+        if self
+            .queen
+            .bee_backend
+            .as_ref()
+            .is_some_and(|b| disabled.contains(b))
+        {
+            self.queen.bee_backend = None;
+        }
+        all
+    }
+
+    /// Whether `o` as provider `id`'s settings gives backends that pass their own checks (for
+    /// the Settings page, before saving). `self` is the config without provider settings.
+    pub fn check_provider(&self, id: &str, o: &ProviderOverride) -> Result<(), String> {
+        for b in self.backends.iter().filter(|b| b.provider() == id) {
+            let mut b = b.clone();
+            b.apply_override(o);
+            b.validate().map_err(|e| format!("{}: {e}", b.name()))?;
         }
         Ok(())
     }
@@ -818,5 +960,114 @@ mod tests {
     fn missing_file_yields_defaults() {
         let path = std::env::temp_dir().join("melissa-no-such-config.toml");
         assert_eq!(QueenConfig::load(&path).unwrap(), QueenConfig::default());
+    }
+
+    fn providers(text: &str) -> ProviderFile {
+        toml::from_str(text).unwrap()
+    }
+
+    fn spec<'a>(config: &'a QueenConfig, name: &str) -> &'a BackendSpec {
+        config.backends.iter().find(|b| b.name() == name).unwrap()
+    }
+
+    #[test]
+    fn provider_settings_win_over_queen_toml_and_defaults() {
+        // queen.toml changes the claude-session args; providers.toml adds to them and
+        // replaces the program; defaults fill in the rest.
+        let mut config: QueenConfig = toml::from_str(
+            r#"
+            [[backend]]
+            kind = "claude"
+            name = "claude-session"
+            command = "claude"
+            args = ["--model", "sonnet"]
+            [[backend]]
+            kind = "acp"
+            name = "grok-acp"
+            command = "grok"
+            args = ["agent", "stdio"]
+            [queen]
+            backends = ["claude-session", "grok-acp"]
+            "#,
+        )
+        .unwrap();
+        let file = providers(
+            r#"
+            [provider.claude]
+            command = "/opt/claude/bin/claude"
+            args = ["--effort", "high"]
+            [provider.claude.env]
+            ANTHROPIC_BASE_URL = "https://llm.example.com"
+            ANTHROPIC_API_KEY = "sk-test"
+            "#,
+        );
+        let facts = config.apply_providers(&file);
+        config.validate().unwrap();
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().all(|f| f.enabled));
+        let BackendSpec::Claude(c) = spec(&config, "claude-session") else {
+            panic!("not claude")
+        };
+        assert_eq!(c.command, "/opt/claude/bin/claude");
+        assert_eq!(c.args, ["--effort", "high", "--model", "sonnet"]);
+        let sandbox = c.effective_sandbox();
+        assert_eq!(sandbox.vars.len(), 2);
+        // The preset (chosen by the file name `claude`) is kept.
+        assert!(sandbox.rw.iter().any(|p| p == ".claude/.credentials.json"));
+        // Other providers are untouched.
+        let BackendSpec::Acp(g) = spec(&config, "grok-acp") else {
+            panic!("not acp")
+        };
+        assert_eq!(g.args, ["agent", "stdio"]);
+        assert!(g.sandbox.is_none());
+    }
+
+    #[test]
+    fn disabled_providers_are_left_out_but_never_all_queen_backends() {
+        let mut config = QueenConfig::default();
+        let facts = config.apply_providers(&providers("[provider.grok]\nenabled = false\n"));
+        config.validate().unwrap();
+        assert!(config.backends.iter().all(|b| b.provider() != "grok"));
+        assert_eq!(config.queen.backends, ["claude-session", "opencode-acp"]);
+        let grok: Vec<_> = facts.iter().filter(|f| f.provider == "grok").collect();
+        assert_eq!(grok.len(), 2);
+        assert!(grok.iter().all(|f| !f.enabled));
+        // Disabling every Queen backend is ignored.
+        let mut config = QueenConfig::default();
+        config.apply_providers(&providers(
+            "[provider.grok]\nenabled = false\n[provider.claude]\nenabled = false\n[provider.opencode]\nenabled = false\n",
+        ));
+        assert_eq!(config.queen.backends.len(), 3);
+        assert_eq!(config.backends.len(), default_backends().len());
+        // A disabled bee default falls back to the Queen's first backend.
+        let mut config: QueenConfig =
+            toml::from_str("[queen]\nbee_backend = \"opencode-acp\"").unwrap();
+        config.apply_providers(&providers("[provider.opencode]\nenabled = false\n"));
+        assert_eq!(config.queen.bee_backend, None);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn overrides_a_backend_refuses_are_dropped() {
+        let mut config = QueenConfig::default();
+        config.apply_providers(&providers("[provider.claude]\nargs = [\"--verbose\"]\n"));
+        config.validate().unwrap();
+        let BackendSpec::Claude(c) = spec(&config, "claude-session") else {
+            panic!("not claude")
+        };
+        assert!(c.args.is_empty());
+        // The one-shot `claude` takes any argument, so it keeps it.
+        let BackendSpec::Cli(c) = spec(&config, "claude") else {
+            panic!("not cli")
+        };
+        assert_eq!(c.args[0], "--verbose");
+    }
+
+    #[test]
+    fn no_provider_settings_change_nothing() {
+        let mut config = QueenConfig::default();
+        let facts = config.apply_providers(&ProviderFile::default());
+        assert_eq!(config, QueenConfig::default());
+        assert_eq!(facts.len(), config.backends.len());
     }
 }

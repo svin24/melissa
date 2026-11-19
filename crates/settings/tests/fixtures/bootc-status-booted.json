@@ -1,0 +1,29 @@
+{
+  "apiVersion": "org.containers.bootc/v1",
+  "kind": "BootcHost",
+  "metadata": { "name": "host" },
+  "spec": {
+    "image": { "image": "localhost/melissa-headless:dev", "transport": "containers-storage" },
+    "bootOrder": "default"
+  },
+  "status": {
+    "staged": null,
+    "booted": {
+      "image": {
+        "image": { "image": "localhost/melissa-headless:dev", "transport": "containers-storage" },
+        "version": "43.20261118.0",
+        "timestamp": "2026-11-18T09:12:00Z",
+        "imageDigest": "sha256:5b0d3c1e9f2a4b6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e",
+        "architecture": "x86_64"
+      },
+      "cachedUpdate": null,
+      "incompatible": false,
+      "pinned": false,
+      "store": "ostreeContainer",
+      "ostree": { "checksum": "0123abcd", "deploySerial": 0, "stateroot": "default" }
+    },
+    "rollback": null,
+    "rollbackQueued": false,
+    "type": "bootcHost"
+  }
+}
