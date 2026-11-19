@@ -860,7 +860,10 @@ pub fn composer(
                     span.visually-hidden { "Send" }
                 }
             }
-            div.composer-status id=(COMPOSER_STATUS_ID) aria-live="polite" { (status) }
+            // The event stream owns the status (busy, Stop, agent): it arrives in order with
+            // the turn's events. The response to a send can land after the turn already ended,
+            // so `hx-preserve` keeps the status on the page instead of this (stale) copy.
+            div.composer-status id=(COMPOSER_STATUS_ID) hx-preserve aria-live="polite" { (status) }
         }
     }
 }
