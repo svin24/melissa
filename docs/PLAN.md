@@ -36,6 +36,12 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
 
 ## 2. Base OS and image pipeline
 
+> **Direction change (2026-11-19, owner):** Melissa first targets running **on an existing Linux host**: a
+> **rootful container** (podman, started by systemd, e.g. a Quadlet unit) and/or a **Nix-packaged service**
+> (flake with systemd units; NixOS module, or system-manager style on other distros). The owner's laptop goes back
+> to stock Fedora Kinoite. Only once that works do we resume a **reference distro** (the bootc images below, then
+> the "reference distro"). The bootc work stays in the repo and is not deleted; it is paused.
+
 - **Two image variants from day one**, built from one `image/Containerfile` (`VARIANT=desktop|headless`) that
   shares a Rust build stage and the Melissa layer (binaries, units, Tailscale, config under `/usr/lib`):
   - **desktop**: `FROM quay.io/fedora-ostree-desktops/kinoite:45` (KDE). For the dev laptop and desktop bees.

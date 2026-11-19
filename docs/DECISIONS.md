@@ -492,3 +492,9 @@ Format: date — decision. Why. Alternatives considered.
   `StandardOutput=` and `OnSuccess=` chains (more units, loses the error text in `last.json`).
 - **2026-11-19 — `/etc/melissa` belongs to the queen's user** (`tmpfiles.d/melissa-config.conf`, `melissa:melissa
   0750`), because Settings writes `providers.toml` there. systemd's `ConfigurationDirectory=` never chowns.
+- **2026-11-19 — Host-first: rootful container and/or Nix service before a reference distro** (owner). The
+  laptop returns to stock Fedora Kinoite (the Melissa desktop image was hard to iterate on: every change is an
+  image build plus a reboot, and the laptop's disk is LUKS-encrypted, so remote reboots stop at the passphrase).
+  Next: make Melissa install and run as a service on an existing Linux host, via a rootful podman container
+  (container mode is already verified rootful) and/or a Nix flake with systemd units. The bootc images (headless,
+  desktop) are kept but paused; a "reference distro" is built only after host-first works.
