@@ -216,6 +216,8 @@ pkgs.testers.runNixOSTest {
         server.wait_for_unit("k3s.service")
         server.wait_until_succeeds("k3s kubectl get node -o jsonpath='{.items[0].status.conditions[?(@.type==\"Ready\")].status}' | grep -qx True", timeout=300)
         server.succeed("k3s kubectl get node --show-labels | grep -q melissa.io/managed=true")
+        # The shared k3s-node-ip pinned the default-route IPv4 (k3s's ExecStartPre).
+        server.succeed("grep -qE '^MELISSA_K3S_ARGS=--node-ip=[0-9.]+$' /run/melissa-k3s/env")
         server.wait_until_succeeds("k3s kubectl -n melissa get serviceaccount melissa-queen melissa-apps", timeout=120)
         server.wait_until_succeeds("test -n \"$(k3s kubectl get validatingadmissionpolicy -o name)\"", timeout=120)
         print(kubectl("get validatingadmissionpolicy,validatingadmissionpolicybinding -o name"))
@@ -271,7 +273,15 @@ pkgs.testers.runNixOSTest {
         print(api("/api/settings/updates/restart", body={"confirm": True}))
         server.wait_until_succeeds(f"test \"$(systemctl show -p InvocationID --value melissa-queen)\" != {before}", timeout=60)
         server.wait_for_open_port(8080, addr="127.0.0.1")
-        print(api("/api/settings/updates"))
+        updates = json.loads(api("/api/settings/updates"))
+        print(updates)
+        # The store's release file (MELISSA_RELEASE_FILE): a Nix install, restart only, Nix commands.
+        assert updates["release"]["runtime"] == "nix", updates["release"]
+        assert updates["host"] == "nix", updates["host"]
+        assert updates["actions"] == ["restart"], updates["actions"]
+        assert any(c["command"] == "sudo nixos-rebuild switch" for c in updates["commands"]), updates["commands"]
+        page = server.succeed("curl -sSf http://127.0.0.1:8080/settings/updates")
+        assert "nix flake update" in page and "podman" not in page and "git pull" not in page
 
     with subtest("melissa-setup on NixOS"):
         print(server.succeed("melissa-setup 2>&1"))

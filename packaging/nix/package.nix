@@ -111,7 +111,8 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out/bin
-    for b in ${bins}/bin/*; do ln -s "$b" $out/bin/; done
+    # Copies, not links: the sandbox bind-mounts melissa-netbridge, and bwrap can't mount on a symlink.
+    install -m0755 -t $out/bin ${bins}/bin/*
     install -Dm0644 -t $out/share/melissa/catalog ${repo + "/manifests"}/*.toml
     install -Dm0644 -t $out/share/melissa/k3s/manifests ${root + "/usr/lib/melissa/k3s/manifests"}/*.yaml
     install -Dm0644 ${root + "/usr/share/polkit-1/rules.d/50-melissa.rules"} \
