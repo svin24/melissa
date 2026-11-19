@@ -130,6 +130,34 @@ nc -z <BIND> <APP_PORT_BASE+n>
 Admission checks as the apps identity: `kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig
 apply -f <privileged deployment>` → denied with the policy message.
 
+## Verified (2026-11-19, rootful test container, APP_PORT_BASE 35000, k3s v1.37)
+- **Upgrade from the catalog:** master (3c9879b) installed Nextcloud with `install_app` (ready, a WebDAV file
+  uploaded). The branch image on the same volume logged "stored specs for apps from the old catalog apps=1";
+  the same pod kept running; `app_status` showed the rebuilt spec (user `admin`), link `127.0.0.1:35000`.
+  `stop_app`/`start_app` passed the new workloads policy on the old Deployment. `update_app` (upload limit 2G)
+  kept `nextcloud-secrets` (`kept`), the volume, the port and the password (`app-credentials` unchanged, file
+  still there) and added `allowPrivilegeEscalation: false`. Keep-data uninstall, then `deploy_app {"app":
+  "nextcloud"}` without a spec brought it back with its data.
+- **Minecraft** (`itzg/minecraft-server`, EULA, 1536Mi, 5Gi volume, game 25565/tcp + query 25565/udp public):
+  NodePorts 30001/30002 (35001/35002 on the host). Java 21 tag crash-looped (Minecraft 26.3 needs Java 25;
+  `app_logs` said so); `update_app` to the java25 tag kept both ports. From the host: `nc -z` open, a status
+  ping answered (26.3, MOTD), a UDP query answered. Web UI: tile `127.0.0.1:35001 (TCP)`, dialog "Game" and
+  "Query" with protocol.
+- **HTTP app:** `traefik/whoami:v1.12.0`, `web: http`: link `http://127.0.0.1:35003` answered.
+- **Chat (OpenCode, free model):** "Set up a Minecraft server" → `cluster_health`, `list_apps`,
+  `create_agent` (Ada), `deploy_app` (4 specs refused by validation first, then a valid one) → confirmation
+  with the summary, approved → deployed. It hit the same Java 25 problem; asked to fix it, the lead agent read
+  `app_logs`, called `update_app` with the java25 image (confirmation named Ada first), reported "Connect at
+  127.0.0.1:35001 (TCP)"; a status ping answered (Paper 26.3).
+- **Negatives:** the tool refused `privileged`, `hostNetwork`, `hostPath`, `nodePort` (unknown fields) and an
+  unpinned image, before any confirmation. As the apps identity (`kubectl --dry-run=server`): privileged,
+  hostPath, hostNetwork, SYS_ADMIN, no limits, hostPort → `melissa-apps-workloads`; NodePort 31000 and SCTP →
+  `melissa-apps-services`; a namespace without `melissa.io/workspace` and a bad `melissa.io/ports` →
+  `melissa-apps-namespaces`; a PVC with `volumeName` → `melissa-apps-volumes`; a Deployment in kube-system →
+  RBAC. A valid Deployment passed. `container-run.sh smoke` passed.
+- **NixOS VM test** (`nix build .#checks.x86_64-linux.melissa-nixos -L`): the test app deployed with
+  `deploy_app` (image pinned by the digest k3s reports), NodePort answered from the client VM, stop/start.
+
 ## Gotchas
 - CEL: Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as `s.namespace`, never
   `__namespace__` (`rbac_manifests.rs` guards it).

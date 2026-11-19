@@ -665,4 +665,7 @@ Roadmap (rough, phases may overlap):
     (scheduler requests only); a per-device budget? (e) Public ports are open to the LAN and tailnet like web
     ports (56); per-port access limits? (f) Image size and disk (36) are not checked before a deploy.
     (g) `update_app` takes the whole spec; a patch form (change one env var) would be easier for agents but
-    harder to show in the confirmation.
+    harder to show in the confirmation. (h) Without a probe, a crash-looping app shows `ready` between crashes
+    (seen live: 4 restarts, phase ready); count recent restarts as `failing`, or require a probe? (i) The lead
+    agent needed 4 tries to get a first spec past validation (OpenCode free model); a short example in the
+    tool description or an `example` tool may help.
