@@ -213,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
         catalog_dir: config.apps.catalog.clone(),
         domain: config.apps.domain.clone(),
         addresses: config.apps.addresses.clone(),
+        port_offset: config.apps.port_offset,
         comb: comb.id.clone(),
         bees: Some(names.clone()),
     };
@@ -715,6 +716,7 @@ mod tests {
             catalog_dir: dir.join("catalog"),
             domain: "example.com".into(),
             addresses: None,
+            port_offset: 0,
             comb: "c-0a1b2c3d".into(),
             bees: None,
         };

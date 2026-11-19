@@ -77,9 +77,11 @@ scripts/container-run.sh purge
   (once; an existing file is left alone): `127.0.0.1` for a loopback `BIND`, `BIND` itself for one address,
   nothing for `0.0.0.0` (then the auto-detected LAN address is right). `APP_ADDRESSES=a,b` overrides. Apps
   installed before the address change keep their old trusted hosts (reinstall or set them by hand).
-- App links name the device port (30000+n, from the namespace annotation; the web UI uses the visitor's Host
-  plus that port). With `APP_PORT_BASE` ≠ 30000 they are off by the difference; `up` warns. No code change
-  for that yet (PLAN question 59).
+- App links name the published port: NodePort (30000+n, from the namespace annotation) plus `[apps]
+  port_offset` (the app tools report it as `port`, the NodePort as `node_port`; the web UI uses the visitor's
+  Host plus `port`). `up` writes `port_offset = APP_PORT_BASE - 30000` with the addresses at the first start; if
+  the config already exists and lacks the matching offset, `up` prints a note instead (unit tests cover the URL
+  building; not yet re-run in a live container).
 - Masked in the layer: NetworkManager(-wait-online), systemd-resolved (+ its sockets) — they hide pasta's DNS
   (169.254.1.1) from nss-resolve, giving "Could not resolve host"; tailscaled, sshd, chronyd, bootloader-update,
   bootc-fetch-apply-updates.timer, melissa-firstboot (needs /dev/tty1); kernel-fs mounts a container can't make.

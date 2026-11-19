@@ -120,7 +120,8 @@ scripts/container-run.sh down        # stop; `purge` deletes the container and i
   sudo systemctl daemon-reload
   ```
 - **App links** say `http://127.0.0.1:30000` (and up): `up` writes that address into the Queen's config. If you
-  move the app ports (`APP_PORT_BASE=31000`), add the difference yourself: the links still name 30000 and up.
+  move the app ports (`APP_PORT_BASE=31000`), the first `up` also writes `[apps] port_offset = 1000`, so the
+  links name 31000 and up.
 - **Security:** the container runs `--privileged` (k3s and the agent sandbox need namespaces, mounts and
   netfilter). Rootless that is limited to your own user; run as root it is root on your machine. The web UI has
   no login and is published on 127.0.0.1 only; app ports default to 127.0.0.1 too (`BIND=0.0.0.0` for the LAN).
