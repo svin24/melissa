@@ -24,4 +24,7 @@ RUN set -eu; \
     # The queen's config (/etc/melissa/queen.toml: [apps] addresses, backends) must survive a
     # recreate too; container-run.sh writes the container's app addresses there.
     rm -rf /etc/melissa; ln -s /var/lib/melissa-container/etc-melissa /etc/melissa; \
+    # Rootful only (bridge network, no pasta): forward the host's UI connections to the loopback-only
+    # queen. Inactive unless container-run.sh wrote /var/lib/melissa-container/ui-forward.
+    systemctl enable melissa-ui-forward.socket; \
     echo 'MELISSA_RUNTIME=container' >> /usr/lib/melissa/release

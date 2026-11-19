@@ -111,7 +111,12 @@ scripts/container-run.sh down        # stop; `purge` deletes the container and i
 
 - **Status:** verified rootless on Fedora 45 (2026-11-19): web UI, agents (sandbox and network allowlist),
   `melissa-setup`, k3s with Traefik, Nextcloud from the catalog at `http://127.0.0.1:30000`, stop/start of apps,
-  and a chat with the Queen. Rootful (`sudo`) is not verified.
+  and a chat with the Queen. Rootful (`sudo`) verified the same day for the web UI, k3s, Nextcloud and
+  stop/start (agents and chat not tried rootful).
+- **Rootful:** run the same commands with `sudo` (root has its own image storage: `podman save` the image and
+  `sudo podman load -i` it, or build as root). It uses podman's bridge network instead of pasta and needs no
+  `cpuset` change; a small filtered forward inside the container passes the host's UI connections to the
+  Queen, and pods can't use it. Root in the container is root on your machine.
 - **Rootless k3s needs one host change** (as root, once): let your user's containers use the `cpuset` cgroup
   controller, which Fedora does not delegate by default. `preflight` checks it and prints the commands:
   ```

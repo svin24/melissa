@@ -519,5 +519,7 @@ Roadmap (rough, phases may overlap):
     drop-in (as `/usr/lib/systemd/system/user@.service.d/`)? Recommended yes: it only lets the user's own
     containers use one more cgroup controller (cpuset), what systemd already does for cpu/io/memory/pids; it is
     not added yet, pending owner review. (b) Is container mode a supported third way to try Melissa (published
-    container image, rootful verified too)? (c) App links when host ports differ from 30000+n
+    container image)? Rootful verified 2026-11-19 (bridge network + filtered UI forward; UI, k3s, policies, pod
+    isolation, Nextcloud, stop/start); agents and chat not tried rootful. Rootful lets the kubelet set host
+    sysctls (overcommit, panic): acceptable for a tester's machine, or document only? (c) App links when host ports differ from 30000+n
     (`APP_PORT_BASE`): add an `[apps]` port offset, or keep 1:1 mapping only?
