@@ -1,0 +1,20 @@
+# Sign one agent CLI in with a device code (Settings → Providers → Sign in). Only Grok has a
+# device-code login that needs no input; the polkit rule lets the queen (user `melissa`) start
+# only the instance `grok`. Output (the vendor's URL and code) goes to
+# /run/melissa-agent-install/<name>-login.log (directory root:melissa 0750), which the page reads.
+# The person opens the URL on their own device; Melissa never sees a password.
+[Unit]
+Description=Melissa: sign the %i agent CLI in (device code)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/melissa-setup login %i --no-restart
+Environment=TERM=dumb
+StandardInput=null
+StandardOutput=truncate:/run/melissa-agent-install/%i-login.log
+StandardError=inherit
+# Device codes expire; don't wait for ever.
+TimeoutStartSec=15min
+PrivateTmp=yes

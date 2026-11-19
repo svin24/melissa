@@ -41,6 +41,7 @@ use axum::{
 };
 use melissa_agent::{AuditLog, AuditRecord};
 use melissa_settings::{
+    install::Installer,
     providers::{BackendFacts, ProviderOverride, ProviderStore},
     updates::{Release, UpdateEnv},
     version::VersionProbe,
@@ -65,6 +66,8 @@ pub struct SettingsParts {
     pub release: Release,
     /// The agents' home (`$HOME` of the queen's user).
     pub home: Option<PathBuf>,
+    /// Installs agent CLIs (Settings → Providers → Install), where the packaging allows it.
+    pub installer: Installer,
 }
 
 /// The Settings context. Cheap to clone.
@@ -90,6 +93,9 @@ impl Settings {
 
     /// No settings file, no backends (routers built without a queen config).
     pub fn detached() -> Self {
+        let release = Release::read(std::path::Path::new(
+            melissa_settings::updates::RELEASE_FILE,
+        ));
         Self::new(SettingsParts {
             store: ProviderStore::in_memory(),
             backends: Vec::new(),
@@ -97,9 +103,8 @@ impl Settings {
             check: None,
             audit: None,
             updates: UpdateEnv::system(),
-            release: Release::read(std::path::Path::new(
-                melissa_settings::updates::RELEASE_FILE,
-            )),
+            installer: Installer::system(release.runtime.as_deref()),
+            release,
             home: std::env::var_os("HOME").map(PathBuf::from),
         })
     }
@@ -134,12 +139,18 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         )
         .route("/settings/providers", get(providers::page))
         .route("/ui/settings/providers/refresh", post(providers::refresh))
+        .route("/ui/settings/providers/poll", get(providers::poll))
         .route("/ui/settings/providers/{id}", post(providers::save))
         .route(
             "/ui/settings/providers/{id}/enabled",
             post(providers::enable),
         )
         .route("/ui/settings/providers/{id}/env", post(providers::set_var))
+        .route(
+            "/ui/settings/providers/{id}/install",
+            post(providers::install),
+        )
+        .route("/ui/settings/providers/{id}/login", post(providers::login))
         .route(
             "/ui/settings/providers/{id}/env/remove",
             post(providers::remove_var),
@@ -158,6 +169,14 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
             post(providers::api_refresh),
         )
         .route("/api/settings/providers/{id}", post(providers::api_change))
+        .route(
+            "/api/settings/providers/{id}/install",
+            get(providers::api_install_status).post(providers::api_install),
+        )
+        .route(
+            "/api/settings/providers/{id}/login",
+            post(providers::api_login),
+        )
         .route("/api/settings/updates", get(updates::api_status))
         .route("/api/settings/updates/{action}", post(updates::api_action))
         .with_state(ui)

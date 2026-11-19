@@ -6,7 +6,8 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 
 ## Where things are (2026-11-19)
 - `crates/settings` (`melissa-settings`, no UI): `providers` (the `providers.toml` model, checks, secret
-  rules, `ProviderStore`, `BackendFacts`), `version` (`--version` probe, cached 10 min, 5 s timeout, clean env),
+  rules, `ProviderStore`, `BackendFacts`), `install` (`Installer`, `InstallWay`, `unit_name`, `parse_show`,
+  `read_log`: Install button through the systemd unit), `version` (`--version` probe, cached 10 min, 5 s timeout, clean env),
   `updates` (`Release`, `HostKind`, host helper `status.json` parser, request files, `UpdateAction`).
 - `crates/queen/src/config.rs`: `QueenConfig::apply_providers` (merge at startup), `check_provider` (a change
   checked against the real backend specs before saving), `BackendSpec::provider()`.
@@ -18,7 +19,10 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   shows only on keyboard focus for no-JS), `detail_head`, `facts` (dl), `group`, `text_field`, `lines_field`,
   `settings_form`, `var_list`/`VarRow` (secret → "set"), `command_block` (copy button via the existing
   `.copy-code` JS), `confirm_card`, `plain_action`, `actions`, `region`. Rail: `Nav::Settings`.
-- Packaging: `packaging/common/usr/share/polkit-1/rules.d/50-melissa.rules` (restart the queen only),
+- Packaging: `packaging/common/usr/share/polkit-1/rules.d/50-melissa.rules` (restart the queen; start
+  `melissa-agent-install@{claude,grok,opencode}.service` and `melissa-agent-login@grok.service`),
+  `melissa-agent-install@.service`, `melissa-agent-login@.service`,
+  `tmpfiles.d/melissa-agent-install.conf` (`/run/melissa-agent-install`, root:melissa 0750),
   `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`); container: the host helper
   `packaging/container/host/melissa-host-update` + `melissa-update.{path,service}`, the Quadlet's two update
   mounts, the queen drop-in `ReadWritePaths=-/run/melissa-update-request` ([container-image.md](container-image.md)).
@@ -30,8 +34,9 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 3. New markup only as a reviewed component. Router tests in `crates/web/src/lib.rs` (`SettingsFixture`).
 
 ## Providers: rules
-- A provider = an agent program by file name (`claude`, `grok`, `opencode`, `echo`, any other `[[backend]]`
-  command's file name). Overrides apply to all its backends.
+- A provider = an agent program by file name (`claude`, `grok`, `opencode`, any other `[[backend]]`
+  command's file name). Overrides apply to all its backends. **Echo is never listed** (UI, API → 404, Agent
+  tasks page): it stays for tests; its backends still count as "another agent" for the disable lock.
 - Precedence: defaults < `queen.toml` < `providers.toml` (`$XDG_CONFIG_HOME/melissa`, `/etc/melissa` on the
   image; 0600). Merged once at startup; saved changes say "after a restart" (`ProviderStore::restart_needed`).
 - Program path must be absolute and keep the provider's file name (it picks the sandbox preset, egress allowlist
@@ -46,8 +51,24 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   audit (audit = "variable X set" + SHA-256). `ProviderOverride`'s `Debug` and parse errors never print values
   (tested). Known gap: bwrap gets them as `--setenv` arguments (see PLAN open questions).
 - Disabling is refused while the Queen runs on it, a helper uses it, or no other Queen agent would be left.
-- "Set up": `sudo melissa-setup agent <id>` (or `login <id>`) shown with a copy button on images; the UI never
-  installs (needs root and runs vendor installers).
+- **Install** (`InstallWay::detect(root, MELISSA_RUNTIME)`): unit + polkit rule present → Install button
+  (`POST /ui|/api/settings/providers/{id}/install`; id must be configured AND in `INSTALLABLE`; refused while
+  running or installed; audited `settings.provider.install`, refusals too). It runs `systemctl start --no-block
+  melissa-agent-install@<id>.service` (a fixed `&'static str`), then the region polls
+  `/ui/settings/providers/poll?p=<open>` every 2 s (`live_region`) and shows the log tail (`log_view`); failure →
+  error + "Try again". Success → "Installed · after a restart" + Restart button (the queen resolves programs at
+  start). `MELISSA_RUNTIME=nix` → only "This requires you add <Provider> via your Nix configuration." (no button,
+  no command, the unit is never called). Neither: container → `sudo podman exec -it melissa melissa-setup agent
+  <id>`; from source → a note.
+- **Sign in** (installed, no secret variable set, not logged in or just installed): Claude → `ANTHROPIC_API_KEY`
+  or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on the owner's computer; Grok → `XAI_API_KEY`; OpenCode
+  → free models, optional provider key. Plus `melissa-setup login <id>` on the host in the container (not when
+  the page can sign in). Melissa never handles passwords.
+- **Grok device sign-in** (`Job::Login`, `POST .../grok/login`): `melissa-agent-login@grok.service` (polkit:
+  that instance only) runs `grok login --device-auth`; `device_prompt` takes the URL (only
+  `https://accounts.x.ai/…`) and the `XXXX-XXXX` code from `/run/melissa-agent-install/grok-login.log`; the
+  region polls while it waits. Login readiness is checked live (credential file), so no restart is needed.
+  A failed/stopped sign-in shows "Try again" without the log (it holds the expired code). Open items: PLAN 62.
 - CLI: `melissa-queen provider [list]|enable|disable <id>|set <id> [--name|--command|--arg|--no-args|--env
   NAME=VALUE|--env NAME (stdin)|--unset NAME]`.
 

@@ -687,8 +687,24 @@ pub async fn providers(client: &Client) -> anyhow::Result<()> {
                 None => println!("    {name} (set, hidden)"),
             }
         }
-        if let Some(setup) = p["setup"].as_str() {
-            println!("    set up: {setup}");
+        let install = &p["install"];
+        match install["way"].as_str() {
+            Some("button") => println!(
+                "    install: {} (Settings → Providers → Install)",
+                install["state"].as_str().unwrap_or("idle")
+            ),
+            Some(_) => {
+                if let Some(text) = install["text"].as_str() {
+                    println!("    install: {text}");
+                }
+                if let Some(cmd) = install["command"].as_str() {
+                    println!("      {cmd}");
+                }
+            }
+            None => {}
+        }
+        if let Some(text) = p["sign_in"]["text"].as_str() {
+            println!("    sign in: {text}");
         }
     }
     println!("(- = disabled)");

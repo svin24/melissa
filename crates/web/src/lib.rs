@@ -25,7 +25,7 @@ use maud::Markup;
 use melissa_agent::{
     mcp::{McpServer, UnknownSession},
     queen::Queen,
-    TaskBoard, TaskId,
+    BackendInfo, TaskBoard, TaskId,
 };
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -135,7 +135,15 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::R
 }
 
 async fn dashboard(State(board): State<TaskBoard>) -> Markup {
-    pages::dashboard(&board.backends(), &board.list())
+    pages::dashboard(&visible_backends(board.backends()), &board.list())
+}
+
+/// The agents people see: without the built-in one-shot `echo` (a test partner). Echo
+/// sessions someone configured in `queen.toml` (other names) stay visible.
+fn visible_backends(all: Vec<BackendInfo>) -> Vec<BackendInfo> {
+    all.into_iter()
+        .filter(|b| !(b.name == "echo" && b.kind == "echo"))
+        .collect()
 }
 
 async fn tasks_fragment(State(board): State<TaskBoard>) -> Markup {
@@ -336,7 +344,8 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("echo"));
+        // The built-in echo is a test partner: not listed for people.
+        assert!(!body.contains("value=\"echo\"") && !body.contains("built-in, no LLM"));
         assert!(body.contains("/assets/htmx.min.js"));
         assert!(headers[header::CONTENT_SECURITY_POLICY]
             .to_str()
@@ -635,6 +644,7 @@ mod tests {
         // --- Settings ------------------------------------------------------------------------
 
         use melissa_settings::{
+            install::{InstallWay, Installer},
             providers::{BackendFacts, ProviderStore},
             updates::{HostKind, Release, UpdateEnv},
         };
@@ -660,6 +670,39 @@ mod tests {
             }
 
             fn settings(&self, kind: HostKind, helper: bool) -> Settings {
+                self.settings_with(kind, helper, InstallWay::Manual)
+            }
+
+            /// A fake `systemctl`: `show` prints `unit-state`; `start` logs the call and marks
+            /// the unit running.
+            fn installer(&self, way: InstallWay) -> Installer {
+                use std::os::unix::fs::PermissionsExt;
+                let ctl = self.dir.join("bin/systemctl");
+                let state = self.dir.join("unit-state");
+                if !state.exists() {
+                    std::fs::write(&state, "LoadState=loaded\nActiveState=inactive\n").unwrap();
+                }
+                std::fs::write(
+                    &ctl,
+                    format!(
+                        "#!/bin/sh\necho \"$@\" >> '{calls}'\n\
+                         if [ \"$1\" = show ]; then cat '{state}'; exit 0; fi\n\
+                         printf 'LoadState=loaded\\nActiveState=activating\\n' > '{state}'\n",
+                        calls = self.dir.join("systemctl-calls").display(),
+                        state = state.display(),
+                    ),
+                )
+                .unwrap();
+                std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+                std::fs::create_dir_all(self.dir.join("install-logs")).unwrap();
+                Installer::new(way, self.dir.join("install-logs"), ctl)
+            }
+
+            fn calls(&self) -> String {
+                std::fs::read_to_string(self.dir.join("systemctl-calls")).unwrap_or_default()
+            }
+
+            fn settings_with(&self, kind: HostKind, helper: bool, way: InstallWay) -> Settings {
                 let fact = |name: &str, provider: &str, session: bool, command: Option<String>| {
                     BackendFacts {
                         name: name.into(),
@@ -717,6 +760,7 @@ mod tests {
                         source: "image",
                     },
                     home: Some("/var/lib/melissa/home".into()),
+                    installer: self.installer(way),
                 })
             }
 
@@ -768,6 +812,212 @@ mod tests {
             assert!(html.contains("0.3.1") && html.contains("From source"));
             assert!(html.contains("git pull"));
             assert!(html.contains("version 0.9.1"));
+        }
+
+        #[tokio::test]
+        async fn echo_is_never_listed() {
+            let fx = SettingsFixture::new("echo-hidden");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            let (_, _, html) = send(&app, get("/settings/providers")).await;
+            assert!(
+                !html.contains("Echo") && !html.contains("?p=echo"),
+                "{html}"
+            );
+            let (_, v) = send_json(&app, get("/api/settings/providers")).await;
+            let ids: Vec<&str> = v["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, ["claude", "grok"]);
+            let (status, _, _) = send(&app, get("/settings/providers?p=echo")).await;
+            assert_eq!(status, StatusCode::OK);
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/providers/echo", r#"{"enabled": false}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn install_button_starts_the_fixed_unit_and_polls() {
+            let fx = SettingsFixture::new("install");
+            let (app, _) = app_with(Some(fx.settings_with(
+                HostKind::Container,
+                true,
+                InstallWay::Button,
+            )));
+            let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
+            assert!(html.contains("Install Claude Code"), "{html}");
+            assert!(html.contains("/ui/settings/providers/claude/install"));
+            assert!(html.contains("Anthropic's official installer"));
+            // No copy-command when the button works, and nothing polls yet.
+            assert!(!html.contains("melissa-setup agent") && !html.contains("hx-trigger=\"every"));
+            // Installed providers have no Install section.
+            let (_, _, html) = send(&app, get("/settings/providers?p=grok")).await;
+            assert!(!html.contains("Install Grok"));
+
+            let (status, _, html) = send(
+                &app,
+                form("/ui/settings/providers/claude/install", "", true),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Installing Claude Code"), "{html}");
+            assert!(html.contains("hx-get=\"/ui/settings/providers/poll?p=claude\""));
+            assert!(html.contains("every 2s"));
+            assert_eq!(
+                fx.calls()
+                    .lines()
+                    .filter(|l| l.starts_with("start"))
+                    .collect::<Vec<_>>(),
+                ["start --no-block melissa-agent-install@claude.service"]
+            );
+            assert!(fx.audit().contains("claude: install requested"));
+            // A second request while it runs is refused, not started again.
+            let (status, v) = send_json(
+                &app,
+                json_post("/api/settings/providers/claude/install", ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{v}");
+            assert_eq!(fx.calls().matches("start --no-block").count(), 1);
+
+            // It fails: the error, the log and a retry.
+            std::fs::write(
+                fx.dir.join("unit-state"),
+                "LoadState=loaded\nActiveState=failed\nResult=exit-code\nExecMainStatus=1\n\
+                 ExecMainExitTimestampMonotonic=9\n",
+            )
+            .unwrap();
+            std::fs::write(
+                fx.dir.join("install-logs/claude.log"),
+                "melissa-setup: download failed: <https://claude.ai/install.sh>\n",
+            )
+            .unwrap();
+            let (status, _, html) = send(&app, get("/ui/settings/providers/poll?p=claude")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Install failed") && html.contains("exit status 1"));
+            assert!(html.contains("Try again") && !html.contains("every 2s"));
+            assert!(html.contains("&lt;https://claude.ai/install.sh&gt;"));
+            let (_, v) = send_json(&app, get("/api/settings/providers/claude/install")).await;
+            assert_eq!(v["install"]["state"], "failed");
+            assert_eq!(v["install"]["way"], "button");
+
+            // Only configured providers from the fixed list; nothing else reaches systemd.
+            for bad in [
+                "opencode",
+                "echo",
+                "foo",
+                "..",
+                "claude.service",
+                "grok%2F..%2Fx",
+            ] {
+                let (status, _) = send_json(
+                    &app,
+                    json_post(&format!("/api/settings/providers/{bad}/install"), ""),
+                )
+                .await;
+                assert!(status.is_client_error(), "{bad}: {status}");
+            }
+            // Installed already.
+            let (status, _) =
+                send_json(&app, json_post("/api/settings/providers/grok/install", "")).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(fx.calls().matches("start --no-block").count(), 1);
+            assert!(fx.audit().contains("foo: install refused"));
+            // Cross-origin posts never get there.
+            let (status, _, _) = send(
+                &app,
+                axum::http::Request::post("/ui/settings/providers/claude/install")
+                    .header(header::HOST, "127.0.0.1:8080")
+                    .header(header::ORIGIN, "http://evil.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+
+        #[tokio::test]
+        async fn device_sign_in_is_grok_only_through_its_fixed_unit() {
+            let fx = SettingsFixture::new("login");
+            let (app, _) = app_with(Some(fx.settings_with(
+                HostKind::Container,
+                true,
+                InstallWay::Button,
+            )));
+            // Claude has no unattended device flow; claude isn't installed either.
+            let (status, _) =
+                send_json(&app, json_post("/api/settings/providers/claude/login", "")).await;
+            assert!(status.is_client_error());
+            for bad in ["opencode", "echo", "foo"] {
+                let (status, _) = send_json(
+                    &app,
+                    json_post(&format!("/api/settings/providers/{bad}/login"), ""),
+                )
+                .await;
+                assert!(status.is_client_error(), "{bad}");
+            }
+            assert!(fx.calls().lines().all(|l| !l.starts_with("start")));
+            std::fs::write(
+                fx.dir.join("install-logs/grok-login.log"),
+                "To sign in, open this URL in your browser:\n\
+                 https://accounts.x.ai/oauth2/device?user_code=ABCD-1234\nABCD-1234\n",
+            )
+            .unwrap();
+            let (status, v) =
+                send_json(&app, json_post("/api/settings/providers/grok/login", "")).await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{v}");
+            assert_eq!(
+                fx.calls()
+                    .lines()
+                    .filter(|l| l.starts_with("start"))
+                    .collect::<Vec<_>>(),
+                ["start --no-block melissa-agent-login@grok.service"]
+            );
+            assert!(fx.audit().contains("grok: device sign-in requested"));
+            assert!(fx.audit().contains("claude: device sign-in refused"));
+        }
+
+        #[tokio::test]
+        async fn nix_installs_point_at_the_nix_configuration() {
+            let fx = SettingsFixture::new("nix");
+            let (app, _) = app_with(Some(fx.settings_with(
+                HostKind::Other,
+                true,
+                InstallWay::Nix,
+            )));
+            let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
+            assert!(html.contains("This requires you add Claude Code via your Nix configuration."));
+            assert!(!html.contains("Install Claude Code") && !html.contains("melissa-setup"));
+            let (status, v) = send_json(
+                &app,
+                json_post("/api/settings/providers/claude/install", ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(v["error"].as_str().unwrap().contains("Nix configuration"));
+            assert!(fx.calls().is_empty(), "the unit is never used on Nix");
+        }
+
+        #[tokio::test]
+        async fn without_the_unit_a_host_command_is_the_fallback() {
+            let fx = SettingsFixture::new("manual");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
+            assert!(html.contains("sudo podman exec -it melissa melissa-setup agent claude"));
+            assert!(!html.contains("Install Claude Code"));
+            let (_, v) = send_json(&app, get("/api/settings/providers")).await;
+            assert_eq!(v["providers"][0]["install"]["way"], "manual");
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/providers/claude/install", ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
         }
 
         #[tokio::test]
@@ -906,7 +1156,8 @@ mod tests {
                 json_post("/api/settings/providers/echo", r#"{"command": "/x/echo"}"#),
             )
             .await;
-            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            // Echo is never a provider people see or change.
+            assert_eq!(status, StatusCode::NOT_FOUND);
             // Saved settings and what is escaped.
             let (status, _, _) = send(
                 &app,

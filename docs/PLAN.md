@@ -588,3 +588,20 @@ Roadmap (rough, phases may overlap):
     (d) `--privileged` lets root inside mknod and open any host device even with `/dev/input` hidden; the
     logind/sleep masking is the real protection against power handling. Narrower than `--privileged`
     (explicit caps + device list) is worth a spike.
+62. Providers: install and sign in from the page (2026-11-19; DECISIONS). Done: Install button through
+    `melissa-agent-install@{claude,grok,opencode}` (polkit start-only), progress + log tail, retry, audit; Grok's
+    device-code sign-in through `melissa-agent-login@grok`; Claude/OpenCode keys as write-only variables; Echo
+    hidden; Nix note. Verified in a rootful test container 2026-11-19 (OpenCode install → chat turn; Claude and
+    Grok installed, guidance shown, Grok URL + code shown; polkit negatives). Open: (a) **Nix module** must write
+    `MELISSA_RUNTIME=nix` into its release file (`/usr/lib/melissa/release` or wherever the package's
+    `RELEASE_FILE` points; today the queen reads only `/usr/lib/melissa/release`, so the Nix package needs that path or
+    a `MELISSA_RELEASE_FILE`-style override) and must not install the two units or extend the polkit rule.
+    (b) Claude's `claude auth login` prints a URL but wants the code pasted back on stdin: a page flow would need
+    the code passed into the unit (a credential or socket, never an argument); for now `claude setup-token` on
+    the owner's computer → `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`. (c) OpenCode's `auth login` is
+    interactive; provider keys work as variables. (d) After an install Melissa needs a restart (backends resolve
+    programs at start); live re-detection would avoid it (60b). (e) No update/reinstall/uninstall button for an
+    installed CLI yet (re-running the unit reinstalls; the vendor CLIs self-update). (f) The audit records the
+    request, not the outcome (the unit's result is in its log and `systemctl show`). (g) The device code is
+    shown to anyone who reaches the UI (same trust as the UI itself, 28). (h) `melissa-queen provider install`
+    CLI verb not added (the API exists: `POST /api/settings/providers/<id>/install|login`).

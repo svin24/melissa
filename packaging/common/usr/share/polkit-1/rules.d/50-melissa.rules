@@ -1,11 +1,25 @@
 // Melissa: the queen runs as the unprivileged user `melissa`. It may restart itself (to use
-// saved settings) and nothing else: no other units, verbs or arguments.
+// saved settings), start the installer unit for the three known agent CLIs (Settings →
+// Providers → Install) and Grok's device-code sign-in (Settings → Providers → Sign in).
+// Nothing else: no other units, verbs, instances or arguments.
 // See docs/DECISIONS.md (2026-11-19).
+var MELISSA_AGENT_UNITS = [
+    "melissa-agent-install@claude.service",
+    "melissa-agent-install@grok.service",
+    "melissa-agent-install@opencode.service",
+    "melissa-agent-login@grok.service",
+];
+
 polkit.addRule(function (action, subject) {
     if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "melissa") {
         return polkit.Result.NOT_HANDLED;
     }
-    if (action.lookup("verb") === "restart" && action.lookup("unit") === "melissa-queen.service") {
+    var verb = action.lookup("verb");
+    var unit = action.lookup("unit");
+    if (verb === "restart" && unit === "melissa-queen.service") {
+        return polkit.Result.YES;
+    }
+    if (verb === "start" && MELISSA_AGENT_UNITS.indexOf(unit) >= 0) {
         return polkit.Result.YES;
     }
     return polkit.Result.NOT_HANDLED;

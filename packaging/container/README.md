@@ -33,7 +33,8 @@ Settings (environment of install.sh): `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `
 `AUTO_UPDATE` (`registry` | `local` | `off`), `SET_SYSCTLS` (yes). `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
 
-Then set up an agent and chat:
+Then set up an agent in the web UI: Settings → Providers → Install (OpenCode works with free models
+and no account; Claude and Grok then need an API key or token, added on the same page). Or from the host:
 ```
 sudo podman exec -it melissa melissa-setup agent opencode     # free models, no account
 sudo podman exec -it melissa melissa-setup agent claude       # Claude subscription (logs in)

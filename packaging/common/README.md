@@ -18,8 +18,11 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 | `usr/lib/systemd/system/melissa-kubeconfig.service` | Writes the queen's two read-only/app-install kubeconfigs after k3s |
 | `usr/lib/sysusers.d/melissa.conf` | User `melissa` (home `/var/lib/melissa/home`), group `melissa-kube` |
 | `usr/lib/tmpfiles.d/melissa-{config,home,kube}.conf` | `/etc/melissa`, `/var/lib/melissa{,/home}`, `/run/melissa-kube` |
-| `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-queen.service` (Settings → Restart), nothing else |
-| `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the queen's user |
+| `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-queen.service` (Settings → Restart) and start `melissa-agent-install@{claude,grok,opencode}.service` (Settings → Providers → Install) and `melissa-agent-login@grok.service` (Sign in), nothing else |
+| `usr/lib/systemd/system/melissa-agent-install@.service` | Oneshot: `melissa-setup agent %i --yes --no-login --no-restart`, output to `/run/melissa-agent-install/%i.log`. Not for Nix installs (their agents come from the Nix configuration) |
+| `usr/lib/systemd/system/melissa-agent-login@.service` | Oneshot: `melissa-setup login %i --no-restart` (Grok's device code), output to `/run/melissa-agent-install/%i-login.log`; polkit allows only `@grok`. Not for Nix installs |
+| `usr/lib/tmpfiles.d/melissa-agent-install.conf` | `/run/melissa-agent-install` (root:melissa 0750) |
+| `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the queen's user (`--yes`, `--no-login`, `--no-restart`) |
 | `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP |
 | `usr/libexec/melissa/melissa-kubeconfig` | ServiceAccount tokens → `/run/melissa-kube/{queen,apps}.kubeconfig` |
 | `usr/lib/melissa/k3s.lock` | Pinned k3s version and sha256 sums (binary, airgap images, LICENSE; k3s-selinux for SELinux hosts) |
@@ -35,3 +38,7 @@ Packages the host or image needs at runtime: systemd, bubblewrap (agent sandbox)
 iproute (k3s, egress), polkit (Settings → Restart), ca-certificates, curl (agent installers).
 
 Checks: `crates/hive/tests/rbac_manifests.rs` parses the manifests here.
+
+**Release marker.** Each packaging writes `MELISSA_RUNTIME` in its release file (`/usr/lib/melissa/release`):
+`container` for the image, `nix` for the Nix package. With `nix` the Providers page never offers the Install
+button (it says to add the agent via the Nix configuration), even if the unit above is present.

@@ -13,6 +13,8 @@ use std::{
 
 /// How long a version answer is kept.
 pub const CACHE_FOR: Duration = Duration::from_secs(600);
+/// How long "no version" is kept.
+pub const RETRY_AFTER: Duration = Duration::from_secs(15);
 /// How long `--version` may take.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -70,7 +72,13 @@ impl VersionProbe {
     /// The program's version (None: it gave none in time).
     pub async fn version(&self, program: &Path) -> Option<String> {
         if let Some(e) = lock(&self.cache).get(program) {
-            if e.at.elapsed() < CACHE_FOR {
+            // A missing answer is asked again soon (e.g. a program that was just installed).
+            let keep = if e.version.is_some() {
+                CACHE_FOR
+            } else {
+                RETRY_AFTER
+            };
+            if e.at.elapsed() < keep {
                 return e.version.clone();
             }
         }

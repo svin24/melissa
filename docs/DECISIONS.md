@@ -546,3 +546,28 @@ Format: date — decision. Why. Alternatives considered.
   container's bridge address otherwise).
 - **2026-11-19 — The container image ships `iptables-nft`.** k3s's bundled iptables picked the legacy backend in a
   fresh fedora container and needs the `ip_tables` module, which modern hosts don't load: kube-proxy exited.
+- **2026-11-19 — Settings → Providers installs agent CLIs through a polkit-limited systemd template unit.**
+  `melissa-agent-install@.service` (packaging/common) runs `melissa-setup agent %i --yes --no-login --no-restart`
+  as root; its output goes to `/run/melissa-agent-install/<id>.log` (root:melissa 0750 directory). The polkit rule
+  `50-melissa.rules` lets user `melissa` **start** only `melissa-agent-install@{claude,grok,opencode}.service`
+  (exact names; besides restarting the queen). The queen checks the id against the fixed list and the configured
+  providers before calling `systemctl start --no-block <fixed unit name>`; nothing from the web becomes an
+  argument, and `melissa-setup` checks the name a third time. Progress: `systemctl show` (read-only) and the log
+  tail, polled by the Providers region (`live_region`, every 2 s) while an install runs. Every request is audited
+  (`settings.provider.install`, also refusals). No login and no queen restart in the unit: the page then shows
+  "Installed · after a restart" with the Restart button, and sign-in guidance (API key / token as write-only
+  variables; Melissa never handles passwords). Grok's device-code login (`grok login --device-auth`: prints a URL
+  and a code, needs no input) runs the same way: `melissa-agent-login@.service` (`melissa-setup login %i
+  --no-restart`), polkit allows only `melissa-agent-login@grok.service`; the page shows the URL (only on
+  `https://accounts.x.ai/`) and the code from its log. Claude's login wants a code pasted back, so Claude gets
+  `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token` on the owner's computer). The way to install depends on the packaging: the unit and rule
+  present → Install button; `MELISSA_RUNTIME=nix` in the release file → only the note "This requires you add
+  <Provider> via your Nix configuration." (Nix never uses the unit; agent CLIs come from
+  `services.melissa.agents.packages`); otherwise a host command (older image) or a note (from source).
+  Alternatives: the queen as root (no), a root daemon with an API (more code), a request-file path unit like the
+  updates (works, but systemd + polkit already give a fixed, auditable verb), keeping the copy-command only
+  (owner asked for a button).
+- **2026-11-19 — Echo is not a provider people see.** The built-in echo stays in code (tests, VM/dev checks) but is
+  never listed in Settings → Providers or its API (`/api/settings/providers/echo` → 404) and not on the Agent
+  tasks page. Echo session backends someone configures in `queen.toml` (other names) still show in the chat's
+  agent menu.

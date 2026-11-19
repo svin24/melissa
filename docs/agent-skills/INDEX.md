@@ -30,7 +30,7 @@ Read this at the start of every session. One file per skill; update the skill wh
   (refused vs confirmation naming the bee), reassign path (Queen + user's yes, or the user's CLI),
   migration of old owner labels, admission rules, declaring a tool's target.
 - [settings-ui.md](settings-ui.md) — Settings pages: Providers (`providers.toml` over `queen.toml`, secrets
-  write-only, versions, disable rules) and Updates (container image status, host update helper via request files,
+  write-only, versions, disable rules, Install button via the polkit-limited `melissa-agent-install@` unit, Nix note, sign-in guidance; echo hidden) and Updates (container image status, host update helper via request files,
   restart via polkit, confirmation cards); `/api/settings/...`, `melissa-queen provider|update`; adding a section.
 - [e2e-queen-app-install.md](e2e-queen-app-install.md) — the owner installs/checks/uninstalls Nextcloud by
   chatting with the Queen: laptop Queen + VM k3s setup, verified run with timings, taint and confirmation gotchas.

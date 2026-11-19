@@ -1,0 +1,20 @@
+# Install one agent CLI for the queen's user (Settings → Providers → Install).
+# The queen (user `melissa`) may start only the instances claude, grok and opencode of this
+# template (polkit rule 50-melissa.rules); melissa-setup checks the name again. Output goes to
+# /run/melissa-agent-install/<name>.log (root:melissa 0640), which the Providers page tails.
+# Not used on Nix installs: there the agent CLIs come from the Nix configuration.
+[Unit]
+Description=Melissa: install the %i agent CLI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# No login (it needs a person) and no queen restart (the page offers one).
+ExecStart=/usr/bin/melissa-setup agent %i --yes --no-login --no-restart
+Environment=TERM=dumb
+StandardInput=null
+StandardOutput=truncate:/run/melissa-agent-install/%i.log
+StandardError=inherit
+TimeoutStartSec=15min
+PrivateTmp=yes
