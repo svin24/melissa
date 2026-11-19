@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::{ConfigField, EnvSource, FieldType, Manifest, ManifestError, SCHEMA_VERSION};
+use crate::{
+    ConfigField, EnvSource, FieldType, Manifest, ManifestError, FILES_VOLUME, MAX_FILES,
+    MAX_FILE_BYTES, SCHEMA_VERSION,
+};
 
 /// A parsed `registry/repository[:tag]@sha256:<digest>` reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +226,12 @@ impl Manifest {
         for (i, v) in self.volumes.iter().enumerate() {
             let path = format!("volumes[{i}]");
             dns_label(&v.name, 40).map_err(|m| err(format!("{path}.name"), m))?;
+            if v.name == FILES_VOLUME {
+                return Err(err(
+                    format!("{path}.name"),
+                    format!("`{FILES_VOLUME}` is reserved"),
+                ));
+            }
             if !volumes.insert(v.name.as_str()) {
                 return Err(err(
                     format!("{path}.name"),
@@ -316,6 +325,46 @@ impl Manifest {
                     || !mount_paths.insert(m.path.as_str())
                 {
                     return Err(err(&mpath, "path must be a unique absolute path"));
+                }
+            }
+            if c.files.len() > MAX_FILES {
+                return Err(err(
+                    format!("{path}.files"),
+                    format!("at most {MAX_FILES} files"),
+                ));
+            }
+            for (fi, f) in c.files.iter().enumerate() {
+                let fpath = format!("{path}.files[{fi}]");
+                let inside_mount = c.mounts.iter().any(|m| {
+                    f.path == m.path
+                        || f.path
+                            .starts_with(&format!("{}/", m.path.trim_end_matches('/')))
+                });
+                if !f.path.starts_with('/')
+                    || f.path.ends_with('/')
+                    || f.path.contains("..")
+                    || f.path.chars().any(char::is_control)
+                    || !mount_paths.insert(f.path.as_str())
+                {
+                    return Err(err(
+                        format!("{fpath}.path"),
+                        "must be a unique absolute file path",
+                    ));
+                }
+                if inside_mount {
+                    return Err(err(
+                        format!("{fpath}.path"),
+                        "must not be inside a volume mount (the file would land in the app's data)",
+                    ));
+                }
+                if f.content.is_empty()
+                    || f.content.len() > MAX_FILE_BYTES
+                    || f.content.contains('\0')
+                {
+                    return Err(err(
+                        format!("{fpath}.content"),
+                        format!("must be 1-{MAX_FILE_BYTES} bytes of text"),
+                    ));
                 }
             }
             check_resources(&c.resources).map_err(|m| err(format!("{path}.resources"), m))?;

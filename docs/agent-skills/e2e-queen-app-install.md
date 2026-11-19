@@ -9,6 +9,11 @@ gives it the job (`create_bee`, `give_bee_job`, `bee_status`) instead of `start_
 and `install_app` from the Queen names the bee that looks after the new cell
 ([cells-and-ownership.md](cells-and-ownership.md)). Not re-run against the VM yet.
 
+Note (2026-11-19): apps now have `stop_app`/`start_app` ("turn off" must never become an uninstall) and
+links `http://<device>:<port>` instead of `<app>.<domain>` (see app-catalog.md, "Links and ports").
+In the VM, add `hostfwd_add tcp:127.0.0.1:13000-:30000` on `vm/headless/monitor.sock` and curl with
+`Host: 10.0.2.15:30000`.
+
 ## Setup (laptop Queen, VM cluster)
 The headless test VM has k3s and the app RBAC but no agent CLI logins; the dev laptop has them. So
 the Queen daemon runs on the laptop (temp XDG dirs, egress proxy, default sandbox) and its cluster

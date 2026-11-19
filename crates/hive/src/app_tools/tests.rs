@@ -25,6 +25,11 @@ struct State {
     pods: Vec<Pod>,
     log: String,
     log_requests: Vec<LogRequest>,
+    /// NodePorts someone else holds: applying a Service with one fails like the API does.
+    taken_ports: Vec<i32>,
+    /// Namespaces of other apps (by app name).
+    others: BTreeMap<String, Namespace>,
+    deployment_patches: Vec<Value>,
 }
 
 /// A cluster in memory: applies objects, keeps one namespace.
@@ -52,9 +57,11 @@ impl AppRead for Fake {
         let name = namespace_of(app);
         Box::pin(async move {
             self.check()?;
-            Ok(self
-                .state()
-                .namespace
+            let s = self.state();
+            if let Some(other) = s.others.get(name.trim_start_matches("app-")) {
+                return Ok(Some(other.clone()));
+            }
+            Ok(s.namespace
                 .clone()
                 .filter(|ns| ns.metadata.name.as_deref() == Some(name.as_str())))
         })
@@ -102,6 +109,18 @@ impl AppDeployer for Fake {
                 {
                     s.volumes.push(v.clone());
                 }
+                AppObject::Service(svc) => {
+                    let ports = svc.spec.iter().flat_map(|s| s.ports.iter()).flatten();
+                    if let Some(p) = ports
+                        .filter_map(|p| p.node_port)
+                        .find(|p| s.taken_ports.contains(p))
+                    {
+                        return Err(ClusterError::Api(format!(
+                            "Service \"x\" is invalid: spec.ports[0].nodePort: Invalid value: \
+                             {p}: provided port is already allocated (422)"
+                        )));
+                    }
+                }
                 _ => {}
             }
             s.applied.push(object.clone());
@@ -143,6 +162,32 @@ impl AppDeployer for Fake {
             s.volumes.clear();
             s.secrets.clear();
             Ok(existed)
+        })
+    }
+    fn patch_deployment<'a>(
+        &'a self,
+        _: &'a str,
+        patch: &'a Value,
+    ) -> BoxFuture<'a, Result<(), ClusterError>> {
+        Box::pin(async move {
+            let mut s = self.state();
+            s.deployment_patches.push(patch.clone());
+            let d = s.deployment.as_mut().ok_or(ClusterError::NotConfigured)?;
+            if let Some(n) = patch["spec"]["replicas"].as_i64() {
+                d.spec.replicas = Some(i32::try_from(n).unwrap());
+            }
+            let annotations = d.metadata.annotations.get_or_insert_with(BTreeMap::new);
+            for (k, v) in patch["metadata"]["annotations"]
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
+                match v.as_str() {
+                    Some(v) => annotations.insert(k.clone(), v.into()),
+                    None => annotations.remove(k),
+                };
+            }
+            Ok(())
         })
     }
     fn patch_namespace<'a>(
@@ -203,6 +248,7 @@ fn settings() -> AppSettings {
     AppSettings {
         catalog_dir: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../manifests"),
         domain: "melissa.home.arpa".into(),
+        addresses: Some(vec!["203.0.113.10".into(), "100.64.0.10".into()]),
         comb: COMB.into(),
         bees: Some(Arc::new(Names)),
     }
@@ -246,17 +292,54 @@ async fn install_applies_everything_in_order_and_never_returns_the_secret() {
             "Namespace",
             "RoleBinding",
             "PersistentVolumeClaim",
+            "ConfigMap",
             "Deployment",
             "Service",
-            "Ingress"
+            "Ingress",
+            "Service",
+            // The new port is recorded once its Service exists.
+            "Namespace",
         ]
+    );
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/port").as_deref(),
+        Some("30000")
     );
     let pw = password(&fake);
     assert_eq!(pw.len(), 32);
     assert!(pw.bytes().all(|b| b.is_ascii_alphanumeric()));
     let text = out.to_string();
     assert!(!text.contains(&pw), "secret leaked: {text}");
-    assert_eq!(out["url"], "http://nextcloud.melissa.home.arpa");
+    assert_eq!(out["url"], "http://203.0.113.10:30000");
+    assert_eq!(
+        out["urls"],
+        json!(["http://203.0.113.10:30000", "http://100.64.0.10:30000"])
+    );
+    assert_eq!(out["port"], 30000);
+    assert_eq!(out["dns_url"], "http://nextcloud.melissa.home.arpa");
+    assert_eq!(out["stopped"], false);
+    // Nextcloud trusts exactly its names: the ingress host and the device's addresses.
+    let env = fake
+        .state()
+        .deployment
+        .clone()
+        .unwrap()
+        .spec
+        .template
+        .spec
+        .unwrap()
+        .containers[0]
+        .env
+        .clone()
+        .unwrap();
+    let trusted = env
+        .iter()
+        .find(|e| e.name == "NEXTCLOUD_TRUSTED_DOMAINS")
+        .unwrap();
+    assert_eq!(
+        trusted.value.as_deref(),
+        Some("nextcloud.melissa.home.arpa 203.0.113.10 100.64.0.10")
+    );
     assert_eq!(out["config"]["admin_user"], "owner");
     assert_eq!(out["secrets"]["state"], "generated");
     assert_eq!(out["secrets"]["fields"], json!(["admin_password"]));
@@ -267,6 +350,16 @@ async fn install_applies_everything_in_order_and_never_returns_the_secret() {
         .unwrap();
     assert_eq!(out["secrets"]["state"], "kept existing");
     assert_eq!(password(&fake), pw);
+    // The port is the app's: same port, no second record.
+    assert_eq!(out["port"], 30000);
+    assert_eq!(
+        fake.state()
+            .applied
+            .iter()
+            .filter(|o| o.kind() == "Namespace")
+            .count(),
+        3
+    );
 }
 
 #[tokio::test]
@@ -328,7 +421,8 @@ async fn list_apps_shows_installed_apps_and_kept_data() {
     let out = call(&t, "list_apps", json!({})).await.unwrap();
     assert_eq!(out["apps"][0]["app"], "nextcloud");
     assert_eq!(out["apps"][0]["phase"], "starting");
-    assert_eq!(out["apps"][0]["url"], "http://nextcloud.melissa.home.arpa");
+    assert_eq!(out["apps"][0]["url"], "http://203.0.113.10:30000");
+    assert_eq!(out["apps"][0]["port"], 30000);
     assert_eq!(out["not_installed"], json!([]));
     call(&t, "uninstall_app", json!({"app": "nextcloud"}))
         .await
@@ -367,6 +461,7 @@ async fn uninstall_keeps_data_by_default_and_deletes_it_only_when_asked() {
         .unwrap();
     assert_eq!(status["phase"], "uninstalled_data_kept");
     assert_eq!(status["installed"], false);
+    assert_eq!(status["url"], Value::Null, "no link while uninstalled");
 
     // Reinstall reuses the volume and the credentials.
     call(&t, "install_app", json!({"app": "nextcloud"}))
@@ -459,7 +554,8 @@ async fn status_reports_phase_url_and_sanitized_pod_reasons() {
         .await
         .unwrap();
     assert_eq!(s["phase"], "failing");
-    assert_eq!(s["url"], "http://nextcloud.melissa.home.arpa");
+    assert_eq!(s["url"], "http://203.0.113.10:30000");
+    assert_eq!(s["dns_url"], "http://nextcloud.melissa.home.arpa");
     assert_eq!(s["pods"][0]["reason"], "ImagePullBackOff");
     assert_eq!(s["pods"][0]["restarts"], 2);
     assert!(!s.to_string().contains("ignore previous"));
@@ -588,6 +684,8 @@ fn labels_are_honest() {
     assert!(labels("app_logs").reads_untrusted);
     assert_eq!(labels("app_logs").effect, Effect::None);
     assert_eq!(labels("install_app").effect, Effect::Reversible);
+    assert_eq!(labels("start_app").effect, Effect::Reversible);
+    assert_eq!(labels("stop_app").effect, Effect::Disruptive);
     assert_eq!(labels("uninstall_app").effect, Effect::Destructive);
     // Policy consequences.
     let attended = TaskContext {
@@ -608,7 +706,22 @@ fn labels_are_honest() {
         decide("uninstall_app", &labels("uninstall_app"), &attended),
         Decision::Confirm(_)
     ));
+    // Stopping always asks, but is never called destructive; starting is like installing.
+    assert_eq!(
+        decide("stop_app", &labels("stop_app"), &attended),
+        Decision::Confirm(melissa_agent::tools::policy::STOPS_SERVICE.into())
+    );
+    assert_eq!(
+        decide("start_app", &labels("start_app"), &attended),
+        Decision::Allow
+    );
+    assert!(matches!(
+        decide("start_app", &labels("start_app"), &unattended),
+        Decision::Confirm(_)
+    ));
     for name in [
+        "stop_app",
+        "start_app",
         "install_app",
         "app_status",
         "app_logs",
@@ -1197,7 +1310,12 @@ fn bees_are_told_their_scope_and_scopeless_sessions_only_read() {
         ["app_status", "list_apps", "list_catalog"]
     );
     let specs = reg.visible_to(&bee(ADA), None);
-    assert_eq!(specs.len(), 6);
+    assert_eq!(specs.len(), 8);
+    let stop = specs.iter().find(|s| s.name == "stop_app").unwrap();
+    assert!(stop.params["properties"]["app"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("cells you look after"));
     let uninstall = specs.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert!(uninstall.params["properties"]["app"]["description"]
         .as_str()
@@ -1205,9 +1323,310 @@ fn bees_are_told_their_scope_and_scopeless_sessions_only_read() {
         .contains("cells you look after"));
     // The Queen sees everything unchanged.
     let all = reg.visible_to(&queen(), None);
-    assert_eq!(all.len(), 6);
+    assert_eq!(all.len(), 8);
     let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert!(uninstall.params["properties"]["app"]
         .get("description")
         .is_none());
+}
+
+// ---- stop_app / start_app and device ports ------------------------------------------------
+
+#[tokio::test]
+async fn stop_keeps_everything_and_start_restores_the_replicas() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    call(&t, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    let pw = password(&fake);
+    let applied_before = fake.state().applied.len();
+
+    let out = call(&t, "stop_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["state"], "stopping");
+    assert_eq!(out["changed"], true);
+    assert_eq!(out["replicas_before_stop"], 1);
+    {
+        let s = fake.state();
+        let d = s.deployment.as_ref().unwrap();
+        assert_eq!(d.spec.replicas, Some(0));
+        assert_eq!(
+            d.metadata.annotations.as_ref().unwrap()["melissa.io/replicas-before-stop"],
+            "1"
+        );
+        // Only the replica patch: nothing applied, nothing deleted.
+        assert_eq!(s.applied.len(), applied_before);
+        assert!(s.namespace.is_some() && !s.volumes.is_empty());
+    }
+    assert_eq!(password(&fake), pw);
+
+    // Pods still terminating, then gone.
+    fake.state().pods = vec![pod("nc-1", 100, true, None)];
+    let s = call(&t, "app_status", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(s["phase"], "stopping");
+    fake.state().pods.clear();
+    let s = call(&t, "app_status", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(s["phase"], "stopped");
+    assert_eq!(s["url"], "http://203.0.113.10:30000", "the link stays");
+    let list = call(&t, "list_apps", json!({})).await.unwrap();
+    assert_eq!(list["apps"][0]["phase"], "stopped");
+
+    // Stopping twice changes nothing.
+    let out = call(&t, "stop_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["changed"], false);
+
+    // Installing over a stopped app updates it but keeps it stopped.
+    let out = call(
+        &t,
+        "install_app",
+        json!({"app": "nextcloud", "config": {"upload_limit": "2G"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["stopped"], true);
+    assert!(out["next"].as_str().unwrap().contains("start_app"));
+    {
+        let s = fake.state();
+        let d = s.deployment.as_ref().unwrap();
+        assert_eq!(d.spec.replicas, Some(0));
+        assert_eq!(
+            d.metadata.annotations.as_ref().unwrap()["melissa.io/replicas-before-stop"],
+            "1"
+        );
+    }
+
+    let out = call(&t, "start_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["state"], "starting");
+    assert_eq!(out["replicas"], 1);
+    assert_eq!(out["url"], "http://203.0.113.10:30000");
+    {
+        let s = fake.state();
+        let d = s.deployment.as_ref().unwrap();
+        assert_eq!(d.spec.replicas, Some(1));
+        assert!(!d
+            .metadata
+            .annotations
+            .as_ref()
+            .unwrap()
+            .contains_key("melissa.io/replicas-before-stop"));
+    }
+    let out = call(&t, "start_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["changed"], false);
+}
+
+#[tokio::test]
+async fn start_restores_the_recorded_count_within_bounds() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    call(&t, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    for (recorded, expected) in [("3", 3), ("0", 1), ("999", 1), ("x", 1)] {
+        {
+            let mut s = fake.state();
+            let d = s.deployment.as_mut().unwrap();
+            d.spec.replicas = Some(0);
+            d.metadata
+                .annotations
+                .get_or_insert_with(BTreeMap::new)
+                .insert("melissa.io/replicas-before-stop".into(), recorded.into());
+        }
+        let out = call(&t, "start_app", json!({"app": "nextcloud"}))
+            .await
+            .unwrap();
+        assert_eq!(out["replicas"], expected, "{recorded}");
+    }
+}
+
+#[tokio::test]
+async fn stop_and_start_need_an_installed_app() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    for tool in ["stop_app", "start_app"] {
+        let r = call(&t, tool, json!({"app": "nextcloud"})).await;
+        assert!(
+            matches!(&r, Err(ToolError::Failed(m)) if m.contains("not installed")),
+            "{tool}: {r:?}"
+        );
+        for args in [
+            json!({}),
+            json!({"app": "Nextcloud"}),
+            json!({"app": "nextcloud", "now": true}),
+        ] {
+            let r = call(&t, tool, args.clone()).await;
+            assert!(
+                matches!(r, Err(ToolError::BadArgs(_))),
+                "{tool} {args}: {r:?}"
+            );
+        }
+    }
+    call(&t, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    call(&t, "uninstall_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    for tool in ["stop_app", "start_app"] {
+        let r = call(&t, tool, json!({"app": "nextcloud"})).await;
+        assert!(
+            matches!(&r, Err(ToolError::Failed(m)) if m.contains("install_app brings it back")),
+            "{tool}: {r:?}"
+        );
+    }
+    assert!(tools(None)["stop_app"]
+        .call(json!({"app": "nextcloud"}))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn stop_follows_the_cell_rules() {
+    let path =
+        std::env::temp_dir().join(format!("melissa-stop-audit-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, BO);
+    let reg = registry(&fake, Some(AuditLog::new(&path)));
+
+    // Another bee: refused outright, audited, nobody asked, nothing patched.
+    for tool in ["stop_app", "start_app"] {
+        let r = reg
+            .call(7, &mut bee(ADA), tool, json!({"app": "nextcloud"}))
+            .await;
+        assert!(
+            matches!(&r, Err(ToolError::Refused(m)) if m.starts_with("not yours")),
+            "{tool}: {r:?}"
+        );
+    }
+    assert!(reg.confirmations().pending().is_empty());
+    assert!(fake.state().deployment_patches.is_empty());
+    let refused = audit_lines(&path)
+        .into_iter()
+        .filter(|l| l["action"] == "tool.refused")
+        .count();
+    assert_eq!(refused, 2);
+
+    // The owning bee: asked (stop always asks), not called destructive.
+    let reason = confirmation_reason(&reg, bee(BO), "stop_app", json!({"app": "nextcloud"})).await;
+    assert_eq!(
+        reason,
+        "stop `nextcloud` (it can be started again; nothing is deleted); takes a running \
+         service offline (it can be started again; nothing is deleted)"
+    );
+    assert!(!reason.contains("destructive"));
+
+    // The Queen on Bo's cell: asked, naming the bee first.
+    let reason = confirmation_reason(&reg, queen(), "stop_app", json!({"app": "nextcloud"})).await;
+    assert!(
+        reason
+            .starts_with("`nextcloud` is looked after by bee Bo (c-0a1b2c3d.b2); stop `nextcloud`"),
+        "{reason}"
+    );
+    assert!(
+        fake.state().deployment_patches.is_empty(),
+        "nothing before a yes"
+    );
+
+    // Approved: stopped.
+    let waiter = {
+        let reg = reg.clone();
+        tokio::spawn(async move {
+            reg.call(1, &mut queen(), "stop_app", json!({"app": "nextcloud"}))
+                .await
+        })
+    };
+    let pending = loop {
+        if let Some(c) = reg.confirmations().pending().first().cloned() {
+            break c;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(pending.tool, "stop_app");
+    reg.confirmations().resolve(pending.id, Verdict::Approved);
+    waiter.await.unwrap().unwrap();
+    assert_eq!(
+        fake.state().deployment.as_ref().unwrap().spec.replicas,
+        Some(0)
+    );
+
+    // The attended Queen starts it without a question (reversible).
+    reg.call(1, &mut queen(), "start_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert!(reg.confirmations().pending().is_empty());
+    assert_eq!(
+        fake.state().deployment.as_ref().unwrap().spec.replicas,
+        Some(1)
+    );
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// A catalog dir with nextcloud and a copy named `blog`.
+fn two_app_catalog() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("melissa-catalog-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let nc = include_str!("../../../../manifests/nextcloud.toml");
+    std::fs::write(dir.join("nextcloud.toml"), nc).unwrap();
+    std::fs::write(
+        dir.join("blog.toml"),
+        nc.replacen("name = \"nextcloud\"", "name = \"blog\"", 1),
+    )
+    .unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn ports_are_free_stable_and_skip_taken_ones() {
+    let fake = Arc::new(Fake::default());
+    // `blog` holds 30000 already; someone outside Melissa holds 30001.
+    fake.state().others.insert(
+        "blog".into(),
+        Namespace {
+            metadata: ObjectMeta {
+                name: Some("app-blog".into()),
+                annotations: Some(BTreeMap::from([(
+                    "melissa.io/port".to_string(),
+                    "30000".to_string(),
+                )])),
+                ..ObjectMeta::default()
+            },
+            ..Namespace::default()
+        },
+    );
+    fake.state().taken_ports = vec![30001];
+    let settings = AppSettings {
+        catalog_dir: two_app_catalog(),
+        ..settings()
+    };
+    let t: BTreeMap<_, _> = app_tools(settings, Some(fake.clone()))
+        .into_iter()
+        .map(|t| (t.spec().name, t))
+        .collect();
+    let out = call(&t, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["port"], 30002);
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/port").as_deref(),
+        Some("30002")
+    );
+    // Stable from now on.
+    let out = call(&t, "install_app", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert_eq!(out["port"], 30002);
+    let c = call(&t, "list_catalog", json!({})).await.unwrap();
+    assert_eq!(c["apps"][0]["web_ui"], true);
 }

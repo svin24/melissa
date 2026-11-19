@@ -44,6 +44,8 @@ pub struct Frame<'a> {
     pub bees: &'a [BeeView],
     /// Archived chats with Melissa, newest first.
     pub past: &'a [PastChat],
+    /// The `Host` the visitor used (for app links), if the page needs it.
+    pub host: Option<&'a str>,
 }
 
 /// An archived chat's page.
@@ -567,8 +569,9 @@ fn device(d: &Device) -> Markup {
     })
 }
 
-/// The apps region of the hive page (refreshes itself).
-pub fn hive_apps(snap: &HiveSnapshot) -> Markup {
+/// The apps region of the hive page (refreshes itself). App links use `host`, the address
+/// the visitor reached the UI at.
+pub fn hive_apps(snap: &HiveSnapshot, host: Option<&str>) -> Markup {
     let content = match &snap.apps {
         Apps::Unknown => html! {
             (honeycomb("Apps", add_app_cell("/?draft=Install%20")))
@@ -583,6 +586,7 @@ pub fn hive_apps(snap: &HiveSnapshot) -> Markup {
             available,
         } => {
             let names: Vec<String> = installed.iter().map(|a| a.display_name()).collect();
+            let links: Vec<Option<String>> = installed.iter().map(|a| a.link(host)).collect();
             let keepers: Vec<Option<String>> = installed
                 .iter()
                 .map(|a| match &a.keeper {
@@ -593,9 +597,9 @@ pub fn hive_apps(snap: &HiveSnapshot) -> Markup {
                 .collect();
             html! {
                 (honeycomb("Apps", html! {
-                    @for ((a, name), keeper) in installed.iter().zip(&names).zip(&keepers) {
+                    @for (((a, name), keeper), link) in installed.iter().zip(&names).zip(&keepers).zip(&links) {
                         @let (health, status) = phase_words(&a.phase);
-                        (app_cell(&AppCell { name, health, status, detail: keeper.as_deref(), url: a.url.as_deref() }))
+                        (app_cell(&AppCell { name, health, status, detail: keeper.as_deref(), url: link.as_deref() }))
                     }
                     (add_app_cell("/?draft=Install%20"))
                 }))
@@ -622,7 +626,7 @@ pub fn hive(f: &Frame<'_>) -> Markup {
         html! {
             div.wide {
                 (page_header("Apps and devices", Some("What runs where. Ask in the chat to change anything.")))
-                (section("Apps", hive_apps(snap)))
+                (section("Apps", hive_apps(snap, f.host)))
                 (section("Devices", html! {
                     @if snap.devices.is_empty() {
                         p.quiet { "Couldn't read device details yet." }
@@ -846,12 +850,14 @@ mod tests {
                         name: "nextcloud".into(),
                         phase: "ready".into(),
                         url: None,
+                        port: None,
                         keeper: None,
                     },
                     App {
                         name: "immich".into(),
                         phase: "starting".into(),
                         url: None,
+                        port: None,
                         keeper: None,
                     },
                 ],

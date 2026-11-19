@@ -20,8 +20,9 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.
-- [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app), rendering, the
-  app tools and their labels, the `melissa-apps` write identity + admission policies, owner-only
+- [app-catalog.md](app-catalog.md) — app manifests (TOML schema, pinning digests, adding an app, reviewed
+  `files`), rendering, the app tools and their labels (incl. `stop_app`/`start_app`), app links
+  `http://<device>:<port>` (per-app NodePort 30000-30079), the `melissa-apps` write identity + admission policies, owner-only
   `app-credentials`, Nextcloud verified in the VM.
 - [cells-and-ownership.md](cells-and-ownership.md) — the hive model in code: comb/bee ids, cells owned by
   bees (`melissa.io/owner-bee`), scopes (User/Queen/Bee/Nothing), the one scope check in the registry

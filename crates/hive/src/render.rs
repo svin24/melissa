@@ -5,7 +5,10 @@
 //! `baseline` enforced), a RoleBinding that gives the `melissa-apps` ServiceAccount the
 //! `melissa-app-workload` role in that namespace only, a Secret with the generated secrets,
 //! one PVC per volume (`local-path`), a single-replica Deployment with the `Recreate`
-//! strategy, a ClusterIP Service and a Traefik Ingress for `<name>.<domain>`.
+//! strategy, a ClusterIP Service and a Traefik Ingress for `<name>.<domain>`. An app with a
+//! web port also gets a NodePort Service `<name>-port` on its own stable port from
+//! [`APP_PORTS`] (recorded in [`PORT_ANNOTATION`] on the namespace), so it is reachable at
+//! `http://<device address>:<port>` without any DNS.
 
 use std::collections::BTreeMap;
 
@@ -13,11 +16,12 @@ use k8s_openapi::{
     api::{
         apps::v1::{Deployment, DeploymentSpec, DeploymentStrategy},
         core::v1::{
-            Container, ContainerPort, EnvVar, EnvVarSource, HTTPGetAction, HTTPHeader, Namespace,
-            PersistentVolumeClaim, PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource,
-            PodSecurityContext, PodSpec, PodTemplateSpec, Probe, ResourceRequirements,
-            SeccompProfile, Secret, SecretKeySelector, Service, ServicePort, ServiceSpec, Volume,
-            VolumeMount, VolumeResourceRequirements,
+            ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EnvVar, EnvVarSource,
+            HTTPGetAction, HTTPHeader, KeyToPath, Namespace, PersistentVolumeClaim,
+            PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource, PodSecurityContext,
+            PodSpec, PodTemplateSpec, Probe, ResourceRequirements, SeccompProfile, Secret,
+            SecretKeySelector, Service, ServicePort, ServiceSpec, Volume, VolumeMount,
+            VolumeResourceRequirements,
         },
         networking::v1::{
             HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -31,7 +35,8 @@ use k8s_openapi::{
 };
 use kube::api::ObjectMeta;
 use melissa_agent::tools::Owner;
-use melissa_catalog::{Builtin, EnvSource, Manifest, ResolvedConfig};
+use melissa_catalog::{Builtin, EnvSource, Manifest, ResolvedConfig, FILES_VOLUME};
+use sha2::{Digest, Sha256};
 
 /// Label on every object of an app (and the namespace): the app's name.
 pub const APP_LABEL: &str = "melissa.io/app";
@@ -63,6 +68,17 @@ pub const LEGACY_OWNER_LABEL: &str = "melissa.io/owner";
 pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
 pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
 pub const ORIGIN_ANNOTATION: &str = "melissa.io/origin";
+/// Annotation on the namespace: the app's own port on the device (a NodePort from
+/// [`APP_PORTS`]). Set at the first install and never changed while the namespace exists
+/// (admission policy `melissa-apps-namespaces`), so links stay valid.
+pub const PORT_ANNOTATION: &str = "melissa.io/port";
+/// Ports Melissa gives apps. Inside k3s's NodePort range (30000-32767) and in the lower
+/// band (30000-30085) that Kubernetes keeps for static allocations, so automatically
+/// allocated NodePorts (e.g. Traefik's) avoid it. The admission policy
+/// `melissa-apps-services` allows NodePorts only here.
+pub const APP_PORTS: std::ops::RangeInclusive<u16> = 30000..=30079;
+/// Annotation on a stopped app's Deployment: the replica count `start_app` restores.
+pub const REPLICAS_BEFORE_STOP_ANNOTATION: &str = "melissa.io/replicas-before-stop";
 /// Annotation on the Deployment: the resolved, non-secret config as JSON.
 pub const CONFIG_ANNOTATION: &str = "melissa.io/config";
 /// Pod Security Standard enforced in app namespaces. `baseline` forbids privileged pods,
@@ -81,7 +97,50 @@ pub struct AppObjects {
     pub volumes: Vec<PersistentVolumeClaim>,
     pub deployment: Deployment,
     pub service: Option<Service>,
+    /// The manifest's files (`<name>-files`), if any container has some.
+    pub files: Option<ConfigMap>,
+    /// NodePort Service for the app's web port (when it has one and a port was given).
+    pub port_service: Option<Service>,
     pub ingress: Option<Ingress>,
+}
+
+/// Where and how an app runs, besides its manifest and config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement<'a> {
+    /// Ingress domain (`<name>.<domain>`).
+    pub domain: &'a str,
+    /// The app's port on the device ([`APP_PORTS`]); `None`: no NodePort Service.
+    pub port: Option<u16>,
+    /// The app is stopped: render 0 replicas and remember this count for `start_app`.
+    pub stopped_from: Option<i32>,
+    /// The device's addresses and host name (builtin `device_hosts`, after the ingress host).
+    pub hosts: &'a [String],
+}
+
+impl<'a> Placement<'a> {
+    /// Running, without a device port.
+    pub fn domain(domain: &'a str) -> Self {
+        Self {
+            domain,
+            port: None,
+            stopped_from: None,
+            hosts: &[],
+        }
+    }
+}
+
+/// Name of the ConfigMap holding app `app`'s manifest files.
+pub fn files_name(app: &str) -> String {
+    format!("{app}-files")
+}
+
+/// Annotation on the pod template: hash of the manifest files, so a changed file restarts
+/// the pod (`subPath` mounts never see ConfigMap updates).
+pub const FILES_HASH_ANNOTATION: &str = "melissa.io/files-sha256";
+
+/// Name of the NodePort Service of app `app`.
+pub fn port_service_name(app: &str) -> String {
+    format!("{app}-port")
 }
 
 /// What [`secret_object`] needs besides the values.
@@ -214,11 +273,15 @@ pub fn assign_patch(cell: &str, comb: &str, bee: &str, by: &str, at: &str) -> se
     })
 }
 
-/// Render `manifest` with resolved `config` for ingress domain `domain`.
-pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> AppObjects {
+/// Render `manifest` with resolved `config` for `placement`.
+pub fn render(
+    manifest: &Manifest,
+    config: &ResolvedConfig,
+    placement: &Placement<'_>,
+) -> AppObjects {
     let m = manifest;
     let ns = m.namespace();
-    let host = m.host(domain);
+    let host = m.host(placement.domain);
     let selector = BTreeMap::from([(APP_LABEL.to_string(), m.name.clone())]);
 
     let mut ns_labels = BTreeMap::from([
@@ -238,6 +301,10 @@ pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> App
         metadata: ObjectMeta {
             name: Some(ns.clone()),
             labels: Some(ns_labels),
+            annotations: placement
+                .port
+                .filter(|_| m.ingress.is_some())
+                .map(|p| BTreeMap::from([(PORT_ANNOTATION.to_string(), p.to_string())])),
             ..ObjectMeta::default()
         },
         ..Namespace::default()
@@ -289,9 +356,9 @@ pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> App
     let containers = m
         .containers
         .iter()
-        .map(|c| container(m, c, config, &host))
+        .map(|c| container(m, c, config, &host, placement.hosts))
         .collect();
-    let pod_volumes: Vec<Volume> = m
+    let mut pod_volumes: Vec<Volume> = m
         .volumes
         .iter()
         .map(|v| Volume {
@@ -303,18 +370,80 @@ pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> App
             ..Volume::default()
         })
         .collect();
+    // Manifest files: one ConfigMap, one volume, a read-only subPath mount per file.
+    let file_entries: Vec<(String, &melissa_catalog::File)> = m
+        .containers
+        .iter()
+        .flat_map(|c| {
+            c.files
+                .iter()
+                .enumerate()
+                .map(move |(i, f)| (file_key(&c.name, i), f))
+        })
+        .collect();
+    let files = (!file_entries.is_empty()).then(|| ConfigMap {
+        metadata: meta(m, &files_name(&m.name)),
+        data: Some(
+            file_entries
+                .iter()
+                .map(|(k, f)| (k.clone(), f.content.clone()))
+                .collect(),
+        ),
+        ..ConfigMap::default()
+    });
+    let files_hash = (!file_entries.is_empty()).then(|| {
+        let mut h = Sha256::new();
+        for (k, f) in &file_entries {
+            h.update(k.as_bytes());
+            h.update([0]);
+            h.update(f.content.as_bytes());
+            h.update([0, u8::from(f.executable)]);
+        }
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    });
+    if !file_entries.is_empty() {
+        pod_volumes.push(Volume {
+            name: FILES_VOLUME.into(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: files_name(&m.name),
+                default_mode: Some(0o444),
+                items: Some(
+                    file_entries
+                        .iter()
+                        .map(|(k, f)| KeyToPath {
+                            key: k.clone(),
+                            path: k.clone(),
+                            mode: Some(if f.executable { 0o555 } else { 0o444 }),
+                            ..KeyToPath::default()
+                        })
+                        .collect(),
+                ),
+                optional: Some(false),
+                ..ConfigMapVolumeSource::default()
+            }),
+            ..Volume::default()
+        });
+    }
 
     let mut deploy_meta = meta(m, &m.name);
     // BTreeMap → JSON object with sorted keys; serializing a map of strings can't fail.
     let config_json = serde_json::to_string(&config.values).unwrap_or_default();
-    deploy_meta.annotations = Some(BTreeMap::from([(
-        CONFIG_ANNOTATION.to_string(),
-        config_json,
-    )]));
+    let mut deploy_annotations = BTreeMap::from([(CONFIG_ANNOTATION.to_string(), config_json)]);
+    if let Some(n) = placement.stopped_from {
+        deploy_annotations.insert(REPLICAS_BEFORE_STOP_ANNOTATION.into(), n.to_string());
+    }
+    deploy_meta.annotations = Some(deploy_annotations);
     let deployment = Deployment {
         metadata: deploy_meta,
         spec: DeploymentSpec {
-            replicas: Some(1),
+            replicas: Some(if placement.stopped_from.is_some() {
+                0
+            } else {
+                1
+            }),
             revision_history_limit: Some(3),
             // One pod owns the ReadWriteOnce volume; never run old and new at once.
             strategy: Some(DeploymentStrategy {
@@ -328,6 +457,8 @@ pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> App
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
                     labels: Some(labels(m)),
+                    annotations: files_hash
+                        .map(|h| BTreeMap::from([(FILES_HASH_ANNOTATION.to_string(), h)])),
                     ..ObjectMeta::default()
                 }),
                 spec: Some(PodSpec {
@@ -375,6 +506,36 @@ pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> App
         ..Service::default()
     });
 
+    // The web port on the device: only the ingress port, so one app holds one NodePort.
+    let port_service = m
+        .ingress
+        .as_ref()
+        .zip(placement.port)
+        .and_then(|(i, node_port)| {
+            let p = m
+                .containers
+                .iter()
+                .flat_map(|c| &c.ports)
+                .find(|p| p.name == i.port)?;
+            Some(Service {
+                metadata: meta(m, &port_service_name(&m.name)),
+                spec: Some(ServiceSpec {
+                    type_: Some("NodePort".into()),
+                    selector: Some(selector.clone()),
+                    ports: Some(vec![ServicePort {
+                        name: Some(p.name.clone()),
+                        port: i32::from(p.port),
+                        target_port: Some(IntOrString::String(p.name.clone())),
+                        node_port: Some(i32::from(node_port)),
+                        protocol: Some("TCP".into()),
+                        ..ServicePort::default()
+                    }]),
+                    ..ServiceSpec::default()
+                }),
+                ..Service::default()
+            })
+        });
+
     let ingress = m.ingress.as_ref().map(|i| Ingress {
         metadata: meta(m, &m.name),
         spec: Some(IngressSpec {
@@ -410,8 +571,15 @@ pub fn render(manifest: &Manifest, config: &ResolvedConfig, domain: &str) -> App
         volumes,
         deployment,
         service,
+        files,
+        port_service,
         ingress,
     }
+}
+
+/// ConfigMap key (and file name in the volume) of file `i` of container `container`.
+fn file_key(container: &str, i: usize) -> String {
+    format!("{container}.{i}")
 }
 
 /// PVC name for volume `volume` of app `m`.
@@ -424,6 +592,7 @@ fn container(
     c: &melissa_catalog::Container,
     config: &ResolvedConfig,
     host: &str,
+    hosts: &[String],
 ) -> Container {
     let env: Vec<EnvVar> = c
         .env
@@ -436,6 +605,15 @@ fn container(
                 EnvSource::Config(f) => (config.values.get(f).map(|v| v.to_env()), None),
                 EnvSource::Builtin(Builtin::IngressHost) => (Some(host.to_string()), None),
                 EnvSource::Builtin(Builtin::IngressUrl) => (Some(format!("http://{host}")), None),
+                EnvSource::Builtin(Builtin::DeviceHosts) => (
+                    Some(
+                        std::iter::once(host)
+                            .chain(hosts.iter().map(String::as_str).filter(|h| *h != host))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    None,
+                ),
                 EnvSource::Secret(f) => (
                     None,
                     Some(EnvVarSource {
@@ -523,7 +701,7 @@ fn container(
                 .collect()
         }),
         env: (!env.is_empty()).then_some(env),
-        volume_mounts: (!c.mounts.is_empty()).then(|| {
+        volume_mounts: (!c.mounts.is_empty() || !c.files.is_empty()).then(|| {
             c.mounts
                 .iter()
                 .map(|mnt| VolumeMount {
@@ -531,6 +709,13 @@ fn container(
                     mount_path: mnt.path.clone(),
                     ..VolumeMount::default()
                 })
+                .chain(c.files.iter().enumerate().map(|(i, f)| VolumeMount {
+                    name: FILES_VOLUME.into(),
+                    mount_path: f.path.clone(),
+                    sub_path: Some(file_key(&c.name, i)),
+                    read_only: Some(true),
+                    ..VolumeMount::default()
+                }))
                 .collect()
         }),
         resources: Some(ResourceRequirements {
@@ -584,6 +769,8 @@ mod tests {
             "volumes": o.volumes,
             "deployment": o.deployment,
             "service": o.service,
+            "files": o.files,
+            "port_service": o.port_service,
             "ingress": o.ingress,
         })
     }
@@ -613,7 +800,15 @@ mod tests {
         let config = m.resolve_config(&serde_json::Map::new()).unwrap();
         golden(
             "nextcloud",
-            &as_json(&render(&m, &config, "melissa.home.arpa")),
+            &as_json(&render(
+                &m,
+                &config,
+                &Placement {
+                    port: Some(30000),
+                    hosts: &["192.0.2.15".to_string(), "melissa".to_string()],
+                    ..Placement::domain("melissa.home.arpa")
+                },
+            )),
         );
     }
 
@@ -622,7 +817,7 @@ mod tests {
         let m = nextcloud();
         let overrides = json!({"admin_user": "owner", "upload_limit": "2G"});
         let config = m.resolve_config(overrides.as_object().unwrap()).unwrap();
-        let o = render(&m, &config, "home.example.com");
+        let o = render(&m, &config, &Placement::domain("home.example.com"));
         let pod = o.deployment.spec.template.spec.as_ref().unwrap();
         let env = pod.containers[0].env.as_ref().unwrap();
         let get = |n: &str| env.iter().find(|e| e.name == n).unwrap();
@@ -660,7 +855,7 @@ mod tests {
         let o = render(
             &m,
             &m.resolve_config(&serde_json::Map::new()).unwrap(),
-            "x.test",
+            &Placement::domain("x.test"),
         );
         let labels = o.namespace.metadata.labels.unwrap();
         assert_eq!(labels[APP_LABEL], "nextcloud");
@@ -687,7 +882,7 @@ mod tests {
         let o = render(
             &m,
             &m.resolve_config(&serde_json::Map::new()).unwrap(),
-            "x.test",
+            &Placement::domain("x.test"),
         );
         let plan = o.secret.unwrap();
         assert_eq!(
@@ -700,6 +895,59 @@ mod tests {
         );
         assert_eq!(s.metadata.name.as_deref(), Some("nextcloud-secrets"));
         assert_eq!(s.string_data.unwrap()["admin_password"], "pw");
+    }
+
+    #[test]
+    fn a_stopped_app_renders_with_no_replicas_and_remembers_the_count() {
+        let m = nextcloud();
+        let config = m.resolve_config(&serde_json::Map::new()).unwrap();
+        let o = render(
+            &m,
+            &config,
+            &Placement {
+                stopped_from: Some(2),
+                ..Placement::domain("x.test")
+            },
+        );
+        assert_eq!(o.deployment.spec.replicas, Some(0));
+        assert_eq!(
+            o.deployment.metadata.annotations.unwrap()[REPLICAS_BEFORE_STOP_ANNOTATION],
+            "2"
+        );
+        // No port given: no NodePort Service and no port record.
+        assert!(o.port_service.is_none());
+        assert!(o.namespace.metadata.annotations.is_none());
+    }
+
+    #[test]
+    fn the_port_service_exposes_only_the_web_port() {
+        let m = nextcloud();
+        let config = m.resolve_config(&serde_json::Map::new()).unwrap();
+        let o = render(
+            &m,
+            &config,
+            &Placement {
+                port: Some(30005),
+                ..Placement::domain("x.test")
+            },
+        );
+        let svc = o.port_service.unwrap();
+        assert_eq!(svc.metadata.name.as_deref(), Some("nextcloud-port"));
+        let spec = svc.spec.unwrap();
+        assert_eq!(spec.type_.as_deref(), Some("NodePort"));
+        let ports = spec.ports.unwrap();
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].node_port, Some(30005));
+        assert!(spec.external_ips.is_none());
+        assert_eq!(
+            o.namespace.metadata.annotations.unwrap()[PORT_ANNOTATION],
+            "30005"
+        );
+        // The ClusterIP Service is unchanged.
+        assert_eq!(
+            o.service.unwrap().spec.unwrap().type_.as_deref(),
+            Some("ClusterIP")
+        );
     }
 
     #[test]

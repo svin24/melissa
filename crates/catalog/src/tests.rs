@@ -302,3 +302,65 @@ fn catalog_reports_bad_files_and_name_mismatches() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(Catalog::load_dir(&dir).apps.is_empty());
 }
+
+#[test]
+fn files_are_small_text_outside_the_data_volumes() {
+    let with_file = |file: &str| {
+        variant(
+            "mounts = [{ volume = \"data\", path = \"/data\" }]",
+            &format!("mounts = [{{ volume = \"data\", path = \"/data\" }}]\nfiles = [{file}]"),
+        )
+    };
+    let ok = with_file(
+        r##"{ path = "/etc/demo/hook.sh", content = "#!/bin/sh\necho hi\n", executable = true }"##,
+    )
+    .unwrap();
+    assert!(ok.containers[0].files[0].executable);
+    // Inside a volume mount: the file would land in the app's data.
+    for bad in ["/data/hook.sh", "/data"] {
+        let msg = invalid_at(
+            with_file(&format!(r#"{{ path = "{bad}", content = "x" }}"#)),
+            "containers[0].files[0].path",
+        );
+        assert!(!msg.is_empty());
+    }
+    for bad in ["relative", "/etc/../x", "/etc/dir/"] {
+        invalid_at(
+            with_file(&format!(r#"{{ path = "{bad}", content = "x" }}"#)),
+            "containers[0].files[0].path",
+        );
+    }
+    invalid_at(
+        with_file(r#"{ path = "/x", content = "" }"#),
+        "containers[0].files[0].content",
+    );
+    let big = "a".repeat(MAX_FILE_BYTES + 1);
+    invalid_at(
+        with_file(&format!(r#"{{ path = "/x", content = "{big}" }}"#)),
+        "containers[0].files[0].content",
+    );
+    // Two files on one path.
+    invalid_at(
+        with_file(r#"{ path = "/x", content = "a" }, { path = "/x", content = "b" }"#),
+        "containers[0].files[1].path",
+    );
+    // The files volume name is reserved.
+    invalid_at(
+        variant("name = \"data\"\nsize", "name = \"melissa-files\"\nsize"),
+        "volumes[0].name",
+    );
+    assert!(with_file(r#"{ path = "/x", content = "a", mode = "0777" }"#).is_err());
+}
+
+#[test]
+fn device_hosts_is_a_builtin() {
+    let m = variant(
+        "GREETING = { config = \"greeting\" }",
+        "GREETING = { builtin = \"device_hosts\" }",
+    )
+    .unwrap();
+    assert_eq!(
+        m.containers[0].env["GREETING"].source(),
+        Some(EnvSource::Builtin(Builtin::DeviceHosts))
+    );
+}

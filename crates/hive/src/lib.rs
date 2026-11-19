@@ -11,6 +11,7 @@
 mod app_tools;
 pub mod apps;
 pub mod cluster;
+mod device;
 mod health;
 pub mod render;
 

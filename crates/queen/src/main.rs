@@ -204,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
     let app_settings = AppSettings {
         catalog_dir: config.apps.catalog.clone(),
         domain: config.apps.domain.clone(),
+        addresses: config.apps.addresses.clone(),
         comb: comb.id.clone(),
         bees: Some(names.clone()),
     };
@@ -601,6 +602,17 @@ mod tests {
         parse_args(args.iter().map(|s| s.to_string()).collect())
     }
 
+    /// "Turn it off" must never become an uninstall (owner's test, 2026-11-19).
+    #[test]
+    fn prompts_map_turning_off_to_stop_app() {
+        for prompt in [QUEEN_PROMPT, BEE_PROMPT] {
+            assert!(prompt.contains("`stop_app`"));
+            assert!(prompt.contains("`start_app`"));
+            assert!(prompt.contains("turn off"));
+            assert!(prompt.contains("only when"));
+        }
+    }
+
     #[test]
     fn parses_serve_and_tool_commands() {
         assert!(matches!(
@@ -687,6 +699,7 @@ mod tests {
         let settings = AppSettings {
             catalog_dir: dir.join("catalog"),
             domain: "example.com".into(),
+            addresses: None,
             comb: "c-0a1b2c3d".into(),
             bees: None,
         };

@@ -351,3 +351,48 @@ Format: date — decision. Why. Alternatives considered.
   "MIT"` for every crate via `[workspace.package]`, OCI label `org.opencontainers.image.licenses="MIT"`; the image
   already ships `LICENSE*` in `/usr/share/licenses/melissa/`. Why: the owner leaned towards MIT; simple, permissive,
   matches the dependencies' licenses. Alternatives: AGPL-3.0 + commercial dual license (needs a CLA), Apache-2.0.
+- **2026-11-19 — Apps can be stopped and started, without removing anything** (owner's Nextcloud test: "turn off
+  nextcloud" could only become `uninstall_app`). `stop_app` scales the app's Deployment to 0 and records the count
+  in `melissa.io/replicas-before-stop`; `start_app` restores it. Namespace, volumes, Secret, Services, Ingress and
+  the app's port stay. Labels: `stop_app` gets a new effect, **`Effect::Disruptive`**: always confirmed (it takes a
+  service offline, like a destructive action), but its reason never says "destructive" and the UI card is not marked
+  dangerous ("Stop Nextcloud? It can be started again; nothing is deleted."). `start_app` is **Reversible**, like
+  `install_app`: it only brings back a state the user approved at install, so the attended, untainted Queen starts
+  an app when asked without a second question; unattended or tainted tasks are asked (it uses resources and puts the
+  app back on the network, so it is not read-only). Installing over a stopped app updates it and keeps it stopped: a
+  confirmed stop is only undone by `start_app`. Prompts: "turn off/stop/pause/shut down" = `stop_app`;
+  `uninstall_app` only on an explicit uninstall/remove/delete request. Alternatives: scale via the uninstall path
+  (destructive, loses Services/port), a Reversible stop (an agent could take apps offline unasked while attended).
+- **2026-11-19 — Apps are reached at `http://<device address>:<own port>` by default; `<app>.<domain>` stays as an
+  option.** Nothing resolves `nextcloud.melissa.home.arpa` on the owner's devices, so the old link "just gives
+  nothing". Each app with a web UI gets a NodePort from **30000-30079** in its own Service `<app>-port` (one port,
+  the ingress port), recorded once in `melissa.io/port` on its namespace and fixed while the namespace exists (kept
+  across stop, keep-data uninstall and reinstall). The range is the static band (first 86 ports) of k3s's default
+  NodePort range, which Kubernetes' allocator avoids for automatic ports. Admission allows NodePort only for
+  `<app>-port`, one port, in range, and keeps `melissa.io/port` in range and unchanged. Tools return `url` (first
+  address), `urls` (every address: LAN address of the default route, Tailscale 100.64.0.0/10 addresses, or
+  `[apps] addresses`), `port` and `dns_url`; the web UI builds links from the `Host` the visitor used (LAN IP,
+  host name or Tailscale all work). Address detection makes no network traffic (UDP `connect` for the route,
+  `/proc/net/fib_trie`). Why not: a Traefik entrypoint per app (needs kube-system Helm config changes per install,
+  i.e. more privilege for the write identity), path prefixes on one port (most apps, Nextcloud included, don't
+  run under a sub-path cleanly), the Queen proxying ports itself (more code in the trusted process, same firewall
+  question), k3s ServiceLB/LoadBalancer (svclb pods per app, arbitrary host ports), wildcard-DNS services such as
+  nip.io/sslip.io (third-party lookups; rejected outright), mDNS (`.local` names don't reach Tailscale peers or
+  Android reliably). Firewall: headless (fedora-bootc) has no firewalld; Kinoite's default zone `FedoraWorkstation`
+  accepts TCP 1025-65535 and forwards within the zone, and the desktop image ships a firewalld service
+  `melissa-apps` (30000-30079/tcp) for stricter zones. Trade-off: every app's web port is open to the LAN and the
+  tailnet (as with the Ingress on port 80 before); apps still need their own login.
+- **2026-11-19 — Nextcloud trusts exactly the names it is reached at, no wildcards** (pre-alpha trade-off,
+  stated). Nextcloud answers only hosts in `trusted_domains` (400 "untrusted domain" otherwise; reproduced with the
+  pinned image). New catalog builtin `device_hosts` = ingress host + device addresses + host name at install time
+  (or `[apps] addresses`), passed as `NEXTCLOUD_TRUSTED_DOMAINS`. The image reads that only at the first install, so
+  the manifest ships a reviewed entrypoint hook (`before-starting`, new catalog field `files`: ConfigMap,
+  read-only `subPath` mount, never inside a data volume, ≤ 16 KiB, ≤ 8 per container, hash on the pod template)
+  that sets `trusted_domains` to exactly that list on every start; verified locally with the pinned image (an old
+  install with only the ingress host answered 400 on IP:port, 200 after a restart with the hook; removed hosts are
+  dropped; 2 s). Why not wildcards: Nextcloud's `*` becomes `[-.a-zA-Z0-9]*`, so `192.168.*` or `10.*` would also
+  trust `192.168.evil.example` (DNS rebinding); a bare `*` turns the check off. Why not `overwritehost`: it rewrites
+  every generated link to one name. Cost: if the device's address changes (DHCP, new tailnet), Nextcloud refuses
+  the new one until the next `install_app` (or a fixed `[apps] addresses`). Security trade-off for pre-alpha: plain
+  HTTP on the LAN/tailnet (Tailscale encrypts its leg; the LAN leg is cleartext, including the login), and the
+  host name is trusted as given by the kernel.

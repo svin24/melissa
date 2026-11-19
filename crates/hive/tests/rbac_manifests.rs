@@ -5,8 +5,9 @@
 use std::path::PathBuf;
 
 use melissa_hive::render::{
-    APPS_SERVICE_ACCOUNT, ASSIGNED_AT_ANNOTATION, CELL_LABEL, COMB_LABEL, LEGACY_OWNER_LABEL,
-    MELISSA_NAMESPACE, OWNER_BEE_LABEL, WORKLOAD_ROLE,
+    port_service_name, APPS_SERVICE_ACCOUNT, APP_PORTS, ASSIGNED_AT_ANNOTATION, CELL_LABEL,
+    COMB_LABEL, LEGACY_OWNER_LABEL, MELISSA_NAMESPACE, OWNER_BEE_LABEL, PORT_ANNOTATION,
+    WORKLOAD_ROLE,
 };
 
 fn manifest(name: &str) -> String {
@@ -188,6 +189,26 @@ fn admission_policies_guard_the_write_identity() {
     assert!(ns.contains(&format!(
         "!('{LEGACY_OWNER_LABEL}' in object.metadata.labels))"
     )));
+    // App ports: in Melissa's range, fixed once recorded.
+    let (lo, hi) = (APP_PORTS.start(), APP_PORTS.end());
+    assert_eq!(
+        (*lo, *hi),
+        (30000, 30079),
+        "update the policies with the range"
+    );
+    assert!(ns.contains(&format!("'{PORT_ANNOTATION}'")));
+    assert!(ns.contains("matches('^300[0-7][0-9]$')"));
+    assert!(ns.contains(&format!(
+        "object.metadata.annotations['{PORT_ANNOTATION}'] == oldObject.metadata.annotations['{PORT_ANNOTATION}']"
+    )));
+    let svc = doc(&docs, "ValidatingAdmissionPolicy", "melissa-apps-services");
+    assert!(svc.contains(&format!(
+        "object.spec.ports[0].nodePort >= {lo} && object.spec.ports[0].nodePort <= {hi}"
+    )));
+    assert!(svc.contains("request.namespace.substring(4) + '-port'"));
+    assert!(svc.contains("object.spec.ports.size() == 1"));
+    assert!(!svc.contains("LoadBalancer"), "never allowed");
+    assert_eq!(port_service_name("nextcloud"), "nextcloud-port");
     let rb = doc(
         &docs,
         "ValidatingAdmissionPolicy",
