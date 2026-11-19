@@ -20,8 +20,13 @@ COPY Cargo.toml Cargo.lock clippy.toml about.toml about.hbs ./
 COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
+    # The target cache is shared by every checkout that builds this image (worktrees too), and
+    # cargo's mtime check can take another tree's newer output as up to date. Always rebuild our
+    # own crates; dependencies stay cached.
+    for p in $(sed -n 's/^name = "\(.*\)"/\1/p' crates/*/Cargo.toml); do \
+        cargo clean --release --locked -p "$p" 2>/dev/null || true; done \
     # melissa-agent's only binary is melissa-netbridge (runs inside every agent sandbox).
-    cargo build --release --locked -p melissa-queen -p melissa-comb -p melissa-agent \
+ && cargo build --release --locked -p melissa-queen -p melissa-comb -p melissa-agent \
  && install -D -m 0755 target/release/melissa-queen target/release/melissa-comb \
         target/release/melissa-netbridge -t /out/bin/ \
  && mkdir -p /out/licenses && cargo fetch --locked \
