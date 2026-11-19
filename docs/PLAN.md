@@ -513,7 +513,11 @@ Roadmap (rough, phases may overlap):
 58. `stop_app` always asks the user, even the owner bee's own cell and even when the user asked for it in chat
     (decided 2026-11-19, like destructive). Should an explicit, attended "turn it off" skip the card? Should a stop
     be automatic on low disk/memory (needs the unattended-Queen marking, 27)?
-59. Container mode (`scripts/container-run.sh`, spike 2026-11-19): UI, agents and setup work rootless; k3s needs
-    `cpuset` delegated to the user (a root-owned drop-in). Should the desktop image ship
-    `user@.service.d/delegate.conf`, and is container mode a supported third way to try Melissa (published
-    container image, rootful as well) once k3s and apps are verified in it?
+59. Container mode (`scripts/container-run.sh`): verified rootless 2026-11-19 (k3s + Traefik + policies, Nextcloud
+    install, stop/start, NodePort from the host, chat turn). Needs `cpuset` delegated to the user (root-owned
+    drop-in `/etc/systemd/system/user@.service.d/delegate.conf`). Open: (a) should the desktop image ship that
+    drop-in (as `/usr/lib/systemd/system/user@.service.d/`)? Recommended yes: it only lets the user's own
+    containers use one more cgroup controller (cpuset), what systemd already does for cpu/io/memory/pids; it is
+    not added yet, pending owner review. (b) Is container mode a supported third way to try Melissa (published
+    container image, rootful verified too)? (c) App links when host ports differ from 30000+n
+    (`APP_PORT_BASE`): add an `[apps]` port offset, or keep 1:1 mapping only?

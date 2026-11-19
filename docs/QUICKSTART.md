@@ -104,14 +104,23 @@ Needs podman 5+ with pasta, cgroup v2, and the image built from this checkout (`
 scripts/container-run.sh preflight   # checks cgroup delegation, kernel modules, pasta
 scripts/container-run.sh build       # adds the small container layer (image/container)
 scripts/container-run.sh up          # web UI: http://127.0.0.1:18080
+scripts/container-run.sh smoke       # k3s Ready, Traefik, policies, an app port from the host (~3 min first time)
 scripts/container-run.sh shell       # then: melissa-setup agent opencode, melissa-queen chat
 scripts/container-run.sh down        # stop; `purge` deletes the container and its data volume
 ```
 
-- **Status:** the web UI, agents (sandbox and network allowlist) and `melissa-setup` work rootless. k3s, and so
-  app installs, is not verified in a container yet.
+- **Status:** verified rootless on Fedora 45 (2026-11-19): web UI, agents (sandbox and network allowlist),
+  `melissa-setup`, k3s with Traefik, Nextcloud from the catalog at `http://127.0.0.1:30000`, stop/start of apps,
+  and a chat with the Queen. Rootful (`sudo`) is not verified.
 - **Rootless k3s needs one host change** (as root, once): let your user's containers use the `cpuset` cgroup
-  controller, which Fedora does not delegate by default. `preflight` prints the commands.
+  controller, which Fedora does not delegate by default. `preflight` checks it and prints the commands:
+  ```
+  sudo mkdir -p /etc/systemd/system/user@.service.d
+  printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+  sudo systemctl daemon-reload
+  ```
+- **App links** say `http://127.0.0.1:30000` (and up): `up` writes that address into the Queen's config. If you
+  move the app ports (`APP_PORT_BASE=31000`), add the difference yourself: the links still name 30000 and up.
 - **Security:** the container runs `--privileged` (k3s and the agent sandbox need namespaces, mounts and
   netfilter). Rootless that is limited to your own user; run as root it is root on your machine. The web UI has
   no login and is published on 127.0.0.1 only; app ports default to 127.0.0.1 too (`BIND=0.0.0.0` for the LAN).

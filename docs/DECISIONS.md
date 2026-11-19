@@ -404,3 +404,13 @@ Format: date — decision. Why. Alternatives considered.
   the container's address (exposes the UI to pods), a separate non-bootc image (two images to keep in step).
   Status: spike; k3s in a container is unverified (rootless needs `cpuset` delegation).
 
+- **2026-11-19 — Container mode runs k3s rootless; app addresses come from `container-run.sh`.** With `cpuset`
+  delegated to `user@.service` (host drop-in `Delegate=cpu cpuset io memory pids`), k3s, flannel vxlan, the
+  native overlayfs snapshotter on the `/var` volume, Traefik, our admission policies, RBAC and NodePorts through
+  pasta work with no other change: none of the expected fallbacks (fuse-overlayfs, host-gw, userspace proxy) was
+  needed. Container-layer changes only: `/etc/melissa` is a symlink onto the volume (like k3s's node password),
+  so the Queen's config survives a recreate, and `up` writes `[apps] addresses` there (`127.0.0.1` for the
+  default loopback `BIND`; nothing for `0.0.0.0`, because pasta copies the host's LAN address into the container
+  and automatic detection finds it). Why not a code change for host ports that differ from 30000+n
+  (`APP_PORT_BASE`): it only matters next to another k3s; the default maps ports 1:1. Base image unchanged.
+

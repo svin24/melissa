@@ -21,4 +21,7 @@ RUN set -eu; \
     # k3s keeps the node password in /etc/rancher/node and refuses to rejoin its own datastore
     # without it, so keep it on the volume.
     rm -rf /etc/rancher/node; ln -s /var/lib/melissa-container/rancher-node /etc/rancher/node; \
+    # The queen's config (/etc/melissa/queen.toml: [apps] addresses, backends) must survive a
+    # recreate too; container-run.sh writes the container's app addresses there.
+    rm -rf /etc/melissa; ln -s /var/lib/melissa-container/etc-melissa /etc/melissa; \
     echo 'MELISSA_RUNTIME=container' >> /usr/lib/melissa/release
