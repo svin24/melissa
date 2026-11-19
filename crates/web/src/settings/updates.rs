@@ -189,6 +189,20 @@ enum Outcome {
     Failed(Flash),
 }
 
+/// How long the queen waits after answering before it asks systemd to restart it.
+const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
+
+fn started_text(action: UpdateAction) -> &'static str {
+    match action {
+        UpdateAction::Check => "Checking for updates. Reload this page in a minute for the result.",
+        UpdateAction::Apply => "Installing the update. The device restarts when it is ready.",
+        UpdateAction::Rollback => {
+            "Going back to the previous image. The device restarts in a moment."
+        }
+        UpdateAction::Restart => "Melissa is restarting. Reload this page in a few seconds.",
+    }
+}
+
 async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Outcome {
     let s = &ui.settings;
     let env = &s.parts().updates;
@@ -214,22 +228,25 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
         &format!("{} requested", action.as_str()),
         None,
     );
+    if action == UpdateAction::Restart {
+        // Restarting stops this process at once (no graceful shutdown): asked inline, the
+        // reply was lost and the browser/CLI saw a dropped connection. Answer first.
+        let settings = s.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RESTART_DELAY).await;
+            if let Err(e) = request(action).await {
+                tracing::warn!("restart request failed: {e}");
+                settings.audit("settings.update", "queen", "restart failed", None);
+            }
+        });
+        return Outcome::Started(Flash {
+            text: started_text(action).into(),
+            tone: Tone::Info,
+        });
+    }
     match request(action).await {
         Ok(()) => Outcome::Started(Flash {
-            text: match action {
-                UpdateAction::Check => {
-                    "Checking for updates. Reload this page in a minute for the result.".into()
-                }
-                UpdateAction::Apply => {
-                    "Installing the update. The device restarts when it is ready.".into()
-                }
-                UpdateAction::Rollback => {
-                    "Going back to the previous image. The device restarts in a moment.".into()
-                }
-                UpdateAction::Restart => {
-                    "Melissa is restarting. Reload this page in a few seconds.".into()
-                }
-            },
+            text: started_text(action).into(),
             tone: Tone::Info,
         }),
         Err(e) => Outcome::Failed(Flash {

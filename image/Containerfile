@@ -96,7 +96,9 @@ COPY --from=build /out/licenses/ /usr/share/licenses/melissa/
 ARG MELISSA_VERSION=dev
 RUN mkdir -p /usr/lib/melissa && printf 'MELISSA_VERSION=%s\nMELISSA_VARIANT=%s\n' "$MELISSA_VERSION" "$VARIANT" > /usr/lib/melissa/release
 
+# version: bootc shows it in `bootc status` (else the base image's, e.g. 45.20261118.0).
 LABEL org.opencontainers.image.title="melissa" \
+      org.opencontainers.image.version="${MELISSA_VERSION}" \
       org.opencontainers.image.description="Melissa OS image (pre-alpha)" \
       org.opencontainers.image.licenses="MIT"
 # Secure Boot guard: keep Fedora's signed kernel and modules. Exactly one kernel, signed with

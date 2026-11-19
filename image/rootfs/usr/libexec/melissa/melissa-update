@@ -27,6 +27,26 @@ last() { # last <action> <ok:true|false> [message]
     printf '{"action":"%s","ok":%s,"at":%s,"message":"%s"}\n' "$1" "$2" "$(date +%s)" "$msg" | write last.json
 }
 
+# bootc must run in the SELinux domain install_t (it writes labels the running policy may not
+# know yet, e.g. from a newer k3s-selinux). systemd starts /usr/bin/bootc (install_exec_t) in
+# install_t, but from this script (bin_t -> unconfined_service_t) bootc stays put, tries to
+# relabel a copy of itself with chcon, is denied (AVC mac_admin) and carries on without it.
+# So every bootc call is its own transient unit. Its output goes to files PID 1 opens in a
+# root-only directory (a pipe or /tmp from this domain is denied to init_t). Exit code kept.
+bootc() {
+    work="$dir/.work"
+    mkdir -p -m 0700 "$work" || return 1
+    bout=$(mktemp "$work/out.XXXXXX") && berr=$(mktemp "$work/err.XXXXXX") || return 1
+    systemd-run --quiet --wait --collect \
+        -p StandardOutput="truncate:$bout" -p StandardError="truncate:$berr" \
+        /usr/bin/bootc "$@"
+    rc=$?
+    cat "$bout"
+    cat "$berr" >&2
+    rm -f "$bout" "$berr"
+    return "$rc"
+}
+
 status() {
     out=$(bootc status --format=json 2>/dev/null) || return 1
     printf '%s\n' "$out" | write status.json

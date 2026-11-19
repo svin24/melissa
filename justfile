@@ -36,7 +36,9 @@ ask +message:
 # Rootless build into the user's container storage.
 image-build variant="headless":
     # --network=host: rootless pasta networking fails on the dev laptop (SELinux AVC on a FUSE mount).
-    podman build --layers --network=host -f image/Containerfile \
+    # SOURCE_DATE_EPOCH: the Nix dev shell exports 315532800 (1980), which podman uses as the image's
+    # creation time (bootc shows it as "built"); use the last commit's time instead.
+    SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) podman build --layers --network=host -f image/Containerfile \
         --build-arg VARIANT={{variant}} \
         --build-arg BASE={{ if variant == "desktop" { "quay.io/fedora-ostree-desktops/kinoite:45" } else { "quay.io/fedora/fedora-bootc:45" } }} \
         --build-arg MELISSA_VERSION=$(git describe --always --dirty) \
