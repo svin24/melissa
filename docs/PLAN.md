@@ -522,5 +522,7 @@ Roadmap (rough, phases may overlap):
     2026-11-19: (a) the desktop image ships `/usr/lib/systemd/system/user@.service.d/delegate.conf`
     (`Delegate=cpu cpuset io memory pids`); headless does not (DECISIONS). (b) Container mode becomes a supported
     way to try Melissa once rootful is verified too; publishing a container image needs the owner's explicit yes.
-    (c) `[apps] port_offset` (written by `container-run.sh up` from `APP_PORT_BASE`) shifts app links. Still open:
-    verify rootful; re-run the offset path in a live container.
+    (c) `[apps] port_offset` (written by `container-run.sh up` from `APP_PORT_BASE`) shifts app links. Rootful verified 2026-11-19
+    (bridge network + filtered UI forward; UI, k3s, policies, pod isolation, Nextcloud, stop/start); agents and chat
+    not tried rootful. Still open: rootful lets the kubelet set host sysctls (overcommit, panic): acceptable for a
+    tester's machine, or document only? Re-run the offset path in a live container.

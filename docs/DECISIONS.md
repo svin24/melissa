@@ -447,3 +447,15 @@ Format: date — decision. Why. Alternatives considered.
   until then `[apps] addresses`. `stop_app` keeps its confirmation card for the demo. Container mode becomes a
   supported try-it path once rootful is verified; publishing a container image needs the owner's explicit yes.
   Host ports other than 30000+n are handled by `[apps] port_offset` (supersedes "no code change" above).
+- **2026-11-19 — Rootful container mode uses the bridge network and a filtered UI forward inside.** Rootful podman
+  has no pasta, and bridge `-p` forwards arrive on the container's `eth0`, not its loopback. Chosen: a socket unit
+  on `:8081` running `systemd-socket-proxyd` to the queen's `127.0.0.1:8080`, behind an nftables table that admits
+  TCP to 8081 only on the default-route interface from the default gateway (the host); everything else to 8081
+  (pods on `cni0`, other bridge containers, IPv6) is dropped. Enabled only by a flag file that rootful `up` writes
+  on the volume, so rootless is unchanged. Why: the queen keeps its loopback-only bind and its "no
+  non-loopback without login" rule, and the exception is one port, one source, one interface, checked by
+  `smoke` (pod isolation) and a negative control. Alternatives: binding the queen to `eth0` with an allowlist
+  (weakens a queen invariant for a container-only need, and needs code); an nft DNAT to 127.0.0.1 (needs
+  `route_localnet`, the CVE-2020-8558 class); `--network=host` (collides with a host k3s); `--userns` tricks to
+  get pasta (podman refuses rootful). Verified with Nextcloud and stop/start next to a host k3s.
+

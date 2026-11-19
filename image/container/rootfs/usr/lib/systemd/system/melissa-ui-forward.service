@@ -1,0 +1,15 @@
+[Unit]
+Description=Melissa web UI forward (to 127.0.0.1:8080)
+Requires=melissa-ui-forward.socket
+After=melissa-ui-forward.socket melissa-queen.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8080
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=

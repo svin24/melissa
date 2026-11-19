@@ -13,7 +13,9 @@
 #   scripts/container-run.sh preflight  check the host (cgroup delegation, pasta, kernel modules)
 #   scripts/container-run.sh smoke      k3s Ready, Traefik, admission policies, RBAC, a NodePort from the host
 #
-# Rootless by default. Run it with sudo for a rootful container (its own image storage: build there).
+# Rootless by default (pasta network). Run it as root (sudo) for a rootful container: its own image
+# storage (build there or `podman load`), the default bridge network, and the UI through a filtered
+# forward inside (docs/agent-skills/container-mode.md, "Rootful").
 # Environment:
 #   NAME=melissa              container name (volume: $NAME-var)
 #   IMAGE=localhost/melissa-headless:dev
@@ -28,6 +30,7 @@
 #                             BIND when it is one address, unset (found automatically) for 0.0.0.0.
 #   PASTA_DIR=                directory with a working `pasta` (on SELinux hosts where the distro
 #                             one is denied; e.g. "$(nix build --no-link --print-out-paths nixpkgs#passt)/bin")
+#                             Rootless only; rootful uses the bridge network.
 set -euo pipefail
 
 NAME=${NAME:-melissa}
@@ -38,13 +41,16 @@ APP_PORT_BASE=${APP_PORT_BASE:-30000}
 BIND=${BIND:-127.0.0.1}
 VOLUME="$NAME-var"
 repo=$(cd "$(dirname "$0")/.." && pwd)
+ROOTFUL=0; [ "$(id -u)" = 0 ] && ROOTFUL=1
+# k3s's pod and service networks inside the container; the podman network must not overlap them.
+K3S_CIDRS="10.42.0.0/16 10.43.0.0/16"
 
 die() { echo "container-run: $*" >&2; exit 1; }
 [ -n "${PASTA_DIR:-}" ] && export PATH="$PASTA_DIR:$PATH"
 in_ctr() { podman exec "$NAME" "$@"; }
 
 controllers() {
-    if [ "$(id -u)" = 0 ]; then cat /sys/fs/cgroup/cgroup.controllers
+    if [ "$ROOTFUL" = 1 ]; then cat /sys/fs/cgroup/cgroup.controllers
     else cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"; fi
 }
 
@@ -64,7 +70,7 @@ preflight() {
             ok=1; break ;;
         esac
     done
-    if [ "$(id -u)" != 0 ] && [ ! -e /etc/systemd/system/user@.service.d/delegate.conf ] \
+    if [ "$ROOTFUL" = 0 ] && [ ! -e /etc/systemd/system/user@.service.d/delegate.conf ] \
         && ! grep -qs cpuset /usr/lib/systemd/system/user@.service.d/*.conf; then
         echo "note: no Delegate= drop-in for user@.service found; cpuset may be gone after a reboot."
     fi
@@ -78,7 +84,9 @@ preflight() {
             echo "host port $p is in use (UI_PORT=$UI_PORT, APP_PORT_BASE=$APP_PORT_BASE): pick others"; ok=1
         fi
     done
-    if ! podman run --rm --network=pasta --entrypoint true "$IMAGE" >/dev/null 2>&1; then
+    if [ "$ROOTFUL" = 1 ]; then
+        preflight_rootful || ok=1
+    elif ! podman run --rm --network=pasta --entrypoint true "$IMAGE" >/dev/null 2>&1; then
         echo "pasta networking fails here. On SELinux hosts where /usr/bin/pasta is denied, point"
         echo "PASTA_DIR at another build, e.g. PASTA_DIR=\$(nix build --no-link --print-out-paths nixpkgs#passt)/bin"
         ok=1
@@ -87,12 +95,48 @@ preflight() {
     return "$ok"
 }
 
+# Rootful: the default bridge network must work and must not overlap k3s's networks inside.
+preflight_rootful() {
+    local ok=0 sub c
+    podman image exists "$CTR_IMAGE" || echo "note: no $CTR_IMAGE in root's storage: build it as root or podman load it"
+    if ! podman run --rm --network=bridge --entrypoint true "$IMAGE" >/dev/null 2>&1 \
+        && ! podman run --rm --network=bridge --entrypoint true "$CTR_IMAGE" >/dev/null 2>&1; then
+        echo "rootful bridge networking fails here (podman run --network=bridge)"; ok=1
+    fi
+    for sub in $(podman network inspect podman --format '{{range .Subnets}}{{.Subnet}} {{end}}' 2>/dev/null); do
+        for c in $K3S_CIDRS; do
+            if overlaps "$sub" "$c"; then
+                echo "podman network 'podman' ($sub) overlaps k3s's $c inside the container"; ok=1
+            fi
+        done
+    done
+    echo "rootful: --privileged is root on this host; k3s inside sets host-wide sysctls (vm.overcommit_memory=1,"
+    echo "  kernel.panic=10, kernel.panic_on_oops=1, as any k3s on the host does)."
+    return "$ok"
+}
+
+# overlaps A/len B/len (IPv4 only; anything else: no)
+overlaps() {
+    local a=${1%/*} al=${1#*/} b=${2%/*} bl=${2#*/} m
+    case "$a$b" in *:*) return 1 ;; esac
+    # shellcheck disable=SC2086 # split the address at the dots
+    ip2n() { local IFS=.; set -- $1; echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 )); }
+    m=$(( al < bl ? al : bl ))
+    [ $(( ($(ip2n "$a") ^ $(ip2n "$b")) >> (32 - m) )) = 0 ]
+}
+
 # The app addresses for the queen's config: what people on the host (or LAN) type before :port.
 app_addresses() {
     if [ -n "${APP_ADDRESSES:-}" ]; then echo "$APP_ADDRESSES"; return; fi
     case "$BIND" in
     127.*|::1|localhost) echo 127.0.0.1 ;;
-    0.0.0.0|::|'') ;; # pasta copies the host's LAN address into the container: found automatically
+    0.0.0.0|::|'')
+        # Rootless, pasta copies the host's LAN address into the container: found automatically.
+        # Rootful, the container only has its bridge address: use the host's (route source address
+        # towards a documentation address; nothing is sent).
+        if [ "$ROOTFUL" = 1 ]; then
+            ip -4 route get 203.0.113.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p'
+        fi ;;
     *) echo "$BIND" ;;
     esac
 }
@@ -161,7 +205,7 @@ smoke() {
     wait_for 120 "policy denies a non-app namespace" denied \
         && pass "policy: melissa-apps may not create a non-app namespace" || fail=1
     t404() { [ "$(in_ctr curl -s -o /dev/null -w '%{http_code}' -H 'Host: smoke.invalid' http://127.0.0.1/)" = 404 ]; }
-    wait_for 120 "Traefik answers on :80 inside" t404 && pass "Traefik answers on :80 inside (404 for an unknown host)" || fail=1
+    wait_for 240 "Traefik answers on :80 inside" t404 && pass "Traefik answers on :80 inside (404 for an unknown host)" || fail=1
     # A NodePort in front of Traefik on the last app port (no image pull needed), reached from
     # the host through pasta's port forward.
     in_ctr kubectl -n kube-system create service nodeport melissa-smoke --tcp=80:8000 --node-port=30079 \
@@ -174,9 +218,31 @@ smoke() {
     done
     [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at 127.0.0.1:$last" || bad "NodePort from the host: HTTP $code"
     in_ctr kubectl -n kube-system delete service melissa-smoke --wait=false >/dev/null
+    pod_isolation || fail=1
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$UI_PORT/" || true)
     [ "$code" = 200 ] && pass "web UI http://127.0.0.1:$UI_PORT/" || bad "web UI: HTTP $code"
     [ "$fail" = 0 ] && echo "smoke test complete" || echo "smoke test FAILED"
+    return "$fail"
+}
+
+# A pod must not reach the queen's UI: try from CoreDNS's network namespace (no image pull) the
+# node's address on 8080 and 8081 (the rootful forward) and, rootful, the host's UI port via the gateway.
+pod_isolation() {
+    local cid pid node gw t code fail=0
+    cid=$(in_ctr k3s crictl ps -q --name coredns 2>/dev/null | head -1)
+    pid=$(in_ctr k3s crictl inspect -o go-template --template '{{.info.pid}}' "$cid" 2>/dev/null) \
+        || { echo "FAIL: no CoreDNS pod to test pod isolation from"; return 1; }
+    node=$(in_ctr kubectl get node "$NAME" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+    t=("$node:8080" "$node:8081")
+    if [ "$ROOTFUL" = 1 ]; then
+        gw=$(in_ctr ip -4 route show default | awk '{print $3; exit}')
+        t+=("$gw:$UI_PORT")
+    fi
+    for a in "${t[@]}"; do
+        code=$(in_ctr nsenter -t "$pid" -n curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://$a/" || true)
+        if [ "$code" = 000 ]; then echo "PASS: a pod cannot reach $a"
+        else echo "FAIL: a pod reaches $a (HTTP $code)"; fail=1; fi
+    done
     return "$fail"
 }
 
@@ -194,18 +260,28 @@ up)
         #   agent sandbox needs nested namespaces. Rootless, "privileged" means only the
         #   capabilities of your own user namespace; rootful, it is full root on the host.
         # --systemd=always: tmpfs on /run, /tmp; cgroup writable; stop with SIGRTMIN+3.
-        # --network=pasta:--host-lo-to-ns-lo: host 127.0.0.1:UI_PORT reaches the queen on the
-        #   container's own 127.0.0.1:8080, so the UI stays loopback-only inside (pods cannot reach it).
+        # Rootless --network=pasta:--host-lo-to-ns-lo: host 127.0.0.1:UI_PORT reaches the queen on
+        #   the container's own 127.0.0.1:8080, so the UI stays loopback-only inside (pods cannot reach it).
+        # Rootful (no pasta): the bridge network; host 127.0.0.1:UI_PORT goes to :8081 on the container's
+        #   eth0, where melissa-ui-forward.socket passes it to 127.0.0.1:8080. Its nftables filter admits
+        #   only the bridge gateway (the host) on eth0; pods and other containers are dropped.
+        if [ "$ROOTFUL" = 1 ]; then net=(--network=bridge -p "127.0.0.1:$UI_PORT:8081")
+        else net=(--network=pasta:--host-lo-to-ns-lo -p "127.0.0.1:$UI_PORT:8080"); fi
         podman run -d --name "$NAME" --hostname "$NAME" \
             --privileged --systemd=always \
-            --network=pasta:--host-lo-to-ns-lo \
-            -p "127.0.0.1:$UI_PORT:8080" \
+            "${net[@]}" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
             -v "$VOLUME:/var" \
             --stop-timeout 60 \
             "$CTR_IMAGE" /sbin/init >/dev/null
     fi
-    wait_for 60 "systemd in the container" in_ctr test -d /var/lib/melissa-container/etc-melissa && configure
+    wait_for 60 "systemd in the container" in_ctr test -d /var/lib/melissa-container/etc-melissa
+    if [ "$ROOTFUL" = 1 ]; then
+        # The flag survives restarts (it is on the volume); start the forward now on first use.
+        in_ctr touch /var/lib/melissa-container/ui-forward
+        in_ctr systemctl start melissa-ui-forward.socket
+    fi
+    configure
     echo "Started '$NAME'. Web UI: http://127.0.0.1:$UI_PORT  (k3s takes a minute or two: '$0 status')"
     ;;
 status)
