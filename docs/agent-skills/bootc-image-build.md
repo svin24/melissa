@@ -46,7 +46,9 @@ changes the last layer downloads kilobytes. `RUN bootc container lint` is the fi
   UI on 127.0.0.1:8080, plus `k3s.service` and `melissa-kubeconfig.service`. There is no per-user queen unit any
   more (it would fight the system queen for port 8080). Headless-only: `melissa-firstboot` (in `image/headless/`).
 - Desktop-only: `/usr/lib/firewalld/zones/melissa-k3s.xml` (Kinoite runs firewalld; the zone accepts k3s's pod
-  10.42.0.0/16 and service 10.43.0.0/16 sources so pods reach CoreDNS/API; nothing opens to the LAN).
+  10.42.0.0/16 and service 10.43.0.0/16 sources so pods reach CoreDNS/API; nothing opens to the LAN), and
+  `/usr/lib/firewalld/services/melissa-apps.xml` (apps' ports 30000-30079/tcp; FedoraWorkstation already
+  accepts 1025-65535, so it is only needed in stricter zones: `firewall-cmd --add-service=melissa-apps`).
 - **Plasma Setup** (Kinoite's first-run wizard, `plasma-setup.service`) runs before the login screen unless
   `/etc/plasma-setup-done` exists; it does not look at existing users. A bib disk with a user (the test VM) shows it;
   `sudo touch /etc/plasma-setup-done` to get the login screen. A laptop already set up keeps its `/etc` flag.

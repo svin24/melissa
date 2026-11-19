@@ -77,6 +77,10 @@ fn target(&self) -> Option<Target> {
     Some(Target { kind: ResourceKind::Cell, arg: "app", access: Access::Change, verb: "restart" })
 }
 ```
+Examples: `install_app` ("install over"), `stop_app` ("stop"), `start_app` ("start"), `uninstall_app`
+("uninstall") are `Change`; `app_logs` is `ReadScoped`; `app_status` is `Read`. A stop by another bee is
+refused ("not yours", audited `tool.refused`, no confirmation); the Queen's stop of Ada's cell asks the
+user with "`nextcloud` is looked after by bee Ada (…); stop `nextcloud` (…)" (2026-11-19).
 `access`: `Read` (anyone), `ReadScoped` (content the cell controls), `Change`. `arg` is a required string.
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
 a tool by name. `describe_call(args)` adds a one-line description to confirmations.

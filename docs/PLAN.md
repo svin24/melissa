@@ -72,13 +72,17 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   Secret + PVC + Deployment + Service + Traefik Ingress (`<app>.melissa.home.arpa` by default,
   `[apps] domain`) and server-side applied by a second identity, `melissa/melissa-apps`, whose writes
   admission policies pin to `app-*` namespaces with Pod Security baseline (no Secret reads anywhere).
-  Tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `uninstall_app`. First app: Nextcloud
+  Tools: `list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `stop_app`, `start_app`,
+  `uninstall_app` (stop/start since 2026-11-19: stop keeps everything, always asks, never "destructive"). First app: Nextcloud
   34.0.6 (official Apache image by digest, SQLite). Verified in the headless VM: install with
   confirmation, ready, `status.php` from the host, owner login, logs cap, keep-data uninstall +
   reinstall, delete-data uninstall, RBAC denials, smoke test, no AVC denials. Details:
   `docs/agent-skills/app-catalog.md`.
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).
-- **Ingress:** wildcard `*.<domain>` (e.g. `nextcloud.<domain>`, `immich.<domain>`) via the k3s ingress controller, with automatic TLS (internal CA on LAN, ACME for public).
+- **App links (2026-11-19):** by default `http://<device address>:<port>`: each app gets its own NodePort from
+  30000-30079 (`<app>-port` Service, recorded in `melissa.io/port`), reachable on the LAN and over Tailscale with no
+  DNS; the web UI builds links from the address the visitor used. See DECISIONS.md.
+- **Ingress:** wildcard `*.<domain>` (e.g. `nextcloud.<domain>`, `immich.<domain>`) via the k3s ingress controller, with automatic TLS (internal CA on LAN, ACME for public). Today an extra option for people with their own DNS (`dns_url`).
 - **HA virtual IP:** kube-vip or keepalived for the control-plane/ingress address.
 - **Storage:** Longhorn first (simple), Ceph (Rook) for larger hives. Local-path for single-node M2.
 - **Apps:** Melissa's own app manifests (TOML, see above and DECISIONS.md) render to plain objects;
@@ -487,3 +491,15 @@ Roadmap (rough, phases may overlap):
     in the VM vs 2.3.2 on the laptop needed a sandbox change). Pin versions or checksums per Melissa release?
 54. Agent logins on the headless box: Grok tokens expire after 7 days; Claude's OAuth refresh under the sandbox's
     bind mount is unverified (24). How does a tester learn a login expired (UI notice, `melissa-setup` status)?
+55. App ports (2026-11-19): apps are plain HTTP on `http://<device>:<port>` (30000-30079), open to the LAN and the
+    tailnet. TLS for these (Tailscale certs for `*.ts.net`, the comb's own CA) and per-app access limits are open
+    (ties to 22 and 38). Is 80 apps per comb enough? Ports are per comb: in a multi-comb hive, should the port be
+    unique hive-wide so a link survives an app moving combs?
+56. Nextcloud's trusted hosts are the device's addresses at install time (no wildcards). If the address changes
+    (DHCP, new tailnet) Nextcloud refuses it until the next `install_app`; should the Queen refresh apps
+    automatically when the device's addresses change, or should owners set `[apps] addresses` (e.g. a DHCP
+    reservation or the MagicDNS name)? Tailscale MagicDNS names (`<host>.<tailnet>.ts.net`) are not detected
+    (no Tailscale API call); add them via `[apps] addresses` for now.
+57. `stop_app` always asks the user, even the owner bee's own cell and even when the user asked for it in chat
+    (decided 2026-11-19, like destructive). Should an explicit, attended "turn it off" skip the card? Should a stop
+    be automatic on low disk/memory (needs the unattended-Queen marking, 27)?

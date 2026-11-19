@@ -1,7 +1,8 @@
 # App catalog and app installs (M2)
 
 **When:** adding or changing an app manifest, bumping an app's image, touching the app tools
-(`list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `uninstall_app`), the write identity
+(`list_catalog`, `list_apps`, `install_app`, `app_status`, `app_logs`, `stop_app`, `start_app`,
+`uninstall_app`), app links and ports, the write identity
 `melissa-apps` or its admission policies, or the owner's `app-credentials` command.
 Code: `crates/catalog` (schema, validation), `crates/hive/src/{render,apps,app_tools}.rs`,
 `crates/queen/src/credentials.rs`, `image/rootfs/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`,
@@ -45,7 +46,11 @@ mounts = [{ volume = "data", path = "/var/www/html" }]
 A = { value = "literal" }
 B = { config = "admin_user" }         # non-secret field
 C = { secret = "admin_password" }     # secretKeyRef to <name>-secrets, never a literal
-D = { builtin = "ingress_host" }      # or ingress_url
+D = { builtin = "ingress_host" }      # or ingress_url, device_hosts (ingress host + device addresses + host name)
+[[containers.files]]          # reviewed small files (<= 16 KiB, <= 8): ConfigMap <name>-files, read-only subPath
+path = "/docker-entrypoint-hooks.d/before-starting/50-x.sh"   # absolute, never inside a volume mount
+executable = true             # 0555 instead of 0444
+content = '''#!/bin/sh ...'''
 [containers.resources]        # all four required (small boxes)
 cpu_request = "100m"; cpu_limit = "1"; memory_request = "256Mi"; memory_limit = "1Gi"
 [containers.probe]            # HTTP; used for startup, readiness, liveness
@@ -54,7 +59,7 @@ ingress_host_header = true    # send Host: <name>.<domain> (apps that check trus
 startup_timeout_secs = 900    # first start may install/migrate; period_secs default 10
 
 [ingress]
-port = "http"                 # Traefik Ingress for <name>.<domain>, path /
+port = "http"                 # the web port: own NodePort <name>-port (http://<device>:<port>) + Traefik Ingress <name>.<domain>
 
 [credentials]                 # what app-credentials prints
 user = "admin_user"           # string field (value from the Deployment's config annotation)
@@ -86,18 +91,37 @@ templating, no hostPath/privileged knobs to forget), rendered to plain objects.
 Namespace `app-<name>` (labels `melissa.io/app=<name>`, `melissa.io/managed=true`, Pod Security
 `enforce=baseline`) → RoleBinding `melissa-apps` (ClusterRole `melissa-app-workload` →
 ServiceAccount `melissa/melissa-apps`) → Secret `<name>-secrets` (created once, POST, 409 = keep)
-→ PVC `<name>-<volume>` → Deployment `<name>` (1 replica, `Recreate`, no SA token, no service
-links, RuntimeDefault seccomp, config annotation `melissa.io/config`) → ClusterIP Service →
-Ingress (class traefik). All but the Secret are server-side applied, field manager `melissa`,
+→ PVC `<name>-<volume>` → ConfigMap `<name>-files` (manifest files, if any) → Deployment `<name>`
+(1 replica, or 0 + `melissa.io/replicas-before-stop` when stopped; `Recreate`, no SA token, no service
+links, RuntimeDefault seccomp, config annotation `melissa.io/config`, pod annotation
+`melissa.io/files-sha256`) → ClusterIP Service → Ingress (class traefik) → NodePort Service
+`<name>-port` (only the ingress port) → the namespace again with `melissa.io/port` (a new port is
+recorded only after its Service exists; on "port already allocated" the next free one is tried). All but the Secret are server-side applied, field manager `melissa`,
 forced. Deployment, not StatefulSet: one replica on one RWO volume; the PVC is a separate object
 so "keep data" and "delete data" are explicit, and `Recreate` never runs two pods on the data.
+
+## Links and ports (2026-11-19)
+- Every app with `[ingress]` gets a port from `APP_PORTS` = 30000-30079 (the static band of k3s's
+  NodePort range), the lowest one no catalog app's namespace records. Fixed while the namespace
+  exists (admission): survives stop, keep-data uninstall, reinstall; freed by a delete-data uninstall.
+- Tools return `url` (first address), `urls` (all), `port`, `dns_url` (`http://<name>.<domain>`, only
+  with the owner's DNS). Addresses: `[apps] addresses` in `queen.toml`, else found per call: the LAN
+  address of the default route (UDP `connect` to 203.0.113.1, nothing sent) and Tailscale addresses
+  (100.64.0.0/10 from `/proc/net/fib_trie`); k3s's 10.42/10.43, loopback and link-local skipped.
+- `device_hosts` (Nextcloud's trusted domains) = ingress host + those addresses + the kernel host
+  name. Exact names only, never wildcards (DNS rebinding; see DECISIONS.md).
+- Web UI: `App::link(host)` = the visitor's `Host` (port stripped) + the app's port.
+- Firewall: headless has none; desktop's default zone (FedoraWorkstation) accepts 1025-65535; for
+  stricter zones `firewall-cmd --add-service=melissa-apps` (shipped in the desktop image).
 
 ## Tools and labels (policy keys off them)
 | tool | labels | notes |
 |---|---|---|
 | `list_catalog` | read-only | works without k3s |
 | `install_app {app, config?, bee?}` | Reversible, target `app` (Change) | attended Queen: allowed for a new cell (she must name the `bee` that looks after it) and over a bee's cell; over an unassigned cell: confirmation; a bee: its own/new cells only; unattended or tainted: confirmation. Records `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` (+ assigned-by/at, installed-by/at, origin) on a new namespace, keeps an existing record. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
-| `app_status {app}` | read-only, target `app` (Read) | reports `bee`, `bee_name`, `comb`, `assigned_by`, `installed_by`, `installed_at`, `legacy_owner`; phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
+| `app_status {app}` | read-only, target `app` (Read) | reports `bee`, `bee_name`, `comb`, `assigned_by`, `installed_by`, `installed_at`, `legacy_owner`, `url`/`urls`/`port`/`dns_url`; phases `not_installed`, `starting`, `ready`, `failing`, `stopping`, `stopped`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
+| `stop_app {app}` | **Disruptive**, target `app` (Change) | always a confirmation whoever asks; reason "stop `x` (it can be started again; nothing is deleted); takes a running service offline (…)", never "destructive"; card "Stop Nextcloud? It can be started again; nothing is deleted." Merge-patches the Deployment: `replicas: 0` + `melissa.io/replicas-before-stop`. Already stopped: `changed: false`. |
+| `start_app {app}` | Reversible, target `app` (Change) | like `install_app`: attended untainted Queen runs it, unattended/tainted asks. Restores the recorded count (1-10, else 1), removes the annotation. Not stopped: `changed: false`. Uninstalled: "install_app brings it back". |
 | `app_logs {app, lines?, container?, previous?}` | reads_untrusted, target `app` (ReadScoped: a bee only for its own cells) | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
 | `uninstall_app {app, delete_data?}` | Destructive, target `app` (Change) | always a confirmation (the Queen's names the owning bee); a bee: refused on cells that are not its own. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
 
@@ -105,10 +129,9 @@ Before the labels, the registry checks the caller's scope against the cell's own
 [cells-and-ownership.md](cells-and-ownership.md)): a bee touching a cell that isn't its own is refused
 outright (`tool.refused`), never asked. `melissa-queen tool` and `/api/tools` act as the user.
 | `list_apps` | read-only | catalog apps present on the bee (any phase but `not_installed`, incl. `uninstalled_data_kept`) + the rest as `not_installed`; per-app reads (the write identity can get but not list namespaces), so apps outside the catalog are invisible |
-| `install_app {app, config?}` | Reversible | attended Queen: allowed; unattended or tainted: confirmation. Secrets generated from `/dev/urandom` (62-letter alphabet, rejection sampling), never returned. Reinstall keeps the Secret and PVCs. |
-| `app_status {app}` | read-only | phases `not_installed`, `starting`, `ready`, `failing`, `uninstalled_data_kept`, `deleting`; pods with kubelet reason codes only (no messages) |
-| `app_logs {app, lines?, container?, previous?}` | reads_untrusted | default 100, max 500 lines, 64 KiB, ANSI/control chars stripped, lines > 2000 chars cut; taints the task |
-| `uninstall_app {app, delete_data?}` | Destructive | always a confirmation. Default deletes Deployment/Service/Ingress, keeps namespace, PVCs, Secret. `delete_data: true` deletes the namespace (data gone: local-path reclaim is Delete). |
+- Installing over a **stopped** app applies the new config but renders 0 replicas and keeps the
+  annotation (`stopped: true`, `next` says start_app). Keep-data uninstall also deletes `<name>-port`
+  and `<name>-files` (the port stays recorded on the namespace).
 
 `melissa-queen tool --wait <name> [json]` runs a tool in the daemon (`POST /api/tools/{name}`) as
 an unattended operator call (task 0): reversible/destructive calls wait for `melissa-queen
@@ -122,7 +145,8 @@ and refuses anything that needs a confirmation.
   `melissa-app-workload`. ValidatingAdmissionPolicies (fail closed, matched on the SA's username):
   namespaces must be `app-<name>` with `melissa.io/app=<name>` and PSA baseline/restricted;
   RoleBindings only in such namespaces, only `melissa-app-workload`, only to `melissa-apps`;
-  Services ClusterIP without externalIPs. Inside an app namespace, `melissa-app-workload`:
+  Services ClusterIP without externalIPs, except `<app>-port`: NodePort, one port, nodePort
+  30000-30079; namespace annotation `melissa.io/port` matches `^300[0-7][0-9]$` and never changes. Inside an app namespace, `melissa-app-workload`:
   deployments/statefulsets, services, PVCs, configmaps, ingresses (full), **secrets create/delete
   only (no get/list)**, pods + pods/log read. No PVs, nodes, exec, other namespaces.
 - PSA baseline in app namespaces is what keeps the write identity off the host (no privileged
@@ -161,6 +185,10 @@ $vm 'melissa-queen tool --wait install_app "{\"app\":\"nextcloud\"}"' &   # prin
 $vm 'melissa-queen confirm list; melissa-queen confirm approve <id>'
 $vm 'melissa-queen tool --wait app_status "{\"app\":\"nextcloud\"}"'
 curl --resolve nextcloud.melissa.home.arpa:18080:127.0.0.1 http://nextcloud.melissa.home.arpa:18080/status.php
+# The app's own port (e.g. 30000) through a QEMU forward added at runtime:
+echo 'hostfwd_add tcp:127.0.0.1:13000-:30000' | socat - unix-connect:vm/headless/monitor.sock
+curl -H 'Host: <VM address>:30000' http://127.0.0.1:13000/status.php   # Host = an address Nextcloud trusts
+$vm 'melissa-queen tool --wait stop_app "{\"app\":\"nextcloud\"}"' &   # always asks: confirm approve <id>
 $vm 'sudo melissa-queen app-credentials nextcloud'
 curl -u admin:<pw> -H 'OCS-APIRequest: true' --resolve ... 'http://nextcloud.melissa.home.arpa:18080/ocs/v2.php/cloud/user?format=json'
 ```
@@ -205,6 +233,24 @@ namespace `kube-evil`, label kube-system, get secrets anywhere, rolebinding in d
   labelled `container_file_t` with MCS categories; k3s and queen `NRestarts=0`.
 - Deploying the change moved 11 layers / 580 MB the first time (base layers had moved on), 7 layers
   / 9 MB for the fix.
+
+## Verified (2026-11-19, headless VM, image 13fb138, stop/start + ports)
+- Install over the existing Nextcloud from 2026-11-18 (old namespace without a port): applied incl.
+  `ConfigMap` and `Service (device port)`, port 30000 recorded, secret `kept existing`; `url`
+  `http://10.0.2.15:30000`. The hook logged `trusted_domains set to: nextcloud.melissa.home.arpa
+  10.0.2.15 fedora`. From the host via `hostfwd_add tcp:127.0.0.1:13000-:30000`: Host `10.0.2.15:30000`
+  and `fedora:30000` → 200 (`/login`, `status.php` installed), `192.0.2.99:30000` and
+  `10.0.2.15.evil.example` → 400.
+- `stop_app` (operator `tool --wait`): confirmation #2 with the "nothing is deleted" reason, replicas
+  still 1 before approval; after it `stopping` → `stopped` (`list_apps` too), port closed, Deployment,
+  both Services, PVC, Secret, Ingress kept, annotation `replicas-before-stop: 1`. `install_app` over it:
+  `stopped: true`, replicas stayed 0. `start_app` (asked: unattended) → `starting`, 200 again.
+- Admission as `melissa-apps`: changing `melissa.io/port`, a NodePort Service `evil`, `nextcloud-port`
+  with nodePort 31000, a LoadBalancer → all denied with the policy messages. `vm-k3s-smoke.sh` passes,
+  0 AVC denials.
+- Not verified on a VM: the desktop image's firewall path (FedoraWorkstation zone, expected open),
+  Tailscale address detection (no tailnet in the VM; unit-tested parser), the Queen/bee choosing
+  `stop_app` from a real chat (prompt change only), the web UI links in a browser (unit-tested).
 
 ## Gotchas
 - **CEL field names:** Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as

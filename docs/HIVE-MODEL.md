@@ -41,7 +41,7 @@ whatever they like, and a queen names the bees and cells she creates. The UI sho
 - The user can rename anything; a queen names what she creates (bees, cells) and may suggest names for new combs.
 - Ids include the comb, so the model works unchanged when a hive grows from one comb to many.
 
-## Mapping to today's code (2026-11-18, after the hive-model rename)
+## Mapping to today's code (2026-11-18, after the hive-model rename; stop/start and ports 2026-11-19)
 
 | Model | Code today | Still to do |
 |---|---|---|
@@ -49,7 +49,7 @@ whatever they like, and a queen names the bees and cells she creates. The UI sho
 | Queen | the Queen conversation in `melissa-queen` (`melissa_agent::queen`), `Scope::Queen { comb }`: any cell of her comb, destructive actions name the owning bee | main-comb Queen coordination (M3) |
 | Bee | persistent, named agent (`queen::registry`, `queen::bees`): id `<comb>.b<n>` (never reused), name (the Queen chooses, the user renames), backend, tools; its own resumable agent session, sandbox, MCP session (`Scope::Bee`), transcript; Queen tools `create_bee`, `give_bee_job`, `bee_status`, `list_bees`, `stop_bee` | budgets per bee; bee UI (owner's design) |
 | Cell | an installed app (`app-<name>` namespace) with `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` (+ `assigned-by/at`); every install names its bee; old `melissa.io/owner` labels count as unassigned | more cell kinds (agent-built apps, backups) |
-| Service | the app's pods/containers | same |
+| Service | the app's pods/containers; the owner bee or the Queen stops/starts them with `stop_app` (scale to 0, always the user's confirmation, nothing deleted) and `start_app` (2026-11-19); reached at `http://<device>:<port>` (the cell's own NodePort, `melissa.io/port`) | more services per cell |
 | Reassign | Queen: `reassign_cell` (always the user's confirmation); user: `melissa-queen cell reassign <cell> --to <bee>`; admission lets the owner change only with a new `assigned-at` | cross-comb takeover (ids and `CellStore::assign` already take any bee id) |
 | Talking | user ↔ Queen (`/api/queen`, `chat`), user ↔ any bee (`/api/bees/{bee}/…`, `chat --bee`); bee ↔ bee only via the Queen (`message_bee`: tagged as data, audited `bee.brokered`) | Queen ↔ main Queen (M3) |
 | Apiary | none | later |
