@@ -947,7 +947,7 @@ mod tests {
             devices: vec![],
         };
         let out = strip(&snap).into_string();
-        assert!(out.contains("Nextcloud running, Immich installing"));
+        assert!(out.contains("Nextcloud running, Immich starting"));
         assert!(out.contains("mini h-ok"));
         assert!(out.contains("mini h-busy"));
     }

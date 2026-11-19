@@ -1660,7 +1660,7 @@ mod tests {
                 queen.events().epoch()
             )));
             assert!(body.contains("/assets/htmx-ext-sse.min.js"));
-            assert!(body.contains("Nextcloud running, Immich installing"));
+            assert!(body.contains("Nextcloud running, Immich starting"));
             assert!(body.contains("comb-1"));
             // Before the first message: the agent it will start on, as a menu.
             assert!(

@@ -194,7 +194,7 @@ impl Default for HiveSnapshot {
 pub fn phase_words(phase: &str) -> (Health, &'static str) {
     match phase {
         "ready" => (Health::Ok, "Running"),
-        "starting" => (Health::Busy, "Installing"),
+        "starting" => (Health::Busy, "Starting"),
         "failing" => (Health::Problem, "Needs attention"),
         "deleting" => (Health::Busy, "Removing"),
         "uninstalled_data_kept" => (Health::Idle, "Removed, data kept"),

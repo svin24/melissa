@@ -439,12 +439,6 @@ pub fn app_details(d: &AppDetails<'_>) -> Markup {
                 }
             }
         }
-        section.sheet-logs aria-labelledby="app-logs-h" {
-            h3 #app-logs-h { "Logs" }
-            div #app-logs hx-get=(d.logs_url) hx-trigger="load" hx-swap="outerHTML" {
-                p.quiet { "Loading…" }
-            }
-        }
         div.action-row {
             @if let Some((label, url)) = d.toggle {
                 button.secondary type="button" hx-post=(url) hx-target="#app-dialog"
@@ -462,6 +456,12 @@ pub fn app_details(d: &AppDetails<'_>) -> Markup {
                         autocapitalize="off" spellcheck="false" pattern=(d.delete_word);
                 }
                 button.primary.danger type="submit" { "Force delete" }
+            }
+        }
+        section.sheet-logs aria-labelledby="app-logs-h" {
+            h3 #app-logs-h { "Logs" }
+            div #app-logs hx-get=(d.logs_url) hx-trigger="load" hx-swap="outerHTML" {
+                p.quiet { "Loading…" }
             }
         }
     }

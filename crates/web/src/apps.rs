@@ -255,6 +255,12 @@ async fn logs(
             None,
             Some("Not running, so no logs."),
         ),
+        // The container is still being created (the API server answers 400).
+        Err(ToolError::Failed(m))
+            if m.contains("waiting to start") || m.contains("ContainerCreating") =>
+        {
+            (String::new(), Vec::new(), None, Some("No logs yet."))
+        }
         Err(_) => (
             String::new(),
             Vec::new(),

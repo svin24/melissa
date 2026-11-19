@@ -2287,7 +2287,7 @@ dialog.sheet::backdrop {
 .sheet-log .log {
   font-family: var(--mono);
   font-size: 0.8rem;
-  max-height: 22rem;
+  max-height: 18rem;
   margin: 0.5rem 0 0;
 }
 

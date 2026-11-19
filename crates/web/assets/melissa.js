@@ -51,6 +51,11 @@
     if (dialog && dialog.id === "app-dialog" && !dialog.open && dialog.showModal) {
       dialog.showModal();
     }
+    // Logs: show the newest lines first (the end of the tail).
+    var log = document.querySelector("#app-logs .log");
+    if (log) {
+      log.scrollTop = log.scrollHeight;
+    }
   });
 
   // After sending, the composer is replaced: put the cursor back in it.
