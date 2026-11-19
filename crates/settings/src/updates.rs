@@ -359,6 +359,14 @@ impl UpdateAction {
     }
 }
 
+/// Melissa's polkit rule file and the directories polkit reads it from (relative to `root`).
+const POLKIT_RULE: &str = "50-melissa.rules";
+const POLKIT_RULE_DIRS: [&str; 3] = [
+    "usr/share/polkit-1/rules.d",
+    "etc/polkit-1/rules.d",
+    "run/current-system/sw/share/polkit-1/rules.d",
+];
+
 /// Where the helper is installed and writes; `root` is `/` except in tests.
 #[derive(Debug, Clone)]
 pub struct UpdateEnv {
@@ -382,16 +390,21 @@ impl UpdateEnv {
         self.root
             .join("usr/lib/systemd/system/melissa-update-check.service")
             .exists()
-            && self
-                .root
-                .join("usr/share/polkit-1/rules.d/50-melissa.rules")
-                .exists()
+            && self.polkit_rule_installed()
+    }
+
+    /// Melissa's polkit rule (restart the queen) is installed: by the image in /usr, by the
+    /// non-NixOS Nix bundle in /etc, or by the NixOS module in the system profile.
+    pub fn polkit_rule_installed(&self) -> bool {
+        POLKIT_RULE_DIRS
+            .iter()
+            .any(|d| self.root.join(d).join(POLKIT_RULE).exists())
     }
 
     /// Whether the UI may offer `action` as a button.
     pub fn can(&self, action: UpdateAction) -> bool {
         match action {
-            UpdateAction::Restart => self.helper_installed(),
+            UpdateAction::Restart => self.polkit_rule_installed(),
             _ => self.kind == HostKind::Bootc && self.helper_installed(),
         }
     }
@@ -541,6 +554,25 @@ mod tests {
         assert!(env.can(UpdateAction::Apply) && env.can(UpdateAction::Restart));
         std::fs::write(root.join("run/.containerenv"), "").unwrap();
         assert_eq!(HostKind::detect(&root), HostKind::Container);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restart_needs_only_the_polkit_rule() {
+        // NixOS: the rule comes with the system profile; no update helper, no bootc.
+        let root = std::env::temp_dir().join(format!("melissa-nixos-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let env = UpdateEnv {
+            root: root.clone(),
+            kind: HostKind::Other,
+            state_dir: root.join("run/melissa-update"),
+        };
+        assert!(!env.can(UpdateAction::Restart));
+        let dir = root.join("run/current-system/sw/share/polkit-1/rules.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("50-melissa.rules"), "").unwrap();
+        assert!(env.can(UpdateAction::Restart));
+        assert!(!env.helper_installed() && !env.can(UpdateAction::Check));
         let _ = std::fs::remove_dir_all(root);
     }
 
