@@ -194,7 +194,7 @@ impl Default for HiveSnapshot {
 pub fn phase_words(phase: &str) -> (Health, &'static str) {
     match phase {
         "ready" => (Health::Ok, "Running"),
-        "starting" => (Health::Busy, "Installing"),
+        "starting" => (Health::Busy, "Starting"),
         "failing" => (Health::Problem, "Needs attention"),
         "deleting" => (Health::Busy, "Removing"),
         "uninstalled_data_kept" => (Health::Idle, "Removed, data kept"),
@@ -341,6 +341,12 @@ impl HiveCache {
             }
             None => self.refresh().await,
         }
+    }
+
+    /// Read everything again now (after the user changed an app), so the next page or
+    /// fragment shows it.
+    pub async fn refresh_now(&self) {
+        self.refresh().await;
     }
 
     async fn refresh(&self) -> Arc<HiveSnapshot> {

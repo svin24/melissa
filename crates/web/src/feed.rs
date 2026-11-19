@@ -300,6 +300,17 @@ impl Feed {
                     },
                 )]
             }
+            QueenEvent::CellForceDeleted { cell, bee } => {
+                vec![self.add(
+                    format!("n{}", rec.seq),
+                    Item::Activity {
+                        label: format!("You deleted {}", display_app(cell)),
+                        detail: None,
+                        state: ActivityState::Done,
+                        bee: bee.clone(),
+                    },
+                )]
+            }
             QueenEvent::SessionOpened { backend, resumed } => {
                 self.backend = Some(backend_label(backend).to_string());
                 let text = if *resumed {

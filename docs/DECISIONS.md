@@ -608,3 +608,21 @@ Format: date — decision. Why. Alternatives considered.
   decides what is installed, not a runtime check inside a shared rule; the Nix side copies only
   `50-melissa.rules` already. Alternative: one rule that checks for a container marker (polkit JS can't read
   files; would rely on a unit's presence).
+- **2026-11-19 — App details dialog and the user's force delete.** Each app tile on "Apps and devices" has a
+  Details button that loads a native `<dialog>` (opened with `showModal()` from `melissa.js`; Escape, focus
+  return and the backdrop are the browser's; a full-screen sheet at phone width). It shows status, owner bee,
+  device, link, version/image, pods, restarts, age, the last 200 log lines (escaped text, Refresh button, no
+  polling: each read is an audited `app_logs` call) and Stop/Start (the existing tools; stop's confirmation is
+  answered inside the dialog, same inbox). **Force delete** is the user's own action, not a tool: no agent
+  can reach it (`Queen::user_force_delete` → `CellStore::force_delete`). It needs the app's name typed in
+  (`--yes` in the CLI, `{"confirm": "<app>"}` in the API), ignores bee ownership (HIVE-MODEL rule 3), deletes
+  the workloads, then the namespace with all data, waits up to 2 min, and after 15 s forces stuck pods
+  (grace 0) and clears volume finalizers; a namespace still stuck after that is a clear error (Melissa holds no
+  `namespaces/finalize`). Audited `cell.force_delete` (actor `ui`). The owning bee then gets one brokered
+  message (tagged as data, `bee.brokered`; queued up to 1 h while it works); the Queen gets a note with her
+  next message, never a turn of her own. A reinstall can't happen behind the user's back: bees run
+  unattended, so `install_app` asks the user. **RBAC:** logs keep coming through the apps identity, which is
+  bound per app namespace and already had `pods/log`; the queen's read-only ClusterRole stays without
+  `pods/log` (cluster-wide it would expose system pods' logs). The per-namespace workload role gains `pods:
+  delete` (never create) for the stuck-pod step. Alternatives: logs through `melissa-queen` (wider than
+  needed), a `force_delete_app` tool (agents must not have it), an htmx-polled log tail (fills the audit log).

@@ -30,6 +30,12 @@ struct State {
     /// Namespaces of other apps (by app name).
     others: BTreeMap<String, Namespace>,
     deployment_patches: Vec<Value>,
+    /// The namespace hangs in Terminating until its pods are force-deleted.
+    stuck: bool,
+    /// The namespace hangs in Terminating for good.
+    wedged: bool,
+    /// Calls of `force_delete_pods` and `clear_volume_finalizers`.
+    forced: Vec<&'static str>,
 }
 
 /// A cluster in memory: applies objects, keeps one namespace.
@@ -154,9 +160,38 @@ impl AppDeployer for Fake {
             })
         })
     }
+    fn force_delete_pods<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<usize, ClusterError>> {
+        Box::pin(async move {
+            let mut s = self.state();
+            s.forced.push("pods");
+            let n = s.pods.len();
+            s.pods.clear();
+            if s.stuck {
+                s.stuck = false;
+                s.namespace = None;
+            }
+            Ok(n)
+        })
+    }
+    fn clear_volume_finalizers<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<usize, ClusterError>> {
+        Box::pin(async move {
+            self.state().forced.push("volumes");
+            Ok(0)
+        })
+    }
     fn delete_namespace<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool, ClusterError>> {
         Box::pin(async move {
             let mut s = self.state();
+            if s.stuck || s.wedged {
+                let ns = s.namespace.as_mut().ok_or(ClusterError::NotConfigured)?;
+                ns.metadata.deletion_timestamp =
+                    Some(Time(k8s_openapi::jiff::Timestamp::UNIX_EPOCH));
+                s.deployment = None;
+                return Ok(true);
+            }
             let existed = s.namespace.take().is_some();
             s.deployment = None;
             s.volumes.clear();
@@ -611,6 +646,9 @@ async fn status_reports_phase_url_and_sanitized_pod_reasons() {
     assert_eq!(s["phase"], "ready");
     assert_eq!(s["ready_replicas"], 1);
     assert_eq!(s["version"], "34.0.6");
+    // For the details view: the image and when the pod started.
+    assert!(s["image"].as_str().unwrap().contains("nextcloud"), "{s}");
+    assert_eq!(s["pods"][0]["created"], "1970-01-01T00:01:40Z");
 }
 
 #[tokio::test]
@@ -631,6 +669,7 @@ async fn logs_are_capped_and_cleaned() {
         .await
         .unwrap();
     assert_eq!(out["pod"], "new");
+    assert_eq!(out["containers"], json!(["nextcloud"]));
     assert_eq!(out["lines"], 5);
     assert_eq!(out["truncated"], true);
     assert_eq!(
@@ -1658,4 +1697,80 @@ async fn ports_are_free_stable_and_skip_taken_ones() {
     assert_eq!(out["port"], 30002);
     let c = call(&t, "list_catalog", json!({})).await.unwrap();
     assert_eq!(c["apps"][0]["web_ui"], true);
+}
+
+// ---- force delete (the user's own, not a tool) ---------------------------------------------
+
+fn quick() -> ForceTiming {
+    ForceTiming {
+        force_after: Duration::from_millis(20),
+        timeout: Duration::from_millis(200),
+        poll: Duration::from_millis(5),
+    }
+}
+
+fn cells(fake: &Arc<Fake>) -> Cells {
+    Cells::new(settings(), Some(fake.clone())).with_timing(quick())
+}
+
+#[tokio::test]
+async fn force_delete_removes_everything_whoever_owns_the_cell() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, BO);
+    fake.state().volumes = vec![PersistentVolumeClaim {
+        metadata: ObjectMeta {
+            name: Some("data".into()),
+            ..ObjectMeta::default()
+        },
+        ..PersistentVolumeClaim::default()
+    }];
+    let removed = cells(&fake).force_delete("nextcloud").await.unwrap();
+    assert!(
+        removed.iter().any(|r| r.starts_with("Namespace")),
+        "{removed:?}"
+    );
+    let s = fake.state();
+    assert!(s.namespace.is_none() && s.deployment.is_none() && s.volumes.is_empty());
+    assert!(s.forced.is_empty(), "nothing stuck, nothing forced");
+}
+
+#[tokio::test]
+async fn force_delete_forces_a_stuck_namespace_and_gives_up_clearly() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    {
+        let mut s = fake.state();
+        s.stuck = true;
+        s.pods = vec![pod("nc-1", 100, true, None)];
+    }
+    let removed = cells(&fake).force_delete("nextcloud").await.unwrap();
+    assert!(
+        removed.iter().any(|r| r.starts_with("forced: 1 stuck pod")),
+        "{removed:?}"
+    );
+    assert_eq!(fake.state().forced, vec!["pods", "volumes"]);
+    assert!(fake.state().namespace.is_none());
+
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    fake.state().wedged = true;
+    let e = cells(&fake).force_delete("nextcloud").await.unwrap_err();
+    assert!(
+        e.contains("still being deleted") && e.contains("app-nextcloud"),
+        "{e}"
+    );
+
+    let fake = Arc::new(Fake::default());
+    let e = cells(&fake).force_delete("nextcloud").await.unwrap_err();
+    assert!(e.contains("no cell `nextcloud`"), "{e}");
+    let e = cells(&fake).force_delete("../etc").await.unwrap_err();
+    assert!(e.contains("not a cell name"), "{e}");
+}
+
+#[test]
+fn no_agent_tool_can_force_delete() {
+    for t in app_tools::<Fake>(settings(), None) {
+        let name = t.spec().name;
+        assert!(!name.contains("force"), "{name}");
+    }
 }

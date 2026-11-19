@@ -284,3 +284,8 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # The user's force delete removes pods stuck in a terminating app namespace (grace 0).
+  # Delete only: Melissa never creates bare pods, and no exec/attach.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]

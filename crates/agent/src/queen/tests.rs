@@ -234,6 +234,16 @@ impl CellStore for FakeCells {
             Ok(())
         })
     }
+    fn force_delete<'a>(&'a self, cell: &'a str) -> BoxFuture<'a, Result<Vec<String>, String>> {
+        Box::pin(async move {
+            self.cells
+                .lock()
+                .unwrap()
+                .remove(cell)
+                .ok_or("no such cell")?;
+            Ok(vec!["Namespace (all objects, volumes and data)".into()])
+        })
+    }
 }
 
 struct Setup {
@@ -1690,4 +1700,173 @@ async fn taint_flows_from_the_queen_to_her_bee_and_back() {
     s.close().await;
     let saved = std::fs::read_to_string(s.dir.join("bees").join(ADA).join("session.json")).unwrap();
     assert!(saved.contains(r#""tainted":true"#), "{saved}");
+}
+
+/// Wait until `log` has a user message containing `needle`.
+async fn message_in(log: &EventLog, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(text) =
+            log.since(0, usize::MAX)
+                .events
+                .into_iter()
+                .find_map(|r| match r.event {
+                    QueenEvent::UserMessage { text, .. } if text.contains(needle) => Some(text),
+                    _ => None,
+                })
+        {
+            return text;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no message with {needle}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_users_force_delete_tells_the_owning_bee_once_and_the_queen_with_her_next_message() {
+    let mut queen = handshake("s-1");
+    queen.extend([
+        prompt(
+            2,
+            "s-1",
+            "<contains:<melissa-notes>\nThe user force-deleted the cell nextcloud (its data is gone).>",
+        ),
+        text("s-1", "Noted."),
+        done(2, "end_turn"),
+    ]);
+    let bo = bee_reply(
+        "b-1",
+        "<melissa-data from=\"the Queen\">\nThe user force-deleted the cell nextcloud",
+        "Removed from my plans.",
+    );
+    let s = setup_full(
+        scratch("force-delete"),
+        vec![queen],
+        vec![bo],
+        BeeLimits::default(),
+        |_| {},
+    );
+    let q = s.queen_token();
+    create_bees(&s, &q, &["Ada", "Bo"]).await;
+    s.cells.set("nextcloud", Owner::Bee(BO.into()));
+
+    let done = s.queen.user_force_delete("nextcloud").await.unwrap();
+    assert_eq!(done.bee.as_deref(), Some(BO));
+    assert_eq!(done.bee_name.as_deref(), Some("Bo"));
+    assert_eq!(done.bee_notice, "delivered");
+    assert!(s.cells.owner("nextcloud").is_none(), "removed");
+    assert!(
+        s.queen.confirmations().pending().is_empty(),
+        "the user decides"
+    );
+    message_in(
+        &s.pool().events_of("Bo").unwrap(),
+        "force-deleted the cell nextcloud",
+    )
+    .await;
+    queen_event(&s, |e| {
+        matches!(e, QueenEvent::CellForceDeleted { cell, bee: Some(b) } if cell == "nextcloud" && b == BO)
+    })
+    .await;
+    // Ada heard nothing.
+    assert!(s
+        .pool()
+        .events_of("Ada")
+        .unwrap()
+        .since(0, 100)
+        .events
+        .is_empty());
+
+    // The Queen hears it with the user's next message (no turn of her own before).
+    assert!(s.queen.status().turn.is_none());
+    let (turn, since) = s.queen.send("What changed?").unwrap();
+    turn_events(&s.queen, since, turn).await;
+
+    let lines = s.audit_lines();
+    let brokered: Vec<_> = lines
+        .iter()
+        .filter(|l| l["action"] == "bee.brokered")
+        .collect();
+    assert_eq!(brokered.len(), 1, "{brokered:?}");
+    assert!(brokered[0]["detail"].as_str().unwrap().starts_with(
+        "from the Queen to bee Bo (c-0a1b2c3d.b2), tagged as data: The user force-deleted"
+    ));
+    let audit = lines
+        .iter()
+        .find(|l| l["action"] == "cell.force_delete")
+        .unwrap();
+    assert_eq!(audit["actor"], "ui");
+    let detail = audit["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with("nextcloud (owner: ") && detail.contains("Bo"),
+        "{detail}"
+    );
+    // Gone: a second force delete has nothing to remove.
+    assert!(matches!(
+        s.queen.user_force_delete("nextcloud").await,
+        Err(QueenError::Invalid(m)) if m.contains("no cell `nextcloud`")
+    ));
+    s.close().await;
+}
+
+#[tokio::test]
+async fn force_deleting_a_cell_of_a_bee_that_is_gone_tells_only_the_queen() {
+    let s = setup("force-delete-orphan", Vec::new());
+    s.cells.set("nextcloud", Owner::Bee("c-0a1b2c3d.b9".into()));
+    let done = s.queen.user_force_delete("nextcloud").await.unwrap();
+    assert_eq!((done.bee, done.bee_notice), (None, "none"));
+    queen_event(&s, |e| {
+        matches!(e, QueenEvent::CellForceDeleted { bee: None, .. })
+    })
+    .await;
+    assert!(!s.audit().contains("bee.brokered"));
+    s.close().await;
+}
+
+#[tokio::test]
+async fn a_working_bee_gets_the_force_delete_message_after_its_turn() {
+    let mut bo = bee_until_cancelled("b-1");
+    bo.extend([
+        prompt(3, "b-1", "<contains:force-deleted the cell nextcloud>"),
+        text("b-1", "Noted."),
+        done(3, "end_turn"),
+    ]);
+    let s = setup_full(
+        scratch("force-delete-busy"),
+        Vec::new(),
+        vec![bo],
+        BeeLimits::default(),
+        |_| {},
+    );
+    let q = s.queen_token();
+    create_bees(&s, &q, &["Bo"]).await;
+    s.cells.set("nextcloud", Owner::Bee(ADA.into()));
+    // The registry gives the first bee b1: Bo is ADA's id here.
+    s.pool().user_send("Bo", "Tidy up").unwrap();
+    let log = s.pool().events_of("Bo").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !log
+        .since(0, 100)
+        .events
+        .iter()
+        .any(|r| matches!(&r.event, QueenEvent::Text { .. }))
+    {
+        assert!(tokio::time::Instant::now() < deadline, "Bo never started");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let done = s.queen.user_force_delete("nextcloud").await.unwrap();
+    assert_eq!(done.bee_notice, "queued");
+    assert!(s
+        .audit()
+        .contains("tagged as data (queued: the bee is working)"));
+    assert!(s.pool().user_cancel("Bo").await.unwrap());
+    message_in(
+        &s.pool().events_of("Bo").unwrap(),
+        "force-deleted the cell nextcloud",
+    )
+    .await;
+    s.close().await;
 }
