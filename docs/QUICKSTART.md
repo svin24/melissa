@@ -134,6 +134,35 @@ scripts/container-run.sh down        # stop; `purge` deletes the container and i
   volume and survives), the first-boot account prompt, SSH, Tailscale. Host ports: `UI_PORT`, `APP_PORT_BASE`.
 - Details and gotchas: [agent-skills/container-mode.md](agent-skills/container-mode.md).
 
+## Run on NixOS — experimental
+
+Melissa is a Nix flake with a NixOS module (`services.melissa`): the Queen as a system service, k3s for apps,
+the agent sandbox. In your system flake:
+
+```nix
+inputs.melissa.url = "path:/path/to/melissa";   # a checkout; nothing is published yet
+# in nixosSystem { modules = [ ... ]; }:
+melissa.nixosModules.default
+{
+  services.melissa = {
+    enable = true;
+    apps.openFirewall = true;        # app ports 30000-30079 for the LAN
+    # k3s.airgapImages = true;       # k3s's own images from the store (offline boxes)
+  };
+}
+```
+
+Then `sudo nixos-rebuild switch`, and set up an agent: `sudo melissa-setup agent opencode` (or `claude`,
+`grok`); the vendors' CLIs run through nix-ld, which the module turns on. The web UI listens on
+127.0.0.1:8080 only (no login yet): `ssh -L 8080:127.0.0.1:8080 you@box`. Updates come with your system:
+`nix flake update melissa && sudo nixos-rebuild switch` (rollback with `nixos-rebuild --rollback`).
+
+- **Status:** verified in a NixOS VM test (`nix build .#checks.x86_64-linux.melissa-nixos -L`, 2026-11-19):
+  web UI, a chat turn, the agent sandbox and network allowlist, k3s with Melissa's policies, an app install
+  reachable from another machine, stop/start, Settings. Not yet on real hardware.
+- **Other distributions with Nix** (Fedora, Debian, ...): a prototype bundle, `.#melissa-host`; k3s comes from the
+  distribution. Details, options and gotchas: [agent-skills/nix-service.md](agent-skills/nix-service.md).
+
 ## Stop, state and reset
 
 - **Stop:** Ctrl-C in the terminal running `just demo`. Agents stop with it.

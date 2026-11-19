@@ -63,6 +63,23 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   domain; clients migrate through `registries.conf` mirrors (no reinstall needed). Sign images (cosign) before any public release.
 - **BuildStream:** a cleaner reproducible build is "later later". Not before the product works.
 
+### 2b. Nix service (host-first track 2)
+
+Kept separate from the container-first text above on purpose (two tracks, two authors).
+
+- **Flake outputs (2026-11-19):** `packages.<system>.melissa` (workspace from `Cargo.lock`, UI embedded),
+  `nixosModules.melissa` (`services.melissa`), `checks.x86_64-linux.melissa-nixos` (NixOS VM test), and a
+  prototype `melissa-host` bundle for other distributions with Nix. Details:
+  `docs/agent-skills/nix-service.md`.
+- **NixOS module:** the shared queen unit, tmpfiles, polkit rule, k3s manifests and helpers (no copies;
+  `packaging/nix/common.nix` names their root), nixpkgs' `services.k3s` (1.37), UI on loopback, app ports
+  30000-30079 behind `apps.openFirewall`, nix-ld for the vendors' agent CLIs from `melissa-setup`.
+- **Updates on NixOS** are the system's: `nix flake update melissa` + `nixos-rebuild switch`, rollback with
+  `nixos-rebuild --rollback` or the boot menu. Melissa never rebuilds the system itself. Settings → Updates
+  should say so (see open question 61).
+- **Other distributions:** `melissa-host` (root Nix profile as GC root, `melissa-host install` links units into
+  `/etc`); k3s from the distribution. Not system-manager for now (Fedora unsupported upstream).
+
 ## 3. Cluster layer
 
 - **Status (2026-11-18):** k3s v1.37.2 ships in both images (enabled on headless), pinned by sha256 in
@@ -555,3 +572,12 @@ Roadmap (rough, phases may overlap):
     desktop image's helper (same files, not run on the desktop VM), and the apply unit ending "failed
     (signal)" at the reboot (cosmetic). (f) Settings has no login
     gate beyond loopback-only (28); with accounts, only the owner may change providers or updates.
+61. Nix service (2026-11-19): (a) Settings → Updates shows "From source on this computer" on NixOS
+    (`HostKind::Other`). Proposed: a `Nix` host kind (marker: `/etc/NIXOS` or `MELISSA_VERSION` ending in
+    `-nix`) that shows the running version and the commands (`nix flake update melissa`, `sudo nixos-rebuild
+    switch`, `--rollback`), no buttons; a UI change, so the owner decides first. (b) The node-IP pin of
+    `k3s-prepare` is re-implemented in the module (a few lines); fold it into a shared script once the
+    `packaging/common` move lands. (c) `melissa-host` was built but not run: podman cannot start containers
+    from the agent session; verify it in a Fedora/Kinoite VM, incl. SELinux labels on `/nix/store` binaries
+    run by systemd. (d) k3s on NixOS is nixpkgs' 1.37.x, not the sha256-pinned `k3s.lock` binary; pin through
+    the flake lock only. (e) Publishing the flake (a public input URL) needs the owner's yes.

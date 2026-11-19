@@ -20,6 +20,9 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [container-mode.md](container-mode.md) — the headless image under podman with systemd as PID 1
   (`scripts/container-run.sh`): flags and why, pasta `--host-lo-to-ns-lo`, masked units, rootless k3s (cpuset
   delegation host prerequisite), `smoke`, app addresses/links, what's verified.
+- [nix-service.md](nix-service.md) — Melissa from the flake: package, NixOS module `services.melissa` (options, k3s,
+  nix-ld for vendor CLIs), the sandbox on NixOS (`SystemRoot`), the NixOS VM test, the non-NixOS `melissa-host`
+  bundle and why not system-manager.
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.

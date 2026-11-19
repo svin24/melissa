@@ -498,3 +498,21 @@ Format: date — decision. Why. Alternatives considered.
   Next: make Melissa install and run as a service on an existing Linux host, via a rootful podman container
   (container mode is already verified rootful) and/or a Nix flake with systemd units. The bootc images (headless,
   desktop) are kept but paused; a "reference distro" is built only after host-first works.
+- **2026-11-19 — Nix service: flake package + NixOS module; the sandbox learns the NixOS layout.** `nix build
+  .#melissa` builds the workspace from `Cargo.lock` with nixpkgs' `rustPlatform` (no crane: one package, no new
+  input); `nixosModules.melissa` reuses the shared queen unit, tmpfiles, polkit rule, k3s manifests and helper
+  scripts (one `root` variable in `packaging/nix/common.nix`) and uses nixpkgs' `services.k3s` (k3s 1.37 from
+  nixpkgs, not the pinned binary of `k3s.lock`). Vendor agent CLIs keep coming from `melissa-setup` and run
+  through nix-ld (on by default); Nix-built CLIs are an option. The sandbox binds `/nix/store` and
+  `/run/current-system` on NixOS and the host's real `/bin`, `/lib64` instead of usr-links. Why: the same
+  files and code paths as the images, so a fix lands everywhere; nix-ld instead of `buildFHSEnv` because the
+  vendors' self-updating installers write into the home and an FHS wrapper would hide the binary path the
+  sandbox preset and egress allowlist depend on. Alternatives: crane (better incremental CI builds; later if
+  needed), module-native units (would drift from the images' hardening), binding all of `/` in the sandbox
+  (exposes far more than the store).
+- **2026-11-19 — Non-NixOS hosts with Nix: a `melissa-host` bundle, not system-manager (prototype).** A root
+  Nix profile (`/nix/var/nix/profiles/melissa`) is the GC root and the update/rollback unit; `melissa-host
+  install` links the units, sysusers and tmpfiles into `/etc` through it. k3s comes from the distribution
+  (on SELinux hosts k3s-selinux labels `/usr/bin/k3s`; a store path would not be labelled). Why: no extra
+  tool, idempotent, easy to remove. numtide's system-manager (v1.1.0) officially supports only
+  Ubuntu/Debian/NixOS and mocks the firewall; revisit if that changes.
