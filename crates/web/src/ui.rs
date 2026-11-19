@@ -175,6 +175,9 @@ impl Ui {
         let log = self.log(who)?;
         let feed = self.feed(who, &log);
         let backend = self.backend(who, &feed);
+        // Learn the models of usable agents that never had a chat (rate-limited, no prompt);
+        // they show in the menu from the next render.
+        self.queen.refresh_models_soon();
         let agents = self.agents(who, None);
         let view = ChatView {
             who,

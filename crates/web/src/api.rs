@@ -10,6 +10,11 @@
 //! - `GET /api/queen/backends` → `{"backends": [{name, label, available, reason?, current,
 //!   model?, models?: [{id, label}]}]}`: the session backends the Queen can switch to
 //!   (`[queen] backends`); `models` only once the agent has reported them.
+//!   Listing also starts a model probe in the background for usable backends whose list is
+//!   missing or stale (rate-limited; see `melissa_agent::queen::backends`).
+//! - `POST /api/queen/backends/refresh` → `{"probes": [{backend, result, models, error?}]}`:
+//!   ask every usable session backend for its models now (no prompt, up to 15 s each, in
+//!   parallel); `result` is `refreshed`, `no_models`, `skipped` (one is running) or `failed`.
 //! - `POST /api/queen/backend` `{"name": "...", "model": "..."?}` → `{backend, model?,
 //!   changed, after_turn}`: switch from the next turn on (saved, audited `queen.backend`);
 //!   422 unknown backend or model, or a backend that cannot run here (not installed, not
@@ -69,6 +74,7 @@ pub(crate) fn routes(queen: Queen) -> Router {
         .route("/api/queen/new-chat", post(new_chat))
         .route("/api/queen/chats", get(past_chats))
         .route("/api/queen/backends", get(backends))
+        .route("/api/queen/backends/refresh", post(refresh_models))
         .route("/api/queen/backend", post(use_backend))
         .route("/api/bees", get(bees))
         .route("/api/bees/{bee}", get(bee))
@@ -197,7 +203,13 @@ struct UseBackend {
 }
 
 async fn backends(State(queen): State<Queen>) -> Response {
+    queen.refresh_models_soon();
     backend_list(queen.backends())
+}
+
+async fn refresh_models(State(queen): State<Queen>) -> Response {
+    let probes = queen.refresh_models(true).await;
+    Json(json!({ "probes": probes })).into_response()
 }
 
 async fn use_backend(State(queen): State<Queen>, Json(body): Json<UseBackend>) -> Response {
