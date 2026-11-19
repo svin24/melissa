@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use melissa_agent::{AcpSpec, ClaudeSpec, CliSpec};
+use melissa_agent::{AcpSpec, ClaudeSpec, CliSpec, EchoSpec};
 use serde::{de::Error as _, Deserialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -146,6 +146,9 @@ pub enum BackendSpec {
     Acp(AcpSpec),
     /// Claude Code over its stream-json protocol (one process per session).
     Claude(ClaudeSpec),
+    /// A session partner with no LLM that repeats messages (`kind = "echo"`): demos, and
+    /// trying the chat and backend switching without an agent subscription.
+    Echo(EchoSpec),
 }
 
 impl BackendSpec {
@@ -154,12 +157,13 @@ impl BackendSpec {
             Self::Cli(s) => &s.name,
             Self::Acp(s) => &s.name,
             Self::Claude(s) => &s.name,
+            Self::Echo(s) => &s.name,
         }
     }
 
     /// Can hold a long-lived session (the Queen's).
     pub fn is_session(&self) -> bool {
-        matches!(self, Self::Acp(_) | Self::Claude(_))
+        matches!(self, Self::Acp(_) | Self::Claude(_) | Self::Echo(_))
     }
 
     #[cfg(test)]
@@ -168,6 +172,7 @@ impl BackendSpec {
             Self::Cli(s) => s.effective_sandbox(),
             Self::Acp(s) => s.effective_sandbox(),
             Self::Claude(s) => s.effective_sandbox(),
+            Self::Echo(_) => melissa_agent::SandboxSpec::disabled(),
         }
     }
 
@@ -176,6 +181,7 @@ impl BackendSpec {
             Self::Cli(s) => s.validate(),
             Self::Acp(s) => s.validate(),
             Self::Claude(s) => s.validate(),
+            Self::Echo(_) => Ok(()),
         }
     }
 }
@@ -198,8 +204,9 @@ impl<'de> Deserialize<'de> for BackendSpec {
             "cli" => value.try_into().map(Self::Cli).map_err(D::Error::custom),
             "acp" => value.try_into().map(Self::Acp).map_err(D::Error::custom),
             "claude" => value.try_into().map(Self::Claude).map_err(D::Error::custom),
+            "echo" => value.try_into().map(Self::Echo).map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
-                "unknown backend kind `{other}` (expected `cli`, `acp` or `claude`)"
+                "unknown backend kind `{other}` (expected `cli`, `acp`, `claude` or `echo`)"
             ))),
         }
     }
@@ -666,6 +673,22 @@ mod tests {
         .unwrap();
         config.validate().unwrap();
         assert!(config.backends.iter().all(BackendSpec::is_session));
+
+        // Echo session backends: no LLM, for demos and for trying backend switching.
+        let config: QueenConfig = toml::from_str(
+            "[[backend]]\nkind = \"echo\"\nname = \"echo-a\"\n[[backend]]\nkind = \"echo\"\n\
+             name = \"echo-b\"\n[queen]\nbackends = [\"echo-a\", \"echo-b\"]",
+        )
+        .unwrap();
+        config.validate().unwrap();
+        // `echo` is the built-in one-shot backend's name.
+        let dup: QueenConfig =
+            toml::from_str("[[backend]]\nkind = \"echo\"\nname = \"echo\"").unwrap();
+        assert!(dup.validate().is_err());
+        assert!(toml::from_str::<QueenConfig>(
+            "[[backend]]\nkind = \"echo\"\nname = \"e\"\ncommand = \"x\""
+        )
+        .is_err());
         for bad in [
             "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nargs = [\"--dangerously-skip-permissions\"]",
             "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nmcp_args = []",

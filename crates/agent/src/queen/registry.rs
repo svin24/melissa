@@ -35,6 +35,9 @@ pub struct BeeRecord {
     pub name: String,
     /// Session backend its agent runs on.
     pub backend: String,
+    /// Model the user chose for it (None: the backend's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Tools it may use (None: the Queen's tools without the Queen-only ones).
     #[serde(default)]
     pub tools: Option<Vec<String>>,
@@ -195,6 +198,7 @@ impl BeeRegistry {
             id: bee_id(&file.comb, file.next),
             name,
             backend: backend.into(),
+            model: None,
             tools,
             created_by: created_by.into(),
             created_at: now(),
@@ -227,6 +231,26 @@ impl BeeRegistry {
             .find(|b| b.id == id)
             .ok_or_else(|| RegistryError::NoSuchBee(name_or_id.into()))?;
         bee.name = new_name;
+        let out = bee.clone();
+        self.save(&file)?;
+        Ok(out)
+    }
+
+    /// The user moves a bee to another backend (and model).
+    pub fn set_backend(
+        &self,
+        id: &str,
+        backend: &str,
+        model: Option<&str>,
+    ) -> Result<BeeRecord, RegistryError> {
+        let mut file = lock(&self.inner.file);
+        let bee = file
+            .bees
+            .iter_mut()
+            .find(|b| b.id == id)
+            .ok_or_else(|| RegistryError::NoSuchBee(id.into()))?;
+        bee.backend = backend.into();
+        bee.model = model.map(str::to_string);
         let out = bee.clone();
         self.save(&file)?;
         Ok(out)

@@ -72,12 +72,50 @@ bee, `mod.rs` the Queen, `bees.rs` bee pool + Queen-only tools, `registry.rs` pe
   one-turn-at-a-time rule (a Queen job and a user message never overlap). The bee's MCP session stays
   unattended even then (one MCP session per agent session).
 
+## Switching backend and model (2026-11-19)
+Code: `queen/backends.rs` (choice, model cache, views), `Conversation::{backends, check_choice, switch}`,
+`Queen::{backends, use_backend, backend_choice}`, `BeePool::{backends_of, user_use_backend}`.
+- The user picks the backend (and model) of the Queen or of one bee. Choices: the Queen's `[queen] backends`; a
+  bee: every session backend. Refused (`QueenError::Unavailable`, HTTP 422) when `SessionBackend::not_ready()`
+  says not installed, not logged in (claude: `~/.claude/.credentials.json`, grok: `~/.grok/auth.json`, only checked
+  when the preset binds that file and no API-key env var is passed) or the sandbox/netbridge is missing. Unknown
+  backend or model → `Invalid` (422).
+- **Saved in state, not config:** Queen → `$XDG_STATE_HOME/melissa/queen/backend.json` (0600; ignored with a warning
+  if the backend left `[queen] backends`); bee → `backend`/`model` in `bees/registry.json`. Audited
+  `queen.backend` / `bee.backend` (actor ui, `"from → to; applies at the next turn|after the running turn"`).
+  Event `backend_switched {backend, model?, model_label?}` (feed: "Switched to Claude (Sonnet 5.5), picking up
+  where we left off").
+- **Never mid-turn:** `send()` snapshots the choice; the turn runs on it. At the start of the next turn
+  `live_session` sees `live.wanted != choice`, closes the old session (like shutdown: `session.json` kept) and
+  opens the new one. Order: choice first, then the rest of `[queen] backends` (failover); bees only their own.
+- **Context carries over like after a lost session:** same backend, other model → the saved session id is
+  resumed (ACP `session/resume` then `session/set_config_option`; Claude `--resume <id> --model <m>`); another
+  backend → no matching `session.json`, so a new session primed with the transcript recap (the preamble). Switching
+  back later does **not** resume that backend's old session (it would miss the turns in between).
+- **Models are only what the agent reports** (`OpenedSession.models`): ACP `configOptions` with `category:
+  "model"` (select; grouped options flattened) in `session/new`/`session/resume`; Claude's `initialize` answer
+  `models[].value/displayName`. Kept per backend in `queen/models.json` (0600, shared by Queen and bees) once a
+  session on that backend has opened; before that a backend shows no models and a model can't be chosen. Claude's
+  `--model` from the user replaces the config's `--model`; ids are checked with `session::valid_model_id`.
+- Verified: grok 1.0.89's binary contains `configOptions`/`set_config_option` (strings; not yet run live); claude
+  2.1.327's `initialize` answer lists `default, opus, fable, sonnet, haiku, …` with display names (live, no prompt
+  sent); OpenCode sends `configOptions` (fixture `opencode_comb_info.jsonl`).
+- `kind = "echo"` session backends (`[[backend]] kind = "echo"`, `name = "echo-a"`; not `echo`): no LLM, repeat the
+  message and say how many earlier messages Melissa handed over. For demos and trying switching.
+- API: `GET /api/queen/backends`, `POST /api/queen/backend {name, model?}`, `GET /api/bees/{bee}/backends`, `POST
+  /api/bees/{bee}/backend`. CLI: `melissa-queen backend [list] [--bee <bee>]`, `backend use <name> [--model <id>]
+  [--bee <bee>]`.
+- Verified 2026-11-19 (dev laptop, temp XDG dirs, port 18093, echo-a/echo-b + claude-session with a seeded
+  model list + a missing opencode): message on echo-a, switch in the UI → feed line, next message "Connected to
+  echo-b" and the echo said it got 2 earlier messages; switch to Claude · Sonnet 5.5 shown, not sent; CLI list/use
+  and 422 refusals; audit lines as above.
+
 ## Event model (`QueenEvent`, JSON `{"seq", "ts", "type", ...}`)
 Same shape for the Queen and every bee. `user_message`, `text` (reply piece), `agent_message` (whole reply,
 at turn end; was `queen_message`, still read from old transcripts), `tool_call` (id, title, status
 pending/running/done/failed), `permission`, `confirmation_needed` (id, task, tool, reason),
 `confirmation_resolved` (approved/denied/withdrawn), `session_opened` (backend, resumed), `backend_failed`,
-`session_lost`, `turn_finished` (stop_reason: end_turn, cancelled, refusal, max_tokens, max_turn_requests,
+`session_lost`, `backend_switched` (backend, model, model_label), `turn_finished` (stop_reason: end_turn, cancelled, refusal, max_tokens, max_turn_requests,
 error), `error`, `tainted` (tool, subject), `new_chat`, and in memory only `earlier_start`/`earlier_end`. Only in the Queen's log: `bee_created` (bee, name, backend), `bee_started` (bee, name,
 goal), `bee_finished` (bee, name, status succeeded/failed/cancelled, error), `cell_reassigned` (cell, from,
 to, by). Agent text is untrusted: the web UI renders it with the safe `components::markdown`.

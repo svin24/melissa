@@ -47,8 +47,8 @@ use melissa_agent::{
     tools::{
         BeeNames, CellStore, CombInfo, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry,
     },
-    AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EgressProxy, McpLink,
-    TaskBoard,
+    AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EchoSessionBackend,
+    EgressProxy, McpLink, TaskBoard,
 };
 use melissa_hive::{app_tools, AppSettings, Cells, ClusterHealth, KubeApps, LazyCluster};
 use serde_json::{json, Value};
@@ -76,6 +76,11 @@ const USAGE: &str = "usage: melissa-queen [--config <path>] [COMMAND]
   confirm list|approve <id>|deny <id>
   bee list                    this comb's bees (also: bees)
   bee rename <bee> <name>     give a bee a new name
+  backend [list] [--bee <bee>]
+                              the agents the Queen (or a bee) can run on, which one it uses
+                              and the models each offers
+  backend use <name> [--model <id>] [--bee <bee>]
+                              switch the Queen (or a bee) to that agent from its next message
   cell list                   every cell (installed app) and the bee that looks after it
   cell reassign <cell> --to <bee>
                               give a cell to another bee (your decision, no confirmation)";
@@ -105,6 +110,12 @@ enum Command {
     Bees,
     RenameBee(String, String),
     Cells,
+    /// `backend list|use`: the Queen's (None) or a bee's backend.
+    Backend {
+        bee: Option<String>,
+        /// `use <name> [--model <id>]`; None: list.
+        switch: Option<(String, Option<String>)>,
+    },
     Reassign {
         cell: String,
         to: String,
@@ -152,6 +163,13 @@ async fn main() -> anyhow::Result<()> {
         Command::Bees => return client::bees(&api).await,
         Command::RenameBee(bee, name) => return client::rename_bee(&api, bee, name).await,
         Command::Cells => return client::cells(&api).await,
+        Command::Backend { bee, switch } => {
+            let to = to(bee);
+            return match switch {
+                None => client::backends(&to).await,
+                Some((name, model)) => client::use_backend(&to, name, model.as_deref()).await,
+            };
+        }
         Command::Reassign { cell, to } => return client::reassign(&api, cell, to).await,
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
         Command::AppCredentials(app) => {
@@ -319,6 +337,11 @@ async fn serve(
                 );
                 sessions.push(acp.clone());
                 acp
+            }
+            BackendSpec::Echo(spec) => {
+                let echo = Arc::new(EchoSessionBackend::new(spec));
+                sessions.push(echo.clone());
+                echo
             }
             BackendSpec::Claude(spec) => {
                 let claude = Arc::new(
@@ -495,6 +518,7 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
         [c, a, bee, words @ ..] if c == "bee" && a == "rename" && !words.is_empty() => {
             Command::RenameBee(bee.clone(), words.join(" "))
         }
+        [c, tail @ ..] if c == "backend" || c == "backends" => parse_backend(tail)?,
         [c] if c == "cell" => Command::Cells,
         [c, a] if c == "cell" && a == "list" => Command::Cells,
         [c, a, cell, flag, to] if c == "cell" && a == "reassign" && flag == "--to" => {
@@ -518,9 +542,60 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
     Ok((config, command))
 }
 
+/// `backend [list] [--bee <bee>]`, `backend use <name> [--model <id>] [--bee <bee>]`.
+fn parse_backend(args: &[String]) -> anyhow::Result<Command> {
+    let mut words = Vec::new();
+    let (mut bee, mut model) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--bee" => bee = Some(it.next().context("--bee needs a bee's name")?.clone()),
+            "--model" => model = Some(it.next().context("--model needs a model id")?.clone()),
+            _ => words.push(a.clone()),
+        }
+    }
+    let switch = match words.as_slice() {
+        [] => None,
+        [l] if l == "list" => None,
+        [u, name] if u == "use" => Some((name.clone(), model.take())),
+        _ => bail!("{USAGE}"),
+    };
+    if model.is_some() {
+        bail!("--model goes with `backend use <name>`");
+    }
+    Ok(Command::Backend { bee, switch })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_backend_commands() {
+        assert!(matches!(
+            parse(&["backend"]).unwrap().1,
+            Command::Backend {
+                bee: None,
+                switch: None
+            }
+        ));
+        assert!(matches!(
+            parse(&["backend", "list", "--bee", "Ada"]).unwrap().1,
+            Command::Backend { bee: Some(b), switch: None } if b == "Ada"
+        ));
+        assert!(matches!(
+            parse(&["backend", "use", "claude-session"]).unwrap().1,
+            Command::Backend { bee: None, switch: Some((n, None)) } if n == "claude-session"
+        ));
+        assert!(matches!(
+            parse(&["backend", "use", "claude-session", "--model", "sonnet", "--bee", "Ada"]).unwrap().1,
+            Command::Backend { bee: Some(b), switch: Some((n, Some(m))) }
+                if b == "Ada" && n == "claude-session" && m == "sonnet"
+        ));
+        assert!(parse(&["backend", "use"]).is_err());
+        assert!(parse(&["backend", "list", "--model", "x"]).is_err());
+        assert!(parse(&["backend", "use", "x", "--model"]).is_err());
+    }
 
     fn parse(args: &[&str]) -> anyhow::Result<(Option<PathBuf>, Command)> {
         parse_args(args.iter().map(|s| s.to_string()).collect())

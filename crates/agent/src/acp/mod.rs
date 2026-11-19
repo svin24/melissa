@@ -294,7 +294,10 @@ impl AcpBackend {
         let (env, session_servers) = match self.spec.flavor {
             AcpFlavor::Generic => (Vec::new(), open.mcp_servers.clone()),
             AcpFlavor::Opencode => (
-                opencode_env(&open.mcp_servers, self.spec.model.as_deref()),
+                opencode_env(
+                    &open.mcp_servers,
+                    open.model.as_deref().or(self.spec.model.as_deref()),
+                ),
                 Vec::new(),
             ),
         };
@@ -401,6 +404,17 @@ impl AcpBackend {
 impl SessionBackend for AcpBackend {
     fn info(&self) -> BackendInfo {
         Backend::info(self)
+    }
+
+    fn not_ready(&self) -> Option<crate::session::NotReady> {
+        crate::cli::not_ready(
+            &self.spec.command,
+            self.program.is_some(),
+            &self.sandbox,
+            self.bwrap.is_some(),
+            self.egress.as_ref(),
+            self.home.as_deref(),
+        )
     }
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {

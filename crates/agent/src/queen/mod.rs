@@ -8,6 +8,7 @@
 //! ([`conversation`]). Everything is recorded in the [`events::EventLog`] (clients follow it
 //! with a cursor) and the JSONL [`transcript::Transcript`].
 
+pub mod backends;
 pub mod bees;
 pub(crate) mod conversation;
 pub mod events;
@@ -29,6 +30,7 @@ use crate::{
     AuditRecord, TaskBoard, TaskId, MAX_PROMPT_BYTES,
 };
 
+use backends::{BackendChoice, BackendView, ModelCache, Switched};
 use bees::BeePool;
 use conversation::{Conversation, ConversationSpec};
 pub use conversation::{QueenStatus, TurnOutcome};
@@ -71,6 +73,9 @@ pub enum QueenError {
     NoBackends,
     #[error("no bee `{0}` on this comb")]
     NoSuchBee(String),
+    /// The backend asked for cannot run here now (not installed, not logged in).
+    #[error("{0}")]
+    Unavailable(String),
     /// Bad input for a bee or cell operation (name taken, bad name, ...).
     #[error("{0}")]
     Invalid(String),
@@ -81,6 +86,8 @@ pub enum QueenError {
 
 struct Inner {
     conv: Conversation,
+    /// Where the user's backend choice is saved.
+    choice_path: PathBuf,
     server: McpServer,
     board: TaskBoard,
     pool: BeePool,
@@ -133,10 +140,26 @@ impl Queen {
             },
             ..TaskContext::default()
         };
+        let models = ModelCache::open(settings.state_dir.join("models.json"));
+        let choice_path = settings.state_dir.join("backend.json");
+        let choice = backends::load_choice(&choice_path).filter(|c| {
+            let known = settings.backends.contains(&c.backend);
+            if !known {
+                tracing::warn!(
+                    backend = %c.backend,
+                    "the Queen's chosen backend is no longer in `[queen] backends`; ignoring it"
+                );
+            }
+            known
+        });
         let spec = ConversationSpec {
             who: "the Queen".into(),
             audit_kind: "queen",
             backends: settings.backends.clone(),
+            choices: settings.backends.clone(),
+            choice,
+            failover: true,
+            models: models.clone(),
             system_prompt: settings.system_prompt.clone(),
             state_dir: settings.state_dir.clone(),
             workdir: settings.workdir.clone(),
@@ -162,6 +185,7 @@ impl Queen {
             base_url: link.base_url,
             backends,
             default_backend: settings.bee_backend.clone().unwrap_or(first),
+            models,
             bee_prompt: settings.bee_prompt.clone(),
             queen_allow: allow,
             queen_task: task,
@@ -171,6 +195,7 @@ impl Queen {
         Ok(Self {
             inner: Arc::new(Inner {
                 conv,
+                choice_path,
                 server: link.server,
                 board,
                 pool: pool.clone(),
@@ -223,6 +248,31 @@ impl Queen {
 
     pub fn status(&self) -> QueenStatus {
         self.inner.conv.status()
+    }
+
+    /// The session backends the user can switch the Queen to (`[queen] backends`), with
+    /// what is usable now, the current one and the models each offers (once known).
+    pub fn backends(&self) -> Vec<BackendView> {
+        self.inner.conv.backends()
+    }
+
+    /// The user's saved choice of backend for the Queen, if any.
+    pub fn backend_choice(&self) -> Option<BackendChoice> {
+        self.inner.conv.choice()
+    }
+
+    /// The user switches the Queen to `backend` (and `model`, one the backend reported).
+    /// Saved in the state directory, audited `queen.backend`; applies at the next turn,
+    /// with the conversation so far. Refused for a backend that is not usable now.
+    pub fn use_backend(&self, backend: &str, model: Option<&str>) -> Result<Switched, QueenError> {
+        let choice = self.inner.conv.check_choice(backend, model)?;
+        backends::save_choice(&self.inner.choice_path, &choice).map_err(|e| {
+            QueenError::Failed(format!(
+                "cannot save the choice ({}): {e}",
+                self.inner.choice_path.display()
+            ))
+        })?;
+        Ok(self.inner.conv.switch(choice, "ui"))
     }
 
     /// The policy context and tool allowlist of the Queen's MCP session.

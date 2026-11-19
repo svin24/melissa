@@ -15,7 +15,8 @@ Read this at the start of every session. One file per skill; update the skill wh
   CONNECT proxy with per-backend allowlists, MCP-only socket, `network = proxy|learn|none|host`, what each CLI contacts.
 - [queen-loop.md](queen-loop.md) — the Queen (head agent) and her persistent, named bees: the shared
   conversation machinery, bee registry, bee tools and guards, event stream + transcript, resume via a
-  Melissa-owned session store, `/api/queen`, `/api/bees`, `melissa-queen chat|ask [--bee]`, `bee`, `cell`.
+  Melissa-owned session store, `/api/queen`, `/api/bees`, `melissa-queen chat|ask [--bee]`, `bee`, `cell`;
+  switching a conversation's backend/model at runtime (`backend list|use`, models only as agents report them).
 - [k3s-on-bootc.md](k3s-on-bootc.md) — k3s pinned + verified in the image, airgap images, SELinux, Traefik telemetry off, smoke test,
   queen's read-only API access (ServiceAccount, systemd credential, rotation).
 - [kube-rs-client.md](kube-rs-client.md) — `crates/hive`: kube-rs over rustls, `ClusterRead` trait + fakes, adding cluster tools.

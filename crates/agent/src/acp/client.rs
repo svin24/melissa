@@ -22,7 +22,9 @@ use agent_client_protocol::{
             InitializeRequest, McpServer, McpServerHttp, NewSessionRequest, PermissionOption,
             PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
             RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-            SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
+            SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+            SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
+            SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
         },
         ConnectionTo, Responder,
     },
@@ -33,9 +35,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     session::{
-        AgentSession, OpenSession, OpenedSession, PermissionDecision, PermissionHandler,
-        PermissionRequest, PlanStep, SessionCapabilities, SessionEvent, StopReason, ToolKind,
-        ToolStatus,
+        AgentSession, ModelList, ModelOption, OpenSession, OpenedSession, PermissionDecision,
+        PermissionHandler, PermissionRequest, PlanStep, SessionCapabilities, SessionEvent,
+        StopReason, ToolKind, ToolStatus,
     },
     AgentError, BoxFuture,
 };
@@ -123,7 +125,12 @@ where
     let abort = AbortOnDrop(task);
 
     let ready = tokio::time::timeout(OPEN_TIMEOUT, ready_rx).await;
-    let (id, caps, resumed) = match ready {
+    let Ready {
+        id,
+        caps,
+        resumed,
+        models,
+    } = match ready {
         Ok(Ok(Ok(ready))) => ready,
         Ok(Ok(Err(e))) => return Err(AgentError::Protocol(format!("{e}{}", stderr.summary()))),
         Ok(Err(_)) => {
@@ -151,6 +158,7 @@ where
         }),
         events: events_rx,
         resumed,
+        models,
     })
 }
 
@@ -160,7 +168,7 @@ async fn run<T>(
     open: OpenSession,
     events: mpsc::UnboundedSender<SessionEvent>,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    ready: oneshot::Sender<Result<(String, SessionCapabilities, bool), String>>,
+    ready: oneshot::Sender<Result<Ready, String>>,
 ) -> Result<(), agent_client_protocol::Error>
 where
     T: ConnectTo<Client> + Send + 'static,
@@ -208,14 +216,15 @@ where
             agent_client_protocol::on_receive_notification!(),
         )
         .connect_with(transport, async move |cx: ConnectionTo<Agent>| {
-            let (session_id, caps, resumed) = match handshake(&cx, &open).await {
+            let ok = match handshake(&cx, &open).await {
                 Ok(ok) => ok,
                 Err(e) => {
                     let _ = ready.send(Err(e.to_string()));
                     return Err(e);
                 }
             };
-            let _ = ready.send(Ok((session_id.clone(), caps, resumed)));
+            let session_id = ok.id.clone();
+            let _ = ready.send(Ok(ok));
             let busy = Arc::new(AtomicBool::new(false));
             loop {
                 let cmd = tokio::select! {
@@ -274,13 +283,21 @@ where
         .await
 }
 
+/// What the handshake found out.
+struct Ready {
+    id: String,
+    caps: SessionCapabilities,
+    resumed: bool,
+    models: Option<ModelList>,
+}
+
 /// `initialize` (v1, no client fs/terminal capabilities), then `session/resume` if asked
-/// for and supported, else (or if resuming fails) `session/new`. Returns the session id,
-/// the capabilities and whether the session was resumed.
+/// for and supported, else (or if resuming fails) `session/new`; then the model, if one was
+/// asked for and the agent offers it (`session/set_config_option`).
 async fn handshake(
     cx: &ConnectionTo<Agent>,
     open: &OpenSession,
-) -> Result<(String, SessionCapabilities, bool), agent_client_protocol::Error> {
+) -> Result<Ready, agent_client_protocol::Error> {
     let init = InitializeRequest::new(ProtocolVersion::V1)
         .client_capabilities(ClientCapabilities::new())
         .client_info(Implementation::new("melissa", env!("CARGO_PKG_VERSION")));
@@ -328,13 +345,100 @@ async fn handshake(
         let resume =
             ResumeSessionRequest::new(id.clone(), open.cwd.clone()).mcp_servers(servers.clone());
         match cx.send_request(resume).block_task().await {
-            Ok(_) => return Ok((id.clone(), caps, true)),
+            Ok(r) => {
+                let models = choose_model(cx, id, r.config_options, open.model.as_deref()).await;
+                return Ok(Ready {
+                    id: id.clone(),
+                    caps,
+                    resumed: true,
+                    models,
+                });
+            }
             Err(e) => tracing::info!("cannot resume agent session {id}: {e}; starting a new one"),
         }
     }
     let new = NewSessionRequest::new(open.cwd.clone()).mcp_servers(servers);
     let new = cx.send_request(new).block_task().await?;
-    Ok((new.session_id.to_string(), caps, false))
+    let id = new.session_id.to_string();
+    let models = choose_model(cx, &id, new.config_options, open.model.as_deref()).await;
+    Ok(Ready {
+        id,
+        caps,
+        resumed: false,
+        models,
+    })
+}
+
+/// The agent's model option (a select in category `model`), its id and choices.
+fn model_option(options: &[SessionConfigOption]) -> Option<(String, ModelList)> {
+    options.iter().find_map(|o| {
+        if o.category != Some(SessionConfigOptionCategory::Model) {
+            return None;
+        }
+        let SessionConfigKind::Select(select) = &o.kind else {
+            return None;
+        };
+        let flat: Vec<ModelOption> = match &select.options {
+            SessionConfigSelectOptions::Ungrouped(list) => list
+                .iter()
+                .map(|c| ModelOption {
+                    id: c.value.to_string(),
+                    label: c.name.clone(),
+                })
+                .collect(),
+            SessionConfigSelectOptions::Grouped(groups) => groups
+                .iter()
+                .flat_map(|g| g.options.iter())
+                .map(|c| ModelOption {
+                    id: c.value.to_string(),
+                    label: c.name.clone(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some((
+            o.id.to_string(),
+            ModelList {
+                current: Some(select.current_value.to_string()),
+                options: flat,
+            },
+        ))
+    })
+}
+
+/// Report the agent's models; switch to `wanted` if it is one of them and not the current
+/// one. A model the agent does not offer (or a failed switch) keeps the agent's choice: the
+/// session still works, and the returned list says which model it really uses.
+async fn choose_model(
+    cx: &ConnectionTo<Agent>,
+    session: &str,
+    options: Option<Vec<SessionConfigOption>>,
+    wanted: Option<&str>,
+) -> Option<ModelList> {
+    let (config_id, mut models) = model_option(options.as_deref().unwrap_or_default())?;
+    let Some(wanted) = wanted else {
+        return Some(models);
+    };
+    if models.current.as_deref() == Some(wanted) {
+        return Some(models);
+    }
+    if !models.contains(wanted) {
+        tracing::warn!("the agent does not offer model `{wanted}`; keeping its default");
+        return Some(models);
+    }
+    let req = SetSessionConfigOptionRequest::new(
+        session.to_string(),
+        config_id,
+        SessionConfigOptionValue::value_id(wanted.to_string()),
+    );
+    match cx.send_request(req).block_task().await {
+        Ok(r) => match model_option(&r.config_options) {
+            Some((_, after)) => models = after,
+            None => models.current = Some(wanted.to_string()),
+        },
+        Err(e) => tracing::warn!("cannot switch the agent to model `{wanted}`: {e}"),
+    }
+    Some(models)
 }
 
 /// Decide one permission request and answer it; a cancel answers `cancelled` instead.

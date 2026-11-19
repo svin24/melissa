@@ -1084,6 +1084,115 @@ button.send svg {
   padding: 0 0.25rem 0.4rem;
 }
 
+/* Agent menu in the composer status: "Runs on Grok ▾" opens a small panel above the
+   status line (anchored to the line, so it never runs off a phone screen). */
+.composer-status:has(.agent-menu) {
+  position: relative;
+}
+
+.agent-menu {
+  display: inline-block;
+}
+
+.agent-menu > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 32px;
+  padding: 0 0.4rem;
+  border-radius: 8px;
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agent-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-menu > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.agent-menu .caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+}
+
+.agent-menu[open] .caret {
+  transform: rotate(180deg);
+}
+
+.agent-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  width: min(23rem, 100%);
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.8rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  font-size: 0.9rem;
+}
+
+.agent-panel label {
+  font-weight: 600;
+}
+
+.agent-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.agent-row select {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 0.6rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.agent-note,
+.agent-hint {
+  margin: 0;
+  color: var(--muted);
+}
+
+.agent-hint code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--ground);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+.agent-error {
+  color: var(--caution);
+  font-weight: 600;
+}
+
+@media (hover: hover) {
+  .agent-menu > summary:hover {
+    background: var(--surface);
+  }
+}
+
 /* --- Honeycomb -------------------------------------------------------------------------- */
 
 .honeycomb {

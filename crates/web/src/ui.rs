@@ -14,6 +14,10 @@
 //! - `POST /ui/messages` / `POST /ui/bees/{bee}/messages` (form `text`), `POST /ui/cancel` /
 //!   `POST /ui/bees/{bee}/cancel`, `POST /ui/confirmations/{id}/approve|deny`: the same calls
 //!   as the JSON API. htmx gets a fragment; a plain form post gets a redirect.
+//! - `POST /ui/backend` / `POST /ui/bees/{bee}/backend` (form `choice`: `<backend>` or
+//!   `<backend> <model>`, posted with the composer like Stop): switch the agent from the
+//!   next turn. htmx gets the composer status (with the menu, or why it was refused);
+//!   a plain form post gets a redirect.
 //! - `POST /ui/new-chat`: a new chat with Melissa (plain form, redirects to `/`);
 //!   `GET /chats/{id}`: an archived chat, read-only.
 //! - Stream cursors carry the log's epoch (`?epoch=`, SSE ids `<epoch>-<seq>`): a page from
@@ -41,7 +45,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    components::ApprovalState,
+    agents,
+    components::{composer_status, AgentMenu, ApprovalState},
     feed::{approval_words, backend_label, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, Frame, View, Who},
@@ -70,6 +75,8 @@ pub(crate) fn routes(queen: Queen, hive: HiveCache) -> Router {
         .route("/ui/bees/{bee}/cancel", post(bee_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
         .route("/ui/new-chat", post(new_chat))
+        .route("/ui/backend", post(queen_backend))
+        .route("/ui/bees/{bee}/backend", post(bee_backend))
         .route("/chats/{id}", get(past_chat_page))
         .with_state(Ui { queen, hive })
 }
@@ -113,6 +120,18 @@ impl Ui {
             .or_else(|| feed.backend().map(str::to_string))
     }
 
+    /// The agent menu of a conversation (None if it cannot be read).
+    fn agents(&self, who: Who<'_>, error: Option<String>) -> Option<AgentMenu> {
+        let (views, action) = match who {
+            Who::Queen => (self.queen.backends(), "/ui/backend".to_string()),
+            Who::Bee(id) => (
+                self.queen.bees().backends_of(id).ok()?,
+                format!("/ui/bees/{id}/backend"),
+            ),
+        };
+        (!views.is_empty()).then(|| agents::menu(&views, action, error))
+    }
+
     fn waiting(&self) -> usize {
         self.queen.confirmations().pending().len()
     }
@@ -146,11 +165,13 @@ impl Ui {
         let log = self.log(who)?;
         let feed = self.feed(who, &log);
         let backend = self.backend(who, &feed);
+        let agents = self.agents(who, None);
         let view = ChatView {
             who,
             epoch: log.epoch(),
             feed: &feed,
             backend: backend.as_deref(),
+            agents: agents.as_ref(),
             busy: self.status(who).is_some_and(|s| s.turn.is_some()),
             draft,
             error,
@@ -358,12 +379,17 @@ fn stream(
                 return Some((Ok(Event::default().event("reload").data("")), st));
             }
             let backend = st.ui.backend(st.who(), &st.feed);
+            let agents = changes
+                .contains(&Change::Status)
+                .then(|| st.ui.agents(st.who(), None))
+                .flatten();
             let html = pages::stream_update(
                 &st.feed,
                 &changes,
                 st.view,
                 st.who(),
                 backend.as_deref(),
+                agents.as_ref(),
                 st.ui.waiting(),
             );
             if html.is_empty() {
@@ -442,11 +468,13 @@ async fn message_reply(
             .and_then(|s| s.backend.as_deref())
             .map(backend_label);
         let feed = Feed::new();
+        let agents = ui.agents(who, None);
         return pages::composer_box(&ChatView {
             who,
             epoch: 0,
             feed: &feed,
             backend,
+            agents: agents.as_ref(),
             busy,
             draft,
             error: error.as_deref(),
@@ -460,6 +488,89 @@ async fn message_reply(
     match error {
         None => Redirect::to(&back).into_response(),
         Some(e) => match ui.chat_page(who, bee, draft, Some(&e)).await {
+            Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
+            Err(e) => error_page(e),
+        },
+    }
+}
+
+#[derive(Deserialize)]
+struct BackendForm {
+    choice: String,
+}
+
+async fn queen_backend(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Form(form): Form<BackendForm>,
+) -> Response {
+    let (backend, model) = agents::parse_choice(&form.choice);
+    let result = ui.queen.use_backend(backend, model).map(|_| ());
+    backend_reply(&ui, Who::Queen, None, &headers, backend, result).await
+}
+
+async fn bee_backend(
+    State(ui): State<Ui>,
+    Path(bee): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<BackendForm>,
+) -> Response {
+    let Some(bee) = ui.bee(&bee) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    let (backend, model) = agents::parse_choice(&form.choice);
+    let result = ui
+        .queen
+        .bees()
+        .user_use_backend(&bee.id, backend, model)
+        .map(|_| ());
+    backend_reply(
+        &ui,
+        Who::Bee(&bee.id),
+        Some(&bee),
+        &headers,
+        backend,
+        result,
+    )
+    .await
+}
+
+/// The answer to a switch: the composer status with the agent menu (and why a switch was
+/// refused) for htmx; the chat page otherwise. The feed line comes with the event stream.
+async fn backend_reply(
+    ui: &Ui,
+    who: Who<'_>,
+    bee: Option<&BeeView>,
+    headers: &HeaderMap,
+    backend: &str,
+    result: Result<(), QueenError>,
+) -> Response {
+    let error = match result {
+        Ok(()) => None,
+        Err(QueenError::Unavailable(_)) => Some(format!(
+            "{} isn't ready on this device yet.",
+            backend_label(backend)
+        )),
+        Err(QueenError::Failed(e)) => Some(format!("Couldn't switch: {e}.")),
+        Err(_) => Some("Couldn't switch: that agent or model isn't available here.".into()),
+    };
+    if is_htmx(headers) {
+        let status = ui.status(who);
+        let busy = status.as_ref().is_some_and(|s| s.turn.is_some());
+        let label = status
+            .as_ref()
+            .and_then(|s| s.backend.as_deref())
+            .map(backend_label);
+        let agents = ui.agents(who, error);
+        return composer_status(&who.cancel_url(), label, busy, agents.as_ref()).into_response();
+    }
+    let back = match bee {
+        Some(b) => pages::bee_href(&b.id),
+        None => "/".to_string(),
+    };
+    match error {
+        None => Redirect::to(&back).into_response(),
+        Some(e) => match ui.chat_page(who, bee, "", Some(&e)).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },

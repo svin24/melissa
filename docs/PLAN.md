@@ -260,7 +260,9 @@ HIVE-MODEL.md; details in `docs/agent-skills/cells-and-ownership.md` and `queen-
   helper; listed under Conversations in the rail); the task dashboard moved to `/tasks`. Live updates over SSE from
   the conversations' event logs (htmx SSE extension, vendored). Fonts Atkinson Hyperlegible Next and Bricolage
   Grotesque vendored (OFL). The UI says "helper" for a bee and "app" for a cell. Details:
-  [htmx-component.md](agent-skills/htmx-component.md). Not yet: disk usage, upkeep line, several conversations with
+  [htmx-component.md](agent-skills/htmx-component.md). Backend/model switch (2026-11-19): "Runs on Grok ▾" in the
+  composer status of the Queen's and each helper's chat; API `/api/queen/backend(s)`, `/api/bees/{bee}/backend(s)`,
+  CLI `melissa-queen backend list|use`; see [queen-loop.md](agent-skills/queen-loop.md). Not yet: disk usage, upkeep line, several conversations with
   the Queen / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
 
 ## 6b. Clients (later)
@@ -490,3 +492,8 @@ Roadmap (rough, phases may overlap):
     in the VM vs 2.3.2 on the laptop needed a sandbox change). Pin versions or checksums per Melissa release?
 54. Agent logins on the headless box: Grok tokens expire after 7 days; Claude's OAuth refresh under the sandbox's
     bind mount is unverified (24). How does a tester learn a login expired (UI notice, `melissa-setup` status)?
+55. Backend switch (2026-11-19): (a) model lists appear only after a backend has had a session (Grok's list is
+    still unverified live); should Melissa probe a CLI's models on demand (a short handshake, no prompt)? (b) The
+    UI offers every model the agent lists (Claude also lists older ids); curate or keep the agent's list? (c) Should
+    a bee follow the Queen's switch, or the Queen's switch also change `bee_backend` for new bees? (today: no, each
+    is separate). (d) A tool for the Queen to change a bee's backend (today only the user can).

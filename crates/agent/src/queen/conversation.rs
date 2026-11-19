@@ -20,6 +20,10 @@
 //!   conversation starts tainted too: a resumed session still has that content, and a new
 //!   one is primed from the transcript. The flag is saved in `session.json`, so it also
 //!   survives a daemon restart.
+//! - **Backend switch.** The user may choose another backend (and model) at any time; it
+//!   takes effect when the next turn starts, never during one ([`super::backends`]). The
+//!   old session closes like at shutdown; the new one resumes it (same backend, other
+//!   model) or starts primed from the transcript, as after a lost session.
 //! - **System prompt.** The first message of every new session carries the system prompt
 //!   (a reviewed text file shipped with Melissa) as a preamble: ACP has no system prompt
 //!   field that Grok supports.
@@ -37,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, task::AbortHandle};
 
 use super::{
+    backends::{self, BackendChoice, BackendView, ModelCache, Switched},
     events::{EventLog, QueenEvent, TurnId},
     transcript::shorten,
     QueenError,
@@ -45,8 +50,8 @@ use crate::{
     acp::MCP_SERVER_NAME,
     mcp::{McpServer, TaintSource},
     session::{
-        AgentSession, McpServerSpec, OpenSession, PermissionContext, PolicyPermissions,
-        SessionBackend, SessionEvent, ToolStatus,
+        valid_model_id, AgentSession, McpServerSpec, NotReady, OpenSession, PermissionContext,
+        PolicyPermissions, SessionBackend, SessionEvent, ToolStatus,
     },
     tools::TaskContext,
     AgentError, AuditLog, AuditRecord, TaskId, MAX_PROMPT_BYTES,
@@ -64,8 +69,17 @@ pub(crate) struct ConversationSpec {
     pub who: String,
     /// Prefix of audit actions (`queen.message`, `bee.session`, ...).
     pub audit_kind: &'static str,
-    /// Session backends to try, in order.
+    /// Session backends to try, in order (after the user's choice, if any).
     pub backends: Vec<String>,
+    /// Backends the user may switch this conversation to.
+    pub choices: Vec<String>,
+    /// The user's choice (backend and model), saved by the owner of the conversation.
+    pub choice: Option<BackendChoice>,
+    /// When the chosen backend cannot start, try the others in `backends` (the Queen);
+    /// otherwise the turn fails (a bee runs on its own backend only).
+    pub failover: bool,
+    /// Models each backend reported (shared, filled when sessions open).
+    pub models: ModelCache,
     pub system_prompt: String,
     /// `session.json`, the agent's session store, the transcript live here.
     pub state_dir: PathBuf,
@@ -86,6 +100,9 @@ pub struct QueenStatus {
     pub turn: Option<TurnId>,
     /// Backend of the open session, if any.
     pub backend: Option<String>,
+    /// Model of the open session, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Newest event sequence number.
     pub last_seq: u64,
 }
@@ -107,6 +124,11 @@ struct Live {
     gen: u64,
     session: Arc<dyn AgentSession>,
     backend: String,
+    /// The model the session uses, if known.
+    model: Option<String>,
+    /// The user's choice when the session opened; a different choice now means the next
+    /// turn opens a new session.
+    wanted: Option<BackendChoice>,
     /// The session's MCP token (closed with the session).
     token: String,
     /// The system prompt has been sent in this session.
@@ -131,6 +153,8 @@ struct Inner {
     /// The running turn's reply so far.
     text: Mutex<String>,
     live: Mutex<Option<Live>>,
+    /// The user's backend choice (applies from the next turn).
+    choice: Mutex<Option<BackendChoice>>,
     gen: AtomicU64,
     /// The conversation has read untrusted content (sticky, saved in `session.json`).
     tainted: AtomicBool,
@@ -174,6 +198,7 @@ impl Conversation {
             last: events.restored_turns(),
             ..TurnState::default()
         };
+        let choice = spec.choice.clone();
         Self {
             inner: Arc::new(Inner {
                 spec,
@@ -185,6 +210,7 @@ impl Conversation {
                 turn: Mutex::new(turn),
                 text: Mutex::new(String::new()),
                 live: Mutex::new(None),
+                choice: Mutex::new(choice),
                 gen: AtomicU64::new(0),
                 tainted: AtomicBool::new(tainted),
                 last: Mutex::new(None),
@@ -206,10 +232,165 @@ impl Conversation {
     }
 
     pub(crate) fn status(&self) -> QueenStatus {
+        let live = lock(&self.inner.live).clone();
         QueenStatus {
             turn: self.busy(),
-            backend: lock(&self.inner.live).as_ref().map(|l| l.backend.clone()),
+            backend: live.as_ref().map(|l| l.backend.clone()),
+            model: live.and_then(|l| l.model),
             last_seq: self.inner.events.last_seq(),
+        }
+    }
+
+    /// The user's backend choice, if any.
+    pub(crate) fn choice(&self) -> Option<BackendChoice> {
+        lock(&self.inner.choice).clone()
+    }
+
+    fn backend(&self, name: &str) -> Option<&Arc<dyn SessionBackend>> {
+        self.inner.backends.iter().find(|b| b.info().name == name)
+    }
+
+    fn not_ready(&self, name: &str) -> Option<NotReady> {
+        match self.backend(name) {
+            Some(b) => b.not_ready(),
+            None => Some(NotReady::NotInstalled),
+        }
+    }
+
+    /// The backend and model the conversation runs on, or will run on with its next
+    /// message: a pending choice, else the open session, else the first usable backend.
+    fn current(&self) -> Option<(String, Option<String>)> {
+        let choice = self.choice();
+        let live = lock(&self.inner.live).clone();
+        match (choice, live) {
+            (Some(c), Some(l)) if l.wanted.as_ref() != Some(&c) => Some((c.backend, c.model)),
+            (_, Some(l)) => Some((l.backend, l.model)),
+            (Some(c), None) => Some((c.backend, c.model)),
+            (None, None) => self
+                .inner
+                .spec
+                .backends
+                .iter()
+                .find(|b| self.not_ready(b).is_none())
+                .map(|b| (b.clone(), None)),
+        }
+    }
+
+    /// The backends the user may choose for this conversation.
+    pub(crate) fn backends(&self) -> Vec<BackendView> {
+        let current = self.current();
+        self.inner
+            .spec
+            .choices
+            .iter()
+            .map(|name| {
+                let not_ready = self.not_ready(name);
+                let (is_current, model) = match &current {
+                    Some((b, m)) if b == name => (true, m.clone()),
+                    _ => (false, None),
+                };
+                BackendView {
+                    name: name.clone(),
+                    available: not_ready.is_none(),
+                    reason: backends::reason(not_ready),
+                    current: is_current,
+                    model,
+                    models: self.inner.spec.models.get(name),
+                }
+            })
+            .collect()
+    }
+
+    /// Check a choice the user asks for: one of this conversation's backends, usable now,
+    /// and a model the backend itself reported.
+    pub(crate) fn check_choice(
+        &self,
+        backend: &str,
+        model: Option<&str>,
+    ) -> Result<BackendChoice, QueenError> {
+        let spec = &self.inner.spec;
+        if !spec.choices.iter().any(|c| c == backend) {
+            return Err(QueenError::Invalid(format!(
+                "`{backend}` is not a backend {} can use (choose from: {})",
+                spec.who,
+                spec.choices.join(", ")
+            )));
+        }
+        if let Some(r) = self.not_ready(backend) {
+            let why = match r {
+                NotReady::NotInstalled => "it is not installed",
+                NotReady::NotLoggedIn => "it is not logged in",
+                NotReady::Sandbox => "its sandbox cannot start",
+            };
+            return Err(QueenError::Unavailable(format!(
+                "`{backend}` cannot be used on this comb: {why}"
+            )));
+        }
+        let model = model.map(str::trim).filter(|m| !m.is_empty());
+        if let Some(m) = model {
+            let known = spec.models.get(backend);
+            let offered = known
+                .as_ref()
+                .is_some_and(|list| valid_model_id(m) && list.iter().any(|o| o.id == m));
+            if !offered {
+                return Err(QueenError::Invalid(match known {
+                    Some(_) => format!("`{backend}` does not offer a model `{m}`"),
+                    None => format!(
+                        "Melissa does not know the models of `{backend}` yet; switch to it                          without a model first"
+                    ),
+                }));
+            }
+        }
+        Ok(BackendChoice {
+            backend: backend.into(),
+            model: model.map(str::to_string),
+        })
+    }
+
+    /// Record the user's choice (checked with [`Self::check_choice`], saved by the caller).
+    /// It applies when the next turn starts; a running turn keeps its session.
+    pub(crate) fn switch(&self, choice: BackendChoice, actor: &str) -> Switched {
+        let before = self.current();
+        let mut slot = lock(&self.inner.choice);
+        let changed = slot.as_ref() != Some(&choice)
+            && before != Some((choice.backend.clone(), choice.model.clone()));
+        *slot = Some(choice.clone());
+        drop(slot);
+        let after_turn = self.busy().is_some();
+        if changed {
+            let model_label = choice.model.as_deref().and_then(|m| {
+                self.inner
+                    .spec
+                    .models
+                    .get(&choice.backend)
+                    .and_then(|l| l.into_iter().find(|o| o.id == m).map(|o| o.label))
+            });
+            self.inner.events.push(QueenEvent::BackendSwitched {
+                backend: choice.backend.clone(),
+                model: choice.model.clone(),
+                model_label,
+            });
+            let from = match before {
+                Some((b, Some(m))) => format!("{b} ({m})"),
+                Some((b, None)) => b,
+                None => "none".into(),
+            };
+            let to = match &choice.model {
+                Some(m) => format!("{} ({m})", choice.backend),
+                None => choice.backend.clone(),
+            };
+            let when = if after_turn {
+                "after the running turn"
+            } else {
+                "at the next turn"
+            };
+            self.audit("backend", actor, &format!("{from} → {to}; applies {when}"));
+        }
+        Switched {
+            backend: choice.backend,
+            model: choice.model,
+            changed,
+            after_turn,
         }
     }
 
@@ -324,7 +505,9 @@ impl Conversation {
             text: text.to_string(),
         });
         self.audit("message", actor, &shorten(text, 500));
-        let handle = tokio::spawn(self.clone().run_turn(turn, text.to_string()));
+        // The turn runs on the backend chosen when it starts; a later switch waits for it.
+        let choice = self.choice();
+        let handle = tokio::spawn(self.clone().run_turn(turn, text.to_string(), choice));
         t.abort = Some(handle.abort_handle());
         Ok((turn, since))
     }
@@ -400,8 +583,8 @@ impl Conversation {
         }
     }
 
-    async fn run_turn(self, turn: TurnId, text: String) {
-        let live = match self.live_session().await {
+    async fn run_turn(self, turn: TurnId, text: String, choice: Option<BackendChoice>) {
+        let live = match self.live_session(choice).await {
             Ok(live) => live,
             Err(e) => {
                 self.finish_turn(turn, "error", Some(e));
@@ -446,8 +629,9 @@ impl Conversation {
             }
             if !recent.is_empty() {
                 p.push_str(
-                    "Earlier conversation, restored by Melissa from its transcript (your previous \
-                     session was lost, so details may be missing):\n<earlier-conversation>\n",
+                    "Earlier conversation, restored by Melissa from its transcript (this session \
+                     starts without it: the previous one was lost or ran on another agent, so \
+                     details may be missing):\n<earlier-conversation>\n",
                 );
                 for (who, msg) in recent {
                     p.push_str(&format!("{who}: {msg}\n"));
@@ -460,24 +644,41 @@ impl Conversation {
         p
     }
 
-    async fn live_session(&self) -> Result<Live, String> {
-        if let Some(live) = lock(&self.inner.live).clone() {
-            return Ok(live);
+    async fn live_session(&self, choice: Option<BackendChoice>) -> Result<Live, String> {
+        let live = lock(&self.inner.live).clone();
+        if let Some(live) = live {
+            if choice.is_none() || live.wanted == choice {
+                return Ok(live);
+            }
+            // The user switched backend or model since this session opened: only now,
+            // between turns, close it (its id stays saved, so the same backend resumes it).
+            self.close().await;
         }
-        self.open_session().await
+        self.open_session(choice).await
     }
 
-    /// Open a session with the first backend that starts.
-    async fn open_session(&self) -> Result<Live, String> {
+    /// Open a session with the first backend that starts (the chosen one first).
+    async fn open_session(&self, choice: Option<BackendChoice>) -> Result<Live, String> {
         let inner = &self.inner;
         let spec = &inner.spec;
         let saved_path = spec.state_dir.join("session.json");
         let saved = load_session(&saved_path);
         let mut ctx = spec.ctx.clone();
         ctx.tainted = inner.tainted.load(Ordering::SeqCst);
+        let order: Vec<String> = match &choice {
+            Some(c) if spec.failover => std::iter::once(c.backend.clone())
+                .chain(spec.backends.iter().filter(|b| **b != c.backend).cloned())
+                .collect(),
+            Some(c) => vec![c.backend.clone()],
+            None => spec.backends.clone(),
+        };
         let mut tried = Vec::new();
-        for name in &spec.backends {
+        for name in &order {
             tried.push(name.as_str());
+            let model = choice
+                .as_ref()
+                .filter(|c| c.backend == *name)
+                .and_then(|c| c.model.clone());
             let backend = inner.backends.iter().find(|b| b.info().name == *name);
             let Some(backend) = backend.filter(|b| b.info().available) else {
                 self.backend_failed(name, "not available on this comb");
@@ -517,6 +718,7 @@ impl Conversation {
             );
             open.state_dir = Some(spec.state_dir.join("agent-sessions").join(name));
             open.task = Some(spec.task);
+            open.model = model.clone();
             open.resume = saved
                 .as_ref()
                 .filter(|s| s.backend == *name)
@@ -528,10 +730,19 @@ impl Conversation {
                     continue;
                 }
             };
+            if let Some(list) = &opened.models {
+                spec.models.put(name, list);
+            }
             let live = Live {
                 gen: inner.gen.fetch_add(1, Ordering::SeqCst) + 1,
                 session: Arc::from(opened.session),
                 backend: name.clone(),
+                model: opened
+                    .models
+                    .as_ref()
+                    .and_then(|m| m.current.clone())
+                    .or(model),
+                wanted: choice.clone(),
                 token: token.keep(),
                 primed: Arc::new(AtomicBool::new(opened.resumed)),
             };

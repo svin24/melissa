@@ -31,7 +31,11 @@ Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), 
 `markdown` (agent prose), `plain_text` (what the user typed), `activity_row` (its detail is Markdown for a
 helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey "read text from outside" note),
 `approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
-"Can't be undone" variant), `composer`, `composer_status`.
+"Can't be undone" variant), `composer`, `composer_status`, `agent_menu` (2026-11-19, owner-approved: "Runs on
+[Grok ▾]" in the composer status; a `details` panel with a native `select` of agents/models, unavailable agents
+disabled with a `melissa-setup` hint; the Switch button posts the composer form like Stop (`formaction` +
+`hx-post` to `/ui/backend` or `/ui/bees/{id}/backend`, form field `choice` = `<backend>[ <model>]`), htmx swaps
+the status line; built from `BackendView`s in `agents.rs`).
 Apps and devices: `app_cell` (hexagon), `add_app_cell`, `honeycomb`, `app_strip` (mini cells, polls itself),
 `device_card` (facts, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Task pages: `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `live_region`, `log_view`,
