@@ -47,7 +47,32 @@ RUN set -eu; . /k3s.lock; mkdir -p /out; cd /out; \
     printf '%s  k3s\n%s  airgap.tar.zst\n%s  LICENSE\n' \
         "$K3S_SHA256" "$K3S_AIRGAP_SHA256" "$K3S_LICENSE_SHA256" | sha256sum -c -
 
-# ---- stage 3: the runtime image -------------------------------------------------------
+# ---- stage 3: build whisper.cpp's CLI for voice input (version and hash in whisper.lock) ----
+# A separate program, not linked into melissa-server: the server stays lean and C++-free, and a
+# crash or the model's memory ends with each run. CPU only; GGML_CPU_ALL_VARIANTS builds the x86-64
+# variants (SSE4.2 ... AVX-512) and the best one for the host's CPU is loaded at runtime, so the image
+# runs on any x86-64 box. No SDL, ffmpeg, curl or server: Melissa sends it plain 16 kHz WAV files.
+FROM ${BUILDER} AS whisper
+RUN dnf -y install --setopt=install_weak_deps=False cmake gcc-c++ make && dnf clean all
+COPY packaging/container/whisper.lock /whisper.lock
+RUN set -eu; . /whisper.lock; mkdir -p /src /out; cd /src; \
+    curl -fsSL --retry 3 -o whisper.tar.gz \
+        "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v${WHISPER_VERSION}.tar.gz"; \
+    printf '%s  whisper.tar.gz\n' "$WHISPER_SHA256" | sha256sum -c -; \
+    tar xzf whisper.tar.gz --strip-components=1; \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+        -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=OFF \
+        -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF \
+        -DWHISPER_FFMPEG=OFF -DWHISPER_CURL=OFF \
+        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'; \
+    cmake --build build -j"$(nproc)"; \
+    install -m 0755 build/bin/whisper-cli /out/; \
+    find build \( -name 'libwhisper.so*' -o -name 'libggml.so*' -o -name 'libggml-base.so*' \
+        -o -name 'libggml-cpu-*.so' \) -exec cp -P {} /out/ \; ; \
+    install -D -m 0644 LICENSE /licenses/LICENSE; \
+    /out/whisper-cli --help >/dev/null 2>&1
+
+# ---- stage 4: the runtime image -------------------------------------------------------
 FROM ${BASE}
 # Only what Melissa needs inside (packaging/container/packages.txt). No kernel, bootloader, sshd,
 # NetworkManager, chrony, firewalld or tailscale: the host provides networking, time and access.
@@ -66,6 +91,11 @@ RUN set -eu; . /usr/lib/melissa/k3s.lock; \
     install -D -m 0644 /tmp/k3s/airgap.tar.zst \
         "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst"; \
     rm -rf /tmp/k3s
+
+# whisper.cpp's CLI for voice input (rarely changes): found by melissa-server at this path.
+COPY --from=whisper /out/ /usr/lib/melissa/whisper/
+COPY --from=whisper /licenses/LICENSE /usr/share/licenses/whisper.cpp/LICENSE
+COPY packaging/container/whisper.lock /usr/lib/melissa/whisper.lock
 
 # Static config: the files every packaging shares, then the container's own (overrides and drop-ins).
 COPY packaging/common/ /
@@ -108,8 +138,10 @@ RUN printf 'MELISSA_VERSION=%s\nMELISSA_REVISION=%s\nMELISSA_RUNTIME=container\n
 # Image lint: what this image must and must not contain.
 RUN set -eu; \
     for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
-        /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup; do \
+        /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
+        /usr/lib/melissa/whisper/whisper-cli; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
+    /usr/lib/melissa/whisper/whisper-cli --help >/dev/null 2>&1 || { echo "lint: whisper-cli doesn't run"; exit 1; }; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket; \

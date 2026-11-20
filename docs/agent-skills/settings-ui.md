@@ -1,4 +1,4 @@
-# Settings pages (Providers, Updates, Developer)
+# Settings pages (Providers, Voice, Updates, Developer)
 
 **When:** changing `/settings/...`, provider overrides (`providers.toml`), agent CLI versions, the image
 update status/actions, or adding a Settings section. Load the `melissa-ui` skill first; read
@@ -117,6 +117,18 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   host commands (UI and API); from source the page shows `git pull && just demo`.
 - Automatic updates: the install's `AUTO_UPDATE` (podman-auto-update.timer), under Details, not changeable there.
 - CLI: `melissa-server update [status]`, `update check|apply|rollback|restart [--yes]`.
+
+## Voice: rules (2026-11-20)
+- `settings/voice.rs`, view in `pages::voice_region`; engine and model in `crates/voice` (`melissa_voice::Voice`
+  in `SettingsParts.voice`; `Voice::unavailable()` for routers without a server). The toggle is locked when no
+  `whisper-cli` is found (`$MELISSA_WHISPER_CLI`, `/usr/lib/melissa/whisper/whisper-cli`, `PATH`).
+- On: save `voice_input`, audit, start the model download (the region polls `/ui/settings/voice/poll` every 1 s
+  while it runs). Off: a running download stops; a downloaded model stays and "Delete it" removes it. A failed
+  download shows why and "Try again". The composer's mic appears only when on **and** the model is ready
+  (`Settings::voice_url`).
+- `POST /ui/voice/transcribe` answers JSON (`text` or `error`), not HTML: melissa.js inserts the text itself.
+  Tests use fakes behind `melissa_voice::fetch::Fetch` and `engine::Engine` (no network, no whisper);
+  `real_whisper_transcribes_a_recording` (ignored) runs the real CLI by hand.
 
 ## Gotchas
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).

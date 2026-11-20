@@ -251,6 +251,7 @@ impl Ui {
             busy: self.status(who).is_some_and(|s| s.turn.is_some()),
             draft,
             error,
+            voice: self.settings.voice_url(),
         };
         Ok(self
             .framed(|f| match agent {
@@ -765,6 +766,7 @@ async fn message_reply(
             busy,
             draft,
             error: error.as_deref(),
+            voice: ui.settings.voice_url(),
         })
         .into_response();
     }

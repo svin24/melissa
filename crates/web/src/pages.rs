@@ -398,6 +398,8 @@ pub struct ChatView<'a> {
     pub busy: bool,
     pub draft: &'a str,
     pub error: Option<&'a str>,
+    /// Voice input's transcribe URL when it is on and ready (a mic in the composer).
+    pub voice: Option<&'static str>,
 }
 
 /// The chat with Melissa (the lead agent): home.
@@ -475,6 +477,7 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
             send: &send,
             cancel: &cancel,
             placeholder,
+            voice: v.voice,
         },
         v.draft,
         v.error,

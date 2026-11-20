@@ -1,7 +1,8 @@
 // Melissa's own script: small conveniences on top of htmx. Served from this origin (the CSP
 // forbids inline code); no eval, no markup building (file chips are copies of a server-rendered
 // template). Everything works without it, except Enter-to-send, automatic scrolling, pasting
-// or dropping files and previews of picked files (the attach button still works).
+// or dropping files, previews of picked files (the attach button still works) and voice input
+// (its button stays hidden).
 (function () {
   "use strict";
 
@@ -264,6 +265,269 @@
         grow(box);
         box.focus();
       }
+      showVoice();
+    }
+  });
+
+  // --- Voice input: record here, turn speech into text on the box, put it in the box. -----
+  // The browser records (MediaRecorder), decodes its own recording and renders it at 16 kHz
+  // mono (OfflineAudioContext), and sends a plain WAV to the button's `data-url`. The text is
+  // inserted for editing; nothing is sent by itself. Microphones need a secure context
+  // (HTTPS or localhost): elsewhere the button says so instead of failing silently.
+
+  var VOICE_RATE = 16000;
+  var VOICE_MAX_MS = 120000;
+  var rec = null; // the recording now: {recorder, started, timer}
+  var transcribing = false;
+  var asking = false; // the browser's microphone prompt is open
+
+  function voiceButton() {
+    return document.getElementById("voice");
+  }
+
+  function canRecord() {
+    return !!(
+      window.isSecureContext &&
+      navigator.mediaDevices &&
+      navigator.mediaDevices.getUserMedia &&
+      window.MediaRecorder &&
+      window.OfflineAudioContext &&
+      (window.AudioContext || window.webkitAudioContext)
+    );
+  }
+
+  function clock(ms) {
+    var s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  // The button shows the state: ready, recording (with the time) or working.
+  function showVoice() {
+    var b = voiceButton();
+    if (!b) {
+      return;
+    }
+    b.hidden = false;
+    var state = rec ? "recording" : transcribing ? "working" : "idle";
+    var label = {
+      idle: "Speak instead of typing",
+      recording: "Stop recording",
+      working: "Turning speech into text",
+    }[state];
+    b.classList.toggle("recording", state === "recording");
+    b.classList.toggle("working", state === "working");
+    b.setAttribute("aria-pressed", state === "recording" ? "true" : "false");
+    b.disabled = state === "working";
+    b.title = label;
+    var l = b.querySelector(".voice-label");
+    if (l) {
+      l.textContent = label;
+    }
+    var t = b.querySelector(".voice-time");
+    if (t) {
+      t.textContent = rec ? clock(Date.now() - rec.started) : "";
+    }
+  }
+
+  function startRecording(url) {
+    if (!canRecord()) {
+      note(
+        window.isSecureContext
+          ? "This browser can't record audio."
+          : "The microphone needs HTTPS or localhost."
+      );
+      return;
+    }
+    note("");
+    asking = true;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(
+      function (stream) {
+        asking = false;
+        var recorder;
+        try {
+          recorder = new MediaRecorder(stream);
+        } catch (err) {
+          stream.getTracks().forEach(function (t) {
+            t.stop();
+          });
+          note("This browser can't record audio.");
+          return;
+        }
+        var chunks = [];
+        recorder.addEventListener("dataavailable", function (e) {
+          if (e.data && e.data.size > 0) {
+            chunks.push(e.data);
+          }
+        });
+        recorder.addEventListener("stop", function () {
+          stream.getTracks().forEach(function (t) {
+            t.stop();
+          });
+          finishRecording(new Blob(chunks, { type: recorder.mimeType }), url);
+        });
+        recorder.start();
+        rec = {
+          recorder: recorder,
+          started: Date.now(),
+          timer: setInterval(function () {
+            if (rec && Date.now() - rec.started >= VOICE_MAX_MS) {
+              stopRecording();
+            }
+            showVoice();
+          }, 250),
+        };
+        showVoice();
+      },
+      function (err) {
+        asking = false;
+        note(
+          err && err.name === "NotAllowedError"
+            ? "Microphone access is blocked for this page."
+            : "No microphone found."
+        );
+      }
+    );
+  }
+
+  function stopRecording() {
+    if (!rec) {
+      return;
+    }
+    var r = rec;
+    rec = null;
+    clearInterval(r.timer);
+    transcribing = true;
+    showVoice();
+    if (r.recorder.state !== "inactive") {
+      r.recorder.stop();
+    }
+  }
+
+  // A WAV file (PCM, mono, 16-bit) from samples in -1..1.
+  function encodeWav(samples, rate) {
+    var buf = new ArrayBuffer(44 + samples.length * 2);
+    var v = new DataView(buf);
+    function str(at, s) {
+      for (var i = 0; i < s.length; i++) {
+        v.setUint8(at + i, s.charCodeAt(i));
+      }
+    }
+    str(0, "RIFF");
+    v.setUint32(4, 36 + samples.length * 2, true);
+    str(8, "WAVEfmt ");
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true);
+    str(36, "data");
+    v.setUint32(40, samples.length * 2, true);
+    for (var i = 0; i < samples.length; i++) {
+      var x = Math.max(-1, Math.min(1, samples[i]));
+      v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    }
+    return new Blob([buf], { type: "audio/wav" });
+  }
+
+  // The browser's own recording (webm/opus, mp4/aac, ...) as 16 kHz mono WAV.
+  function toWav(data) {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    var ctx = new Ctx();
+    var decoded = ctx.decodeAudioData(data);
+    decoded.then(
+      function () {
+        ctx.close();
+      },
+      function () {
+        ctx.close();
+      }
+    );
+    return decoded
+      .then(function (buffer) {
+        var frames = Math.max(1, Math.ceil(buffer.duration * VOICE_RATE));
+        var off = new OfflineAudioContext(1, frames, VOICE_RATE);
+        var src = off.createBufferSource();
+        src.buffer = buffer;
+        src.connect(off.destination);
+        src.start();
+        return off.startRendering();
+      })
+      .then(function (out) {
+        return encodeWav(out.getChannelData(0), VOICE_RATE);
+      });
+  }
+
+  // Put the text where the cursor is, with spaces around it as needed.
+  function insertText(text) {
+    var box = composer();
+    if (!box) {
+      return;
+    }
+    var start = box.selectionStart;
+    var end = box.selectionEnd;
+    var before = box.value.slice(0, start);
+    var after = box.value.slice(end);
+    var piece =
+      (before && !/\s$/.test(before) ? " " : "") + text + (after && !/^\s/.test(after) ? " " : "");
+    box.setRangeText(piece, start, end, "end");
+    grow(box);
+    box.focus();
+  }
+
+  function finishRecording(blob, url) {
+    var failed = "Couldn't turn that into text.";
+    blob
+      .arrayBuffer()
+      .then(toWav)
+      .then(function (wav) {
+        return fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "audio/wav" },
+          body: wav,
+          credentials: "same-origin",
+        });
+      })
+      .then(function (res) {
+        return res
+          .json()
+          .catch(function () {
+            return {};
+          })
+          .then(function (body) {
+            if (!res.ok || typeof body.text !== "string") {
+              throw new Error(body.error || failed);
+            }
+            return body.text;
+          });
+      })
+      .then(function (text) {
+        if (text === "") {
+          note("No speech heard.");
+        } else {
+          insertText(text);
+        }
+      })
+      .catch(function (e) {
+        // Our own messages are plain Errors; decoding or network failures get the short one.
+        note(e && e.name === "Error" && e.message ? e.message : failed);
+      })
+      .then(function () {
+        transcribing = false;
+        showVoice();
+      });
+  }
+
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("#voice") : null;
+    if (!b || transcribing || asking) {
+      return;
+    }
+    if (rec) {
+      stopRecording();
+    } else {
+      startRecording(b.dataset.url);
     }
   });
 
@@ -292,6 +556,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     grow(composer());
+    showVoice();
     if (document.getElementById("feed")) {
       scrollToBottom();
     }

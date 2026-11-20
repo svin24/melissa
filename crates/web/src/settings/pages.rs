@@ -8,20 +8,26 @@ use crate::{
     components::{
         actions, app_page, badge, card, code, command_block, confirm_card, detail_head, disclosure,
         external_button, facts, group, lines_field, live_region, log_view, notice, one_field_form,
-        pick_list, plain_action, provider_mark, region, settings_form, settings_frame_at,
-        settings_head, split_card, text_field, toggle, var_list, ConfirmCard, LogLine, Nav,
-        PickRow, SettingsSection, Toggle, Tone, VarRow,
+        pick_list, plain_action, progress_bar, provider_mark, region, settings_form,
+        settings_frame_at, settings_head, split_card, text_field, toggle, var_list, ConfirmCard,
+        LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
 use melissa_settings::providers::EnvVarView;
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 3] = [
+pub const SECTIONS: [(&str, &str); 4] = [
     ("/settings/providers", "Providers"),
+    (VOICE_URL, "Voice"),
     ("/settings/updates", "Updates"),
     (DEVELOPER_URL, "Developer"),
 ];
+
+/// The Voice section: voice input for the chat composer.
+pub const VOICE_URL: &str = "/settings/voice";
+/// DOM id of the Voice region.
+pub const VOICE_ID: &str = "voice-settings";
 
 /// The Developer section: Agent tasks (`/tasks` redirects here when the lead agent is present).
 pub const DEVELOPER_URL: &str = "/settings/developer";
@@ -567,4 +573,97 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
             }))
         }
     }
+}
+
+/// What the Voice page shows.
+pub struct VoiceView {
+    pub on: bool,
+    /// whisper.cpp is installed and the model can be fetched (or is here).
+    pub available: bool,
+    pub model: VoiceModel,
+    /// The model's size, e.g. "148 MB".
+    pub size: String,
+    pub error: Option<String>,
+}
+
+/// Where the speech model is.
+pub enum VoiceModel {
+    Absent,
+    Downloading { done: u64, total: u64 },
+    Ready,
+    Failed(String),
+}
+
+impl VoiceModel {
+    fn downloading(&self) -> bool {
+        matches!(self, Self::Downloading { .. })
+    }
+}
+
+pub fn voice_page(f: &Frame<'_>, v: &VoiceView) -> Markup {
+    frame(
+        f,
+        "Voice",
+        html! {
+            header.settings-head { div {
+                h1 { "Voice" }
+                p.lead { "Speak instead of typing. Speech becomes text on this device." }
+            } }
+            (voice_region(v))
+        },
+    )
+}
+
+pub fn voice_region(v: &VoiceView) -> Markup {
+    let label = "Voice input";
+    let locked = (!v.available).then_some("Not available on this install");
+    let body = html! {
+        (facts(&[(label, toggle(&Toggle {
+            action: "/ui/settings/voice",
+            target: VOICE_ID,
+            label,
+            on: v.on && v.available,
+            locked,
+        }))]))
+        @if !v.available {
+            p.quiet { "This install has no speech engine." }
+        } @else {
+            @match (&v.model, v.on) {
+                (VoiceModel::Downloading { done, total }, _) => {
+                    (progress_bar(
+                        "Downloading the speech model",
+                        &format!("{} of {}", mb(*done), mb(*total)),
+                        *done,
+                        *total,
+                    ))
+                }
+                (VoiceModel::Ready, true) => p.quiet { "Ready. Use the microphone next to Send." },
+                (VoiceModel::Ready, false) => {
+                    p.quiet { "The speech model is still here (" (v.size) ")." }
+                    (actions(plain_action("/ui/settings/voice/delete", VOICE_ID, "Delete it", false)))
+                }
+                (VoiceModel::Failed(why), true) => {
+                    (notice(why, Tone::Error))
+                    (actions(plain_action("/ui/settings/voice/retry", VOICE_ID, "Try again", true)))
+                }
+                (VoiceModel::Absent, true) => {
+                    (actions(plain_action("/ui/settings/voice/retry", VOICE_ID, "Download the speech model", true)))
+                }
+                (_, false) => p.quiet { "Turning it on downloads a " (v.size) " speech model once." },
+            }
+        }
+        @if let Some(e) = &v.error { (notice(e, Tone::Error)) }
+    };
+    live_region(
+        VOICE_ID,
+        "/ui/settings/voice/poll",
+        1,
+        v.model.downloading(),
+        body,
+    )
+}
+
+/// Bytes as whole megabytes (10^6, like download sizes elsewhere).
+pub fn mb(bytes: u64) -> String {
+    format!("{} MB", bytes.div_ceil(1_000_000))
 }

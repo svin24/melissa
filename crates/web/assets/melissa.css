@@ -1163,6 +1163,76 @@ label.attach svg,
   flex: none;
 }
 
+/* Voice input: a mic next to the paperclip (shown by melissa.js). Recording turns it into a
+   caution-coloured pill with the elapsed time; while the box transcribes it waits, dimmed. */
+button.voice {
+  min-width: 44px;
+  height: 44px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0 0.6rem;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+}
+
+button.voice[hidden] {
+  display: none;
+}
+
+button.voice:hover {
+  color: var(--ink);
+}
+
+button.voice:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button.voice svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+button.voice.recording {
+  background: var(--caution);
+  color: var(--caution-ink);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+button.voice.working {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.voice-time:empty {
+  display: none;
+}
+
+/* A download's progress (Settings → Voice), styled like the device meters. */
+.meter-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+progress {
+  width: 100%;
+  height: 10px;
+  accent-color: var(--action);
+}
+
 .composer.dropping .composer-box {
   border-style: dashed;
   border-color: var(--action);

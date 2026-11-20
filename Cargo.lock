@@ -1202,6 +1202,7 @@ dependencies = [
  "melissa-appspec",
  "melissa-cluster",
  "melissa-settings",
+ "melissa-voice",
  "melissa-web",
  "serde",
  "serde_json",
@@ -1227,6 +1228,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "melissa-voice"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "melissa-web"
 version = "0.0.1"
 dependencies = [
@@ -1236,6 +1253,7 @@ dependencies = [
  "maud",
  "melissa-agent",
  "melissa-settings",
+ "melissa-voice",
  "pulldown-cmark",
  "rust-embed",
  "serde",

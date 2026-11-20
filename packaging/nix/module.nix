@@ -209,6 +209,23 @@ in
         '';
       };
     };
+
+    voice.package = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = pkgs.whisper-cpp.override {
+        withSDL = false;
+        withFFmpegSupport = false;
+      };
+      defaultText = lib.literalExpression ''
+        pkgs.whisper-cpp.override { withSDL = false; withFFmpegSupport = false; }
+      '';
+      description = ''
+        whisper.cpp, for voice input in the chat (Settings → Voice): speech becomes text on this
+        machine with its `whisper-cli`. Turning voice input on downloads the speech model once
+        (about 148 MB, SHA-256 pinned) into /var/lib/melissa/models. Without SDL and ffmpeg, which
+        Melissa doesn't need (it hands whisper-cli plain 16 kHz WAV files). `null`: no voice input.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable (
@@ -252,7 +269,12 @@ in
           ++ cfg.agents.packages
           ++ [ "/run/current-system/sw" ];
           # The release file (version, revision, MELISSA_RUNTIME=nix) is in the store, not /usr.
-          environment.MELISSA_RELEASE_FILE = "${cfg.package}/lib/melissa/release";
+          environment = {
+            MELISSA_RELEASE_FILE = "${cfg.package}/lib/melissa/release";
+          }
+          // lib.optionalAttrs (cfg.voice.package != null) {
+            MELISSA_WHISPER_CLI = "${cfg.voice.package}/bin/whisper-cli";
+          };
           restartTriggers = [ serverToml ];
         };
 
