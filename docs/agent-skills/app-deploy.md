@@ -1,7 +1,7 @@
 # App deploys: any app from an agent's spec
 
 **When:** touching the app tools (`deploy_app`, `update_app`, `list_apps`, `app_status`,
-`app_logs`, `stop_app`, `start_app`, `uninstall_app`), the app spec format, rendering, app ports
+`app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`), the app spec format, rendering, app ports
 and links, the write identity `melissa-apps` or its admission policies, the owner's
 `app-credentials` command, or the migration of apps installed from the old catalog.
 Code: `crates/appspec` (spec, validation, `legacy`), `crates/cluster/src/{render,apps,app_tools}.rs`,
@@ -93,6 +93,19 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
 | `app_status {app}` | read-only | phase, pods (reason codes), `spec`, `description`, links, `ports` |
 | `list_apps` | read-only | every app namespace (labelled list), same phases |
 | `app_logs`, `stop_app`, `start_app`, `uninstall_app` | unchanged | uninstall keeps data, secrets and the spec; `deploy_app` brings it back |
+| `app_exec {app, command, container?, stdin?, timeout_secs?}` | **Destructive** (always confirmed, the card shows the exact argv), reads private + untrusted, target `app` (Change) | one command in the newest running pod's container (default: the first), argv only, no implicit shell; stdin optional (≤ 64 KiB, then closed); timeout 30 s default, 300 s max (on timeout: output so far, `timed_out`, the command may still run); stdout/stderr ≤ 64 KiB each, `*_truncated`, control chars stripped; returns `exit_code`. Audited: the `tool.call` line names the agent, app, argv (each arg cut to 200 chars), stdin length (never its content), pod, container and exit code (`Tool::audit_detail`). |
+
+### Live console commands (`app_exec`)
+Use `app_exec` for anything that must happen inside a running app without a restart: a game
+server's console (`itzg/minecraft-server`: `["rcon-cli", "op", "Steve"]`, `["rcon-cli", "list"]`),
+an app's own admin CLI (`["occ", "user:list"]` style tools), a quick read of a file. Prefer the
+app's own console mechanism over `update_app` (which re-renders and restarts) or stop/start.
+There is no shell unless the agent passes `["sh", "-c", "..."]` and the image has one.
+The agent that owns the workspace and the lead agent may exec (scope `Change`); others are
+refused before anyone is asked. RBAC: the per-namespace workload role has `pods/exec`
+`get`+`create` (WebSocket exec needs both), nothing cluster-wide, no attach or port-forward.
+A command sees what the container sees, including environment variables that hold generated
+secrets: the user's confirmation is what stands between an agent and those.
 
 ## Safety rules (server and admission)
 Validator: unknown keys refused, pinned images, sizes and counts bounded, mounts and files

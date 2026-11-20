@@ -717,3 +717,16 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   stop/start/update/uninstall keep working and keep the data and password. `[apps] catalog` and the Nix
   option `apps.catalog` are accepted and ignored with a warning; `manifests/` and `/usr/share/melissa/catalog`
   are gone.
+- **2026-11-20 — Agents may run commands in their apps' containers (`app_exec`).** An agent that deployed a
+  Minecraft server was asked to "give him op" and could only read logs or change settings (a restart). The
+  owner wants agents to send commands to the containers they control. `app_exec {app, command, container?,
+  stdin?, timeout_secs?}` runs one argv (no implicit shell) in the newest running pod over the Kubernetes exec
+  API (kube-rs `ws` feature; adds tokio-tungstenite). Scope `Change` (owning agent or lead agent; others
+  refused, never asked). Labels: Destructive (always confirmed, the card shows the exact argv; same rule as
+  agents' own arbitrary commands), reads private and untrusted data (taints the task). Bounded: 64 KiB per
+  output stream (read to the end, the rest dropped), stdin ≤ 64 KiB, timeout 30 s default, 300 s max.
+  Audit: the `tool.call` line names who, app, argv, stdin length (never its content), pod, container and
+  exit code through a new `Tool::audit_detail` hook. RBAC: `pods/exec` `get`+`create` in the per-namespace
+  workload role only (WebSocket exec is a GET, and the API server also checks `create` for the upgrade);
+  no attach or port-forward, nothing cluster-wide. Trade-off: a command can read the container's
+  environment, so generated secrets are reachable by an approved command (PLAN.md open question 65).

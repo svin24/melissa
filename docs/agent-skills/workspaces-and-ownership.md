@@ -78,12 +78,14 @@ fn target(&self) -> Option<Target> {
 }
 ```
 Examples: `deploy_app` ("deploy over"), `update_app` ("update"), `stop_app` ("stop"), `start_app` ("start"), `uninstall_app`
-("uninstall") are `Change`; `app_logs` is `ReadScoped`; `app_status` is `Read`. A stop by another agent is
+("uninstall"), `app_exec` ("run commands in") are `Change`; `app_logs` is `ReadScoped`; `app_status` is `Read`. A stop by another agent is
 refused ("not yours", audited `tool.refused`, no confirmation); the lead agent's stop of Ada's workspace asks the
 user with "`nextcloud` is looked after by agent Ada (…); stop `nextcloud` (…)" (2026-11-19).
 `access`: `Read` (anyone), `ReadScoped` (content the workspace controls), `Change`. `arg` is a required string.
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
-a tool by name. `describe_call(args)` adds a one-line description to confirmations.
+a tool by name. `describe_call(args)` adds a one-line description to confirmations;
+`audit_detail(ctx, args, result)` adds what the `tool.call` audit line must record beyond the
+argument hash (`app_exec`: who, app, argv, stdin length, pod, container, exit code; never secrets).
 
 ## Verified (2026-11-18)
 - Unit tests: `scope.rs` (decisions, messages, presentation), `cluster/src/app_tools/tests.rs` (agent A

@@ -16,7 +16,7 @@ mod health;
 pub mod render;
 
 pub use app_tools::{app_tools, generate_secret, AppSettings, ForceTiming, Workspaces};
-pub use apps::{AppDeployer, AppRead, KubeApps};
+pub use apps::{AppDeployer, AppExec, AppRead, ExecOutput, ExecRequest, KubeApps};
 pub use cluster::{
     ClusterError, ClusterRead, KubeCluster, LazyCluster, APPS_RUNTIME_FILE, CREDENTIAL_NAME,
     RUNTIME_DIR, RUNTIME_FILE,

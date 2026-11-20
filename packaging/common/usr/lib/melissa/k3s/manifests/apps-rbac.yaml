@@ -1,6 +1,6 @@
 # Melissa: the write identity for app installs (ServiceAccount melissa/melissa-apps), separate
 # from the read-only melissa-server. Only the app tools (deploy_app, update_app, stop_app,
-# start_app, uninstall_app, app_status, app_logs, list_apps) use it; see docs/agent-skills/app-deploy.md and docs/DECISIONS.md.
+# start_app, uninstall_app, app_status, app_logs, app_exec, list_apps) use it; see docs/agent-skills/app-deploy.md and docs/DECISIONS.md.
 # Agents write the app specs (any image, any app); these policies are what holds whatever the
 # server renders from them to the rules below, independent of the server's own validation.
 #
@@ -34,8 +34,10 @@
 #   copy another claim (volumeName, dataSource).
 # - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
 #   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
-#   generated credentials are for the owner); pods and logs read.
-# - Nothing in kube-system or any other namespace; no PersistentVolumes, no nodes, no exec.
+#   generated credentials are for the owner); pods and logs read; pods/exec for app_exec
+#   (which can see whatever the container sees, its environment included).
+# - Nothing in kube-system or any other namespace; no PersistentVolumes, no nodes; no exec,
+#   attach or port-forward outside app namespaces.
 # The token reaches the server as /run/melissa-kube/apps.kubeconfig (melissa-kubeconfig).
 #
 # Admission policies come first so they exist before the permissions do.
@@ -461,7 +463,15 @@ rules:
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
   # The user's force delete removes pods stuck in a terminating app namespace (grace 0).
-  # Delete only: Melissa never creates bare pods, and no exec/attach.
+  # Delete only: Melissa never creates bare pods.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
+  # app_exec: one command in an app's running container (e.g. a game server's console), only
+  # for the agent that owns the workspace or the lead agent, always confirmed by the user and
+  # audited. kube-rs execs over WebSocket (an HTTP GET, authorized as `get`); the API server
+  # also requires `create` for that upgrade (AuthorizePodWebsocketUpgradeCreatePermission).
+  # No attach, no port-forward.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]

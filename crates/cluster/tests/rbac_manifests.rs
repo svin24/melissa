@@ -129,7 +129,7 @@ fn the_write_identity_is_narrow() {
         "{}",
         secret_rules[0]
     );
-    // Logs and pods read-only; no exec/attach/port-forward.
+    // Logs and pods read-only.
     assert!(workload.contains(
         "resources: [\"pods\", \"pods/log\"]\n    verbs: [\"get\", \"list\", \"watch\"]"
     ));
@@ -143,8 +143,19 @@ fn the_write_identity_is_narrow() {
         .iter()
         .any(|r| r.contains("resources: [\"pods\"]\n    verbs: [\"delete\"]")));
     assert!(!pod_rules.iter().any(|r| r.contains("\"create\"")));
+    // app_exec: exec (get + create, the WebSocket upgrade needs both) and nothing else of
+    // its kind: no attach, no port-forward.
+    let exec_rules: Vec<_> = rules(workload)
+        .into_iter()
+        .filter(|r| r.contains("pods/exec"))
+        .collect();
+    assert_eq!(exec_rules.len(), 1, "{exec_rules:?}");
+    assert!(
+        exec_rules[0].contains("resources: [\"pods/exec\"]\n    verbs: [\"get\", \"create\"]"),
+        "{}",
+        exec_rules[0]
+    );
     for word in [
-        "pods/exec",
         "pods/attach",
         "pods/portforward",
         "serviceaccounts",
