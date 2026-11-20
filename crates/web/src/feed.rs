@@ -209,7 +209,11 @@ impl Feed {
                 )]
             }
             LeadEvent::ConfirmationNeeded {
-                id, tool, reason, ..
+                id,
+                tool,
+                reason,
+                agent,
+                ..
             } => {
                 // Restored confirmations are gone; a new one may have the same id.
                 let args = if self.prefix.is_empty() {
@@ -217,9 +221,14 @@ impl Feed {
                 } else {
                     None
                 };
-                let approval = approval_words(*id, tool, reason, args.as_ref(), look);
+                let mut approval = approval_words(*id, tool, reason, args.as_ref(), look);
+                // In Melissa's chat, say which helper asks (its own chat needs no label).
+                if let (false, Some(agent)) = (self.helper, agent) {
+                    asked_by(&mut approval, agent, look);
+                }
+                // Upsert: a pending one is announced again after a new chat.
                 vec![
-                    self.add(format!("c{id}"), Item::Approval(approval)),
+                    self.upsert(format!("c{id}"), Item::Approval(approval)),
                     Change::Waiting,
                 ]
             }
@@ -816,6 +825,13 @@ fn tool_name(title: &str) -> &str {
     t
 }
 
+/// Name the helper (agent id) that asked for a confirmation in its card's title, for views
+/// that show every helper's (Melissa's chat, Waiting for you).
+pub fn asked_by(a: &mut Approval, agent: &str, look: &dyn Lookup) {
+    let name = look.agent_name(agent).unwrap_or_else(|| agent.to_string());
+    a.title = format!("{name} asks: {}", a.title);
+}
+
 /// The plain-language confirmation card for `tool` (see [`TOOLS`] for names).
 pub fn approval_words(
     id: u64,
@@ -1216,6 +1232,60 @@ mod tests {
     }
 
     #[test]
+    fn a_helpers_approval_is_labelled_in_melissas_chat_only() {
+        let asked = |seq| {
+            rec(
+                seq,
+                LeadEvent::ConfirmationNeeded {
+                    id: 4,
+                    task: 9,
+                    tool: "uninstall_app".into(),
+                    reason: "destructive action".into(),
+                    agent: Some("d.a1".into()),
+                },
+            )
+        };
+        let title = |feed: &Feed| match &feed.entries()[0].item {
+            Item::Approval(a) => (a.title.clone(), a.state),
+            other => panic!("{other:?}"),
+        };
+        // Melissa's chat names the helper that asks.
+        let mut main = Feed::new();
+        assert_eq!(
+            main.apply(&asked(1), &Known),
+            [Change::Added(0), Change::Waiting]
+        );
+        assert_eq!(
+            title(&main),
+            ("Ada asks: Remove Nextcloud?".into(), ApprovalState::Pending)
+        );
+        // Announced again (after a new chat): still one card.
+        assert_eq!(
+            main.apply(&asked(2), &Known),
+            [Change::Updated(0), Change::Waiting]
+        );
+        assert_eq!(main.entries().len(), 1);
+        // The helper's own chat: the same card, no label; decided in both.
+        let mut own = Feed::for_helper(true);
+        own.apply(&asked(1), &Known);
+        assert_eq!(title(&own).0, "Remove Nextcloud?");
+        let done = rec(
+            3,
+            LeadEvent::ConfirmationResolved {
+                id: 4,
+                outcome: "approved".into(),
+            },
+        );
+        for feed in [&mut main, &mut own] {
+            assert_eq!(
+                feed.apply(&done, &Known),
+                [Change::Updated(0), Change::Waiting]
+            );
+            assert_eq!(title(feed).1, ApprovalState::Approved);
+        }
+    }
+
+    #[test]
     fn confirmations_and_helpers() {
         let args = Known;
         let mut feed = Feed::new();
@@ -1238,6 +1308,7 @@ mod tests {
                     task: 1,
                     tool: "uninstall_app".into(),
                     reason: "destructive action".into(),
+                    agent: None,
                 },
             ),
             &args,

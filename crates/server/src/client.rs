@@ -188,9 +188,14 @@ impl Printer {
                 task,
                 tool,
                 reason,
+                agent,
             } => {
+                let who = match agent {
+                    Some(a) => format!("agent {a} (task {task})"),
+                    None => format!("task {task}"),
+                };
                 self.line(&format!(
-                    "[confirm #{id}] task {task} wants `{tool}`: {reason}\n    approve: melissa-server confirm approve {id}    deny: melissa-server confirm deny {id}"
+                    "[confirm #{id}] {who} wants `{tool}`: {reason}\n    approve: melissa-server confirm approve {id}    deny: melissa-server confirm deny {id}"
                 ));
             }
             LeadEvent::ConfirmationResolved { id, outcome } => {

@@ -50,11 +50,15 @@ pub enum LeadEvent {
         decision: String,
     },
     /// A tool call (of the lead agent or an agent) waits for a human: approve or deny it.
+    /// Recorded in the lead agent's log and, when an agent asked, in that agent's log too.
     ConfirmationNeeded {
         id: u64,
         task: TaskId,
         tool: String,
         reason: String,
+        /// The agent (id) that asked; None for the lead agent and the user's own calls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// A confirmation was decided (`approved`, `denied`) or withdrawn (`withdrawn`).
     ConfirmationResolved { id: u64, outcome: String },

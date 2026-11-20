@@ -304,7 +304,9 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 
 - **UI direction (owner, 2026-11-18):** simple, like a chat bot. **Home = the chat with the lead agent, with a compact
   preview of the apps' state** (app_grid strip: what runs, what's installing, disk warnings). Approvals appear inline
-  in the chat and in a "Waiting for you" list. Secondary screens: the Cluster (apps as app_grid workspaces, agents with
+  in the chat and in a "Waiting for you" list. A helper's approval shows inline in its own chat and also in the lead
+  agent's chat ("Ada asks: …"), and stays there across a new chat while it waits; deciding it anywhere updates all
+  three (2026-11-20). Secondary screens: the Cluster (apps as app_grid workspaces, agents with
   resource bars), a worker's sandbox view (plan, live output, what it can reach, upkeep log). Concept mockups:
   claude.ai artifact "Melissa UI concepts" (private to the owner). The owner approved building them for the
   pre-alpha demo.
