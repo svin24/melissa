@@ -2,7 +2,8 @@
 //! and `melissa-server provider set`, in `$XDG_CONFIG_HOME/melissa/providers.toml` (mode 0600).
 //!
 //! A provider is an agent program, named by its file name: `claude`, `grok`, `opencode`,
-//! `echo` (Melissa's built-in test partner), or the file name of any other `[[backend]]`
+//! `gemini`, `codex-acp` (Codex's ACP adapter), `muse`, `echo` (Melissa's built-in test
+//! partner), or the file name of any other `[[backend]]`
 //! command. One provider can back several backends (`grok` runs `grok-acp` and the one-shot
 //! `grok`); its overrides apply to all of them.
 //!
@@ -82,6 +83,18 @@ const DENIED_ARGS: &[&str] = &[
     "--session-id",
     "-p",
     "--print",
+    // Gemini CLI, Codex and Muse Code: approval, sandbox and config overrides (`-c key=value`
+    // could turn approval or Muse's telemetry setting back on; `-y` is Gemini's YOLO).
+    "--approval-mode",
+    "-y",
+    "-c",
+    "--config",
+    "--sandbox",
+    "--disable-sandbox",
+    "--disable-approval",
+    "--approval-judge",
+    "--permission-profile",
+    "--dangerously-bypass-approvals-and-sandbox",
 ];
 
 /// The whole settings file.
@@ -101,7 +114,15 @@ pub struct ProviderFile {
 }
 
 /// The providers built into Melissa's default config; an added provider can't take their names.
-pub const BUILT_IN: [&str; 4] = ["claude", "grok", "opencode", "echo"];
+pub const BUILT_IN: [&str; 7] = [
+    "claude",
+    "grok",
+    "opencode",
+    "gemini",
+    "codex-acp",
+    "muse",
+    "echo",
+];
 /// Most hosts an added provider may reach.
 pub const MAX_HOSTS: usize = 32;
 
@@ -360,6 +381,9 @@ pub fn default_label(id: &str) -> &str {
         "claude" => "Claude Code",
         "grok" => "Grok",
         "opencode" => "OpenCode",
+        "gemini" => "Gemini CLI",
+        "codex-acp" => "Codex",
+        "muse" => "Muse Code",
         "echo" => "Echo",
         other => other,
     }
@@ -470,7 +494,7 @@ impl ProviderFile {
                 })
             }
         };
-        let file: Self = toml::from_str(&text).map_err(|e| {
+        let mut file: Self = toml::from_str(&text).map_err(|e| {
             // toml's and serde's messages quote the offending value, which may be a
             // secret: say only where.
             let line = e
@@ -490,6 +514,19 @@ impl ProviderFile {
                 message: format!("[provider.{id}]: {e}"),
             })?;
         }
+        // An agent added by hand or from the registry before Melissa built it in (e.g. Muse
+        // Code, Gemini CLI on 2026-11-20): the built-in takes over; the rest of the file stays.
+        file.added.retain(|id, a| {
+            let taken = BUILT_IN.contains(&id.as_str());
+            if taken {
+                tracing::warn!(
+                    provider = %id,
+                    command = %a.command,
+                    "[added.{id}] is built in now; using the built-in provider instead"
+                );
+            }
+            !taken
+        });
         for (id, a) in &file.added {
             a.validate(id).map_err(|e| SettingsError::Parse {
                 path: path.display().to_string(),
@@ -929,6 +966,16 @@ mod tests {
         assert!(added("/opt/kimi/other").validate("kimi").is_err());
         // Built-in names are taken.
         assert!(added("/opt/x/claude").validate("claude").is_err());
+        for id in ["gemini", "codex-acp", "muse"] {
+            let err = added(&format!("/opt/x/{id}")).validate(id).unwrap_err();
+            assert!(err.to_string().contains("is built in"), "{id}: {err}");
+        }
+        // `-y` (Gemini's YOLO) and config overrides can't be added as arguments either.
+        for arg in ["-y", "--approval-mode=yolo", "-c", "--disable-sandbox"] {
+            let mut a = added("/opt/kimi/kimi");
+            a.args = vec![arg.into()];
+            assert!(a.validate("kimi").is_err(), "{arg}");
+        }
         let mut a = added("/opt/kimi/kimi");
         a.allow = vec!["*".into()];
         assert!(a.validate("kimi").is_err());
@@ -943,6 +990,28 @@ mod tests {
         a.installed_in = None;
         a.version = Some("1.0; rm".into());
         assert!(a.validate("kimi").is_err());
+    }
+
+    #[test]
+    fn an_agent_added_before_it_was_built_in_gives_way_to_the_built_in() {
+        let dir = temp("added-now-built-in");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("providers.toml");
+        std::fs::write(
+            &path,
+            "[provider.muse]\nenv = { META_API_KEY = \"k\" }\n\
+             [added.muse]\nlabel = \"Muse Code\"\n\
+             command = \"/var/lib/melissa/home/.local/share/melissa-agents/muse-code/1.4.24/muse\"\n\
+             args = [\"acp\"]\n\
+             [added.kimi]\nlabel = \"Kimi\"\ncommand = \"/opt/kimi/kimi\"\n",
+        )
+        .unwrap();
+        let file = ProviderFile::load(&path).unwrap();
+        assert!(!file.added.contains_key("muse"));
+        assert!(file.added.contains_key("kimi"));
+        // Its key stays: the built-in Muse Code uses it.
+        assert_eq!(file.providers["muse"].env["META_API_KEY"], "k");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

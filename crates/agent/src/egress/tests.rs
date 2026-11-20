@@ -423,7 +423,15 @@ fn scripts_from_the_nix_store_need_it() {
 
 #[test]
 fn default_allowlists_parse() {
-    for cli in ["claude", "grok", "opencode", "/x/y/claude"] {
+    for cli in [
+        "claude",
+        "grok",
+        "opencode",
+        "gemini",
+        "codex-acp",
+        "muse",
+        "/x/y/claude",
+    ] {
         let list = default_allow(cli);
         assert!(!list.is_empty(), "{cli}");
         for rule in list {
@@ -431,6 +439,36 @@ fn default_allowlists_parse() {
         }
     }
     assert!(default_allow("sh").is_empty());
+}
+
+#[test]
+fn new_clis_reach_their_apis_but_not_their_telemetry_or_updates() {
+    let allowed = |cli: &str, host: &str| {
+        default_allow(cli)
+            .iter()
+            .any(|r| HostRule::parse(r).unwrap().matches(host, 443))
+    };
+    let denied = |cli: &str, host: &str| default_deny(cli).iter().any(|r| r.matches(host, 443));
+    assert!(allowed("gemini", "generativelanguage.googleapis.com"));
+    assert!(allowed(
+        "/home/m/.local/bin/gemini",
+        "cloudcode-pa.googleapis.com"
+    ));
+    assert!(!allowed("gemini", "play.googleapis.com"));
+    assert!(denied("gemini", "play.googleapis.com"));
+    assert!(denied("gemini", "registry.npmjs.org"));
+    assert!(allowed("codex-acp", "api.openai.com"));
+    assert!(allowed("codex-acp", "chatgpt.com"));
+    assert!(!allowed("codex-acp", "ab.chatgpt.com"));
+    assert!(denied("codex-acp", "ab.chatgpt.com"));
+    assert!(denied("codex-acp", "api.github.com"));
+    assert!(denied("codex-acp", "files.openai.com"));
+    assert!(allowed("muse", "api.meta.ai"));
+    assert!(allowed("muse", "auth.meta.com"));
+    assert!(denied("muse", "lookaside.facebook.com"));
+    // Each list is the program's own: Codex's hosts are not Gemini's.
+    assert!(!allowed("gemini", "api.openai.com"));
+    assert!(!allowed("codex", "api.openai.com"));
 }
 
 /// A destructive tool, so every call waits in the confirmation inbox.

@@ -1,6 +1,6 @@
 // Melissa, container image only: the server (user `melissa`) may start the installer unit for the
-// three known agent CLIs (Settings → Providers → Install) and the sign-in of Claude and Grok
-// (Settings → Providers → Sign in). Nothing else: no other units, verbs, instances or arguments.
+// built-in agent CLIs (Settings → Providers → Install) and the sign-in of those that have one
+// (Settings → Providers → Sign in: Claude, Grok, Codex, Muse Code). Nothing else: no other units, verbs, instances or arguments.
 // The shared 50-melissa.rules (restart the server) is separate; Nix installs ship only that one,
 // since their agent CLIs come from the Nix configuration.
 // See docs/DECISIONS.md (2026-11-19).
@@ -8,8 +8,13 @@ var MELISSA_AGENT_UNITS = [
     "melissa-agent-install@claude.service",
     "melissa-agent-install@grok.service",
     "melissa-agent-install@opencode.service",
+    "melissa-agent-install@gemini.service",
+    "melissa-agent-install@codex-acp.service",
+    "melissa-agent-install@muse.service",
     "melissa-agent-login@claude.service",
     "melissa-agent-login@grok.service",
+    "melissa-agent-login@codex-acp.service",
+    "melissa-agent-login@muse.service",
 ];
 
 polkit.addRule(function (action, subject) {

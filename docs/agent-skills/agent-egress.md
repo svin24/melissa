@@ -104,12 +104,19 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
 | opencode 2.3.2 (`opencode acp`, flavor opencode) | `opencode.ai`, `models.opencode.ai` (same as `run`) | none | No: learn mode then proxy, lead agent + worker in 23.6 s |
 | opencode 1.19.6 (`opencode acp`, official installer's release on 2026-11-18, in the headless VM's system service) | `opencode.ai`, `models.opencode.ai` | `registry.npmjs.org` | No: lead agent + agent_info in 13 s |
 
-All three use `HTTPS_PROXY` for their own API traffic. Proxy env also set: `HTTP_PROXY`, `ALL_PROXY` and
+| gemini 0.70.0 (`--acp`, scratch container from the image, fake API key, 2026-11-20) | `generativelanguage.googleapis.com` (API key); `cloudcode-pa.googleapis.com`, `oauth2.googleapis.com` (Google sign-in, from the source; not observed) | `play.googleapis.com` (Clearcut usage statistics, 4 per session); `registry.npmjs.org` (update check, from the source) | API reached (400 "API key not valid"); a real turn not verified |
+| codex-acp 2.8.0 + codex 0.170.0 (`authenticate api-key`, mode `read-only`, same run) | `api.openai.com` (Responses API; WebSocket first, then HTTPS), `chatgpt.com` (seen with an API key too: model list), `auth.openai.com` (ChatGPT token refresh, from the source) | `api.github.com` (update check), `files.openai.com` (seen once in learn mode, not needed), `ab.chatgpt.com` (Statsig, from the source) | API reached (401); a real turn not verified |
+| muse 1.4.24 (`acp`, `-c telemetry.enabled=false -c approval_judge="off"`, same run) | `api.meta.ai` (model API and catalogue; its telemetry uses the same host, turned off by the flag), `auth.meta.com` (sign-in, from `muse login`) | `lookaside.facebook.com` (downloads, from the registry entry) | API reached (key rejected at the catalogue fetch); a real turn not verified |
+
+All of them use `HTTPS_PROXY` for their own API traffic; the Node-based ones (gemini, codex-acp's adapter) need
+`NODE_USE_ENV_PROXY=1` for Node's own `fetch`/`http`, which every proxied sandbox now gets (Gemini also installs an
+undici proxy agent itself). Codex itself is Rust and reads the proxy variables. Proxy env also set: `HTTP_PROXY`, `ALL_PROXY` and
 lowercase forms; `NO_PROXY=localhost,127.0.0.1,::1` keeps MCP off the proxy; `GROK_WEB_FETCH_PROXY` (below).
 
 ## Fetch tools (2026-11-20, web reading)
 | CLI | Fetch tool | Routing | Live result |
 |---|---|---|---|
+| gemini 0.70.0 | `web_fetch` | Checks the target with its own `dns.lookup` (SSRF), then fetches through the proxy (undici `EnvHttpProxyAgent`); the DNS placeholder should pass its private-address check | Not verified (needs a real key) |
 | grok 1.0.89 (`agent stdio`, container) | `web_fetch` (permission kind fetch) | Ignores `HTTPS_PROXY`; uses `GROK_WEB_FETCH_PROXY` (or `[toolset.web_fetch] proxy_endpoint`), but first resolves the name itself (SSRF check; static musl binary: `/etc/resolv.conf` + UDP 53) and refuses documentation/private answers ("SSRF blocked: ... 203.0.113.53") | Works with the DNS sinkhole: https://example.com, https://github.com/rust-lang (redirects), http://example.com |
 | opencode 2.3.2 (`acp`, laptop) | `webfetch` | Bun honours `HTTPS_PROXY`/`HTTP_PROXY` | https://example.com via `CONNECT`, http://neverssl.com as a forwarded `GET` |
 | claude (`claude-session`) | none (`--tools ""`) | n/a | `WebFetch` would use the proxy; `WebSearch` runs server-side (PLAN open question 73) |

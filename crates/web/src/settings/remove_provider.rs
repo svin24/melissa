@@ -58,6 +58,24 @@ fn install_paths(id: &str) -> &'static [&'static str] {
             ".cache/opencode",
             ".config/opencode",
         ],
+        // npm installs (melissa-setup): the package folder and the link on PATH.
+        "gemini" => &[
+            ".local/share/melissa-npm/gemini",
+            ".local/bin/gemini",
+            ".gemini",
+        ],
+        "codex-acp" => &[
+            ".local/share/melissa-npm/codex-acp",
+            ".local/bin/codex-acp",
+            ".codex",
+        ],
+        "muse" => &[
+            ".local/bin/muse",
+            ".config/muse",
+            ".local/share/muse",
+            ".local/state/muse",
+            ".cache/muse",
+        ],
         _ => &[],
     }
 }
@@ -296,6 +314,28 @@ mod tests {
             join_names(&["Ada".into(), "Bo".into(), "Melissa".into()]),
             "Ada, Bo and Melissa"
         );
+    }
+
+    #[test]
+    fn every_installable_provider_lists_what_its_install_leaves() {
+        for id in melissa_settings::install::INSTALLABLE {
+            let paths = install_paths(id);
+            assert!(!paths.is_empty(), "{id}");
+            for p in paths {
+                let p = FsPath::new(p);
+                assert!(
+                    p.is_relative()
+                        && p.components()
+                            .all(|c| matches!(c, std::path::Component::Normal(_))),
+                    "{id}: {}",
+                    p.display()
+                );
+            }
+        }
+        // npm installs: the package folder and the link on PATH go too.
+        assert!(install_paths("gemini").contains(&".local/share/melissa-npm/gemini"));
+        assert!(install_paths("codex-acp").contains(&".local/bin/codex-acp"));
+        assert!(install_paths("muse").contains(&".config/muse"));
     }
 
     #[test]

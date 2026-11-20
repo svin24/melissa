@@ -600,3 +600,205 @@ fn prompts_carry_images_but_never_pdfs() {
         ])
     );
 }
+
+/// `initialize` for an agent offering `auth` methods (no resume).
+fn init_with_auth(auth: Value) -> Vec<agent::Step> {
+    use serde_json::json;
+    vec![
+        agent::Step::send(
+            json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": "<any>"}),
+        ),
+        agent::Step::recv(
+            json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1,
+            "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
+            "authMethods": auth}}),
+        ),
+    ]
+}
+
+/// A mode option like Codex's (config category `mode`), currently `current`.
+fn codex_modes(current: &str) -> Value {
+    serde_json::json!([{"id": "mode", "name": "Mode", "category": "mode", "type": "select",
+        "currentValue": current, "options": [
+            {"value": "read-only", "name": "Read-only"},
+            {"value": "agent", "name": "Auto review"},
+            {"value": "agent-full-access", "name": "Full access"}]}])
+}
+
+#[tokio::test]
+async fn codex_signs_in_with_its_key_and_is_switched_to_read_only() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    let mut steps = init_with_auth(json!([{"id": "api-key", "name": "API Key"},
+        {"id": "chat-gpt", "name": "ChatGPT"}]));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "authenticate",
+        "params": {"methodId": "api-key"}}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+    ));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(json!({"jsonrpc": "2.0", "id": 2,
+        "result": {"sessionId": "s-1", "configOptions": codex_modes("agent")}})));
+    steps.push(agent::Step::send(json!({"jsonrpc": "2.0", "id": 3,
+        "method": "session/set_config_option",
+        "params": {"sessionId": "s-1", "configId": "mode", "value": "read-only"}})));
+    steps.push(agent::Step::recv(json!({"jsonrpc": "2.0", "id": 3,
+        "result": {"configOptions": codex_modes("read-only")}})));
+    let mut open = open_with(Arc::new(perms), false);
+    open.authenticate = Some("api-key".into());
+    open.mode = Some("read-only".into());
+    let (opened, agent) = open_replay(steps, open, None).await;
+    assert_eq!(opened.session.id(), "s-1");
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_mode_the_agent_lacks_fails_the_session_and_unknown_sign_ins_are_skipped() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    // Asked to sign in with a method the agent doesn't offer: no `authenticate` is sent.
+    let mut steps = init_with_auth(json!([{"id": "chat-gpt", "name": "ChatGPT"}]));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(json!({"jsonrpc": "2.0", "id": 1,
+        "result": {"sessionId": "s-1", "configOptions": [{"id": "mode", "name": "Mode",
+            "category": "mode", "type": "select", "currentValue": "agent",
+            "options": [{"value": "agent", "name": "Auto"}]}]}})));
+    let (client_out, agent_in) = tokio::io::duplex(64 * 1024);
+    let (agent_out, client_in) = tokio::io::duplex(64 * 1024);
+    let agent = tokio::spawn(agent::run(steps, agent_in, agent_out));
+    let transport = transport::lines(client_in, client_out, None);
+    let mut open = open_with(Arc::new(perms), false);
+    open.authenticate = Some("api-key".into());
+    open.mode = Some("read-only".into());
+    let err = client::start(transport, open, None, StderrTail::default())
+        .await
+        .err()
+        .expect("no `read-only` mode: the session must not open");
+    assert!(err.to_string().contains("read-only"), "{err}");
+    let _ = agent.await;
+}
+
+#[tokio::test]
+async fn gemini_models_and_modes_come_from_the_older_session_fields() {
+    use serde_json::json;
+    let (perms, _) = policy(None);
+    let reply = json!({"sessionId": "g-1",
+        "modes": {"currentModeId": "autoEdit", "availableModes": [
+            {"id": "default", "name": "Default"}, {"id": "autoEdit", "name": "Auto Edit"},
+            {"id": "yolo", "name": "YOLO"}]},
+        "models": {"currentModelId": "auto", "availableModels": [
+            {"modelId": "auto", "name": "Auto"},
+            {"modelId": "gemini-2.5-pro", "name": "gemini-2.5-pro"}]}});
+    let mut steps = init_with_auth(json!([{"id": "gemini-api-key", "name": "Gemini API key"}]));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": "<any>"}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 1, "result": reply}),
+    ));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_mode",
+        "params": {"sessionId": "g-1", "modeId": "default"}}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 2, "result": {}}),
+    ));
+    steps.push(agent::Step::send(
+        json!({"jsonrpc": "2.0", "id": 3, "method": "session/set_model",
+        "params": {"sessionId": "g-1", "modelId": "gemini-2.5-pro"}}),
+    ));
+    steps.push(agent::Step::recv(
+        json!({"jsonrpc": "2.0", "id": 3, "result": {}}),
+    ));
+    let mut open = open_with(Arc::new(perms), false);
+    open.mode = Some("default".into());
+    open.model = Some("gemini-2.5-pro".into());
+    let (opened, agent) = open_replay(steps, open, None).await;
+    let models = opened
+        .models
+        .clone()
+        .expect("models from the `models` field");
+    assert_eq!(models.current.as_deref(), Some("gemini-2.5-pro"));
+    assert_eq!(
+        models
+            .options
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["auto", "gemini-2.5-pro"]
+    );
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+
+    // Parsing: absent or empty lists are no list; labels fall back to ids.
+    assert_eq!(
+        super::client::legacy_models(&json!({"sessionId": "x"})),
+        None
+    );
+    assert_eq!(
+        super::client::legacy_models(&json!({"models": {"availableModels": []}})),
+        None
+    );
+    let one = super::client::legacy_models(
+        &json!({"models": {"availableModels": [{"modelId": "m"}, {"name": "no id"}]}}),
+    )
+    .unwrap();
+    assert_eq!(one.options.len(), 1);
+    assert_eq!(one.options[0].label, "m");
+    assert_eq!(one.current, None);
+}
+
+#[test]
+fn new_flavors_set_their_variables_and_codex_keeps_its_sign_in_file_out_with_a_key() {
+    use super::{flavor_env, flavor_for, sign_in_method, AcpBackend, AcpFlavor, AcpSpec};
+    assert_eq!(flavor_for("/x/gemini"), AcpFlavor::Gemini);
+    assert_eq!(flavor_for("codex-acp"), AcpFlavor::Codex);
+    assert_eq!(flavor_for("/usr/bin/muse"), AcpFlavor::Muse);
+    assert_eq!(flavor_for("codex"), AcpFlavor::Generic);
+    let names = |v: Vec<(String, String)>| v.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+
+    let mut sandbox = crate::SandboxSpec::preset("gemini");
+    // No API key: Gemini uses a Google sign-in, if there is one.
+    assert_eq!(
+        names(flavor_env(AcpFlavor::Gemini, &sandbox)),
+        ["GEMINI_FORCE_FILE_STORAGE", "GOOGLE_GENAI_USE_GCA"]
+    );
+    sandbox.vars = vec![("GEMINI_API_KEY".into(), "k".into())];
+    assert_eq!(
+        names(flavor_env(AcpFlavor::Gemini, &sandbox)),
+        ["GEMINI_FORCE_FILE_STORAGE"]
+    );
+    assert_eq!(sign_in_method(AcpFlavor::Gemini, &sandbox), None);
+    assert_eq!(
+        flavor_env(AcpFlavor::Muse, &sandbox),
+        [("MUSE_EXPERIMENTAL_ACP".to_string(), "on".to_string())]
+    );
+    assert!(flavor_env(AcpFlavor::Generic, &sandbox).is_empty());
+
+    // Codex: the ChatGPT sign-in file without a key; `authenticate api-key` with one.
+    let spec = AcpSpec::new("codex-acp", "codex-acp", &[]).with_flavor(AcpFlavor::Codex);
+    let backend = AcpBackend::new(spec.clone(), "/work".into());
+    assert_eq!(sign_in_method(AcpFlavor::Codex, &backend.sandbox), None);
+    assert!(backend.sandbox.rw.contains(&".codex/auth.json".to_string()));
+    for key in ["OPENAI_API_KEY", "CODEX_API_KEY"] {
+        let mut with_key = spec.effective_sandbox();
+        with_key.vars = vec![(key.into(), "sk".into())];
+        let backend = AcpBackend::new(spec.clone().with_sandbox(with_key), "/work".into());
+        assert_eq!(
+            sign_in_method(AcpFlavor::Codex, &backend.sandbox),
+            Some("api-key")
+        );
+        assert!(!backend.sandbox.rw.contains(&".codex/auth.json".to_string()));
+        assert_eq!(
+            names(flavor_env(AcpFlavor::Codex, &backend.sandbox)),
+            ["NO_BROWSER"]
+        );
+    }
+}

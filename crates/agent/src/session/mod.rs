@@ -104,6 +104,12 @@ pub struct OpenSession {
     /// The agent's file box ([`crate::files`]): bound read-write at the same path inside the
     /// sandbox (absolute; created by the caller). None: no box.
     pub files_dir: Option<PathBuf>,
+    /// ACP sign-in method to `authenticate` with before the session starts, when the agent
+    /// offers it (set by the backend: Codex wants it even with its API key set). None: none.
+    pub authenticate: Option<String>,
+    /// ACP session mode to switch to when the session opens (the agent's strictest asking
+    /// mode); the session fails if the agent doesn't offer it. None: the agent's default.
+    pub mode: Option<String>,
 }
 
 impl OpenSession {
@@ -124,6 +130,8 @@ impl OpenSession {
             effort: None,
             fast: false,
             files_dir: None,
+            authenticate: None,
+            mode: None,
         }
     }
 }

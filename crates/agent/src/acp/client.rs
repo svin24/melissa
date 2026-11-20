@@ -18,13 +18,15 @@ use agent_client_protocol::{
     schema::ProtocolVersion,
     v1::{
         schema::{
-            CancelNotification, ClientCapabilities, ContentBlock, HttpHeader, ImageContent,
-            Implementation, InitializeRequest, McpServer, McpServerHttp, NewSessionRequest,
-            PermissionOption, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-            RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-            SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-            SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
-            SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
+            AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, HttpHeader,
+            ImageContent, Implementation, InitializeRequest, McpServer, McpServerHttp,
+            NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+            PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+            RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome,
+            SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+            SessionConfigOptionValue, SessionConfigSelectOptions, SessionModeState,
+            SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+            SetSessionModeRequest, TextContent,
         },
         ConnectionTo, Responder,
     },
@@ -334,6 +336,20 @@ async fn handshake(
         return Err(agent_client_protocol::Error::invalid_request()
             .data("agent does not accept MCP servers over HTTP; Melissa's tools need it"));
     }
+    // Agents that want `authenticate` even with their key in the environment (Codex).
+    if let Some(method) = &open.authenticate {
+        if init
+            .auth_methods
+            .iter()
+            .any(|m| m.id().to_string() == *method)
+        {
+            cx.send_request(AuthenticateRequest::new(method.clone()))
+                .block_task()
+                .await?;
+        } else {
+            tracing::warn!("the agent does not offer sign-in method `{method}`; not signing in");
+        }
+    }
     let servers: Vec<McpServer> = open
         .mcp_servers
         .iter()
@@ -353,7 +369,8 @@ async fn handshake(
             ResumeSessionRequest::new(id.clone(), open.cwd.clone()).mcp_servers(servers.clone());
         match cx.send_request(resume).block_task().await {
             Ok(r) => {
-                let models = choose(cx, id, r.config_options, open).await;
+                set_mode(cx, id, r.config_options.as_deref(), r.modes.as_ref(), open).await?;
+                let models = choose(cx, id, r.config_options, None, open).await;
                 return Ok(Ready {
                     id: id.clone(),
                     caps,
@@ -364,10 +381,27 @@ async fn handshake(
             Err(e) => tracing::info!("cannot resume agent session {id}: {e}; starting a new one"),
         }
     }
+    // Sent untyped to also read the older `models` field (Gemini CLI lists its models there,
+    // not as a config option); the rest is the typed response.
     let new = NewSessionRequest::new(open.cwd.clone()).mcp_servers(servers);
-    let new = cx.send_request(new).block_task().await?;
+    let raw = cx
+        .send_request(UntypedMessage::new("session/new", &new)?)
+        .block_task()
+        .await?;
+    let legacy = legacy_models(&raw);
+    let new: NewSessionResponse = serde_json::from_value(raw).map_err(|e| {
+        agent_client_protocol::Error::invalid_params().data(format!("session/new reply: {e}"))
+    })?;
     let id = new.session_id.to_string();
-    let models = choose(cx, &id, new.config_options, open).await;
+    set_mode(
+        cx,
+        &id,
+        new.config_options.as_deref(),
+        new.modes.as_ref(),
+        open,
+    )
+    .await?;
+    let models = choose(cx, &id, new.config_options, legacy, open).await;
     Ok(Ready {
         id,
         caps,
@@ -405,6 +439,96 @@ fn model_option(options: &[SessionConfigOption]) -> Option<(String, ModelList)> 
             },
         ))
     })
+}
+
+/// Put the session in the approval mode the backend asks for ([`OpenSession::mode`]): the
+/// agent's mode option (config category `mode`), else its session modes (`session/set_mode`).
+/// Fails closed: a mode the agent doesn't offer, or a failed switch, ends the handshake, since
+/// the agent's own default may run tools without asking (Codex's "Auto review").
+async fn set_mode(
+    cx: &ConnectionTo<Agent>,
+    session: &str,
+    options: Option<&[SessionConfigOption]>,
+    modes: Option<&SessionModeState>,
+    open: &OpenSession,
+) -> Result<(), agent_client_protocol::Error> {
+    let Some(wanted) = open.mode.as_deref() else {
+        return Ok(());
+    };
+    let refuse = |why: String| agent_client_protocol::Error::invalid_request().data(why);
+    let option = options.unwrap_or_default().iter().find_map(|o| {
+        if o.category != Some(SessionConfigOptionCategory::Mode) {
+            return None;
+        }
+        let SessionConfigKind::Select(select) = &o.kind else {
+            return None;
+        };
+        let values: Vec<String> = match &select.options {
+            SessionConfigSelectOptions::Ungrouped(list) => {
+                list.iter().map(|c| c.value.to_string()).collect()
+            }
+            SessionConfigSelectOptions::Grouped(groups) => groups
+                .iter()
+                .flat_map(|g| g.options.iter())
+                .map(|c| c.value.to_string())
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some((o.id.to_string(), select.current_value.to_string(), values))
+    });
+    if let Some((config_id, current, values)) = option {
+        if current == wanted {
+            return Ok(());
+        }
+        if !values.iter().any(|v| v == wanted) {
+            return Err(refuse(format!("the agent has no `{wanted}` mode")));
+        }
+        let req = SetSessionConfigOptionRequest::new(
+            session.to_string(),
+            config_id,
+            SessionConfigOptionValue::value_id(wanted.to_string()),
+        );
+        cx.send_request(req).block_task().await?;
+        return Ok(());
+    }
+    match modes {
+        Some(m) if m.current_mode_id.to_string() == wanted => Ok(()),
+        Some(m) if m.available_modes.iter().any(|a| a.id.to_string() == wanted) => {
+            cx.send_request(SetSessionModeRequest::new(
+                session.to_string(),
+                wanted.to_string(),
+            ))
+            .block_task()
+            .await?;
+            Ok(())
+        }
+        _ => Err(refuse(format!("the agent has no `{wanted}` mode"))),
+    }
+}
+
+/// The models in a `session/new` reply's `models` field (ACP's earlier, unstable session-model
+/// API: `{availableModels: [{modelId, name}], currentModelId}`), for agents that report them
+/// only there. None when absent or empty.
+pub(crate) fn legacy_models(reply: &Value) -> Option<ModelList> {
+    let models = reply.get("models")?;
+    let options: Vec<ModelOption> = models
+        .get("availableModels")?
+        .as_array()?
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("modelId")?.as_str()?;
+            let label = m.get("name").and_then(Value::as_str).unwrap_or(id);
+            (!id.is_empty()).then(|| ModelOption::new(id, label))
+        })
+        .collect();
+    if options.is_empty() {
+        return None;
+    }
+    let current = models
+        .get("currentModelId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(ModelList { current, options })
 }
 
 /// The agent's reasoning level option (a select in category `thought_level`): its id, the
@@ -534,11 +658,12 @@ async fn choose(
     cx: &ConnectionTo<Agent>,
     session: &str,
     options: Option<Vec<SessionConfigOption>>,
+    legacy: Option<ModelList>,
     open: &OpenSession,
 ) -> Option<ModelList> {
     let effort = options.as_deref().and_then(effort_option);
     let speed = options.as_deref().and_then(speed_option);
-    let mut models = choose_model(cx, session, options, open.model.as_deref()).await?;
+    let mut models = choose_model(cx, session, options, legacy, open.model.as_deref()).await?;
     let mut levels = Vec::new();
     if let Some((config_id, offered, current)) = effort {
         levels = offered;
@@ -596,9 +721,12 @@ async fn choose_model(
     cx: &ConnectionTo<Agent>,
     session: &str,
     options: Option<Vec<SessionConfigOption>>,
+    legacy: Option<ModelList>,
     wanted: Option<&str>,
 ) -> Option<ModelList> {
-    let (config_id, mut models) = model_option(options.as_deref().unwrap_or_default())?;
+    let Some((config_id, mut models)) = model_option(options.as_deref().unwrap_or_default()) else {
+        return choose_legacy_model(cx, session, legacy?, wanted).await;
+    };
     let Some(wanted) = wanted else {
         return Some(models);
     };
@@ -619,6 +747,41 @@ async fn choose_model(
             Some((_, after)) => models = after,
             None => models.current = Some(wanted.to_string()),
         },
+        Err(e) => tracing::warn!("cannot switch the agent to model `{wanted}`: {e}"),
+    }
+    Some(models)
+}
+
+/// [`choose_model`] for models from the older `models` field: switched with
+/// `session/set_model {sessionId, modelId}`.
+async fn choose_legacy_model(
+    cx: &ConnectionTo<Agent>,
+    session: &str,
+    mut models: ModelList,
+    wanted: Option<&str>,
+) -> Option<ModelList> {
+    let Some(wanted) = wanted else {
+        return Some(models);
+    };
+    if models.current.as_deref() == Some(wanted) {
+        return Some(models);
+    }
+    if !models.contains(wanted) {
+        tracing::warn!("the agent does not offer model `{wanted}`; keeping its default");
+        return Some(models);
+    }
+    let req = match UntypedMessage::new(
+        "session/set_model",
+        serde_json::json!({"sessionId": session, "modelId": wanted}),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("cannot switch the agent to model `{wanted}`: {e}");
+            return Some(models);
+        }
+    };
+    match cx.send_request(req).block_task().await {
+        Ok(_) => models.current = Some(wanted.to_string()),
         Err(e) => tracing::warn!("cannot switch the agent to model `{wanted}`: {e}"),
     }
     Some(models)

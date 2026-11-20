@@ -2,11 +2,11 @@
 # melissa-setup: one-time setup steps on a Melissa agent.
 #
 #   melissa-setup                         status and next steps (no root needed)
-#   sudo melissa-setup agent <claude|grok|opencode> [--yes] [--no-login] [--no-restart]
-#                                         install that vendor's agent CLI with its official
-#                                         installer, then log it in and restart the server
-#   sudo melissa-setup login <claude|grok|opencode>
-#                                         log an installed agent in again (e.g. after expiry)
+#   sudo melissa-setup agent <name> [--yes] [--no-login] [--no-restart]
+#                                         install that vendor's agent CLI (claude, grok, opencode,
+#                                         gemini, codex-acp, muse), then log it in and restart
+#                                         the server
+#   sudo melissa-setup login <name>       log an installed agent in again (e.g. after expiry)
 #   (--from-page: run by melissa-agent-login@claude.service for Settings → Providers; the code
 #    comes back through a FIFO only the server's user can write, see login_claude_from_page)
 #
@@ -16,6 +16,12 @@
 # /var/lib/melissa/home, where melissa-server.service (User=melissa) finds them. Installer and
 # login run outside the agent sandbox, started by you (root): they need the vendor's download and
 # login hosts, which the sandboxed agents' egress allowlists deliberately do not include.
+#
+# Three ways in (agent_kind): the vendor's install script (claude, grok, opencode); npm packages
+# pinned here by version and SHA-512 integrity (gemini, codex-acp: they ship only on npm), installed
+# without running their scripts into their own folder under ~/.local/share/melissa-npm and run
+# with this system's Node.js through a small wrapper; or one release binary pinned by SHA-256
+# (muse). See docs/DECISIONS.md (2026-11-20, more built-in providers).
 set -euo pipefail
 
 user=melissa
@@ -26,12 +32,25 @@ listen=127.0.0.1:8080
 die() { echo "melissa-setup: $*" >&2; exit 1; }
 need_root() { [ "$(id -u)" = 0 ] || die "this step needs root: run it with sudo"; }
 
-# agent table: name -> installer URL, binary (relative to $home), login command, notes
+agents="claude grok opencode gemini codex-acp muse"
+npm_root=$home/.local/share/melissa-npm
+
+# agent table: name -> how it installs, installer URL, binary (relative to $home), login, notes
+agent_kind() {
+    case $1 in
+        claude|grok|opencode) echo script ;;
+        gemini|codex-acp) echo npm ;;
+        muse) echo binary ;;
+        *) return 1 ;;
+    esac
+}
 agent_url() {
     case $1 in
         claude) echo "https://claude.ai/install.sh" ;;
         grok) echo "https://x.ai/cli/install.sh" ;;
         opencode) echo "https://opencode.ai/install" ;;
+        gemini|codex-acp) echo "https://registry.npmjs.org (pinned packages, see below)" ;;
+        muse) echo "https://lookaside.facebook.com (Meta's release binary, SHA-256 pinned)" ;;
         *) return 1 ;;
     esac
 }
@@ -40,6 +59,9 @@ agent_bin() {
         claude) echo "$home/.local/bin/claude" ;;
         grok) echo "$home/.grok/bin/grok" ;;
         opencode) echo "$home/.opencode/bin/opencode" ;;
+        gemini) echo "$home/.local/bin/gemini" ;;
+        codex-acp) echo "$home/.local/bin/codex-acp" ;;
+        muse) echo "$home/.local/bin/muse" ;;
     esac
 }
 agent_vendor() {
@@ -47,6 +69,9 @@ agent_vendor() {
         claude) echo "Anthropic (Claude Code; proprietary, see https://code.claude.com/docs/en/legal-and-compliance)" ;;
         grok) echo "xAI (Grok CLI)" ;;
         opencode) echo "OpenCode (MIT licence)" ;;
+        gemini) echo "Google (Gemini CLI; Apache-2.0)" ;;
+        codex-acp) echo "OpenAI (Codex; Apache-2.0) with its ACP adapter (Agent Client Protocol project; Apache-2.0)" ;;
+        muse) echo "Meta (Muse Code; proprietary, see https://dev.meta.ai/docs/muse-code)" ;;
     esac
 }
 # Credential file the agent sandbox binds (crates/agent/src/sandbox.rs presets).
@@ -55,9 +80,56 @@ agent_cred() {
         claude) echo "$home/.claude/.credentials.json" ;;
         grok) echo "$home/.grok/auth.json" ;;
         opencode) echo "$home/.local/share/opencode/auth.json" ;;
+        gemini) echo "$home/.gemini/oauth_creds.json" ;;
+        codex-acp) echo "$home/.codex/auth.json" ;;
+        muse) echo "$home/.config/muse/auth.json" ;;
     esac
 }
-valid_agent() { agent_url "$1" >/dev/null 2>&1 || die "unknown agent '$1' (choose claude, grok or opencode)"; }
+valid_agent() {
+    agent_kind "$1" >/dev/null 2>&1 \
+        || die "unknown agent '$1' (choose one of: ${agents// /, })"
+}
+
+# npm pins, one per line: <package>@<version> <sha512 integrity> [<machine>]. Lines without a
+# machine are installed; all are checked against the lockfile npm verified the downloads with
+# (a line with a machine, e.g. a platform binary npm picks itself, only on that machine).
+npm_pins() {
+    case $1 in
+        gemini)
+            echo "@google/gemini-cli@0.70.0 sha512-5gilVH8BI2bjSCf+X6zgGpT75bLWzK9UoZS1akjaaBwgWhm1durzKkNC1M3FamcW40YoqV0PDi4hRCIsY3f9Sg=="
+            ;;
+        codex-acp)
+            echo "@agentclientprotocol/codex-acp@2.8.0 sha512-IYKNewnvVyq8x77n0zwC/ZJJmugtgJoj0RUsgRtHhO+9sSbIDLE21Jh0eyGMX8h67kYo6QybY1PGAMhsoxeKFA=="
+            echo "@openai/codex@0.170.0 sha512-dwoughgqjiik++CFaNkjQ5y6pJO6LUzu5P1z8Hy4LUeJ+aIYcX/QO1P5rOQnHmBG4agOM7Y+hc4LtVo/a4GFiw=="
+            echo "@openai/codex-linux-x64@0.170.0-linux-x64 sha512-6cCZJaZL17tiTAvhd1Pirt8vsV1dP8CfG94+IHygUO4m24oYLQrIInJJLyKzcMv/uUonbu1dF2JmcXhA/s5bsg== x86_64"
+            echo "@openai/codex-linux-arm64@0.170.0-linux-arm64 sha512-mJLm5eia/GcukCrRfVEnYVD5dOXGE7cmpd9dJ/ixkSiKifzDAPaGq83ZEmwVhk3PxbdTPUSLRpnXZQKbNS5HoA== aarch64"
+            ;;
+    esac
+}
+# Extra npm flags: Gemini's optional packages are a terminal emulator and a keyring, neither
+# needed in the sandbox (fewer native binaries); Codex's are its own binary, which it needs.
+npm_flags() {
+    case $1 in
+        gemini) echo "--omit=optional" ;;
+    esac
+}
+# Programs to wrap, <program>:<package>; the first is the agent (linked from ~/.local/bin).
+npm_bins() {
+    case $1 in
+        gemini) echo "gemini:@google/gemini-cli" ;;
+        codex-acp) echo "codex-acp:@agentclientprotocol/codex-acp codex:@openai/codex" ;;
+    esac
+}
+# Release binaries: <url> <sha256> for this machine (`uname -m`).
+binary_pin() {
+    case $1:$(uname -m) in
+        muse:x86_64)
+            echo "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.24-R9131.1&file=muse-x86-linux d752c45dce079ee29e118804b091d81ac2b1b89b67f317b4a162fa1af1206465" ;;
+        muse:aarch64)
+            echo "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.24-R9131.1&file=muse-aarch64-linux 31d4c1fdf382e6711b1c8854d976a6095fe4743eb17b2a8f9a5bb43aef5bad63" ;;
+        *) return 1 ;;
+    esac
+}
 
 # Run a command as the melissa user with a clean environment and its own home.
 melissa_env=(HOME="$home" USER="$user" LOGNAME="$user" SHELL=/bin/bash
@@ -81,8 +153,103 @@ confirm() {
     case $answer in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
+# npm packages into $npm_root/<name>: installed without their scripts into a fresh folder, the
+# pins checked against npm's lockfile, wrappers written, then swapped in. Runs as melissa.
+install_npm() {
+    local name=$1 bin prefix new tmp node pkg ver spec integrity machine rel entry first="" specs=()
+    bin=$(agent_bin "$name")
+    node=$(command -v node) || die "Node.js is missing (container image: nodejs24; Nix: services.melissa adds it)"
+    node=$(readlink -f "$node")
+    command -v npm >/dev/null || die "npm is missing"
+    echo "Agent:     $name, by $(agent_vendor "$name")"
+    echo "Packages:  $(npm_pins "$name" | awk 'NF == 2 { printf "%s ", $1 }')(npm, pinned; no install scripts run)"
+    echo "Runs as:   the '$user' system user; installs into $npm_root/$name, with Node.js $("$node" --version)"
+    echo "By installing and logging in you accept that vendor's terms. Melissa only runs the CLI."
+    confirm "Download and install it now?" || die "cancelled"
+    ensure_user
+    prefix=$npm_root/$name
+    new=$prefix.new
+    as_melissa mkdir -p "$npm_root" "$home/.local/bin"
+    as_melissa rm -rf "$new"
+    as_melissa mkdir -p "$new/bin"
+    tmp=$(as_melissa mktemp -d "$home/.melissa-npm-cache.XXXXXX")
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp' '$new'" EXIT
+    while read -r spec integrity machine; do
+        [ -z "$machine" ] && specs+=("$spec")
+    done < <(npm_pins "$name")
+    # shellcheck disable=SC2046
+    as_melissa npm_config_update_notifier=false npm install --prefix "$new" --cache "$tmp" \
+        --ignore-scripts --no-audit --no-fund --save-exact --loglevel=warn $(npm_flags "$name") \
+        "${specs[@]}" || die "npm install failed"
+    while read -r spec integrity machine; do
+        [ -n "$machine" ] && [ "$machine" != "$(uname -m)" ] && continue
+        pkg=${spec%@*}
+        ver=${spec##*@}
+        as_melissa "$node" -e '
+            const [dir, pkg, ver, sri] = process.argv.slice(1);
+            const e = require(dir + "/package-lock.json").packages["node_modules/" + pkg];
+            if (!e || e.version !== ver || e.integrity !== sri) {
+                console.error(`pin mismatch for ${pkg}: got ${e && e.version} ${e && e.integrity}`);
+                process.exit(1);
+            }' "$new" "$pkg" "$ver" "$integrity" || die "the downloaded packages don't match Melissa's pins"
+    done < <(npm_pins "$name")
+    for entry in $(npm_bins "$name"); do
+        pkg=${entry#*:}
+        rel=$(as_melissa "$node" -e '
+            const p = require(process.argv[1]);
+            const b = typeof p.bin === "string" ? p.bin : (p.bin || {})[process.argv[2]];
+            if (!b) process.exit(1);
+            console.log(b);' "$new/node_modules/$pkg/package.json" "${entry%%:*}") \
+            || die "$pkg has no program ${entry%%:*}"
+        # The wrapper names the final folder (after the swap below) and this system's Node.
+        as_melissa sh -c 'printf "#!/bin/sh\nexec %s %s \"\$@\"\n" "$1" "$2" > "$3" && chmod 0755 "$3"' sh \
+            "$node" "$prefix/node_modules/$pkg/$rel" "$new/bin/${entry%%:*}"
+        [ -n "$first" ] || first=${entry%%:*}
+    done
+    as_melissa rm -rf "$prefix.old"
+    if [ -e "$prefix" ]; then as_melissa mv "$prefix" "$prefix.old"; fi
+    as_melissa mv "$new" "$prefix"
+    as_melissa rm -rf "$prefix.old"
+    as_melissa ln -sfn "$prefix/bin/$first" "$bin"
+    rm -rf "$tmp"
+    trap - EXIT
+    [ -x "$bin" ] || die "the install finished but $bin is missing"
+    echo "Installed: $(as_melissa "$bin" --version 2>/dev/null | head -n1 || echo "$bin")"
+}
+
+# One release binary into ~/.local/bin, checked against its pinned SHA-256. Runs as melissa.
+install_binary() {
+    local name=$1 bin url sha tmp
+    bin=$(agent_bin "$name")
+    read -r url sha < <(binary_pin "$name") || die "no $name release for $(uname -m)"
+    echo "Agent:     $name, by $(agent_vendor "$name")"
+    echo "Download:  $url"
+    echo "SHA-256:   $sha (pinned)"
+    echo "Runs as:   the '$user' system user; installs into $bin"
+    echo "By installing and logging in you accept that vendor's terms. Melissa only runs the CLI."
+    confirm "Download and install it now?" || die "cancelled"
+    ensure_user
+    as_melissa mkdir -p "$home/.local/bin"
+    tmp=$(as_melissa mktemp "$home/.local/bin/.$name.XXXXXX")
+    # shellcheck disable=SC2064
+    trap "rm -f '$tmp'" EXIT
+    as_melissa curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$tmp" "$url" \
+        || die "download failed: $url"
+    printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c --quiet - \
+        || die "the download doesn't match Melissa's pinned SHA-256"
+    as_melissa chmod 0755 "$tmp"
+    as_melissa mv -f "$tmp" "$bin"
+    trap - EXIT
+    echo "Installed: $(as_melissa "$bin" --version 2>/dev/null | head -n1 || echo "$bin")"
+}
+
 install_agent() {
     local name=$1 url bin tmp
+    case $(agent_kind "$name") in
+        npm) install_npm "$name"; return ;;
+        binary) install_binary "$name"; return ;;
+    esac
     url=$(agent_url "$name")
     bin=$(agent_bin "$name")
     echo "Agent:     $name, by $(agent_vendor "$name")"
@@ -197,6 +364,22 @@ login_agent() {
             fi
             as_melissa "$bin" auth login || die "opencode login failed"
             ;;
+        gemini)
+            echo "Gemini CLI uses a Gemini API key (https://aistudio.google.com/apikey): add it in"
+            echo "the web UI under Settings → Providers → Gemini CLI."
+            ;;
+        codex-acp)
+            echo "Logging in to Codex with a ChatGPT device code: open the link on your own computer"
+            echo "and enter the code it shows. (Or add an OpenAI API key in Settings → Providers.)"
+            as_melissa "$npm_root/codex-acp/bin/codex" login --device-auth || die "codex login failed"
+            [ -s "$(agent_cred codex-acp)" ] || die "codex finished, but it is not signed in"
+            ;;
+        muse)
+            echo "Logging in to Muse with a Meta account device code: open the link on your own"
+            echo "computer and confirm the code it shows. (Or add a Meta API key in Settings → Providers.)"
+            as_melissa "$bin" login || die "muse login failed"
+            [ -s "$(agent_cred muse)" ] || die "muse finished, but it is not signed in"
+            ;;
     esac
 }
 
@@ -220,13 +403,14 @@ status() {
         echo "  (agents: run 'sudo melissa-setup' to see which are set up)"
         any=1
     else
-        for name in claude grok opencode; do
+        for name in $agents; do
             bin=$(agent_bin "$name")
             cred=$(agent_cred "$name")
             if [ -x "$bin" ]; then
                 any=1
                 if [ -s "$cred" ]; then state="installed, logged in"
                 elif [ "$name" = opencode ]; then state="installed, free models (no account)"
+                elif [ "$name" = gemini ]; then state="installed (add a Gemini API key in Settings)"
                 else state="installed, NOT logged in: sudo melissa-setup login $name"; fi
             else
                 state="not installed"
@@ -278,7 +462,7 @@ set -- "${args[@]+"${args[@]}"}"
 case ${1:-status} in
     status) status ;;
     agent)
-        [ $# = 2 ] || die "usage: sudo melissa-setup agent <claude|grok|opencode> [--yes] [--no-login] [--no-restart]"
+        [ $# = 2 ] || die "usage: sudo melissa-setup agent <${agents// /|}> [--yes] [--no-login] [--no-restart]"
         valid_agent "$2"; need_root
         install_agent "$2"
         if [ "$login" = 1 ]; then login_agent "$2"; fi
@@ -287,7 +471,7 @@ case ${1:-status} in
         echo "Done. Open the web UI (see 'melissa-setup') or run 'melissa-server chat'."
         ;;
     login)
-        [ $# = 2 ] || die "usage: sudo melissa-setup login <claude|grok|opencode>"
+        [ $# = 2 ] || die "usage: sudo melissa-setup login <${agents// /|}>"
         valid_agent "$2"; need_root
         login_agent "$2"
         if [ "$restart" = 1 ]; then restart_server "$2"; fi

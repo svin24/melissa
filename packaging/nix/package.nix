@@ -34,6 +34,7 @@
   util-linux,
   which,
   xz,
+  nodejs_24,
   # The source revision for the release file (the flake passes self.shortRev or dirtyShortRev).
   revision ? null,
 }:
@@ -58,6 +59,9 @@ let
     util-linux
     which
     xz
+    # npm-only agents (Gemini CLI, Codex's ACP adapter): melissa-setup installs them with npm and
+    # their wrappers run this Node (a store path, bound into the sandbox on NixOS).
+    nodejs_24
   ];
   meta = {
     description = "Melissa: a self-hosted cluster of AI agents that runs apps on k3s";

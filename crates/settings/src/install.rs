@@ -4,9 +4,10 @@
 //! vendor's installer as `melissa` through `melissa-setup`). The narrow path is a systemd
 //! template unit, `melissa-agent-install@.service` (packaging/container/rootfs), and a polkit rule
 //! (`51-melissa-agent-install.rules`, container image only) that
-//! lets `melissa` **start** only its instances `claude`, `grok` and `opencode`. Nothing from the
-//! web becomes an argument: the provider id is checked against [`INSTALLABLE`] here, picks one of
-//! three fixed unit names, polkit checks the name again and `melissa-setup` checks it a third time.
+//! lets `melissa` **start** only its instances for the built-in agents ([`INSTALLABLE`]). Nothing
+//! from the web becomes an argument: the provider id is checked against [`INSTALLABLE`] here,
+//! picks one of the fixed unit names, polkit checks the name again and `melissa-setup` checks it
+//! a third time.
 //!
 //! Progress: `systemctl show` (read-only, allowed for every user) and the unit's output in
 //! `/run/melissa-agent-install/<id>.log` (root:melissa, 0640).
@@ -25,7 +26,7 @@ use std::{
 use crate::{clean_text, updates::HostKind, SettingsError};
 
 /// The agent CLIs `melissa-setup agent <id>` (and so the install unit) knows.
-pub const INSTALLABLE: [&str; 3] = ["claude", "grok", "opencode"];
+pub const INSTALLABLE: [&str; 6] = ["claude", "grok", "opencode", "gemini", "codex-acp", "muse"];
 /// Where the install unit writes its output.
 pub const LOG_DIR: &str = "/run/melissa-agent-install";
 
@@ -76,14 +77,18 @@ pub fn unit_name(id: &str) -> Option<&'static str> {
         "claude" => Some("melissa-agent-install@claude.service"),
         "grok" => Some("melissa-agent-install@grok.service"),
         "opencode" => Some("melissa-agent-install@opencode.service"),
+        "gemini" => Some("melissa-agent-install@gemini.service"),
+        "codex-acp" => Some("melissa-agent-install@codex-acp.service"),
+        "muse" => Some("melissa-agent-install@muse.service"),
         _ => None,
     }
 }
 
-/// What a unit does: install a CLI, or sign it in. Sign-in: Grok's `login --device-auth`
-/// prints a URL and a code and waits (no input); Claude's `auth login` prints a URL and waits
-/// for the code the person pastes on the page ([`Installer::send_code`]). OpenCode needs no
-/// sign-in for its free models.
+/// What a unit does: install a CLI, or sign it in. Sign-in: Grok's `login --device-auth`,
+/// Codex's `login --device-auth` and Muse's `login` print a URL and a code and wait (no input);
+/// Claude's `auth login` prints a URL and waits for the code the person pastes on the page
+/// ([`Installer::send_code`]). OpenCode needs no sign-in for its free models; Gemini CLI uses
+/// an API key (Google's own sign-in isn't offered).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
     Install,
@@ -98,6 +103,8 @@ impl Job {
             Self::Login => match id {
                 "claude" => Some("melissa-agent-login@claude.service"),
                 "grok" => Some("melissa-agent-login@grok.service"),
+                "codex-acp" => Some("melissa-agent-login@codex-acp.service"),
+                "muse" => Some("melissa-agent-login@muse.service"),
                 _ => None,
             },
         }
@@ -174,21 +181,36 @@ pub fn valid_code(code: &str) -> bool {
     !code.is_empty() && code.len() <= CODE_MAX && code.bytes().all(|b| b.is_ascii_graphic())
 }
 
-/// A device-code sign-in in a login log: the vendor's URL (only on its own host) and the code.
-pub fn device_prompt(log: &[String]) -> Option<(String, String)> {
+/// Where each device-code sign-in sends the person (only these are offered as links).
+fn device_url_prefix(id: &str) -> Option<&'static str> {
+    match id {
+        "grok" => Some("https://accounts.x.ai/"),
+        "codex-acp" => Some("https://auth.openai.com/codex/device"),
+        "muse" => Some("https://auth.meta.com/oauth/device"),
+        _ => None,
+    }
+}
+
+/// A device code on a line of its own: `ABCD-1234` or `ABCD-12345` (capitals and digits).
+fn is_device_code(line: &str) -> bool {
+    let b = line.as_bytes();
+    (b.len() == 9 || b.len() == 10)
+        && b[4] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// A device-code sign-in in `id`'s login log: the vendor's URL (only on its own host) and
+/// the code.
+pub fn device_prompt(id: &str, log: &[String]) -> Option<(String, String)> {
+    let prefix = device_url_prefix(id)?;
     let url = log.iter().find_map(|l| {
         l.split_whitespace()
-            .find(|w| w.starts_with("https://accounts.x.ai/"))
+            .find(|w| w.starts_with(prefix))
             .map(str::to_string)
     })?;
-    let code = log.iter().map(|l| l.trim()).find(|l| {
-        let b = l.as_bytes();
-        b.len() == 9
-            && b[4] == b'-'
-            && b.iter()
-                .enumerate()
-                .all(|(i, c)| i == 4 || c.is_ascii_uppercase() || c.is_ascii_digit())
-    })?;
+    let code = log.iter().map(|l| l.trim()).find(|l| is_device_code(l))?;
     Some((url, code.to_string()))
 }
 
@@ -472,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_known_ids_have_a_unit() {
+    fn only_the_built_in_ids_have_a_unit() {
         assert_eq!(
             unit_name("opencode"),
             Some("melissa-agent-install@opencode.service")
@@ -497,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn login_is_claude_and_grok_only_and_the_device_prompt_is_found() {
+    fn login_units_are_fixed_and_the_device_prompt_is_found() {
         assert_eq!(
             Job::Login.unit("grok"),
             Some("melissa-agent-login@grok.service")
@@ -506,8 +528,17 @@ mod tests {
             Job::Login.unit("claude"),
             Some("melissa-agent-login@claude.service")
         );
+        assert_eq!(
+            Job::Login.unit("codex-acp"),
+            Some("melissa-agent-login@codex-acp.service")
+        );
+        assert_eq!(
+            Job::Login.unit("muse"),
+            Some("melissa-agent-login@muse.service")
+        );
         for id in [
             "opencode",
+            "gemini",
             "echo",
             "..",
             "grok.service",
@@ -526,17 +557,53 @@ mod tests {
         .map(String::from)
         .to_vec();
         assert_eq!(
-            device_prompt(&log),
+            device_prompt("grok", &log),
             Some((
                 "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234".into(),
                 "ABCD-1234".into()
             ))
         );
-        // Another host is never offered as a link.
+        // Another host is never offered as a link, nor another vendor's.
         let evil: Vec<String> = ["https://evil.example.com/x", "ABCD-1234"]
             .map(String::from)
             .to_vec();
-        assert_eq!(device_prompt(&evil), None);
+        assert_eq!(device_prompt("grok", &evil), None);
+        assert_eq!(device_prompt("muse", &log), None);
+        assert_eq!(device_prompt("opencode", &log), None);
+        // Codex 0.170 (`codex login --device-auth`, colours already stripped by the reader).
+        let codex: Vec<String> = [
+            "Follow these steps to sign in with ChatGPT using device code authorization:",
+            "1. Open this link in your browser and sign in to your account",
+            "   https://auth.openai.com/codex/device",
+            "2. Enter this one-time code (expires in 15 minutes)",
+            "   SZY0-YGA45",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            device_prompt("codex-acp", &codex),
+            Some((
+                "https://auth.openai.com/codex/device".into(),
+                "SZY0-YGA45".into()
+            ))
+        );
+        // Muse Code 1.4.24 (`muse login`).
+        let muse: Vec<String> = [
+            "Open this page to sign in:",
+            "  https://auth.meta.com/oauth/device/?code=WFXS-JFGJ",
+            "confirm this code matches:",
+            "  WFXS-JFGJ",
+            "Waiting for approval…",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            device_prompt("muse", &muse),
+            Some((
+                "https://auth.meta.com/oauth/device/?code=WFXS-JFGJ".into(),
+                "WFXS-JFGJ".into()
+            ))
+        );
     }
 
     #[test]
