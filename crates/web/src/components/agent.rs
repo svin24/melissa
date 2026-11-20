@@ -309,9 +309,6 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                             span.meta { (d.status) }
                         }
                     }
-                    button.menu-item type="button" data-sidebar-collapse hidden {
-                        (glyph(Glyph::Sidebar)) span { "Collapse sidebar" }
-                    }
                 }
                 button.icon-button.side-collapse type="button" data-sidebar-collapse hidden
                     title="Collapse sidebar" {

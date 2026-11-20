@@ -5317,8 +5317,7 @@ label.attach.upload {
   }
 
   .shell:has([data-phone-view="list"]) .side-head > .side-collapse,
-  .shell:has([data-phone-view="list"]) .side-search > .side-new,
-  .device-menu [data-sidebar-collapse] {
+  .shell:has([data-phone-view="list"]) .side-search > .side-new {
     display: none;
   }
 
