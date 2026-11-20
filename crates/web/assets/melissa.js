@@ -962,6 +962,10 @@
       setDetails(false, true);
       return;
     }
+    // Review: to the permission card in the chat; on narrow screens the sheet steps aside.
+    if (t.closest("[data-review]") && !isWide()) {
+      setDetails(false, false);
+    }
     // "Reference in chat": put the file's reference in the message box (no page load).
     var ref = t.closest("a[data-insert]");
     if (ref && composer()) {
