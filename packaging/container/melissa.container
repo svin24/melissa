@@ -36,6 +36,11 @@ PublishPort=@UI_BIND@:@UI_PORT@:8081
 # App NodePorts 30000-30079 (first app port on the host: APP_PORT_BASE), TCP and UDP (game servers).
 PublishPort=@BIND@:@APP_PORT_BASE@-@APP_PORT_LAST@:30000-30079
 PublishPort=@BIND@:@APP_PORT_BASE@-@APP_PORT_LAST@:30000-30079/udp
+# Tells the server where the app ports are published (BIND; empty: unknown), so app links leave
+# out addresses BIND doesn't cover. The server can't test that by connecting: from inside the
+# container a connect to the host's published address fails (no hairpin) even when it works from
+# everywhere else. melissa-server.service gets it through PassEnvironment (10-container.conf).
+Environment=MELISSA_PUBLISH_BIND=@PUBLISH_BIND@
 Volume=melissa-var:/var
 # Updates: the host helper writes status here (read-only inside) and picks up requests there.
 Volume=/var/lib/melissa-container/status:/run/melissa-update:ro,z

@@ -78,6 +78,15 @@ bind_covers() {
     return 1
 }
 
+# publish_bind: BIND as the server is told (MELISSA_PUBLISH_BIND in melissa.container). The server
+# leaves addresses BIND doesn't cover out of app links; it can't test them by connecting (from
+# inside the container the host's published address doesn't answer: no hairpin). Empty: unknown,
+# the server probes and only notes failures (ALLOW_ADDRESS_MISMATCH=yes: something else forwards).
+publish_bind() {
+    [ "$ALLOW_ADDRESS_MISMATCH" = yes ] && { echo; return 0; }
+    case "$BIND" in ''|0.0.0.0) echo 0.0.0.0 ;; localhost) echo 127.0.0.1 ;; *) echo "$BIND" ;; esac
+}
+
 # uncovered LIST: the entries of the comma-separated LIST that BIND does not cover.
 uncovered() {
     local a out=''
@@ -227,7 +236,8 @@ install_files() {
     printf '%s\n' br_netfilter overlay > "$MODULES_FILE"
     sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
-        -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" "$here/melissa.container" > "$QUADLET"
+        -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
+        "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
     install -m 0644 "$here/README.md" "$SHARE/README.md"

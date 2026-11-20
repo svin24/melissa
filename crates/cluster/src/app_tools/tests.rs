@@ -385,37 +385,47 @@ fn links_add_the_port_offset() {
     assert_eq!(f["port"], Value::Null);
 }
 
-/// app_status and deploy_app leave a dead address out of the links and say why.
-#[tokio::test]
-async fn links_leave_out_addresses_the_host_does_not_publish_on() {
-    use crate::reach::{PortProbe, Probe, ReachCheck};
-    /// The game port answers on the device and at the LAN address; the Tailscale address
-    /// refuses (ports published on another address only).
-    struct Published;
-    impl PortProbe for Published {
-        fn probe<'a>(&'a self, host: &'a str, port: u16) -> BoxFuture<'a, Probe> {
-            let open = port == 30000 && (host == "10.88.0.2" || host == "203.0.113.10");
-            Box::pin(async move {
-                if open {
-                    Probe::Open
-                } else {
-                    Probe::Refused
-                }
-            })
-        }
+/// The container from inside: only the NodePort on the container's own address answers;
+/// every connect to the host's published addresses fails (no hairpin through the DNAT).
+struct NoHairpin;
+impl crate::reach::PortProbe for NoHairpin {
+    fn probe<'a>(&'a self, host: &'a str, port: u16) -> BoxFuture<'a, crate::reach::Probe> {
+        use crate::reach::Probe;
+        let open = port == 30000 && host == "10.88.0.2";
+        Box::pin(async move {
+            if open {
+                Probe::Open
+            } else {
+                Probe::Refused
+            }
+        })
     }
+}
+
+/// Tools whose reachability check uses [`NoHairpin`] and `publish_bind`.
+fn reach_tools(publish_bind: Option<&str>) -> (Arc<Fake>, BTreeMap<&'static str, Arc<dyn Tool>>) {
     let fake = Arc::new(Fake::default());
     let settings = AppSettings {
-        reach: Some(ReachCheck {
-            probe: Arc::new(Published),
+        reach: Some(crate::reach::ReachCheck {
+            probe: Arc::new(NoHairpin),
             control: Some("10.88.0.2".into()),
+            publish_bind: publish_bind.and_then(crate::reach::parse_publish_bind),
         }),
         ..settings()
     };
-    let t: BTreeMap<_, _> = app_tools(settings, Some(fake))
+    let t = app_tools(settings, Some(fake.clone()))
         .into_iter()
         .map(|t| (t.spec().name, t))
         .collect();
+    (fake, t)
+}
+
+/// Container install, ports published on the LAN address: that link is kept although the
+/// device can't connect to it; the Tailscale address (not published there) is left out, and
+/// deploy_app and app_status say why.
+#[tokio::test]
+async fn links_leave_out_addresses_the_host_does_not_publish_on() {
+    let (_, t) = reach_tools(Some("203.0.113.10"));
     let out = call(
         &t,
         "deploy_app",
@@ -432,9 +442,66 @@ async fn links_leave_out_addresses_the_host_does_not_publish_on() {
         assert_eq!(rows[0]["status"], "ok");
         assert_eq!(rows[1]["status"], "unreachable");
         let warning = r["reachability"]["warning"].as_str().unwrap();
-        assert!(warning.contains("100.64.0.10:30000 refused"), "{warning}");
+        assert!(warning.contains("100.64.0.10"), "{warning}");
+        assert!(warning.contains("on 203.0.113.10 only"), "{warning}");
         assert!(r["reachability"]["udp"].is_string());
     }
+}
+
+/// Published on every address (BIND=0.0.0.0): no link is dropped although no connect to a
+/// published address works from inside the container.
+#[tokio::test]
+async fn container_without_hairpin_keeps_every_covered_link() {
+    let (_, t) = reach_tools(Some("0.0.0.0"));
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    let rows = &out["reachability"]["addresses"];
+    assert_eq!(rows[0]["status"], "ok");
+    assert_eq!(rows[1]["status"], "ok");
+    assert_eq!(out["reachability"]["warning"], Value::Null);
+    assert_eq!(out["ports"][0]["address"], "203.0.113.10:30000");
+}
+
+/// Loopback-only publishing with non-loopback addresses: every link is dead, and the owner
+/// is told nothing is left.
+#[tokio::test]
+async fn loopback_bind_drops_every_other_address() {
+    let (_, t) = reach_tools(Some("127.0.0.1"));
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["ports"][0]["address"], Value::Null);
+    let warning = out["reachability"]["warning"].as_str().unwrap();
+    assert!(warning.contains("203.0.113.10, 100.64.0.10"), "{warning}");
+    assert!(warning.contains("No working address is left"), "{warning}");
+}
+
+/// No publish bind (Nix/host install): a failed connect keeps the link, with a note.
+#[tokio::test]
+async fn without_a_publish_bind_a_failed_probe_keeps_the_link() {
+    let (_, t) = reach_tools(None);
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["ports"][0]["address"], "203.0.113.10:30000");
+    let rows = &out["reachability"]["addresses"];
+    assert_eq!(rows[0]["status"], "unverified");
+    assert_eq!(rows[1]["status"], "unverified");
+    assert_eq!(out["reachability"]["warning"], Value::Null);
+    assert!(out["reachability"]["note"].is_string());
 }
 
 fn tools(fake: Option<Arc<Fake>>) -> BTreeMap<&'static str, Arc<dyn Tool>> {

@@ -801,3 +801,16 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   without evidence, normal "pausing when empty" logs are not failures. Alternatives: warn only in install.sh (missed
   the incident's silent case), rewrite server.toml at every container start (would override hand edits), probe from
   outside the device (not possible from Melissa itself).
+- **2026-11-20 — Run-time app address check: the container's publish bind decides, a probe never drops a link.**
+  The run-time probe above was wrong in the container: from inside it, a TCP connect to the host's published address
+  (podman bridge, netavark nftables DNAT) fails, no hairpin, while the same connect from the host and from other
+  tailnet machines works; it would have stripped working links. Now melissa.container sets
+  `MELISSA_PUBLISH_BIND=<BIND>` (install.sh; `0.0.0.0` for an empty BIND, empty with `ALLOW_ADDRESS_MISMATCH=yes`)
+  and the server unit gets it via `PassEnvironment` (systemd services don't inherit the container's environment;
+  checked). With it, addresses are not probed: one the bind provably doesn't cover (loopback bind, other address; one
+  address bind, another) is dropped with the owner warning, a covered one is kept, a host name is kept as
+  `unverified`. Without it (Nix/host install, where k3s serves NodePorts on every host address; or a container not
+  reinstalled yet) addresses are still probed, but a failure is only an `unverified` note, links kept. The control
+  connect (NodePort on the device's own address) still tells "app not answering". Env var rather than a server.toml
+  key: it comes from the same line that publishes the ports (can't drift), and an older image after a rollback
+  ignores it, whereas `[apps]` rejects unknown keys and the server wouldn't start.

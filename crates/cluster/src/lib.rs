@@ -23,4 +23,4 @@ pub use cluster::{
     RUNTIME_DIR, RUNTIME_FILE,
 };
 pub use health::ClusterHealth;
-pub use reach::{PortProbe, Probe, ReachCheck, TcpProbe};
+pub use reach::{parse_publish_bind, PortProbe, Probe, ReachCheck, TcpProbe};

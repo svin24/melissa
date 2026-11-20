@@ -58,7 +58,8 @@ use melissa_agent::{
     EgressProxy, McpLink, TaskBoard,
 };
 use melissa_cluster::{
-    app_tools, AppSettings, ClusterHealth, KubeApps, LazyCluster, ReachCheck, Workspaces,
+    app_tools, parse_publish_bind, AppSettings, ClusterHealth, KubeApps, LazyCluster, ReachCheck,
+    Workspaces,
 };
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
@@ -323,7 +324,7 @@ async fn main() -> anyhow::Result<()> {
         agents: Some(names.clone()),
         // Links name only addresses that really reach the app (incident: a container install
         // published app ports on loopback while links named the Tailscale address).
-        reach: Some(ReachCheck::tcp()),
+        reach: Some(ReachCheck::tcp(publish_bind())),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
     // Who owns which workspace, for the scope check before every workspace-changing tool call; also
@@ -441,6 +442,25 @@ fn load_providers(path: &std::path::Path) -> ProviderFile {
             ProviderFile::default()
         }
     }
+}
+
+/// Where the host publishes the app ports: `MELISSA_PUBLISH_BIND`, set by the container install
+/// (its `BIND`; melissa.container passes it on to this service). Unset (Nix/host install, or a
+/// container installed before it was passed): `None`, app addresses are probed instead.
+fn publish_bind() -> Option<std::net::IpAddr> {
+    let value = std::env::var("MELISSA_PUBLISH_BIND").ok()?;
+    let bind = parse_publish_bind(&value);
+    match bind {
+        Some(ip) => {
+            tracing::info!(publish_bind = %ip, "app ports are published on this host address")
+        }
+        None if !value.trim().is_empty() => tracing::warn!(
+            value,
+            "MELISSA_PUBLISH_BIND is not an IP address; app addresses are probed instead"
+        ),
+        None => {}
+    }
+    bind
 }
 
 /// The same candidates `LazyCluster::for_lead` checks, for the startup summary.

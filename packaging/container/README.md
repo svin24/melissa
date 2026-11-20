@@ -81,8 +81,12 @@ refused": the preflight refuses such a mix (e.g. `BIND=127.0.0.1` with a Tailsca
 reinstall, an existing server.toml whose `[apps] addresses` differ from an explicit `APP_ADDRESSES`, or
 name addresses `BIND` doesn't cover, gets just that key rewritten (install.sh prints old and new).
 `ALLOW_ADDRESS_MISMATCH=yes` skips both, for addresses something else forwards. Apps on Tailscale:
-`BIND=<the host's Tailscale address>` (or `0.0.0.0`). At run time the app tools also try each address
-(TCP) and leave dead ones out of the links they give agents (`reachability` in `app_status`).
+`BIND=<the host's Tailscale address>` (or `0.0.0.0`). The server is told `BIND` too
+(`MELISSA_PUBLISH_BIND` in melissa.container, passed to melissa-server.service) and leaves addresses it
+doesn't cover out of the links it gives agents (`reachability` in `app_status`). It can't test them by
+connecting: from inside the container a connect to the host's published address fails (no hairpin
+through podman's DNAT) even when it works from the host and other machines. An install from before
+this has no `MELISSA_PUBLISH_BIND`; rerun install.sh to add it (until then failed probes are only noted).
 
 ### From another machine
 The UI has **no login yet**: anyone who reaches it controls Melissa. Keep `UI_BIND=127.0.0.1` and use:
