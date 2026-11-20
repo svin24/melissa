@@ -124,6 +124,11 @@ RUN set -eu; \
     # a volume. Keep on it: k3s's node password (k3s refuses to rejoin its own datastore without it) and
     # the server's config (/etc/melissa: server.toml with [apps] addresses, Settings' providers.toml).
     mkdir -p /etc/rancher; rm -rf /etc/rancher/node /etc/melissa; \
+    # Users and groups (melissa, melissa-kube) come from sysusers.d at start: systemd-sysusers only
+    # runs when /etc is older than /usr (ConditionNeedsUpdate=/etc). A build step can leave a fresh
+    # /etc/.updated (seen 2026-11-20: melissa-server failed with "Unknown user 'melissa'"), so drop it:
+    # the container is new at every start anyway.
+    rm -f /etc/.updated; \
     ln -s /var/lib/melissa-container/rancher-node /etc/rancher/node; \
     ln -s /var/lib/melissa-container/etc-melissa /etc/melissa
 
@@ -149,7 +154,9 @@ RUN set -eu; \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket; \
-    grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release
+    grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
+    # systemd-sysusers must run at every start (it creates the melissa user).
+    test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }
 
 LABEL org.opencontainers.image.title="melissa" \
       org.opencontainers.image.version="${MELISSA_VERSION}" \
