@@ -193,3 +193,9 @@ Providers and polkit results still apply to the container (same rule, now restar
   `enabled=on`; off by default). Saved in `ui.toml` next to `providers.toml` (`melissa_settings::prefs`, applies at
   once, audited `settings.ui`). On: the chat feed (`Feed::with_steps`) shows each `thought` event as a row that opens
   to the thought (`components::thought_row`) and appends each step's time to tool rows ("Checked this device · 1.2s").
+  (2026-11-20) Its **Developer mode** card has No permission prompts (`bypass_region`) and, below it, **Full access
+  per agent** (`full_access_region`, `POST /ui/settings/developer/full-access`, `enabled=on`; no confirm step: on
+  only adds Access to each chat's model picker, where Full access asks first). Saved in the permissions file next to
+  the rules (`Permissions::full_access_allowed`), audited `permissions.full_access_allowed`; off puts every agent
+  back on Ask. An agent's level: the picker's `access=ask|full`, or `POST /api/settings/permissions/access`
+  (`confirm` needed for Full), audited `permissions.access`.

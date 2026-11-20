@@ -73,7 +73,8 @@ async fn a_switch_waits_for_the_running_turn_and_carries_the_conversation_over()
         backend: "agent-acp".into(),
         model: None,
         model_label: None,
-        effort_label: None
+        effort_label: None,
+        fast: false
     }));
     // The old session still serves until the next turn; the view shows the choice.
     assert_eq!(s.lead.status().backend.as_deref(), Some("fake-acp"));
@@ -390,6 +391,7 @@ async fn reasoning_levels_come_from_the_agent_and_apply_at_the_next_session() {
             model: Some("m1".into()),
             model_label: Some("Model One".into()),
             effort_label: Some("High".into()),
+            fast: false,
         }));
     s.close().await;
     // Saved with the choice for the next daemon run.
@@ -397,4 +399,80 @@ async fn reasoning_levels_come_from_the_agent_and_apply_at_the_next_session() {
         s.lead.backend_choice().and_then(|c| c.effort).as_deref(),
         Some("high")
     );
+}
+
+/// An ACP option of category `speed` (a boolean toggle; the category is still unstable in
+/// ACP, so it arrives as a custom one).
+fn speed_option(on: bool) -> Value {
+    json!({"id": "speed", "name": "Fast mode", "category": "speed", "type": "boolean",
+        "currentValue": on})
+}
+
+#[tokio::test]
+async fn a_fast_mode_comes_from_the_agent_and_applies_at_the_next_session() {
+    let mut first = handshake("unused");
+    first.pop();
+    first.push(Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
+        "sessionId": "s-1", "configOptions": [model_option("m1"), speed_option(false)]}})));
+    first.extend([
+        prompt(2, "s-1", "<any>"),
+        text("s-1", "Hi."),
+        done(2, "end_turn"),
+    ]);
+    let mut second = handshake("unused");
+    second.truncate(2);
+    second.extend([
+        Step::send(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume",
+            "params": {"sessionId": "s-1", "cwd": "<any>", "mcpServers": "<any>"}}),
+        ),
+        Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
+            "configOptions": [model_option("m1"), speed_option(false)]}})),
+        Step::send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
+            "params": {"sessionId": "s-1", "configId": "speed", "type": "boolean",
+                "value": true}}),
+        ),
+        Step::recv(json!({"jsonrpc": "2.0", "id": 2, "result": {
+            "configOptions": [model_option("m1"), speed_option(true)]}})),
+        prompt(3, "s-1", "Again."),
+        text("s-1", "Hello again."),
+        done(3, "end_turn"),
+    ]);
+    let s = setup_in(scratch("switch-fast"), vec![first, second], |_| {});
+    let (turn, since) = s.lead.send("Hello.").unwrap();
+    turn_events(&s.lead, since, turn).await;
+    let fake = |s: &Setup| {
+        s.lead
+            .backends()
+            .into_iter()
+            .find(|b| b.name == "fake-acp")
+            .unwrap()
+    };
+    // Reported with the model the session uses; the other has none known.
+    let models = fake(&s).models.unwrap();
+    assert!(models[0].fast);
+    assert!(!models[1].fast);
+    assert!(matches!(
+        s.lead.use_backend_with("fake-acp", Some("m2"), None, true),
+        Err(LeadError::Invalid(m)) if m.contains("does not offer a fast mode")
+    ));
+    let sw = s
+        .lead
+        .use_backend_with("fake-acp", Some("m1"), None, true)
+        .unwrap();
+    assert!(sw.changed && sw.fast);
+    assert!(fake(&s).fast);
+    let (turn, since) = s.lead.send("Again.").unwrap();
+    let events = turn_events(&s.lead, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
+    assert!(s
+        .lead
+        .events()
+        .since(0, 100)
+        .events
+        .iter()
+        .any(|r| matches!(&r.event, LeadEvent::BackendSwitched { fast: true, .. })));
+    s.close().await;
+    assert!(s.lead.backend_choice().is_some_and(|c| c.fast));
 }

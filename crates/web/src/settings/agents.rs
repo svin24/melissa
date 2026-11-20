@@ -14,13 +14,19 @@ use melissa_agent::lead::{backends::BackendView, LeadError};
 use super::pages::{self, AgentRow, Flash, AGENTS_URL};
 use crate::{agents::picker, components::Tone, feed::backend_label, is_htmx, ui::Ui};
 
-/// "Claude · Opus 5.5 · High": the backend, and the model and level when chosen.
+/// "Claude · Opus 5.5 · High · Fast": the backend, and the model, level and speed when
+/// chosen.
 pub(crate) fn runs_on(views: &[BackendView], fallback: &str) -> String {
     let Some(current) = views.iter().find(|v| v.current) else {
         return backend_label(fallback).to_string();
     };
     let backend = backend_label(&current.name);
-    let chip = picker(views, String::new(), None).chip;
+    let p = picker(views, String::new(), None, None);
+    let chip = if p.fast {
+        format!("{} · Fast", p.chip)
+    } else {
+        p.chip
+    };
     if chip == backend {
         chip
     } else {

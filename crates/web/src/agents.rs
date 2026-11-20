@@ -1,12 +1,15 @@
-//! The model picker of a chat: which backend, model and reasoning level the lead agent or a
-//! helper runs on, and the choices the user has. Builds the fixed [`ModelPicker`] component
-//! from the API's [`BackendView`]s. Only backends that are usable now are offered: one that
-//! isn't installed or signed in is set up in Settings → Providers, not here.
+//! The model picker of a chat: which backend, model, reasoning level and speed the lead agent
+//! or a helper runs on, its access level, and the choices the user has. Builds the fixed
+//! [`ModelPicker`] component from the API's [`BackendView`]s. Only backends that are usable
+//! now are offered: one that isn't installed or signed in is set up in Settings → Providers,
+//! not here. Option groups show only when they apply (2026-11-20, owner request): reasoning
+//! levels and Speed only for a model the agent reported them for, Access only with the
+//! developer option "Full access per agent".
 
 use melissa_agent::lead::backends::BackendView;
 
 use crate::{
-    components::{ModelPicker, PickerBackend, PickerLevel, PickerModel},
+    components::{ModelPicker, PickerAccess, PickerBackend, PickerLevel, PickerModel},
     feed::backend_label,
 };
 
@@ -68,8 +71,33 @@ pub(crate) fn kept_effort(
         .map(|_| effort.to_string())
 }
 
-/// The picker for `views`, posting to `action`.
-pub(crate) fn picker(views: &[BackendView], action: String, error: Option<String>) -> ModelPicker {
+/// Fast mode to keep when the user picks `model` on `backend` without choosing a speed: on,
+/// if it is on now and the new model offers it too.
+pub(crate) fn kept_fast(views: &[BackendView], backend: &str, model: Option<&str>) -> bool {
+    if !views.iter().any(|v| v.current && v.fast) {
+        return false;
+    }
+    let wanted = model.unwrap_or("default");
+    views
+        .iter()
+        .find(|v| v.name == backend)
+        .and_then(|v| v.models.as_ref())
+        .is_some_and(|models| models.iter().any(|m| m.id == wanted && m.fast))
+}
+
+/// The access level of the chat's agent, for the picker: None while the developer option
+/// "Full access per agent" is off (the group is left out), else whether it is on Full access.
+pub(crate) type Access = Option<bool>;
+
+/// The picker for `views`, posting to `action`. `access`: see [`Access`].
+pub(crate) fn picker(
+    views: &[BackendView],
+    action: String,
+    error: Option<String>,
+    access: Access,
+) -> ModelPicker {
+    let access = access.map(|full| PickerAccess { full });
+    let full_access = access.as_ref().is_some_and(|a| a.full);
     let usable: Vec<&BackendView> = views.iter().filter(|v| v.available).collect();
     let current = usable.iter().copied().find(|v| v.current);
     let mut backends = Vec::new();
@@ -110,6 +138,10 @@ pub(crate) fn picker(views: &[BackendView], action: String, error: Option<String
             current: String::new(),
             backends,
             levels: Vec::new(),
+            speed: None,
+            fast: false,
+            access,
+            full_access,
             error,
         };
     };
@@ -147,6 +179,9 @@ pub(crate) fn picker(views: &[BackendView], action: String, error: Option<String
         Some(e) => format!("{base} · {e}"),
         None => base,
     };
+    // Speed only for a model the agent reported a fast mode for (a model that is itself a
+    // fast variant reports none).
+    let speed = offered.filter(|m| m.fast).map(|_| cur.fast);
     ModelPicker {
         action,
         chip,
@@ -154,6 +189,10 @@ pub(crate) fn picker(views: &[BackendView], action: String, error: Option<String
         current: value(&cur.name, model),
         backends,
         levels,
+        speed,
+        fast: speed == Some(true),
+        access,
+        full_access,
         error,
     }
 }
@@ -172,6 +211,7 @@ mod tests {
             current,
             model: None,
             effort: None,
+            fast: false,
             models: None,
         }
     }
@@ -209,7 +249,7 @@ mod tests {
             grok,
             view("opencode-acp", false, false),
         ];
-        let p = picker(&views, "/ui/backend".into(), None);
+        let p = picker(&views, "/ui/backend".into(), None, None);
         assert_eq!(p.chip, "Sonnet 5.5 · HIGH");
         assert_eq!(p.letter.as_deref(), Some("C"));
         assert_eq!(p.current, "claude-session sonnet");
@@ -241,7 +281,7 @@ mod tests {
         let mut c = claude();
         c.model = Some("haiku".into());
         c.effort = None;
-        let p = picker(&[c], "/ui/backend".into(), None);
+        let p = picker(&[c], "/ui/backend".into(), None, None);
         assert_eq!(p.chip, "Haiku");
         assert!(p.levels.is_empty());
 
@@ -254,9 +294,102 @@ mod tests {
         assert_eq!(kept_effort(&views, "claude-session", Some("haiku")), None);
     }
 
+    /// Claude as the installed CLI reports it: Opus has a fast mode and levels, Haiku (a
+    /// fast model already) has neither.
+    fn claude_fast() -> BackendView {
+        let mut c = view("claude-session", true, true);
+        c.model = Some("opus".into());
+        let mut opus = ModelOption::new("opus", "Opus 5.5");
+        opus.efforts = levels(&["high", "max"]);
+        opus.fast = true;
+        c.models = Some(vec![opus, ModelOption::new("haiku", "Haiku 4.5")]);
+        c
+    }
+
+    #[test]
+    fn speed_shows_only_for_a_model_with_a_fast_mode() {
+        let mut c = claude_fast();
+        let p = picker(std::slice::from_ref(&c), "/ui/backend".into(), None, None);
+        assert_eq!(p.speed, Some(false));
+        assert!(!p.fast);
+        assert!(!p.levels.is_empty());
+        c.fast = true;
+        let p = picker(std::slice::from_ref(&c), "/ui/backend".into(), None, None);
+        assert_eq!(p.speed, Some(true));
+        assert!(p.fast);
+        // A fast model: no Speed group, no levels column.
+        c.model = Some("haiku".into());
+        c.fast = false;
+        let p = picker(&[c], "/ui/backend".into(), None, None);
+        assert_eq!(p.speed, None);
+        assert!(p.levels.is_empty());
+        // An ACP agent that reports only levels (like grok): no Speed either.
+        let mut grok = view("grok-acp", true, true);
+        grok.model = Some("grok-4.7".into());
+        let mut m = ModelOption::new("grok-4.7", "Grok 4.7");
+        m.efforts = levels(&["low", "high"]);
+        grok.models = Some(vec![m, ModelOption::new("grok-4.7-build-fast", "Fast")]);
+        let p = picker(&[grok], "/ui/backend".into(), None, None);
+        assert_eq!(p.speed, None);
+        assert_eq!(p.levels.len(), 3);
+    }
+
+    #[test]
+    fn fast_is_kept_only_when_the_new_model_offers_it() {
+        let mut c = claude_fast();
+        c.fast = true;
+        let views = [c];
+        assert!(kept_fast(&views, "claude-session", Some("opus")));
+        assert!(!kept_fast(&views, "claude-session", Some("haiku")));
+        assert!(!kept_fast(&views, "claude-session", Some("nope")));
+        let mut off = claude_fast();
+        off.fast = false;
+        assert!(!kept_fast(&[off], "claude-session", Some("opus")));
+    }
+
+    #[test]
+    fn access_shows_only_with_the_developer_option_and_marks_the_chip() {
+        let c = claude_fast();
+        let p = picker(std::slice::from_ref(&c), "/ui/backend".into(), None, None);
+        assert!(p.access.is_none());
+        assert!(!p.full_access);
+        let p = picker(
+            std::slice::from_ref(&c),
+            "/ui/backend".into(),
+            None,
+            Some(false),
+        );
+        assert!(p.access.as_ref().is_some_and(|a| !a.full));
+        assert!(!p.full_access);
+        let p = picker(&[c], "/ui/backend".into(), None, Some(true));
+        assert!(p.full_access);
+        let html = crate::components::model_chip(&p).into_string();
+        assert!(html.contains("chip-warn"));
+        let html = crate::components::model_picker(&p).into_string();
+        assert!(html.contains(r#"name="access" value="ask""#));
+        assert!(html.contains("Speed"));
+    }
+
+    #[test]
+    fn the_footer_is_left_out_when_nothing_applies() {
+        let mut c = claude_fast();
+        c.model = Some("haiku".into());
+        let p = picker(&[c], "/ui/backend".into(), None, None);
+        let html = crate::components::model_picker(&p).into_string();
+        assert!(!html.contains("picker-footer"));
+        assert!(!html.contains("picker-levels"));
+        let chip = crate::components::model_chip(&p).into_string();
+        assert!(!chip.contains("chip-tag") && !chip.contains("chip-warn"));
+    }
+
     #[test]
     fn nothing_usable_says_so() {
-        let p = picker(&[view("grok-acp", false, true)], "/ui/backend".into(), None);
+        let p = picker(
+            &[view("grok-acp", false, true)],
+            "/ui/backend".into(),
+            None,
+            None,
+        );
         assert!(p.backends.is_empty());
         assert_eq!(p.letter, None);
         assert_eq!(p.chip, "No agent yet");

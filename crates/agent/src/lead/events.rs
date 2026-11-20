@@ -133,6 +133,9 @@ pub enum LeadEvent {
         /// The reasoning level's display name, if one was chosen.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort_label: Option<String>,
+        /// Fast mode was chosen.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fast: bool,
     },
     /// A Lead agent backend could not start; the next one in the list is tried.
     BackendFailed { backend: String, error: String },

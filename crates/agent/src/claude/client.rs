@@ -528,8 +528,9 @@ impl Actor {
 
 /// Map a `result` message to the turn's end. After an interrupt every ending counts as
 /// cancelled; errors (API errors, crashes inside Claude) fail the turn.
-/// The models in Claude's handshake answer (`[{value, displayName, ...}]`). Only the id and
-/// the display name are kept; anything that is not a usable model id is skipped.
+/// The models in Claude's handshake answer (`[{value, displayName, supportedEffortLevels,
+/// supportsFastMode, ...}]`). The id, the display name, the reasoning levels and whether it
+/// has a fast mode are kept; anything that is not a usable model id is skipped.
 pub(crate) fn offered_models(models: &Value) -> Vec<ModelOption> {
     models
         .as_array()
@@ -545,6 +546,7 @@ pub(crate) fn offered_models(models: &Value) -> Vec<ModelOption> {
                         id: id.into(),
                         label: label.chars().take(80).collect(),
                         efforts: offered_efforts(&m["supportedEffortLevels"]),
+                        fast: m["supportsFastMode"].as_bool() == Some(true),
                     })
                 })
                 .collect()

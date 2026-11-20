@@ -260,6 +260,19 @@ fn with_effort(extra: &[String], effort: Option<&str>) -> Result<Vec<String>, Ag
     Ok(out)
 }
 
+/// The arguments with fast mode on when the user chose it: Claude Code reads `fastMode`
+/// from its settings (`--settings` takes inline JSON; its handshake then reports
+/// `fast_mode_state: "on"`). Off: nothing is added (Claude's own default is off for
+/// programmatic sessions). The config's extra arguments never carry `--settings`
+/// ([`ALLOWED_ARGS`]).
+fn with_fast(mut extra: Vec<String>, fast: bool) -> Vec<String> {
+    if fast {
+        extra.push("--settings".into());
+        extra.push(r#"{"fastMode":true}"#.into());
+    }
+    extra
+}
+
 /// The `--model` value in an argument list, if any.
 fn model_arg(args: &[String]) -> Option<String> {
     args.iter()
@@ -403,6 +416,7 @@ impl ClaudeBackend {
         let env = claude_env();
         let extra = with_model(&self.spec.args, open.model.as_deref())?;
         let extra = with_effort(&extra, open.effort.as_deref())?;
+        let extra = with_fast(extra, open.fast);
         let args = claude_args(&extra, mcp_file.as_ref().map(|f| f.path()), &session);
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
         let (program_path, argv) = sandboxed_command(

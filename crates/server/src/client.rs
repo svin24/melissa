@@ -255,12 +255,18 @@ impl Printer {
                 model,
                 model_label,
                 effort_label,
+                fast,
             } => {
-                let model = match (model_label.as_ref().or(model.as_ref()), effort_label) {
-                    (Some(m), Some(e)) => format!(" ({m}, reasoning {e})"),
-                    (Some(m), None) => format!(" ({m})"),
-                    (None, Some(e)) => format!(" (reasoning {e})"),
-                    (None, None) => String::new(),
+                let mut parts: Vec<String> = Vec::new();
+                parts.extend(model_label.clone().or(model.clone()));
+                parts.extend(effort_label.as_ref().map(|e| format!("reasoning {e}")));
+                if *fast {
+                    parts.push("fast".into());
+                }
+                let model = if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", parts.join(", "))
                 };
                 self.line(&format!(
                     "[session] switched to {backend}{model}; it takes over from the next message"

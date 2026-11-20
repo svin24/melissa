@@ -453,3 +453,148 @@ async fn refusals_with_an_owner_are_audited_with_both_sides() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A tool only the owner may approve, every time (like `schedule_job`).
+struct Plan;
+impl Tool for Plan {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "plan",
+            description: "test",
+            labels: Labels::READ_ONLY,
+            params: json!({"type": "object"}),
+        }
+    }
+    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(async { Ok(json!("planned")) })
+    }
+    fn owner_approval(&self, _: &TaskContext, _: &Value) -> Result<Option<String>, ToolError> {
+        Ok(Some("a standing order".into()))
+    }
+}
+
+/// An owner-only tool that the label policy asks for (like `delete_agent`).
+struct Remove;
+impl Tool for Remove {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "remove",
+            description: "test",
+            labels: Labels {
+                effect: Effect::Destructive,
+                ..Labels::READ_ONLY
+            },
+            params: json!({"type": "object"}),
+        }
+    }
+    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(async { Ok(json!("removed")) })
+    }
+    fn owner_only(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn full_access_approves_only_the_agents_own_confirmations_and_audits_them() {
+    let dir = temp("full");
+    let log = dir.join("audit.jsonl");
+    let reg = ToolRegistry::new(
+        vec![
+            Arc::new(Update),
+            Arc::new(Restart),
+            Arc::new(Plan),
+            Arc::new(Remove),
+        ],
+        Some(AuditLog::new(&log)),
+    )
+    .with_owners(Arc::new(Owners(BTreeMap::from([
+        ("minecraft", ADA),
+        ("valheim", BO),
+    ]))))
+    .with_permissions(Permissions::in_memory())
+    .with_confirm_timeout(Duration::from_secs(10));
+    let ada = Principal::Agent(ADA.into());
+    // Needs the developer option.
+    assert!(matches!(
+        reg.set_access(&ada, true),
+        Err(PermissionsError::FullAccessOff)
+    ));
+    reg.set_full_access_allowed(true).unwrap();
+    reg.set_access(&ada, true).unwrap();
+
+    // Ada's own calls run without asking: a tool without a target, her own workspace, and
+    // her agent CLI's own tools (confirmed through `confirm`).
+    runs_now(&reg, ADA, "restart", json!({})).await.unwrap();
+    runs_now(&reg, ADA, "update_app", json!({"app": "minecraft"}))
+        .await
+        .unwrap();
+    let shell = RuleOffer::new(&Scope::Agent { id: ADA.into() }, "agent:execute", None);
+    reg.confirm(4, shell, "agent:execute", &json!({}), "run a command")
+        .await
+        .unwrap();
+    assert!(reg.confirmations().pending().is_empty());
+
+    // Not hers: Bo's calls, Bo's workspace (the user's own yes), owner-only steps.
+    for (task, who, tool, args) in [
+        (5, BO, "restart", json!({})),
+        (6, ADA, "update_app", json!({"app": "valheim"})),
+        (7, ADA, "plan", json!({})),
+        (8, ADA, "remove", json!({})),
+    ] {
+        let call = spawn(&reg, task, who, tool, args);
+        let c = pending(&reg, 1).await.remove(0);
+        reg.confirmations().resolve(c.id, Verdict::Denied);
+        assert_eq!(call.await.unwrap(), Err(ToolError::Denied), "{tool}");
+    }
+
+    // The lead agent on Full access: its call on Ada's workspace is not its own.
+    reg.set_access(&Principal::Lead, true).unwrap();
+    let lead = {
+        let reg = reg.clone();
+        tokio::spawn(async move {
+            let mut ctx = TaskContext {
+                scope: Scope::Lead {
+                    device: "d-0a1b2c3d".into(),
+                },
+                delegate: true,
+                ..TaskContext::default()
+            };
+            reg.call(9, &mut ctx, "update_app", json!({"app": "minecraft"}))
+                .await
+        })
+    };
+    let c = pending(&reg, 1).await.remove(0);
+    reg.confirmations().resolve(c.id, Verdict::Denied);
+    assert_eq!(lead.await.unwrap(), Err(ToolError::Denied));
+
+    // Back on Ask: Ada is asked again.
+    reg.set_access(&ada, false).unwrap();
+    let call = spawn(&reg, 10, ADA, "restart", json!({}));
+    let c = pending(&reg, 1).await.remove(0);
+    reg.confirmations().resolve(c.id, Verdict::Approved);
+    call.await.unwrap().unwrap();
+
+    let lines = audit_lines(&log);
+    let auto: Vec<&Value> = lines
+        .iter()
+        .filter(|l| l["action"] == "tool.auto_approved")
+        .collect();
+    assert_eq!(auto.len(), 3);
+    assert!(auto.iter().all(|l| l["actor"] == "bypass"
+        && l["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("bypass (full access)")));
+    let access: Vec<&str> = lines
+        .iter()
+        .filter(|l| l["action"] == "permissions.access")
+        .map(|l| l["detail"].as_str().unwrap())
+        .collect();
+    assert_eq!(access.len(), 3);
+    assert!(access[0].ends_with(": full") && access[2].ends_with(": ask"));
+    assert!(lines
+        .iter()
+        .any(|l| l["action"] == "permissions.full_access_allowed" && l["actor"] == "ui"));
+    let _ = std::fs::remove_dir_all(dir);
+}

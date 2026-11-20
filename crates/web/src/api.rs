@@ -225,6 +225,9 @@ struct UseBackend {
     /// Reasoning level (one the model offers); absent: the agent's default.
     #[serde(default)]
     effort: Option<String>,
+    /// Fast mode (only for a model that offers one); absent: standard speed.
+    #[serde(default)]
+    fast: bool,
 }
 
 async fn backends(State(lead): State<Lead>) -> Response {
@@ -238,7 +241,12 @@ async fn refresh_models(State(lead): State<Lead>) -> Response {
 }
 
 async fn use_backend(State(lead): State<Lead>, Json(body): Json<UseBackend>) -> Response {
-    match lead.use_backend(&body.name, body.model.as_deref(), body.effort.as_deref()) {
+    match lead.use_backend_with(
+        &body.name,
+        body.model.as_deref(),
+        body.effort.as_deref(),
+        body.fast,
+    ) {
         Ok(s) => Json(s).into_response(),
         Err(e) => lead_error(e),
     }
@@ -256,11 +264,12 @@ async fn agent_use_backend(
     Path(agent): Path<String>,
     Json(body): Json<UseBackend>,
 ) -> Response {
-    match lead.agents().user_use_backend(
+    match lead.agents().user_use_backend_with(
         &agent,
         &body.name,
         body.model.as_deref(),
         body.effort.as_deref(),
+        body.fast,
     ) {
         Ok(s) => Json(s).into_response(),
         Err(e) => lead_error(e),

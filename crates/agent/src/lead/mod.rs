@@ -407,7 +407,18 @@ impl Lead {
         model: Option<&str>,
         effort: Option<&str>,
     ) -> Result<Switched, LeadError> {
-        let choice = self.inner.conv.check_choice(backend, model, effort)?;
+        self.use_backend_with(backend, model, effort, false)
+    }
+
+    /// [`Self::use_backend`] with fast mode (`fast`: only for a model that offers one).
+    pub fn use_backend_with(
+        &self,
+        backend: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        fast: bool,
+    ) -> Result<Switched, LeadError> {
+        let choice = self.inner.conv.check_choice(backend, model, effort, fast)?;
         backends::save_choice(&self.inner.choice_path, &choice).map_err(|e| {
             LeadError::Failed(format!(
                 "cannot save the choice ({}): {e}",

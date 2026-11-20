@@ -98,6 +98,9 @@ pub struct OpenSession {
     /// Reasoning level (an id from the model's [`ModelOption::efforts`]); None: the agent's
     /// default. Backends without reasoning levels ignore it.
     pub effort: Option<String>,
+    /// Fast mode (the model's [`ModelOption::fast`]); false: the agent's standard speed.
+    /// Backends without a speed option ignore it.
+    pub fast: bool,
     /// The agent's file box ([`crate::files`]): bound read-write at the same path inside the
     /// sandbox (absolute; created by the caller). None: no box.
     pub files_dir: Option<PathBuf>,
@@ -119,6 +122,7 @@ impl OpenSession {
             task: None,
             model: None,
             effort: None,
+            fast: false,
             files_dir: None,
         }
     }
@@ -154,6 +158,11 @@ pub struct ModelOption {
     /// `thought_level` option), as it reported them. Empty: none known.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub efforts: Vec<EffortOption>,
+    /// The agent offers a fast mode (Standard / Fast) with this model, as it reported it
+    /// (Claude's `supportsFastMode`, an ACP option of category `speed`). A model that is
+    /// itself a fast variant reports none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
 }
 
 /// One reasoning level an agent offers for a model.
@@ -172,7 +181,13 @@ impl ModelOption {
             id: id.into(),
             label: label.into(),
             efforts: Vec::new(),
+            fast: false,
         }
+    }
+
+    /// Whether the agent reported any per-model option (levels, speed) for this model.
+    pub fn has_options(&self) -> bool {
+        !self.efforts.is_empty() || self.fast
     }
 
     /// Whether the agent offers reasoning level `id` with this model.

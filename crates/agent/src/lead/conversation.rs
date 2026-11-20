@@ -148,6 +148,7 @@ struct Current {
     backend: String,
     model: Option<String>,
     effort: Option<String>,
+    fast: bool,
 }
 
 impl Current {
@@ -156,16 +157,22 @@ impl Current {
             backend: c.backend,
             model: c.model,
             effort: c.effort,
+            fast: c.fast,
         }
     }
 
-    /// For the audit line: `backend`, `backend (model)`, `backend (model, effort high)`.
+    /// For the audit line: `backend`, `backend (model)`, `backend (model, effort high, fast)`.
     fn words(&self) -> String {
-        match (&self.model, &self.effort) {
-            (Some(m), Some(e)) => format!("{} ({m}, effort {e})", self.backend),
-            (Some(m), None) => format!("{} ({m})", self.backend),
-            (None, Some(e)) => format!("{} (effort {e})", self.backend),
-            (None, None) => self.backend.clone(),
+        let mut parts: Vec<String> = Vec::new();
+        parts.extend(self.model.clone());
+        parts.extend(self.effort.as_ref().map(|e| format!("effort {e}")));
+        if self.fast {
+            parts.push("fast".into());
+        }
+        if parts.is_empty() {
+            self.backend.clone()
+        } else {
+            format!("{} ({})", self.backend, parts.join(", "))
         }
     }
 }
@@ -327,14 +334,12 @@ impl Conversation {
         match (choice, live) {
             (Some(c), Some(l)) if l.wanted.as_ref() != Some(&c) => Some(Current::of(c)),
             (_, Some(l)) => {
-                let effort = l
-                    .wanted
-                    .filter(|w| w.backend == l.backend)
-                    .and_then(|w| w.effort);
+                let wanted = l.wanted.filter(|w| w.backend == l.backend);
                 Some(Current {
                     backend: l.backend,
                     model: l.model,
-                    effort,
+                    effort: wanted.as_ref().and_then(|w| w.effort.clone()),
+                    fast: wanted.is_some_and(|w| w.fast),
                 })
             }
             (Some(c), None) => Some(Current::of(c)),
@@ -348,6 +353,7 @@ impl Conversation {
                     backend: b.clone(),
                     model: None,
                     effort: None,
+                    fast: false,
                 }),
         }
     }
@@ -361,9 +367,11 @@ impl Conversation {
             .iter()
             .map(|name| {
                 let not_ready = self.not_ready(name);
-                let (is_current, model, effort) = match &current {
-                    Some(c) if c.backend == *name => (true, c.model.clone(), c.effort.clone()),
-                    _ => (false, None, None),
+                let (is_current, model, effort, fast) = match &current {
+                    Some(c) if c.backend == *name => {
+                        (true, c.model.clone(), c.effort.clone(), c.fast)
+                    }
+                    _ => (false, None, None, false),
                 };
                 BackendView {
                     name: name.clone(),
@@ -372,6 +380,7 @@ impl Conversation {
                     current: is_current,
                     model,
                     effort,
+                    fast,
                     models: self.inner.spec.models.get(name),
                 }
             })
@@ -379,12 +388,13 @@ impl Conversation {
     }
 
     /// Check a choice the user asks for: one of this conversation's backends, usable now,
-    /// and a model and reasoning level the backend itself reported.
+    /// and a model, reasoning level and fast mode the backend itself reported.
     pub(crate) fn check_choice(
         &self,
         backend: &str,
         model: Option<&str>,
         effort: Option<&str>,
+        fast: bool,
     ) -> Result<BackendChoice, LeadError> {
         let spec = &self.inner.spec;
         if !spec.choices.iter().any(|c| c == backend) {
@@ -437,10 +447,26 @@ impl Conversation {
                 )));
             }
         }
+        if fast {
+            // Like the levels: the chosen model's, else the backend's default model's.
+            let known = spec.models.get(backend).unwrap_or_default();
+            let wanted = model.unwrap_or("default");
+            let offered = match known.iter().find(|o| o.id == wanted) {
+                Some(m) => m.fast,
+                None => model.is_none() && known.iter().any(|o| o.fast),
+            };
+            if !offered {
+                return Err(LeadError::Invalid(format!(
+                    "`{backend}` does not offer a fast mode with {}",
+                    model.map_or_else(|| "its default model".to_string(), |m| format!("`{m}`"))
+                )));
+            }
+        }
         Ok(BackendChoice {
             backend: backend.into(),
             model: model.map(str::to_string),
             effort: effort.map(str::to_string),
+            fast,
         })
     }
 
@@ -473,6 +499,7 @@ impl Conversation {
                 model: choice.model.clone(),
                 model_label,
                 effort_label,
+                fast: choice.fast,
             });
             let from = before.map_or_else(|| "none".into(), |c| c.words());
             let to = Current::of(choice.clone()).words();
@@ -487,6 +514,7 @@ impl Conversation {
             backend: choice.backend,
             model: choice.model,
             effort: choice.effort,
+            fast: choice.fast,
             changed,
             after_turn,
         }
@@ -922,6 +950,9 @@ impl Conversation {
                 .as_ref()
                 .filter(|c| c.backend == *name)
                 .and_then(|c| c.effort.clone());
+            let fast = choice
+                .as_ref()
+                .is_some_and(|c| c.backend == *name && c.fast);
             let backend = inner.backends.iter().find(|b| b.info().name == *name);
             let Some(backend) = backend else {
                 self.backend_failed(name, "not available on this device");
@@ -981,6 +1012,7 @@ impl Conversation {
             open.task = Some(spec.task);
             open.model = model.clone();
             open.effort = effort;
+            open.fast = fast;
             open.files_dir = Some(files_dir);
             open.resume = saved
                 .as_ref()

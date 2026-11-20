@@ -865,9 +865,16 @@ Roadmap (rough, phases may overlap):
     first"): never orphan an app, never hand it to someone silently. Otherwise its running job stops and its
     schedules (every schedule that runs it), file box, transcript and session store and working directory are
     removed; audited `agent.delete` (+ `schedule.removed`, `files.box_removed`); its id is never reused; Melissa
-    herself can't be deleted. Open: (d) a Standard/Fast toggle: Claude reports `supportsFastMode`, but Melissa
-    has no fast-mode plumbing, so the picker has no footer; add it if the owner wants it. (e) Not verified live: a
-    real Claude/ACP session started with a chosen level, the picker in Firefox (anchor positioning fallback).
+    herself can't be deleted. (d) Decided (owner request, DECISIONS): a picker footer shows only the groups that
+    apply: Speed (Standard / Fast) for a model that reports a fast mode (Claude `supportsFastMode`, set with
+    `--settings {"fastMode":true}`; ACP category `speed`), Access (Ask / Full access) with the Developer option
+    "Full access per agent"; the chip marks Fast and Full access. Installed today: Claude Code 2.1.x reports
+    fast mode on Opus/Fable (not Sonnet/Haiku) and levels low–max; Grok reports `model` and
+    `reasoning_effort` (thought_level) only; OpenCode reports `model` and `mode` (build/plan, ignored). Open:
+    (e) Not verified live: a real Claude/ACP session started with a chosen level or Fast in a turn (Claude's
+    handshake was checked to report `fast_mode_state: "on"`), the picker in Firefox (anchor positioning
+    fallback). (f) Pending confirmations are not approved when an agent is switched to Full access (only new
+    ones); should they be? (g) Should OpenCode's `mode` (plan = read-only) be offered as a group?
 73. Web reading (2026-11-20; DECISIONS): (a) A hijacked agent can still send data out in URLs and request
     headers (up to 64 KiB per tunnel, any number of tunnels); per-task budgets or an owner-approved
     destination list for tainted tasks? (b) Grok ends the whole turn when a fetch permission is refused, and the

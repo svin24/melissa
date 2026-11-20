@@ -57,7 +57,12 @@ or `effort` + hidden `current`) posting to `/ui/backend` or `/ui/agents/{id}/bac
 and the chip out of band; a refusal comes back `data-error` and melissa.js reopens it. Rail of usable backends
 (Favorites first), search, model rows (mark, name, check, star, Ctrl+1..9 hints), "Show more", a Reasoning column
 only when the current model reports levels; built from `BackendView`s in `agents.rs`. Without script every model
-shows grouped by backend and each pick is a plain form post.
+shows grouped by backend and each pick is a plain form post. A footer (`.picker-footer`, left out when empty) holds
+the option groups that apply: Speed (`.segmented` Standard / Fast, `fast=off|on`) only when the current model
+reports a fast mode (`ModelOption::fast`; a fast model itself reports none), Access (`access=ask|full`) only with
+the developer option "Full access per agent"; Full access asks in place (`details.seg-confirm`, no browser dialog).
+The chip adds `span.chip-tag` "Fast" and `span.chip-warn` (warning icon) on Full access. Never add a group a
+backend doesn't report.
 Apps and devices: `app_tile` (hexagon), `add_app_tile`, `app_grid`, `app_strip` (mini workspaces, polls itself),
 `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.md)): `settings_frame`,

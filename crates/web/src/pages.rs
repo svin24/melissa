@@ -50,6 +50,8 @@ fn device_health(d: &Device) -> (Health, &'static str) {
 pub struct Frame<'a> {
     /// No permission prompts is on (developer mode).
     pub bypass: bool,
+    /// The developer option "Full access per agent" is on.
+    pub full_access: bool,
     pub waiting: usize,
     pub snap: &'a ClusterSnapshot,
     pub agents: &'a [AgentView],
@@ -884,7 +886,10 @@ pub fn dashboard(
     let content = if f.is_some() {
         html! {
             (page_header("Developer", Some(lead)))
-            (card("Developer mode", crate::settings::pages::bypass_region(f.is_some_and(|f| f.bypass), false, None)))
+            (card("Developer mode", html! {
+                (crate::settings::pages::bypass_region(f.is_some_and(|f| f.bypass), false, None))
+                (crate::settings::pages::full_access_region(f.is_some_and(|f| f.full_access), None))
+            }))
             (card("New agent task", new_task_form(&offered)))
             (card("Agent tasks", tasks_region(tasks, None)))
             (card("Chat", crate::settings::pages::chat_prefs_region(show_steps, None)))

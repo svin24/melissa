@@ -716,6 +716,27 @@ fn reasoning_levels_come_from_the_handshake_and_the_choice_replaces_the_configs_
 }
 
 #[test]
+fn fast_mode_comes_from_the_handshake_and_is_set_with_settings() {
+    // As the installed CLI (2.1.x) reports it: `supportsFastMode` only on models that have
+    // a fast mode; a model that is already fast (Haiku) has none.
+    let offered = client::offered_models(&json!([
+        {"value": "opus", "displayName": "Opus", "supportsFastMode": true,
+         "supportedEffortLevels": ["high"]},
+        {"value": "haiku", "displayName": "Haiku", "supportsFastMode": false},
+        {"value": "sonnet", "displayName": "Sonnet"}
+    ]));
+    let fast: Vec<(&str, bool)> = offered.iter().map(|m| (m.id.as_str(), m.fast)).collect();
+    assert_eq!(fast, [("opus", true), ("haiku", false), ("sonnet", false)]);
+
+    let config = vec!["--model".to_string(), "opus".to_string()];
+    assert_eq!(super::with_fast(config.clone(), false), config);
+    assert_eq!(
+        super::with_fast(config, true),
+        ["--model", "opus", "--settings", r#"{"fastMode":true}"#]
+    );
+}
+
+#[test]
 fn files_go_before_the_text_as_image_and_document_blocks() {
     use crate::session::PromptBlock;
     assert_eq!(super::client::user_content("hi".into(), &[]), json!("hi"));

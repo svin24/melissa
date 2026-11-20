@@ -1690,12 +1690,21 @@ pub struct PickerLevel {
     pub current: bool,
 }
 
+/// The access level in the picker (shown only with the developer option "Full access per
+/// agent").
+pub struct PickerAccess {
+    /// The agent is on Full access (else Ask).
+    pub full: bool,
+}
+
 /// The model picker of a chat (2026-11-20, owner-requested): a chip in the composer bar
 /// ("Opus 5.5 · High") opens a popover above it with a rail of backends (Favorites first),
-/// a searchable list of the selected backend's models and the current model's reasoning
-/// levels. Only usable backends are in it. Picking posts the picker's own form (`choice`, or
-/// `effort` with the hidden `current`) to `action`; it applies from the next turn. Built from
-/// the API's `BackendView`s in `agents.rs`.
+/// a searchable list of the selected backend's models, the current model's reasoning
+/// levels, and a footer with the other options the model supports (Speed) and the agent's
+/// access level. Each group shows only when it applies. Only usable backends are in it.
+/// Picking posts the picker's own form (`choice`, or `effort`/`fast` with the hidden
+/// `current`, or `access`) to `action`; a model option applies from the next turn. Built
+/// from the API's `BackendView`s in `agents.rs`.
 pub struct ModelPicker {
     pub action: String,
     /// What the chat runs on, for the chip: "Opus 5.5 · High".
@@ -1707,6 +1716,15 @@ pub struct ModelPicker {
     pub backends: Vec<PickerBackend>,
     /// The current model's reasoning levels (empty: none; the column is left out).
     pub levels: Vec<PickerLevel>,
+    /// Speed (Standard / Fast) when the current model has a fast mode: whether Fast is on.
+    /// None: the group is left out.
+    pub speed: Option<bool>,
+    /// Fast is on (a "Fast" mark on the chip).
+    pub fast: bool,
+    /// The agent's access level; None: the group is left out (developer option off).
+    pub access: Option<PickerAccess>,
+    /// The agent is on Full access (a warning mark on the chip).
+    pub full_access: bool,
     /// Why the last switch was refused.
     pub error: Option<String>,
 }
@@ -1719,6 +1737,13 @@ pub fn model_chip(p: &ModelPicker) -> Markup {
             @if let Some(l) = &p.letter { (provider_mark(l, false)) }
             span.visually-hidden { "Model: " }
             span.chip-text { (p.chip) }
+            @if p.fast { span.chip-tag { "Fast" } }
+            @if p.full_access {
+                span.chip-warn title="Full access: this agent's own requests run without asking you" {
+                    (warn_icon())
+                    span.visually-hidden { ", full access" }
+                }
+            }
             span.caret aria-hidden="true" {}
         }
     }
@@ -1728,6 +1753,15 @@ fn star_icon() -> Markup {
     html! {
         svg.star viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
             path d="M8 1.8l1.85 3.9 4.25.55-3.1 2.95.8 4.2L8 11.35 4.2 13.4l.8-4.2L1.9 6.25l4.25-.55z" {}
+        }
+    }
+}
+
+fn warn_icon() -> Markup {
+    html! {
+        svg.warn viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M8 1.8 15 14H1z" {}
+            path.mark d="M8 6v3.6M8 11.6v.4" {}
         }
     }
 }
@@ -1817,6 +1851,43 @@ pub fn model_picker(p: &ModelPicker) -> Markup {
                                 aria-current=[l.current.then_some("true")] {
                                 span { (l.label) }
                                 @if l.current { (check_icon()) }
+                            }
+                        }
+                    }
+                }
+                @if p.speed.is_some() || p.access.is_some() {
+                    div.picker-footer {
+                        @if let Some(fast) = p.speed {
+                            div.picker-option role="group" aria-labelledby="picker-speed-head" {
+                                span.picker-option-head #picker-speed-head { "Speed" }
+                                div.segmented {
+                                    button.seg type="submit" name="fast" value="off"
+                                        aria-pressed=(if fast { "false" } else { "true" }) { "Standard" }
+                                    button.seg type="submit" name="fast" value="on"
+                                        aria-pressed=(if fast { "true" } else { "false" })
+                                        title="Faster replies; may use more of your plan" { "Fast" }
+                                }
+                            }
+                        }
+                        @if let Some(a) = &p.access {
+                            div.picker-option role="group" aria-labelledby="picker-access-head" {
+                                span.picker-option-head #picker-access-head { "Access" }
+                                div.segmented {
+                                    button.seg type="submit" name="access" value="ask"
+                                        aria-pressed=(if a.full { "false" } else { "true" }) { "Ask" }
+                                    @if a.full {
+                                        button.seg.danger type="submit" name="access" value="full"
+                                            aria-pressed="true" { "Full access" }
+                                    } @else {
+                                        details.seg-confirm {
+                                            summary.seg { "Full access" }
+                                            div.seg-confirm-body {
+                                                p { "This agent's own requests run without asking you. Other agents' apps, schedules and moves still ask. All of it is logged." }
+                                                button.primary.danger type="submit" name="access" value="full" { "Allow full access" }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
