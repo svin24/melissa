@@ -1105,7 +1105,7 @@ pub fn approval_card(c: &ApprovalCard<'_>) -> Markup {
                     }
                     @if let Some(question) = c.always {
                         form method="post" action=(action("always")) hx-post=(action("always"))
-                            hx-target=(target) hx-swap="innerHTML" hx-confirm=(question) {
+                            hx-target=(target) hx-swap="innerHTML" {
                             button.secondary type="submit" title=(question) { "Always allow" }
                         }
                     }
