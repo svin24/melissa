@@ -32,7 +32,9 @@ Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), 
 `markdown` (agent prose), `plain_text` (what the user typed), `activity_row` (its detail is Markdown for a
 helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey "read text from outside" note),
 `approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
-"Can't be undone" variant), `composer`, `composer_status`, `agent_menu` (2026-11-19, owner-approved: "Runs on
+"Can't be undone" variant), `composer` (2026-11-20: grows with its text; paperclip/paste/drop files, shown as chips cloned from its
+`file-chip` template by melissa.js), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
+`composer_status`, `agent_menu` (2026-11-19, owner-approved: "Runs on
 [Grok ▾]" in the composer status; a `details` panel with a native `select` of agents/models, unavailable agents
 disabled with a host-aware hint (container: Settings → Providers or `sudo podman exec -it melissa melissa-setup …`;
 Nix: the Nix note; from source: `sudo melissa-setup …`); the Switch button posts the composer form like Stop (`formaction` +

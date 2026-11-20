@@ -11,13 +11,16 @@
 //!   reconnect the browser sends it back as `Last-Event-ID` and the stream continues from
 //!   there. The stream re-folds the log up to the cursor first, so its keys match the page.
 //! - `GET /ui/strip`, `GET /ui/cluster/apps`: fragments that poll (apps change slowly).
-//! - `POST /ui/messages` / `POST /ui/agents/{agent}/messages` (form `text`), `POST /ui/cancel` /
+//! - `POST /ui/messages` / `POST /ui/agents/{agent}/messages` (multipart: `text` and any
+//!   number of `files`; or a urlencoded `text`), `POST /ui/cancel` /
 //!   `POST /ui/agents/{agent}/cancel`, `POST /ui/confirmations/{id}/approve|deny`: the same calls
 //!   as the JSON API. htmx gets a fragment; a plain form post gets a redirect.
 //! - `POST /ui/backend` / `POST /ui/agents/{agent}/backend` (form `choice`: `<backend>` or
 //!   `<backend> <model>`, posted with the composer like Stop): switch the agent from the
 //!   next turn. htmx gets the composer status (with the menu, or why it was refused);
 //!   a plain form post gets a redirect.
+//! - `GET /ui/attachments/{file}`: a file sent with a message (images inline, the rest as
+//!   downloads; see `melissa_agent::attachments`).
 //! - `POST /ui/new-chat`: a new chat with Melissa (plain form, redirects to `/`);
 //!   `GET /chats/{id}`: an archived chat, read-only.
 //! - Stream cursors carry the log's epoch (`?epoch=`, SSE ids `<epoch>-<seq>`): a page from
@@ -26,7 +29,7 @@
 use std::{convert::Infallible, time::Duration};
 
 use axum::{
-    extract::{Form, Path, Query, State},
+    extract::{DefaultBodyLimit, Form, FromRequest, Multipart, Path, Query, Request, State},
     http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -38,6 +41,7 @@ use axum::{
 use futures::Stream;
 use maud::Markup;
 use melissa_agent::{
+    attachments::{self, AttachmentError, Upload, MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES},
     lead::{agents::AgentView, events::EventLog, Lead, LeadError, LeadStatus},
     tools::Verdict,
 };
@@ -109,8 +113,15 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/ui/agents/{agent}/stream", get(agent_stream))
         .route("/ui/strip", get(strip))
         .route("/ui/cluster/apps", get(cluster_apps))
-        .route("/ui/messages", post(lead_message))
-        .route("/ui/agents/{agent}/messages", post(agent_message))
+        .route(
+            "/ui/messages",
+            post(lead_message).layer(DefaultBodyLimit::max(MESSAGE_BODY_LIMIT)),
+        )
+        .route(
+            "/ui/agents/{agent}/messages",
+            post(agent_message).layer(DefaultBodyLimit::max(MESSAGE_BODY_LIMIT)),
+        )
+        .route("/ui/attachments/{file}", get(attachment))
         .route("/ui/cancel", post(lead_cancel))
         .route("/ui/agents/{agent}/cancel", post(agent_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
@@ -468,43 +479,229 @@ fn stream(
     Sse::new(events).keep_alive(KeepAlive::default())
 }
 
+/// Largest message request body: the files' limit plus room for the text and the form's
+/// framing. Bigger bodies are cut off while they stream in.
+const MESSAGE_BODY_LIMIT: usize = MAX_MESSAGE_BYTES + 1024 * 1024;
+
 #[derive(Deserialize)]
-struct NewMessage {
+struct TextOnly {
     text: String,
 }
 
-async fn lead_message(
-    State(ui): State<Ui>,
-    headers: HeaderMap,
-    Form(form): Form<NewMessage>,
-) -> Response {
-    let result = ui.lead.send(&form.text).map(|_| ());
-    message_reply(&ui, Who::Lead, None, &headers, &form.text, result).await
+/// A message from the composer: its text and files. The composer posts
+/// `multipart/form-data` (fields `text` and `files`); a urlencoded form has text only.
+struct NewMessage {
+    text: String,
+    files: Vec<Upload>,
+    /// Why the files were refused while reading them (too large, too many, cut off).
+    refused: Option<LeadError>,
+}
+
+impl NewMessage {
+    fn had_files(&self) -> bool {
+        !self.files.is_empty() || self.refused.is_some()
+    }
+}
+
+impl<S: Send + Sync> FromRequest<S> for NewMessage {
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Response> {
+        let multipart = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("multipart/form-data"));
+        if !multipart {
+            let Form(form) = Form::<TextOnly>::from_request(req, state)
+                .await
+                .map_err(IntoResponse::into_response)?;
+            return Ok(Self {
+                text: form.text,
+                files: Vec::new(),
+                refused: None,
+            });
+        }
+        let parts = Multipart::from_request(req, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        Ok(read_message(parts).await)
+    }
+}
+
+/// Read a multipart message. Files are checked while they stream in, so an oversized one
+/// is refused without holding more than the limit in memory.
+async fn read_message(mut parts: Multipart) -> NewMessage {
+    let mut msg = NewMessage {
+        text: String::new(),
+        files: Vec::new(),
+        refused: None,
+    };
+    let mut total = 0usize;
+    loop {
+        let mut field = match parts.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => {
+                msg.refused = Some(cut_off(&e));
+                break;
+            }
+        };
+        match field.name() {
+            Some("text") => match field.text().await {
+                Ok(t) => msg.text = t,
+                Err(e) => {
+                    msg.refused = Some(cut_off(&e));
+                    break;
+                }
+            },
+            Some("files") => {
+                let name = field.file_name().unwrap_or_default().to_string();
+                let mut bytes = Vec::new();
+                let mut failed = None;
+                loop {
+                    match field.chunk().await {
+                        Ok(Some(chunk)) => {
+                            bytes.extend_from_slice(&chunk);
+                            if bytes.len() > MAX_FILE_BYTES {
+                                failed = Some(
+                                    AttachmentError::FileTooLarge {
+                                        name: attachments::safe_name(&name),
+                                    }
+                                    .into(),
+                                );
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            failed = Some(cut_off(&e));
+                            break;
+                        }
+                    }
+                }
+                if let Some(e) = failed {
+                    msg.refused = Some(e);
+                    break;
+                }
+                // A file input with nothing chosen sends one empty, unnamed part.
+                if name.is_empty() && bytes.is_empty() {
+                    continue;
+                }
+                total += bytes.len();
+                if msg.files.len() == MAX_FILES {
+                    msg.refused = Some(AttachmentError::TooMany.into());
+                    break;
+                }
+                if total > MAX_MESSAGE_BYTES {
+                    msg.refused = Some(AttachmentError::MessageTooLarge.into());
+                    break;
+                }
+                msg.files.push(Upload { name, bytes });
+            }
+            _ => {}
+        }
+    }
+    msg
+}
+
+/// A multipart body that could not be read: almost always the size limit.
+fn cut_off(e: &axum::extract::multipart::MultipartError) -> LeadError {
+    tracing::debug!("reading a message upload: {e}");
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        AttachmentError::MessageTooLarge.into()
+    } else {
+        LeadError::Invalid("the upload was cut off".into())
+    }
+}
+
+async fn lead_message(State(ui): State<Ui>, headers: HeaderMap, msg: NewMessage) -> Response {
+    let had_files = msg.had_files();
+    let result = match msg.refused {
+        Some(e) => Err(e),
+        None if msg.files.is_empty() => ui.lead.send(&msg.text).map(|_| ()),
+        None => {
+            // Storing the files writes to disk: off the async workers.
+            let (lead, text, files) = (ui.lead.clone(), msg.text.clone(), msg.files);
+            tokio::task::spawn_blocking(move || lead.send_with(&text, files).map(|_| ()))
+                .await
+                .unwrap_or_else(|e| Err(LeadError::Failed(e.to_string())))
+        }
+    };
+    message_reply(&ui, Who::Lead, None, &headers, &msg.text, had_files, result).await
 }
 
 async fn agent_message(
     State(ui): State<Ui>,
     Path(agent): Path<String>,
     headers: HeaderMap,
-    Form(form): Form<NewMessage>,
+    msg: NewMessage,
 ) -> Response {
     let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
-    let result = ui
-        .lead
-        .agents()
-        .user_send(&agent.id, &form.text)
-        .map(|_| ());
+    let had_files = msg.had_files();
+    let result = match msg.refused {
+        Some(e) => Err(e),
+        None => {
+            let (lead, id, text, files) = (
+                ui.lead.clone(),
+                agent.id.clone(),
+                msg.text.clone(),
+                msg.files,
+            );
+            tokio::task::spawn_blocking(move || {
+                lead.agents().user_send_with(&id, &text, files).map(|_| ())
+            })
+            .await
+            .unwrap_or_else(|e| Err(LeadError::Failed(e.to_string())))
+        }
+    };
     message_reply(
         &ui,
         Who::Agent(&agent.id),
         Some(&agent),
         &headers,
-        &form.text,
+        &msg.text,
+        had_files,
         result,
     )
     .await
+}
+
+/// A file sent with a message (any conversation's; names are unguessable). Images are shown
+/// inline, everything else is a download. The file may not run script or be embedded by
+/// another site.
+async fn attachment(State(ui): State<Ui>, Path(file): Path<String>) -> Response {
+    let not_found = || (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    let Some(path) = ui.lead.attachments().path(&file) else {
+        return not_found();
+    };
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return not_found();
+    };
+    let (content_type, inline) = attachments::content_type(&file);
+    let disposition = if inline { "inline" } else { "attachment" };
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, disposition),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            ),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox",
+            ),
+            (
+                header::HeaderName::from_static("cross-origin-resource-policy"),
+                "same-origin",
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 /// The answer to a sent message: the composer (cleared, or with the text and why it wasn't
@@ -515,9 +712,10 @@ async fn message_reply(
     agent: Option<&AgentView>,
     headers: &HeaderMap,
     text: &str,
+    had_files: bool,
     result: Result<(), LeadError>,
 ) -> Response {
-    let error = match &result {
+    let mut error = match &result {
         Ok(()) => None,
         Err(LeadError::Busy) => {
             Some("Still working on your last message. Wait for it, or press Stop.".to_string())
@@ -525,6 +723,12 @@ async fn message_reply(
         Err(LeadError::Empty) => Some("Type a message first.".to_string()),
         Err(e) => Some(format!("Couldn't send that: {e}.")),
     };
+    // A plain form post can't keep its files; htmx (melissa.js) keeps them for a retry.
+    if had_files && !is_htmx(headers) {
+        if let Some(e) = error.as_mut() {
+            e.push_str(" Attach the files again.");
+        }
+    }
     // Keep the text on failure so nothing typed is lost.
     let draft = if error.is_some() { text } else { "" };
     if is_htmx(headers) {

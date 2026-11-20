@@ -8,6 +8,8 @@ description = "Melissa agent layer: pluggable backends, task dispatch, audit log
 
 [dependencies]
 agent-client-protocol = { workspace = true }
+# Files sent to the model as base64 content blocks (already in the build via kube-rs).
+base64 = { workspace = true }
 futures = { workspace = true }
 # Egress: MCP served on each sandbox's Unix socket (hyper's HTTP/1 server, already in the
 # build through axum and kube-rs; no new crates).

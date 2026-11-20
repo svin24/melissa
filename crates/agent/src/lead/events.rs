@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use super::transcript::Transcript;
-use crate::TaskId;
+use crate::{attachments::Attachment, TaskId};
 
 /// Id of one user message and the lead agent's work on it.
 pub type TurnId = u64;
@@ -27,7 +27,13 @@ pub type TurnId = u64;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LeadEvent {
     /// The user sent a message; a turn starts.
-    UserMessage { turn: TurnId, text: String },
+    UserMessage {
+        turn: TurnId,
+        text: String,
+        /// Files sent with the message (stored by Melissa; see [`crate::attachments`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
+    },
     /// A piece of the lead agent's reply (not line-buffered).
     Text { turn: TurnId, text: String },
     /// The agent's whole reply for a turn (sent at the end of the turn; the transcript keeps

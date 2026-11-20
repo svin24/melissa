@@ -11,6 +11,7 @@
 //! through the narrow [`tools`] API, whose policy decides when a human must confirm.
 
 pub mod acp;
+pub mod attachments;
 mod audit;
 mod backend;
 mod board;

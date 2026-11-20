@@ -16,6 +16,7 @@ melissa-settings = { path = "crates/settings" }
 # ACP (Agent Client Protocol) client: long-lived agent sessions (Grok `agent stdio`). Apache-2.0.
 agent-client-protocol = { version = "5.3", default-features = false }
 anyhow = "1"
+base64 = "0.22"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 axum = "0.8"
 http-body-util = "0.1"

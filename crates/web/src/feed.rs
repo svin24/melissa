@@ -12,7 +12,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use melissa_agent::lead::events::{EventRecord, LeadEvent, TurnId};
+use melissa_agent::{
+    attachments::Attachment,
+    lead::events::{EventRecord, LeadEvent, TurnId},
+};
 use serde_json::Value;
 
 use crate::components::{ActivityState, ApprovalState, NoteTone};
@@ -20,8 +23,11 @@ use crate::components::{ActivityState, ApprovalState, NoteTone};
 /// One thing shown in the chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    /// What the user wrote.
-    User { text: String },
+    /// What the user wrote, and the files sent with it.
+    User {
+        text: String,
+        files: Vec<Attachment>,
+    },
     /// Something passed into a helper's conversation by Melissa (a job, or a message from
     /// Melissa or another helper). `text` is untrusted.
     Relayed { from: String, text: String },
@@ -174,9 +180,16 @@ impl Feed {
         }
         self.last_seq = rec.seq;
         match &rec.event {
-            LeadEvent::UserMessage { turn, text } => {
+            LeadEvent::UserMessage {
+                turn,
+                text,
+                attachments,
+            } => {
                 self.busy = Some(*turn);
-                let item = relayed(text).unwrap_or_else(|| Item::User { text: text.clone() });
+                let item = relayed(text).unwrap_or_else(|| Item::User {
+                    text: text.clone(),
+                    files: attachments.clone(),
+                });
                 let added = self.add(format!("u{}", rec.seq), item);
                 vec![added, Change::Status]
             }
@@ -1123,6 +1136,7 @@ mod tests {
                 LeadEvent::UserMessage {
                     turn: 1,
                     text: "Install Nextcloud".into(),
+                    attachments: vec![],
                 },
             ),
             rec(
@@ -1428,6 +1442,7 @@ mod tests {
                 LeadEvent::UserMessage {
                     turn: 1,
                     text: "hi".into(),
+                    attachments: vec![],
                 },
             ),
             &NoLookup,
@@ -1460,6 +1475,7 @@ mod tests {
                 LeadEvent::UserMessage {
                     turn: 2,
                     text: "again".into(),
+                    attachments: vec![],
                 },
             ),
             &NoLookup,

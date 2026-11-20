@@ -48,6 +48,7 @@ use super::{
 };
 use crate::{
     acp::MCP_SERVER_NAME,
+    attachments::{self, Attachment, AttachmentStore, Upload},
     mcp::{McpServer, TaintSource},
     session::{
         valid_model_id, AgentSession, McpServerSpec, NotReady, OpenSession, PermissionContext,
@@ -91,6 +92,8 @@ pub(crate) struct ConversationSpec {
     pub ctx: TaskContext,
     /// Tools the agent may see (None = all its context allows).
     pub allow: Option<Vec<&'static str>>,
+    /// Where files sent with messages are stored (shared by every conversation).
+    pub attachments: AttachmentStore,
 }
 
 /// What a client sees of a conversation right now.
@@ -488,15 +491,35 @@ impl Conversation {
     /// follow from (the `user_message` event comes right after it). `actor` is recorded in
     /// the audit log (`ui`, `lead`). Must be called inside a Tokio runtime.
     pub(crate) fn send(&self, text: &str, actor: &str) -> Result<(TurnId, u64), LeadError> {
+        self.send_with(text, Vec::new(), actor)
+    }
+
+    /// [`Conversation::send`] with files: they are validated and stored before the turn
+    /// starts (nothing is stored if the message is refused). The text may be empty when
+    /// there are files.
+    pub(crate) fn send_with(
+        &self,
+        text: &str,
+        files: Vec<Upload>,
+        actor: &str,
+    ) -> Result<(TurnId, u64), LeadError> {
         let text = text.trim();
-        if text.is_empty() {
+        if text.is_empty() && files.is_empty() {
             return Err(LeadError::Empty);
         }
         if text.len() > MAX_PROMPT_BYTES {
             return Err(LeadError::TooLong);
         }
+        attachments::validate(&files)?;
+        if self.busy().is_some() {
+            return Err(LeadError::Busy);
+        }
+        // Written outside the turn lock (it can take a moment).
+        let stored = self.inner.spec.attachments.save(files)?;
         let mut t = lock(&self.inner.turn);
         if t.busy.is_some() {
+            drop(t);
+            self.inner.spec.attachments.remove(&stored);
             return Err(LeadError::Busy);
         }
         t.last += 1;
@@ -506,11 +529,20 @@ impl Conversation {
         self.inner.events.push(LeadEvent::UserMessage {
             turn,
             text: text.to_string(),
+            attachments: stored.clone(),
         });
-        self.audit("message", actor, &shorten(text, 500));
+        let mut audited = shorten(text, 500);
+        if !stored.is_empty() {
+            let names: Vec<&str> = stored.iter().map(|a| a.name.as_str()).collect();
+            audited.push_str(&format!(" [files: {}]", names.join(", ")));
+        }
+        self.audit("message", actor, &audited);
         // The turn runs on the backend chosen when it starts; a later switch waits for it.
         let choice = self.choice();
-        let handle = tokio::spawn(self.clone().run_turn(turn, text.to_string(), choice));
+        let handle = tokio::spawn(
+            self.clone()
+                .run_turn(turn, text.to_string(), stored, choice),
+        );
         t.abort = Some(handle.abort_handle());
         Ok((turn, since))
     }
@@ -586,7 +618,13 @@ impl Conversation {
         }
     }
 
-    async fn run_turn(self, turn: TurnId, text: String, choice: Option<BackendChoice>) {
+    async fn run_turn(
+        self,
+        turn: TurnId,
+        text: String,
+        files: Vec<Attachment>,
+        choice: Option<BackendChoice>,
+    ) {
         let live = match self.live_session(choice).await {
             Ok(live) => live,
             Err(e) => {
@@ -594,12 +632,30 @@ impl Conversation {
                 return;
             }
         };
-        let prompt = if live.primed.swap(true, Ordering::SeqCst) {
+        let mut prompt = if live.primed.swap(true, Ordering::SeqCst) {
             self.with_notes(text)
         } else {
             self.preamble(&text)
         };
-        match live.session.prompt(&prompt).await {
+        // Files: native blocks where the session takes them, else copies in its workdir.
+        let blocks = if files.is_empty() {
+            Vec::new()
+        } else {
+            let store = self.inner.spec.attachments.clone();
+            let workdir = self.inner.spec.workdir.clone();
+            let caps = live.session.capabilities().clone();
+            let delivery = tokio::task::spawn_blocking(move || {
+                attachments::deliver(&store, &files, &caps, &workdir)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("preparing attachments: {e}");
+                attachments::Delivery::default()
+            });
+            prompt.push_str(&delivery.note);
+            delivery.blocks
+        };
+        match live.session.prompt_with(&prompt, &blocks).await {
             // The event pump ends the turn when it sees the agent's `TurnFinished`, so the
             // turn's last events are published before it.
             Ok(_) => {}

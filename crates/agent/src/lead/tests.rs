@@ -554,6 +554,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
         LeadEvent::UserMessage {
             turn,
             text: "What kernel does this device run?".into(),
+            attachments: vec![],
         },
         LeadEvent::BackendFailed {
             backend: "broken-acp".into(),
@@ -921,7 +922,8 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert_eq!(kinds.last(), Some(&&LeadEvent::EarlierEnd));
     assert!(kinds.contains(&&LeadEvent::UserMessage {
         turn: 1,
-        text: "Check the logs.".into()
+        text: "Check the logs.".into(),
+        attachments: vec![]
     }));
     assert!(kinds.contains(&&LeadEvent::AgentMessage {
         turn: 1,
@@ -1240,6 +1242,7 @@ async fn the_lead_creates_a_named_agent_and_gives_it_a_job() {
     assert!(agent_events.contains(&LeadEvent::UserMessage {
         turn: 1,
         text: "A job from the lead agent:\n\nReport the kernel version.".into(),
+        attachments: vec![]
     }));
     assert!(agent_events.contains(&LeadEvent::AgentMessage {
         turn: 1,
@@ -1929,5 +1932,95 @@ async fn a_working_agent_gets_the_force_delete_message_after_its_turn() {
         "force-deleted the workspace nextcloud",
     )
     .await;
+    s.close().await;
+}
+
+// --- files sent with a message --------------------------------------------------------
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+fn upload(name: &str, bytes: &[u8]) -> crate::attachments::Upload {
+    crate::attachments::Upload {
+        name: name.into(),
+        bytes: bytes.to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn files_reach_the_agent_as_images_or_copies_in_its_workdir() {
+    use base64::Engine as _;
+    let png64 = base64::engine::general_purpose::STANDARD.encode(PNG);
+    // An ACP agent that takes images: the PNG goes inline, the text file is copied.
+    let mut script = vec![
+        Step::send(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": "<any>"})),
+        Step::recv(
+            json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1,
+            "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true},
+                                  "promptCapabilities": {"image": true},
+                                  "sessionCapabilities": {"resume": {}, "close": {}}},
+            "authMethods": []}}),
+        ),
+    ];
+    script.extend(handshake("s-1").into_iter().skip(2));
+    script.extend([
+        Step::send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+            "params": {"sessionId": "s-1", "prompt": [
+                {"type": "image", "data": png64, "mimeType": "image/png"},
+                {"type": "text", "text": "<contains:Attached above: shot.png.>"}]}}),
+        ),
+        text("s-1", "A screenshot and notes."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup("files", vec![script]);
+    // Refused files store nothing and start no turn.
+    let too_many: Vec<_> = (0..=crate::attachments::MAX_FILES)
+        .map(|i| upload(&format!("{i}.txt"), b"x"))
+        .collect();
+    assert!(matches!(
+        s.lead.send_with("hi", too_many),
+        Err(LeadError::Attachment(
+            crate::attachments::AttachmentError::TooMany
+        ))
+    ));
+    assert!(!s.lead.attachments().dir().exists());
+    // Files without text are a message.
+    let (turn, since) = s
+        .lead
+        .send_with(
+            "",
+            vec![upload("shot.png", PNG), upload("../notes.txt", b"hello")],
+        )
+        .unwrap();
+    let events = turn_events(&s.lead, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
+    let Some(LeadEvent::UserMessage {
+        text, attachments, ..
+    }) = events.first()
+    else {
+        panic!("no user message: {events:?}");
+    };
+    assert_eq!(text, "");
+    let names: Vec<(&str, &str)> = attachments
+        .iter()
+        .map(|a| (a.name.as_str(), a.mime.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        [("shot.png", "image/png"), ("notes.txt", "text/plain")]
+    );
+    // Stored for the UI; the non-image copied where the agent's tools can reach it.
+    assert_eq!(
+        s.lead.attachments().read(&attachments[0].file).unwrap(),
+        PNG
+    );
+    let copy = s
+        .dir
+        .join("work/lead/attachments")
+        .join(attachments[1].workdir_name());
+    assert_eq!(std::fs::read(copy).unwrap(), b"hello");
+    // The transcript keeps the files (the feed shows them after a restart).
+    let json = serde_json::to_string(&events[0]).unwrap();
+    assert!(json.contains("\"attachments\""), "{json}");
     s.close().await;
 }

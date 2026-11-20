@@ -1005,9 +1005,12 @@ svg.icon.stopped {
 
 .composer textarea {
   flex: 1;
+  min-width: 0;
   min-height: 44px;
-  max-height: 40vh;
-  resize: vertical;
+  max-height: min(40vh, 16rem);
+  overflow-y: auto;
+  /* Grows with the text (melissa.js sets the height where field-sizing is missing). */
+  resize: none;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -1071,6 +1074,156 @@ button.send svg {
   color: var(--caution);
   font-weight: 600;
   padding: 0 0.25rem 0.4rem;
+}
+
+.composer-error[hidden] {
+  display: none;
+}
+
+/* Attachments: the paperclip next to Send (the file input itself stays focusable but
+   unseen), chips for files about to be sent, a dashed outline while dragging over. */
+.attach-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+
+label.attach {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+label.attach:hover {
+  color: var(--ink);
+}
+
+.attach-input:focus-visible + label.attach {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+label.attach svg,
+.file-icon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.file-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.composer.dropping .composer-box {
+  border-style: dashed;
+  border-color: var(--action);
+}
+
+.composer-files {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.composer-files:empty {
+  display: none;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  padding: 0.25rem 0.3rem 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 0.85rem;
+}
+
+.file-chip .thumb {
+  width: 36px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.file-chip .name {
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip .size {
+  flex: none;
+  color: var(--muted);
+}
+
+.file-chip button.remove {
+  min-height: 32px;
+  width: 32px;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.file-chip button.remove:hover {
+  color: var(--ink);
+}
+
+/* Files in a sent message (inside the user's bubble). */
+.sent-files {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.sent-files:last-child {
+  margin-bottom: 0;
+}
+
+.sent-image img {
+  display: block;
+  max-width: min(100%, 14rem);
+  max-height: 14rem;
+  border-radius: 10px;
+}
+
+.msg-user .file-chip {
+  background: transparent;
+  color: var(--bubble-ink);
+  border-color: color-mix(in srgb, var(--bubble-ink) 35%, transparent);
+  text-decoration: none;
+  padding-right: 0.6rem;
+}
+
+.msg-user .file-chip .size {
+  color: inherit;
+  opacity: 0.75;
 }
 
 /* Agent menu in the composer status: "Runs on Grok ▾" opens a small panel above the

@@ -13,6 +13,7 @@
 
 use crate::markdown::{self, Align, El, Node, Segment};
 use maud::{html, Markup, DOCTYPE};
+use melissa_agent::attachments::{MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES};
 
 /// Visual tone used by badges and notices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -841,10 +842,65 @@ fn split_blocks(text: &str) -> Vec<Block<'_>> {
 
 /// A message the user wrote (right-aligned, dark bubble).
 pub fn user_message(text: &str) -> Markup {
+    user_message_with(text, &[])
+}
+
+/// A file the user sent with a message, as the chat shows it.
+pub struct SentFile {
+    /// Where the UI serves it (same origin).
+    pub href: String,
+    /// The cleaned file name.
+    pub name: String,
+    /// Human-readable size (`1.2 MiB`).
+    pub size: String,
+    /// Shown as a thumbnail (PNG, JPEG, GIF, WebP); anything else is a download chip.
+    pub image: bool,
+}
+
+/// A message the user wrote with files: image thumbnails (open full size) and name/size
+/// chips (download), then the text.
+pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
     html! {
         div.msg.msg-user {
             h3.visually-hidden { "You" }
-            div.bubble { (plain_text(text)) }
+            div.bubble {
+                @if !files.is_empty() {
+                    ul.sent-files {
+                        @for f in files {
+                            li {
+                                @if f.image {
+                                    a.sent-image href=(f.href) target="_blank" rel="noopener" title=(f.name) {
+                                        img src=(f.href) alt=(f.name) loading="lazy" decoding="async";
+                                    }
+                                } @else {
+                                    a.file-chip href=(f.href) download=(f.name) {
+                                        (file_icon())
+                                        span.name { (f.name) }
+                                        span.size { (f.size) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                @if !text.trim().is_empty() { (plain_text(text)) }
+            }
+        }
+    }
+}
+
+fn file_icon() -> Markup {
+    html! {
+        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M4 1.5h5l3.5 3.5v9.5h-8.5zM9 1.5V5h3.5" {}
+        }
+    }
+}
+
+fn paperclip_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M13.5 7.5 8.2 12.8a3.2 3.2 0 0 1-4.5-4.5l5.6-5.6a2.1 2.1 0 0 1 3 3L6.7 11.3a1 1 0 0 1-1.5-1.5l5-5" {}
         }
     }
 }
@@ -1015,13 +1071,34 @@ pub fn composer(
 ) -> Markup {
     html! {
         form.composer id=(COMPOSER_ID) method="post" action=(to.send) hx-post=(to.send)
+            enctype="multipart/form-data" hx-encoding="multipart/form-data"
             hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
             @if let Some(e) = error { p.composer-error role="alert" { (e) } }
+            // Files picked, pasted or dropped: melissa.js fills this list from the template
+            // (name, size, a thumbnail for images, a remove button) before sending.
+            p.composer-error #composer-note role="alert" hidden {}
+            ul.composer-files #composer-files aria-label="Files to send" {}
+            template #file-chip {
+                li.file-chip {
+                    img.thumb alt="" hidden;
+                    span.name {}
+                    span.size {}
+                    button.remove type="button" aria-label="Remove" { span aria-hidden="true" { "×" } }
+                }
+            }
             div.composer-box {
                 label.visually-hidden for="message" { "Message" }
-                textarea #message name="text" rows="2" maxlength="16384" required
+                textarea #message name="text" rows="1" maxlength="16384"
                     placeholder=(to.placeholder)
                     autofocus[draft.is_empty() && error.is_none()] { (draft) }
+                // After the text, so the server reads the text before the files.
+                input #attach .attach-input type="file" name="files" multiple
+                    data-max-file=(MAX_FILE_BYTES) data-max-total=(MAX_MESSAGE_BYTES)
+                    data-max-count=(MAX_FILES);
+                label.attach for="attach" title="Attach files" {
+                    (paperclip_icon())
+                    span.visually-hidden { "Attach files" }
+                }
                 button.send type="submit" {
                     svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M2.5 8h10M8.5 3.5L13 8l-4.5 4.5" {} }
                     span.visually-hidden { "Send" }

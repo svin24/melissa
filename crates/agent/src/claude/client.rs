@@ -35,7 +35,8 @@ use crate::{
     },
     session::{
         AgentSession, ModelList, ModelOption, OpenedSession, PermissionDecision, PermissionHandler,
-        PermissionRequest, SessionCapabilities, SessionEvent, StopReason, ToolKind, ToolStatus,
+        PermissionRequest, PromptBlock, SessionCapabilities, SessionEvent, StopReason, ToolKind,
+        ToolStatus,
     },
     AgentError, BoxFuture,
 };
@@ -69,6 +70,7 @@ type InitInfo = (Option<String>, Vec<ModelOption>);
 enum Command {
     Prompt {
         text: String,
+        blocks: Vec<PromptBlock>,
         reply: oneshot::Sender<Result<StopReason, AgentError>>,
     },
     Cancel {
@@ -159,6 +161,8 @@ where
         fork: false,
         close: true,
         mcp_http: true,
+        images: true,
+        pdfs: true,
     };
     Ok(OpenedSession {
         session: Box::new(ClaudeSession {
@@ -264,7 +268,7 @@ impl Actor {
                     }
                 },
                 cmd = commands.recv() => match cmd {
-                    Some(Command::Prompt { text, reply }) => self.prompt(text, reply),
+                    Some(Command::Prompt { text, blocks, reply }) => self.prompt(text, blocks, reply),
                     Some(Command::Cancel { reply }) => {
                         self.cancel();
                         let _ = reply.send(());
@@ -289,7 +293,12 @@ impl Actor {
         self.pending.clear();
     }
 
-    fn prompt(&mut self, text: String, reply: oneshot::Sender<Result<StopReason, AgentError>>) {
+    fn prompt(
+        &mut self,
+        text: String,
+        blocks: Vec<PromptBlock>,
+        reply: oneshot::Sender<Result<StopReason, AgentError>>,
+    ) {
         if self.turn.is_some() || self.init.is_some() {
             let _ = reply.send(Err(AgentError::Busy));
             return;
@@ -297,7 +306,7 @@ impl Actor {
         self.interrupted = false;
         self.send(json!({
             "type": "user",
-            "message": {"role": "user", "content": text},
+            "message": {"role": "user", "content": user_content(text, &blocks)},
             "parent_tool_use_id": null,
             "session_id": "",
         }));
@@ -653,6 +662,29 @@ impl ClaudeSession {
     }
 }
 
+/// A user message's `content`: the plain text, or (with files) the files as image and
+/// document blocks first, then the text (the order Anthropic recommends).
+pub(crate) fn user_content(text: String, blocks: &[PromptBlock]) -> Value {
+    if blocks.is_empty() {
+        return Value::String(text);
+    }
+    let mut parts: Vec<Value> = blocks
+        .iter()
+        .map(|b| match b {
+            PromptBlock::Image { mime, data } => json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": data},
+            }),
+            PromptBlock::Pdf { data } => json!({
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+            }),
+        })
+        .collect();
+    parts.push(json!({"type": "text", "text": text}));
+    Value::Array(parts)
+}
+
 impl AgentSession for ClaudeSession {
     fn id(&self) -> &str {
         &self.id
@@ -663,11 +695,20 @@ impl AgentSession for ClaudeSession {
     }
 
     fn prompt<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<StopReason, AgentError>> {
+        self.prompt_with(text, &[])
+    }
+
+    fn prompt_with<'a>(
+        &'a self,
+        text: &'a str,
+        blocks: &'a [PromptBlock],
+    ) -> BoxFuture<'a, Result<StopReason, AgentError>> {
         Box::pin(async move {
             let (reply, rx) = oneshot::channel();
             self.cmd_tx
                 .send(Command::Prompt {
                     text: text.to_string(),
+                    blocks: blocks.to_vec(),
                     reply,
                 })
                 .map_err(|_| self.closed())?;
