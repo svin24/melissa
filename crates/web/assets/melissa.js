@@ -1,8 +1,9 @@
 // Melissa's own script: small conveniences on top of htmx. Served from this origin (the CSP
 // forbids inline code); no eval, no markup building (file chips are copies of a server-rendered
 // template). Everything works without it, except Enter-to-send, automatic scrolling, pasting
-// or dropping files, previews of picked files (the attach button still works) and voice input
-// (its button stays hidden).
+// or dropping files, previews of picked files (the attach button still works), voice input
+// (its button stays hidden) and the model picker's filter, search, favorites and shortcuts
+// (without script it lists every model and each pick is a plain form post).
 (function () {
   "use strict";
 
@@ -552,6 +553,273 @@
         button.textContent = "Copy";
       }, 1500);
     });
+  });
+
+  // --- The model picker (a popover; the browser opens and closes it, Esc and clicks outside
+  // included). Here: the provider rail filters the list, the search filters as you type,
+  // favorites (starred, per browser in localStorage), Ctrl+1..9 pick the first models shown,
+  // "Show more" for long lists, arrow keys move between models. A refused switch comes back
+  // with the picker marked `data-error`; it opens again to say why.
+
+  document.documentElement.classList.add("js");
+
+  var FAVORITES = "melissa.favorite-models";
+  var FIRST_SHOWN = 8;
+  var pickerFilter = null;
+  var pickerExpanded = false;
+  var anchored = !!(window.CSS && CSS.supports && CSS.supports("position-area", "top"));
+
+  function picker() {
+    return document.getElementById("model-picker");
+  }
+
+  function favorites() {
+    try {
+      var list = JSON.parse(window.localStorage.getItem(FAVORITES) || "[]");
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveFavorites(list) {
+    try {
+      window.localStorage.setItem(FAVORITES, JSON.stringify(list));
+    } catch (e) {
+      // Storage unavailable: the star works until the page reloads.
+    }
+  }
+
+  function each(list, fn) {
+    Array.prototype.forEach.call(list, fn);
+  }
+
+  // The picks shown now, in order.
+  function shownPicks(p) {
+    var out = [];
+    each(p.querySelectorAll(".picker-row"), function (row) {
+      if (!row.hidden) {
+        out.push(row.querySelector(".pick"));
+      }
+    });
+    return out;
+  }
+
+  function applyPicker() {
+    var p = picker();
+    if (!p) {
+      return;
+    }
+    var rail = p.querySelectorAll(".rail-item");
+    if (!pickerFilter || !p.querySelector('.rail-item[data-filter="' + pickerFilter + '"]')) {
+      var current = p.querySelector('.rail-item[data-filter]:not([data-filter="favorites"])[aria-pressed="true"]');
+      var first = p.querySelector('.rail-item[data-filter]:not([data-filter="favorites"])');
+      pickerFilter = (current || first) ? (current || first).getAttribute("data-filter") : null;
+    }
+    each(rail, function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-filter") === pickerFilter ? "true" : "false");
+    });
+    var search = p.querySelector(".picker-search");
+    var q = search ? search.value.trim().toLowerCase() : "";
+    var favs = favorites();
+    var matching = 0;
+    var hiddenByLimit = 0;
+    each(p.querySelectorAll(".picker-row"), function (row) {
+      var value = row.getAttribute("data-value");
+      var fav = favs.indexOf(value) >= 0;
+      var star = row.querySelector(".fav");
+      if (star) {
+        star.setAttribute("aria-pressed", fav ? "true" : "false");
+      }
+      var show;
+      if (q !== "") {
+        // Searching looks through every provider.
+        show = (row.getAttribute("data-name") || "").indexOf(q) >= 0;
+      } else if (pickerFilter === "favorites") {
+        show = fav;
+      } else {
+        show = row.getAttribute("data-backend") === pickerFilter;
+      }
+      if (show) {
+        matching += 1;
+        var isCurrent = row.querySelector('.pick[aria-current="true"]');
+        if (q === "" && !pickerExpanded && matching > FIRST_SHOWN && !isCurrent) {
+          show = false;
+          hiddenByLimit += 1;
+        }
+      }
+      row.hidden = !show;
+    });
+    each(p.querySelectorAll(".picker-group"), function (g) {
+      g.hidden = !g.querySelector(".picker-row:not([hidden])");
+    });
+    var picks = shownPicks(p);
+    each(p.querySelectorAll(".picker-row kbd"), function (k) {
+      k.textContent = "";
+    });
+    picks.slice(0, 9).forEach(function (pick, i) {
+      var k = pick.querySelector("kbd");
+      if (k) {
+        k.textContent = "Ctrl " + (i + 1);
+      }
+    });
+    var noMatch = p.querySelector('[data-empty="search"]');
+    var noFavs = p.querySelector('[data-empty="favorites"]');
+    if (noMatch) {
+      noMatch.hidden = !(q !== "" && picks.length === 0);
+    }
+    if (noFavs) {
+      noFavs.hidden = !(q === "" && pickerFilter === "favorites" && picks.length === 0);
+    }
+    var more = p.querySelector(".picker-more");
+    if (more) {
+      more.hidden = hiddenByLimit === 0;
+    }
+  }
+
+  // Above the chip, right-aligned with it, inside the window (only where CSS anchors are
+  // missing; element.style is allowed by the CSP, unlike style attributes).
+  function placePicker(p) {
+    if (anchored) {
+      return;
+    }
+    var chip = document.querySelector("#model-chip .model-chip");
+    if (!chip) {
+      return;
+    }
+    var r = chip.getBoundingClientRect();
+    var width = Math.min(640, window.innerWidth - 32);
+    var left = Math.max(16, Math.min(r.right - width, window.innerWidth - width - 16));
+    p.classList.add("placed");
+    p.style.left = left + "px";
+    p.style.bottom = Math.max(16, window.innerHeight - r.top + 8) + "px";
+  }
+
+  document.addEventListener(
+    "toggle",
+    function (e) {
+      var p = picker();
+      if (e.target !== p) {
+        return;
+      }
+      if (e.newState === "open") {
+        var search = p.querySelector(".picker-search");
+        if (search) {
+          search.value = "";
+        }
+        pickerFilter = null;
+        pickerExpanded = false;
+        applyPicker();
+        placePicker(p);
+        var focus = search || p.querySelector('.pick[aria-current="true"]') || p.querySelector(".pick");
+        if (focus) {
+          focus.focus();
+        }
+      }
+    },
+    true
+  );
+
+  document.addEventListener("click", function (e) {
+    var p = picker();
+    if (!p || !e.target.closest || !p.contains(e.target)) {
+      return;
+    }
+    var rail = e.target.closest(".rail-item");
+    if (rail) {
+      pickerFilter = rail.getAttribute("data-filter");
+      pickerExpanded = false;
+      var search = p.querySelector(".picker-search");
+      if (search) {
+        search.value = "";
+      }
+      applyPicker();
+      return;
+    }
+    var star = e.target.closest(".fav");
+    if (star) {
+      var value = star.getAttribute("data-fav");
+      var list = favorites();
+      var i = list.indexOf(value);
+      if (i >= 0) {
+        list.splice(i, 1);
+      } else {
+        list.push(value);
+      }
+      saveFavorites(list);
+      applyPicker();
+      return;
+    }
+    if (e.target.closest(".picker-more")) {
+      pickerExpanded = true;
+      applyPicker();
+    }
+  });
+
+  document.addEventListener("input", function (e) {
+    if (e.target.classList && e.target.classList.contains("picker-search")) {
+      applyPicker();
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var p = picker();
+    if (!p || !p.matches(":popover-open") || !p.contains(document.activeElement)) {
+      return;
+    }
+    var picks = shownPicks(p);
+    if (e.ctrlKey && !e.altKey && !e.metaKey && e.key >= "1" && e.key <= "9") {
+      var pick = picks[Number(e.key) - 1];
+      if (pick) {
+        e.preventDefault();
+        pick.click();
+      }
+      return;
+    }
+    var inSearch = document.activeElement.classList.contains("picker-search");
+    if (e.key === "Enter" && inSearch) {
+      // Enter in the search picks the first match instead of sending the form as is.
+      e.preventDefault();
+      if (picks[0]) {
+        picks[0].click();
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      var at = picks.indexOf(document.activeElement);
+      var next;
+      if (e.key === "ArrowDown") {
+        next = inSearch ? picks[0] : picks[at + 1];
+      } else {
+        next = at > 0 ? picks[at - 1] : p.querySelector(".picker-search");
+      }
+      if (next) {
+        e.preventDefault();
+        next.focus();
+      }
+    }
+  });
+
+  // After a switch the picker comes back closed: focus returns to the chip, or the picker
+  // opens again to show why the switch was refused.
+  document.addEventListener("htmx:afterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (!t || t.id !== "model-picker") {
+      return;
+    }
+    var p = picker();
+    if (p && p.hasAttribute("data-error") && p.showPopover) {
+      p.removeAttribute("data-error");
+      p.showPopover();
+      return;
+    }
+    // After the chip's own (out-of-band) swap, which replaces the focused button.
+    setTimeout(function () {
+      var chip = document.querySelector("#model-chip .model-chip");
+      if (chip) {
+        chip.focus();
+      }
+    }, 0);
   });
 
   // --- Panels that remember whether they were open (the chat's file panel). ---------------

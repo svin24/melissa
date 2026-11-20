@@ -308,6 +308,15 @@ impl Feed {
                     agent: Some(agent.clone()),
                 },
             )],
+            LeadEvent::AgentDeleted { name, .. } => vec![self.add(
+                format!("n{}", rec.seq),
+                Item::Activity {
+                    label: format!("Deleted helper: {name}"),
+                    detail: None,
+                    state: ActivityState::Done,
+                    agent: None,
+                },
+            )],
             LeadEvent::AgentStarted { agent, name, goal } => {
                 let key = format!("j{}", rec.seq);
                 self.open_jobs.insert(agent.clone(), key.clone());
@@ -398,12 +407,15 @@ impl Feed {
                 backend,
                 model,
                 model_label,
+                effort_label,
             } => {
-                let name = match (model_label, model) {
-                    (Some(label), _) => format!("{} ({label})", backend_label(backend)),
-                    (None, Some(m)) => format!("{} ({m})", backend_label(backend)),
-                    (None, None) => backend_label(backend).to_string(),
+                let detail = match (model_label.as_ref().or(model.as_ref()), effort_label) {
+                    (Some(m), Some(e)) => format!(" ({m} · {e})"),
+                    (Some(m), None) => format!(" ({m})"),
+                    (None, Some(e)) => format!(" ({e})"),
+                    (None, None) => String::new(),
                 };
+                let name = format!("{}{detail}", backend_label(backend));
                 vec![
                     self.add(
                         format!("n{}", rec.seq),
@@ -901,6 +913,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Handing an app to a helper",
         "Handed an app to a helper",
     ),
+    ("delete_agent", "Deleting a helper", "Deleted a helper"),
 ];
 
 /// Agents' own tool calls not shown as rows: looking up their tool list.
@@ -1125,6 +1138,17 @@ pub fn approval_words(
                 "Cancels its current job. It starts again with its next job or message.".into();
             a.yes = "Stop";
             a.no = "Let it work";
+        }
+        "delete_agent" => {
+            a.title = match agent("agent") {
+                Some(b) => format!("Delete {b}?"),
+                None => "Delete a helper?".into(),
+            };
+            a.consequence =
+                "Its chat, file box and schedules are removed with it. This can't be undone."
+                    .into();
+            a.yes = "Delete";
+            a.no = "Keep it";
         }
         "reassign_workspace" => {
             let to = agent("to");

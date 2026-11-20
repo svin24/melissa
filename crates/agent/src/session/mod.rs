@@ -95,6 +95,9 @@ pub struct OpenSession {
     /// Model to use (an id from the backend's [`ModelList`]); None: the backend's default.
     /// Backends that cannot choose a model ignore it.
     pub model: Option<String>,
+    /// Reasoning level (an id from the model's [`ModelOption::efforts`]); None: the agent's
+    /// default. Backends without reasoning levels ignore it.
+    pub effort: Option<String>,
     /// The agent's file box ([`crate::files`]): bound read-write at the same path inside the
     /// sandbox (absolute; created by the caller). None: no box.
     pub files_dir: Option<PathBuf>,
@@ -115,6 +118,7 @@ impl OpenSession {
             resume: None,
             task: None,
             model: None,
+            effort: None,
             files_dir: None,
         }
     }
@@ -146,6 +150,35 @@ pub struct ModelOption {
     pub id: String,
     /// The agent's own display name for it.
     pub label: String,
+    /// Reasoning levels the agent offers with this model (Claude's `--effort`, an ACP
+    /// `thought_level` option), as it reported them. Empty: none known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<EffortOption>,
+}
+
+/// One reasoning level an agent offers for a model.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EffortOption {
+    /// What the agent takes to select it (e.g. `high`).
+    pub id: String,
+    /// Its display name.
+    pub label: String,
+}
+
+impl ModelOption {
+    /// A model without known reasoning levels.
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            efforts: Vec::new(),
+        }
+    }
+
+    /// Whether the agent offers reasoning level `id` with this model.
+    pub fn offers_effort(&self, id: &str) -> bool {
+        self.efforts.iter().any(|e| e.id == id)
+    }
 }
 
 impl ModelList {

@@ -142,6 +142,34 @@ struct Live {
     primed: Arc<AtomicBool>,
 }
 
+/// What a conversation runs on (or will, with its next message).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Current {
+    backend: String,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl Current {
+    fn of(c: BackendChoice) -> Self {
+        Self {
+            backend: c.backend,
+            model: c.model,
+            effort: c.effort,
+        }
+    }
+
+    /// For the audit line: `backend`, `backend (model)`, `backend (model, effort high)`.
+    fn words(&self) -> String {
+        match (&self.model, &self.effort) {
+            (Some(m), Some(e)) => format!("{} ({m}, effort {e})", self.backend),
+            (Some(m), None) => format!("{} ({m})", self.backend),
+            (None, Some(e)) => format!("{} (effort {e})", self.backend),
+            (None, None) => self.backend.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct TurnState {
     busy: Option<TurnId>,
@@ -290,22 +318,37 @@ impl Conversation {
         }
     }
 
-    /// The backend and model the conversation runs on, or will run on with its next
-    /// message: a pending choice, else the open session, else the first usable backend.
-    fn current(&self) -> Option<(String, Option<String>)> {
+    /// The backend, model and reasoning level the conversation runs on, or will run on with
+    /// its next message: a pending choice, else the open session, else the first usable
+    /// backend.
+    fn current(&self) -> Option<Current> {
         let choice = self.choice();
         let live = lock(&self.inner.live).clone();
         match (choice, live) {
-            (Some(c), Some(l)) if l.wanted.as_ref() != Some(&c) => Some((c.backend, c.model)),
-            (_, Some(l)) => Some((l.backend, l.model)),
-            (Some(c), None) => Some((c.backend, c.model)),
+            (Some(c), Some(l)) if l.wanted.as_ref() != Some(&c) => Some(Current::of(c)),
+            (_, Some(l)) => {
+                let effort = l
+                    .wanted
+                    .filter(|w| w.backend == l.backend)
+                    .and_then(|w| w.effort);
+                Some(Current {
+                    backend: l.backend,
+                    model: l.model,
+                    effort,
+                })
+            }
+            (Some(c), None) => Some(Current::of(c)),
             (None, None) => self
                 .inner
                 .spec
                 .backends
                 .iter()
                 .find(|b| self.not_ready(b).is_none())
-                .map(|b| (b.clone(), None)),
+                .map(|b| Current {
+                    backend: b.clone(),
+                    model: None,
+                    effort: None,
+                }),
         }
     }
 
@@ -318,9 +361,9 @@ impl Conversation {
             .iter()
             .map(|name| {
                 let not_ready = self.not_ready(name);
-                let (is_current, model) = match &current {
-                    Some((b, m)) if b == name => (true, m.clone()),
-                    _ => (false, None),
+                let (is_current, model, effort) = match &current {
+                    Some(c) if c.backend == *name => (true, c.model.clone(), c.effort.clone()),
+                    _ => (false, None, None),
                 };
                 BackendView {
                     name: name.clone(),
@@ -328,6 +371,7 @@ impl Conversation {
                     reason: backends::reason(not_ready),
                     current: is_current,
                     model,
+                    effort,
                     models: self.inner.spec.models.get(name),
                 }
             })
@@ -335,11 +379,12 @@ impl Conversation {
     }
 
     /// Check a choice the user asks for: one of this conversation's backends, usable now,
-    /// and a model the backend itself reported.
+    /// and a model and reasoning level the backend itself reported.
     pub(crate) fn check_choice(
         &self,
         backend: &str,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<BackendChoice, LeadError> {
         let spec = &self.inner.spec;
         if !spec.choices.iter().any(|c| c == backend) {
@@ -374,9 +419,28 @@ impl Conversation {
                 }));
             }
         }
+        let effort = effort.map(str::trim).filter(|e| !e.is_empty());
+        if let Some(e) = effort {
+            // The levels of the chosen model; without one, of the backend's default model
+            // (Claude lists it as `default`), else of any of its models.
+            let known = spec.models.get(backend).unwrap_or_default();
+            let wanted = model.unwrap_or("default");
+            let offered = valid_model_id(e)
+                && match known.iter().find(|o| o.id == wanted) {
+                    Some(m) => m.offers_effort(e),
+                    None => model.is_none() && known.iter().any(|o| o.offers_effort(e)),
+                };
+            if !offered {
+                return Err(LeadError::Invalid(format!(
+                    "`{backend}` does not offer reasoning level `{e}` with {}",
+                    model.map_or_else(|| "its default model".to_string(), |m| format!("`{m}`"))
+                )));
+            }
+        }
         Ok(BackendChoice {
             backend: backend.into(),
             model: model.map(str::to_string),
+            effort: effort.map(str::to_string),
         })
     }
 
@@ -385,33 +449,33 @@ impl Conversation {
     pub(crate) fn switch(&self, choice: BackendChoice, actor: &str) -> Switched {
         let before = self.current();
         let mut slot = lock(&self.inner.choice);
-        let changed = slot.as_ref() != Some(&choice)
-            && before != Some((choice.backend.clone(), choice.model.clone()));
+        let changed = slot.as_ref() != Some(&choice) && before != Some(Current::of(choice.clone()));
         *slot = Some(choice.clone());
         drop(slot);
         let after_turn = self.busy().is_some();
         if changed {
+            let known = self.inner.spec.models.get(&choice.backend);
             let model_label = choice.model.as_deref().and_then(|m| {
-                self.inner
-                    .spec
-                    .models
-                    .get(&choice.backend)
-                    .and_then(|l| l.into_iter().find(|o| o.id == m).map(|o| o.label))
+                known
+                    .as_ref()
+                    .and_then(|l| l.iter().find(|o| o.id == m).map(|o| o.label.clone()))
+            });
+            let effort_label = choice.effort.as_deref().map(|e| {
+                known
+                    .iter()
+                    .flatten()
+                    .flat_map(|m| m.efforts.iter())
+                    .find(|l| l.id == e)
+                    .map_or_else(|| e.to_string(), |l| l.label.clone())
             });
             self.inner.events.push(LeadEvent::BackendSwitched {
                 backend: choice.backend.clone(),
                 model: choice.model.clone(),
                 model_label,
+                effort_label,
             });
-            let from = match before {
-                Some((b, Some(m))) => format!("{b} ({m})"),
-                Some((b, None)) => b,
-                None => "none".into(),
-            };
-            let to = match &choice.model {
-                Some(m) => format!("{} ({m})", choice.backend),
-                None => choice.backend.clone(),
-            };
+            let from = before.map_or_else(|| "none".into(), |c| c.words());
+            let to = Current::of(choice.clone()).words();
             let when = if after_turn {
                 "after the running turn"
             } else {
@@ -422,6 +486,7 @@ impl Conversation {
         Switched {
             backend: choice.backend,
             model: choice.model,
+            effort: choice.effort,
             changed,
             after_turn,
         }
@@ -853,6 +918,10 @@ impl Conversation {
                 .as_ref()
                 .filter(|c| c.backend == *name)
                 .and_then(|c| c.model.clone());
+            let effort = choice
+                .as_ref()
+                .filter(|c| c.backend == *name)
+                .and_then(|c| c.effort.clone());
             let backend = inner.backends.iter().find(|b| b.info().name == *name);
             let Some(backend) = backend else {
                 self.backend_failed(name, "not available on this device");
@@ -911,6 +980,7 @@ impl Conversation {
             open.state_dir = Some(spec.state_dir.join("agent-sessions").join(name));
             open.task = Some(spec.task);
             open.model = model.clone();
+            open.effort = effort;
             open.files_dir = Some(files_dir);
             open.resume = saved
                 .as_ref()

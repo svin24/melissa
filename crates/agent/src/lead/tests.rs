@@ -1626,9 +1626,13 @@ async fn agent_a_needs_the_users_yes_on_agent_bs_workspace_and_never_sees_the_le
         "stop_agent",
         "message_agent",
         "reassign_workspace",
+        "delete_agent",
     ] {
         assert!(!names.iter().any(|n| n == hidden), "{hidden}: {names:?}");
     }
+    let r = call(&s.server, &ada, "delete_agent", json!({"agent": "Bo"})).await;
+    assert!(err_text(&r).contains("unknown tool"), "{r}");
+    assert!(s.pool().get("Bo").is_some());
     assert!(names.iter().any(|n| n == "uninstall_app"), "{names:?}");
     // Not even by name.
     let r = call(
@@ -1870,6 +1874,71 @@ async fn reassigning_by_the_lead_needs_the_users_confirmation() {
     s.lead.confirmations().resolve(c.id, Verdict::Denied);
     r.await.unwrap();
     s.close().await;
+}
+
+#[tokio::test]
+async fn deleting_a_helper_by_the_lead_needs_the_users_confirmation() {
+    let s = setup("lead-delete", Vec::new());
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada", "Bo"]).await;
+    s.workspaces.set("nextcloud", Owner::Agent(ADA.into()));
+    let delete = |agent: &'static str| {
+        let (server, q) = (s.server.clone(), q.clone());
+        tokio::spawn(
+            async move { call(&server, &q, "delete_agent", json!({"agent": agent})).await },
+        )
+    };
+    // An agent that doesn't exist fails at once; nobody is asked.
+    let r = call(&s.server, &q, "delete_agent", json!({"agent": "Nobody"})).await;
+    assert!(err_text(&r).contains("no agent `Nobody`"), "{r}");
+    assert!(s.lead.confirmations().pending().is_empty());
+    // Denied: Bo stays.
+    let r = delete("Bo");
+    let c = pending(&s).await;
+    assert_eq!(c.tool, "delete_agent");
+    assert!(
+        c.reason.contains(
+            "the lead agent wants to delete agent Bo (d-0a1b2c3d.a2) with its chat, file box and schedules"
+        ),
+        "{}",
+        c.reason
+    );
+    assert!(c.reason.contains("destructive"), "{}", c.reason);
+    s.lead.confirmations().resolve(c.id, Verdict::Denied);
+    assert!(err_text(&r.await.unwrap()).contains("denied"));
+    assert!(s.pool().get("Bo").is_some());
+    // Approved, but Ada looks after an app: refused, naming it.
+    let r = delete("Ada");
+    let c = pending(&s).await;
+    s.lead.confirmations().resolve(c.id, Verdict::Approved);
+    let r = r.await.unwrap();
+    assert!(
+        err_text(&r)
+            .contains("Ada still looks after nextcloud. Reassign or remove its apps first."),
+        "{r}"
+    );
+    assert!(s.pool().get("Ada").is_some());
+    // Approved: Bo is gone, with its chat.
+    let bo_dir = s.pool().agent_dir(BO);
+    std::fs::create_dir_all(&bo_dir).unwrap();
+    std::fs::write(bo_dir.join("transcript.jsonl"), "{}\n").unwrap();
+    let r = delete("Bo");
+    let c = pending(&s).await;
+    s.lead.confirmations().resolve(c.id, Verdict::Approved);
+    let r = r.await.unwrap();
+    assert_eq!(r["structuredContent"]["deleted"], true, "{r}");
+    assert_eq!(r["structuredContent"]["agent"], "Bo");
+    assert!(s.pool().get("Bo").is_none());
+    assert!(!bo_dir.exists());
+    lead_event(&s, |e| {
+        *e == LeadEvent::AgentDeleted {
+            agent: BO.into(),
+            name: "Bo".into(),
+        }
+    })
+    .await;
+    s.close().await;
+    assert!(s.audit().contains(r#""action":"agent.delete""#));
 }
 
 #[tokio::test]

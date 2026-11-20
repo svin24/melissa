@@ -679,6 +679,43 @@ fn models_come_from_the_handshake_and_the_choice_replaces_the_configs_model() {
 }
 
 #[test]
+fn reasoning_levels_come_from_the_handshake_and_the_choice_replaces_the_configs_effort() {
+    let offered = client::offered_models(&json!([
+        {"value": "opus", "displayName": "Opus", "supportsEffort": true,
+         "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max", "--bad", "new"]},
+        {"value": "haiku", "displayName": "Haiku"}
+    ]));
+    let levels: Vec<(&str, &str)> = offered[0]
+        .efforts
+        .iter()
+        .map(|e| (e.id.as_str(), e.label.as_str()))
+        .collect();
+    assert_eq!(
+        levels,
+        [
+            ("low", "Low"),
+            ("medium", "Medium"),
+            ("high", "High"),
+            ("xhigh", "Extra high"),
+            ("max", "Max"),
+            ("new", "new")
+        ]
+    );
+    assert!(offered[1].efforts.is_empty());
+
+    let config: Vec<String> = ["--model", "opus", "--effort", "high"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(super::with_effort(&config, None).unwrap(), config);
+    assert_eq!(
+        super::with_effort(&config, Some("low")).unwrap(),
+        ["--model", "opus", "--effort", "low"]
+    );
+    assert!(super::with_effort(&config, Some("--verbose")).is_err());
+}
+
+#[test]
 fn files_go_before_the_text_as_image_and_document_blocks() {
     use crate::session::PromptBlock;
     assert_eq!(super::client::user_content("hi".into(), &[]), json!("hi"));

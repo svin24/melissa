@@ -43,7 +43,9 @@ use futures::Stream;
 use maud::Markup;
 use melissa_agent::{
     attachments::{self, AttachmentError, Upload, MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES},
-    lead::{agents::AgentView, events::EventLog, Lead, LeadError, LeadStatus},
+    lead::{
+        agents::AgentView, backends::BackendView, events::EventLog, Lead, LeadError, LeadStatus,
+    },
     tools::{AlwaysAllowError, RuleOffer, ToolRegistry, Verdict},
 };
 use serde::Deserialize;
@@ -51,7 +53,7 @@ use serde_json::Value;
 
 use crate::{
     agents,
-    components::{composer_status, AgentMenu, ApprovalState},
+    components::{model_chip, model_picker, oob_inner, ApprovalState, ModelPicker, MODEL_CHIP_ID},
     feed::{always_words, approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, Frame, View, Who},
@@ -188,17 +190,22 @@ impl Ui {
             .or_else(|| feed.backend().map(str::to_string))
     }
 
-    /// The agent menu of a conversation (None if it cannot be read).
-    fn agents(&self, who: Who<'_>, error: Option<String>) -> Option<AgentMenu> {
-        let (views, action) = match who {
-            Who::Lead => (self.lead.backends(), "/ui/backend".to_string()),
-            Who::Agent(id) => (
-                self.lead.agents().backends_of(id).ok()?,
-                format!("/ui/agents/{id}/backend"),
-            ),
+    /// The backends a conversation may switch to (None if they cannot be read).
+    fn backend_views(&self, who: Who<'_>) -> Option<Vec<BackendView>> {
+        match who {
+            Who::Lead => Some(self.lead.backends()),
+            Who::Agent(id) => self.lead.agents().backends_of(id).ok(),
+        }
+    }
+
+    /// The model picker of a conversation (None if it cannot be read).
+    fn picker(&self, who: Who<'_>, error: Option<String>) -> Option<ModelPicker> {
+        let views = self.backend_views(who)?;
+        let action = match who {
+            Who::Lead => "/ui/backend".to_string(),
+            Who::Agent(id) => format!("/ui/agents/{id}/backend"),
         };
-        let host = self.settings.host();
-        (!views.is_empty()).then(|| agents::menu(&views, action, error, host))
+        (!views.is_empty()).then(|| agents::picker(&views, action, error))
     }
 
     /// Name the helper that asked for confirmation `task` in its card (views that show every
@@ -256,7 +263,7 @@ impl Ui {
         // Learn the models of usable agents that never had a chat (rate-limited, no prompt);
         // they show in the menu from the next render.
         self.lead.refresh_models_soon();
-        let agents = self.agents(who, None);
+        let picker = self.picker(who, None);
         let links = self.file_links(who);
         let panel = {
             let ui = self.clone();
@@ -270,8 +277,9 @@ impl Ui {
             who,
             epoch: log.epoch(),
             feed: &feed,
+            name: agent.map_or("Melissa", |a| a.name.as_str()),
             backend: backend.as_deref(),
-            agents: agents.as_ref(),
+            picker: picker.as_ref(),
             busy: self.status(who).is_some_and(|s| s.turn.is_some()),
             draft,
             error,
@@ -497,9 +505,9 @@ fn stream(
                 return Some((Ok(Event::default().event("reload").data("")), st));
             }
             let backend = st.ui.backend(st.who(), &st.feed);
-            let agents = changes
+            let picker = changes
                 .contains(&Change::Status)
-                .then(|| st.ui.agents(st.who(), None))
+                .then(|| st.ui.picker(st.who(), None))
                 .flatten();
             let links = st.ui.file_links(st.who());
             let panel = if changes.contains(&Change::Files) && st.view == View::Chat {
@@ -519,7 +527,7 @@ fn stream(
                 st.who(),
                 &pages::StreamExtras {
                     backend: backend.as_deref(),
-                    agents: agents.as_ref(),
+                    picker: picker.as_ref(),
                     waiting: st.ui.waiting(),
                     links: &links,
                     files: files.as_ref(),
@@ -763,14 +771,15 @@ async fn message_reply(
             .and_then(|s| s.backend.as_deref())
             .map(backend_label);
         let feed = Feed::new();
-        let agents = ui.agents(who, None);
+        let picker = ui.picker(who, None);
         let links = pages::FileLinks::none();
         return pages::composer_box(&ChatView {
             who,
             epoch: 0,
             feed: &feed,
+            name: agent.map_or("Melissa", |a| a.name.as_str()),
             backend,
-            agents: agents.as_ref(),
+            picker: picker.as_ref(),
             busy,
             draft,
             error: error.as_deref(),
@@ -793,9 +802,34 @@ async fn message_reply(
     }
 }
 
+/// A pick in the model picker: a model (`choice`), or a reasoning level (`effort`, empty for
+/// the default) for the current model (`current`). Picking a model keeps the reasoning level
+/// when the new model offers it too.
 #[derive(Deserialize)]
 struct BackendForm {
-    choice: String,
+    #[serde(default)]
+    choice: Option<String>,
+    #[serde(default)]
+    current: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+}
+
+impl BackendForm {
+    /// Backend, model and reasoning level to switch to.
+    fn resolve(&self, views: &[BackendView]) -> (String, Option<String>, Option<String>) {
+        let choice = self
+            .choice
+            .as_deref()
+            .or(self.current.as_deref())
+            .unwrap_or_default();
+        let (backend, model) = agents::parse_choice(choice);
+        let effort = match &self.effort {
+            Some(e) => Some(e.trim().to_string()).filter(|e| !e.is_empty()),
+            None => agents::kept_effort(views, backend, model),
+        };
+        (backend.to_string(), model.map(str::to_string), effort)
+    }
 }
 
 async fn lead_backend(
@@ -803,9 +837,12 @@ async fn lead_backend(
     headers: HeaderMap,
     Form(form): Form<BackendForm>,
 ) -> Response {
-    let (backend, model) = agents::parse_choice(&form.choice);
-    let result = ui.lead.use_backend(backend, model).map(|_| ());
-    backend_reply(&ui, Who::Lead, None, &headers, backend, result).await
+    let (backend, model, effort) = form.resolve(&ui.lead.backends());
+    let result = ui
+        .lead
+        .use_backend(&backend, model.as_deref(), effort.as_deref())
+        .map(|_| ());
+    backend_reply(&ui, Who::Lead, None, &headers, &backend, result).await
 }
 
 async fn agent_backend(
@@ -817,25 +854,27 @@ async fn agent_backend(
     let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
-    let (backend, model) = agents::parse_choice(&form.choice);
+    let views = ui.backend_views(Who::Agent(&agent.id)).unwrap_or_default();
+    let (backend, model, effort) = form.resolve(&views);
     let result = ui
         .lead
         .agents()
-        .user_use_backend(&agent.id, backend, model)
+        .user_use_backend(&agent.id, &backend, model.as_deref(), effort.as_deref())
         .map(|_| ());
     backend_reply(
         &ui,
         Who::Agent(&agent.id),
         Some(&agent),
         &headers,
-        backend,
+        &backend,
         result,
     )
     .await
 }
 
-/// The answer to a switch: the composer status with the agent menu (and why a switch was
-/// refused) for htmx; the chat page otherwise. The feed line comes with the event stream.
+/// The answer to a switch: the picker (closed, or reopened by melissa.js with why a switch
+/// was refused) and the chip out of band for htmx; the chat page otherwise. The feed line
+/// comes with the event stream.
 async fn backend_reply(
     ui: &Ui,
     who: Who<'_>,
@@ -851,17 +890,17 @@ async fn backend_reply(
             backend_label(backend)
         )),
         Err(LeadError::Failed(e)) => Some(format!("Couldn't switch: {e}.")),
-        Err(_) => Some("Couldn't switch: that agent or model isn't available here.".into()),
+        Err(_) => Some("Couldn't switch: that model or level isn't available here.".into()),
     };
     if is_htmx(headers) {
-        let status = ui.status(who);
-        let busy = status.as_ref().is_some_and(|s| s.turn.is_some());
-        let label = status
-            .as_ref()
-            .and_then(|s| s.backend.as_deref())
-            .map(backend_label);
-        let agents = ui.agents(who, error);
-        return composer_status(&who.cancel_url(), label, busy, agents.as_ref()).into_response();
+        return match ui.picker(who, error) {
+            Some(p) => maud::html! {
+                (model_picker(&p))
+                (oob_inner(MODEL_CHIP_ID, model_chip(&p)))
+            }
+            .into_response(),
+            None => StatusCode::NO_CONTENT.into_response(),
+        };
     }
     let back = match agent {
         Some(b) => pages::agent_href(&b.id),

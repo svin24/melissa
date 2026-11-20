@@ -1,26 +1,14 @@
-//! The agent menu of a chat: which backend (and model) the lead agent or a helper runs on, and
-//! the choices the user has. Builds the fixed [`AgentMenu`] component from the API's
-//! [`BackendView`]s and holds the UI words for a backend that cannot be used yet (what fixes it
-//! depends on the host: Settings → Providers in the container and on Nix (installs there come
-//! from the Nix configuration), `melissa-setup` only for a run from source).
+//! The model picker of a chat: which backend, model and reasoning level the lead agent or a
+//! helper runs on, and the choices the user has. Builds the fixed [`ModelPicker`] component
+//! from the API's [`BackendView`]s. Only backends that are usable now are offered: one that
+//! isn't installed or signed in is set up in Settings → Providers, not here.
 
 use melissa_agent::lead::backends::BackendView;
-use melissa_settings::updates::HostKind;
 
 use crate::{
-    components::{AgentGroup, AgentHint, AgentMenu, AgentOption},
+    components::{ModelPicker, PickerBackend, PickerLevel, PickerModel},
     feed::backend_label,
 };
-
-/// The agent name `melissa-setup agent|login <name>` takes for a backend.
-fn setup_name(backend: &str) -> Option<&'static str> {
-    match backend {
-        "claude-session" | "claude" => Some("claude"),
-        "grok-acp" | "grok" => Some("grok"),
-        "opencode-acp" | "opencode" => Some("opencode"),
-        _ => None,
-    }
-}
 
 /// Form value for a backend and model (`<backend>` or `<backend> <model>`; neither has
 /// spaces: model ids are checked, backend names come from the config).
@@ -53,103 +41,126 @@ fn model_label(view: &BackendView, model: &str) -> Option<String> {
     Some(label.to_string())
 }
 
-/// What to tell the user about an agent that isn't installed (`login`: it is, but isn't signed
-/// in): one short line, and a command only for a run from source (never in the container).
-fn setup_hint(label: &str, backend: &str, login: bool, host: HostKind) -> (String, Option<String>) {
-    let name = setup_name(backend);
-    let verb = if login { "login" } else { "agent" };
-    match (host, login) {
-        (HostKind::Nix, false) => (
-            format!("This requires you add {label} via your Nix configuration."),
-            None,
-        ),
-        (HostKind::Container, false) => (
-            format!("{label}: install it in Settings → Providers."),
-            None,
-        ),
-        (HostKind::Container | HostKind::Nix, true) => {
-            (format!("{label}: sign in from Settings → Providers."), None)
-        }
-        (HostKind::Other, false) => (
-            format!("{label} isn't installed."),
-            name.map(|a| format!("sudo melissa-setup {verb} {a}")),
-        ),
-        (HostKind::Other, true) => (
-            format!("{label} needs a sign-in."),
-            name.map(|a| format!("sudo melissa-setup {verb} {a}")),
-        ),
-    }
+/// The letter in a backend's mark.
+fn letter(label: &str) -> String {
+    label
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map_or_else(|| "?".into(), |c| c.to_uppercase().collect())
 }
 
-/// The menu for `views`, posting to `action`; setup hints fit `host`.
-pub(crate) fn menu(
+/// The reasoning level to keep when the user picks `model` on `backend` without choosing a
+/// level: the current one, if the new model offers it too.
+pub(crate) fn kept_effort(
     views: &[BackendView],
-    action: String,
-    error: Option<String>,
-    host: HostKind,
-) -> AgentMenu {
-    let current = views
+    backend: &str,
+    model: Option<&str>,
+) -> Option<String> {
+    let current = views.iter().find(|v| v.current)?;
+    let effort = current.effort.as_deref()?;
+    let view = views.iter().find(|v| v.name == backend)?;
+    let wanted = model.unwrap_or("default");
+    view.models
         .iter()
-        .find(|v| v.current)
-        .map(|v| {
-            let name = backend_label(&v.name).to_string();
-            match v.model.as_deref().and_then(|m| model_label(v, m)) {
-                Some(m) => format!("{name} · {m}"),
-                None => name,
-            }
-        })
-        .unwrap_or_else(|| "no agent yet".into());
-    let mut groups = Vec::new();
-    let mut unavailable = Vec::new();
-    for v in views {
+        .flatten()
+        .find(|m| m.id == wanted)
+        .filter(|m| m.offers_effort(effort))
+        .map(|_| effort.to_string())
+}
+
+/// The picker for `views`, posting to `action`.
+pub(crate) fn picker(views: &[BackendView], action: String, error: Option<String>) -> ModelPicker {
+    let usable: Vec<&BackendView> = views.iter().filter(|v| v.available).collect();
+    let current = usable.iter().copied().find(|v| v.current);
+    let mut backends = Vec::new();
+    for v in &usable {
         let label = backend_label(&v.name).to_string();
-        if !v.available {
-            let (text, command) = match v.reason {
-                Some("not_logged_in") => setup_hint(&label, &v.name, true, host),
-                Some("sandbox") => (format!("{label} can't start here; the log says why."), None),
-                _ => setup_hint(&label, &v.name, false, host),
-            };
-            unavailable.push(AgentHint {
-                label,
-                text,
-                command,
-            });
-            continue;
-        }
-        let mut options: Vec<AgentOption> = v
+        let mut models: Vec<PickerModel> = v
             .models
             .iter()
             .flatten()
-            .map(|m| AgentOption {
+            .map(|m| PickerModel {
                 value: value(&v.name, Some(&m.id)),
                 label: m.label.clone(),
-                selected: v.current && v.model.as_deref() == Some(m.id.as_str()),
+                current: v.current && v.model.as_deref() == Some(m.id.as_str()),
             })
             .collect();
-        if options.is_empty() || (v.current && !options.iter().any(|o| o.selected)) {
-            options.insert(
+        if models.is_empty() || (v.current && !models.iter().any(|m| m.current)) {
+            models.insert(
                 0,
-                AgentOption {
+                PickerModel {
                     value: value(&v.name, None),
                     label: label.clone(),
-                    selected: v.current,
+                    current: v.current,
                 },
             );
         }
-        groups.push(AgentGroup { label, options });
+        backends.push(PickerBackend {
+            name: v.name.clone(),
+            letter: letter(&label),
+            label,
+            models,
+        });
     }
-    AgentMenu {
+    let Some(cur) = current else {
+        return ModelPicker {
+            action,
+            chip: "No agent yet".into(),
+            letter: None,
+            current: String::new(),
+            backends,
+            levels: Vec::new(),
+            error,
+        };
+    };
+    let name = backend_label(&cur.name).to_string();
+    let model = cur.model.as_deref();
+    let offered = cur
+        .models
+        .iter()
+        .flatten()
+        .find(|m| m.id == model.unwrap_or("default"));
+    let efforts = offered.map(|m| m.efforts.as_slice()).unwrap_or_default();
+    let mut levels = Vec::new();
+    if !efforts.is_empty() {
+        levels.push(PickerLevel {
+            value: String::new(),
+            label: "Default".into(),
+            current: cur.effort.is_none(),
+        });
+        levels.extend(efforts.iter().map(|e| PickerLevel {
+            value: e.id.clone(),
+            label: e.label.clone(),
+            current: cur.effort.as_deref() == Some(e.id.as_str()),
+        }));
+    }
+    let effort_label = cur.effort.as_deref().map(|e| {
+        efforts
+            .iter()
+            .find(|l| l.id == e)
+            .map_or_else(|| e.to_string(), |l| l.label.clone())
+    });
+    let base = model
+        .and_then(|m| model_label(cur, m))
+        .unwrap_or(name.clone());
+    let chip = match effort_label {
+        Some(e) => format!("{base} · {e}"),
+        None => base,
+    };
+    ModelPicker {
         action,
-        current,
-        groups,
-        unavailable,
+        chip,
+        letter: Some(letter(&name)),
+        current: value(&cur.name, model),
+        backends,
+        levels,
         error,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use melissa_agent::session::ModelOption;
+    use melissa_agent::session::{EffortOption, ModelOption};
 
     use super::*;
 
@@ -160,74 +171,94 @@ mod tests {
             reason: (!available).then_some("not_installed"),
             current,
             model: None,
+            effort: None,
             models: None,
         }
     }
 
-    #[test]
-    fn the_menu_names_the_current_agent_and_explains_the_missing_ones() {
+    fn levels(ids: &[&str]) -> Vec<EffortOption> {
+        ids.iter()
+            .map(|i| EffortOption {
+                id: (*i).into(),
+                label: i.to_uppercase(),
+            })
+            .collect()
+    }
+
+    fn claude() -> BackendView {
         let mut claude = view("claude-session", true, true);
         claude.model = Some("sonnet".into());
+        claude.effort = Some("high".into());
+        let mut sonnet = ModelOption::new("sonnet", "Sonnet 5.5");
+        sonnet.efforts = levels(&["low", "high"]);
         claude.models = Some(vec![
-            ModelOption {
-                id: "default".into(),
-                label: "Default (recommended)".into(),
-            },
-            ModelOption {
-                id: "sonnet".into(),
-                label: "Sonnet 5.5".into(),
-            },
+            ModelOption::new("default", "Default (recommended)"),
+            sonnet,
+            ModelOption::new("haiku", "Haiku"),
         ]);
+        claude
+    }
+
+    #[test]
+    fn the_picker_offers_only_usable_backends_and_names_the_current_model() {
         let mut grok = view("grok-acp", false, false);
         grok.reason = Some("not_logged_in");
         let views = [
             view("echo-a", true, false),
-            claude,
+            claude(),
             grok,
             view("opencode-acp", false, false),
         ];
-        let m = menu(&views, "/ui/backend".into(), None, HostKind::Other);
-        assert_eq!(m.current, "Claude · Sonnet 5.5");
-        assert_eq!(m.groups.len(), 2);
-        assert_eq!(m.groups[0].options[0].value, "echo-a");
-        let claude = &m.groups[1];
-        assert_eq!(claude.label, "Claude");
-        let selected: Vec<&str> = claude
-            .options
+        let p = picker(&views, "/ui/backend".into(), None);
+        assert_eq!(p.chip, "Sonnet 5.5 · HIGH");
+        assert_eq!(p.letter.as_deref(), Some("C"));
+        assert_eq!(p.current, "claude-session sonnet");
+        let names: Vec<&str> = p.backends.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["echo-a", "claude-session"]);
+        assert_eq!(p.backends[0].models[0].value, "echo-a");
+        let current: Vec<&str> = p.backends[1]
+            .models
             .iter()
-            .filter(|o| o.selected)
-            .map(|o| o.value.as_str())
+            .filter(|m| m.current)
+            .map(|m| m.value.as_str())
             .collect();
-        assert_eq!(selected, ["claude-session sonnet"]);
-        assert_eq!(m.unavailable.len(), 2);
-        assert_eq!(
-            m.unavailable[0].command.as_deref(),
-            Some("sudo melissa-setup login grok")
-        );
-        assert_eq!(
-            m.unavailable[1].command.as_deref(),
-            Some("sudo melissa-setup agent opencode")
-        );
+        assert_eq!(current, ["claude-session sonnet"]);
+        let lv: Vec<(&str, bool)> = p
+            .levels
+            .iter()
+            .map(|l| (l.value.as_str(), l.current))
+            .collect();
+        assert_eq!(lv, [("", false), ("low", false), ("high", true)]);
         assert_eq!(
             parse_choice("claude-session sonnet"),
             ("claude-session", Some("sonnet"))
         );
         assert_eq!(parse_choice(" grok-acp "), ("grok-acp", None));
+    }
 
-        // In the container image: Settings → Providers, never a command.
-        let m = menu(&views, "/ui/backend".into(), None, HostKind::Container);
+    #[test]
+    fn a_model_without_levels_hides_the_column_and_keeps_only_offered_levels() {
+        let mut c = claude();
+        c.model = Some("haiku".into());
+        c.effort = None;
+        let p = picker(&[c], "/ui/backend".into(), None);
+        assert_eq!(p.chip, "Haiku");
+        assert!(p.levels.is_empty());
+
+        let views = [claude()];
+        // Sonnet offers `high`: kept; Haiku offers none: dropped.
         assert_eq!(
-            m.unavailable[0].text,
-            "Grok: sign in from Settings → Providers."
+            kept_effort(&views, "claude-session", Some("sonnet")).as_deref(),
+            Some("high")
         );
-        assert!(m.unavailable[1].text.contains("Settings → Providers"));
-        assert!(m.unavailable.iter().all(|h| h.command.is_none()));
-        // On Nix: the Nix configuration, no melissa-setup.
-        let m = menu(&views, "/ui/backend".into(), None, HostKind::Nix);
-        assert_eq!(
-            m.unavailable[1].text,
-            "This requires you add OpenCode via your Nix configuration."
-        );
-        assert!(m.unavailable.iter().all(|h| h.command.is_none()));
+        assert_eq!(kept_effort(&views, "claude-session", Some("haiku")), None);
+    }
+
+    #[test]
+    fn nothing_usable_says_so() {
+        let p = picker(&[view("grok-acp", false, true)], "/ui/backend".into(), None);
+        assert!(p.backends.is_empty());
+        assert_eq!(p.letter, None);
+        assert_eq!(p.chip, "No agent yet");
     }
 }

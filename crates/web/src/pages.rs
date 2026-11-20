@@ -17,8 +17,9 @@ use crate::{
         APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
-        feed_archive, file_count, file_panel, file_panel_inner, AgentMenu, ComposerTarget,
-        FilePanel, RailHelper, RailPastChat, SentFile, FILE_BODY_ID,
+        feed_archive, file_count, file_panel, file_panel_inner, model_chip, model_picker,
+        ComposerTarget, FilePanel, ModelPicker, RailHelper, RailPastChat, SentFile, FILE_BODY_ID,
+        MODEL_CHIP_ID,
     },
     feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
@@ -342,7 +343,7 @@ impl View {
 /// What a live update needs besides the feed.
 pub struct StreamExtras<'a> {
     pub backend: Option<&'a str>,
-    pub agents: Option<&'a AgentMenu>,
+    pub picker: Option<&'a ModelPicker>,
     pub waiting: usize,
     pub links: &'a FileLinks,
     /// The file panel, when the box changed (chat view).
@@ -359,7 +360,7 @@ pub fn stream_update(
     who: Who<'_>,
     x: &StreamExtras<'_>,
 ) -> String {
-    let (backend, agents, waiting, links) = (x.backend, x.agents, x.waiting, x.links);
+    let (backend, picker, waiting, links) = (x.backend, x.picker, x.waiting, x.links);
     let mut added = Vec::new();
     let mut updated = Vec::new();
     let (mut status, mut count, mut files) = (false, false, false);
@@ -396,7 +397,8 @@ pub fn stream_update(
             }
         }
         @if status && view == View::Chat {
-            (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), backend, feed.busy(), agents)))
+            (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), feed.busy(), backend.filter(|_| picker.is_none()))))
+            @if let Some(p) = picker { (oob_inner(MODEL_CHIP_ID, model_chip(p))) }
         }
         @if count { (waiting_count(waiting, true)) }
     };
@@ -466,8 +468,10 @@ pub struct ChatView<'a> {
     pub epoch: u64,
     pub feed: &'a Feed,
     pub backend: Option<&'a str>,
-    /// The agent menu (switch backend or model), if the conversation has choices.
-    pub agents: Option<&'a AgentMenu>,
+    /// Who the chat is with ("Melissa" or the helper's name), for the placeholder.
+    pub name: &'a str,
+    /// The model picker (switch backend, model or reasoning level), if it can be read.
+    pub picker: Option<&'a ModelPicker>,
     pub busy: bool,
     pub draft: &'a str,
     pub error: Option<&'a str>,
@@ -500,6 +504,7 @@ pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
                         ),
                     ))
                     (composer_box(v))
+                    @if let Some(p) = v.picker { (model_picker(p)) }
                 }
                 @if let Some(p) = v.files { (file_panel(p)) }
             }
@@ -543,6 +548,7 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
                         ),
                     ))
                     (composer_box(v))
+                    @if let Some(p) = v.picker { (model_picker(p)) }
                 }
                 @if let Some(p) = v.files { (file_panel(p)) }
             }
@@ -553,20 +559,18 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
 /// The composer (also the response to sending a message).
 pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
-    let placeholder = match v.who {
-        Who::Lead => "Ask Melissa to install, check or fix something",
-        Who::Agent(_) => "Message this helper",
-    };
+    let placeholder = format!("Message {}", v.name);
     composer(
         &ComposerTarget {
             send: &send,
             cancel: &cancel,
-            placeholder,
+            placeholder: &placeholder,
             voice: v.voice,
         },
         v.draft,
         v.error,
-        composer_status(&cancel, v.backend, v.busy, v.agents),
+        v.picker.map(model_chip).unwrap_or_default(),
+        composer_status(&cancel, v.busy, v.backend.filter(|_| v.picker.is_none())),
     )
 }
 

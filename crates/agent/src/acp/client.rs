@@ -35,9 +35,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     session::{
-        AgentSession, ModelList, ModelOption, OpenSession, OpenedSession, PermissionDecision,
-        PermissionHandler, PermissionRequest, PlanStep, PromptBlock, SessionCapabilities,
-        SessionEvent, StopReason, ToolKind, ToolStatus,
+        AgentSession, EffortOption, ModelList, ModelOption, OpenSession, OpenedSession,
+        PermissionDecision, PermissionHandler, PermissionRequest, PlanStep, PromptBlock,
+        SessionCapabilities, SessionEvent, StopReason, ToolKind, ToolStatus,
     },
     AgentError, BoxFuture,
 };
@@ -353,7 +353,7 @@ async fn handshake(
             ResumeSessionRequest::new(id.clone(), open.cwd.clone()).mcp_servers(servers.clone());
         match cx.send_request(resume).block_task().await {
             Ok(r) => {
-                let models = choose_model(cx, id, r.config_options, open.model.as_deref()).await;
+                let models = choose(cx, id, r.config_options, open).await;
                 return Ok(Ready {
                     id: id.clone(),
                     caps,
@@ -367,7 +367,7 @@ async fn handshake(
     let new = NewSessionRequest::new(open.cwd.clone()).mcp_servers(servers);
     let new = cx.send_request(new).block_task().await?;
     let id = new.session_id.to_string();
-    let models = choose_model(cx, &id, new.config_options, open.model.as_deref()).await;
+    let models = choose(cx, &id, new.config_options, open).await;
     Ok(Ready {
         id,
         caps,
@@ -388,18 +388,12 @@ fn model_option(options: &[SessionConfigOption]) -> Option<(String, ModelList)> 
         let flat: Vec<ModelOption> = match &select.options {
             SessionConfigSelectOptions::Ungrouped(list) => list
                 .iter()
-                .map(|c| ModelOption {
-                    id: c.value.to_string(),
-                    label: c.name.clone(),
-                })
+                .map(|c| ModelOption::new(c.value.to_string(), c.name.clone()))
                 .collect(),
             SessionConfigSelectOptions::Grouped(groups) => groups
                 .iter()
                 .flat_map(|g| g.options.iter())
-                .map(|c| ModelOption {
-                    id: c.value.to_string(),
-                    label: c.name.clone(),
-                })
+                .map(|c| ModelOption::new(c.value.to_string(), c.name.clone()))
                 .collect(),
             _ => Vec::new(),
         };
@@ -411,6 +405,79 @@ fn model_option(options: &[SessionConfigOption]) -> Option<(String, ModelList)> 
             },
         ))
     })
+}
+
+/// The agent's reasoning level option (a select in category `thought_level`): its id, the
+/// levels and the current one.
+fn effort_option(options: &[SessionConfigOption]) -> Option<(String, Vec<EffortOption>, String)> {
+    options.iter().find_map(|o| {
+        if o.category != Some(SessionConfigOptionCategory::ThoughtLevel) {
+            return None;
+        }
+        let SessionConfigKind::Select(select) = &o.kind else {
+            return None;
+        };
+        let levels: Vec<EffortOption> = match &select.options {
+            SessionConfigSelectOptions::Ungrouped(list) => list
+                .iter()
+                .map(|c| EffortOption {
+                    id: c.value.to_string(),
+                    label: c.name.clone(),
+                })
+                .collect(),
+            SessionConfigSelectOptions::Grouped(groups) => groups
+                .iter()
+                .flat_map(|g| g.options.iter())
+                .map(|c| EffortOption {
+                    id: c.value.to_string(),
+                    label: c.name.clone(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some((o.id.to_string(), levels, select.current_value.to_string()))
+    })
+}
+
+/// The model (see [`choose_model`]), then the reasoning level: switch to the one asked for
+/// if the agent offers it. The levels are reported with the model the session uses (an
+/// agent offers them for its current model only).
+async fn choose(
+    cx: &ConnectionTo<Agent>,
+    session: &str,
+    options: Option<Vec<SessionConfigOption>>,
+    open: &OpenSession,
+) -> Option<ModelList> {
+    let effort = options.as_deref().and_then(effort_option);
+    let mut models = choose_model(cx, session, options, open.model.as_deref()).await?;
+    let Some((config_id, mut levels, current)) = effort else {
+        return Some(models);
+    };
+    if let Some(wanted) = open.effort.as_deref() {
+        if wanted != current && levels.iter().any(|l| l.id == wanted) {
+            let req = SetSessionConfigOptionRequest::new(
+                session.to_string(),
+                config_id,
+                SessionConfigOptionValue::value_id(wanted.to_string()),
+            );
+            match cx.send_request(req).block_task().await {
+                Ok(r) => {
+                    if let Some((_, after, _)) = effort_option(&r.config_options) {
+                        levels = after;
+                    }
+                }
+                Err(e) => tracing::warn!("cannot set the agent's reasoning level `{wanted}`: {e}"),
+            }
+        } else if wanted != current {
+            tracing::warn!("the agent does not offer reasoning level `{wanted}`; keeping its own");
+        }
+    }
+    if let Some(current) = models.current.clone() {
+        if let Some(m) = models.options.iter_mut().find(|m| m.id == current) {
+            m.efforts = levels;
+        }
+    }
+    Some(models)
 }
 
 /// Report the agent's models; switch to `wanted` if it is one of them and not the current

@@ -137,6 +137,16 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 - Schedules: the card "When a run needs your OK" (`POST /ui/settings/schedules/wait`, `minutes` 1–1440, default
   10; `Schedules::set_approval_wait`, audited `schedule.settings`). API `GET|POST /api/settings/schedules`.
 
+## Agents (2026-11-20)
+- `/settings/agents` (`settings/agents.rs`, `pages::agents_region`): Melissa (the lead agent, "Lead agent", no
+  Delete) and every helper: name (links to its chat), what it runs on ("Claude · Opus 5.5 · High", the picker's
+  chip words), status badge, Delete (`action_button`, in-page confirm). `POST /ui/settings/agents/{id}/delete`
+  swaps the region (htmx) or redirects back; JSON: `DELETE /api/agents/{agent}` (409 while it looks after apps,
+  422 for Melissa, 404 unknown).
+- The rules live in the agent layer (`AgentPool::delete`, shared with the lead agent's `delete_agent` tool):
+  refused while the helper looks after any app or when its apps can't be checked; otherwise its turn stops, its
+  schedules, file box, transcript/session store and working directory are removed, audited `agent.delete`.
+
 ## Gotchas
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).
 - The toggle posts `enabled=on` or nothing; parse the form as `Vec<(String, String)>`.

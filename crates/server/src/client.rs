@@ -210,6 +210,9 @@ impl Printer {
             } => {
                 self.line(&format!("[agent {name}] created ({agent}, {backend})"));
             }
+            LeadEvent::AgentDeleted { agent, name } => {
+                self.line(&format!("[agent {name}] deleted ({agent})"));
+            }
             LeadEvent::AgentStarted { name, goal, .. } => {
                 self.line(&format!("[agent {name}] job: {}", one_line(goal)));
             }
@@ -251,10 +254,12 @@ impl Printer {
                 backend,
                 model,
                 model_label,
+                effort_label,
             } => {
-                let model = match (model_label, model) {
-                    (Some(l), _) => format!(" ({l})"),
-                    (None, Some(m)) => format!(" ({m})"),
+                let model = match (model_label.as_ref().or(model.as_ref()), effort_label) {
+                    (Some(m), Some(e)) => format!(" ({m}, reasoning {e})"),
+                    (Some(m), None) => format!(" ({m})"),
+                    (None, Some(e)) => format!(" (reasoning {e})"),
                     (None, None) => String::new(),
                 };
                 self.line(&format!(

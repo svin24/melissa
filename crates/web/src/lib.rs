@@ -2291,12 +2291,11 @@ mod tests {
             assert!(body.contains("/assets/htmx-ext-sse.min.js"));
             assert!(body.contains("Nextcloud running, Immich starting"));
             assert!(body.contains("device-1"));
-            // Before the first message: the agent it will start on, as a menu.
-            assert!(
-                body.contains("Runs on <details class=\"agent-menu\">"),
-                "{body}"
-            );
-            assert!(body.contains("id=\"agent-choice\""));
+            // Before the first message: the agent it will start on, as the model chip that
+            // opens the picker (a popover, no script needed to open it).
+            assert!(body.contains("popovertarget=\"model-picker\""), "{body}");
+            assert!(body.contains("id=\"model-picker\" popover=\"auto\""));
+            assert!(body.contains("placeholder=\"Message Melissa\""));
             assert!(!body.contains("style="), "no inline styles");
             assert!(!body.contains("<script>"), "no inline scripts");
 
@@ -3756,18 +3755,18 @@ mod tests {
                 .iter()
                 .any(|r| matches!(&r.event, LeadEvent::BackendSwitched { backend, .. } if backend == "echo-b")));
 
-            // The chat shows it quietly, and the menu has the new current agent.
+            // The chat shows it quietly, and the picker has the new current agent.
             let (_, _, page) = send(&app, get("/")).await;
             assert!(page.contains("Switched to echo-b, picking up where we left off"));
             assert!(
-                page.contains("<option value=\"echo-b\" selected>"),
+                page.contains("data-filter=\"echo-b\" aria-pressed=\"true\""),
                 "{page}"
             );
-            assert!(page.contains("<option disabled>gone</option>"));
-            // The menu shows agent names only; no hint text.
+            // Not installed: never offered, and no setup hints in the picker.
+            assert!(!page.contains("data-filter=\"gone\""));
             assert!(!page.contains("isn&#39;t installed") && !page.contains("isn't installed"));
 
-            // The UI form: htmx gets the status line back; a refusal says why.
+            // The UI form: htmx gets the picker (and the chip) back; a refusal says why.
             let ui_post = |choice: &str, htmx: bool| {
                 let mut b = post("/ui/backend");
                 if htmx {
@@ -3778,11 +3777,9 @@ mod tests {
             };
             let (status, _, body) = send(&app, ui_post("stuck", true)).await;
             assert_eq!(status, StatusCode::OK);
-            assert!(
-                body.contains("Runs on <details class=\"agent-menu\">"),
-                "{body}"
-            );
-            assert!(!body.contains("agent-error"));
+            assert!(body.starts_with("<div class=\"model-picker\""), "{body}");
+            assert!(body.contains("hx-swap-oob=\"innerHTML:#model-chip\""));
+            assert!(!body.contains("picker-error") && !body.contains("data-error"));
             let (status, _, body) = send(&app, ui_post("gone", true)).await;
             assert_eq!(status, StatusCode::OK);
             assert!(
@@ -3790,6 +3787,7 @@ mod tests {
                     || body.contains("gone isn't ready on this device yet."),
                 "{body}"
             );
+            assert!(body.contains("data-error"), "reopens to say why");
             let (status, headers, _) = send(&app, ui_post("echo-b", false)).await;
             assert_eq!(status, StatusCode::SEE_OTHER);
             assert_eq!(headers[header::LOCATION], "/");
@@ -3834,6 +3832,310 @@ mod tests {
                 .0,
                 StatusCode::NOT_FOUND
             );
+        }
+
+        // --- Model picker (2026-11-20) -------------------------------------------------------
+
+        /// What `echo-b` reported: m1 with the levels low and high, m2 without levels.
+        fn seed_models(lead: &Lead) {
+            use melissa_agent::session::{EffortOption, ModelList, ModelOption};
+            let level = |id: &str, label: &str| EffortOption {
+                id: id.into(),
+                label: label.into(),
+            };
+            let mut m1 = ModelOption::new("m1", "Model One");
+            m1.efforts = vec![level("low", "Low"), level("high", "High")];
+            lead.models().put(
+                "echo-b",
+                &ModelList {
+                    current: None,
+                    options: vec![m1, ModelOption::new("m2", "Model Two")],
+                },
+            );
+        }
+
+        fn chip(text: &str) -> String {
+            format!("<span class=\"chip-text\">{text}</span>")
+        }
+
+        #[tokio::test]
+        async fn the_model_picker_switches_model_and_reasoning_level() {
+            let (app, lead) = app();
+            seed_models(&lead);
+            let (_, _, page) = get_html(&app, "/").await;
+            // Only usable backends; the current one is pressed on the rail and on the chip.
+            assert!(
+                page.contains("data-filter=\"stuck\" aria-pressed=\"true\""),
+                "{page}"
+            );
+            assert!(page.contains("data-filter=\"echo-b\" aria-pressed=\"false\""));
+            assert!(page.contains("data-filter=\"favorites\""));
+            assert!(!page.contains("data-filter=\"gone\""), "not installed");
+            assert!(page.contains(&chip("stuck")));
+            assert!(page.contains("name=\"choice\" value=\"echo-b m1\""));
+            // `stuck` reports no levels: no Reasoning column.
+            assert!(!page.contains("picker-levels"));
+
+            // Pick a model (htmx): the picker comes back (closed) with the chip out of band.
+            let (status, _, body) = send(
+                &app,
+                htmx_post("/ui/backend", "current=stuck&choice=echo-b+m1"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains(&chip("Model One")), "{body}");
+            assert!(body.contains("hx-swap-oob=\"innerHTML:#model-chip\""));
+            assert!(body.contains(">Reasoning</h3>"));
+            assert!(body.contains("name=\"effort\" value=\"high\""));
+            let choice = |lead: &Lead| {
+                lead.backend_choice()
+                    .map(|c| (c.backend, c.model, c.effort))
+                    .unwrap_or_default()
+            };
+            assert_eq!(choice(&lead), ("echo-b".into(), Some("m1".into()), None));
+
+            // A level for the current model.
+            let (_, _, body) = send(
+                &app,
+                htmx_post("/ui/backend", "current=echo-b+m1&effort=high"),
+            )
+            .await;
+            assert!(body.contains(&chip("Model One · High")), "{body}");
+            assert_eq!(choice(&lead).2.as_deref(), Some("high"));
+            // A model without that level drops it (the column goes too).
+            let (_, _, body) = send(
+                &app,
+                htmx_post("/ui/backend", "current=echo-b+m1&choice=echo-b+m2"),
+            )
+            .await;
+            assert!(body.contains(&chip("Model Two")), "{body}");
+            assert!(!body.contains("picker-levels"));
+            assert_eq!(choice(&lead), ("echo-b".into(), Some("m2".into()), None));
+            // A level the model doesn't offer is refused, and the picker says why.
+            let (_, _, body) = send(
+                &app,
+                htmx_post("/ui/backend", "current=echo-b+m2&effort=high"),
+            )
+            .await;
+            assert!(body.contains("data-error"), "{body}");
+            assert!(body.contains("picker-error"));
+            assert_eq!(choice(&lead).1.as_deref(), Some("m2"));
+
+            // Without script: a plain form post, then the page shows it.
+            let req = post("/ui/backend")
+                .body(Body::from("current=echo-b+m1&effort=low"))
+                .unwrap();
+            let (status, headers, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/");
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains(&chip("Model One · Low")), "{page}");
+            assert!(page.contains("name=\"choice\" value=\"echo-b m1\" aria-current=\"true\""));
+            assert!(page.contains("name=\"effort\" value=\"low\" aria-current=\"true\""));
+
+            // The JSON API takes the level too, and lists it.
+            let (status, body) = send_json(
+                &app,
+                json_post(
+                    "/api/lead/backend",
+                    r#"{"name":"echo-b","model":"m1","effort":"high"}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["effort"], "high");
+            let (_, body) = send_json(&app, get("/api/lead/backends")).await;
+            assert_eq!(body["backends"][1]["effort"], "high");
+            assert_eq!(body["backends"][1]["models"][0]["efforts"][1]["id"], "high");
+            let (status, _) = send_json(
+                &app,
+                json_post(
+                    "/api/lead/backend",
+                    r#"{"name":"echo-b","model":"m2","effort":"high"}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+            // A helper: saved in the registry; its chat's picker posts to its own URL.
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "stuck", None, "the user")
+                .unwrap()
+                .id;
+            let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
+            assert!(page.contains(&format!("action=\"/ui/agents/{ada}/backend\"")));
+            assert!(page.contains("placeholder=\"Message Ada\""));
+            let url = format!("/ui/agents/{ada}/backend");
+            let (_, _, body) = send(&app, htmx_post(&url, "current=stuck&choice=echo-b+m1")).await;
+            assert!(body.contains(&chip("Model One")), "{body}");
+            let (_, _, body) = send(&app, htmx_post(&url, "current=echo-b+m1&effort=low")).await;
+            assert!(body.contains(&chip("Model One · Low")), "{body}");
+            let (_, agent) = send_json(&app, get("/api/agents/Ada")).await;
+            assert_eq!(agent["backend"], "echo-b");
+            assert_eq!(agent["model"], "m1");
+            assert_eq!(agent["effort"], "low");
+        }
+
+        // --- Deleting a helper (2026-11-20) --------------------------------------------------
+
+        /// One workspace, `nextcloud`, looked after by the agent set in it (None: nobody).
+        #[derive(Default)]
+        struct OwnedBy(std::sync::Mutex<Option<String>>);
+
+        impl melissa_agent::tools::WorkspaceStore for OwnedBy {
+            fn workspaces(
+                &self,
+            ) -> BoxFuture<'_, Result<Vec<melissa_agent::tools::WorkspaceInfo>, String>>
+            {
+                let owner = match self.0.lock().unwrap().clone() {
+                    Some(id) => melissa_agent::tools::Owner::Agent(id),
+                    None => melissa_agent::tools::Owner::Unassigned,
+                };
+                Box::pin(async move {
+                    Ok(vec![melissa_agent::tools::WorkspaceInfo {
+                        name: "nextcloud".into(),
+                        owner,
+                        device: Some("d-0a1b2c3d".into()),
+                        assigned_by: None,
+                        assigned_at: None,
+                        legacy_owner: None,
+                    }])
+                })
+            }
+            fn assign<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a str,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async { Err("no".into()) })
+            }
+            fn force_delete<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> BoxFuture<'a, Result<Vec<String>, String>> {
+                Box::pin(async { Err("no".into()) })
+            }
+        }
+
+        #[tokio::test]
+        async fn helpers_are_deleted_with_their_chat_box_and_schedules_but_not_with_apps() {
+            use melissa_agent::{
+                lead::schedules::{Creator, ScheduleInput, Schedules, TimeZone},
+                tools::permissions::Principal,
+            };
+            let store = Arc::new(OwnedBy::default());
+            let (app, lead) = app_full(None, Some(store.clone()), false);
+            let sched = lead.start_schedules(Schedules::in_memory(TimeZone::UTC));
+            let reg = lead.agents().registry().clone();
+            let ada = reg.create("Ada", "stuck", None, "the user").unwrap().id;
+            reg.create("Bo", "stuck", None, "the user").unwrap();
+            *store.0.lock().unwrap() = Some(ada.clone());
+            let schedule = |agent: Principal| ScheduleInput {
+                name: "Backup".into(),
+                agent,
+                instruction: "Check the backups".into(),
+                cron: "0 3 * * *".into(),
+                enabled: true,
+                max_minutes: None,
+            };
+            let s = sched.schedules();
+            s.create(&schedule(Principal::Agent(ada.clone())), &Creator::Owner)
+                .unwrap();
+            s.create(&schedule(Principal::Lead), &Creator::Owner)
+                .unwrap();
+            // Its file box and its chat.
+            let owner = Principal::Agent(ada.clone());
+            let box_dir = lead.files().ensure_dir(&owner).unwrap();
+            std::fs::write(box_dir.join("notes.txt"), "hi").unwrap();
+            let agent_dir = reg.agent_dir(&ada);
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            std::fs::write(agent_dir.join("transcript.jsonl"), "{}\n").unwrap();
+
+            // Settings → Agents: Melissa (no Delete) and the helpers.
+            let (status, _, page) = get_html(&app, "/settings/agents").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(page.contains("Lead agent"), "{page}");
+            assert!(page.contains(&format!("action=\"/ui/settings/agents/{ada}/delete\"")));
+            assert!(page.contains("Delete Ada? Its chat, file box and schedules go with it."));
+            assert_eq!(
+                page.matches("action=\"/ui/settings/agents/").count(),
+                2,
+                "only the helpers"
+            );
+
+            // Refused while it looks after an app: says which, nothing removed.
+            let del = format!("/ui/settings/agents/{ada}/delete");
+            let (_, _, body) = send(&app, htmx_post(&del, "")).await;
+            assert!(
+                body.contains(
+                    "Ada still looks after nextcloud. Reassign or remove its apps first."
+                ),
+                "{body}"
+            );
+            let req = axum::http::Request::delete("/api/agents/Ada")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(send(&app, req).await.0, StatusCode::CONFLICT);
+            assert!(lead.agents().get("Ada").is_some());
+            assert_eq!(s.list().len(), 2);
+            assert!(box_dir.exists());
+
+            // The app went to someone else: now it goes, with what was its own.
+            *store.0.lock().unwrap() = None;
+            let (_, _, body) = send(&app, htmx_post(&del, "")).await;
+            assert!(body.contains("Deleted Ada."), "{body}");
+            assert!(!body.contains(&format!("{ada}/delete")));
+            assert!(lead.agents().get("Ada").is_none());
+            let left: Vec<Principal> = s.list().into_iter().map(|s| s.agent).collect();
+            assert_eq!(left, [Principal::Lead], "its schedule only");
+            assert!(!box_dir.exists());
+            assert!(!agent_dir.exists());
+            assert!(lead.events().since(0, 100).events.iter().any(|r| matches!(
+                &r.event,
+                LeadEvent::AgentDeleted { name, .. } if name == "Ada"
+            )));
+            // Its id is never reused.
+            let cy = reg.create("Cy", "stuck", None, "the user").unwrap().id;
+            assert_ne!(cy, ada);
+
+            // The JSON API.
+            let delete = |uri: &str| {
+                axum::http::Request::delete(uri)
+                    .body(Body::empty())
+                    .unwrap()
+            };
+            let (status, body) = send_json(&app, delete("/api/agents/Bo")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["name"], "Bo");
+            assert_eq!(
+                send(&app, get("/api/agents/Bo")).await.0,
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                send(&app, delete("/api/agents/Bo")).await.0,
+                StatusCode::NOT_FOUND
+            );
+            // Melissa herself can't be deleted.
+            let (status, body) = send_json(&app, delete("/api/agents/melissa")).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(body["error"].as_str().unwrap().contains("can't be deleted"));
+            // Cross-site: refused.
+            let mut cross = delete("/api/agents/Cy");
+            cross
+                .headers_mut()
+                .insert(header::ORIGIN, "http://evil.example.com".parse().unwrap());
+            assert_eq!(send(&app, cross).await.0, StatusCode::FORBIDDEN);
+            // Without script: a plain post redirects back to the list.
+            let req = post(&format!("/ui/settings/agents/{cy}/delete"))
+                .body(Body::empty())
+                .unwrap();
+            let (status, headers, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/settings/agents");
+            assert!(lead.agents().get("Cy").is_none());
         }
     }
 

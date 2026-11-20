@@ -10,8 +10,8 @@
 //! `create_agent` (it names it), `give_agent_job` (wakes the agent with a job message; at most
 //! `max_concurrent` agents work at once, each job has a time limit), `agent_status`, `list_agents`,
 //! `stop_agent`, `message_agent` (passes data, e.g. another agent's result, tagged as data:
-//! agent-to-agent talk goes through the lead agent only, audited) and `reassign_workspace` (always asks
-//! the user). The user talks to any agent directly (API `/api/agents/{agent}/messages`, CLI
+//! agent-to-agent talk goes through the lead agent only, audited), `reassign_workspace` (always asks
+//! the user) and `delete_agent` (destructive: always asks the user; see [`AgentPool::delete`]). The user talks to any agent directly (API `/api/agents/{agent}/messages`, CLI
 //! `melissa-server chat --agent <name>`), renames agents and reassigns workspaces.
 //!
 //! Taint flows both ways: a job or message from a tainted lead agent taints the agent, and the
@@ -122,6 +122,8 @@ struct PoolInner {
     jobs: Mutex<HashMap<String, Job>>,
     /// Serialises the concurrency check and the job start.
     start: Mutex<()>,
+    /// The device's schedules, once they run (deleting an agent removes its schedules).
+    schedules: OnceLock<super::schedules::Schedules>,
 }
 
 /// The agents of this device. Cheap to clone.
@@ -139,6 +141,9 @@ pub struct AgentView {
     /// The model the user chose for it (None: the backend's default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The reasoning level the user chose for it (None: the agent's default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// `idle`, `working` or `stopped`.
     pub status: &'static str,
     pub created_by: String,
@@ -161,6 +166,28 @@ pub struct ForceDeleted {
     pub agent_name: Option<String>,
     /// The agent's message: `delivered`, `queued` (it was working), `failed` or `none`.
     pub agent_notice: &'static str,
+}
+
+/// What deleting an agent did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentDeleted {
+    /// Its id (never reused).
+    pub agent: String,
+    pub name: String,
+    /// What was removed with it, in words.
+    pub removed: Vec<String>,
+}
+
+/// Remove a directory tree; true if it existed and is gone.
+fn remove_tree(dir: &std::path::Path) -> bool {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), "cannot remove: {e}");
+            false
+        }
+    }
 }
 
 /// A workspace as clients see it.
@@ -194,6 +221,7 @@ impl AgentPool {
                 convs: Mutex::new(HashMap::new()),
                 jobs: Mutex::new(HashMap::new()),
                 start: Mutex::new(()),
+                schedules: OnceLock::new(),
             }),
         }
     }
@@ -216,7 +244,121 @@ impl AgentPool {
             Arc::new(StopAgent(self.clone())),
             Arc::new(MessageAgent(self.clone())),
             Arc::new(ReassignWorkspace(self.clone())),
+            Arc::new(DeleteAgent(self.clone())),
         ]
+    }
+
+    /// Give the pool the device's schedules (done by [`super::Lead::start_schedules`]).
+    pub(crate) fn attach_schedules(&self, schedules: super::schedules::Schedules) {
+        let _ = self.inner.schedules.set(schedules);
+    }
+
+    /// Delete an agent for good (`actor`: `ui` for the user, `lead` for the lead agent's
+    /// approved `delete_agent`). Refused ([`LeadError::InUse`]) while it looks after any
+    /// workspace, or when its workspaces cannot be checked: the user reassigns or removes
+    /// those apps first, so no app is left without an agent. Otherwise its running job is
+    /// cancelled and its session closed, then its schedules (every schedule that runs it),
+    /// its file box, its chat transcript and session store, and its working directory are
+    /// removed, and it leaves the registry (its id is never reused). Audited
+    /// `agent.delete`. The lead agent is not in the registry and cannot be deleted.
+    pub async fn delete(&self, name_or_id: &str, actor: &str) -> Result<AgentDeleted, LeadError> {
+        let agent = self.inner.registry.resolve(name_or_id).ok_or_else(|| {
+            let key = name_or_id.trim();
+            if key.eq_ignore_ascii_case("lead") || key.eq_ignore_ascii_case("melissa") {
+                LeadError::Invalid("Melissa (the lead agent) can't be deleted".into())
+            } else {
+                LeadError::NoSuchAgent(name_or_id.into())
+            }
+        })?;
+        if let Some(store) = &self.inner.workspaces {
+            let all = store.workspaces().await.map_err(|e| {
+                LeadError::InUse(format!(
+                    "can't check which apps {} looks after ({e}); try again later",
+                    agent.name
+                ))
+            })?;
+            let owned: Vec<String> = all
+                .into_iter()
+                .filter(|w| w.owner.label_value() == Some(agent.id.as_str()))
+                .map(|w| w.name)
+                .collect();
+            if !owned.is_empty() {
+                return Err(LeadError::InUse(format!(
+                    "{} still looks after {}. Reassign or remove its apps first.",
+                    agent.name,
+                    owned.join(", ")
+                )));
+            }
+        }
+        let mut removed = Vec::new();
+        // Stop it first, like stop_agent; a pending confirmation of its turn is withdrawn
+        // when the turn ends.
+        let conv = lock(&self.inner.convs).remove(&agent.id);
+        if let Some(conv) = conv {
+            conv.cancel(None, actor).await;
+            if let Some(turn) = conv.busy() {
+                conv.wait_turn(turn, STOP_GRACE).await;
+            }
+            conv.close().await;
+        }
+        lock(&self.inner.jobs).remove(&agent.id);
+        self.inner
+            .registry
+            .remove(&agent.id)
+            .map_err(registry_error)?;
+        let owner = Principal::Agent(agent.id.clone());
+        if let Some(schedules) = self.inner.schedules.get() {
+            let by = match actor {
+                "lead" => super::schedules::Creator::Lead,
+                _ => super::schedules::Creator::Owner,
+            };
+            let mine: Vec<u64> = schedules
+                .list()
+                .into_iter()
+                .filter(|s| s.agent == owner)
+                .map(|s| s.id)
+                .collect();
+            for id in &mine {
+                if let Err(e) = schedules.remove(*id, &by) {
+                    tracing::warn!("cannot remove schedule {id} of agent {}: {e}", agent.id);
+                }
+            }
+            if !mine.is_empty() {
+                removed.push(format!("{} schedule(s)", mine.len()));
+            }
+        }
+        if let Some(a) = self.inner.attached.get() {
+            match a.files.remove_box(&owner, actor) {
+                Ok(n) => removed.push(format!("its file box ({n} files)")),
+                Err(e) => tracing::warn!("cannot remove the file box of {}: {e}", agent.id),
+            }
+            let workdir = a.workroot.join(&agent.id);
+            if remove_tree(&workdir) {
+                removed.push("its working directory".into());
+            }
+        }
+        if remove_tree(&self.inner.registry.agent_dir(&agent.id)) {
+            removed.push("its chat and session store".into());
+        }
+        self.audit(
+            "agent.delete",
+            actor,
+            &format!(
+                "{} ({}): removed {}",
+                agent.id,
+                agent.name,
+                removed.join(", ")
+            ),
+        );
+        self.inner.events.push(LeadEvent::AgentDeleted {
+            agent: agent.id.clone(),
+            name: agent.name.clone(),
+        });
+        Ok(AgentDeleted {
+            agent: agent.id,
+            name: agent.name,
+            removed,
+        })
     }
 
     /// Connect the pool to the daemon (done by [`super::Lead::new`]; the board needs the
@@ -306,6 +448,7 @@ impl AgentPool {
             choice: Some(BackendChoice {
                 backend: agent.backend.clone(),
                 model: agent.model.clone(),
+                effort: agent.effort.clone(),
             }),
             failover: false,
             models: a.models.clone(),
@@ -360,6 +503,7 @@ impl AgentPool {
             name: agent.name.clone(),
             backend: agent.backend.clone(),
             model: agent.model.clone(),
+            effort: agent.effort.clone(),
             status: self.status_of(agent),
             created_by: agent.created_by.clone(),
             created_at: agent.created_at,
@@ -533,23 +677,24 @@ impl AgentPool {
             .backends())
     }
 
-    /// The user switches an agent to another backend (and model). Saved in the agent registry,
-    /// audited `agent.backend`; the agent's next job or message runs on it, with its
-    /// conversation so far.
+    /// The user switches an agent to another backend (and model and reasoning level). Saved
+    /// in the agent registry, audited `agent.backend`; the agent's next job or message runs on
+    /// it, with its conversation so far.
     pub fn user_use_backend(
         &self,
         name_or_id: &str,
         backend: &str,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<Switched, LeadError> {
         let agent = self.user_agent(name_or_id)?;
         let conv = self
             .conversation(&agent)
             .map_err(|e| LeadError::Failed(e.to_string()))?;
-        let choice = conv.check_choice(backend, model)?;
+        let choice = conv.check_choice(backend, model, effort)?;
         self.inner
             .registry
-            .set_backend(&agent.id, &choice.backend, choice.model.as_deref())
+            .set_backend(&agent.id, &choice)
             .map_err(registry_error)?;
         Ok(conv.switch(choice, "ui"))
     }
@@ -1284,6 +1429,7 @@ struct ListAgents(AgentPool);
 struct StopAgent(AgentPool);
 struct MessageAgent(AgentPool);
 struct ReassignWorkspace(AgentPool);
+struct DeleteAgent(AgentPool);
 
 fn needs_context<'a>() -> BoxFuture<'a, Result<Value, ToolError>> {
     Box::pin(async { Err(ToolError::Failed("agent tools need a caller".into())) })
@@ -1561,6 +1707,75 @@ impl Tool for ReassignWorkspace {
         };
         Some(format!(
             "the lead agent wants to move workspace `{workspace}` to {to}"
+        ))
+    }
+}
+
+impl Tool for DeleteAgent {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "delete_agent",
+            description: "Delete one of your agents (helpers) for good: its chat, file box and \
+                          schedules go with it. Refused while it looks after any app: reassign or \
+                          remove those first. Always asks the user first.",
+            labels: Labels {
+                effect: Effect::Destructive,
+                ..Labels::READ_ONLY
+            },
+            params: json!({
+                "type": "object",
+                "properties": {"agent": agent_param("Which agent to delete")},
+                "required": ["agent"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        needs_context()
+    }
+    fn call_in<'a>(
+        &'a self,
+        _task: TaskId,
+        ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(async move {
+            lead_only(ctx)?;
+            let args = object(&args, &["agent"])?;
+            let name = str_arg(&args, "agent")?;
+            match self.0.delete(name, "lead").await {
+                Ok(d) => Ok(json!({
+                    "agent": d.name,
+                    "agent_id": d.agent,
+                    "deleted": true,
+                    "removed": d.removed,
+                })),
+                Err(LeadError::NoSuchAgent(_)) => Err(ToolError::BadArgs(format!(
+                    "no agent `{name}` on this device"
+                ))),
+                Err(e @ (LeadError::InUse(_) | LeadError::Invalid(_))) => {
+                    Err(ToolError::Refused(e.to_string()))
+                }
+                Err(e) => Err(ToolError::Failed(e.to_string())),
+            }
+        })
+    }
+    fn lead_only(&self) -> bool {
+        true
+    }
+    fn check_args(&self, args: &Value) -> Result<(), ToolError> {
+        // An agent that does not exist fails at once, before anyone is asked.
+        let args = object(args, &["agent"])?;
+        self.0.resolve(str_arg(&args, "agent")?).map(|_| ())
+    }
+    fn describe_call(&self, args: &Value) -> Option<String> {
+        let agent = args.get("agent")?.as_str()?;
+        let who = match self.0.inner.registry.resolve(agent) {
+            Some(b) => describe_agent(Some(&self.0.inner.registry), &b.id),
+            None => format!("`{}`", shorten(agent, 40)),
+        };
+        Some(format!(
+            "the lead agent wants to delete {who} with its chat, file box and schedules"
         ))
     }
 }

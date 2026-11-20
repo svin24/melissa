@@ -257,7 +257,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   cancel, `session_lost` + new session when the agent dies, the shipped system prompt
   (`crates/server/prompts/lead.md`) as the first message's preamble. Since the cluster-model change (2026-11-18)
   the lead agent directs persistent, named **agents** (Lead-only tools `create_agent`, `give_agent_job`, `agent_status`,
-  `list_agents`, `stop_agent`, `message_agent`, `reassign_workspace`); each agent is a conversation like the lead agent's (own
+  `list_agents`, `stop_agent`, `message_agent`, `reassign_workspace`, `delete_agent`); each agent is a conversation like the lead agent's (own
   session store, sandbox, scope, transcript), at most `max_agents` working at once, job time limits, all audited.
   Typed event stream + JSONL transcript; JSON API `/api/lead/*`, `/api/agents/*`, `/api/workspaces/*`,
   `/api/confirmations`; CLI `melissa-server chat|ask [--agent]|confirm|agent|workspace`. Context
@@ -369,8 +369,11 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   helper; listed under Conversations in the rail); the task dashboard moved to `/tasks`. Live updates over SSE from
   the conversations' event logs (htmx SSE extension, vendored). Fonts Atkinson Hyperlegible Next and Bricolage
   Grotesque vendored (OFL). The UI says "helper" for an agent and "app" for a workspace. Details:
-  [htmx-component.md](agent-skills/htmx-component.md). Backend/model switch (2026-11-19): "Runs on Grok ▾" in the
-  composer status of the lead agent's and each helper's chat; API `/api/lead/backend(s)`, `/api/agents/{agent}/backend(s)`,
+  [htmx-component.md](agent-skills/htmx-component.md). Backend/model switch (2026-11-19; since 2026-11-20 the
+  owner-requested model picker: a chip "Opus 5.5 · High" in the composer bar opens a popover with a rail of usable
+  providers (Favorites first, per browser), a searchable model list, Ctrl+1..9 and the current model's reasoning
+  levels; not-installed providers never show there) in the lead agent's and each helper's chat; API
+  `/api/lead/backend(s)`, `/api/agents/{agent}/backend(s)` (`effort` = reasoning level),
   CLI `melissa-server backend list|use`; see [lead-loop.md](agent-skills/lead-loop.md). Settings (2026-11-19, owner-requested,
   modelled on T3 Code's settings): `/settings/providers` (agent programs: installed, version, login, enabled,
   who uses them, models; display name, program path, extra arguments, write-only secret variables; stored in
@@ -816,7 +819,8 @@ Roadmap (rough, phases may overlap):
     makes are ignored (and never pruned). (c) Agent files are noticed when a turn ends, the panel opens, or
     `my_files` is used; a file written mid-turn shows at the end of the turn. (d) Retention counts from when
     Melissa first saw a file; rewriting a file in place keeps its age (`my_files` `save` resets it). (e) A
-    removed agent's box stays (with its index) until pruned; remove it with the agent? (f) Migrated attachments
+    removed agent's box stays (with its index) until pruned; remove it with the agent? (Decided 2026-11-20: deleting
+    a helper removes its box; see 71.) (f) Migrated attachments
     count as added at migration time, so they get a full retention period. (g) Files the agent reads from its
     box don't taint the conversation (like files sent inline). (h) Box files reach the model only by path (the
     agent opens them) except images and PDFs sent with a message. (i) Not verified live: sandbox bind with real
@@ -829,3 +833,19 @@ Roadmap (rough, phases may overlap):
     (d) Cross-device (M3): an agent's call on another device's app should go to that device's lead agent; today
     only this device's workspaces exist. (e) Not verified live with a real agent conversation and two Minecraft
     servers.
+72. Model picker and helper delete (2026-11-20, owner request). Decided: (a) the composer is one box (text on top;
+    paperclip left; model chip, mic and Send right); the chip opens a server-rendered popover (Popover API, CSS
+    anchor positioning, melissa.js fallback placement) listing only usable backends; favorites live in the browser
+    (localStorage), not on the server. (b) Reasoning levels are only what agents report: Claude's per-model
+    `supportedEffortLevels` (passed as `--effort`), an ACP `thought_level` config option (set with
+    `session/set_config_option`; reported for the session's current model only, so other models show no levels
+    until used). The choice is saved with the backend and model (`effort`), applies from the next turn, and
+    picking another model keeps the level only if that model offers it. (c) Deleting a helper (Settings → Agents,
+    `DELETE /api/agents/{agent}`, the lead agent's `delete_agent`, which is destructive and always asks the owner)
+    is refused while it looks after any app, or when its apps can't be checked ("Reassign or remove its apps
+    first"): never orphan an app, never hand it to someone silently. Otherwise its running job stops and its
+    schedules (every schedule that runs it), file box, transcript and session store and working directory are
+    removed; audited `agent.delete` (+ `schedule.removed`, `files.box_removed`); its id is never reused; Melissa
+    herself can't be deleted. Open: (d) a Standard/Fast toggle: Claude reports `supportsFastMode`, but Melissa
+    has no fast-mode plumbing, so the picker has no footer; add it if the owner wants it. (e) Not verified live: a
+    real Claude/ACP session started with a chosen level, the picker in Firefox (anchor positioning fallback).

@@ -38,6 +38,9 @@ pub struct AgentRecord {
     /// Model the user chose for it (None: the backend's default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Reasoning level the user chose for it (None: the agent's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// Tools it may use (None: the lead agent's tools without the lead agent-only ones).
     #[serde(default)]
     pub tools: Option<Vec<String>>,
@@ -207,6 +210,7 @@ impl AgentRegistry {
             name,
             backend: backend.into(),
             model: None,
+            effort: None,
             tools,
             created_by: created_by.into(),
             created_at: now(),
@@ -244,12 +248,11 @@ impl AgentRegistry {
         Ok(out)
     }
 
-    /// The user moves an agent to another backend (and model).
+    /// The user moves an agent to another backend (and model and reasoning level).
     pub fn set_backend(
         &self,
         id: &str,
-        backend: &str,
-        model: Option<&str>,
+        choice: &super::backends::BackendChoice,
     ) -> Result<AgentRecord, RegistryError> {
         let mut file = lock(&self.inner.file);
         let agent = file
@@ -257,11 +260,31 @@ impl AgentRegistry {
             .iter_mut()
             .find(|b| b.id == id)
             .ok_or_else(|| RegistryError::NoSuchAgent(id.into()))?;
-        agent.backend = backend.into();
-        agent.model = model.map(str::to_string);
+        agent.backend.clone_from(&choice.backend);
+        agent.model.clone_from(&choice.model);
+        agent.effort.clone_from(&choice.effort);
         let out = agent.clone();
         self.save(&file)?;
         Ok(out)
+    }
+
+    /// Forget an agent (its id is never reused). Returns its record.
+    pub fn remove(&self, id: &str) -> Result<AgentRecord, RegistryError> {
+        let mut file = lock(&self.inner.file);
+        let i = file
+            .agents
+            .iter()
+            .position(|b| b.id == id)
+            .ok_or_else(|| RegistryError::NoSuchAgent(id.into()))?;
+        let mut next = RegistryFile {
+            device: file.device.clone(),
+            next: file.next,
+            agents: file.agents.clone(),
+        };
+        let gone = next.agents.remove(i);
+        self.save(&next)?;
+        *file = next;
+        Ok(gone)
     }
 
     /// Mark an agent stopped (or awake again).

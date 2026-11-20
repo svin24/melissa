@@ -856,6 +856,39 @@ impl FileBoxes {
         Ok(())
     }
 
+    /// Remove `owner`'s whole box: its files, its index and its retention setting (the
+    /// agent was deleted). Audited `files.box_removed`. Returns how many files it held.
+    pub fn remove_box(&self, owner: &Principal, actor: &str) -> io::Result<usize> {
+        let key = Self::key(owner)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a file box"))?;
+        let count = self.list(owner).len();
+        lock(&self.inner.boxes).remove(&key);
+        let dir = self.inner.root.join("boxes").join(&key);
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        match fs::remove_file(self.index_path(&key)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let mut retention = self.retention();
+        if retention.overrides.remove(&key).is_some() {
+            if let Err(e) = self.save_retention(retention) {
+                tracing::warn!("file boxes: cannot drop {key}'s retention: {e}");
+            }
+        }
+        self.audit(
+            "files.box_removed",
+            actor,
+            &format!("{key}'s box ({count} files)"),
+        );
+        self.changed(owner);
+        Ok(count)
+    }
+
     /// Every box that exists (on disk or in an index).
     pub fn owners(&self) -> Vec<Principal> {
         let mut keys: HashSet<String> = HashSet::new();

@@ -18,8 +18,9 @@ use crate::{
 use melissa_settings::providers::EnvVarView;
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 7] = [
+pub const SECTIONS: [(&str, &str); 8] = [
     ("/settings/providers", "Providers"),
+    (AGENTS_URL, "Agents"),
     (PERMISSIONS_URL, "Permissions"),
     (SCHEDULES_URL, "Schedules"),
     (FILES_URL, "Files"),
@@ -27,6 +28,11 @@ pub const SECTIONS: [(&str, &str); 7] = [
     ("/settings/updates", "Updates"),
     (DEVELOPER_URL, "Developer"),
 ];
+
+/// The Agents section: Melissa and her helpers (Delete).
+pub const AGENTS_URL: &str = "/settings/agents";
+/// DOM id of the Agents region (Delete swaps it).
+pub const AGENTS_ID: &str = "agents";
 
 /// The Schedules section: scheduled jobs.
 pub const SCHEDULES_URL: &str = "/settings/schedules";
@@ -882,6 +888,56 @@ fn schedule_form(f: &ScheduleForm, zone: &str) -> Markup {
                 }))
             }))
             @if f.id.is_some() { (link(SCHEDULES_URL, "Cancel")) }
+        },
+    )
+}
+
+/// One agent on the Agents page. `id`: None for Melissa (the lead agent: no Delete).
+pub struct AgentRow {
+    pub id: Option<String>,
+    pub name: String,
+    /// Its chat.
+    pub href: String,
+    /// "Claude · Opus 5.5 · High".
+    pub runs_on: String,
+    pub status: (&'static str, Tone),
+}
+
+pub fn agents_page(f: &Frame<'_>, rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
+    frame(f, "Agents", agents_region(rows, flash))
+}
+
+/// The agent list (swapped whole by Delete).
+pub fn agents_region(rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
+    let rows: Vec<Vec<Markup>> = rows
+        .iter()
+        .map(|r| {
+            vec![
+                link(&r.href, &r.name),
+                html! { (r.runs_on) },
+                badge(r.status.0, r.status.1),
+                match &r.id {
+                    None => html! { span.quiet { "Lead agent" } },
+                    Some(id) => action_button(
+                        &format!("/ui/settings/agents/{id}/delete"),
+                        AGENTS_ID,
+                        "Delete",
+                        &format!(
+                            "Delete {}? Its chat, file box and schedules go with it. This can't be undone.",
+                            r.name
+                        ),
+                    ),
+                },
+            ]
+        })
+        .collect();
+    region(
+        AGENTS_ID,
+        html! {
+            (page_header("Agents", Some("Melissa and her helpers. A helper that looks after apps can't be deleted until you reassign or remove them.")))
+            @if let Some(f) = flash { (notice(&f.text, f.tone)) }
+            (table(&["Name", "Runs on", "Status", ""], rows, "No agents."))
+            p.quiet { "Change what an agent runs on with the model button under its chat." }
         },
     )
 }

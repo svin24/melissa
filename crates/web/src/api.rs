@@ -97,7 +97,7 @@ pub(crate) fn routes(lead: Lead) -> Router {
         .route("/api/lead/backends/refresh", post(refresh_models))
         .route("/api/lead/backend", post(use_backend))
         .route("/api/agents", get(agents))
-        .route("/api/agents/{agent}", get(agent))
+        .route("/api/agents/{agent}", get(agent).delete(agent_delete))
         .route("/api/agents/{agent}/messages", post(agent_message))
         .route("/api/agents/{agent}/events", get(agent_events))
         .route("/api/agents/{agent}/cancel", post(agent_cancel))
@@ -222,6 +222,9 @@ struct UseBackend {
     name: String,
     #[serde(default)]
     model: Option<String>,
+    /// Reasoning level (one the model offers); absent: the agent's default.
+    #[serde(default)]
+    effort: Option<String>,
 }
 
 async fn backends(State(lead): State<Lead>) -> Response {
@@ -235,7 +238,7 @@ async fn refresh_models(State(lead): State<Lead>) -> Response {
 }
 
 async fn use_backend(State(lead): State<Lead>, Json(body): Json<UseBackend>) -> Response {
-    match lead.use_backend(&body.name, body.model.as_deref()) {
+    match lead.use_backend(&body.name, body.model.as_deref(), body.effort.as_deref()) {
         Ok(s) => Json(s).into_response(),
         Err(e) => lead_error(e),
     }
@@ -253,10 +256,12 @@ async fn agent_use_backend(
     Path(agent): Path<String>,
     Json(body): Json<UseBackend>,
 ) -> Response {
-    match lead
-        .agents()
-        .user_use_backend(&agent, &body.name, body.model.as_deref())
-    {
+    match lead.agents().user_use_backend(
+        &agent,
+        &body.name,
+        body.model.as_deref(),
+        body.effort.as_deref(),
+    ) {
         Ok(s) => Json(s).into_response(),
         Err(e) => lead_error(e),
     }
@@ -268,7 +273,7 @@ async fn status(State(lead): State<Lead>) -> Response {
 
 fn lead_error(e: LeadError) -> Response {
     match e {
-        LeadError::Busy => error(StatusCode::CONFLICT, e),
+        LeadError::Busy | LeadError::InUse(_) => error(StatusCode::CONFLICT, e),
         LeadError::NoSuchAgent(_) => error(StatusCode::NOT_FOUND, e),
         LeadError::Failed(_) => error(StatusCode::BAD_GATEWAY, e),
         _ => error(StatusCode::UNPROCESSABLE_ENTITY, e),
@@ -283,6 +288,15 @@ async fn agent(State(lead): State<Lead>, Path(agent): Path<String>) -> Response 
     match lead.agents().get(&agent) {
         Some(b) => Json(b).into_response(),
         None => lead_error(LeadError::NoSuchAgent(agent)),
+    }
+}
+
+/// Delete an agent (see [`melissa_agent::lead::agents::AgentPool::delete`]): 409 while it
+/// looks after apps, 422 for the lead agent.
+async fn agent_delete(State(lead): State<Lead>, Path(agent): Path<String>) -> Response {
+    match lead.agents().delete(&agent, "ui").await {
+        Ok(d) => Json(d).into_response(),
+        Err(e) => lead_error(e),
     }
 }
 
