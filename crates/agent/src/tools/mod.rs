@@ -94,6 +94,19 @@ pub trait Tool: Send + Sync {
     fn describe_call(&self, _args: &Value) -> Option<String> {
         None
     }
+
+    /// What the `tool.call` audit line records about this call besides its outcome, for
+    /// tools whose calls must be traceable in full (e.g. `app_exec`: who ran which command
+    /// where, and its exit status). Arguments are otherwise only hashed, so this must leave
+    /// out anything secret (say how long an input was, not what it was). Default: nothing.
+    fn audit_detail(
+        &self,
+        _ctx: &TaskContext,
+        _args: &Value,
+        _result: &Result<Value, ToolError>,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// All tools available on this device, plus the confirmation inbox.
@@ -257,14 +270,18 @@ impl ToolRegistry {
             self.confirm(task, name, &args, &reasons.join("; ")).await?;
         }
 
+        let audited = args.clone();
         let result = tool.call_in(task, ctx, args).await;
         if spec.labels.reads_untrusted && result.is_ok() {
             ctx.tainted = true;
         }
-        let outcome = match &result {
+        let mut outcome = match &result {
             Ok(_) => "ok".to_string(),
             Err(e) => format!("error: {e}"),
         };
+        if let Some(detail) = tool.audit_detail(ctx, &audited, &result) {
+            outcome = format!("{outcome}; {detail}");
+        }
         self.audit(task, "tool.call", name, &hash, &outcome);
         result
     }

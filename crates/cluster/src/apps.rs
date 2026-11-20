@@ -4,8 +4,9 @@
 //!   namespace). No writes.
 //! - [`AppDeployer`]: server-side apply of rendered objects, create-once Secrets, deletes,
 //!   and the replica patch of `stop_app`/`start_app`. Only the changing app tools hold one.
+//! - [`AppExec`]: run one command in an app's pod (`app_exec`, `pods/exec`).
 //!
-//! Both are implemented by [`KubeApps`] over the write identity's kubeconfig
+//! All three are implemented by [`KubeApps`] over the write identity's kubeconfig
 //! (`melissa/melissa-apps`, RBAC in `apps-rbac.yaml`). `cluster_health` and other read-only
 //! tools keep using the read-only identity through [`crate::ClusterRead`].
 
@@ -18,15 +19,20 @@ use k8s_openapi::{
         networking::v1::Ingress,
         rbac::v1::RoleBinding,
     },
+    apimachinery::pkg::apis::meta::v1::Status,
     serde::{de::DeserializeOwned, Serialize},
     NamespaceResourceScope,
 };
 use kube::{
-    api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
+    api::{
+        Api, AttachParams, AttachedProcess, DeleteParams, ListParams, LogParams, Patch,
+        PatchParams, PostParams,
+    },
     Resource,
 };
 use melissa_agent::BoxFuture;
 use melissa_appspec::{namespace_of, valid_app_name};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     cluster::map_err,
@@ -108,6 +114,46 @@ pub trait AppRead: Send + Sync {
         app: &'a str,
         request: &'a LogRequest,
     ) -> BoxFuture<'a, Result<String, ClusterError>>;
+}
+
+/// One command to run in a container of an app's pod (`app_exec`). No shell is involved: the
+/// API server hands `command` to the container runtime as the argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecRequest {
+    pub pod: String,
+    pub container: String,
+    pub command: Vec<String>,
+    /// Written to the command's stdin, which is then closed. `None`: no stdin at all.
+    pub stdin: Option<String>,
+    /// After this long the call returns what it has (the command may keep running).
+    pub timeout: Duration,
+    /// At most this many bytes of stdout and of stderr are kept; the rest is read and dropped.
+    pub max_output: usize,
+}
+
+/// What a command printed and how it ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    /// The exit code, when the API server reported one.
+    pub exit_code: Option<i32>,
+    /// The call gave up after [`ExecRequest::timeout`].
+    pub timed_out: bool,
+    /// The API server's message when the command could not run or failed without an exit code
+    /// (e.g. "executable file not found").
+    pub error: Option<String>,
+}
+
+/// Running commands in an app's pods (`pods/exec`, bound per app namespace like the rest).
+pub trait AppExec: Send + Sync {
+    fn exec<'a>(
+        &'a self,
+        app: &'a str,
+        request: &'a ExecRequest,
+    ) -> BoxFuture<'a, Result<ExecOutput, ClusterError>>;
 }
 
 /// Write access, limited by RBAC to `app-*` namespaces.
@@ -525,5 +571,192 @@ impl AppDeployer for KubeApps {
                 .map(|_| ())
                 .map_err(map_err)
         })
+    }
+}
+
+impl AppExec for KubeApps {
+    fn exec<'a>(
+        &'a self,
+        app: &'a str,
+        request: &'a ExecRequest,
+    ) -> BoxFuture<'a, Result<ExecOutput, ClusterError>> {
+        Box::pin(async move {
+            let api = self.ns_api::<Pod>(app).await?;
+            let params = AttachParams {
+                container: Some(request.container.clone()),
+                stdin: request.stdin.is_some(),
+                stdout: true,
+                stderr: true,
+                tty: false,
+                max_stdin_buf_size: None,
+                max_stdout_buf_size: None,
+                max_stderr_buf_size: None,
+            };
+            let mut out = ExecOutput::default();
+            let run = async {
+                let mut guard = AbortOnDrop(Some(
+                    api.exec(&request.pod, request.command.clone(), &params)
+                        .await
+                        .map_err(map_err)?,
+                ));
+                let Some(process) = guard.0.as_mut() else {
+                    return Err(ClusterError::Api("exec: no process".into()));
+                };
+                let status = process.take_status();
+                let stdin = process.stdin();
+                let (stdout, stderr) = (process.stdout(), process.stderr());
+                let write = async {
+                    if let (Some(mut w), Some(data)) = (stdin, request.stdin.as_deref()) {
+                        // A command that exits without reading its input is fine.
+                        let _ = w.write_all(data.as_bytes()).await;
+                        let _ = w.shutdown().await;
+                    }
+                };
+                let max = request.max_output;
+                let (o, e, ()) = tokio::join!(
+                    read_capped(stdout, max, &mut out.stdout),
+                    read_capped(stderr, max, &mut out.stderr),
+                    write,
+                );
+                out.stdout_truncated = o;
+                out.stderr_truncated = e;
+                let status = match status {
+                    Some(s) => s.await,
+                    None => None,
+                };
+                match (status, guard.0.take()) {
+                    (Some(s), _) => {
+                        (out.exit_code, out.error) = exec_status(&s);
+                        Ok(())
+                    }
+                    // No status at all: the connection broke before the command ended.
+                    (None, Some(p)) => p.join().await.map_err(|e| ClusterError::Api(e.to_string())),
+                    (None, None) => Ok(()),
+                }
+            };
+            match tokio::time::timeout(request.timeout, run).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(_) => out.timed_out = true,
+            }
+            Ok(out)
+        })
+    }
+}
+
+/// Closes the exec connection when the call ends early (timeout): dropping an
+/// [`AttachedProcess`] alone leaves its background task running. The command itself may keep
+/// running in the container.
+struct AbortOnDrop(Option<AttachedProcess>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(p) = &self.0 {
+            p.abort();
+        }
+    }
+}
+
+/// Read `reader` to its end, keeping the first `max` bytes in `into` (the rest is read and
+/// dropped, so the command never blocks on a full pipe). Returns whether anything was dropped.
+async fn read_capped<R: AsyncRead + Unpin>(
+    reader: Option<R>,
+    max: usize,
+    into: &mut Vec<u8>,
+) -> bool {
+    let Some(mut reader) = reader else {
+        return false;
+    };
+    let mut truncated = false;
+    let mut buf = vec![0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = max.saturating_sub(into.len());
+                into.extend_from_slice(&buf[..n.min(room)]);
+                truncated |= n > room;
+            }
+        }
+    }
+    truncated
+}
+
+/// The exit code and error message of an exec status: `Success` is exit 0; a non-zero exit is
+/// `Failure` / `NonZeroExitCode` with the code as an `ExitCode` cause; anything else (the
+/// command could not start) has no code, only the message.
+pub(crate) fn exec_status(status: &Status) -> (Option<i32>, Option<String>) {
+    if status.status.as_deref() == Some("Success") {
+        return (Some(0), None);
+    }
+    let code = status
+        .details
+        .as_ref()
+        .and_then(|d| d.causes.as_ref())
+        .into_iter()
+        .flatten()
+        .find(|c| c.reason.as_deref() == Some("ExitCode"))
+        .and_then(|c| c.message.as_deref()?.trim().parse().ok());
+    let message = match code {
+        Some(_) => None,
+        None => Some(
+            status
+                .message
+                .clone()
+                .unwrap_or_else(|| "the command failed".into()),
+        ),
+    };
+    (code, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{StatusCause, StatusDetails};
+
+    use super::*;
+
+    #[test]
+    fn exec_statuses_give_exit_codes() {
+        let ok = Status {
+            status: Some("Success".into()),
+            ..Status::default()
+        };
+        assert_eq!(exec_status(&ok), (Some(0), None));
+        let exit3 = Status {
+            status: Some("Failure".into()),
+            reason: Some("NonZeroExitCode".into()),
+            message: Some("command terminated with non-zero exit code: 3".into()),
+            details: Some(StatusDetails {
+                causes: Some(vec![StatusCause {
+                    reason: Some("ExitCode".into()),
+                    message: Some("3".into()),
+                    ..StatusCause::default()
+                }]),
+                ..StatusDetails::default()
+            }),
+            ..Status::default()
+        };
+        assert_eq!(exec_status(&exit3), (Some(3), None));
+        let missing = Status {
+            status: Some("Failure".into()),
+            message: Some("executable file not found in $PATH".into()),
+            ..Status::default()
+        };
+        assert_eq!(
+            exec_status(&missing),
+            (None, Some("executable file not found in $PATH".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn output_is_capped_but_read_to_the_end() {
+        let data = vec![b'x'; 20_000];
+        let mut kept = Vec::new();
+        assert!(read_capped(Some(&data[..]), 100, &mut kept).await);
+        assert_eq!(kept.len(), 100);
+        let mut kept = Vec::new();
+        assert!(!read_capped(Some(&b"hello"[..]), 100, &mut kept).await);
+        assert_eq!(kept, b"hello");
+        assert!(!read_capped(None::<&[u8]>, 100, &mut Vec::new()).await);
     }
 }

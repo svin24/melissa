@@ -125,7 +125,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   server-side applied by a second identity, `melissa/melissa-apps`, whose writes admission policies pin to
   `app-*` workspace namespaces with Pod Security baseline, never privileged or on the host (no Secret reads
   anywhere). Every deploy and update is confirmed by the user with a summary of what runs. Tools: `deploy_app`,
-  `update_app`, `list_apps`, `app_status`, `app_logs`, `stop_app`, `start_app`, `uninstall_app`. The old
+  `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`. The old
   catalog's Nextcloud keeps running and is converted to a stored spec at startup. Details:
   `docs/agent-skills/app-deploy.md`.
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).
@@ -181,6 +181,12 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   traits. Generated secrets are never returned to agents; the owner reads them with
   `sudo melissa-server app-credentials <app>`. `melissa-server tool --wait <tool> [json]` runs a tool in the
   daemon and waits for its confirmation (`POST /api/tools/{name}`).
+- **`app_exec` (2026-11-20):** one command (argv, no implicit shell) in an app's running container over the
+  Kubernetes exec API (kube-rs `ws`), e.g. a Minecraft console command (`rcon-cli op <player>`) without a
+  restart. Only the owning agent or the lead agent (scope `Change`), always confirmed with the exact argv
+  (Destructive), output untrusted (taints) and bounded (64 KiB per stream, 30 s default / 300 s max timeout).
+  The audit line records who, app, argv, stdin length (not content), pod, container and exit code. RBAC: the
+  per-app-namespace workload role gains `pods/exec` `get`+`create`; still no attach or port-forward.
 - **Cluster tools (2026-11-18):** `cluster_health` (read-only) in `crates/cluster`, registered next to `device_info`;
   Verified in the headless VM (bootc, archived) and again in the rootful container (2026-11-19) through the lead agent's own credentials. `melissa-server tool <name> [json]` runs one tool
   through the MCP session path (unattended policy, no waiting for confirmations) for operators and tests.
@@ -669,3 +675,11 @@ Roadmap (rough, phases may overlap):
     (seen live: 4 restarts, phase ready); count recent restarts as `failing`, or require a probe? (i) The lead
     agent needed 4 tries to get a first spec past validation (OpenCode free model); a short example in the
     tool description or an `example` tool may help.
+65. `app_exec` (2026-11-20; DECISIONS): (a) a command sees what the container sees, including environment
+    variables holding generated secrets ("Melissa never reads Secrets" now means "never through the API";
+    the user's confirmation of the exact argv is the guard). Redact known secret values from output, or
+    refuse `env`/`printenv`-style reads? (b) Every exec asks the user and is labelled destructive, which is
+    heavy for routine console commands (`rcon-cli list`); per-app pre-approved command prefixes chosen by
+    the user (e.g. `rcon-cli`)? (c) On timeout the command may keep running in the container (the exec
+    stream closes, the process is not killed). (d) The confirmation card is the generic one with the argv
+    in its reason; a dedicated card (owner's UI) could show argv and stdin size more clearly.

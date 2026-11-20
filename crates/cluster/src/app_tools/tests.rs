@@ -2,8 +2,8 @@ use std::{sync::Mutex, time::Duration};
 
 use k8s_openapi::{
     api::core::v1::{
-        Container, ContainerState, ContainerStateWaiting, ContainerStatus, NamespaceStatus,
-        PodCondition, PodSpec, PodStatus, Secret,
+        Container, ContainerState, ContainerStateRunning, ContainerStateWaiting, ContainerStatus,
+        NamespaceStatus, PodCondition, PodSpec, PodStatus, Secret,
     },
     apimachinery::pkg::apis::meta::v1::Time,
 };
@@ -14,6 +14,7 @@ use melissa_agent::{
 };
 
 use super::*;
+use crate::apps::ExecOutput;
 
 #[derive(Default)]
 struct State {
@@ -38,6 +39,9 @@ struct State {
     forced: Vec<&'static str>,
     /// Objects `delete_named` removed (`Kind name`).
     deleted: Vec<String>,
+    /// Commands `exec` was asked to run, and what it answers.
+    exec_requests: Vec<ExecRequest>,
+    exec_output: ExecOutput,
 }
 
 /// A cluster in memory: applies objects, keeps one namespace.
@@ -118,6 +122,21 @@ impl AppRead for Fake {
             let mut s = self.state();
             s.log_requests.push(request.clone());
             Ok(s.log.clone())
+        })
+    }
+}
+
+impl AppExec for Fake {
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        request: &'a ExecRequest,
+    ) -> BoxFuture<'a, Result<ExecOutput, ClusterError>> {
+        Box::pin(async move {
+            self.check()?;
+            let mut s = self.state();
+            s.exec_requests.push(request.clone());
+            Ok(s.exec_output.clone())
         })
     }
 }
@@ -872,7 +891,18 @@ fn labels_are_honest() {
         decide("start_app", &labels("start_app"), &unattended),
         Decision::Confirm(_)
     ));
+    // Any command at all: always a human, whoever asks and however attended.
+    let exec = labels("app_exec");
+    assert_eq!(exec.effect, Effect::Destructive);
+    assert!(exec.reads_untrusted && exec.reads_private && !exec.egress);
+    for ctx in [&attended, &unattended] {
+        assert!(matches!(
+            decide("app_exec", &exec, ctx),
+            Decision::Confirm(_)
+        ));
+    }
     for name in [
+        "app_exec",
         "stop_app",
         "start_app",
         "deploy_app",
@@ -1577,7 +1607,12 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
     };
     assert_eq!(names(&TaskContext::default()), ["app_status", "list_apps"]);
     let specs = reg.visible_to(&agent(ADA), None);
-    assert_eq!(specs.len(), 8);
+    assert_eq!(specs.len(), 9);
+    let exec = specs.iter().find(|s| s.name == "app_exec").unwrap();
+    assert!(exec.params["properties"]["app"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("only run commands in the workspaces you look after"));
     let stop = specs.iter().find(|s| s.name == "stop_app").unwrap();
     assert!(stop.params["properties"]["app"]["description"]
         .as_str()
@@ -1590,7 +1625,7 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
         .contains("workspaces you look after"));
     // The lead agent sees everything unchanged.
     let all = reg.visible_to(&lead(), None);
-    assert_eq!(all.len(), 8);
+    assert_eq!(all.len(), 9);
     let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert!(uninstall.params["properties"]["app"]
         .get("description")
@@ -2282,4 +2317,410 @@ async fn a_bad_spec_fails_before_anyone_is_asked() {
         )
     );
     assert!(fake.state().applied.is_empty());
+}
+
+// ---- app_exec ------------------------------------------------------------------------------
+
+/// A running pod of nextcloud (its one container running).
+fn live_pod(name: &str, created: i64) -> Pod {
+    let mut p = pod(name, created, true, None);
+    if let Some(cs) = p
+        .status
+        .as_mut()
+        .and_then(|s| s.container_statuses.as_mut())
+    {
+        cs[0].state = Some(ContainerState {
+            running: Some(ContainerStateRunning::default()),
+            ..ContainerState::default()
+        });
+    }
+    p
+}
+
+fn exited(code: i32, stdout: &str) -> ExecOutput {
+    ExecOutput {
+        stdout: stdout.as_bytes().to_vec(),
+        exit_code: Some(code),
+        ..ExecOutput::default()
+    }
+}
+
+#[test]
+fn exec_arguments_are_checked() {
+    let ok =
+        exec_args(&json!({"app": "nextcloud", "command": ["rcon-cli", "op", "Steve"]})).unwrap();
+    assert_eq!(ok.command, ["rcon-cli", "op", "Steve"]);
+    assert_eq!(ok.timeout, Duration::from_secs(DEFAULT_EXEC_TIMEOUT_SECS));
+    assert_eq!(ok.stdin, None);
+    let full = exec_args(
+        &json!({"app": "nextcloud", "command": ["cat"], "container": "web",
+                                 "stdin": "hi", "timeout_secs": 300}),
+    )
+    .unwrap();
+    assert_eq!(full.container.as_deref(), Some("web"));
+    assert_eq!(full.timeout, Duration::from_secs(300));
+
+    let many: Vec<String> = (0..=MAX_EXEC_ARGS).map(|i| i.to_string()).collect();
+    for (args, needle) in [
+        (json!({"app": "nextcloud"}), "`command`"),
+        (json!({"command": ["ls"]}), "`app`"),
+        (
+            json!({"app": "Bad Name", "command": ["ls"]}),
+            "not an app name",
+        ),
+        (
+            json!({"app": "nextcloud", "command": "rcon-cli op Steve"}),
+            "argv as a list",
+        ),
+        (json!({"app": "nextcloud", "command": []}), "1-64 items"),
+        (json!({"app": "nextcloud", "command": many}), "1-64 items"),
+        (
+            json!({"app": "nextcloud", "command": ["ls", 3]}),
+            "list of strings",
+        ),
+        (json!({"app": "nextcloud", "command": [" "]}), "program"),
+        (json!({"app": "nextcloud", "command": ["ls\u{0}"]}), "NUL"),
+        (
+            json!({"app": "nextcloud", "command": ["echo", "x".repeat(9000)]}),
+            "too long",
+        ),
+        (
+            json!({"app": "nextcloud", "command": ["ls"], "container": "../x"}),
+            "container",
+        ),
+        (
+            json!({"app": "nextcloud", "command": ["ls"], "stdin": 5}),
+            "`stdin`",
+        ),
+        (
+            json!({"app": "nextcloud", "command": ["ls"], "stdin": "x".repeat(MAX_EXEC_STDIN + 1)}),
+            "too long",
+        ),
+        (
+            json!({"app": "nextcloud", "command": ["ls"], "timeout_secs": 0}),
+            "timeout_secs",
+        ),
+        (
+            json!({"app": "nextcloud", "command": ["ls"], "timeout_secs": 301}),
+            "timeout_secs",
+        ),
+        (
+            json!({"app": "nextcloud", "command": ["ls"], "shell": true}),
+            "unknown argument `shell`",
+        ),
+    ] {
+        match exec_args(&args) {
+            Err(ToolError::BadArgs(m)) => assert!(m.contains(needle), "{args}: {m}"),
+            other => panic!("{args}: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn exec_runs_the_argv_in_the_newest_running_pod() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    let mut gone = live_pod("old", 1);
+    gone.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::UNIX_EPOCH));
+    fake.state().pods = vec![
+        live_pod("p1", 5),
+        gone,
+        pod("pending", 9, false, Some("ContainerCreating")),
+    ];
+    fake.state().exec_output = exited(0, "Made Steve a server operator\n");
+    let t = tools(Some(fake.clone()));
+    let out = call(
+        &t,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["rcon-cli", "op", "Steve"], "stdin": "x"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["pod"], "p1");
+    assert_eq!(out["container"], "nextcloud");
+    assert_eq!(out["exit_code"], 0);
+    assert_eq!(out["succeeded"], true);
+    assert_eq!(out["stdout"], "Made Steve a server operator\n");
+    assert_eq!(out["timed_out"], false);
+    let req = fake.state().exec_requests[0].clone();
+    assert_eq!(req.pod, "p1");
+    assert_eq!(req.command, ["rcon-cli", "op", "Steve"]);
+    assert_eq!(req.stdin.as_deref(), Some("x"));
+    assert_eq!(req.timeout, Duration::from_secs(30));
+    assert_eq!(req.max_output, MAX_EXEC_OUTPUT);
+
+    // A non-zero exit is an answer, not a failure; a command that could not start is.
+    fake.state().exec_output = ExecOutput {
+        stderr: b"Unknown player\n".to_vec(),
+        exit_code: Some(1),
+        ..ExecOutput::default()
+    };
+    let out = call(
+        &t,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["rcon-cli", "x"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["exit_code"], 1);
+    assert_eq!(out["succeeded"], false);
+    assert_eq!(out["stderr"], "Unknown player\n");
+    fake.state().exec_output = ExecOutput {
+        error: Some("executable file not found in $PATH".into()),
+        ..ExecOutput::default()
+    };
+    let r = call(
+        &t,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["nope"]}),
+    )
+    .await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("did not run: executable file not found")),
+        "{r:?}"
+    );
+    // A timeout returns what came so far and says the command may still run.
+    fake.state().exec_output = ExecOutput {
+        stdout: b"partial".to_vec(),
+        timed_out: true,
+        ..ExecOutput::default()
+    };
+    let out = call(
+        &t,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["sleep", "999"], "timeout_secs": 2}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["timed_out"], true);
+    assert_eq!(out["exit_code"], Value::Null);
+    assert_eq!(out["stdout"], "partial");
+    assert!(out["note"].as_str().unwrap().contains("within 2 s"));
+}
+
+#[tokio::test]
+async fn exec_needs_a_running_container() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    let args = json!({"app": "nextcloud", "command": ["ls"]});
+    let failed_with = |r: Result<Value, ToolError>, needle: &str| match r {
+        Err(ToolError::Failed(m) | ToolError::BadArgs(m)) => assert!(m.contains(needle), "{m}"),
+        other => panic!("{other:?}"),
+    };
+    failed_with(call(&t, "app_exec", args.clone()).await, "not installed");
+    nextcloud_of(&fake, ADA);
+    failed_with(call(&t, "app_exec", args.clone()).await, "no running pod");
+    fake.state().pods = vec![pod("p", 1, false, Some("CrashLoopBackOff"))];
+    failed_with(call(&t, "app_exec", args.clone()).await, "no running pod");
+    // Running pod, container not (yet) running.
+    fake.state().pods = vec![pod("p", 1, false, None)];
+    failed_with(call(&t, "app_exec", args.clone()).await, "is not running");
+    fake.state().pods = vec![live_pod("p", 1)];
+    failed_with(
+        call(
+            &t,
+            "app_exec",
+            json!({"app": "nextcloud", "command": ["ls"], "container": "db"}),
+        )
+        .await,
+        "no container `db`",
+    );
+    fake.state().deployment.as_mut().unwrap().spec.replicas = Some(0);
+    failed_with(call(&t, "app_exec", args.clone()).await, "is stopped");
+    assert!(fake.state().exec_requests.is_empty());
+    let none = tools(None);
+    failed_with(call(&none, "app_exec", args).await, "k3s");
+}
+
+#[tokio::test]
+async fn exec_output_is_capped_and_cleaned() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    fake.state().pods = vec![live_pod("p", 1)];
+    let mut big = b"\x1b[31mred\x1b[0m\r\n".to_vec();
+    big.extend(vec![b'a'; MAX_EXEC_OUTPUT + 10]);
+    fake.state().exec_output = ExecOutput {
+        stdout: big,
+        stderr: vec![0xff, b'o', b'k', 0x07],
+        exit_code: Some(0),
+        ..ExecOutput::default()
+    };
+    let t = tools(Some(fake.clone()));
+    let out = call(
+        &t,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["cat", "log"]}),
+    )
+    .await
+    .unwrap();
+    let stdout = out["stdout"].as_str().unwrap();
+    assert!(stdout.starts_with("red\naaa"), "{}", &stdout[..20]);
+    assert!(stdout.len() <= MAX_EXEC_OUTPUT);
+    assert_eq!(out["stdout_truncated"], true);
+    assert_eq!(out["stderr"], "\u{fffd}ok");
+    assert_eq!(out["stderr_truncated"], false);
+    // The cluster side's own cap is reported too.
+    fake.state().exec_output = ExecOutput {
+        stdout: b"x".to_vec(),
+        stdout_truncated: true,
+        exit_code: Some(0),
+        ..ExecOutput::default()
+    };
+    let out = call(
+        &t,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["x"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["stdout_truncated"], true);
+}
+
+#[tokio::test]
+async fn exec_follows_the_workspace_rules() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, BO);
+    fake.state().pods = vec![live_pod("p", 1)];
+    fake.state().exec_output = exited(0, "");
+    let reg = registry(&fake, None);
+    let args = json!({"app": "nextcloud", "command": ["rcon-cli", "op", "Steve"]});
+
+    // Another agent's workspace: refused outright, nobody is asked, nothing runs.
+    let mut ada = agent(ADA);
+    ada.preapproved.insert("app_exec".into());
+    match reg.call(1, &mut ada, "app_exec", args.clone()).await {
+        Err(ToolError::Refused(m)) => assert!(m.starts_with("not yours"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(reg.confirmations().pending().is_empty());
+    // Unassigned workspaces are not an agent's either.
+    legacy_nextcloud(&fake);
+    assert!(matches!(
+        reg.call(1, &mut ada, "app_exec", args.clone()).await,
+        Err(ToolError::Refused(_))
+    ));
+    // A scopeless session neither.
+    assert!(matches!(
+        reg.call(1, &mut TaskContext::default(), "app_exec", args.clone())
+            .await,
+        Err(ToolError::Refused(_))
+    ));
+    assert!(fake.state().exec_requests.is_empty());
+
+    // The owner is asked about the exact argv every time, even when pre-approved.
+    nextcloud_of(&fake, BO);
+    let mut bo = agent(BO);
+    bo.preapproved.insert("app_exec".into());
+    let reason = confirmation_reason(&reg, bo.clone(), "app_exec", args.clone()).await;
+    assert!(
+        reason.starts_with("run [\"rcon-cli\",\"op\",\"Steve\"] in `nextcloud`"),
+        "{reason}"
+    );
+    assert!(
+        fake.state().exec_requests.is_empty(),
+        "nothing runs before approval"
+    );
+    let out = approved(&reg, 1, &mut bo, "app_exec", args.clone())
+        .await
+        .unwrap();
+    assert_eq!(out["exit_code"], 0);
+    assert!(bo.tainted, "command output is untrusted input");
+    // The lead agent may too (naming the owner); bad arguments fail before anyone is asked.
+    let reason = confirmation_reason(&reg, lead(), "app_exec", args.clone()).await;
+    assert!(reason.contains("looked after by agent Bo"), "{reason}");
+    let r = reg
+        .call(
+            1,
+            &mut lead(),
+            "app_exec",
+            json!({"app": "nextcloud", "command": "op Steve"}),
+        )
+        .await;
+    assert!(matches!(r, Err(ToolError::BadArgs(_))), "{r:?}");
+    assert!(reg.confirmations().pending().is_empty());
+    assert_eq!(fake.state().exec_requests.len(), 1);
+}
+
+#[tokio::test]
+async fn every_exec_is_audited_without_its_input() {
+    let path =
+        std::env::temp_dir().join(format!("melissa-exec-audit-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, BO);
+    fake.state().pods = vec![live_pod("p1", 1)];
+    fake.state().exec_output = exited(3, "");
+    let reg = registry(&fake, Some(AuditLog::new(&path)));
+    let mut bo = agent(BO);
+    approved(
+        &reg,
+        4,
+        &mut bo,
+        "app_exec",
+        json!({"app": "nextcloud", "command": ["sh", "-c", "read p; echo \"$p\""],
+               "stdin": "hunter2-secret"}),
+    )
+    .await
+    .unwrap();
+    // A refused call is audited too (by the registry, before anything runs).
+    let _ = reg
+        .call(
+            5,
+            &mut agent(ADA),
+            "app_exec",
+            json!({"app": "nextcloud", "command": ["id"]}),
+        )
+        .await;
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("hunter2"), "stdin is never logged: {text}");
+    let lines = audit_lines(&path);
+    let call = lines
+        .iter()
+        .find(|l| l["action"] == "tool.call" && l["tool"] == "app_exec")
+        .expect("tool.call line");
+    assert_eq!(call["task"], 4);
+    assert_eq!(
+        call["detail"],
+        format!(
+            "ok; by agent {BO}; app `nextcloud`; argv [\"sh\",\"-c\",\"read p; echo \\\"$p\\\"\"]; \
+             stdin 14 bytes; pod p1; container nextcloud; exit 3"
+        )
+    );
+    assert!(lines
+        .iter()
+        .any(|l| l["action"] == "tool.approved" && l["tool"] == "app_exec"));
+    assert!(lines
+        .iter()
+        .any(|l| l["action"] == "tool.refused" && l["tool"] == "app_exec" && l["task"] == 5));
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn exec_audit_records_failures_and_cuts_long_arguments() {
+    let t = tools(None);
+    let ctx = TaskContext {
+        scope: Scope::Lead {
+            device: DEVICE.into(),
+        },
+        ..TaskContext::default()
+    };
+    let long = "y".repeat(500);
+    let detail = t["app_exec"]
+        .audit_detail(
+            &ctx,
+            &json!({"app": "nextcloud", "command": ["echo", long, "a\nb"]}),
+            &Err(ToolError::Failed("boom".into())),
+        )
+        .unwrap();
+    assert!(
+        detail.starts_with("by lead agent; app `nextcloud`; argv [\"echo\",\"yyy"),
+        "{detail}"
+    );
+    assert!(detail.contains(&format!("{}…\"", "y".repeat(MAX_SHOWN_ARG_CHARS))));
+    assert!(
+        detail.contains("\"a\\nb\""),
+        "control characters stay escaped: {detail}"
+    );
+    assert!(detail.ends_with("stdin 0 bytes"), "{detail}");
+    assert!(!detail.contains('\n'));
 }
