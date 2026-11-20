@@ -2312,6 +2312,57 @@ form.inline {
   margin-top: 0;
 }
 
+/* In-page confirmation (no browser dialogs): the summary is the action, the body asks. */
+.confirm-inline {
+  display: inline-block;
+}
+
+.confirm-inline > summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0.5rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.confirm-inline.link > summary {
+  padding: 0 0.25rem;
+  border: 0;
+  background: none;
+  color: var(--action);
+  text-decoration: underline;
+}
+
+.confirm-inline > summary::-webkit-details-marker {
+  display: none;
+}
+
+.confirm-inline > summary:focus-visible {
+  outline: 2px solid var(--action);
+  outline-offset: 2px;
+}
+
+.confirm-inline[open] > summary {
+  border-color: var(--muted);
+}
+
+.confirm-inline-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.confirm-inline-body form {
+  margin: 0;
+}
+
 .confirm {
   margin: 0 0 1.25rem;
 }

@@ -21,5 +21,7 @@ description: Melissa's binding web UI rules. Load before any work on crates/web 
    design skills (frontend-design, modern-web-guidance) for typography, spacing, accessibility and modern CSS,
    but not for "aesthetic risk". Accessible by default: semantic HTML, keyboard use, contrast, light/dark via
    `prefers-color-scheme`, works at phone width.
+   No browser dialogs (`alert`, `confirm`, `hx-confirm`): confirm inside the page (`action_button`'s
+   in-page confirm), or not at all when the action is easy to undo (owner, 2026-11-20).
 6. **Verify.** `devenv shell -- just check`; router tests with `tower::ServiceExt::oneshot`. Details and patterns:
    `docs/agent-skills/htmx-component.md`.

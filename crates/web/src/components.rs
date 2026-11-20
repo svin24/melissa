@@ -1460,12 +1460,33 @@ pub fn post_form(action: &str, target: &str, submit_label: &str, fields: Markup)
     }
 }
 
-/// A single-button form, e.g. "Cancel". Asks for confirmation with htmx.
+/// A single-button action, e.g. "Remove", confirmed in the page (never a browser dialog):
+/// the button opens `confirm` with a "Yes, <label>" button that posts. No script needed.
 pub fn action_button(action: &str, target: &str, label: &str, confirm: &str) -> Markup {
+    inline_confirm(
+        false,
+        label,
+        confirm,
+        html! {
+            form method="post" action=(action) hx-post=(action) hx-target={ "#" (target) }
+                hx-swap="outerHTML" {
+                button.primary.danger type="submit" { "Yes, " (label.to_lowercase()) }
+            }
+        },
+    )
+}
+
+/// The in-page confirmation behind [`action_button`] and the variable list's Remove: a
+/// `<details>` whose summary is the action and whose body asks `question` next to `form`
+/// (which holds the real submit button). `link`: the summary looks like a text link.
+fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Markup {
     html! {
-        form.inline method="post" action=(action) hx-post=(action) hx-target={ "#" (target) }
-            hx-swap="outerHTML" hx-confirm=(confirm) {
-            button.secondary type="submit" { (label) }
+        details.confirm-inline.link[link] {
+            summary { (label) }
+            div.confirm-inline-body {
+                span { (question) }
+                (form)
+            }
         }
     }
 }
@@ -1731,11 +1752,16 @@ pub fn var_list(rows: &[VarRow<'_>], target: &str, empty: &str) -> Markup {
                             Some(v) => span.var-value { (v) },
                             None => span.var-secret { "set" span.visually-hidden { " (hidden)" } },
                         }
-                        form.var-remove method="post" action=(r.remove_action) hx-post=(r.remove_action)
-                            hx-target={ "#" (target) } hx-swap="outerHTML"
-                            hx-confirm={ "Remove " (r.name) "?" } {
-                            input type="hidden" name="name" value=(r.name);
-                            button.link type="submit" { "Remove" span.visually-hidden { " " (r.name) } }
+                        div.var-remove {
+                            (inline_confirm(true, "Remove", &format!("Remove {}?", r.name), html! {
+                                form method="post" action=(r.remove_action) hx-post=(r.remove_action)
+                                    hx-target={ "#" (target) } hx-swap="outerHTML" {
+                                    input type="hidden" name="name" value=(r.name);
+                                    button.primary.danger type="submit" {
+                                        "Yes, remove" span.visually-hidden { " " (r.name) }
+                                    }
+                                }
+                            }))
                         }
                     }
                 }
@@ -1851,6 +1877,17 @@ pub fn one_field_form(action: &str, target: &str, submit: &str, field: Markup) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmations_stay_in_the_page() {
+        let out = action_button("/x/remove", "t", "Remove", "Remove <this>?").into_string();
+        assert!(!out.contains("hx-confirm"), "no browser dialogs: {out}");
+        assert!(out.contains("<details class=\"confirm-inline\">"));
+        assert!(out.contains("<summary>Remove</summary>"));
+        assert!(out.contains("Remove &lt;this&gt;?"));
+        assert!(out.contains("hx-post=\"/x/remove\""));
+        assert!(out.contains(">Yes, remove</button>"));
+    }
 
     #[test]
     fn text_is_escaped() {
