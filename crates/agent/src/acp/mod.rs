@@ -9,6 +9,7 @@
 //! [`PolicyPermissions`]) and through Melissa's MCP tools.
 
 pub(crate) mod client;
+pub mod probe;
 pub mod replay;
 pub(crate) mod transport;
 

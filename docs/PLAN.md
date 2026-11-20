@@ -426,6 +426,26 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   the device or owner is sent (User-Agent `melissa`). The download is audited; Settings shows its progress and
   can delete the model while voice input is off. whisper.cpp comes from the packaging (container image stage,
   pinned in `packaging/container/whisper.lock`; Nix `services.melissa.voice.package`).
+- **Add and remove providers (2026-11-20, owner request; DECISIONS):** Settings → Providers has "Add provider", an
+  in-page panel with three steps (1 Provider → 2 Identity → 3 Config): the agents Melissa runs itself (Claude Code,
+  Grok, OpenCode; choosing one continues to its usual Install and Sign in), an agent from the public **ACP
+  registry**, or a local ACP command entered by hand (saved only after it answers ACP `initialize`). Identity is an
+  API key (stored like the other provider secrets), Config the hosts it may reach (deny by default). Added agents
+  live in `providers.toml` `[added.<id>]` and run as session backends `<id>-acp` after the next (idle) restart; then
+  they show in the model picker once usable. "Remove provider" (in-page confirm) refuses while Melissa or a helper
+  uses it, uninstalls what Melissa installed in the agents' home, deletes its sign-in and keys and its settings,
+  and hides it until it is added again. Provider **logos** (vendored SVGs, checked by an allowlist parser) where the
+  brand's guidelines allow; the letter mark otherwise. Details: [settings-ui.md](agent-skills/settings-ui.md).
+  **Third-party network calls (documented per AGENTS.md):** (1) the ACP registry,
+  `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` (about 80 KB; the list ACP clients share),
+  fetched **only** when the owner presses "Load the list" / "Refresh" in the panel (or calls
+  `POST /api/settings/providers/registry/refresh`), never in the background or on a page view; cached in
+  `<state>/acp-registry.json`; search uses the cache. (2) When the owner presses "Add" on a registry agent: that
+  agent's release archive from the URL the registry lists (https only, usually the vendor's GitHub releases or
+  download host), at most 512 MiB, checked against the registry's SHA-256 before it is unpacked into
+  `<agents' home>/.local/share/melissa-agents/<id>/<version>`. Both are audited (`settings.provider.registry`,
+  `settings.provider.add`), send nothing about the device or owner (User-Agent `melissa`), and never load the
+  registry's remote icons.
 
 ## 6b. Clients (later)
 
@@ -869,3 +889,14 @@ Roadmap (rough, phases may overlap):
     window to fetch tool calls? (e) Programs that resolve with `AI_ADDRCONFIG` (e.g. `getent ahosts`) get no
     answer in the sandbox (only loopback is configured). (f) Should Claude sessions get `WebFetch` (goes through
     the proxy) and `WebSearch` (server-side: content never passes the proxy, taint comes from the permission)?
+74. Add and remove providers (2026-11-20; DECISIONS): (a) Registry agents distributed only through `npx`/`uvx`
+    (Codex, Gemini CLI, GitHub Copilot, Qwen Code, ...) need Node.js or uv, which the image doesn't have; they show
+    "Enter manually". Ship a Node runtime, or install npm packages into the agents' home? (b) An added agent gets
+    an empty sandbox home and only the hosts the owner lists; Melissa doesn't know which hosts each agent's service
+    uses. Offer `network = "learn"` for a first run and propose the list from what it saw? (c) Its own sign-in
+    flows (ACP `authenticate`, terminal logins) are not offered; only an API key. (d) The ACP check runs the program
+    once outside the sandbox (like an installer); run it under bwrap with no network instead? (e) Registry
+    releases are trusted by their published SHA-256 only (same source as the URL); no signatures. (f) Brand
+    guidelines were read on 2026-11-20; recheck before adding logos, and if a brand objects, drop its logo (letter
+    mark). (g) Removing a provider while its chat sessions exist leaves their transcripts; switching a chat to a
+    removed provider is refused once it is gone after the restart.

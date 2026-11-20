@@ -693,6 +693,8 @@ async fn serve(
         release: Release::read(&melissa_settings::updates::release_file()),
         home: std::env::var_os("HOME").map(PathBuf::from),
         voice,
+        // The ACP registry cache sits with Melissa's state; fetched only on the owner's request.
+        catalog: melissa_web::Catalog::new(&dirs.state),
     });
     melissa_web::serve(
         listener,

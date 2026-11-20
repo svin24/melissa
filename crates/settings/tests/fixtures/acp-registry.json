@@ -1,0 +1,78 @@
+{
+  "version": "1.0.0",
+  "agents": [
+    {
+      "id": "codex-acp",
+      "name": "Codex CLI",
+      "version": "2.8.0",
+      "description": "ACP adapter for a coding agent (example entry)",
+      "repository": "https://example.com/codex-acp",
+      "license": "Apache-2.0",
+      "distribution": { "npx": { "package": "@example/codex-acp@2.8.0" } },
+      "icon": "https://example.com/codex.svg"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "version": "0.70.0",
+      "description": "An agent run with npx (example entry)",
+      "distribution": { "npx": { "package": "@example/gemini-cli@0.70.0", "args": ["--acp"] } }
+    },
+    {
+      "id": "goose",
+      "name": "goose",
+      "version": "1.20.0",
+      "description": "An agent shipped as tar.bz2 (example entry)",
+      "website": "http://example.com/goose",
+      "repository": "http://example.com/goose-src",
+      "distribution": {
+        "binary": {
+          "linux-x86_64": {
+            "archive": "https://example.com/goose-x86_64-unknown-linux-gnu.tar.bz2",
+            "cmd": "./goose",
+            "args": ["acp"],
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      }
+    },
+    {
+      "id": "fake-agent",
+      "name": "Fake Agent",
+      "version": "0.1.0",
+      "description": "A test agent \u001b[31mfor\u001b[0m the fixture",
+      "website": "https://example.com/fake",
+      "license": "MIT",
+      "distribution": {
+        "binary": {
+          "linux-x86_64": {
+            "archive": "https://example.com/fake-agent-linux-x64.tar.gz",
+            "cmd": "./fake-agent",
+            "args": ["acp"],
+            "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "linux-aarch64": {
+            "archive": "https://example.com/fake-agent-linux-arm64.tar.gz",
+            "cmd": "./fake-agent",
+            "args": ["acp"],
+            "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      }
+    },
+    {
+      "id": "nochecksum",
+      "name": "No Checksum",
+      "version": "1.0.0",
+      "description": "A binary without a published checksum",
+      "distribution": {
+        "binary": {
+          "linux-x86_64": { "archive": "https://example.com/nc.tar.gz", "cmd": "./nc-agent" }
+        }
+      }
+    },
+    { "id": "Bad Id", "name": "Bad", "version": "1", "description": "", "distribution": {} },
+    { "id": "noname", "name": "  ", "version": "1", "description": "", "distribution": {} }
+  ],
+  "extensions": []
+}

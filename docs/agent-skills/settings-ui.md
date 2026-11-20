@@ -16,8 +16,9 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   `updates.rs` (view building + handlers, UI and JSON API), `apply.rs` (saved changes apply by themselves when
   Melissa is idle), `pages.rs` (assembly from components; `SECTIONS`).
 - Components (all in `components.rs`): `settings_frame` (section nav + breadcrumb), `settings_head` ("Checked
-  just now · Check again"), `split_card` + `pick_list`/`PickRow` (two panes), `provider_mark` (lettered hex, no
-  vendor logos), `toggle` (styled native checkbox, `role=switch`, htmx `hx-trigger="change"`, a Save button that
+  just now · Check again"), `split_card` + `pick_list`/`PickRow` (two panes), `provider_mark` (lettered hex)
+  and `provider_logo` (a vendored logo where allowed, else the letter mark; see "Logos"),
+  `toggle` (styled native checkbox, `role=switch`, htmx `hx-trigger="change"`, a Save button that
   shows only on keyboard focus for no-JS), `detail_head`, `facts` (dl), `group`, `text_field`, `lines_field`,
   `settings_form`, `var_list`/`VarRow` (secret → "set"), `command_block` (copy button via the existing
   `.copy-code` JS), `confirm_card`, `plain_action`, `actions`, `region`, `disclosure` (native `<details>`:
@@ -102,6 +103,45 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   watched in the background whether or not the page is open.
 - CLI: `melissa-server provider [list]|enable|disable <id>|set <id> [--name|--command|--arg|--no-args|--env
   NAME=VALUE|--env NAME (stdin)|--unset NAME]`.
+
+## Logos (2026-11-20)
+- `crates/web/src/logos.rs` + `crates/web/assets/logos/*.svg`: Simple Icons 16.38.0 (CC0) for OpenCode, Cursor,
+  Cline; LobeHub Icons 1.104.0 (MIT, licence file next to them) for Grok, Goose. `key_for(name)` maps a backend
+  name (`grok-acp`), provider id or registry id to a file; everything else (Claude, Codex, Gemini, Copilot, Kimi,
+  Mistral, unknown) keeps the letter mark because of the brands' logo guidelines (DECISIONS 2026-11-20).
+- Files are never sent as markup: `parse` is an allowlist (`svg` with `xmlns`+`viewBox`, `title`, `path` with
+  `d`/`fill-rule`; nothing else, no `&`, no comments) and `provider_logo` draws the paths. Drawn black, white in
+  dark mode. A new logo: add the SVG (normalized to that shape), a `FILES` entry, a `key_for` line, check the
+  brand's guidelines, and record source/licence in `assets/README.md`, ACKNOWLEDGMENTS.md and DECISIONS.
+
+## Add provider / Remove provider (2026-11-20)
+- Files: `settings/add_provider.rs` (panel, `Catalog`: registry fetcher + cache + ACP probe + install jobs),
+  `settings/remove_provider.rs`, components in `components/provider_add.rs` (`add_panel`, `stepper`,
+  `provider_tiles`, `registry_list`, `search_box`, `link_button`), `melissa_settings::registry` (parse, search,
+  cache, `unpack`), `melissa_settings::providers` (`removed`, `[added.<id>]`, `ProviderStore::{add, forget,
+  set_hosts, is_removed}`), `melissa_agent::acp::probe` (ACP `initialize` only), server `apply_providers`
+  (added → `<id>-acp` session backends appended to the lead's list; removed → left out like disabled).
+- Routes: `GET /settings/providers/add[?q=|?step=manual|identity|config&id=]` (never fetches);
+  `POST /ui/settings/providers/add/{id}` (a removed built-in comes back → `/settings/providers?p=<id>`);
+  `GET /ui/settings/providers/registry?q=` (list region, cache only) and `POST` the same (**the only fetch**);
+  `POST .../registry/{rid}/add` (background install; the region polls while it runs); `POST
+  /ui/settings/providers/manual` (`name`, `command`); `POST .../new/{id}/key` (`var`, `value`), `POST
+  .../new/{id}/finish` (`hosts`, one per line → apply); `POST /ui/settings/providers/{id}/remove`. API: `GET
+  /api/settings/providers/registry`, `POST .../registry/refresh`, `POST /api/settings/providers/add`
+  (`provider` | `registry` | `name`+`command`), `DELETE /api/settings/providers/{id}`.
+- Rules: the registry is fetched only on the owner's action, cached in `<state>/acp-registry.json`; remote icons
+  never load. Installs: binary + SHA-256 for this platform only, https, ≤ 512 MiB, into
+  `<home>/.local/share/melissa-agents/<id>/<version>`; then the ACP check (`initialize`, protocol 1, MCP over HTTP)
+  before saving. Manual: no shell (words and quotes), absolute path or found on `PATH`, file name = provider id,
+  not a built-in name. API key names must look secret. Hosts: egress rules, no catch-all.
+- Remove: refused (409, audited) while Melissa or a helper uses it ("Ada and Melissa use Grok. Switch them to
+  another provider first."), while its install/sign-in unit runs, or with no other provider left. Uninstall only
+  with `InstallWay::Button` (Melissa's own installs): fixed paths per built-in inside the agents' home, or the
+  registry folder; never follows symlinks, never outside home. From source / Nix the files stay (the confirm text
+  says so). Built-ins become `removed = true` (hidden; Add brings them back), added ones are deleted.
+- Tests: `settings/provider_flow_tests.rs` (included into `lib.rs`'s settings tests: fixture
+  `with_fake_net`/`with_catalog`, a shell-script ACP agent), `logos.rs`, `registry.rs`, `acp/probe.rs`,
+  server `config.rs` (added/removed backends).
 
 ## Updates: rules
 - Host kind: `/run/.containerenv` or `/run/systemd/container` → container; else "from source". Release:

@@ -19,6 +19,14 @@
 //! [provider.claude.env]
 //! ANTHROPIC_BASE_URL = "https://llm.example.com"
 //! ANTHROPIC_API_KEY = "..."                             # a secret: write-only in the UI
+//! [provider.grok]
+//! removed = true                                        # the owner removed it (Add brings it back)
+//! [added.kimi]                                          # an ACP agent the owner added
+//! label = "Kimi"
+//! command = "/var/lib/melissa/home/.local/share/melissa-agents/kimi/1.2.0/kimi"
+//! args = ["acp"]
+//! allow = ["api.example.com"]                           # hosts it may reach (egress proxy)
+//! registry = "kimi"                                     # where it came from (None: entered by hand)
 //! ```
 //!
 //! Secrets: variables whose name looks like one ([`is_secret_name`]) are never shown, sent to
@@ -86,6 +94,108 @@ pub struct ProviderFile {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub providers: BTreeMap<String, ProviderOverride>,
+    /// ACP agents the owner added (Settings → Providers → Add provider): each becomes a
+    /// session backend `<id>-acp` at startup. Their overrides (API key) stay in `providers`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub added: BTreeMap<String, AddedProvider>,
+}
+
+/// The providers built into Melissa's default config; an added provider can't take their names.
+pub const BUILT_IN: [&str; 4] = ["claude", "grok", "opencode", "echo"];
+/// Most hosts an added provider may reach.
+pub const MAX_HOSTS: usize = 32;
+
+/// An ACP agent the owner added: entered by hand (a command already on the box) or installed
+/// by Melissa from the ACP registry into the agents' home.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddedProvider {
+    /// The name the UI shows.
+    pub label: String,
+    /// The program (absolute; its file name is the provider id).
+    pub command: String,
+    /// The arguments that start its ACP server on stdio (e.g. `acp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Hosts it may reach through the egress proxy (`host`, `*.domain`, `host:port`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// The ACP registry entry it came from (None: entered by hand).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    /// The registry version Melissa installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The directory Melissa installed it into (deleted again when it is removed). None:
+    /// Melissa didn't install it, so removing it leaves the program alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_in: Option<String>,
+}
+
+impl AddedProvider {
+    /// Check an entry stored under `id`.
+    pub fn validate(&self, id: &str) -> Result<(), SettingsError> {
+        if !valid_id(id) {
+            return Err(invalid(format!(
+                "`{}` can't be a provider name: use lowercase letters, digits, - _ or .",
+                crate::clean_text(id, 40)
+            )));
+        }
+        if BUILT_IN.contains(&id) {
+            return Err(invalid(format!(
+                "`{id}` is built in; add it from the list above"
+            )));
+        }
+        check_display_name(&self.label)?;
+        check_command(id, &self.command)?;
+        check_args(&self.args)?;
+        check_hosts(&self.allow)?;
+        if let Some(r) = &self.registry {
+            if !valid_id(r) {
+                return Err(invalid("the registry id is not valid"));
+            }
+        }
+        if let Some(v) = &self.version {
+            if v.is_empty()
+                || v.len() > 64
+                || !v
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+            {
+                return Err(invalid("the version is not valid"));
+            }
+        }
+        if let Some(dir) = &self.installed_in {
+            let p = Path::new(dir);
+            if !p.is_absolute()
+                || has_control(dir)
+                || p.components().any(|c| c == std::path::Component::ParentDir)
+            {
+                return Err(invalid("the install directory must be an absolute path"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Hosts an added provider may reach: each a valid egress rule, no catch-all.
+pub fn check_hosts(hosts: &[String]) -> Result<(), SettingsError> {
+    if hosts.len() > MAX_HOSTS {
+        return Err(invalid(format!("at most {MAX_HOSTS} hosts")));
+    }
+    for h in hosts {
+        let bare = h.trim_start_matches("*.");
+        if h.len() > 253
+            || !bare.contains('.')
+            || melissa_agent::egress::HostRule::parse(h).is_err()
+        {
+            return Err(invalid(format!(
+                "`{}` is not a host name like api.example.com or *.example.com",
+                crate::clean_text(h, 60)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// One provider's overrides. Absent fields leave `server.toml` (or the default) as it is.
@@ -107,6 +217,10 @@ pub struct ProviderOverride {
     /// Variables set for the agent (inside its sandbox).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// The owner removed this built-in provider (Settings → Providers → Remove): it is left
+    /// out like a disabled one and hidden until it is added again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 impl std::fmt::Debug for ProviderOverride {
@@ -118,13 +232,15 @@ impl std::fmt::Debug for ProviderOverride {
             .field("command", &self.command)
             .field("args", &self.args.len())
             .field("env", &env)
+            .field("removed", &self.removed)
             .finish()
     }
 }
 
 impl ProviderOverride {
+    /// Its backends run (not turned off, not removed).
     pub fn is_enabled(&self) -> bool {
-        self.enabled.unwrap_or(true)
+        self.enabled.unwrap_or(true) && !self.removed
     }
 
     pub fn is_empty(&self) -> bool {
@@ -257,7 +373,8 @@ fn has_control(s: &str) -> bool {
     s.chars().any(char::is_control)
 }
 
-fn check_display_name(n: &str) -> Result<(), SettingsError> {
+/// A display name: 1-40 characters on one line.
+pub fn check_display_name(n: &str) -> Result<(), SettingsError> {
     if n.trim().is_empty() || n.chars().count() > MAX_NAME_LEN || has_control(n) {
         return Err(invalid(format!(
             "a display name is 1-{MAX_NAME_LEN} characters on one line"
@@ -373,6 +490,12 @@ impl ProviderFile {
                 message: format!("[provider.{id}]: {e}"),
             })?;
         }
+        for (id, a) in &file.added {
+            a.validate(id).map_err(|e| SettingsError::Parse {
+                path: path.display().to_string(),
+                message: format!("[added.{id}]: {e}"),
+            })?;
+        }
         Ok(file)
     }
 
@@ -407,6 +530,10 @@ pub enum Change {
         value: String,
     },
     RemoveVar(String),
+    /// Remove a built-in provider: its settings (API key included) go, it is hidden.
+    Remove,
+    /// Add a removed built-in provider again.
+    Restore,
 }
 
 impl std::fmt::Debug for Change {
@@ -441,6 +568,8 @@ impl Change {
                 Some(sha256_hex(value.as_bytes())),
             ),
             Self::RemoveVar(name) => (format!("variable {name} removed"), None),
+            Self::Remove => ("removed".into(), None),
+            Self::Restore => ("added again".into(), None),
         }
     }
 
@@ -456,6 +585,16 @@ impl Change {
             }
             Self::RemoveVar(name) => {
                 o.env.remove(name);
+            }
+            Self::Remove => {
+                *o = ProviderOverride {
+                    removed: true,
+                    ..ProviderOverride::default()
+                }
+            }
+            Self::Restore => {
+                o.removed = false;
+                o.enabled = None;
             }
         }
     }
@@ -533,6 +672,65 @@ impl ProviderStore {
         }
         inner.file = next;
         Ok(())
+    }
+
+    /// The owner removed it: a removed built-in, or an added provider deleted since start.
+    pub fn is_removed(&self, id: &str) -> bool {
+        let inner = lock(&self.inner);
+        inner.file.get(id).removed
+            || (inner.applied.added.contains_key(id) && !inner.file.added.contains_key(id))
+    }
+
+    /// The added providers as saved.
+    pub fn added(&self) -> BTreeMap<String, AddedProvider> {
+        lock(&self.inner).file.added.clone()
+    }
+
+    /// Save a new added provider (refused if the name is taken).
+    pub fn add(&self, id: &str, provider: AddedProvider) -> Result<(), SettingsError> {
+        provider.validate(id)?;
+        let mut inner = lock(&self.inner);
+        if inner.file.added.contains_key(id) {
+            return Err(invalid(format!(
+                "a provider called `{id}` is already added"
+            )));
+        }
+        let mut next = inner.file.clone();
+        next.added.insert(id.to_string(), provider);
+        if let Some(path) = &inner.path {
+            next.save(path)?;
+        }
+        inner.file = next;
+        Ok(())
+    }
+
+    /// Change the hosts an added provider may reach.
+    pub fn set_hosts(&self, id: &str, hosts: Vec<String>) -> Result<(), SettingsError> {
+        let mut inner = lock(&self.inner);
+        let mut next = inner.file.clone();
+        let Some(entry) = next.added.get_mut(id) else {
+            return Err(invalid(format!("no added provider `{id}`")));
+        };
+        entry.allow = hosts;
+        entry.validate(id)?;
+        if let Some(path) = &inner.path {
+            next.save(path)?;
+        }
+        inner.file = next;
+        Ok(())
+    }
+
+    /// Delete an added provider and its settings (API key included); returns what it was.
+    pub fn forget(&self, id: &str) -> Result<Option<AddedProvider>, SettingsError> {
+        let mut inner = lock(&self.inner);
+        let mut next = inner.file.clone();
+        let gone = next.added.remove(id);
+        next.providers.remove(id);
+        if let Some(path) = &inner.path {
+            next.save(path)?;
+        }
+        inner.file = next;
+        Ok(gone)
     }
 }
 
@@ -710,5 +908,109 @@ mod tests {
         );
         assert_eq!(provider_id("grok"), "grok");
         assert!(valid_id("opencode") && !valid_id("") && !valid_id("-x") && !valid_id("A"));
+    }
+
+    fn added(command: &str) -> AddedProvider {
+        AddedProvider {
+            label: "Kimi".into(),
+            command: command.into(),
+            args: vec!["acp".into()],
+            allow: vec!["api.example.com".into(), "*.example.net".into()],
+            registry: Some("kimi".into()),
+            version: Some("1.2.0".into()),
+            installed_in: Some("/var/lib/melissa/home/.local/share/melissa-agents/kimi".into()),
+        }
+    }
+
+    #[test]
+    fn added_providers_are_checked() {
+        assert!(added("/opt/kimi/kimi").validate("kimi").is_ok());
+        // The file name is the provider id.
+        assert!(added("/opt/kimi/other").validate("kimi").is_err());
+        // Built-in names are taken.
+        assert!(added("/opt/x/claude").validate("claude").is_err());
+        let mut a = added("/opt/kimi/kimi");
+        a.allow = vec!["*".into()];
+        assert!(a.validate("kimi").is_err());
+        a.allow = vec!["localhost".into()];
+        assert!(a.validate("kimi").is_err());
+        let mut a = added("/opt/kimi/kimi");
+        a.args = vec!["--yolo".into()];
+        assert!(a.validate("kimi").is_err());
+        let mut a = added("/opt/kimi/kimi");
+        a.installed_in = Some("../x".into());
+        assert!(a.validate("kimi").is_err());
+        a.installed_in = None;
+        a.version = Some("1.0; rm".into());
+        assert!(a.validate("kimi").is_err());
+    }
+
+    #[test]
+    fn remove_restore_add_and_forget_are_saved() {
+        let dir = temp("add-remove");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("providers.toml");
+        let store = ProviderStore::new(path.clone(), ProviderFile::default());
+        store
+            .change(
+                "grok",
+                &Change::SetVar {
+                    name: "XAI_API_KEY".into(),
+                    value: "secret-value".into(),
+                },
+            )
+            .unwrap();
+        store.change("grok", &Change::Remove).unwrap();
+        let o = store.get("grok");
+        assert!(o.removed && !o.is_enabled() && o.env.is_empty());
+        assert!(store.is_removed("grok"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("removed = true") && !text.contains("secret-value"));
+        store.change("grok", &Change::Restore).unwrap();
+        assert!(!store.is_removed("grok") && store.get("grok").is_enabled());
+
+        store.add("kimi", added("/opt/kimi/kimi")).unwrap();
+        assert!(store.add("kimi", added("/opt/kimi/kimi")).is_err());
+        store
+            .change(
+                "kimi",
+                &Change::SetVar {
+                    name: "KIMI_API_KEY".into(),
+                    value: "k".into(),
+                },
+            )
+            .unwrap();
+        let loaded = ProviderFile::load(&path).unwrap();
+        assert_eq!(loaded.added["kimi"], added("/opt/kimi/kimi"));
+        store
+            .set_hosts("kimi", vec!["api.example.org".into()])
+            .unwrap();
+        assert!(store.set_hosts("kimi", vec!["nope".into()]).is_err());
+        assert_eq!(store.added()["kimi"].allow, ["api.example.org"]);
+
+        // Removing an added provider that the daemon started with hides it until restart.
+        let started = ProviderStore::new(path.clone(), ProviderFile::load(&path).unwrap());
+        let gone = started.forget("kimi").unwrap().unwrap();
+        assert_eq!(gone.label, "Kimi");
+        assert!(started.is_removed("kimi"));
+        let after = ProviderFile::load(&path).unwrap();
+        assert!(after.added.is_empty() && !after.providers.contains_key("kimi"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_added_entry_fails_the_load() {
+        let dir = temp("added-bad");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("providers.toml");
+        std::fs::write(
+            &path,
+            "[added.kimi]\nlabel = \"Kimi\"\ncommand = \"kimi\"\n",
+        )
+        .unwrap();
+        let e = ProviderFile::load(&path).unwrap_err().to_string();
+        assert!(e.contains("[added.kimi]"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

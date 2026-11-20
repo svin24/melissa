@@ -13,6 +13,12 @@
 //!   `POST /ui/settings/providers/{id}/env/remove` (`name`),
 //!   `POST /ui/settings/providers/{id}/key` (`value`: the provider's API key, stored under
 //!   its fixed variable name; write-only).
+//! - Add provider (`add_provider.rs`): `GET /settings/providers/add` (the panel; `?q=`, `?step=manual`,
+//!   `?step=identity|config&id=`), `POST /ui/settings/providers/add/{id}` (a removed built-in back),
+//!   `GET|POST /ui/settings/providers/registry` (the list from the cache | fetch it now: the only
+//!   network call), `POST .../registry/{rid}/add`, `POST /ui/settings/providers/manual` (`name`,
+//!   `command`), `POST .../new/{id}/key` (`var`, `value`), `POST .../new/{id}/finish` (`hosts`).
+//!   Remove (`remove_provider.rs`): `POST /ui/settings/providers/{id}/remove`.
 //! - `POST /ui/settings/providers/{id}/{install|login}`; Claude's sign-in then takes the
 //!   pasted code at `POST .../login/code` (`code`) or stops at `POST .../login/cancel`.
 //! - `POST /ui/settings/updates/{check|apply|rollback}`: apply and rollback first return a
@@ -52,6 +58,9 @@
 //!   "set_env"?: {"NAME": "value"}, "remove_env"?: ["NAME"]}` → the provider. 404 unknown
 //!   provider, 409 refused (e.g. disabling the agent the lead agent runs on), 422 invalid.
 //! - `POST /api/settings/providers/refresh` → the list again, versions re-read.
+//! - `DELETE /api/settings/providers/{id}` → `{"removed", "deleted_paths", "restart_needed"}`; 409
+//!   while in use. `POST /api/settings/providers/add` (`provider` | `registry` | `name`+`command`).
+//!   `GET /api/settings/providers/registry` (cached), `POST .../registry/refresh` (fetch now).
 //! - `GET /api/settings/updates` → release, host kind, OS image state, available actions.
 //! - `POST /api/settings/updates/{check|apply|rollback|restart}` `{"confirm": true}` (needed
 //!   for apply/rollback) → 202; 409 without `confirm`; 501 where the root helper is missing.
@@ -69,6 +78,7 @@
 //! for and again with their outcome (`settings.provider.install`, `settings.provider.login`);
 //! sign-in codes never reach the audit log.
 
+mod add_provider;
 mod agents;
 mod apply;
 mod developer;
@@ -76,6 +86,7 @@ mod files;
 pub(crate) mod pages;
 mod permissions;
 mod providers;
+mod remove_provider;
 mod schedules;
 mod updates;
 mod voice;
@@ -106,6 +117,8 @@ use melissa_settings::{
 
 use crate::ui::Ui;
 
+pub use add_provider::{Catalog, ProbeFn, ProbeRequest};
+
 /// Checks a provider change against the real backend config (the lead agent's merge + its
 /// backends' own checks) before it is saved.
 pub type CheckFn = Arc<dyn Fn(&str, &ProviderOverride) -> Result<(), String> + Send + Sync>;
@@ -129,6 +142,8 @@ pub struct SettingsParts {
     pub installer: Installer,
     /// Voice input: the speech model and the on-device transcriber (Settings → Voice).
     pub voice: melissa_voice::Voice,
+    /// Add provider: the ACP registry (fetched on request), registry installs, the ACP check.
+    pub catalog: Catalog,
 }
 
 /// The Settings context. Cheap to clone.
@@ -180,6 +195,7 @@ impl Settings {
             release: Release::read(&melissa_settings::updates::release_file()),
             home: std::env::var_os("HOME").map(PathBuf::from),
             voice: melissa_voice::Voice::unavailable(),
+            catalog: Catalog::unavailable(),
         })
     }
 
@@ -269,6 +285,32 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             get(|| async { Redirect::to("/settings/providers") }),
         )
         .route("/settings/providers", get(providers::page))
+        .route(add_provider::ADD_URL, get(add_provider::page))
+        .route(
+            "/ui/settings/providers/add/{id}",
+            post(add_provider::add_known),
+        )
+        .route(
+            "/ui/settings/providers/registry",
+            get(add_provider::registry_list_region).post(add_provider::registry_refresh),
+        )
+        .route(
+            "/ui/settings/providers/registry/{rid}/add",
+            post(add_provider::registry_add),
+        )
+        .route("/ui/settings/providers/manual", post(add_provider::manual))
+        .route(
+            "/ui/settings/providers/new/{id}/key",
+            post(add_provider::new_key),
+        )
+        .route(
+            "/ui/settings/providers/new/{id}/finish",
+            post(add_provider::finish),
+        )
+        .route(
+            "/ui/settings/providers/{id}/remove",
+            post(remove_provider::ui_remove),
+        )
         .route("/ui/settings/providers/refresh", post(providers::refresh))
         .route("/ui/settings/providers/poll", get(providers::poll))
         .route("/ui/settings/providers/{id}", post(providers::save))
@@ -345,7 +387,19 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
             "/api/settings/providers/refresh",
             post(providers::api_refresh),
         )
-        .route("/api/settings/providers/{id}", post(providers::api_change))
+        .route(
+            "/api/settings/providers/{id}",
+            post(providers::api_change).delete(remove_provider::api_remove),
+        )
+        .route("/api/settings/providers/add", post(add_provider::api_add))
+        .route(
+            "/api/settings/providers/registry",
+            get(add_provider::api_registry),
+        )
+        .route(
+            "/api/settings/providers/registry/refresh",
+            post(add_provider::api_registry_refresh),
+        )
         .route(
             "/api/settings/providers/{id}/install",
             get(providers::api_install_status).post(providers::api_install),
