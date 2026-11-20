@@ -291,6 +291,11 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
     html! {
         nav.sidebar id=(SIDEBAR_ID) aria-label="Agents" {
             div.side-head {
+                button.icon-button.side-collapse type="button" data-sidebar-collapse hidden
+                    title="Collapse sidebar" {
+                    (glyph(Glyph::Sidebar))
+                    span.visually-hidden { "Collapse sidebar" }
+                }
                 button.device-button type="button" popovertarget="device-menu" aria-haspopup="true"
                     title="Devices" {
                     svg.mark viewBox="0 0 24 24" aria-hidden="true" focusable="false" {
@@ -309,11 +314,6 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                             span.meta { (d.status) }
                         }
                     }
-                }
-                button.icon-button.side-collapse type="button" data-sidebar-collapse hidden
-                    title="Collapse sidebar" {
-                    (glyph(Glyph::Sidebar))
-                    span.visually-hidden { "Collapse sidebar" }
                 }
                 (new_agent_round(s.new_agent))
             }
