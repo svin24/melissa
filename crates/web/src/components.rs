@@ -243,20 +243,7 @@ pub fn rail(
             }
             section.rail-section aria-labelledby="conv-h" {
                 h2 #conv-h { "Conversations" }
-                ul.conversations {
-                    li { a href="/" aria-current=[(current == Nav::Chat).then_some("page")] { "Melissa" } }
-                    @for h in helpers {
-                        li {
-                            a href=(h.href) aria-current=[h.current.then_some("page")] {
-                                span.with-dot {
-                                    span class={ "dot " (h.health.class()) } aria-hidden="true" {}
-                                    span.name { (h.name) }
-                                }
-                                span.visually-hidden { ", helper: " (h.status) }
-                            }
-                        }
-                    }
-                }
+                (rail_conversations(current == Nav::Chat, helpers, false))
                 // A plain form: works without JS; the server redirects to the empty chat.
                 form method="post" action=(NEW_CHAT_URL) {
                     button.ghost type="submit" title="Start over with Melissa. This chat is kept under Past chats." { "New chat" }
@@ -291,6 +278,43 @@ pub fn rail(
                     }
                 }
             }
+        }
+    }
+}
+
+/// DOM id of the rail's list of conversations (Melissa and each helper).
+pub const RAIL_CONVERSATIONS_ID: &str = "rail-conversations";
+
+/// The rail's conversations: Melissa (`melissa_current`: her chat is open), then each helper.
+/// Has a stable id so the live stream can replace it when helpers come, go or change
+/// (`oob`: as an out-of-band replacement).
+pub fn rail_conversations(melissa_current: bool, helpers: &[RailHelper<'_>], oob: bool) -> Markup {
+    html! {
+        ul.conversations id=(RAIL_CONVERSATIONS_ID) hx-swap-oob=[oob.then_some("true")] {
+            li { a href="/" aria-current=[melissa_current.then_some("page")] { "Melissa" } }
+            @for h in helpers {
+                li {
+                    a href=(h.href) aria-current=[h.current.then_some("page")] {
+                        span.with-dot {
+                            span class={ "dot " (h.health.class()) } aria-hidden="true" {}
+                            span.name { (h.name) }
+                        }
+                        span.visually-hidden { ", helper: " (h.status) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Shown in place of the composer when the conversation cannot go on (its helper was
+/// deleted): a short notice and a way back. `oob`: replaces the composer out of band.
+pub fn composer_closed(text: &str, back: &str, back_label: &str, oob: bool) -> Markup {
+    let swap = oob.then(|| format!("outerHTML:#{COMPOSER_ID}"));
+    html! {
+        div.composer.composer-closed hx-swap-oob=[swap] {
+            (notice(text, Tone::Warn))
+            (link(back, back_label))
         }
     }
 }

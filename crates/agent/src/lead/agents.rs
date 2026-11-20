@@ -623,7 +623,20 @@ impl AgentPool {
         if let Err(e) = self.inner.registry.set_stopped(&agent.id, false) {
             tracing::warn!("agent registry: {e}");
         }
+        self.watch_turn(conv, out.0);
         Ok(out)
+    }
+
+    /// The agent is working on `turn`: wake live views now and when the turn is over.
+    fn watch_turn(&self, conv: Conversation, turn: TurnId) {
+        let registry = self.inner.registry.clone();
+        registry.touch();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                while !conv.wait_turn(turn, Duration::from_secs(3600)).await {}
+                registry.touch();
+            });
+        }
     }
 
     /// A scheduled job's turn for agent `id` (see [`super::schedules`]); wakes a stopped agent.
@@ -647,6 +660,7 @@ impl AgentPool {
         if let Err(e) = self.inner.registry.set_stopped(&agent.id, false) {
             tracing::warn!("agent registry: {e}");
         }
+        self.watch_turn(conv, turn);
         Ok(turn)
     }
 
@@ -1126,7 +1140,10 @@ impl AgentPool {
             name: agent.name.clone(),
             goal: shorten(goal, 200),
         });
+        // It is working now (live views show its status).
+        self.inner.registry.touch();
         let events = self.inner.events.clone();
+        let registry = self.inner.registry.clone();
         let (id, name) = (agent.id.clone(), agent.name.clone());
         tokio::spawn(async move {
             let mut over_time = false;
@@ -1154,6 +1171,7 @@ impl AgentPool {
                 status: status.into(),
                 error,
             });
+            registry.touch();
         });
         Ok(json!({
             // The name is what the agent says (and may pass back); the id is for reference.

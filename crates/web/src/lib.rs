@@ -4143,6 +4143,99 @@ mod tests {
             assert_eq!(headers[header::LOCATION], "/settings/agents");
             assert!(lead.agents().get("Cy").is_none());
         }
+
+        /// The SSE frames of `body` until one passes `keep` (returns it).
+        async fn frame_where(body: &mut Body, keep: impl Fn(&str) -> bool) -> String {
+            loop {
+                let frame = next_frame(body).await;
+                if keep(&frame) {
+                    return frame;
+                }
+            }
+        }
+
+        /// Open pages' rails follow helpers as they come, are renamed and go; a deleted
+        /// helper's open chat says so instead of erroring, and its address says it's gone.
+        #[tokio::test]
+        async fn the_rail_follows_helpers_live_and_deleted_ones_say_so() {
+            let (app, lead) = app_full(None, Some(Arc::new(OwnedBy::default())), false);
+            let reg = lead.agents().registry().clone();
+            let ada = reg.create("Ada", "stuck", None, "the user").unwrap().id;
+            let pip = reg.create("Pip", "stuck", None, "the user").unwrap().id;
+            for page in [format!("/agents/{ada}"), format!("/agents/{pip}")] {
+                let (status, _, body) = get_html(&app, &page).await;
+                assert_eq!(status, StatusCode::OK);
+                assert!(body.contains("id=\"rail-conversations\""), "{body}");
+            }
+            let open = |uri: String| {
+                let app = app.clone();
+                async move { app.oneshot(get(&uri)).await.unwrap().into_body() }
+            };
+            let mut main = open("/ui/stream?since=0".into()).await;
+            let mut waiting = open("/ui/stream?since=0&view=approvals".into()).await;
+            let mut hers = open(format!("/ui/agents/{ada}/stream?since=0")).await;
+            let mut his = open(format!("/ui/agents/{pip}/stream?since=0")).await;
+            let name = |n: &str| format!("<span class=\"name\">{n}</span>");
+            let rail =
+                "<ul class=\"conversations\" id=\"rail-conversations\" hx-swap-oob=\"true\">";
+
+            // A new helper shows on every open page.
+            let cy = reg.create("Cy", "stuck", None, "the user").unwrap().id;
+            let has_cy = |f: &str| f.contains(rail) && f.contains(&name("Cy"));
+            let frame = frame_where(&mut main, has_cy).await;
+            assert!(
+                frame.contains("<a href=\"/\" aria-current=\"page\">Melissa</a>"),
+                "{frame}"
+            );
+            assert!(frame.contains(&format!("href=\"/agents/{cy}\"")), "{frame}");
+            let frame = frame_where(&mut waiting, has_cy).await;
+            assert!(!frame.contains("aria-current"), "{frame}");
+            let frame = frame_where(&mut hers, has_cy).await;
+            assert!(
+                frame.contains(&format!("<a href=\"/agents/{ada}\" aria-current=\"page\">")),
+                "{frame}"
+            );
+            frame_where(&mut his, has_cy).await;
+
+            // Renamed: the new name.
+            lead.agents().rename("Cy", "Cyd").unwrap();
+            let has_cyd = |f: &str| f.contains(rail) && f.contains(&name("Cyd"));
+            frame_where(&mut main, has_cyd).await;
+            frame_where(&mut hers, has_cyd).await;
+            frame_where(&mut his, has_cyd).await;
+
+            // Deleted: gone from every rail; his own chat says so in place of the composer.
+            lead.agents().delete(&pip, "ui").await.unwrap();
+            let no_pip = |f: &str| f.contains(rail) && !f.contains(&name("Pip"));
+            frame_where(&mut main, no_pip).await;
+            // Her chat goes on.
+            let frame = frame_where(&mut hers, no_pip).await;
+            assert!(!frame.contains("was deleted."), "{frame}");
+            let frame = frame_where(&mut his, |f| f.contains("Pip was deleted.")).await;
+            assert!(
+                frame.contains("hx-swap-oob=\"outerHTML:#composer\""),
+                "{frame}"
+            );
+            assert!(frame.contains("<a href=\"/\">Back to Melissa"), "{frame}");
+
+            // His address (and any unknown one) says so in the app, with a way back.
+            for page in [format!("/agents/{pip}"), "/agents/nobody".to_string()] {
+                let (status, _, body) = get_html(&app, &page).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{page}");
+                assert!(body.contains("Conversation not found"), "{body}");
+                assert!(body.contains("Back to Melissa"), "{body}");
+                assert!(body.contains("id=\"rail-conversations\""), "{body}");
+                assert!(!body.contains(&name("Pip")), "{body}");
+            }
+            // Her status shows live elsewhere: working on a message.
+            lead.agents().user_send("Ada", "hi").unwrap();
+            let frame = frame_where(&mut main, |f| f.contains(rail)).await;
+            assert!(frame.contains("dot h-busy"), "{frame}");
+            // A reconnecting stream of his chat makes the page reload (and say so).
+            let mut again = open(format!("/ui/agents/{pip}/stream?since=0")).await;
+            let frame = next_frame(&mut again).await;
+            assert!(frame.contains("event: reload"), "{frame}");
+        }
     }
 
     #[tokio::test]

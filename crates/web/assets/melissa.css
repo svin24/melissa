@@ -1046,6 +1046,18 @@ svg.icon.stopped {
   padding: 0.35rem 0.45rem 0.45rem 0.9rem;
 }
 
+/* The conversation can't go on (its helper was deleted): a notice and a way back. */
+.composer-closed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+}
+
+.composer-closed .notice {
+  margin-bottom: 0;
+}
+
 /* Under the text: the paperclip left; the model chip, mic and Send right. */
 .composer-bar {
   display: flex;
