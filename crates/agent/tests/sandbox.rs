@@ -174,3 +174,65 @@ async fn cancelling_kills_background_grandchildren() {
     assert_eq!(before, after, "grandchild survived the cancel");
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// An agent's sandbox has its own file box, read-write at the same path, and nothing of the
+/// other boxes (not even their names).
+#[test]
+fn an_agent_sees_its_own_file_box_and_no_other() {
+    if !bwrap_works() {
+        return;
+    }
+    let dir = scratch("filebox");
+    let home = dir.join("home");
+    let work = dir.join("work/agents/d-0a1b2c3d.a1");
+    let boxes = dir.join("files/boxes");
+    let mine = boxes.join("d-0a1b2c3d.a1");
+    let other = boxes.join("d-0a1b2c3d.a2");
+    for d in [&home, &work, &mine, &other] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(mine.join("from-owner.txt"), "hello").unwrap();
+    std::fs::write(other.join("secret.txt"), "not for a1").unwrap();
+    let bwrap = sandbox::find_bwrap().unwrap();
+    let sh = host_program("sh").unwrap();
+    let plan = sandbox::SandboxPlan::resolve(
+        &SandboxSpec {
+            network: NetworkMode::None,
+            ..SandboxSpec::default()
+        },
+        &bwrap,
+        Some(&home),
+        &sh,
+    )
+    .unwrap()
+    .with_rw_dirs(std::slice::from_ref(&mine))
+    .unwrap();
+    let (m, o, b) = (mine.display(), other.display(), boxes.display());
+    let script = format!(
+        "cat {m}/from-owner.txt; echo; echo saved > {m}/report.txt; \
+         if cat {o}/secret.txt 2>/dev/null; then echo LEAK-FILE; fi; \
+         if ls {b} | grep -q a2; then echo LEAK-NAME; fi; \
+         echo x > {b}/new.txt 2>/dev/null; \
+         echo done"
+    );
+    let (program, argv) = sandbox::command(&plan, &work, &[], &["-c".into(), script]);
+    let out = std::process::Command::new(program)
+        .args(argv)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("hello"),
+        "{stdout} / {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("done"), "{stdout}");
+    assert!(!stdout.contains("LEAK"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(mine.join("report.txt")).unwrap(),
+        "saved\n"
+    );
+    // Whatever it writes beside its box stays in the sandbox's private /tmp.
+    assert!(!boxes.join("new.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

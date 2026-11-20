@@ -345,8 +345,15 @@ impl ToolRegistry {
             if let Some(n) = note {
                 reasons.insert(0, n);
             }
-            self.confirm(task, offer, name, &args, &reasons.join("; "))
-                .await?;
+            self.confirm_within(
+                task,
+                offer,
+                name,
+                &args,
+                &reasons.join("; "),
+                ctx.confirm_wait,
+            )
+            .await?;
         }
 
         let audited = args.clone();
@@ -429,6 +436,21 @@ impl ToolRegistry {
         args: &Value,
         reason: &str,
     ) -> Result<(), ToolError> {
+        self.confirm_within(task, rule, name, args, reason, None)
+            .await
+    }
+
+    /// [`ToolRegistry::confirm`], waiting `wait` instead of the confirmation timeout when
+    /// given (a scheduled run's confirmations: [`TaskContext::confirm_wait`]).
+    pub async fn confirm_within(
+        &self,
+        task: TaskId,
+        rule: Option<RuleOffer>,
+        name: &str,
+        args: &Value,
+        reason: &str,
+        wait: Option<Duration>,
+    ) -> Result<(), ToolError> {
         let hash = args_hash(args);
         let key = rule.as_ref().map(|r| r.key.clone());
         if let Some(grant) = self.permissions.grant(key.as_ref()) {
@@ -448,7 +470,7 @@ impl ToolRegistry {
         if let Some(grant) = self.permissions.grant(key.as_ref()) {
             self.approve_granted(&info, grant);
         }
-        let verdict = match tokio::time::timeout(self.confirm_timeout, rx).await {
+        let verdict = match tokio::time::timeout(wait.unwrap_or(self.confirm_timeout), rx).await {
             Ok(Ok(v)) => v,
             // Store dropped the sender (shouldn't happen): treat as no.
             Ok(Err(_)) => Verdict::Denied,
@@ -819,6 +841,29 @@ mod tests {
         };
         reg.confirmations().resolve(id, Verdict::Denied);
         assert_eq!(waiter.await.unwrap(), Err(ToolError::Denied));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_scheduled_runs_confirmations_wait_its_own_time() {
+        // The registry's timeout is long; a task with its own wait (a scheduled run) is
+        // withdrawn after that wait instead.
+        let reg = registry(None).with_confirm_timeout(Duration::from_secs(4 * 60));
+        let mut ctx = attended();
+        ctx.confirm_wait = Some(Duration::from_secs(10 * 60));
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            reg.call(1, &mut ctx, "remove_app", json!({})).await,
+            Err(ToolError::ConfirmationTimeout)
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(10 * 60));
+        assert!(reg.confirmations().pending().is_empty());
+        // Without one (interactive): the registry's timeout.
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            reg.call(2, &mut attended(), "remove_app", json!({})).await,
+            Err(ToolError::ConfirmationTimeout)
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(4 * 60));
     }
 
     #[tokio::test]

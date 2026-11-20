@@ -52,6 +52,11 @@ pub const MAX_INSTRUCTION_BYTES: usize = 4000;
 pub const DEFAULT_MAX_MINUTES: u32 = 60;
 /// The longest time limit, in minutes (a day).
 pub const MAX_MAX_MINUTES: u32 = 24 * 60;
+/// How long a scheduled run's confirmation waits for the owner by default, in minutes.
+pub const DEFAULT_APPROVAL_WAIT_MINUTES: u32 = 10;
+/// The shortest and longest wait the owner can set, in minutes (1 minute to a day).
+pub const MIN_APPROVAL_WAIT_MINUTES: u32 = 1;
+pub const MAX_APPROVAL_WAIT_MINUTES: u32 = 24 * 60;
 
 /// Who made a schedule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,12 +415,30 @@ pub fn check_input(input: &ScheduleInput) -> Result<(), ScheduleError> {
     validate(input).map(|_| ())
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct State {
     #[serde(default)]
     next_id: u64,
     #[serde(default)]
     schedules: Vec<Schedule>,
+    /// How long a scheduled run's confirmation waits for the owner before it is withdrawn
+    /// (minutes; the owner's setting in Settings → Schedules).
+    #[serde(default = "default_approval_wait")]
+    approval_wait_minutes: u32,
+}
+
+fn default_approval_wait() -> u32 {
+    DEFAULT_APPROVAL_WAIT_MINUTES
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            next_id: 0,
+            schedules: Vec::new(),
+            approval_wait_minutes: DEFAULT_APPROVAL_WAIT_MINUTES,
+        }
+    }
 }
 
 struct Shared {
@@ -525,6 +548,46 @@ impl Schedules {
 
     fn now_secs(&self) -> u64 {
         u64::try_from(self.clock.now().as_second()).unwrap_or(0)
+    }
+
+    /// How long a scheduled run's confirmation waits for the owner, in minutes. A saved value
+    /// outside the bounds (edited by hand) is clamped.
+    pub fn approval_wait_minutes(&self) -> u32 {
+        lock(&self.shared.state)
+            .approval_wait_minutes
+            .clamp(MIN_APPROVAL_WAIT_MINUTES, MAX_APPROVAL_WAIT_MINUTES)
+    }
+
+    /// [`Schedules::approval_wait_minutes`] as a duration.
+    pub fn approval_wait(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.approval_wait_minutes()) * 60)
+    }
+
+    /// Set how long a scheduled run's confirmation waits for the owner (audited
+    /// `schedule.settings`). Applies to runs that start afterwards.
+    pub fn set_approval_wait(&self, minutes: u32, by: &Creator) -> Result<(), ScheduleError> {
+        if !(MIN_APPROVAL_WAIT_MINUTES..=MAX_APPROVAL_WAIT_MINUTES).contains(&minutes) {
+            return Err(ScheduleError::Invalid(format!(
+                "the wait is {MIN_APPROVAL_WAIT_MINUTES} to {MAX_APPROVAL_WAIT_MINUTES} minutes"
+            )));
+        }
+        let mut guard = lock(&self.shared.state);
+        if guard.approval_wait_minutes == minutes {
+            return Ok(());
+        }
+        let mut next = guard.clone();
+        next.approval_wait_minutes = minutes;
+        self.commit(&mut guard, next)?;
+        drop(guard);
+        self.audit(
+            "schedule.settings",
+            by.actor(),
+            &format!(
+                "{}a scheduled run's request waits {minutes} min for your answer",
+                by.audit_prefix()
+            ),
+        );
+        Ok(())
     }
 
     /// Every schedule, oldest first.

@@ -34,6 +34,12 @@
 //!   `POST /ui/settings/schedules/{id}` (same fields) saves one, and `.../{id}/enabled`
 //!   (`enabled=on` or nothing), `.../{id}/run`, `.../{id}/remove` act on one. Their JSON API
 //!   is `/api/schedules` (see `crate::api`).
+//!   `POST /ui/settings/schedules/wait` (`minutes`, 1–1440): how long a scheduled run's
+//!   request waits for the owner before it is withdrawn (default 10). API:
+//!   `GET|POST /api/settings/schedules` `{"approval_wait_minutes": n}`.
+//! - `GET /settings/files`; `POST /ui/settings/files` (`keep` = days or `forever`): how long
+//!   file boxes keep files by default (each box can override it in its chat's file panel).
+//!   API: `GET|POST /api/settings/files` (see `crate::files`).
 //! - `GET /settings/permissions`: the "Always allow" rules; `POST
 //!   /ui/settings/permissions/{id}/remove` removes one.
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
@@ -65,6 +71,7 @@
 
 mod apply;
 mod developer;
+mod files;
 pub(crate) mod pages;
 mod permissions;
 mod providers;
@@ -314,6 +321,9 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             "/ui/settings/schedules/{id}/remove",
             post(schedules::remove),
         )
+        .route("/ui/settings/schedules/wait", post(schedules::wait))
+        .route(pages::FILES_URL, get(files::page))
+        .route("/ui/settings/files", post(files::save))
         .route(pages::VOICE_URL, get(voice::page))
         .route("/ui/settings/voice", post(voice::toggle))
         .route("/ui/settings/voice/poll", get(voice::poll))
@@ -367,7 +377,12 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
         .route("/api/schedules/{id}/enabled", post(schedules::api_enabled))
         .route("/api/schedules/{id}/run", post(schedules::api_run))
         .route("/api/schedules/{id}/remove", post(schedules::api_remove))
+        .route(
+            "/api/settings/schedules",
+            get(schedules::api_settings).post(schedules::api_set_settings),
+        )
         .route("/api/settings/updates", get(updates::api_status))
+        .merge(crate::files::api_routes())
         .route("/api/settings/updates/{action}", post(updates::api_action))
         .with_state(ui)
 }

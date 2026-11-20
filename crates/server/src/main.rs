@@ -40,6 +40,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{bail, Context};
 use melissa_agent::{
     device::DeviceIdentity,
+    files::{FileBoxes, MyFilesTool},
     lead::{
         agents::{AgentLimits, AgentPool},
         events::EventLog,
@@ -506,6 +507,10 @@ async fn serve(
         schedules.clone(),
         Some(wiring.names.clone()),
     )));
+    // Every agent's file box, in the state directory (each bound only into its own agent's
+    // sandbox); old chat attachments move in once (`Lead::new`).
+    let files = FileBoxes::open(dirs.state.join("files")).with_audit(Some(audit.clone()));
+    tools.push(Arc::new(MyFilesTool::new(files.clone())));
     // The owner's "Always allow" rules and No permission prompts, kept in the state directory
     // (outside every agent's sandbox). A broken file grants nothing: every request asks again.
     let permissions_path = dirs.state.join("permissions.json");
@@ -589,10 +594,13 @@ async fn serve(
         workdir: workdir.join("lead"),
         tools: q.tools.clone(),
         device: wiring.device,
+        files,
     };
     let lead = Lead::new(settings, sessions, board.clone(), events, &pool)
         .context("setting up the lead agent")?;
     lead.start_schedules(schedules);
+    // Expired files go (Settings → Files), checked every hour.
+    lead.start_file_prune(Duration::from_secs(3600));
     tracing::info!(backends = ?q.backends, "lead agent ready (opens on the first message)");
 
     let listener = tokio::net::TcpListener::bind(config.listen)

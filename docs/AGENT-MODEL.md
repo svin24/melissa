@@ -44,6 +44,11 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
    device), and each create or remove needs the user's yes, which no "Always allow" rule can give. A scheduled run
    acts on its own only within the user's standing permissions; everything else waits for the user.
 
+9. **File boxes are private.** The lead agent and each agent have their own file box: what the user sends in that
+   agent's chat and what the agent saves to keep or hand over. Only that agent's sandbox sees its box (no other
+   agent's, not the lead agent's either); the user sees every box next to its chat and decides how long files are
+   kept. Files reach another agent only through the user (send it in that agent's chat).
+
 ## Naming
 
 - Every lead agent, agent, device and workspace has a stable internal id (never reused) and a display name.
@@ -62,4 +67,5 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
 | Reassign | lead agent: `reassign_workspace` (always the user's confirmation); user: `melissa-server workspace reassign <workspace> --to <agent>`; admission lets the owner change only with a new `assigned-at` | cross-device takeover (ids and `WorkspaceStore::assign` already take any agent id) |
 | Force delete | the user only: the app dialog's Force delete, `/api/apps/{app}/force-delete`, `melissa-server app force-delete <app> --yes`; any owner; removes the workspace and its data; the owning agent gets one brokered message, the lead agent a note with its next message (2026-11-19) | |
 | Talking | user ↔ lead agent (`/api/lead`, `chat`), user ↔ any agent (`/api/agents/{agent}/…`, `chat --agent`); agent ↔ agent only via the lead agent (`message_agent`: tagged as data, audited `agent.brokered`) | lead agent ↔ primary lead agent (M3) |
+| File box | `melissa_agent::files`: `<state>/files/boxes/<lead or agent id>/`, bound read-write only into that agent's sandbox; index outside every sandbox; `my_files` tool; file panel and `/api/files/{key}` (2026-11-20) | quotas for agent-written files |
 | Fleet | none | later |

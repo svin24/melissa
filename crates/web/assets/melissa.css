@@ -2807,3 +2807,199 @@ dialog.sheet::backdrop {
   align-items: center;
   gap: 0.6rem;
 }
+
+/* --- File panel (a chat's file box; 2026-11-20) ---------------------------------------- */
+
+.chat-layout {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.chat-layout > .chat {
+  flex: 1 1 760px;
+  margin: 0;
+  min-width: 0;
+}
+
+.file-panel {
+  flex: none;
+  position: sticky;
+  top: 1rem;
+  margin-top: 1.25rem;
+  padding-right: 1rem;
+}
+
+.file-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.file-box[open] {
+  width: 18rem;
+}
+
+.file-box > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.file-box > summary::-webkit-details-marker {
+  display: none;
+}
+
+.file-box > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.file-box > summary .count {
+  min-width: 1.6em;
+  padding: 0 0.45em;
+  border-radius: 999px;
+  background: var(--ground);
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.file-box-body {
+  padding: 0 0.9rem 0.6rem;
+  max-height: calc(100vh - 7rem);
+  overflow-y: auto;
+}
+
+.file-usage {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.box-files {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.box-files li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.box-file {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.box-file .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.box-file .meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--focus);
+}
+
+@media (hover: hover) {
+  .box-file:hover {
+    background: var(--ground);
+  }
+
+  .icon-button:hover {
+    background: var(--caution-soft);
+    color: var(--caution);
+  }
+}
+
+.keep-files .one-field {
+  padding-bottom: 0.4rem;
+}
+
+.file-chip.expired {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.file-chip.expired .size {
+  font-style: italic;
+}
+
+/* Not enough room beside the chat: the panel becomes a section above it. */
+@media (max-width: 1279px) {
+  .chat-layout {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .chat-layout > .chat {
+    flex: none;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .file-panel {
+    order: -1;
+    position: static;
+    width: 100%;
+    max-width: 760px;
+    margin: 1rem auto 0;
+    padding: 0 1.5rem;
+  }
+
+  .file-box[open] {
+    width: auto;
+  }
+
+  .file-box-body {
+    max-height: 50vh;
+  }
+}
+
+@media (max-width: 760px) {
+  .file-panel {
+    padding: 0 1rem;
+    margin-top: 0.75rem;
+  }
+}

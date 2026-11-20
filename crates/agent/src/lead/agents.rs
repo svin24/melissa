@@ -38,8 +38,9 @@ use crate::{
     mcp::McpServer,
     session::SessionBackend,
     tools::{
-        check_tool_set, describe_agent, Access, AgentNames, Effect, Labels, Owner, ResourceKind,
-        Scope, Target, TaskContext, Tool, ToolError, ToolSpec, WorkspaceInfo, WorkspaceStore,
+        check_tool_set, describe_agent, permissions::Principal, Access, AgentNames, Effect, Labels,
+        Owner, ResourceKind, Scope, Target, TaskContext, Tool, ToolError, ToolSpec, WorkspaceInfo,
+        WorkspaceStore,
     },
     BoxFuture, TaskBoard, TaskId,
 };
@@ -97,8 +98,8 @@ pub(crate) struct Attached {
     pub lead_task: TaskId,
     /// Agents work in `<workroot>/<id>`.
     pub workroot: std::path::PathBuf,
-    /// Shared with the lead agent's conversation.
-    pub attachments: crate::attachments::AttachmentStore,
+    /// Every agent's file box (each conversation uses its own).
+    pub files: crate::files::FileBoxes,
 }
 
 /// A job the lead agent gave an agent.
@@ -285,13 +286,15 @@ impl AgentPool {
             self.inner.limits.transcript_max_bytes,
         ));
         let device = self.inner.registry.device();
+        let owner = Principal::Agent(agent.id.clone());
         let system_prompt = format!(
             "{}\n\nYou are agent {} (id {}) on device {device}. Your scope: the workspaces you look after \
              and new workspaces you create (they become yours). Messages come from the lead agent \
-             (\"A job from the lead agent\") or from the user directly.",
+             (\"A job from the lead agent\") or from the user directly.\n\n{}",
             a.agent_prompt.trim_end(),
             agent.name,
             agent.id,
+            super::file_box_words(&a.files, &owner),
         );
         let spec = ConversationSpec {
             who: format!("agent {}", agent.name),
@@ -307,7 +310,8 @@ impl AgentPool {
             system_prompt,
             state_dir,
             workdir: a.workroot.join(&agent.id),
-            attachments: a.attachments.clone(),
+            files: a.files.clone(),
+            owner,
             task: a.board.reserve_id(),
             ctx: TaskContext {
                 // Agents work on jobs while nobody watches; the user chatting with one does not
@@ -462,6 +466,7 @@ impl AgentPool {
         id: &str,
         name: &str,
         text: &str,
+        wait: Duration,
     ) -> Result<TurnId, LeadError> {
         let agent = self
             .inner
@@ -471,7 +476,7 @@ impl AgentPool {
         let conv = self
             .conversation(&agent)
             .map_err(|e| LeadError::Failed(e.to_string()))?;
-        let (turn, _) = conv.send_scheduled(name, text, "schedule")?;
+        let (turn, _) = conv.send_scheduled(name, text, "schedule", wait)?;
         if let Err(e) = self.inner.registry.set_stopped(&agent.id, false) {
             tracing::warn!("agent registry: {e}");
         }
@@ -479,6 +484,21 @@ impl AgentPool {
     }
 
     /// Agent `id`'s conversation, if it has one yet.
+    /// Every agent's id (also stopped ones).
+    pub(crate) fn registry_ids(&self) -> Vec<String> {
+        self.inner
+            .registry
+            .list()
+            .into_iter()
+            .map(|a| a.id)
+            .collect()
+    }
+
+    /// Where agent `id` keeps its state (transcript, sessions).
+    pub(crate) fn agent_dir(&self, id: &str) -> std::path::PathBuf {
+        self.inner.registry.agent_dir(id)
+    }
+
     pub(crate) fn conversation_of(&self, id: &str) -> Option<Conversation> {
         lock(&self.inner.convs).get(id).cloned()
     }

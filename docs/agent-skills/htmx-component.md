@@ -34,7 +34,11 @@ helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey 
 `approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
 "Can't be undone" variant), `composer` (2026-11-20: grows with its text; paperclip/paste/drop files, shown as chips cloned from its
 `file-chip` template by melissa.js), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
-`composer_status`, `agent_menu` (2026-11-19, owner-approved: "Runs on
+`composer_status`, `file_panel` (2026-11-20, owner decision: the chat's file box beside it, a `details`
+collapsed by default and remembered per browser by melissa.js (`data-remember`), a section above the chat below
+1280 px; rows with download link and a trash button (`hx-confirm`), "Keep files for…" select; `file_panel_body`
+is what delete/retention return, `file_panel_inner` + `file_count` what the stream swaps on `Change::Files`;
+`SentFile.href = None` renders an "expired" chip), `agent_menu` (2026-11-19, owner-approved: "Runs on
 [Grok ▾]" in the composer status; a `details` panel with a native `select` of agents/models, unavailable agents
 disabled with a host-aware hint (container: Settings → Providers or `sudo podman exec -it melissa melissa-setup …`;
 Nix: the Nix note; from source: `sudo melissa-setup …`); the Switch button posts the composer form like Stop (`formaction` +
@@ -103,6 +107,8 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   the app strip and the device card warn ("Storage almost full (1.7 GB left)").
 - Why SSE + the extension and not polling: one connection, low latency for streamed reply text, no
   re-rendering of the whole conversation (which would also steal focus from approval buttons).
+- Files: a box change pushes `files_changed` (memory only) into that conversation's log; the stream answers
+  with the panel's body and count out of band, and re-renders sent messages so removed files show as expired.
 - Apps change slowly: `app_strip` and the cluster's apps region poll (`/ui/strip`, `/ui/cluster/apps`, 15 s).
 
 ## Patterns

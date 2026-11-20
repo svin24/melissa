@@ -63,6 +63,10 @@ pub struct TaskContext {
     pub delegate: bool,
     /// What this task may change ([`super::scope`]); checked before the label policy.
     pub scope: Scope,
+    /// How long a confirmation this task asks for waits for the owner; None: the registry's
+    /// confirmation timeout. Set only for scheduled (unattended) turns (Settings →
+    /// Schedules); interactive confirmations keep the registry's timeout.
+    pub confirm_wait: Option<std::time::Duration>,
 }
 
 /// The outcome for one tool call.

@@ -1,28 +1,29 @@
-//! Files the user sends with a chat message: validation, storage and delivery to the model.
+//! Files the user sends with a chat message: validation, type sniffing, names and delivery to
+//! the model. They are stored in the agent's file box ([`crate::files`]).
 //!
-//! - **Upload.** [`AttachmentStore::save`] checks the limits ([`MAX_FILE_BYTES`] per file,
-//!   [`MAX_MESSAGE_BYTES`] and [`MAX_FILES`] per message), sniffs the type from the bytes (the
-//!   browser's claim and the name's extension are ignored) and writes each file under a
-//!   random name (`<32 hex>.<ext>`) in Melissa's state directory, never under a name the user
-//!   chose. The message's [`Attachment`]s go into the conversation's event, so the feed shows
-//!   them after a reload.
-//! - **Serving.** [`AttachmentStore::open`] accepts only names of that exact shape, so a request
-//!   cannot reach outside the store. [`content_type`] says how to serve one.
+//! - **Upload.** [`validate`] checks the limits ([`MAX_FILE_BYTES`] per file,
+//!   [`MAX_MESSAGE_BYTES`] and [`MAX_FILES`] per message); [`sniff`] takes the type from the
+//!   bytes (the browser's claim and the name's extension are ignored); [`safe_name`] cleans the
+//!   name. [`crate::files::FileBoxes::store_uploads`] writes them into the box and returns the
+//!   message's [`Attachment`]s, which go into the conversation's event, so the feed shows them
+//!   after a reload. [`Attachment::file`] is `<id>.<ext>`: the id is the box file's
+//!   (generated, never a name the user chose).
+//! - **Serving.** By that id from the box; [`content_type`] says how to serve one.
 //! - **Delivery** ([`deliver`]). Images (PNG, JPEG, GIF, WebP) and PDFs go to the model as native
-//!   content blocks when the session supports them and they fit the model's limits. Everything
-//!   else is copied into the agent's working directory (the only host path its sandbox sees)
-//!   and the message tells the agent where, so it can use the file with its own tools.
+//!   content blocks when the session supports them and they fit the model's limits. Every file
+//!   stays in the agent's file box (which its sandbox sees) and the message lists them there,
+//!   so the agent can use them with its own tools.
 
-use std::{
-    fs,
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
-};
+use std::io::Read;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::session::{PromptBlock, SessionCapabilities};
+use crate::{
+    files::FileBoxes,
+    session::{PromptBlock, SessionCapabilities},
+    tools::permissions::Principal,
+};
 
 const MIB: usize = 1024 * 1024;
 
@@ -42,8 +43,6 @@ pub const NATIVE_PDF_BYTES: usize = 10 * MIB;
 pub const NATIVE_TOTAL_BYTES: usize = 15 * MIB;
 /// Longest stored display name, in characters.
 const MAX_NAME_CHARS: usize = 80;
-/// Where copies for the agent go, inside its working directory.
-pub const WORKDIR_SUBDIR: &str = "attachments";
 
 /// A file as it arrived from the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,12 +69,6 @@ impl Attachment {
     pub fn is_image(&self) -> bool {
         IMAGE_TYPES.contains(&self.mime.as_str())
     }
-
-    /// Name of the agent's copy in its working directory (unique per message file).
-    pub fn workdir_name(&self) -> String {
-        let short = self.file.get(..8).unwrap_or(&self.file);
-        format!("{short}-{}", self.name)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -90,6 +83,8 @@ pub enum AttachmentError {
     Empty { name: String },
     #[error("couldn't store {name}: {reason}")]
     Store { name: String, reason: String },
+    #[error("the file box is full ({} GiB); delete some files first", crate::files::MAX_BOX_BYTES >> 30)]
+    BoxFull,
 }
 
 const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -210,7 +205,7 @@ pub fn validate(uploads: &[Upload]) -> Result<(), AttachmentError> {
     Ok(())
 }
 
-/// Is `file` a name [`AttachmentStore::save`] could have made (`<32 lowercase hex>.<ext>`)?
+/// Is `file` a name the old shared store (and [`Attachment::file`]) uses (`<32 lowercase hex>.<ext>`)?
 pub fn valid_file_name(file: &str) -> bool {
     let Some((id, ext)) = file.split_once('.') else {
         return false;
@@ -221,104 +216,6 @@ pub fn valid_file_name(file: &str) -> bool {
         && ext
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-}
-
-/// The directory holding every conversation's attachments (lead agent and agents share it,
-/// so one route serves them all).
-#[derive(Debug, Clone)]
-pub struct AttachmentStore {
-    dir: PathBuf,
-}
-
-impl AttachmentStore {
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// Validate and store one message's files. All or nothing: on an error, files already
-    /// written for this message are removed.
-    pub fn save(&self, uploads: Vec<Upload>) -> Result<Vec<Attachment>, AttachmentError> {
-        validate(&uploads)?;
-        if uploads.is_empty() {
-            return Ok(Vec::new());
-        }
-        let store_err = |name: &str, e: io::Error| AttachmentError::Store {
-            name: name.to_string(),
-            reason: e.to_string(),
-        };
-        let mut saved: Vec<Attachment> = Vec::with_capacity(uploads.len());
-        for u in uploads {
-            let name = safe_name(&u.name);
-            let result = fs::create_dir_all(&self.dir)
-                .and_then(|()| random_hex())
-                .and_then(|id| {
-                    let (mime, ext) = sniff(&u.bytes);
-                    let file = format!("{id}.{ext}");
-                    write_new(&self.dir.join(&file), &u.bytes)?;
-                    Ok(Attachment {
-                        file,
-                        name: name.clone(),
-                        mime: mime.to_string(),
-                        size: u.bytes.len() as u64,
-                    })
-                });
-            match result {
-                Ok(a) => saved.push(a),
-                Err(e) => {
-                    self.remove(&saved);
-                    return Err(store_err(&name, e));
-                }
-            }
-        }
-        Ok(saved)
-    }
-
-    /// Delete stored files (a message refused after they were saved).
-    pub fn remove(&self, files: &[Attachment]) {
-        for a in files {
-            if let Some(path) = self.path(&a.file) {
-                let _ = fs::remove_file(path);
-            }
-        }
-    }
-
-    /// The path of a stored file, if `file` is a valid stored name.
-    pub fn path(&self, file: &str) -> Option<PathBuf> {
-        valid_file_name(file).then(|| self.dir.join(file))
-    }
-
-    /// Read a stored file.
-    pub fn read(&self, file: &str) -> io::Result<Vec<u8>> {
-        let path = self
-            .path(file)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such attachment"))?;
-        fs::read(path)
-    }
-}
-
-/// Write a file that must not exist yet (owner-only permissions where supported).
-fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
-    f.write_all(bytes)?;
-    f.sync_all()
-}
-
-/// 128 random bits as 32 lowercase hex digits (from the OS).
-fn random_hex() -> io::Result<String> {
-    let mut buf = [0u8; 16];
-    fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// How one message's files reach the model.
@@ -353,67 +250,68 @@ pub fn plan(files: &[Attachment], caps: &SessionCapabilities) -> Vec<bool> {
         .collect()
 }
 
-/// Turn a message's stored files into content blocks and a note for the agent. Files that
-/// don't go natively are copied to `<workdir>/attachments/`. A file that can't be read or
-/// copied is named in the note as unavailable (the turn still runs).
+/// Turn a message's stored files (in `owner`'s file box) into content blocks and a note
+/// for the agent. Every file stays in the box, where the agent can open it with its own
+/// tools; the note lists them with the box's path. A file that can't be read is named in
+/// the note as unavailable (the turn still runs).
 pub fn deliver(
-    store: &AttachmentStore,
+    boxes: &FileBoxes,
+    owner: &Principal,
     files: &[Attachment],
     caps: &SessionCapabilities,
-    workdir: &Path,
 ) -> Delivery {
     if files.is_empty() {
         return Delivery::default();
     }
     let native = plan(files, caps);
     let mut blocks = Vec::new();
-    let (mut inline, mut copied, mut missing) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut inline, mut listed, mut missing) = (Vec::new(), Vec::new(), Vec::new());
     for (a, native) in files.iter().zip(native) {
-        if native {
-            match store.read(&a.file) {
-                Ok(bytes) => {
-                    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    blocks.push(if a.is_image() {
-                        PromptBlock::Image {
-                            mime: a.mime.clone(),
-                            data,
-                        }
-                    } else {
-                        PromptBlock::Pdf { data }
-                    });
-                    inline.push(a.name.clone());
-                }
-                Err(e) => {
-                    tracing::warn!(file = %a.file, "reading an attachment: {e}");
-                    missing.push(a.name.clone());
-                }
-            }
+        let id = crate::files::attachment_id(&a.file);
+        let opened = boxes.open_file(owner, id);
+        let Ok((entry, mut file)) = opened else {
+            tracing::warn!(file = %a.file, "an attachment is not in the file box");
+            missing.push(a.name.clone());
+            continue;
+        };
+        listed.push(format!(
+            "{} ({}, {})",
+            entry.name,
+            a.mime,
+            human_size(a.size)
+        ));
+        if !native {
             continue;
         }
-        let rel = format!("{WORKDIR_SUBDIR}/{}", a.workdir_name());
-        let copy = store
-            .path(&a.file)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not a stored attachment name"));
-        let result = copy.and_then(|src| {
-            fs::create_dir_all(workdir.join(WORKDIR_SUBDIR))?;
-            fs::copy(src, workdir.join(&rel))
-        });
-        match result {
-            Ok(_) => copied.push(format!("{rel} ({}, {})", a.mime, human_size(a.size))),
-            Err(e) => {
-                tracing::warn!(file = %a.file, "copying an attachment for the agent: {e}");
-                missing.push(a.name.clone());
+        let mut bytes = Vec::new();
+        match file.read_to_end(&mut bytes) {
+            Ok(_) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                blocks.push(if a.is_image() {
+                    PromptBlock::Image {
+                        mime: a.mime.clone(),
+                        data,
+                    }
+                } else {
+                    PromptBlock::Pdf { data }
+                });
+                inline.push(a.name.clone());
             }
+            Err(e) => tracing::warn!(file = %a.file, "reading an attachment: {e}"),
         }
     }
     let mut note = String::from("\n\n<melissa-attachments>");
     if !inline.is_empty() {
         note.push_str(&format!("\nAttached above: {}.", inline.join(", ")));
     }
-    if !copied.is_empty() {
-        note.push_str("\nAttached files, saved in your working directory:");
-        for c in &copied {
-            note.push_str(&format!("\n- {c}"));
+    if !listed.is_empty() {
+        let dir = boxes
+            .dir(owner)
+            .map(|d| d.display().to_string())
+            .unwrap_or_default();
+        note.push_str(&format!("\nThe user's files are in your file box, {dir}/:"));
+        for l in &listed {
+            note.push_str(&format!("\n- {l}"));
         }
     }
     if !missing.is_empty() {
@@ -446,13 +344,13 @@ mod tests {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n";
 
-    fn temp_store(tag: &str) -> (AttachmentStore, PathBuf) {
+    fn temp_boxes(tag: &str) -> (FileBoxes, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
-            "melissa-attach-{tag}-{}-{}",
+            "melissa-attach-{tag}-{}-{:?}",
             std::process::id(),
-            random_hex().unwrap()
+            std::time::SystemTime::now()
         ));
-        (AttachmentStore::new(root.join("store")), root)
+        (FileBoxes::open(root.join("files")), root)
     }
 
     fn up(name: &str, bytes: &[u8]) -> Upload {
@@ -549,38 +447,43 @@ mod tests {
     }
 
     #[test]
-    fn stores_files_under_generated_names() {
-        let (store, root) = temp_store("save");
-        let saved = store
-            .save(vec![up("../shot.png", PNG), up("notes.md", b"# hi\n")])
+    fn stores_files_under_generated_ids() {
+        let (boxes, root) = temp_boxes("save");
+        let lead = Principal::Lead;
+        let saved = boxes
+            .store_uploads(
+                &lead,
+                vec![up("../shot.png", PNG), up("notes.md", b"# hi\n")],
+            )
             .unwrap();
         assert_eq!(saved.len(), 2);
         assert_eq!(saved[0].name, "shot.png");
         assert_eq!(saved[0].mime, "image/png");
         assert!(saved[0].file.ends_with(".png") && valid_file_name(&saved[0].file));
         assert_eq!(saved[1].mime, "text/plain");
-        assert_eq!(store.read(&saved[0].file).unwrap(), PNG);
         assert_ne!(saved[0].file, saved[1].file);
-        // Only generated names resolve.
-        assert!(store.path("../etc/passwd").is_none());
-        assert!(store
-            .path("0123456789abcdef0123456789abcdef.png/..")
-            .is_none());
-        assert!(store.path("0123456789ABCDEF0123456789ABCDEF.png").is_none());
-        assert!(store.read("nope").is_err());
+        let (_, mut f) = boxes
+            .open_file(&lead, crate::files::attachment_id(&saved[0].file))
+            .unwrap();
+        let mut bytes = Vec::new();
+        f.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, PNG);
+        // Only generated ids resolve.
+        assert!(boxes.open_file(&lead, "../etc/passwd").is_err());
+        assert!(boxes.open_file(&lead, "shot.png").is_err());
         // Survives a JSON round trip (persisted in the conversation's events).
         let json = serde_json::to_string(&saved[0]).unwrap();
         assert_eq!(serde_json::from_str::<Attachment>(&json).unwrap(), saved[0]);
-        let _ = fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn refused_messages_store_nothing() {
-        let (store, root) = temp_store("refuse");
+        let (boxes, root) = temp_boxes("refuse");
         let too_many: Vec<Upload> = (0..=MAX_FILES).map(|i| up(&format!("{i}"), b"x")).collect();
-        assert!(store.save(too_many).is_err());
-        assert!(!store.dir().exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(boxes.store_uploads(&Principal::Lead, too_many).is_err());
+        assert!(!root.join("files/boxes").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn att(file: &str, mime: &str, size: u64) -> Attachment {
@@ -615,17 +518,20 @@ mod tests {
     }
 
     #[test]
-    fn delivers_blocks_and_copies() {
-        let (store, root) = temp_store("deliver");
-        let work = root.join("work");
-        let saved = store
-            .save(vec![
-                up("shot.png", PNG),
-                up("doc.pdf", PDF),
-                up("data.csv", b"a,b\n1,2\n"),
-            ])
+    fn delivers_blocks_and_lists_the_box() {
+        let (boxes, root) = temp_boxes("deliver");
+        let owner = Principal::Agent("d-0a1b2c3d.a1".into());
+        let saved = boxes
+            .store_uploads(
+                &owner,
+                vec![
+                    up("shot.png", PNG),
+                    up("doc.pdf", PDF),
+                    up("data.csv", b"a,b\n1,2\n"),
+                ],
+            )
             .unwrap();
-        let d = deliver(&store, &saved, &caps(true, true), &work);
+        let d = deliver(&boxes, &owner, &saved, &caps(true, true));
         let png64 = base64::engine::general_purpose::STANDARD.encode(PNG);
         let pdf64 = base64::engine::general_purpose::STANDARD.encode(PDF);
         assert_eq!(
@@ -643,30 +549,39 @@ mod tests {
             "{}",
             d.note
         );
-        let rel = format!("attachments/{}", saved[2].workdir_name());
+        let dir = boxes.dir(&owner).unwrap();
         assert!(
-            d.note.contains(&format!("- {rel} (text/plain, 8 B)")),
+            d.note
+                .contains(&format!("in your file box, {}/:", dir.display())),
             "{}",
             d.note
         );
-        assert_eq!(fs::read(work.join(&rel)).unwrap(), b"a,b\n1,2\n");
+        assert!(
+            d.note.contains("- data.csv (text/plain, 8 B)"),
+            "{}",
+            d.note
+        );
+        assert_eq!(std::fs::read(dir.join("data.csv")).unwrap(), b"a,b\n1,2\n");
 
-        // Without native support everything is copied.
-        let d = deliver(&store, &saved, &caps(false, false), &work);
+        // Without native support every file is only listed.
+        let d = deliver(&boxes, &owner, &saved, &caps(false, false));
         assert!(d.blocks.is_empty());
-        assert_eq!(d.note.matches("\n- attachments/").count(), 3);
+        assert_eq!(d.note.matches("\n- ").count(), 3);
 
-        // A file gone from the store is reported, not fatal.
+        // A file gone from the box is reported, not fatal.
         let gone = att("0123456789abcdef0123456789abcdef.png", "image/png", 10);
-        let d = deliver(&store, &[gone], &caps(true, true), &work);
+        let d = deliver(&boxes, &owner, &[gone], &caps(true, true));
         assert!(d.blocks.is_empty());
         assert!(d.note.contains("could not be passed on"), "{}", d.note);
+        // Another agent's box does not have them.
+        let d = deliver(&boxes, &Principal::Lead, &saved, &caps(true, true));
+        assert!(d.blocks.is_empty());
 
         assert_eq!(
-            deliver(&store, &[], &caps(true, true), &work),
+            deliver(&boxes, &owner, &[], &caps(true, true)),
             Delivery::default()
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

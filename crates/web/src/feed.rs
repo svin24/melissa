@@ -104,6 +104,8 @@ pub enum Change {
     Waiting,
     /// The user started a new chat: everything before is gone (clients reload).
     Reset,
+    /// The conversation's file box changed (the file panel, and sent files that expired).
+    Files,
 }
 
 /// The folded chat.
@@ -506,6 +508,7 @@ impl Feed {
                 )]
             }
             LeadEvent::EarlierEnd => self.end_earlier(rec.seq),
+            LeadEvent::FilesChanged => vec![Change::Files],
             LeadEvent::Error { turn, message } => {
                 if let Some(t) = turn {
                     self.errored_turns.insert(*t);

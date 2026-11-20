@@ -286,7 +286,7 @@ impl Printer {
                 ));
             }
             LeadEvent::NewChat => self.line("[new chat] the earlier chat was archived"),
-            LeadEvent::EarlierStart | LeadEvent::EarlierEnd => {}
+            LeadEvent::EarlierStart | LeadEvent::EarlierEnd | LeadEvent::FilesChanged => {}
             LeadEvent::TurnFinished { stop_reason, .. } => {
                 if stop_reason == "end_turn" {
                     if self.mid_line {

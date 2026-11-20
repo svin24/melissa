@@ -141,6 +141,19 @@ impl McpServer {
         }
     }
 
+    /// How long a confirmation asked for by this session waits for the owner (None: the
+    /// registry's confirmation timeout). Set for scheduled, unattended turns. Returns false
+    /// for an unknown session.
+    pub fn set_confirm_wait(&self, token: &str, wait: Option<std::time::Duration>) -> bool {
+        match lock(&self.sessions).get_mut(token) {
+            Some(s) => {
+                s.ctx.confirm_wait = wait;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// What first tainted a session (None: not tainted by a tool call, or unknown session).
     pub fn taint_source(&self, token: &str) -> Option<TaintSource> {
         lock(&self.sessions)

@@ -9,6 +9,7 @@ mod api;
 mod apps;
 pub mod components;
 mod feed;
+mod files;
 mod markdown;
 mod pages;
 mod settings;
@@ -687,6 +688,7 @@ mod tests {
                 workdir: dir.join("work/lead"),
                 tools: None,
                 device: "d-0a1b2c3d".into(),
+                files: melissa_agent::files::FileBoxes::open(dir.join("files")),
             };
             let lead = Lead::new(
                 settings,
@@ -2253,6 +2255,14 @@ mod tests {
             send(app, get(uri)).await
         }
 
+        async fn get_json(app: &Router, uri: &str) -> (StatusCode, Value) {
+            send_json(app, get(uri)).await
+        }
+
+        async fn post_json(app: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
+            send_json(app, json_post(uri, &body.to_string())).await
+        }
+
         /// The next SSE frame of a streaming response, as text.
         async fn next_frame(body: &mut Body) -> String {
             let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
@@ -2630,6 +2640,79 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("Nothing yet."));
             assert!(lead.server().registry().permissions().rules().is_empty());
+        }
+
+        /// Settings → Schedules: how long a scheduled run's request waits for the owner.
+        #[tokio::test]
+        async fn schedules_page_sets_the_wait_for_a_runs_requests() {
+            use melissa_agent::lead::schedules::{Schedules, TimeZone};
+            let (app, lead) = app();
+            assert_eq!(
+                get_json(&app, "/api/settings/schedules").await.0,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            let sched = lead.start_schedules(Schedules::in_memory(TimeZone::UTC));
+            let (_, _, body) = get_html(&app, "/settings/schedules").await;
+            assert!(body.contains("When a run needs your OK"), "{body}");
+            assert!(body.contains("name=\"minutes\""));
+            assert!(body.contains("value=\"10\""), "default 10 minutes: {body}");
+            let (status, _, html) =
+                send(&app, htmx_post("/ui/settings/schedules/wait", "minutes=45")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Saved."), "{html}");
+            assert_eq!(sched.schedules().approval_wait_minutes(), 45);
+            for bad in ["minutes=0", "minutes=1441", "minutes=soon"] {
+                let (_, _, html) = send(&app, htmx_post("/ui/settings/schedules/wait", bad)).await;
+                assert!(html.contains("Couldn"), "{bad}: {html}");
+            }
+            assert_eq!(sched.schedules().approval_wait_minutes(), 45);
+            let (status, body) = post_json(
+                &app,
+                "/api/settings/schedules",
+                serde_json::json!({"approval_wait_minutes": 120}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["approval_wait_minutes"], 120);
+            let (status, _) = post_json(
+                &app,
+                "/api/settings/schedules",
+                serde_json::json!({"approval_wait_minutes": 0}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(
+                get_json(&app, "/api/settings/schedules").await.1["approval_wait_minutes"],
+                120
+            );
+        }
+
+        /// A file added to the box updates an open chat's file panel over the stream.
+        #[tokio::test]
+        async fn the_file_panel_updates_live() {
+            let (app, lead) = app();
+            let since = lead.events().last_seq();
+            let epoch = lead.events().epoch();
+            let mut body = app
+                .clone()
+                .oneshot(get(&format!("/ui/stream?since={since}&epoch={epoch}")))
+                .await
+                .unwrap()
+                .into_body();
+            lead.files()
+                .save_named(
+                    &melissa_agent::tools::permissions::Principal::Lead,
+                    "notes.txt",
+                    b"saved by Melissa",
+                )
+                .unwrap();
+            let frame = next_frame(&mut body).await;
+            assert!(frame.contains("innerHTML:#file-box-body"), "{frame}");
+            assert!(frame.contains("notes.txt"), "{frame}");
+            assert!(
+                frame.contains("id=\"file-count\" hx-swap-oob=\"true\">1<"),
+                "{frame}"
+            );
         }
 
         /// Settings → Schedules: add (presets), edit, switch off, run now (labelled in the
@@ -3056,15 +3139,24 @@ mod tests {
             let names: Vec<&str> = files.iter().map(|a| a.name.as_str()).collect();
             assert_eq!(names, ["shot.png", "my_notes.txt"]);
 
-            // The chat shows a thumbnail and a download chip.
+            // The chat shows a thumbnail and a download chip, served from Melissa's box.
+            let id = |f: &melissa_agent::attachments::Attachment| {
+                melissa_agent::files::attachment_id(&f.file).to_string()
+            };
             let (_, _, page) = get_html(&app, "/").await;
-            let png = format!("/ui/attachments/{}", files[0].file);
-            let txt = format!("/ui/attachments/{}", files[1].file);
+            let png = format!("/ui/files/lead/{}", id(&files[0]));
+            let txt = format!("/ui/files/lead/{}", id(&files[1]));
             assert!(
                 page.contains(&format!("<img src=\"{png}\" alt=\"shot.png\"")),
                 "{page}"
             );
             assert!(page.contains(&format!("href=\"{txt}\" download=\"my_notes.txt\"")));
+            // The file panel lists both, newest first, sent by "You".
+            assert!(page.contains("<aside class=\"file-panel\""), "{page}");
+            assert!(page.contains("data-remember=\"file-panel\""));
+            assert!(page.contains("2 files, "), "{page}");
+            assert!(page.contains("Kept for 5 days (default)"), "{page}");
+            assert!(page.contains(" · You<"), "{page}");
 
             // Served: images inline, the rest as downloads; never script, never embedded
             // by another site.
@@ -3080,15 +3172,159 @@ mod tests {
             assert_eq!(headers["cross-origin-resource-policy"], "same-origin");
             let (_, headers, body) = send(&app, get(&txt)).await;
             assert_eq!(headers[header::CONTENT_TYPE], "text/plain; charset=utf-8");
-            assert_eq!(headers[header::CONTENT_DISPOSITION], "attachment");
+            assert_eq!(
+                headers[header::CONTENT_DISPOSITION],
+                "attachment; filename=\"my_notes.txt\""
+            );
             assert_eq!(body, "hello");
+            // Only generated ids of real boxes; another box doesn't have Melissa's files.
             for bad in [
-                "/ui/attachments/..%2F..%2Fetc%2Fpasswd",
-                "/ui/attachments/nope",
-                "/ui/attachments/0123456789abcdef0123456789abcdef.png",
+                "/ui/files/lead/..%2F..%2Fetc%2Fpasswd".to_string(),
+                "/ui/files/lead/my_notes.txt".to_string(),
+                "/ui/files/lead/0123456789abcdef0123456789abcdef".to_string(),
+                "/ui/files/..%2Flead/0123456789abcdef0123456789abcdef".to_string(),
+                format!("/ui/files/d-0a1b2c3d.a1/{}", id(&files[0])),
+                format!("/api/files/d-0a1b2c3d.a1/{}", id(&files[0])),
             ] {
-                assert_eq!(send(&app, get(bad)).await.0, StatusCode::NOT_FOUND, "{bad}");
+                assert_eq!(
+                    send(&app, get(&bad)).await.0,
+                    StatusCode::NOT_FOUND,
+                    "{bad}"
+                );
             }
+
+            // Delete from the panel: the body comes back without it, and the message shows
+            // the file as expired.
+            let (status, _, html) = send(
+                &app,
+                htmx_post(&format!("/ui/files/lead/{}/delete", id(&files[1])), ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("id=\"file-box-body\""), "{html}");
+            assert!(html.contains("1 file, "), "{html}");
+            assert!(!html.contains("my_notes.txt"), "{html}");
+            assert_eq!(send(&app, get(&txt)).await.0, StatusCode::NOT_FOUND);
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains("file-chip expired"), "{page}");
+            assert!(page.contains(">expired<"), "{page}");
+            assert!(!page.contains(&format!("href=\"{txt}\"")));
+        }
+
+        #[tokio::test]
+        async fn a_helpers_files_and_retention() {
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
+                .unwrap();
+            let owner = melissa_agent::tools::permissions::Principal::Agent(ada.id.clone());
+            // A file the helper saved in her box shows in her panel, by her.
+            let dir = lead.files().ensure_dir(&owner).unwrap();
+            std::fs::write(dir.join("report.md"), "# Weekly report\n").unwrap();
+            let (status, _, page) = get_html(&app, &format!("/agents/{}", ada.id)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(page.contains("report.md"), "{page}");
+            assert!(page.contains(" · Ada<"), "{page}");
+            // Melissa's panel doesn't show it.
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(!home.contains("report.md"));
+
+            // The API lists it and serves it.
+            let (status, body) = get_json(&app, &format!("/api/files/{}", ada.id)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["files"][0]["name"], "report.md");
+            assert_eq!(body["files"][0]["by"], "agent");
+            assert_eq!(body["keep_days"], 5);
+            assert_eq!(body["override"], false);
+            let file_id = body["files"][0]["id"].as_str().unwrap().to_string();
+            let (status, _, text) =
+                send(&app, get(&format!("/api/files/{}/{file_id}", ada.id))).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(text, "# Weekly report\n");
+            assert_eq!(
+                get_json(&app, "/api/files/nobody").await.0,
+                StatusCode::NOT_FOUND
+            );
+
+            // Her own retention, from the panel: forever.
+            let (status, _, html) = send(
+                &app,
+                htmx_post(&format!("/ui/files/{}/retention", ada.id), "keep=forever"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Kept forever"), "{html}");
+            assert_eq!(
+                lead.files().keep_for(&owner),
+                melissa_agent::files::Keep::Forever
+            );
+            // Through the API: 2 days, then back to the default; bounds checked.
+            let (status, body) = post_json(
+                &app,
+                &format!("/api/files/{}/retention", ada.id),
+                serde_json::json!({"keep_days": 2}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["keep_days"], 2);
+            let (status, _) = post_json(
+                &app,
+                &format!("/api/files/{}/retention", ada.id),
+                serde_json::json!({"keep_days": 0}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            // Settings → Files lists boxes with their own setting.
+            let (status, _, settings) = get_html(&app, "/settings/files").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(settings.contains("Boxes with their own setting"));
+            assert!(
+                settings.contains(&format!("href=\"/agents/{}\"", ada.id)),
+                "{settings}"
+            );
+            let (_, body) = post_json(
+                &app,
+                &format!("/api/files/{}/retention", ada.id),
+                serde_json::json!({"default": true}),
+            )
+            .await;
+            assert_eq!(body["override"], false);
+
+            // The default, in Settings and the API.
+            let (status, _, html) = send(&app, htmx_post("/ui/settings/files", "keep=14")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Saved."), "{html}");
+            assert_eq!(
+                lead.files().keep_for(&owner),
+                melissa_agent::files::Keep::Days(14)
+            );
+            let (_, _, html) = send(&app, htmx_post("/ui/settings/files", "keep=0")).await;
+            assert!(html.contains("Couldn"), "{html}");
+            let (status, body) = post_json(
+                &app,
+                "/api/settings/files",
+                serde_json::json!({"keep_days": null}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["keep_days"], serde_json::Value::Null);
+            assert_eq!(
+                get_json(&app, "/api/settings/files").await.1["keep_days"],
+                serde_json::Value::Null
+            );
+
+            // Delete through the API.
+            let (status, body) = post_json(
+                &app,
+                &format!("/api/files/{}/{file_id}/delete", ada.id),
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["deleted"]["name"], "report.md");
+            assert!(!dir.join("report.md").exists());
         }
 
         /// The send reply can reach the browser after the stream already ended the turn

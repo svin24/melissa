@@ -1,6 +1,6 @@
 //! Pages and fragments, assembled only from `components`. No markup is written here.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use maud::{html, Markup};
 use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BYTES};
@@ -16,7 +16,10 @@ use crate::{
         ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone,
         APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
-    components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat, SentFile},
+    components::{
+        feed_archive, file_count, file_panel, file_panel_inner, AgentMenu, ComposerTarget,
+        FilePanel, RailHelper, RailPastChat, SentFile, FILE_BODY_ID,
+    },
     feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
 };
@@ -202,32 +205,53 @@ pub fn entry_id(key: &str) -> String {
     format!("f-{key}")
 }
 
-/// Where the UI serves a stored attachment (see `ui::attachment`).
-pub fn attachment_href(file: &str) -> String {
-    format!("/ui/attachments/{file}")
+/// Where the UI serves a file of a box (`key`: `lead` or an agent id; see `ui::box_file`).
+pub fn file_href(key: &str, id: &str) -> String {
+    format!("/ui/files/{key}/{id}")
 }
 
-/// A message's stored files as the chat shows them.
-fn sent_files(files: &[Attachment]) -> Vec<SentFile> {
-    files
-        .iter()
-        .map(|a| SentFile {
-            href: attachment_href(&a.file),
-            name: a.name.clone(),
-            size: human_size(a.size),
-            image: a.is_image(),
-        })
-        .collect()
+/// Which of a conversation's sent files are still in its file box, and where they are.
+pub struct FileLinks {
+    /// The box key: `lead` or the agent's id.
+    pub key: String,
+    /// Ids of the files in the box.
+    pub present: HashSet<String>,
+}
+
+impl FileLinks {
+    /// No box (nothing is shown as available).
+    pub fn none() -> Self {
+        Self {
+            key: String::new(),
+            present: HashSet::new(),
+        }
+    }
+
+    /// A message's files as the chat shows them; those no longer in the box as expired.
+    fn sent(&self, files: &[Attachment]) -> Vec<SentFile> {
+        files
+            .iter()
+            .map(|a| {
+                let id = melissa_agent::files::attachment_id(&a.file);
+                SentFile {
+                    href: self.present.contains(id).then(|| file_href(&self.key, id)),
+                    name: a.name.clone(),
+                    size: human_size(a.size),
+                    image: a.is_image(),
+                }
+            })
+            .collect()
+    }
 }
 
 /// The content of one feed entry (without its `li`).
-pub fn entry_content(entry: &Entry) -> Markup {
+pub fn entry_content(entry: &Entry, links: &FileLinks) -> Markup {
     match &entry.item {
         Item::User {
             text,
             files,
             scheduled: None,
-        } => user_message_with(text, &sent_files(files)),
+        } => user_message_with(text, &links.sent(files)),
         Item::User {
             text,
             scheduled: Some(name),
@@ -291,9 +315,9 @@ pub fn approval_gone() -> Markup {
     )
 }
 
-fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>) -> Markup {
+fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>, links: &FileLinks) -> Markup {
     html! {
-        @for e in list { (feed_entry(&entry_id(&e.key), entry_content(e))) }
+        @for e in list { (feed_entry(&entry_id(&e.key), entry_content(e, links))) }
     }
 }
 
@@ -315,27 +339,37 @@ impl View {
     }
 }
 
+/// What a live update needs besides the feed.
+pub struct StreamExtras<'a> {
+    pub backend: Option<&'a str>,
+    pub agents: Option<&'a AgentMenu>,
+    pub waiting: usize,
+    pub links: &'a FileLinks,
+    /// The file panel, when the box changed (chat view).
+    pub files: Option<&'a FilePanel<'a>>,
+}
+
 /// The HTML for one live update: new entries (appended by the client) and out-of-band
-/// replacements for changed entries, the composer status and the waiting count. Empty if
-/// nothing visible changed.
+/// replacements for changed entries, the composer status, the waiting count and the file
+/// panel. Empty if nothing visible changed.
 pub fn stream_update(
     feed: &Feed,
     changes: &[Change],
     view: View,
     who: Who<'_>,
-    backend: Option<&str>,
-    agents: Option<&AgentMenu>,
-    waiting: usize,
+    x: &StreamExtras<'_>,
 ) -> String {
+    let (backend, agents, waiting, links) = (x.backend, x.agents, x.waiting, x.links);
     let mut added = Vec::new();
     let mut updated = Vec::new();
-    let (mut status, mut count) = (false, false);
+    let (mut status, mut count, mut files) = (false, false, false);
     for c in changes {
         match *c {
             Change::Added(i) if !added.contains(&i) => added.push(i),
             Change::Updated(i) if !updated.contains(&i) => updated.push(i),
             Change::Status => status = true,
             Change::Waiting => count = true,
+            Change::Files => files = true,
             _ => {}
         }
     }
@@ -343,11 +377,23 @@ pub fn stream_update(
     let shown = |i: &usize| list.get(*i).is_some_and(|e| view.shows(&e.item));
     let out = html! {
         @for i in added.iter().filter(|i| shown(i)) {
-            (feed_entry(&entry_id(&list[*i].key), entry_content(&list[*i])))
+            (feed_entry(&entry_id(&list[*i].key), entry_content(&list[*i], links)))
         }
         // An entry added in this batch is already rendered in its latest state.
         @for i in updated.iter().filter(|i| shown(i) && !added.contains(i)) {
-            (oob_inner(&entry_id(&list[*i].key), entry_content(&list[*i])))
+            (oob_inner(&entry_id(&list[*i].key), entry_content(&list[*i], links)))
+        }
+        @if let (true, View::Chat, Some(panel)) = (files, view, x.files) {
+            (oob_inner(FILE_BODY_ID, file_panel_inner(panel)))
+            (file_count(panel.files.len(), true))
+            // Sent files that left the box show as expired.
+            @for (i, e) in list.iter().enumerate().filter(|(i, e)| {
+                matches!(&e.item, Item::User { files, .. } if !files.is_empty())
+                    && !added.contains(i)
+                    && !updated.contains(i)
+            }) {
+                (oob_inner(&entry_id(&list[i].key), entry_content(e, links)))
+            }
         }
         @if status && view == View::Chat {
             (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), backend, feed.busy(), agents)))
@@ -427,6 +473,10 @@ pub struct ChatView<'a> {
     pub error: Option<&'a str>,
     /// Voice input's transcribe URL when it is on and ready (a mic in the composer).
     pub voice: Option<&'static str>,
+    /// Which sent files are still in the box.
+    pub links: &'a FileLinks,
+    /// The conversation's file panel (None: only the composer is rendered).
+    pub files: Option<&'a FilePanel<'a>>,
 }
 
 /// The chat with Melissa (the lead agent): home.
@@ -436,19 +486,22 @@ pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
         "Chat",
         rail_for(Nav::Chat, f, None),
         html! {
-            div.chat {
-                (strip(f.snap))
-                (feed(
-                    FEED_ID,
-                    "Conversation",
-                    &v.who.stream_url(v.feed.last_seq(), v.epoch),
-                    entries(v.feed.entries()),
-                    empty_state(
-                        "Hi, I'm Melissa.",
-                        "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
-                    ),
-                ))
-                (composer_box(v))
+            div.chat-layout {
+                div.chat {
+                    (strip(f.snap))
+                    (feed(
+                        FEED_ID,
+                        "Conversation",
+                        &v.who.stream_url(v.feed.last_seq(), v.epoch),
+                        entries(v.feed.entries(), v.links),
+                        empty_state(
+                            "Hi, I'm Melissa.",
+                            "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
+                        ),
+                    ))
+                    (composer_box(v))
+                }
+                @if let Some(p) = v.files { (file_panel(p)) }
             }
         },
     )
@@ -476,19 +529,22 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
         &agent.name,
         rail_for(Nav::Helper, f, Some(&agent.id)),
         html! {
-            div.chat {
-                (page_header(&agent.name, Some(&lead)))
-                (feed(
-                    FEED_ID,
-                    &format!("Conversation with {}", agent.name),
-                    &v.who.stream_url(v.feed.last_seq(), v.epoch),
-                    entries(v.feed.entries()),
-                    empty_state(
-                        &format!("Nothing here yet with {}.", agent.name),
-                        "Its jobs from Melissa and your messages show up here.",
-                    ),
-                ))
-                (composer_box(v))
+            div.chat-layout {
+                div.chat {
+                    (page_header(&agent.name, Some(&lead)))
+                    (feed(
+                        FEED_ID,
+                        &format!("Conversation with {}", agent.name),
+                        &v.who.stream_url(v.feed.last_seq(), v.epoch),
+                        entries(v.feed.entries(), v.links),
+                        empty_state(
+                            &format!("Nothing here yet with {}.", agent.name),
+                            "Its jobs from Melissa and your messages show up here.",
+                        ),
+                    ))
+                    (composer_box(v))
+                }
+                @if let Some(p) = v.files { (file_panel(p)) }
             }
         },
     )
@@ -515,7 +571,7 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
 }
 
 /// An archived chat with Melissa: read-only, no composer.
-pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed) -> Markup {
+pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks) -> Markup {
     let lead = format!(
         "An earlier chat with Melissa, kept read-only. Started {}, closed {}.",
         short_date(chat.started),
@@ -531,7 +587,7 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed) -> Markup {
                 (feed_archive(
                     FEED_ID,
                     "Past chat",
-                    entries(feed.entries()),
+                    entries(feed.entries(), links),
                     empty_state("Nothing in this chat.", "It was closed before anything was said."),
                 ))
                 p.quiet { (link("/", "Back to the current chat")) }
