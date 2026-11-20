@@ -32,6 +32,21 @@ eq "one address does not cover another" no "$(yes_no bind_covers 203.0.113.5)"
 eq "one address does not cover loopback" no "$(yes_no bind_covers 127.0.0.1)"
 eq "an unresolvable name is not covered" no "$(yes_no bind_covers nothing.invalid)"
 
+# --- what the server is told (MELISSA_PUBLISH_BIND) -----------------------------------------
+ALLOW_ADDRESS_MISMATCH=no
+BIND=127.0.0.1; eq "publish bind: loopback" 127.0.0.1 "$(publish_bind)"
+BIND=localhost; eq "publish bind: localhost as an address" 127.0.0.1 "$(publish_bind)"
+BIND=100.64.0.10; eq "publish bind: one address" 100.64.0.10 "$(publish_bind)"
+BIND=''; eq "publish bind: empty BIND is every address" 0.0.0.0 "$(publish_bind)"
+BIND=::; eq "publish bind: ::" :: "$(publish_bind)"
+ALLOW_ADDRESS_MISMATCH=yes
+BIND=127.0.0.1; eq "publish bind: unknown when something else forwards" "" "$(publish_bind)"
+ALLOW_ADDRESS_MISMATCH=no
+eq "melissa.container passes it" yes \
+    "$(yes_no grep -qx 'Environment=MELISSA_PUBLISH_BIND=@PUBLISH_BIND@' "$here/melissa.container")"
+eq "the server's unit takes it" yes \
+    "$(yes_no grep -qx 'PassEnvironment=MELISSA_PUBLISH_BIND' "$here/rootfs/usr/lib/systemd/system/melissa-server.service.d/10-container.conf")"
+
 # --- defaults from BIND --------------------------------------------------------------------
 unset APP_ADDRESSES
 BIND=127.0.0.1; eq "loopback BIND: 127.0.0.1" 127.0.0.1 "$(app_addresses)"

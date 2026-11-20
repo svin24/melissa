@@ -273,9 +273,10 @@ fn link_fields(
     })
 }
 
-/// [`link_fields`] after the reachability check (when configured): addresses where the app's
-/// ports are not published are left out of the links and reported under `reachability`, so
-/// agents don't hand out dead addresses.
+/// [`link_fields`] after the reachability check (when configured): addresses where the host
+/// provably doesn't publish the app's ports are left out of the links and reported under
+/// `reachability`, so agents don't hand out dead addresses (a failed probe alone never drops
+/// one: `reach.rs`).
 async fn checked_links(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value {
     let mut addresses = settings.addresses();
     let mut report = None;
@@ -1409,9 +1410,10 @@ impl Tool for AppStatus {
                 stopping, stopped, uninstalled_data_kept, deleting), ready replicas, `url` \
                 (web UI: http://<this device>:<its port>; `urls`: every address of the \
                 device; `dns_url` only works with the owner's own DNS), `ports` (each port on \
-                the device: `address` host:port and `protocol`), `reachability` (each address \
-                tried from the device: an `unreachable` one is left out of the links, pass its \
-                `warning` to the user; UDP isn't checked), its current `spec` (edit it \
+                the device: `address` host:port and `protocol`), `reachability` (each \
+                address: `unreachable` ones (the host doesn't publish app ports there) are left \
+                out of the links, pass the `warning` to the user; `unverified` ones are kept, \
+                mention the `note` only if people can't open the link), its current `spec` (edit it \
                 for update_app), the agent that looks after the workspace (`agent`: id, \
                 `agent_name`; null = no agent) and who installed it, volumes, and pods with \
                 sanitized problem reasons (e.g. ImagePullBackOff, CrashLoopBackOff, OOMKilled).",

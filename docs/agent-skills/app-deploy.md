@@ -84,16 +84,20 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
   port, node_port, web, address: "<addr>:<port>", url}]`. `port` = NodePort + `[apps] port_offset`.
 - Web UI: the link uses the visitor's `Host` + port; non-web ports show
   `<host>:<port> (TCP|UDP)` on the tile (when there is no link) and in the details dialog.
-- Reachability (`reach.rs`): `deploy_app`, `update_app`, `start_app` and `app_status` try a TCP
-  connect (800 ms timeout; open and timed-out results cached 15 s) to every advertised
-  `address:port`, plus a control connect to the NodePort on the device's own address (in the
-  container: its bridge address, k3s's node address). Control open but an address refused or timed
-  out: the address is dead (ports not published there, e.g. a container install with
-  `BIND=127.0.0.1` and a Tailscale address in `[apps] addresses`); it is dropped from
-  `url`/`urls`/`ports[].address` and listed under `reachability` with a `warning` for the owner.
-  Nothing answers: `app_not_answering` (starting, or listening on another port), links kept.
-  Not checked: UDP (no handshake), loopback addresses (work on the device only). Checked from the
-  device itself, so a firewall that only blocks other machines is not seen.
+- Reachability (`reach.rs`), in `deploy_app`, `update_app`, `start_app` and `app_status`. A
+  control connect to the NodePort on the device's own address (in the container: its bridge
+  address, k3s's node address) tells whether the app answers; if not: `app_not_answering`
+  (starting, or listening on another port), links kept. The advertised addresses:
+  - Container install (`MELISSA_PUBLISH_BIND`, the host's `BIND`): judged by the bind, not
+    probed (from inside the container the host's published address never answers: no
+    hairpin). An address the bind provably doesn't cover (e.g. `BIND=127.0.0.1` and a
+    Tailscale address in `[apps] addresses`) is `unreachable`: dropped from
+    `url`/`urls`/`ports[].address` with a `warning` for the owner. Covered: kept. Host names:
+    kept, `unverified`.
+  - No bind known (Nix/host install): a TCP connect to every `address:port` (800 ms; open and
+    timed-out results cached 15 s). A failure while the app answers is `unverified` with a
+    `note`; the link is kept (a connect from the device isn't proof either way). Loopback and
+    UDP are not probed (said so).
 
 ### Connection problems (agent guidance)
 - Verify reachability (`app_status`: `reachability`, pods ready) before blaming the app. Never
