@@ -959,9 +959,8 @@ Roadmap (rough, phases may overlap):
     `transition: all`, missing reduced-motion rules), and a headless layout check at 1440/1024/768/390/320?
     (c) Copy fixes from the first lint pass: "agent" means a helper, a provider and Melissa in different places
     (Settings → Agents, Providers, "Lead agent", "Claude-backed agents"); several errors show raw error text
-    ("Couldn't save that: {e}") or no next step ("Couldn't save."). (d) Small CSS drift: a raw `#1b2533` on
-    `.count`, untokened overlay shadows and backdrops, `margin-right: -48px` on `.file-more`, `tabular-nums` only
-    on the voice timer.
+    ("Couldn't save that: {e}") or no next step ("Couldn't save."). (d) Small CSS drift: fixed in the 2026-11-20
+    cleanup except the banner close button's raw hover colour; `tabular-nums` is still rare (timer, counts).
 76. Add and remove providers (2026-11-20; DECISIONS): (a) Decided 2026-11-20: the image ships Node.js 24 (~73 MiB
     with npm) and `melissa-setup` installs npm-only agents into the agents' home with pinned versions and
     integrity (Gemini CLI, Codex are built in now). Still open: registry agents distributed only through

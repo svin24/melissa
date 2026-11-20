@@ -111,19 +111,9 @@ pub(crate) fn keep_choices(default: Option<Keep>, current: Option<Keep>) -> Vec<
     out
 }
 
-fn usage_words(files: &[BoxFile]) -> String {
-    let total: u64 = files.iter().map(|f| f.size).sum();
-    match files.len() {
-        0 => "No files".into(),
-        1 => format!("1 file, {}", human_size(total)),
-        n => format!("{n} files, {}", human_size(total)),
-    }
-}
-
 /// Everything the file panel shows (owned; [`PanelData::view`] borrows it).
 pub(crate) struct PanelData {
     files: Vec<PanelFile>,
-    usage: String,
     keep: String,
     keep_action: String,
     choices: Vec<(String, String)>,
@@ -138,7 +128,6 @@ impl PanelData {
     pub(crate) fn view(&self) -> FilePanel<'_> {
         FilePanel {
             files: &self.files,
-            usage: &self.usage,
             keep: &self.keep,
             keep_action: &self.keep_action,
             keep_choices: &self.choices,
@@ -273,7 +262,6 @@ impl Ui {
         };
         PanelData {
             files: rows,
-            usage: usage_words(&list),
             keep: keep_words,
             keep_action: format!("/ui/files/{key}/retention"),
             choices: keep_choices(Some(files.retention().default), own),

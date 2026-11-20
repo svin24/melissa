@@ -450,37 +450,6 @@ pub fn app_grid(label: &str, workspaces: Markup) -> Markup {
     html! { ul.app_grid aria-label=(label) { (workspaces) } }
 }
 
-/// A mini workspace in the app strip.
-pub struct StripTile<'a> {
-    pub name: &'a str,
-    pub health: Health,
-}
-
-/// The compact app-state strip at the top of the chat. Refreshes itself from `url`.
-pub fn app_strip(
-    url: &str,
-    workspaces: &[StripTile<'_>],
-    summary: &str,
-    warning: Option<&str>,
-) -> Markup {
-    html! {
-        section.strip #app-strip aria-label="Your apps" hx-get=(url) hx-trigger="every 15s" hx-swap="outerHTML" {
-            @if !workspaces.is_empty() {
-                ul.mini-tiles aria-hidden="true" {
-                    @for c in workspaces {
-                        li class={ "mini " (c.health.class()) } title=(c.name) {}
-                    }
-                }
-            }
-            p.strip-text {
-                span { (summary) }
-                @if let Some(w) = warning { span.strip-warn { (w) } }
-            }
-            a.strip-link href="/cluster" { "Apps" }
-        }
-    }
-}
-
 // --- Devices ---------------------------------------------------------------------------
 
 /// A usage meter (0.0 to 1.0) with a text label.
@@ -776,11 +745,6 @@ fn split_blocks(text: &str) -> Vec<Block<'_>> {
         blank = false;
     }
     out
-}
-
-/// A message the user wrote (right-aligned, dark bubble).
-pub fn user_message(text: &str) -> Markup {
-    user_message_with(text, &[])
 }
 
 /// A file the user sent with a message, as the chat shows it.
@@ -1211,8 +1175,6 @@ pub struct PanelFile {
 /// A chat's file panel (the Files section of the details panel).
 pub struct FilePanel<'a> {
     pub files: &'a [PanelFile],
-    /// `3 files, 12 MiB`.
-    pub usage: &'a str,
     /// `Kept for 5 days`.
     pub keep: &'a str,
     /// POST here to change how long this box keeps files (form field `keep`).
@@ -1505,8 +1467,6 @@ pub(crate) fn approval_state_outcome(state: ApprovalState) -> Markup {
 pub struct ComposerTarget<'a> {
     /// POST URL for a message (form field `text`).
     pub send: &'a str,
-    /// POST URL that stops the running turn.
-    pub cancel: &'a str,
     pub placeholder: &'a str,
     /// POST URL that turns a recording into text (voice input on and ready), if any.
     pub voice: Option<&'a str>,
@@ -2045,7 +2005,7 @@ fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Mark
 // header, and each section's content. Built for more sections than Providers and Updates.
 
 pub use panel::{
-    glyph, inline_form, inline_number, inline_select, overlay_dialog, panel, rail_foot,
+    glyph, inline_form, inline_number, inline_select, overlay_dialog, panel, section_bar,
     setting_card, setting_row, setting_row_with, settings_frame_at, usage_table, Glyph,
     SettingsSection, UpdateHint, UsageRow, OVERLAY_BODY_ID, OVERLAY_ID,
 };
@@ -2096,7 +2056,7 @@ pub use agent::{
 mod mobile;
 pub use mobile::{
     back_link, composer_caption, menu_cancel, menu_head, new_agent_round, phone_view, sheet_avatar,
-    sheet_handle, sheet_sub, tab_bar, MenuWho, PhoneView, SheetWho,
+    sheet_handle, sheet_sub, MenuWho, PhoneView, SheetWho,
 };
 mod panel;
 mod provider_add;
@@ -2622,13 +2582,13 @@ mod tests {
         assert!(out.contains(&format!("Open {link}.")), "{out}");
         let out = markdown("`http://nextcloud.example.com`").into_string();
         assert!(!out.contains("<a "), "{out}");
-        let out =
-            user_message("see http://nextcloud.example.com, `http://x.example`").into_string();
+        let out = user_message_with("see http://nextcloud.example.com, `http://x.example`", &[])
+            .into_string();
         assert!(
             out.contains(&format!("see {link}, <code>http://x.example</code>")),
             "{out}"
         );
-        let out = user_message("a\nb\n\nc <b>").into_string();
+        let out = user_message_with("a\nb\n\nc <b>", &[]).into_string();
         assert!(out.contains("<p>a<br>b</p><p>c &lt;b&gt;</p>"), "{out}");
     }
 
@@ -2748,19 +2708,6 @@ mod tests {
         let add = add_app_tile("/?draft=Install").into_string();
         assert!(add.contains("hex hex-add"));
         assert!(add.contains("Add an app"));
-        let strip = app_strip(
-            "/ui/strip",
-            &[StripTile {
-                name: "Immich",
-                health: Health::Busy,
-            }],
-            "Immich installing",
-            Some("Disk 91% full"),
-        )
-        .into_string();
-        assert!(strip.contains("mini h-busy"));
-        assert!(strip.contains("hx-get=\"/ui/strip\""));
-        assert!(strip.contains("Disk 91% full"));
     }
 
     #[test]

@@ -10,6 +10,28 @@
 
   var stickToBottom = true;
 
+  function each(list, fn) {
+    Array.prototype.forEach.call(list, fn);
+  }
+
+  // Remembered choices, per browser (or per tab with `session`). Storage can be blocked
+  // (private windows): then nothing is remembered and reading gives null.
+  function stored(key, session) {
+    try {
+      return (session ? window.sessionStorage : window.localStorage).getItem(key);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function store(key, value, session) {
+    try {
+      (session ? window.sessionStorage : window.localStorage).setItem(key, value);
+    } catch (e) {
+      // Not remembered.
+    }
+  }
+
   // What scrolls the chat: the nearest scrolling box around the feed (the main column, or the
   // chat column beside the details panel), or the page on phones.
   function scroller() {
@@ -156,7 +178,7 @@
       return sum + f.size;
     }, 0);
     var refused = "";
-    Array.prototype.forEach.call(files, function (f) {
+    each(files, function (f) {
       if (f.size > maxFile) {
         refused = f.name + " is over " + sizeText(maxFile) + ".";
       } else if (kept.length >= maxCount) {
@@ -600,23 +622,16 @@
 
   function favorites() {
     try {
-      var list = JSON.parse(window.localStorage.getItem(FAVORITES) || "[]");
+      var list = JSON.parse(stored(FAVORITES) || "[]");
       return Array.isArray(list) ? list : [];
     } catch (e) {
       return [];
     }
   }
 
+  // Without storage the star works until the page reloads.
   function saveFavorites(list) {
-    try {
-      window.localStorage.setItem(FAVORITES, JSON.stringify(list));
-    } catch (e) {
-      // Storage unavailable: the star works until the page reloads.
-    }
-  }
-
-  function each(list, fn) {
-    Array.prototype.forEach.call(list, fn);
+    store(FAVORITES, JSON.stringify(list));
   }
 
   // The picks shown now, in order.
@@ -861,23 +876,12 @@
   }
 
   function storedOpen(wide) {
-    try {
-      var v = window.localStorage.getItem("melissa.details." + (wide ? "wide" : "narrow"));
-      if (v === "1" || v === "0") {
-        return v === "1";
-      }
-    } catch (e) {
-      // Storage unavailable: the default.
-    }
-    return wide;
+    var v = stored("melissa.details." + (wide ? "wide" : "narrow"));
+    return v === "1" || v === "0" ? v === "1" : wide;
   }
 
   function storeOpen(wide, open) {
-    try {
-      window.localStorage.setItem("melissa.details." + (wide ? "wide" : "narrow"), open ? "1" : "0");
-    } catch (e) {
-      // Storage unavailable: nothing to remember.
-    }
+    store("melissa.details." + (wide ? "wide" : "narrow"), open ? "1" : "0");
   }
 
   function detailsParts() {
@@ -921,7 +925,7 @@
     if (p.backdrop) {
       p.backdrop.hidden = !sheet;
     }
-    Array.prototype.forEach.call(p.covered, function (el) {
+    each(p.covered, function (el) {
       el.inert = sheet;
     });
     if (p.toggle) {
@@ -1000,7 +1004,7 @@
     if (p.toggle) {
       p.toggle.hidden = false;
     }
-    Array.prototype.forEach.call(p.panel.querySelectorAll(".details-close"), function (b) {
+    each(p.panel.querySelectorAll(".details-close"), function (b) {
       b.hidden = false;
     });
     showDetails(storedOpen(isWide()), false);
@@ -1019,10 +1023,10 @@
 
   // --- The sidebar (2026-11-20, owner design): agents grouped by state. --------------------
   // Here: the search filters the agents as you type; wide screens collapse it (remembered per
-  // browser) and the chat header's button shows it again; on phones it is a sheet over the
-  // page (the header's button opens it; the collapse button, Esc or a click outside close it;
-  // focus moves in and back). Working/Settled keep the open state the user gave them across
-  // live updates (per tab). Without script it is a plain column (above the chat on phones).
+  // browser) and the chat header's button shows it again. Working/Settled keep the open state
+  // the user gave them across live updates (per tab). On phones it is the agent list (CSS;
+  // `components::mobile`), so collapsing doesn't apply there. Without script it is a plain
+  // column.
 
   var PHONE = window.matchMedia ? window.matchMedia("(max-width: 760px)") : null;
 
@@ -1030,36 +1034,17 @@
     return !!(PHONE && PHONE.matches);
   }
 
-  function sideParts() {
-    var nav = document.getElementById("sidebar");
-    if (!nav) {
-      return null;
-    }
-    return {
-      nav: nav,
-      backdrop: document.querySelector(".side-backdrop"),
-      covered: document.querySelectorAll("main, .banner, .skip"),
-    };
-  }
-
   function sideCollapsed() {
     return document.documentElement.getAttribute("data-sidebar") === "collapsed";
   }
 
   function showSideButtons() {
-    var phone = isPhone();
     var collapsed = sideCollapsed();
-    Array.prototype.forEach.call(document.querySelectorAll("[data-sidebar-expand]"), function (b) {
-      b.hidden = !(phone || collapsed);
+    each(document.querySelectorAll("[data-sidebar-expand]"), function (b) {
+      b.hidden = !collapsed;
     });
-    Array.prototype.forEach.call(document.querySelectorAll("[data-sidebar-collapse]"), function (b) {
+    each(document.querySelectorAll("[data-sidebar-collapse]"), function (b) {
       b.hidden = false;
-      var label = phone ? "Close agents" : "Collapse sidebar";
-      b.title = label;
-      var text = b.querySelector("span");
-      if (text) {
-        text.textContent = label;
-      }
     });
   }
 
@@ -1069,11 +1054,7 @@
     } else {
       document.documentElement.removeAttribute("data-sidebar");
     }
-    try {
-      window.localStorage.setItem("melissa.sidebar", collapsed ? "collapsed" : "open");
-    } catch (e) {
-      // Storage unavailable: only this page.
-    }
+    store("melissa.sidebar", collapsed ? "collapsed" : "open");
     showSideButtons();
     var to = collapsed
       ? document.querySelector(".chat-head [data-sidebar-expand]")
@@ -1081,37 +1062,6 @@
     if (to) {
       to.focus();
     }
-  }
-
-  function setSheet(open, focus) {
-    var p = sideParts();
-    if (!p) {
-      return;
-    }
-    if (open) {
-      p.nav.setAttribute("data-open", "");
-    } else {
-      p.nav.removeAttribute("data-open");
-    }
-    if (p.backdrop) {
-      p.backdrop.hidden = !open;
-    }
-    Array.prototype.forEach.call(p.covered, function (el) {
-      el.inert = open;
-    });
-    if (focus) {
-      var to = open
-        ? document.getElementById("agent-search")
-        : document.querySelector(".chat-head [data-sidebar-expand]");
-      if (to) {
-        to.focus();
-      }
-    }
-  }
-
-  function sheetOpen() {
-    var p = sideParts();
-    return !!(p && isPhone() && p.nav.hasAttribute("data-open"));
   }
 
   document.addEventListener("click", function (e) {
@@ -1125,30 +1075,11 @@
       if (menu && menu.hidePopover && menu.matches(":popover-open")) {
         menu.hidePopover();
       }
-      if (isPhone()) {
-        setSheet(false, true);
-      } else {
-        setCollapsed(true);
-      }
+      setCollapsed(true);
       return;
     }
     if (t.closest("[data-sidebar-expand]")) {
-      if (isPhone()) {
-        setSheet(true, true);
-      } else {
-        setCollapsed(false);
-      }
-      return;
-    }
-    if (t.closest("[data-sidebar-close]")) {
-      setSheet(false, true);
-    }
-  });
-
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && sheetOpen() && !document.querySelector(":popover-open, dialog[open]")) {
-      e.preventDefault();
-      setSheet(false, true);
+      setCollapsed(false);
     }
   });
 
@@ -1162,11 +1093,11 @@
     }
     var q = input.value.trim().toLowerCase();
     var any = false;
-    Array.prototype.forEach.call(groups.querySelectorAll(".agent-row"), function (row) {
+    each(groups.querySelectorAll(".agent-row"), function (row) {
       row.hidden = q !== "" && (row.getAttribute("data-name") || "").indexOf(q) < 0;
       any = any || !row.hidden;
     });
-    Array.prototype.forEach.call(groups.querySelectorAll(".agent-group"), function (g) {
+    each(groups.querySelectorAll(".agent-group"), function (g) {
       var shown = !!g.querySelector(".agent-row:not([hidden])");
       g.hidden = q !== "" && !shown;
       if (g.tagName === "DETAILS") {
@@ -1203,23 +1134,14 @@
       if (!(g instanceof Element) || !g.matches("details.agent-group") || g.hasAttribute("data-was")) {
         return;
       }
-      try {
-        window.sessionStorage.setItem(groupKey(g), g.open ? "1" : "0");
-      } catch (err) {
-        // Not remembered.
-      }
+      store(groupKey(g), g.open ? "1" : "0", true);
     },
     true
   );
 
   function restoreGroups() {
-    Array.prototype.forEach.call(document.querySelectorAll("details.agent-group[data-group]"), function (g) {
-      var v = null;
-      try {
-        v = window.sessionStorage.getItem(groupKey(g));
-      } catch (err) {
-        v = null;
-      }
+    each(document.querySelectorAll("details.agent-group[data-group]"), function (g) {
+      var v = stored(groupKey(g), true);
       if (v === "1" || v === "0") {
         g.open = v === "1";
       }
@@ -1235,33 +1157,15 @@
   });
 
   function initSidebar() {
-    var p = sideParts();
-    if (!p) {
+    if (!document.getElementById("sidebar")) {
       return;
     }
-    var stored = null;
-    try {
-      stored = window.localStorage.getItem("melissa.sidebar");
-    } catch (e) {
-      stored = null;
-    }
-    if (stored === "collapsed") {
+    if (stored("melissa.sidebar") === "collapsed") {
       document.documentElement.setAttribute("data-sidebar", "collapsed");
     }
     showSideButtons();
     restoreGroups();
     filterAgents();
-    window.requestAnimationFrame(function () {
-      window.requestAnimationFrame(function () {
-        p.nav.setAttribute("data-ready", "");
-      });
-    });
-    if (PHONE && PHONE.addEventListener) {
-      PHONE.addEventListener("change", function () {
-        setSheet(false, false);
-        showSideButtons();
-      });
-    }
   }
 
   // --- Menus ("⋯", the device menu): native popovers; placed next to the button that opened
@@ -1387,30 +1291,20 @@
   // browser. Storage can be blocked (private windows); then it only hides for this page.
   function initDismiss() {
     var buttons = document.querySelectorAll("[data-dismiss]");
-    Array.prototype.forEach.call(buttons, function (b) {
+    each(buttons, function (b) {
       var id = b.getAttribute("data-dismiss");
       var el = document.getElementById(id);
       if (!el) {
         return;
       }
       var key = "melissa.dismissed." + id;
-      var gone = false;
-      try {
-        gone = window.localStorage.getItem(key) === "1";
-      } catch (e) {
-        gone = false;
-      }
-      if (gone) {
+      if (stored(key) === "1") {
         el.remove();
         return;
       }
       b.hidden = false;
       b.addEventListener("click", function () {
-        try {
-          window.localStorage.setItem(key, "1");
-        } catch (e) {
-          // Not remembered; it still goes away now.
-        }
+        store(key, "1");
         el.remove();
       });
     });
@@ -1600,12 +1494,12 @@
   function filterSettings(root, query) {
     var q = query.trim().toLowerCase();
     var any = false;
-    Array.prototype.forEach.call(root.querySelectorAll(".settings-nav li"), function (li) {
+    each(root.querySelectorAll(".settings-nav li"), function (li) {
       var text = (li.textContent + " " + (li.getAttribute("data-keywords") || "")).toLowerCase();
       li.hidden = q !== "" && text.indexOf(q) < 0;
       any = any || !li.hidden;
     });
-    Array.prototype.forEach.call(root.querySelectorAll(".settings-nav ul"), function (ul) {
+    each(root.querySelectorAll(".settings-nav ul"), function (ul) {
       var shown = ul.querySelector("li:not([hidden])");
       ul.hidden = !shown;
       var label = ul.previousElementSibling;
@@ -1617,7 +1511,7 @@
     if (none) {
       none.hidden = any;
     }
-    Array.prototype.forEach.call(root.querySelectorAll("[data-setting]"), function (row) {
+    each(root.querySelectorAll("[data-setting]"), function (row) {
       row.hidden = q !== "" && row.textContent.toLowerCase().indexOf(q) < 0;
     });
   }

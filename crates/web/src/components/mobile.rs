@@ -4,7 +4,8 @@
 //! agent's "⋯" menu opens as an action sheet.
 //!
 //! These are the phone-only pieces; the screens reuse the desktop components (the sidebar is
-//! the Agents screen, `details_panel` the sheet, `agent_menu` the action sheet). Everything
+//! the Agents screen and its `section_bar` the tab bar, `details_panel` the sheet,
+//! `agent_menu` the action sheet). Everything
 //! here is hidden above 760px by CSS, and works without script: the list and the chat are
 //! separate pages, the sheet is a section after the chat, and the action sheet is a native
 //! popover.
@@ -15,8 +16,7 @@ use maud::{html, Markup};
 
 use super::{
     agent::{avatar, Avatar},
-    panel::{glyph, Glyph, UpdateHint},
-    Nav,
+    panel::{glyph, Glyph},
 };
 
 /// Which screen a page is on a phone. Above 760px both show the same page.
@@ -63,36 +63,6 @@ pub fn new_agent_round(href: &str) -> Markup {
         a.icon-button.round-button.phone-new href=(href) title="New helper" {
             (glyph(Glyph::Plus))
             span.visually-hidden { "New helper" }
-        }
-    }
-}
-
-/// The tab bar at the bottom of the phone's agent list: Settings, Apps, Usage and Updates
-/// (the wide sidebar's bottom bar, with words). The links open the same panels (melissa.js
-/// shows them full screen); without script they are pages.
-pub fn tab_bar(current: Nav, update: &UpdateHint) -> Markup {
-    let tab = |href: &str, label: &str, title: &str, icon: Glyph, here: bool| {
-        html! {
-            a.tab href=(href) title=(title) aria-current=[here.then_some("page")] {
-                (glyph(icon))
-                span.tab-label { (label) }
-            }
-        }
-    };
-    html! {
-        nav.tab-bar aria-label="Sections" {
-            (tab("/settings", "Settings", "Settings", Glyph::Gear, current == Nav::Settings))
-            (tab("/cluster", "Apps", "Apps", Glyph::Hexagon, current == Nav::Cluster))
-            (tab("/usage", "Usage", "Usage and resources", Glyph::Chart, current == Nav::Usage))
-            a class={ "tab tab-update" @if update.available { " has-update" } } href=(update.href)
-                title=(update.label) data-update=(if update.available { "available" } else { "none" }) {
-                span.tab-icon {
-                    (glyph(Glyph::Refresh))
-                    @if update.available { span.update-dot aria-hidden="true" {} }
-                }
-                span.tab-label { "Updates" }
-                @if update.available { span.visually-hidden { ": " (update.label) } }
-            }
         }
     }
 }
@@ -171,39 +141,6 @@ mod tests {
             r#"<span hidden data-phone-view="list"></span>"#
         );
         assert_eq!(phone_view(PhoneView::Page).into_string(), "");
-    }
-
-    #[test]
-    fn the_tab_bar_has_four_labelled_tabs() {
-        let html = tab_bar(Nav::Chat, &UpdateHint::NONE).into_string();
-        for (href, label) in [
-            ("/settings", "Settings"),
-            ("/cluster", "Apps"),
-            ("/usage", "Usage"),
-            ("/settings/updates", "Updates"),
-        ] {
-            assert!(html.contains(&format!("href=\"{href}\"")), "{href}");
-            assert!(
-                html.contains(&format!("<span class=\"tab-label\">{label}</span>")),
-                "{label}"
-            );
-        }
-        assert!(html.contains("aria-label=\"Sections\""));
-        assert!(!html.contains("update-dot") && !html.contains("aria-current"));
-    }
-
-    #[test]
-    fn the_updates_tab_shows_a_dot_when_an_update_is_available() {
-        let hint = UpdateHint {
-            href: "/settings/updates",
-            label: "Melissa update available",
-            available: true,
-        };
-        let html = tab_bar(Nav::Settings, &hint).into_string();
-        assert!(html.contains("class=\"tab tab-update has-update\""));
-        assert!(html.contains("<span class=\"update-dot\" aria-hidden=\"true\"></span>"));
-        assert!(html.contains(": Melissa update available"));
-        assert!(html.contains("href=\"/settings\" title=\"Settings\" aria-current=\"page\""));
     }
 
     #[test]

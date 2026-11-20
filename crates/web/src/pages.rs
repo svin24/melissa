@@ -8,13 +8,13 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 use crate::{
     components::{
         action_button, activity_row, add_app_tile, agent_message, app_dialog, app_grid, app_page,
-        app_strip, app_tile, badge, card, chat_divider, composer, composer_status, crumbs,
-        device_card, empty_state, facts, feed, feed_entry, link, live_region, live_region_on,
-        log_view, markdown, note, oob_inner, page, page_header, permission_card, plain_text,
-        post_form, relayed_message, scheduled_message, section, select_field, steps_card, table,
+        app_tile, badge, card, chat_divider, composer, composer_status, crumbs, device_card,
+        empty_state, facts, feed, feed_entry, link, live_region, live_region_on, log_view,
+        markdown, note, oob_inner, page, page_header, permission_card, plain_text, post_form,
+        relayed_message, scheduled_message, section, select_field, steps_card, table,
         textarea_field, truncated, user_message_with, AppWorkspace, Avatar, Choice, DeviceCard,
-        Health, LogLine, MessageHead, Meter, Nav, PermissionCard, StepLine, StripTile, Tone,
-        APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
+        Health, LogLine, MessageHead, Meter, Nav, PermissionCard, StepLine, Tone, APPROVALS_ID,
+        COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
         chat_head, composer_closed, details_panel, details_toggle, feed_archive, file_count,
@@ -34,9 +34,6 @@ use melissa_agent::{
 
 pub const TASKS_ID: &str = "tasks";
 pub const TASK_ID: &str = "task";
-
-/// URL of the app strip fragment.
-pub const STRIP_URL: &str = "/ui/strip";
 
 // --- Shared pieces --------------------------------------------------------------------------
 
@@ -522,41 +519,6 @@ pub fn stream_update(
 
 // --- Home: the chat ---------------------------------------------------------------------------
 
-/// The app strip from a snapshot (the Apps panel).
-pub fn strip(snap: &ClusterSnapshot) -> Markup {
-    let words: Vec<(String, Health, &str)> = match &snap.apps {
-        Apps::Known { installed, .. } => installed
-            .iter()
-            .map(|a| {
-                let (h, w) = phase_words(&a.phase);
-                (a.display_name(), h, w)
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    let summary = match &snap.apps {
-        Apps::Unknown => "Checking your apps…".to_string(),
-        Apps::Unreachable => "Can't reach the app platform right now.".to_string(),
-        Apps::Known { installed, .. } if installed.is_empty() => {
-            "No apps yet. Ask me to install one.".to_string()
-        }
-        Apps::Known { .. } => words
-            .iter()
-            .map(|(name, _, w)| format!("{name} {}", w.to_lowercase()))
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
-    let workspaces: Vec<StripTile<'_>> = words
-        .iter()
-        .map(|(name, health, _)| StripTile {
-            name,
-            health: *health,
-        })
-        .collect();
-    let warning = disk_warning(snap);
-    app_strip(STRIP_URL, &workspaces, &summary, warning.as_deref())
-}
-
 /// "Storage almost full" when a device's data disk is above [`Disk::WARN_PERCENT`].
 pub(crate) fn disk_warning(snap: &ClusterSnapshot) -> Option<String> {
     let d = snap
@@ -665,7 +627,6 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
     composer(
         &ComposerTarget {
             send: &send,
-            cancel: &cancel,
             placeholder: &placeholder,
             voice: v.voice,
             caption: v
@@ -1206,37 +1167,5 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_secs(125)), "2 min 05 s");
         assert_eq!(format_uptime(3 * 86_400 + 7200), "Up 3 d 2 h");
         assert_eq!(format_kib(8 * 1024 * 1024), "8.0 GB");
-    }
-
-    #[test]
-    fn strip_summarises_apps() {
-        use crate::state::App;
-        let snap = ClusterSnapshot {
-            apps: Apps::Known {
-                installed: vec![
-                    App {
-                        name: "nextcloud".into(),
-                        phase: "ready".into(),
-                        url: None,
-                        port: None,
-                        keeper: None,
-                        other_port: None,
-                    },
-                    App {
-                        name: "immich".into(),
-                        phase: "starting".into(),
-                        url: None,
-                        port: None,
-                        keeper: None,
-                        other_port: None,
-                    },
-                ],
-            },
-            devices: vec![],
-        };
-        let out = strip(&snap).into_string();
-        assert!(out.contains("Nextcloud running, Immich starting"));
-        assert!(out.contains("mini h-ok"));
-        assert!(out.contains("mini h-busy"));
     }
 }

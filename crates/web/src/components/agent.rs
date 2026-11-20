@@ -12,8 +12,8 @@ use maud::{html, Markup};
 
 use super::{
     activity_icon, approval_state_outcome, markdown,
-    mobile::{back_link, menu_cancel, menu_head, new_agent_round, tab_bar, MenuWho},
-    panel::{glyph, rail_foot, Glyph, UpdateHint},
+    mobile::{back_link, menu_cancel, menu_head, new_agent_round, MenuWho},
+    panel::{glyph, section_bar, Glyph, UpdateHint},
     ActivityState, ApprovalState, Health, Nav,
 };
 
@@ -279,9 +279,9 @@ pub const AGENT_GROUPS_ID: &str = "agent-groups";
 pub const SIDEBAR_ID: &str = "sidebar";
 
 /// The sidebar (replaces the rail, 2026-11-20): the device menu and collapse control, the
-/// agent search with "+", the agents grouped by state, and the bottom bar. Without script it
-/// is a plain column (on phones: above the chat); melissa.js filters it as you type, collapses
-/// it and opens it as a sheet on phones.
+/// agent search with "+", the agents grouped by state, and the sections bar. On phones it is
+/// the agent list (`/`) and hidden on every other page (CSS). melissa.js filters it as you
+/// type and collapses it on wide screens.
 pub fn sidebar(s: &Sidebar<'_>) -> Markup {
     let this = s
         .devices
@@ -334,10 +334,8 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                 (agent_groups(s.groups, s.waiting, false))
                 p.side-none.quiet role="status" data-search-empty hidden { "No agents match." }
             }
-            (rail_foot(s.current, s.update))
-            (tab_bar(s.current, s.update))
+            (section_bar(s.current, s.update))
         }
-        div.side-backdrop data-sidebar-close hidden {}
     }
 }
 

@@ -12,7 +12,7 @@
 //!   of its composer). The event id is the conversation's event sequence number; on
 //!   reconnect the browser sends it back as `Last-Event-ID` and the stream continues from
 //!   there. The stream re-folds the log up to the cursor first, so its keys match the page.
-//! - `GET /ui/strip`, `GET /ui/cluster/apps`: fragments that poll (apps change slowly).
+//! - `GET /ui/cluster/apps`: a fragment that polls (apps change slowly).
 //! - `POST /ui/messages` / `POST /ui/agents/{agent}/messages` (multipart: `text` and any
 //!   number of `files`; or a urlencoded `text`), `POST /ui/cancel` /
 //!   `POST /ui/agents/{agent}/cancel`, `POST /ui/confirmations/{id}/approve|deny|always`: the
@@ -130,7 +130,6 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/agents/{agent}", get(agent_page))
         .route("/ui/stream", get(lead_stream))
         .route("/ui/agents/{agent}/stream", get(agent_stream))
-        .route("/ui/strip", get(strip))
         .route("/ui/cluster/apps", get(cluster_apps))
         .route(
             "/ui/messages",
@@ -432,10 +431,6 @@ async fn cluster_page(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
 
 async fn cluster_apps(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
     pages::cluster_apps(&*ui.cluster.get().await, host(&headers))
-}
-
-async fn strip(State(ui): State<Ui>) -> Markup {
-    pages::strip(&*ui.cluster.get().await)
 }
 
 async fn approvals_page(State(ui): State<Ui>) -> Markup {

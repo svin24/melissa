@@ -27,7 +27,7 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   `.copy-code` JS), `confirm_card`, `plain_action`, `actions`, `region`, `disclosure` (native `<details>`:
   "Details", "Use an API key instead", "Log"), `external_button` (vendor sign-in link, new tab,
   `noopener noreferrer`, http(s) only), `one_field_form` (one field + primary button: the code, the API key).
-  Rail: the gear in the bottom bar (`rail_foot`, `Nav::Settings`).
+  Rail: the gear in the sections bar (`section_bar`, `Nav::Settings`).
 - Packaging: `packaging/common/usr/share/polkit-1/rules.d/50-melissa.rules` (restart the lead agent; shared with
   Nix), `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`); container only
   (`packaging/container/rootfs`): `polkit-1/rules.d/51-melissa-agent-install.rules` (start
