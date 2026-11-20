@@ -1,5 +1,13 @@
-//! Standing permissions the owner grants: "Always allow" rules and the developer bypass
-//! ("No permission prompts").
+//! Standing permissions the owner grants: "Always allow" rules, the developer bypass
+//! ("No permission prompts") and per-agent Full access.
+//!
+//! Full access (2026-11-20, owner request) is the bypass scoped to one agent (or the lead
+//! agent): its *own* confirmations are approved without asking, audited as `bypass`. It needs
+//! the developer option "Full access per agent" ([`Permissions::full_access_allowed`]);
+//! switching that off puts every agent back on Ask. It never answers the user-only
+//! confirmations (another agent's workspace), owner-only steps (schedules, moving
+//! workspaces, deleting agents) or the lead agent's calls on its agents' workspaces: those
+//! are not the agent's own ([`super::ToolRegistry`] decides which confirmations are).
 //!
 //! Both only answer *confirmations*: a call reaches them only after the scope check and the
 //! argument check passed, so neither can turn a refusal ("not yours", bad arguments, a
@@ -116,22 +124,25 @@ pub enum Grant {
     Rule(u64),
     /// No permission prompts (developer mode) is on.
     Bypass,
+    /// The asking agent is on Full access (its own confirmations only).
+    Full,
 }
 
 impl Grant {
-    /// The audit actor: `rule` or `bypass`.
+    /// The audit actor: `rule` or `bypass` (Full access is a bypass for one agent).
     pub fn actor(self) -> &'static str {
         match self {
             Self::Rule(_) => "rule",
-            Self::Bypass => "bypass",
+            Self::Bypass | Self::Full => "bypass",
         }
     }
 
-    /// For audit details: `rule 3` or `bypass`.
+    /// For audit details: `rule 3`, `bypass` or `bypass (full access)`.
     pub fn describe(self) -> String {
         match self {
             Self::Rule(id) => format!("rule {id}"),
             Self::Bypass => "bypass".into(),
+            Self::Full => "bypass (full access)".into(),
         }
     }
 }
@@ -150,6 +161,8 @@ pub enum PermissionsError {
         path: String,
         source: std::io::Error,
     },
+    #[error("Full access per agent is off (Settings → Developer)")]
+    FullAccessOff,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +174,12 @@ struct State {
     /// No permission prompts (developer mode).
     #[serde(default)]
     bypass: bool,
+    /// Developer option: the owner may put single agents on Full access.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    full_access_allowed: bool,
+    /// Who is on Full access (sorted, once each). Empty while the option is off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    full_access: Vec<Principal>,
 }
 
 /// The owner's standing permissions. Cheap to clone; clones share state.
@@ -245,6 +264,77 @@ impl Permissions {
             }
         }
         state.bypass.then_some(Grant::Bypass)
+    }
+
+    /// [`Self::grant`] for the asking agent's own confirmation: also its Full access. Needs
+    /// `key` (who asks); a confirmation without one is never an agent's own.
+    pub fn grant_own(&self, key: Option<&ActionKey>) -> Option<Grant> {
+        self.grant(key).or_else(|| {
+            let key = key?;
+            self.has_full_access(&key.principal).then_some(Grant::Full)
+        })
+    }
+
+    /// Is the developer option "Full access per agent" on?
+    pub fn full_access_allowed(&self) -> bool {
+        self.lock().full_access_allowed
+    }
+
+    /// Is `who` on Full access (and the option on)?
+    pub fn has_full_access(&self, who: &Principal) -> bool {
+        let state = self.lock();
+        state.full_access_allowed && state.full_access.contains(who)
+    }
+
+    /// Everyone on Full access.
+    pub fn full_access(&self) -> Vec<Principal> {
+        let state = self.lock();
+        if state.full_access_allowed {
+            state.full_access.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Switch the developer option. Off puts everyone back on Ask (so turning it on again
+    /// never brings back an old Full access). Returns whether it changed.
+    pub(crate) fn set_full_access_allowed(&self, on: bool) -> Result<bool, PermissionsError> {
+        let mut guard = self.lock();
+        if guard.full_access_allowed == on && (on || guard.full_access.is_empty()) {
+            return Ok(false);
+        }
+        let mut next = guard.clone();
+        next.full_access_allowed = on;
+        if !on {
+            next.full_access.clear();
+        }
+        self.commit(&mut guard, next)?;
+        Ok(true)
+    }
+
+    /// Put `who` on Full access (`on`) or back on Ask. Full access needs the developer
+    /// option. Returns whether it changed.
+    pub(crate) fn set_full_access(
+        &self,
+        who: &Principal,
+        on: bool,
+    ) -> Result<bool, PermissionsError> {
+        let mut guard = self.lock();
+        if on && !guard.full_access_allowed {
+            return Err(PermissionsError::FullAccessOff);
+        }
+        if guard.full_access.contains(who) == on {
+            return Ok(false);
+        }
+        let mut next = guard.clone();
+        if on {
+            next.full_access.push(who.clone());
+            next.full_access.sort();
+        } else {
+            next.full_access.retain(|p| p != who);
+        }
+        self.commit(&mut guard, next)?;
+        Ok(true)
     }
 
     /// Every rule, oldest first.
@@ -378,6 +468,40 @@ mod tests {
         let (rule, _) = p.add(&offer(&ada, "agent:execute", None)).unwrap();
         assert_eq!(rule.verb, "run commands");
         assert_eq!(p.grant(Some(&key)), Some(Grant::Rule(rule.id)));
+    }
+
+    #[test]
+    fn full_access_is_one_agents_own_and_needs_the_developer_option() {
+        let p = Permissions::in_memory();
+        let ada = Principal::Agent("d-0a1b2c3d.a1".into());
+        let key = |who: &Principal| ActionKey {
+            principal: who.clone(),
+            tool: "agent:execute".into(),
+            target: None,
+        };
+        // Off: Full access cannot be given.
+        assert!(matches!(
+            p.set_full_access(&ada, true),
+            Err(PermissionsError::FullAccessOff)
+        ));
+        assert!(p.set_full_access_allowed(true).unwrap());
+        assert!(p.set_full_access(&ada, true).unwrap());
+        assert!(!p.set_full_access(&ada, true).unwrap());
+        assert!(p.has_full_access(&ada));
+        // Only Ada's own confirmations, and only through `grant_own`.
+        assert_eq!(p.grant_own(Some(&key(&ada))), Some(Grant::Full));
+        assert_eq!(p.grant(Some(&key(&ada))), None);
+        assert_eq!(p.grant_own(None), None);
+        let bo = Principal::Agent("d-0a1b2c3d.a2".into());
+        assert_eq!(p.grant_own(Some(&key(&bo))), None);
+        assert_eq!(p.grant_own(Some(&key(&Principal::Lead))), None);
+        assert_eq!(Grant::Full.actor(), "bypass");
+        // Switching the option off puts everyone back on Ask, for good.
+        assert!(p.set_full_access_allowed(false).unwrap());
+        assert_eq!(p.grant_own(Some(&key(&ada))), None);
+        assert!(p.set_full_access_allowed(true).unwrap());
+        assert!(!p.has_full_access(&ada));
+        assert!(p.full_access().is_empty());
     }
 
     #[test]

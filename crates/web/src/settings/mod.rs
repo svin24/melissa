@@ -45,6 +45,10 @@
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
 //!   On returns a confirmation card first; only `POST .../bypass/on` with `confirm=yes`
 //!   switches it on. Off applies at once.
+//! - `POST /ui/settings/developer/full-access` (`enabled=on` or nothing): Full access per
+//!   agent, which adds Access (Ask / Full access) to each chat's model picker; off puts every
+//!   agent back on Ask. An agent's level is set from its picker (`access=ask|full` to the
+//!   picker's action; Full asks in the popover first).
 //!
 //! API (JSON; never returns secret values):
 //! - `GET /api/settings/providers` → `{"providers": [...], "restart_needed": bool}`.
@@ -57,7 +61,11 @@
 //!   for apply/rollback) → 202; 409 without `confirm`; 501 where the root helper is missing.
 //!
 //! - `POST /api/settings/providers/{id}/login/code` `{"code": "..."}` (empty: cancel).
-//! - `GET /api/settings/permissions` → `{"rules": [...], "bypass": bool}`;
+//! - `GET /api/settings/permissions` → `{"rules": [...], "bypass": bool,
+//!   "full_access_allowed": bool, "full_access": [principal]}`;
+//!   `POST /api/settings/permissions/full-access` `{"on": bool}`;
+//!   `POST /api/settings/permissions/access` `{"agent": "lead"|name|id, "full": bool,
+//!   "confirm": bool}` → 200; 409 Full without `confirm` or with the option off, 404 unknown;
 //!   `POST /api/settings/permissions/rules/{id}/remove` → the rule, 404 unknown;
 //!   `POST /api/settings/permissions/bypass` `{"on": bool, "confirm": bool}` → 200 with the
 //!   confirmations it approved; 409 switching on without `confirm`. Rules are made only by
@@ -304,6 +312,10 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         )
         .route("/ui/settings/developer/bypass", post(permissions::bypass))
         .route(
+            "/ui/settings/developer/full-access",
+            post(permissions::full_access),
+        )
+        .route(
             "/ui/settings/developer/bypass/on",
             post(permissions::bypass_on),
         )
@@ -366,6 +378,14 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
         .route(
             "/api/settings/permissions/bypass",
             post(permissions::api_bypass),
+        )
+        .route(
+            "/api/settings/permissions/full-access",
+            post(permissions::api_full_access),
+        )
+        .route(
+            "/api/settings/permissions/access",
+            post(permissions::api_access),
         )
         .route(
             "/api/schedules",

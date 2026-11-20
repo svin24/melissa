@@ -1,6 +1,7 @@
-//! Settings → Permissions (the owner's "Always allow" rules) and No permission prompts
-//! (Settings → Developer). Both are the owner's alone: agents have no tool for them, and every
-//! change is audited by the registry (`permissions.*`).
+//! Settings → Permissions (the owner's "Always allow" rules), No permission prompts and
+//! Full access per agent (Settings → Developer), and each agent's access level. All are the
+//! owner's alone: agents have no tool for them, and every change is audited by the registry
+//! (`permissions.*`).
 
 use axum::{
     extract::{Form, Path, State},
@@ -8,6 +9,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     Json,
 };
+use melissa_agent::tools::{PermissionsError, Principal};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -128,6 +130,29 @@ fn bypass_reply(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> Response 
         .into_response()
 }
 
+/// `POST /ui/settings/developer/full-access` (`enabled=on` or nothing). No confirm step:
+/// on only adds Access to the pickers, and putting an agent on Full access asks there. Off
+/// puts every agent back on Ask.
+pub(super) async fn full_access(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Form(form): Form<BypassForm>,
+) -> Response {
+    let flash = ui
+        .registry()
+        .set_full_access_allowed(form.enabled == "on")
+        .err()
+        .map(|e| Flash {
+            text: format!("Couldn't save that: {e}"),
+            tone: Tone::Error,
+        });
+    if !is_htmx(&headers) {
+        return Redirect::to(DEVELOPER_URL).into_response();
+    }
+    let on = ui.registry().permissions().full_access_allowed();
+    pages::full_access_region(on, flash.as_ref()).into_response()
+}
+
 // --- API ---------------------------------------------------------------------------------------
 
 fn rule_json(ui: &Ui, r: &melissa_agent::tools::Rule) -> serde_json::Value {
@@ -145,7 +170,13 @@ fn rule_json(ui: &Ui, r: &melissa_agent::tools::Rule) -> serde_json::Value {
 pub(super) async fn api_list(State(ui): State<Ui>) -> Response {
     let p = ui.registry().permissions();
     let rules: Vec<_> = p.rules().iter().map(|r| rule_json(&ui, r)).collect();
-    Json(json!({"rules": rules, "bypass": p.bypass()})).into_response()
+    Json(json!({
+        "rules": rules,
+        "bypass": p.bypass(),
+        "full_access_allowed": p.full_access_allowed(),
+        "full_access": p.full_access(),
+    }))
+    .into_response()
 }
 
 pub(super) async fn api_remove(State(ui): State<Ui>, Path(id): Path<u64>) -> Response {
@@ -186,6 +217,74 @@ pub(super) async fn api_bypass(State(ui): State<Ui>, Json(body): Json<ApiBypass>
             "approved": approved.iter().map(|c| c.id).collect::<Vec<_>>(),
         }))
         .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ApiFullAccess {
+    on: bool,
+}
+
+/// `POST /api/settings/permissions/full-access` `{"on": bool}`: the developer option.
+pub(super) async fn api_full_access(
+    State(ui): State<Ui>,
+    Json(body): Json<ApiFullAccess>,
+) -> Response {
+    match ui.registry().set_full_access_allowed(body.on) {
+        Ok(()) => Json(json!({"full_access_allowed": body.on})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ApiAccess {
+    /// `lead`, or an agent's name or id.
+    agent: String,
+    /// Full access (else Ask).
+    full: bool,
+    /// Needed for Full access.
+    #[serde(default)]
+    confirm: bool,
+}
+
+/// `POST /api/settings/permissions/access` `{"agent", "full", "confirm"}`: one agent's
+/// access level.
+pub(super) async fn api_access(State(ui): State<Ui>, Json(body): Json<ApiAccess>) -> Response {
+    if body.full && !body.confirm {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Full access needs \"confirm\": true"})),
+        )
+            .into_response();
+    }
+    let who = if body.agent == "lead" {
+        Principal::Lead
+    } else {
+        match ui.agent(&body.agent) {
+            Some(a) => Principal::Agent(a.id),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": format!("no agent `{}`", body.agent)})),
+                )
+                    .into_response()
+            }
+        }
+    };
+    match ui.registry().set_access(&who, body.full) {
+        Ok(()) => Json(json!({"principal": who, "full": body.full})).into_response(),
+        Err(e @ PermissionsError::FullAccessOff) => {
+            (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

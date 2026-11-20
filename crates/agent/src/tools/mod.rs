@@ -115,6 +115,14 @@ pub trait Tool: Send + Sync {
         Ok(None)
     }
 
+    /// Confirmations of this tool are the owner's alone (e.g. `delete_agent`): an agent's
+    /// Full access never answers them; rules and No permission prompts still may. Tools
+    /// with [`Effect::Ownership`] and [`Tool::owner_approval`] calls count as owner-only
+    /// anyway. Default: false.
+    fn owner_only(&self) -> bool {
+        false
+    }
+
     /// A short description of this call for the person asked to confirm it (e.g. "move workspace
     /// `nextcloud` to agent `Bo`"). Default: none (the arguments are shown anyway).
     fn describe_call(&self, _args: &Value) -> Option<String> {
@@ -168,6 +176,18 @@ pub struct AlwaysAllowed {
     /// The confirmations it approved: the one asked about first, then any other pending
     /// one the rule matches.
     pub approved: Vec<Confirmation>,
+}
+
+/// Which standing permissions may answer a confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answerable {
+    /// The asking agent's own call: rules, No permission prompts and its Full access.
+    Own,
+    /// Not the agent's own (owner-only steps, the lead agent's calls on its agents'
+    /// workspaces): rules and No permission prompts, never an agent's Full access.
+    Owner,
+    /// Only the user's own answer ([`Confirmation::user_only`]).
+    UserOnly,
 }
 
 impl ToolRegistry {
@@ -311,6 +331,8 @@ impl ToolRegistry {
         let mut note = None;
         // Only the user's own yes, for this call (another agent's workspace).
         let mut user_only = false;
+        // Owner-only: an agent's Full access never answers it.
+        let mut owner_only = tool.owner_only() || spec.labels.effect == Effect::Ownership;
         // Who acts on whose workspace, when it is not the caller's own (audited both sides).
         let mut crossed = None;
         // Refusals end here (the scope check), before any rule or the bypass is looked at.
@@ -348,6 +370,7 @@ impl ToolRegistry {
             Ok(Some(reason)) => {
                 // Asked every time: nothing to remember, so no rule can answer it.
                 offer = None;
+                owner_only = true;
                 reasons.push(reason);
             }
             Err(e) => {
@@ -372,6 +395,13 @@ impl ToolRegistry {
                     &format!("asked: {c}"),
                 );
             }
+            let answerable = if user_only {
+                Answerable::UserOnly
+            } else if owner_only || crossed.is_some() {
+                Answerable::Owner
+            } else {
+                Answerable::Own
+            };
             let answer = self
                 .ask(
                     task,
@@ -380,7 +410,7 @@ impl ToolRegistry {
                     &args,
                     &reasons.join("; "),
                     ctx.confirm_wait,
-                    user_only,
+                    answerable,
                 )
                 .await;
             if let Some(c) = &crossed {
@@ -491,8 +521,9 @@ impl ToolRegistry {
     /// `tool.denied` or `tool.confirm_timeout`). If the returned future is dropped (task
     /// cancelled), the confirmation is withdrawn from the inbox.
     ///
-    /// `rule`: what "Always allow" would save. A saved rule matching it, or No permission
-    /// prompts, approves at once without asking (audited `tool.auto_approved`, actor `rule` or
+    /// `rule`: what "Always allow" would save. A saved rule matching it, No permission
+    /// prompts, or the asking agent's Full access (this is its own call: e.g. its agent CLI's
+    /// shell) approves at once without asking (audited `tool.auto_approved`, actor `rule` or
     /// `bypass`). Call this only for calls that passed the scope and argument checks.
     pub async fn confirm(
         &self,
@@ -517,11 +548,12 @@ impl ToolRegistry {
         reason: &str,
         wait: Option<Duration>,
     ) -> Result<(), ToolError> {
-        self.ask(task, rule, name, args, reason, wait, false).await
+        self.ask(task, rule, name, args, reason, wait, Answerable::Own)
+            .await
     }
 
-    /// [`ToolRegistry::confirm_within`]; `user_only`: only the user's own answer counts (no
-    /// rule, no bypass; [`Confirmation::user_only`]).
+    /// [`ToolRegistry::confirm_within`]; `answerable`: which standing permissions may answer
+    /// ([`Answerable`]; user-only: none, [`Confirmation::user_only`]).
     #[allow(clippy::too_many_arguments)]
     async fn ask(
         &self,
@@ -531,16 +563,15 @@ impl ToolRegistry {
         args: &Value,
         reason: &str,
         wait: Option<Duration>,
-        user_only: bool,
+        answerable: Answerable,
     ) -> Result<(), ToolError> {
+        let user_only = answerable == Answerable::UserOnly;
         let hash = args_hash(args);
         let key = rule.as_ref().map(|r| r.key.clone());
-        let grant = || {
-            if user_only {
-                None
-            } else {
-                self.permissions.grant(key.as_ref())
-            }
+        let grant = || match answerable {
+            Answerable::UserOnly => None,
+            Answerable::Owner => self.permissions.grant(key.as_ref()),
+            Answerable::Own => self.permissions.grant_own(key.as_ref()),
         };
         if let Some(grant) = grant() {
             self.audit_grant(task, "tool.auto_approved", name, &hash, grant, reason);
@@ -653,6 +684,35 @@ impl ToolRegistry {
             .filter(|c| !c.user_only)
             .filter_map(|c| self.approve_granted(c, Grant::Bypass))
             .collect())
+    }
+
+    /// The owner switches the developer option "Full access per agent" (audited
+    /// `permissions.full_access_allowed`, `on`/`off`). Off puts every agent back on Ask.
+    pub fn set_full_access_allowed(&self, on: bool) -> Result<(), PermissionsError> {
+        if self.permissions.set_full_access_allowed(on)? {
+            let detail = if on {
+                "on"
+            } else {
+                "off (every agent back on Ask)"
+            };
+            self.audit_owner(0, "permissions.full_access_allowed", detail, None);
+        }
+        Ok(())
+    }
+
+    /// The owner puts `who` on Full access or back on Ask (audited `permissions.access`,
+    /// `full`/`ask`). Applies to its next confirmation; pending ones still wait for an
+    /// answer. Full access needs the developer option ([`PermissionsError::FullAccessOff`]).
+    pub fn set_access(&self, who: &Principal, full: bool) -> Result<(), PermissionsError> {
+        if self.permissions.set_full_access(who, full)? {
+            let name = match who {
+                Principal::Lead => "the lead agent".to_string(),
+                Principal::Agent(id) => describe_agent(self.agent_names(), id),
+            };
+            let level = if full { "full" } else { "ask" };
+            self.audit_owner(0, "permissions.access", &format!("{name}: {level}"), None);
+        }
+        Ok(())
     }
 
     /// `let agent Ada (d-….a1) update minecraft (tool update_app)`, for the audit log.

@@ -408,12 +408,18 @@ impl Feed {
                 model,
                 model_label,
                 effort_label,
+                fast,
             } => {
-                let detail = match (model_label.as_ref().or(model.as_ref()), effort_label) {
-                    (Some(m), Some(e)) => format!(" ({m} · {e})"),
-                    (Some(m), None) => format!(" ({m})"),
-                    (None, Some(e)) => format!(" ({e})"),
-                    (None, None) => String::new(),
+                let mut parts: Vec<&str> = Vec::new();
+                parts.extend(model_label.as_deref().or(model.as_deref()));
+                parts.extend(effort_label.as_deref());
+                if *fast {
+                    parts.push("Fast");
+                }
+                let detail = if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", parts.join(" · "))
                 };
                 let name = format!("{}{detail}", backend_label(backend));
                 vec![

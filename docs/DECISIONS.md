@@ -930,3 +930,22 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   sees secrets), a permission-time `/etc/hosts` entry for the fetched host instead of DNS (breaks cross-host
   redirects), a fake systemd-resolved varlink socket (works for glibc NSS only; Grok is musl), dropping
   `--dev` so the bridge can bind port 53 (Grok uses ptys: `portable-pty`).
+- **2026-11-20 — Model options come from the agents; per-agent Full access is a scoped bypass** (owner request).
+  The model picker shows an option group only when the chosen model reports it: reasoning levels (as before),
+  Speed (Standard / Fast) from Claude's `supportsFastMode` (set with `--settings {"fastMode":true}`) or an ACP
+  option of category `speed`; nothing is inferred from model names, so a fast model shows no toggle. Unknown ACP
+  options (OpenCode's `mode`) are ignored rather than rendered generically: they change what the agent does, and a
+  generic control would be UI an agent picked, not a reviewed component. Access (Ask / Full access) shows only
+  with the new Developer option "Full access per agent" (a sibling of No permission prompts, not a change to it:
+  the global switch keeps its meaning, the new one only reveals a per-agent control). Full access approves the
+  agent's own confirmations (its CLI's tools, Melissa's tools on its own or unassigned workspaces) without
+  asking, audited `tool.auto_approved` actor `bypass` ("bypass (full access)"); it never answers user-only
+  confirmations (another agent's workspace), owner-only steps (`owner_approval` such as schedules,
+  `Effect::Ownership` such as moving workspaces, `Tool::owner_only` such as deleting agents) or the lead
+  agent's calls on its agents' workspaces, and refusals stay refusals. It is stored with the rules
+  (permissions file), changed only by the owner (picker with an in-page confirm, or API with `confirm`),
+  audited `permissions.access`; switching the option off puts everyone back on Ask. No multi-agent "ultra"
+  mode: no backend exposes one. Alternatives: hardcoded per-model option tables (go stale, and the owner
+  asked for discovery), Full access as an agent-registry field (would split standing permissions across two
+  stores), turning No permission prompts into the per-agent switch (would change what an existing setting
+  means).

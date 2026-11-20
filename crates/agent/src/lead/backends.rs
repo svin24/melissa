@@ -57,6 +57,9 @@ pub struct BackendChoice {
     /// A reasoning level the backend reported for the model; None: the agent's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Fast mode, for a model the backend reported one for; false: standard speed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
 }
 
 /// One backend the user can choose, as clients see it.
@@ -76,6 +79,9 @@ pub struct BackendView {
     /// The reasoning level chosen on the current backend (None: the agent's default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Fast mode is chosen on the current backend.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
     /// Models the backend offers, once Melissa has seen them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<ModelOption>>,
@@ -89,6 +95,8 @@ pub struct Switched {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
     /// False: that was already the choice (nothing recorded).
     pub changed: bool,
     /// A turn is running: the switch applies when it has ended.
@@ -198,13 +206,18 @@ impl ModelCache {
             return;
         }
         let mut lists = lock(&self.inner.lists);
-        // An agent may report reasoning levels only for the model its session used (ACP):
-        // levels seen before for the others are kept.
+        // An agent may report per-model options (reasoning levels, speed) only for the model
+        // its session used (ACP): what was seen before for a model reported without any is
+        // kept.
         let mut next = models.options.clone();
         if let Some(before) = lists.get(backend) {
-            for m in next.iter_mut().filter(|m| m.efforts.is_empty()) {
+            let current = models.current.as_deref();
+            for m in next.iter_mut().filter(|m| !m.has_options()) {
                 if let Some(old) = before.models.iter().find(|o| o.id == m.id) {
                     m.efforts = old.efforts.clone();
+                    if current != Some(m.id.as_str()) {
+                        m.fast = old.fast;
+                    }
                 }
             }
         }
@@ -443,6 +456,28 @@ mod tests {
         assert!(!got[1].offers_effort("low"));
     }
 
+    #[test]
+    fn a_speed_seen_for_one_model_is_kept_but_the_current_models_report_wins() {
+        let cache = ModelCache::new();
+        // Session on `a`: it reports a fast mode.
+        let mut first = list(&["a", "b"]);
+        first.current = Some("a".into());
+        first.options[0].fast = true;
+        cache.put("x-acp", &first);
+        // Session on `b`: nothing said about `a`, which keeps its fast mode.
+        let mut second = list(&["a", "b"]);
+        second.current = Some("b".into());
+        cache.put("x-acp", &second);
+        let got = cache.get("x-acp").unwrap_or_default();
+        assert!(got[0].fast);
+        assert!(!got[1].fast);
+        // Session on `a` again, which now has no speed option: dropped.
+        let mut third = list(&["a", "b"]);
+        third.current = Some("a".into());
+        cache.put("x-acp", &third);
+        assert!(!cache.get("x-acp").unwrap_or_default()[0].fast);
+    }
+
     /// A session backend that reports `models` (or hangs), counting opens and prompts.
     struct Probed {
         name: &'static str,
@@ -599,6 +634,7 @@ mod tests {
             backend: "claude-session".into(),
             model: Some("sonnet".into()),
             effort: Some("high".into()),
+            fast: true,
         };
         save_choice(&path, &c).ok();
         assert_eq!(load_choice(&path), Some(c));

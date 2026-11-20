@@ -46,7 +46,7 @@ use melissa_agent::{
     lead::{
         agents::AgentView, backends::BackendView, events::EventLog, Lead, LeadError, LeadStatus,
     },
-    tools::{AlwaysAllowError, RuleOffer, ToolRegistry, Verdict},
+    tools::{AlwaysAllowError, PermissionsError, Principal, RuleOffer, ToolRegistry, Verdict},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -205,7 +205,11 @@ impl Ui {
             Who::Lead => "/ui/backend".to_string(),
             Who::Agent(id) => format!("/ui/agents/{id}/backend"),
         };
-        (!views.is_empty()).then(|| agents::picker(&views, action, error))
+        let permissions = self.registry().permissions();
+        let access = permissions
+            .full_access_allowed()
+            .then(|| permissions.has_full_access(&principal(who)));
+        (!views.is_empty()).then(|| agents::picker(&views, action, error, access))
     }
 
     /// Name the helper that asked for confirmation `task` in its card (views that show every
@@ -221,7 +225,7 @@ impl Ui {
     }
 
     /// The agent for a path segment (id or name).
-    fn agent(&self, agent: &str) -> Option<AgentView> {
+    pub(crate) fn agent(&self, agent: &str) -> Option<AgentView> {
         self.lead.agents().get(agent)
     }
 
@@ -241,6 +245,7 @@ impl Ui {
         let past = self.lead.past_chats();
         page(&Frame {
             bypass: self.registry().permissions().bypass(),
+            full_access: self.registry().permissions().full_access_allowed(),
             waiting: self.waiting(),
             snap: &snap,
             agents: &agents,
@@ -802,9 +807,18 @@ async fn message_reply(
     }
 }
 
+/// Who asks for a conversation's confirmations, for its access level.
+fn principal(who: Who<'_>) -> Principal {
+    match who {
+        Who::Lead => Principal::Lead,
+        Who::Agent(id) => Principal::Agent(id.to_string()),
+    }
+}
+
 /// A pick in the model picker: a model (`choice`), or a reasoning level (`effort`, empty for
-/// the default) for the current model (`current`). Picking a model keeps the reasoning level
-/// when the new model offers it too.
+/// the default) or speed (`fast`: `on`/`off`) for the current model (`current`), or the
+/// agent's access level (`access`: `ask`/`full`). Picking a model keeps the reasoning level
+/// and Fast when the new model offers them too.
 #[derive(Deserialize)]
 struct BackendForm {
     #[serde(default)]
@@ -813,11 +827,23 @@ struct BackendForm {
     current: Option<String>,
     #[serde(default)]
     effort: Option<String>,
+    #[serde(default)]
+    fast: Option<String>,
+    #[serde(default)]
+    access: Option<String>,
+}
+
+/// What a picker form asks for.
+struct Pick {
+    backend: String,
+    model: Option<String>,
+    effort: Option<String>,
+    fast: bool,
 }
 
 impl BackendForm {
-    /// Backend, model and reasoning level to switch to.
-    fn resolve(&self, views: &[BackendView]) -> (String, Option<String>, Option<String>) {
+    /// Backend, model, reasoning level and speed to switch to.
+    fn resolve(&self, views: &[BackendView]) -> Pick {
         let choice = self
             .choice
             .as_deref()
@@ -828,7 +854,43 @@ impl BackendForm {
             Some(e) => Some(e.trim().to_string()).filter(|e| !e.is_empty()),
             None => agents::kept_effort(views, backend, model),
         };
-        (backend.to_string(), model.map(str::to_string), effort)
+        let fast = match self.fast.as_deref().map(str::trim) {
+            Some(f) => f == "on",
+            None => agents::kept_fast(views, backend, model),
+        };
+        Pick {
+            backend: backend.to_string(),
+            model: model.map(str::to_string),
+            effort,
+            fast,
+        }
+    }
+
+    /// The access level asked for: Some(true) Full access, Some(false) Ask.
+    fn access(&self) -> Option<Result<bool, ()>> {
+        self.access.as_deref().map(|a| match a.trim() {
+            "full" => Ok(true),
+            "ask" => Ok(false),
+            _ => Err(()),
+        })
+    }
+}
+
+/// Put the conversation's agent on Full access or back on Ask (the owner's own change,
+/// audited by the registry). Why it was refused, if it was.
+fn set_access(ui: &Ui, who: Who<'_>, asked: Result<bool, ()>) -> Option<String> {
+    let Ok(full) = asked else {
+        return Some("That access level isn't available.".into());
+    };
+    match ui.registry().set_access(&principal(who), full) {
+        Ok(()) => None,
+        Err(PermissionsError::FullAccessOff) => {
+            Some("Full access per agent is off. Turn it on in Settings → Developer.".into())
+        }
+        Err(e) => {
+            tracing::warn!("cannot save the access level: {e}");
+            Some("Couldn't save the access level.".into())
+        }
     }
 }
 
@@ -837,12 +899,21 @@ async fn lead_backend(
     headers: HeaderMap,
     Form(form): Form<BackendForm>,
 ) -> Response {
-    let (backend, model, effort) = form.resolve(&ui.lead.backends());
+    if let Some(asked) = form.access() {
+        let error = set_access(&ui, Who::Lead, asked);
+        return picker_reply(&ui, Who::Lead, None, &headers, error).await;
+    }
+    let pick = form.resolve(&ui.lead.backends());
     let result = ui
         .lead
-        .use_backend(&backend, model.as_deref(), effort.as_deref())
+        .use_backend_with(
+            &pick.backend,
+            pick.model.as_deref(),
+            pick.effort.as_deref(),
+            pick.fast,
+        )
         .map(|_| ());
-    backend_reply(&ui, Who::Lead, None, &headers, &backend, result).await
+    backend_reply(&ui, Who::Lead, None, &headers, &pick.backend, result).await
 }
 
 async fn agent_backend(
@@ -854,22 +925,25 @@ async fn agent_backend(
     let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
-    let views = ui.backend_views(Who::Agent(&agent.id)).unwrap_or_default();
-    let (backend, model, effort) = form.resolve(&views);
+    let who = Who::Agent(&agent.id);
+    if let Some(asked) = form.access() {
+        let error = set_access(&ui, who, asked);
+        return picker_reply(&ui, who, Some(&agent), &headers, error).await;
+    }
+    let views = ui.backend_views(who).unwrap_or_default();
+    let pick = form.resolve(&views);
     let result = ui
         .lead
         .agents()
-        .user_use_backend(&agent.id, &backend, model.as_deref(), effort.as_deref())
+        .user_use_backend_with(
+            &agent.id,
+            &pick.backend,
+            pick.model.as_deref(),
+            pick.effort.as_deref(),
+            pick.fast,
+        )
         .map(|_| ());
-    backend_reply(
-        &ui,
-        Who::Agent(&agent.id),
-        Some(&agent),
-        &headers,
-        &backend,
-        result,
-    )
-    .await
+    backend_reply(&ui, who, Some(&agent), &headers, &pick.backend, result).await
 }
 
 /// The answer to a switch: the picker (closed, or reopened by melissa.js with why a switch
@@ -890,8 +964,20 @@ async fn backend_reply(
             backend_label(backend)
         )),
         Err(LeadError::Failed(e)) => Some(format!("Couldn't switch: {e}.")),
-        Err(_) => Some("Couldn't switch: that model or level isn't available here.".into()),
+        Err(_) => Some("Couldn't switch: that model or option isn't available here.".into()),
     };
+    picker_reply(ui, who, agent, headers, error).await
+}
+
+/// The picker after a pick: closed, or reopened by melissa.js with why it was refused, and
+/// the chip out of band for htmx; the chat page otherwise.
+async fn picker_reply(
+    ui: &Ui,
+    who: Who<'_>,
+    agent: Option<&AgentView>,
+    headers: &HeaderMap,
+    error: Option<String>,
+) -> Response {
     if is_htmx(headers) {
         return match ui.picker(who, error) {
             Some(p) => maud::html! {

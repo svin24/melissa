@@ -3978,6 +3978,122 @@ mod tests {
             assert_eq!(agent["effort"], "low");
         }
 
+        /// `echo-b` with a fast mode on m1 only (m2 is a fast model already).
+        fn seed_fast_models(lead: &Lead) {
+            use melissa_agent::session::{ModelList, ModelOption};
+            let mut m1 = ModelOption::new("m1", "Model One");
+            m1.fast = true;
+            lead.models().put(
+                "echo-b",
+                &ModelList {
+                    current: None,
+                    options: vec![m1, ModelOption::new("m2", "Model Two Fast")],
+                },
+            );
+        }
+
+        #[tokio::test]
+        async fn the_picker_offers_speed_and_access_only_when_they_apply() {
+            let (app, lead) = app();
+            seed_fast_models(&lead);
+            let (_, _, body) = send(
+                &app,
+                htmx_post("/ui/backend", "current=stuck&choice=echo-b+m1"),
+            )
+            .await;
+            // m1 has a fast mode: Speed shows; Access doesn't (developer option off).
+            assert!(body.contains(">Speed</span>"), "{body}");
+            assert!(body.contains("name=\"fast\" value=\"on\" aria-pressed=\"false\""));
+            assert!(!body.contains(">Access</span>"));
+            let (_, _, body) =
+                send(&app, htmx_post("/ui/backend", "current=echo-b+m1&fast=on")).await;
+            assert!(
+                body.contains("<span class=\"chip-tag\">Fast</span>"),
+                "{body}"
+            );
+            assert!(lead.backend_choice().is_some_and(|c| c.fast));
+            // Another model without a fast mode drops it, and the footer goes.
+            let (_, _, body) = send(
+                &app,
+                htmx_post("/ui/backend", "current=echo-b+m1&choice=echo-b+m2"),
+            )
+            .await;
+            assert!(!body.contains("picker-footer"), "{body}");
+            assert!(!body.contains("chip-tag"));
+            assert!(lead.backend_choice().is_some_and(|c| !c.fast));
+            // Asking for Fast there is refused, and the picker says why.
+            let (_, _, body) =
+                send(&app, htmx_post("/ui/backend", "current=echo-b+m2&fast=on")).await;
+            assert!(body.contains("picker-error"), "{body}");
+            assert!(lead.backend_choice().is_some_and(|c| !c.fast));
+
+            // Access: refused while the developer option is off.
+            let (_, _, body) = send(&app, htmx_post("/ui/backend", "access=full")).await;
+            assert!(body.contains("Settings → Developer"), "{body}");
+            // The Developer page has the switch; on adds Access to the picker.
+            let (_, _, page) = get_html(&app, "/settings/developer").await;
+            assert!(page.contains("id=\"full-access\""), "{page}");
+            let (status, _, body) = send(
+                &app,
+                htmx_post("/ui/settings/developer/full-access", "enabled=on"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("checked"), "{body}");
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains(">Access</span>"), "{page}");
+            // Full access asks in the popover first (no browser dialog), then marks the chip.
+            assert!(page.contains("<summary class=\"seg\">Full access</summary>"));
+            assert!(page.contains("Allow full access"));
+            assert!(!page.contains("hx-confirm"));
+            assert!(!page.contains("chip-warn"));
+            // Without script: a plain form post, then the page shows it.
+            let req = post("/ui/backend").body(Body::from("access=full")).unwrap();
+            let (status, headers, _) = send(&app, req).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/");
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains("chip-warn"), "{page}");
+            assert!(page.contains("name=\"access\" value=\"full\" aria-pressed=\"true\""));
+            let (_, perms) = send_json(&app, get("/api/settings/permissions")).await;
+            assert_eq!(perms["full_access_allowed"], true);
+            assert_eq!(perms["full_access"], serde_json::json!(["lead"]));
+            // Back to Ask.
+            send(&app, htmx_post("/ui/backend", "access=ask")).await;
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(!page.contains("chip-warn"));
+
+            // A helper, through the API: Full needs `confirm`.
+            lead.agents()
+                .registry()
+                .create("Ada", "stuck", None, "the user")
+                .unwrap();
+            let (status, _) = send_json(
+                &app,
+                json_post(
+                    "/api/settings/permissions/access",
+                    r#"{"agent":"Ada","full":true}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            let (status, body) = send_json(
+                &app,
+                json_post(
+                    "/api/settings/permissions/access",
+                    r#"{"agent":"Ada","full":true,"confirm":true}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            // Switching the option off puts everyone back on Ask and hides Access.
+            send(&app, htmx_post("/ui/settings/developer/full-access", "")).await;
+            let (_, perms) = send_json(&app, get("/api/settings/permissions")).await;
+            assert_eq!(perms["full_access"], serde_json::json!([]));
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(!page.contains(">Access</span>"));
+        }
+
         // --- Deleting a helper (2026-11-20) --------------------------------------------------
 
         /// One workspace, `nextcloud`, looked after by the agent set in it (None: nobody).

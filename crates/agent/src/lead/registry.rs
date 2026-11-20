@@ -41,6 +41,9 @@ pub struct AgentRecord {
     /// Reasoning level the user chose for it (None: the agent's default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Fast mode the user chose for it (only for a model that offers one).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
     /// Tools it may use (None: the lead agent's tools without the lead agent-only ones).
     #[serde(default)]
     pub tools: Option<Vec<String>>,
@@ -211,6 +214,7 @@ impl AgentRegistry {
             backend: backend.into(),
             model: None,
             effort: None,
+            fast: false,
             tools,
             created_by: created_by.into(),
             created_at: now(),
@@ -263,6 +267,7 @@ impl AgentRegistry {
         agent.backend.clone_from(&choice.backend);
         agent.model.clone_from(&choice.model);
         agent.effort.clone_from(&choice.effort);
+        agent.fast = choice.fast;
         let out = agent.clone();
         self.save(&file)?;
         Ok(out)

@@ -111,6 +111,12 @@ Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends,
   the session's model only, so the cache keeps levels seen earlier for the others). The choice (`effort`) is
   checked against the chosen model's levels, saved with backend and model (`lead/backend.json`, the agent
   registry), shown in `backend_switched.effort_label`, and applies from the next turn (the session reopens).
+- **Fast mode (2026-11-20)**, the same way (`ModelOption.fast`, choice `fast`): Claude's `models[].supportsFastMode`
+  (set with `--settings {"fastMode":true}`; the handshake then says `fast_mode_state: "on"`), an ACP option of
+  category `speed` (unstable in ACP, so a custom category: a boolean, or a two-value select with a `fast` value;
+  set with `session/set_config_option`). Never inferred from a model's name: a fast model (`grok-4.7-build-fast`,
+  Haiku) reports none. Refused for a model that doesn't offer it; the web picker keeps it on a model change only
+  when the new model offers it. Other ACP options (OpenCode's `mode` build/plan) are ignored on purpose.
 - **Model probes** (q55a, `backends::probe`, `ModelCache::refresh`): open a session through the backend's own
   `open` (same sandbox/egress as real sessions; no MCP servers, every permission refused, empty cwd
   `<workdir>/../probe/<backend>`), read `OpenedSession.models`, close it; **no prompt is sent**. 15 s timeout.
@@ -146,7 +152,8 @@ audited `schedule.*` actor `ui`), `Scheduler` (one Tokio task, started by `Lead:
   recorded `missed` (only the latest due time counts); a change or switching on counts from now; a run past
   `max_minutes` is cancelled (`timed_out`); `running` at startup becomes `interrupted`.
 - `schedule_job` create/remove always ask the owner via `Tool::owner_approval` (new hook in `ToolRegistry::call`):
-  the confirmation carries no rule offer, so "Always allow" can't cover it; the developer bypass still does.
+  the confirmation carries no rule offer, so "Always allow" can't cover it; the developer bypass still does, an
+  agent's Full access never does (owner-only, like `Tool::owner_only` tools and `Effect::Ownership`).
   Scope: an agent only for itself (else refused "not yours" before anyone is asked), the lead agent any agent.
 - Tests use `FakeClock` (follows Tokio's paused clock) + a `FakeRunner`, never real sleeps
   (`schedules/tests.rs`); real conversations in `lead/tests/schedules.rs`.

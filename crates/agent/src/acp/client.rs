@@ -439,9 +439,97 @@ fn effort_option(options: &[SessionConfigOption]) -> Option<(String, Vec<EffortO
     })
 }
 
-/// The model (see [`choose_model`]), then the reasoning level: switch to the one asked for
-/// if the agent offers it. The levels are reported with the model the session uses (an
-/// agent offers them for its current model only).
+/// An agent's speed option (ACP category `speed`, still unstable in the protocol, so it
+/// arrives as a custom category): a boolean toggle (on: fast), or a select with exactly two
+/// values, one of them "fast". Anything else is not a speed Melissa can offer and is ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SpeedOption {
+    Toggle {
+        id: String,
+        on: bool,
+    },
+    Select {
+        id: String,
+        standard: String,
+        fast: String,
+        on: bool,
+    },
+}
+
+impl SpeedOption {
+    fn on(&self) -> bool {
+        match self {
+            Self::Toggle { on, .. } | Self::Select { on, .. } => *on,
+        }
+    }
+
+    fn request(&self, session: &str, fast: bool) -> SetSessionConfigOptionRequest {
+        let (id, value) = match self {
+            Self::Toggle { id, .. } => (id, SessionConfigOptionValue::boolean(fast)),
+            Self::Select {
+                id,
+                standard,
+                fast: f,
+                ..
+            } => (
+                id,
+                SessionConfigOptionValue::value_id(if fast { f.clone() } else { standard.clone() }),
+            ),
+        };
+        SetSessionConfigOptionRequest::new(session.to_string(), id.clone(), value)
+    }
+}
+
+/// The agent's speed option, if it reports one Melissa understands ([`SpeedOption`]).
+pub(crate) fn speed_option(options: &[SessionConfigOption]) -> Option<SpeedOption> {
+    options.iter().find_map(|o| {
+        if !matches!(&o.category, Some(SessionConfigOptionCategory::Other(c)) if c == "speed") {
+            return None;
+        }
+        match &o.kind {
+            SessionConfigKind::Boolean(b) => Some(SpeedOption::Toggle {
+                id: o.id.to_string(),
+                on: b.current_value,
+            }),
+            SessionConfigKind::Select(select) => {
+                let values: Vec<(String, String)> = match &select.options {
+                    SessionConfigSelectOptions::Ungrouped(list) => list
+                        .iter()
+                        .map(|c| (c.value.to_string(), c.name.clone()))
+                        .collect(),
+                    SessionConfigSelectOptions::Grouped(groups) => groups
+                        .iter()
+                        .flat_map(|g| g.options.iter())
+                        .map(|c| (c.value.to_string(), c.name.clone()))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let [a, b] = values.as_slice() else {
+                    return None;
+                };
+                let is_fast = |(v, n): &(String, String)| {
+                    v.eq_ignore_ascii_case("fast") || n.eq_ignore_ascii_case("fast")
+                };
+                let (fast, standard) = match (is_fast(a), is_fast(b)) {
+                    (true, false) => (a, b),
+                    (false, true) => (b, a),
+                    _ => return None,
+                };
+                Some(SpeedOption::Select {
+                    id: o.id.to_string(),
+                    on: select.current_value.to_string() == fast.0,
+                    standard: standard.0.clone(),
+                    fast: fast.0.clone(),
+                })
+            }
+            _ => None,
+        }
+    })
+}
+
+/// The model (see [`choose_model`]), then the reasoning level and the speed: switch to the
+/// ones asked for if the agent offers them. Levels and speed are reported with the model
+/// the session uses (an agent offers them for its current model only).
 async fn choose(
     cx: &ConnectionTo<Agent>,
     session: &str,
@@ -449,32 +537,53 @@ async fn choose(
     open: &OpenSession,
 ) -> Option<ModelList> {
     let effort = options.as_deref().and_then(effort_option);
+    let speed = options.as_deref().and_then(speed_option);
     let mut models = choose_model(cx, session, options, open.model.as_deref()).await?;
-    let Some((config_id, mut levels, current)) = effort else {
-        return Some(models);
-    };
-    if let Some(wanted) = open.effort.as_deref() {
-        if wanted != current && levels.iter().any(|l| l.id == wanted) {
-            let req = SetSessionConfigOptionRequest::new(
-                session.to_string(),
-                config_id,
-                SessionConfigOptionValue::value_id(wanted.to_string()),
-            );
-            match cx.send_request(req).block_task().await {
-                Ok(r) => {
-                    if let Some((_, after, _)) = effort_option(&r.config_options) {
-                        levels = after;
+    let mut levels = Vec::new();
+    if let Some((config_id, offered, current)) = effort {
+        levels = offered;
+        if let Some(wanted) = open.effort.as_deref() {
+            if wanted != current && levels.iter().any(|l| l.id == wanted) {
+                let req = SetSessionConfigOptionRequest::new(
+                    session.to_string(),
+                    config_id,
+                    SessionConfigOptionValue::value_id(wanted.to_string()),
+                );
+                match cx.send_request(req).block_task().await {
+                    Ok(r) => {
+                        if let Some((_, after, _)) = effort_option(&r.config_options) {
+                            levels = after;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("cannot set the agent's reasoning level `{wanted}`: {e}")
                     }
                 }
-                Err(e) => tracing::warn!("cannot set the agent's reasoning level `{wanted}`: {e}"),
+            } else if wanted != current {
+                tracing::warn!(
+                    "the agent does not offer reasoning level `{wanted}`; keeping its own"
+                );
             }
-        } else if wanted != current {
-            tracing::warn!("the agent does not offer reasoning level `{wanted}`; keeping its own");
+        }
+    }
+    let fast = speed.is_some();
+    if let Some(speed) = speed {
+        if speed.on() != open.fast {
+            if let Err(e) = cx
+                .send_request(speed.request(session, open.fast))
+                .block_task()
+                .await
+            {
+                tracing::warn!("cannot set the agent's speed (fast: {}): {e}", open.fast);
+            }
         }
     }
     if let Some(current) = models.current.clone() {
         if let Some(m) = models.options.iter_mut().find(|m| m.id == current) {
-            m.efforts = levels;
+            if !levels.is_empty() {
+                m.efforts = levels;
+            }
+            m.fast = fast;
         }
     }
     Some(models)

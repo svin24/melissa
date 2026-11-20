@@ -50,6 +50,8 @@ pub const PERMISSIONS_URL: &str = "/settings/permissions";
 pub const PERMISSIONS_ID: &str = "permissions";
 /// DOM id of No permission prompts on the Developer page.
 pub const BYPASS_ID: &str = "bypass";
+/// DOM id of Full access per agent on the Developer page.
+pub const FULL_ACCESS_ID: &str = "full-access";
 
 /// The Voice section: voice input for the chat composer.
 pub const VOICE_URL: &str = "/settings/voice";
@@ -688,6 +690,31 @@ pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Marku
                             locked: None,
                         }))
                     }
+                },
+            ))
+        },
+    )
+}
+
+/// Full access per agent on the Developer page (2026-11-20, owner request): the switch
+/// that adds Access (Ask / Full access) to each chat's model picker. Off puts every agent
+/// back on Ask.
+pub fn full_access_region(on: bool, flash: Option<&Flash>) -> Markup {
+    region(
+        FULL_ACCESS_ID,
+        html! {
+            (group(
+                "Full access per agent",
+                Some("Adds Access to each chat's model picker. An agent on Full access does what it asks for itself without asking you; other agents' apps, schedules and moves still ask. Each one is logged."),
+                html! {
+                    @if let Some(f) = flash { (notice(&f.text, f.tone)) }
+                    (toggle(&Toggle {
+                        action: "/ui/settings/developer/full-access",
+                        target: FULL_ACCESS_ID,
+                        label: "Full access per agent",
+                        on,
+                        locked: None,
+                    }))
                 },
             ))
         },

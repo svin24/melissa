@@ -1397,6 +1397,36 @@ progress {
   white-space: nowrap;
 }
 
+.chip-tag {
+  flex: none;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--honey-soft);
+  color: var(--honey-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.chip-warn {
+  flex: none;
+  display: inline-grid;
+  color: var(--caution);
+}
+
+svg.warn {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+svg.warn .mark {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
 .model-chip .caret {
   flex: none;
   width: 0;
@@ -1467,8 +1497,104 @@ progress {
 .picker {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   width: 100%;
   min-height: 0;
+}
+
+/* Options the current model (or agent) supports, below the list; left out when none. */
+.picker-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 1.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.picker-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.picker-option-head {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.segmented .seg {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.segmented .seg[aria-pressed="true"] {
+  border-color: var(--ink);
+  background: var(--ground);
+  font-weight: 700;
+}
+
+.segmented .seg.danger[aria-pressed="true"] {
+  border-color: var(--caution);
+  background: var(--caution-soft);
+  color: var(--caution);
+}
+
+.seg-confirm > summary {
+  list-style: none;
+}
+
+.seg-confirm > summary::-webkit-details-marker {
+  display: none;
+}
+
+.seg-confirm[open] > summary {
+  border-color: var(--caution);
+  color: var(--caution);
+}
+
+.seg-confirm-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  width: min(26rem, calc(100vw - 9rem));
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  background: var(--caution-soft);
+}
+
+.seg-confirm-body p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.picker .seg:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .picker-rail {
@@ -1747,6 +1873,10 @@ progress {
   .picker {
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .picker {
+    grid-template-rows: minmax(0, 1fr) auto auto;
   }
 
   .picker-rail {

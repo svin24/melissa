@@ -144,6 +144,9 @@ pub struct AgentView {
     /// The reasoning level the user chose for it (None: the agent's default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Fast mode is chosen for it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
     /// `idle`, `working` or `stopped`.
     pub status: &'static str,
     pub created_by: String,
@@ -449,6 +452,7 @@ impl AgentPool {
                 backend: agent.backend.clone(),
                 model: agent.model.clone(),
                 effort: agent.effort.clone(),
+                fast: agent.fast,
             }),
             failover: false,
             models: a.models.clone(),
@@ -504,6 +508,7 @@ impl AgentPool {
             backend: agent.backend.clone(),
             model: agent.model.clone(),
             effort: agent.effort.clone(),
+            fast: agent.fast,
             status: self.status_of(agent),
             created_by: agent.created_by.clone(),
             created_at: agent.created_at,
@@ -687,11 +692,23 @@ impl AgentPool {
         model: Option<&str>,
         effort: Option<&str>,
     ) -> Result<Switched, LeadError> {
+        self.user_use_backend_with(name_or_id, backend, model, effort, false)
+    }
+
+    /// [`Self::user_use_backend`] with fast mode (`fast`: only for a model that offers one).
+    pub fn user_use_backend_with(
+        &self,
+        name_or_id: &str,
+        backend: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        fast: bool,
+    ) -> Result<Switched, LeadError> {
         let agent = self.user_agent(name_or_id)?;
         let conv = self
             .conversation(&agent)
             .map_err(|e| LeadError::Failed(e.to_string()))?;
-        let choice = conv.check_choice(backend, model, effort)?;
+        let choice = conv.check_choice(backend, model, effort, fast)?;
         self.inner
             .registry
             .set_backend(&agent.id, &choice)
@@ -1761,6 +1778,10 @@ impl Tool for DeleteAgent {
         })
     }
     fn lead_only(&self) -> bool {
+        true
+    }
+    fn owner_only(&self) -> bool {
+        // Deleting a helper is the owner's call, whatever the lead agent's access.
         true
     }
     fn check_args(&self, args: &Value) -> Result<(), ToolError> {
