@@ -1236,22 +1236,33 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
     let target = format!("#{FILE_BODY_ID}");
     html! {
         @if let Some((text, tone)) = p.flash { (notice(text, tone)) }
-        p.file-usage { (p.usage) " · " (p.keep) }
-        form.file-upload method="post" action=(p.upload) enctype="multipart/form-data"
-            hx-post=(p.upload) hx-target=(target) hx-swap="outerHTML" {
-            // One upload icon: picking files uploads them (melissa.js, `data-autosubmit`).
-            // Without JavaScript the Upload button below does it.
-            input #box-upload .attach-input type="file" name="files" multiple required
-                data-autosubmit;
-            label.attach.upload for="box-upload" title="Upload files" {
-                (upload_icon())
-                span.visually-hidden { "Upload files" }
+        // One row, no prose: the upload icon and how long files are kept (both act on change,
+        // melissa.js `data-autosubmit`; without JavaScript their buttons do it).
+        div.file-tools {
+            form.file-upload method="post" action=(p.upload) enctype="multipart/form-data"
+                hx-post=(p.upload) hx-target=(target) hx-swap="outerHTML" {
+                input #box-upload .attach-input type="file" name="files" multiple required
+                    data-autosubmit;
+                label.attach.upload for="box-upload" title="Upload files" {
+                    (upload_icon())
+                    span.visually-hidden { "Upload files" }
+                }
+                noscript { button.secondary type="submit" { "Upload" } }
             }
-            noscript { button.secondary type="submit" { "Upload" } }
+            form.file-keep method="post" action=(p.keep_action) hx-post=(p.keep_action)
+                hx-target=(target) hx-swap="outerHTML" title=(p.keep) {
+                label {
+                    span.visually-hidden { "Keep files for" }
+                    select name="keep" data-autosubmit {
+                        @for (value, label) in p.keep_choices {
+                            option value=(value) selected[value == p.keep_selected] { (label) }
+                        }
+                    }
+                }
+                noscript { button.secondary type="submit" { "Save" } }
+            }
         }
-        @if p.files.is_empty() {
-            p.quiet { "Nothing here yet. Files you add or send " (p.whose) ", and files it saves, show up here." }
-        } @else {
+        @if !p.files.is_empty() {
             ul.box-files {
                 @for f in p.files {
                     li {
@@ -1297,21 +1308,6 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                         }
                     }
                 }
-            }
-        }
-        details.disclosure.keep-files {
-            summary { "Keep files for…" }
-            form.one-field method="post" action=(p.keep_action) hx-post=(p.keep_action)
-                hx-target=(target) hx-swap="outerHTML" {
-                label.field {
-                    span.visually-hidden { "Keep files for" }
-                    select name="keep" {
-                        @for (value, label) in p.keep_choices {
-                            option value=(value) selected[value == p.keep_selected] { (label) }
-                        }
-                    }
-                }
-                button.secondary type="submit" { "Save" }
             }
         }
     }

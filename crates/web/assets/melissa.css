@@ -3481,18 +3481,30 @@ dialog.sheet::backdrop {
   font-size: 0.9rem;
 }
 
-.file-usage {
-  margin: 0 0 0.5rem;
-  color: var(--muted);
-  font-size: 0.875rem;
-}
-
 .file-upload {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 0.5rem;
   margin: 0 0 0.6rem;
+}
+
+/* Files: the upload icon and the "Keep for" choice on one row. */
+.file-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.file-tools form {
+  margin: 0;
+}
+
+.file-keep select {
+  min-height: 40px;
+  font: inherit;
+  font-size: 0.85rem;
 }
 
 /* The upload icon reuses the composer's paperclip look (label.attach). */
@@ -3617,10 +3629,6 @@ label.attach.upload {
   .icon-button:hover {
     background: var(--ground);
   }
-}
-
-.keep-files .one-field {
-  padding-bottom: 0.4rem;
 }
 
 .file-chip.expired {

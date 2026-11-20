@@ -158,9 +158,9 @@
   }
 
   document.addEventListener("change", function (e) {
-    // A file input that uploads as soon as files are picked (the details panel's upload icon).
+    // Fields that act on change: the details panel's upload icon and its "Keep for" choice.
     var t = e.target;
-    if (t && t.hasAttribute && t.hasAttribute("data-autosubmit") && t.files && t.files.length > 0) {
+    if (t && t.hasAttribute && t.hasAttribute("data-autosubmit") && (!t.files || t.files.length > 0)) {
       if (t.form && t.form.requestSubmit) {
         t.form.requestSubmit();
       }

@@ -3159,7 +3159,10 @@ mod tests {
                 "{page}"
             );
             assert!(page.contains("data-details-toggle"));
-            assert!(page.contains("2 files, "), "{page}");
+            assert!(
+                page.contains(">2<span class=\"visually-hidden\"> files<"),
+                "{page}"
+            );
             assert!(page.contains("Kept for 5 days (default)"), "{page}");
             assert!(page.contains(" · You<"), "{page}");
 
@@ -3207,7 +3210,10 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("id=\"file-box-body\""), "{html}");
-            assert!(html.contains("1 file, "), "{html}");
+            assert!(
+                html.contains(">1<span class=\"visually-hidden\"> file<"),
+                "{html}"
+            );
             assert!(!html.contains("my_notes.txt"), "{html}");
             assert_eq!(send(&app, get(&txt)).await.0, StatusCode::NOT_FOUND);
             let (_, _, page) = get_html(&app, "/").await;
