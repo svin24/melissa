@@ -1232,68 +1232,260 @@ async fn confirmation_reason(
     pending.reason
 }
 
+/// Every app tool on `nextcloud`, with arguments that pass its own checks.
+fn every_app_call() -> Vec<(&'static str, Value, &'static str)> {
+    vec![
+        ("app_status", json!({"app": "nextcloud"}), "check"),
+        ("app_logs", json!({"app": "nextcloud"}), "read the logs of"),
+        (
+            "app_exec",
+            json!({"app": "nextcloud", "command": ["id"]}),
+            "run commands in",
+        ),
+        (
+            "update_app",
+            json!({"app": "nextcloud", "spec": nc()}),
+            "update",
+        ),
+        (
+            "deploy_app",
+            json!({"app": "nextcloud", "spec": nc()}),
+            "deploy over",
+        ),
+        ("stop_app", json!({"app": "nextcloud"}), "stop"),
+        ("start_app", json!({"app": "nextcloud"}), "start"),
+        ("uninstall_app", json!({"app": "nextcloud"}), "uninstall"),
+        (
+            "uninstall_app",
+            json!({"app": "nextcloud", "delete_data": true}),
+            "uninstall",
+        ),
+    ]
+}
+
+/// Start `tool` for `ctx` in the background and return the confirmation it asks for.
+async fn asks(
+    reg: &ToolRegistry,
+    ctx: TaskContext,
+    tool: &'static str,
+    args: Value,
+) -> (
+    melissa_agent::tools::Confirmation,
+    tokio::task::JoinHandle<Result<Value, ToolError>>,
+) {
+    let call = {
+        let reg = reg.clone();
+        tokio::spawn(async move {
+            let mut ctx = ctx;
+            reg.call(7, &mut ctx, tool, args).await
+        })
+    };
+    for _ in 0..10_000 {
+        if let Some(c) = reg.confirmations().pending().first().cloned() {
+            return (c, call);
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("{tool}: nobody was asked");
+}
+
 #[tokio::test]
-async fn agent_a_is_refused_on_agent_bs_workspace_and_nobody_is_asked() {
+async fn agent_a_never_touches_agent_bs_workspace_without_the_users_own_yes() {
     let path =
         std::env::temp_dir().join(format!("melissa-scope-audit-{}.jsonl", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let fake = Arc::new(Fake::default());
     nextcloud_of(&fake, BO);
-    let reg = registry(&fake, Some(AuditLog::new(&path)));
-    // Even pre-approval for the tools does not open another agent's workspace.
+    fake.state().pods = vec![live_pod("p1", 1)];
+    let reg =
+        registry(&fake, Some(AuditLog::new(&path))).with_confirm_timeout(Duration::from_secs(10));
+    // Even pre-approval for the tools, and No permission prompts, do not open another agent's
+    // workspace: every call waits for the user's own answer.
+    reg.set_bypass(true).unwrap();
     let mut ctx = agent(ADA);
-
-    for (tool, args) in [
-        (
-            "uninstall_app",
-            json!({"app": "nextcloud", "delete_data": true}),
-        ),
-        ("uninstall_app", json!({"app": "nextcloud"})),
-        ("deploy_app", json!({"spec": nc(), "app": "nextcloud"})),
-        ("app_logs", json!({"app": "nextcloud"})),
+    for t in [
+        "app_exec",
+        "update_app",
+        "stop_app",
+        "start_app",
+        "uninstall_app",
     ] {
-        let r = reg.call(7, &mut ctx, tool, args).await;
-        match r {
-            Err(ToolError::Refused(reason)) => assert_eq!(
-                reason,
-                "not yours: the workspace `nextcloud` belongs to agent Bo (d-0a1b2c3d.a2); ask the lead agent"
-            ),
-            other => panic!("{tool}: {other:?}"),
-        }
-        assert!(
-            reg.confirmations().pending().is_empty(),
-            "{tool}: a refusal never becomes a confirmation"
-        );
+        ctx.preapproved.insert(t.into());
     }
+
+    for (tool, args, verb) in every_app_call() {
+        let (c, call) = asks(&reg, ctx.clone(), tool, args).await;
+        assert_eq!(c.tool, tool);
+        assert!(c.user_only, "{tool}: only the user answers");
+        assert!(c.rule.is_none(), "{tool}: no \"Always allow\" offered");
+        assert!(
+            c.reason.starts_with(&format!(
+                "Ada wants to {verb} Bo's `nextcloud` (not Ada's). Only you can allow this, and \
+                 only this once"
+            )),
+            "{tool}: {}",
+            c.reason
+        );
+        // "Always allow" cannot make a rule of it, and switching the bypass on again skips it.
+        assert!(reg.always_allow(c.id).is_err());
+        assert!(reg.set_bypass(true).unwrap().is_empty());
+        assert_eq!(
+            reg.confirmations().pending().len(),
+            1,
+            "{tool}: still asked"
+        );
+        reg.confirmations().resolve(c.id, Verdict::Denied);
+        assert_eq!(call.await.unwrap(), Err(ToolError::Denied), "{tool}");
+    }
+    assert!(reg.permissions().rules().is_empty());
     assert!(fake.state().applied.is_empty());
+    assert!(fake.state().exec_requests.is_empty());
+    assert!(fake.state().log_requests.is_empty());
+    assert!(fake.state().deployment_patches.is_empty());
     assert!(fake.state().namespace.is_some() && fake.state().deployment.is_some());
-    // Names and phases stay readable, with the owning agent.
-    let status = reg
-        .call(7, &mut ctx, "app_status", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    assert_eq!(status["agent"], BO);
-    assert_eq!(status["agent_name"], "Bo");
+
+    // Audited with both agents: asked, then the user's answer.
+    let lines = audit_lines(&path);
+    let crossed: Vec<&str> = lines
+        .iter()
+        .filter(|l| l["action"] == "tool.cross_owner")
+        .map(|l| l["detail"].as_str().unwrap())
+        .collect();
+    assert_eq!(crossed.len(), 2 * every_app_call().len());
+    assert_eq!(
+        crossed[0],
+        format!("asked: agent Ada ({ADA}) → check `nextcloud` of agent Bo ({BO})")
+    );
+    assert_eq!(
+        crossed[1],
+        format!("denied by the user: agent Ada ({ADA}) → check `nextcloud` of agent Bo ({BO})")
+    );
+    assert!(!lines.iter().any(
+        |l| l["action"] == "tool.auto_approved" || l["action"] == "confirmation.auto_approved"
+    ));
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[tokio::test]
+async fn the_users_yes_allows_one_cross_owner_call_only() {
+    let path = std::env::temp_dir().join(format!(
+        "melissa-scope-once-audit-{}.jsonl",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, BO);
+    fake.state().pods = vec![live_pod("p1", 1)];
+    fake.state().exec_output = exited(0, "ok\n");
+    let reg =
+        registry(&fake, Some(AuditLog::new(&path))).with_confirm_timeout(Duration::from_secs(10));
+    let exec = || json!({"app": "nextcloud", "command": ["rcon-cli", "op", "svin24"]});
+
+    // The user says yes to this one call (app_exec is destructive: one confirmation, both
+    // reasons in it).
+    let (c, call) = asks(&reg, agent(ADA), "app_exec", exec()).await;
+    assert!(c.user_only);
+    assert!(c
+        .reason
+        .contains("Ada wants to run commands in Bo's `nextcloud`"));
+    reg.confirmations().resolve(c.id, Verdict::Approved);
+    assert_eq!(call.await.unwrap().unwrap()["exit_code"], 0);
+    assert_eq!(fake.state().exec_requests.len(), 1);
+
+    // The next one asks again: nothing was remembered.
+    let (c, call) = asks(&reg, agent(ADA), "app_exec", exec()).await;
+    assert!(c.user_only);
+    reg.confirmations().resolve(c.id, Verdict::Denied);
+    assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
+    assert_eq!(fake.state().exec_requests.len(), 1);
 
     let lines = audit_lines(&path);
-    let refused: Vec<&Value> = lines
+    let both = format!("agent Ada ({ADA}) → run commands in `nextcloud` of agent Bo ({BO})");
+    let crossed: Vec<&str> = lines
         .iter()
-        .filter(|l| l["action"] == "tool.refused")
+        .filter(|l| l["action"] == "tool.cross_owner")
+        .map(|l| l["detail"].as_str().unwrap())
         .collect();
-    assert_eq!(refused.len(), 4);
-    assert_eq!(refused[0]["tool"], "uninstall_app");
-    assert_eq!(refused[0]["task"], 7);
-    assert_eq!(refused[0]["actor"], "agent");
-    assert!(refused[0]["detail"]
-        .as_str()
-        .unwrap()
-        .starts_with("not yours: the workspace `nextcloud` belongs to agent Bo"));
-    assert!(!lines
+    assert_eq!(
+        crossed,
+        [
+            format!("asked: {both}"),
+            format!("approved by the user (this call only): {both}"),
+            format!("asked: {both}"),
+            format!("denied by the user: {both}"),
+        ]
+    );
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[tokio::test]
+async fn the_lead_agent_acts_on_any_agents_app_and_reassignment_flips_access() {
+    let path = std::env::temp_dir().join(format!(
+        "melissa-scope-lead-audit-{}.jsonl",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, BO);
+    fake.state().pods = vec![live_pod("p1", 1)];
+    let reg = registry(&fake, Some(AuditLog::new(&path)));
+
+    // The lead agent: reads at once; a start (reversible, attended) at once; the override is
+    // on record with both sides.
+    let mut ctx = lead();
+    reg.call(1, &mut ctx, "app_status", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    reg.call(1, &mut ctx, "app_logs", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    let lines = audit_lines(&path);
+    assert!(!lines.iter().any(|l| l["action"] == "tool.cross_owner"));
+    approved(
+        &reg,
+        1,
+        &mut lead(),
+        "stop_app",
+        json!({"app": "nextcloud"}),
+    )
+    .await
+    .unwrap();
+    let lines = audit_lines(&path);
+    let crossed: Vec<&str> = lines
         .iter()
-        .any(|l| l["action"] == "tool.confirm_requested"));
-    for l in &refused {
-        eprintln!("{l}");
-    }
+        .filter(|l| l["action"] == "tool.cross_owner")
+        .map(|l| l["detail"].as_str().unwrap())
+        .collect();
+    let both = format!("the lead agent of {DEVICE} → stop `nextcloud` of agent Bo ({BO})");
+    assert_eq!(
+        crossed,
+        [format!("asked: {both}"), format!("approved: {both}")]
+    );
+
+    // Bo has it; Ada is asked about.
+    let status = || json!({"app": "nextcloud"});
+    reg.call(2, &mut agent(BO), "app_status", status())
+        .await
+        .unwrap();
+    let (c, call) = asks(&reg, agent(ADA), "app_status", status()).await;
+    assert!(c.user_only);
+    reg.confirmations().resolve(c.id, Verdict::Denied);
+    call.await.unwrap().unwrap_err();
+
+    // The user moves it to Ada: from now on Ada has full access and Bo none.
+    let ws = Workspaces::new(settings(), Some(fake.clone()));
+    ws.assign("nextcloud", ADA, "the user").await.unwrap();
+    reg.call(3, &mut agent(ADA), "app_status", status())
+        .await
+        .unwrap();
+    let mut ada = agent(ADA);
+    ada.preapproved.insert("start_app".into());
+    reg.call(3, &mut ada, "start_app", status()).await.unwrap();
+    let (c, call) = asks(&reg, agent(BO), "app_status", status()).await;
+    assert!(c.user_only);
+    assert!(c.reason.starts_with("Bo wants to check Ada's `nextcloud`"));
+    reg.confirmations().resolve(c.id, Verdict::Denied);
+    call.await.unwrap().unwrap_err();
     std::fs::remove_file(&path).unwrap();
 }
 
@@ -1382,18 +1574,20 @@ async fn a_agent_owns_the_workspace_it_creates() {
     .await;
     assert_eq!(reason, "destructive action");
 
-    // Another agent may not touch it.
-    let r = approved(
+    // Another agent may not touch it on its own: only the user's yes would let it.
+    let reason = confirmation_reason(
         &reg,
-        9,
-        &mut agent(BO),
+        agent(BO),
         "deploy_app",
         json!({"spec": nc(), "app": "nextcloud"}),
     )
     .await;
     assert!(
-        matches!(&r, Err(ToolError::Refused(m)) if m.contains("belongs to agent Ada")),
-        "{r:?}"
+        reason.starts_with(
+            "Bo wants to deploy over Ada's `nextcloud` (not Bo's). Only you can allow this, and \
+             only this once"
+        ),
+        "{reason}"
     );
 }
 
@@ -1457,18 +1651,18 @@ async fn unassigned_workspaces_from_before_agents_are_only_the_leads_with_approv
     let fake = Arc::new(Fake::default());
     legacy_nextcloud(&fake);
     let reg = registry(&fake, None);
-    // An agent is refused.
-    let r = reg
-        .call(
-            7,
-            &mut agent(ADA),
-            "uninstall_app",
-            json!({"app": "nextcloud"}),
-        )
-        .await;
-    assert!(
-        matches!(&r, Err(ToolError::Refused(m)) if m.contains("not assigned to any agent")),
-        "{r:?}"
+    // An agent never on its own: only the user's own yes, once.
+    let got = confirmation_reason(
+        &reg,
+        agent(ADA),
+        "uninstall_app",
+        json!({"app": "nextcloud"}),
+    )
+    .await;
+    assert_eq!(
+        got,
+        "Ada wants to uninstall `nextcloud`, which no agent looks after. Only you can allow this, \
+         and only this once; destructive action"
     );
     // The lead agent is asked, whatever it does.
     let got = confirmation_reason(&reg, lead(), "uninstall_app", json!({"app": "nextcloud"})).await;
@@ -1493,12 +1687,7 @@ async fn unassigned_workspaces_from_before_agents_are_only_the_leads_with_approv
     );
     assert!(fake.state().applied.is_empty());
     let status = reg
-        .call(
-            7,
-            &mut agent(ADA),
-            "app_status",
-            json!({"app": "nextcloud"}),
-        )
+        .call(7, &mut lead(), "app_status", json!({"app": "nextcloud"}))
         .await
         .unwrap();
     assert_eq!(status["agent"], Value::Null);
@@ -1725,27 +1914,32 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
     let names = |ctx: &TaskContext| -> Vec<&'static str> {
         reg.visible_to(ctx, None).iter().map(|s| s.name).collect()
     };
-    assert_eq!(names(&TaskContext::default()), ["app_status", "list_apps"]);
+    assert_eq!(
+        names(&TaskContext::default()),
+        ["app_status", "list_apps", "my_apps"]
+    );
     let specs = reg.visible_to(&agent(ADA), None);
-    assert_eq!(specs.len(), 9);
-    let exec = specs.iter().find(|s| s.name == "app_exec").unwrap();
-    assert!(exec.params["properties"]["app"]["description"]
-        .as_str()
-        .unwrap()
-        .contains("only run commands in the workspaces you look after"));
-    let stop = specs.iter().find(|s| s.name == "stop_app").unwrap();
-    assert!(stop.params["properties"]["app"]["description"]
-        .as_str()
-        .unwrap()
-        .contains("workspaces you look after"));
-    let uninstall = specs.iter().find(|s| s.name == "uninstall_app").unwrap();
-    assert!(uninstall.params["properties"]["app"]["description"]
-        .as_str()
-        .unwrap()
-        .contains("workspaces you look after"));
+    assert_eq!(specs.len(), 10);
+    for tool in [
+        "app_exec",
+        "stop_app",
+        "uninstall_app",
+        "app_status",
+        "app_logs",
+    ] {
+        let spec = specs.iter().find(|s| s.name == tool).unwrap();
+        let desc = spec.params["properties"]["app"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            desc.contains("Only the workspaces you look after (my_apps lists them)")
+                && desc.contains("Another agent's needs the user's yes, each time."),
+            "{tool}: {desc}"
+        );
+    }
     // The lead agent sees everything unchanged.
     let all = reg.visible_to(&lead(), None);
-    assert_eq!(all.len(), 9);
+    assert_eq!(all.len(), 10);
     let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert!(uninstall.params["properties"]["app"]
         .get("description")
@@ -1920,23 +2114,17 @@ async fn stop_follows_the_workspace_rules() {
     nextcloud_of(&fake, BO);
     let reg = registry(&fake, Some(AuditLog::new(&path)));
 
-    // Another agent: refused outright, audited, nobody asked, nothing patched.
+    // Another agent: only the user's own yes (denied here), audited, nothing patched.
     for tool in ["stop_app", "start_app"] {
-        let r = reg
-            .call(7, &mut agent(ADA), tool, json!({"app": "nextcloud"}))
-            .await;
-        assert!(
-            matches!(&r, Err(ToolError::Refused(m)) if m.starts_with("not yours")),
-            "{tool}: {r:?}"
-        );
+        let reason = confirmation_reason(&reg, agent(ADA), tool, json!({"app": "nextcloud"})).await;
+        assert!(reason.starts_with("Ada wants to"), "{tool}: {reason}");
     }
-    assert!(reg.confirmations().pending().is_empty());
     assert!(fake.state().deployment_patches.is_empty());
-    let refused = audit_lines(&path)
+    let crossed = audit_lines(&path)
         .into_iter()
-        .filter(|l| l["action"] == "tool.refused")
+        .filter(|l| l["action"] == "tool.cross_owner")
         .count();
-    assert_eq!(refused, 2);
+    assert_eq!(crossed, 4);
 
     // The owning agent: asked (stop always asks), not called destructive.
     let reason =
@@ -2705,20 +2893,18 @@ async fn exec_follows_the_workspace_rules() {
     let reg = registry(&fake, None);
     let args = json!({"app": "nextcloud", "command": ["rcon-cli", "op", "Steve"]});
 
-    // Another agent's workspace: refused outright, nobody is asked, nothing runs.
+    // Another agent's workspace: only the user's own yes (denied here), nothing runs.
     let mut ada = agent(ADA);
     ada.preapproved.insert("app_exec".into());
-    match reg.call(1, &mut ada, "app_exec", args.clone()).await {
-        Err(ToolError::Refused(m)) => assert!(m.starts_with("not yours"), "{m}"),
-        other => panic!("{other:?}"),
-    }
-    assert!(reg.confirmations().pending().is_empty());
+    let reason = confirmation_reason(&reg, ada.clone(), "app_exec", args.clone()).await;
+    assert!(
+        reason.starts_with("Ada wants to run commands in Bo's `nextcloud`"),
+        "{reason}"
+    );
     // Unassigned workspaces are not an agent's either.
     legacy_nextcloud(&fake);
-    assert!(matches!(
-        reg.call(1, &mut ada, "app_exec", args.clone()).await,
-        Err(ToolError::Refused(_))
-    ));
+    let reason = confirmation_reason(&reg, ada.clone(), "app_exec", args.clone()).await;
+    assert!(reason.contains("which no agent looks after"), "{reason}");
     // A scopeless session neither.
     assert!(matches!(
         reg.call(1, &mut TaskContext::default(), "app_exec", args.clone())
@@ -2782,7 +2968,8 @@ async fn every_exec_is_audited_without_its_input() {
     )
     .await
     .unwrap();
-    // A refused call is audited too (by the registry, before anything runs).
+    // Another agent's call waits for the user (nobody answers here) and is audited too, naming
+    // both agents (by the registry, before anything runs).
     let _ = reg
         .call(
             5,
@@ -2809,9 +2996,22 @@ async fn every_exec_is_audited_without_its_input() {
     assert!(lines
         .iter()
         .any(|l| l["action"] == "tool.approved" && l["tool"] == "app_exec"));
-    assert!(lines
+    let crossed: Vec<&str> = lines
         .iter()
-        .any(|l| l["action"] == "tool.refused" && l["tool"] == "app_exec" && l["task"] == 5));
+        .filter(|l| l["action"] == "tool.cross_owner" && l["task"] == 5)
+        .map(|l| l["detail"].as_str().unwrap())
+        .collect();
+    let both = format!("agent Ada ({ADA}) → run commands in `nextcloud` of agent Bo ({BO})");
+    assert_eq!(
+        crossed,
+        [
+            format!("asked: {both}"),
+            format!(
+                "not approved (confirmation timed out: nobody answered in time, so the request \
+                 was withdrawn): {both}"
+            )
+        ]
+    );
     std::fs::remove_file(&path).unwrap();
 }
 
@@ -2843,4 +3043,198 @@ fn exec_audit_records_failures_and_cuts_long_arguments() {
     );
     assert!(detail.ends_with("stdin 0 bytes"), "{detail}");
     assert!(!detail.contains('\n'));
+}
+
+// ---- my_apps and name collisions ---------------------------------------------------------
+
+/// An app namespace looked after by `owner` (None: unassigned), web port `port`.
+fn app_ns(app: &str, owner: Option<&str>, port: u16) -> Namespace {
+    let mut labels = BTreeMap::from([
+        ("melissa.io/app".to_string(), app.to_string()),
+        ("melissa.io/workspace".to_string(), app.to_string()),
+        ("melissa.io/device".to_string(), DEVICE.to_string()),
+    ]);
+    let mut annotations = BTreeMap::from([(PORT_ANNOTATION.to_string(), port.to_string())]);
+    if let Some(owner) = owner {
+        labels.insert("melissa.io/owner-agent".into(), owner.into());
+        annotations.insert(
+            "melissa.io/assigned-by".into(),
+            "the lead agent, approved by the user".into(),
+        );
+        annotations.insert(
+            "melissa.io/assigned-at".into(),
+            "2026-11-20T10:00:00.000000000Z".into(),
+        );
+    }
+    Namespace {
+        metadata: ObjectMeta {
+            name: Some(namespace_of(app)),
+            labels: Some(labels),
+            annotations: Some(annotations),
+            ..ObjectMeta::default()
+        },
+        ..Namespace::default()
+    }
+}
+
+/// Two Minecraft servers (Ada's `minecraft`, Bo's `minecraft-2`) and an unassigned `valheim`.
+fn two_minecrafts() -> Arc<Fake> {
+    let fake = Arc::new(Fake::default());
+    {
+        let mut s = fake.state();
+        s.namespace = Some(app_ns("minecraft", Some(ADA), 30001));
+        s.others
+            .insert("minecraft-2".into(), app_ns("minecraft-2", Some(BO), 30002));
+        s.others
+            .insert("valheim".into(), app_ns("valheim", None, 30003));
+        s.deployment = Some(Deployment {
+            spec: k8s_openapi::api::apps::v1::DeploymentSpec {
+                replicas: Some(1),
+                template: k8s_openapi::api::core::v1::PodTemplateSpec {
+                    spec: Some(k8s_openapi::api::core::v1::PodSpec {
+                        containers: vec![k8s_openapi::api::core::v1::Container {
+                            name: "server".into(),
+                            image: Some("docker.io/itzg/minecraft-server:2025.10.0".into()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            status: Some(k8s_openapi::api::apps::v1::DeploymentStatus {
+                ready_replicas: Some(1),
+                ..Default::default()
+            }),
+            ..Deployment::default()
+        });
+        s.pods = vec![live_pod("p1", 1)];
+    }
+    fake
+}
+
+#[tokio::test]
+async fn my_apps_shows_an_agent_its_own_apps_and_only_names_and_owners_of_the_rest() {
+    let fake = two_minecrafts();
+    let reg = registry(&fake, None);
+    let out = reg
+        .call(1, &mut agent(BO), "my_apps", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(out["you"], "Bo");
+    let yours = out["yours"].as_array().unwrap();
+    assert_eq!(yours.len(), 1);
+    let mine = &yours[0];
+    assert_eq!(mine["app"], "minecraft-2");
+    assert_eq!(mine["phase"], "ready");
+    assert_eq!(mine["image"], "docker.io/itzg/minecraft-server:2025.10.0");
+    assert_eq!(mine["url"], "http://203.0.113.10:30002");
+    assert_eq!(mine["ports"][0]["address"], "203.0.113.10:30002");
+    assert_eq!(mine["assigned_by"], "the lead agent, approved by the user");
+    assert_eq!(mine["assigned_at"], "2026-11-20T10:00:00.000000000Z");
+    // The others: name and owner, nothing else.
+    assert_eq!(
+        out["not_yours"],
+        json!([
+            {"app": "minecraft", "owner": "Ada"},
+            {"app": "valheim", "owner": null},
+        ])
+    );
+    assert!(out["rule"]
+        .as_str()
+        .unwrap()
+        .contains("Act only on `yours`"));
+
+    // list_apps tells an agent no more about the others either.
+    let list = reg
+        .call(1, &mut agent(BO), "list_apps", json!({}))
+        .await
+        .unwrap();
+    let apps = list["apps"].as_array().unwrap();
+    assert_eq!(apps.len(), 3);
+    assert_eq!(
+        apps[0],
+        json!({"app": "minecraft", "owner": "Ada", "not_yours": true})
+    );
+    assert_eq!(apps[1]["app"], "minecraft-2");
+    assert_eq!(apps[1]["phase"], "ready");
+    assert_eq!(
+        apps[2],
+        json!({"app": "valheim", "owner": null, "not_yours": true})
+    );
+    // The UI's own read (no scope) lists everything in full.
+    let ui = reg
+        .call(0, &mut TaskContext::default(), "list_apps", json!({}))
+        .await
+        .unwrap();
+    assert!(ui["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["phase"] == "ready"));
+}
+
+#[tokio::test]
+async fn my_apps_shows_the_lead_agent_every_app_grouped_by_owner() {
+    let fake = two_minecrafts();
+    let reg = registry(&fake, None);
+    let out = reg
+        .call(1, &mut lead(), "my_apps", json!({}))
+        .await
+        .unwrap();
+    let groups = out["by_owner"].as_array().unwrap();
+    let summary: Vec<(Value, Value, Vec<Value>)> = groups
+        .iter()
+        .map(|g| {
+            (
+                g["owner"].clone(),
+                g["agent"].clone(),
+                g["apps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| a["app"].clone())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (json!("Ada"), json!(ADA), vec![json!("minecraft")]),
+            (json!("Bo"), json!(BO), vec![json!("minecraft-2")]),
+            (Value::Null, Value::Null, vec![json!("valheim")]),
+        ]
+    );
+    assert_eq!(groups[0]["apps"][0]["phase"], "ready");
+    assert_eq!(groups[0]["apps"][0]["url"], "http://203.0.113.10:30001");
+}
+
+#[tokio::test]
+async fn with_two_minecraft_servers_an_agent_acts_on_its_own_without_asking_about_ownership() {
+    let fake = two_minecrafts();
+    fake.state().exec_output = exited(0, "Made svin24 a server operator\n");
+    let reg = registry(&fake, None);
+    let op = |app: &str| json!({"app": app, "command": ["rcon-cli", "op", "svin24"]});
+
+    // Its own: the usual exec confirmation (the exact argv), nothing about ownership.
+    let (c, call) = asks(&reg, agent(BO), "app_exec", op("minecraft-2")).await;
+    assert!(!c.user_only);
+    assert!(!c.reason.contains("wants to"), "{}", c.reason);
+    reg.confirmations().resolve(c.id, Verdict::Approved);
+    assert_eq!(call.await.unwrap().unwrap()["exit_code"], 0);
+
+    // Ada's of the same kind: the user's own yes, naming both.
+    let (c, call) = asks(&reg, agent(BO), "app_exec", op("minecraft")).await;
+    assert!(c.user_only);
+    assert!(
+        c.reason
+            .starts_with("Bo wants to run commands in Ada's `minecraft` (not Bo's)"),
+        "{}",
+        c.reason
+    );
+    reg.confirmations().resolve(c.id, Verdict::Denied);
+    assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
+    assert_eq!(fake.state().exec_requests.len(), 1);
 }

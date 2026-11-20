@@ -386,6 +386,8 @@ async fn confirmations(State(lead): State<Lead>) -> Response {
                     "target": o.key.target,
                     "verb": o.verb,
                 })),
+                // Another agent's workspace: only the user's own yes, for this call.
+                "user_only": c.user_only,
                 "created": c.created.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             })
         })

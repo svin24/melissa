@@ -273,9 +273,10 @@ impl AgentPool {
         let handable = self.handable(a);
         let allow: Vec<&'static str> = match &agent.tools {
             None => handable.iter().map(|(n, _)| *n).collect(),
+            // Every agent can see which apps are its own, whatever tools it was given.
             Some(names) => handable
                 .iter()
-                .filter(|(n, _)| names.iter().any(|w| w == n))
+                .filter(|(n, _)| *n == "my_apps" || names.iter().any(|w| w == n))
                 .map(|(n, _)| *n)
                 .collect(),
         };
@@ -288,9 +289,10 @@ impl AgentPool {
         let device = self.inner.registry.device();
         let owner = Principal::Agent(agent.id.clone());
         let system_prompt = format!(
-            "{}\n\nYou are agent {} (id {}) on device {device}. Your scope: the workspaces you look after \
-             and new workspaces you create (they become yours). Messages come from the lead agent \
-             (\"A job from the lead agent\") or from the user directly.\n\n{}",
+            "{}\n\nYou are agent {} (id {}) on device {device}. Your scope: the workspaces you look \
+             after (my_apps lists them) and new workspaces you create (they become yours). \
+             Messages come from the lead agent (\"A job from the lead agent\") or from the user \
+             directly.\n\n{}",
             a.agent_prompt.trim_end(),
             agent.name,
             agent.id,

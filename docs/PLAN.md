@@ -208,6 +208,13 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `$XDG_STATE_HOME/melissa/permissions.json` (0600, outside every sandbox); a broken file grants nothing.
   Agents have no tool for either: only the owner's UI and API (`/api/confirmations/{id}/always`,
   `/api/settings/permissions*`) change them, audited `permissions.rule_added|rule_removed|bypass`.
+- **App ownership (owner, 2026-11-20):** an agent acts only on its own apps (workspaces); `my_apps` tells it which
+  are its own and names the others with their owner only. Any other call by an agent on another agent's (or an
+  unassigned) app, reads included, becomes a user-only confirmation ("Pip wants to run commands in Ada's
+  `minecraft`"): no "Always allow" rule and not No permission prompts can answer it, and a yes covers that one
+  call. The lead agent acts on any app of its device as before; reassignment moves access at once (the owner is
+  read at every call). Every cross-owner attempt is audited `tool.cross_owner` with both sides. See
+  docs/agent-skills/workspaces-and-ownership.md.
 - **Scheduled jobs (owner, 2026-11-20):** "Ada: update all apps and the system, nightly at 3:00". A schedule gives
   one agent (by id, or the lead agent) a recurring instruction on a 5-field cron expression evaluated in the box's
   local time zone (croner on jiff; DST: a time in the skipped hour runs right after the gap, a repeated hour runs
@@ -814,3 +821,11 @@ Roadmap (rough, phases may overlap):
     box don't taint the conversation (like files sent inline). (h) Box files reach the model only by path (the
     agent opens them) except images and PDFs sent with a message. (i) Not verified live: sandbox bind with real
     bwrap, the panel's look at all widths, the hourly prune on a real box.
+71. App ownership (2026-11-20; DECISIONS): (a) An agent that keeps calling another agent's app gets one user-only
+    prompt per call; no rate limit or "stop asking" yet. Should repeated denied cross-owner calls in one turn be
+    refused without asking? (b) The approval card shows the user-only text in the reason but has no own look (the
+    `user_only` flag is in `/api/confirmations` for the UI owner to style). (c) `my_apps` for the lead agent reads
+    every app's status (like `list_apps`); fine for a handful of apps, maybe a lighter phase-only view at scale.
+    (d) Cross-device (M3): an agent's call on another device's app should go to that device's lead agent; today
+    only this device's workspaces exist. (e) Not verified live with a real agent conversation and two Minecraft
+    servers.
