@@ -37,6 +37,7 @@ nearest one that is. Don't add a one-off. A new token is a reviewed change to `m
 | `--ok` | success marks (a finished tool call, a healthy status) |
 | `--idle` | stopped/idle status dots |
 | `--bubble`, `--bubble-ink` | the user's chat bubble |
+| `--icon-green` … `--icon-slate` | helpers' icon colours only (green, teal, blue, violet, rose, orange, lime, slate; 2026-11-20) |
 | `--radius` | 12px: cards and panels |
 | `--font` | Atkinson Hyperlegible Next: all text |
 | `--font-head` | Bricolage Grotesque: h1-h3, the brand word |
@@ -80,7 +81,8 @@ owner (PLAN.md open question 75), not a rule. Don't start it unasked.
 - Text people read is 1rem. `--muted` text is only for labels, meta and short help. Nothing below about
   `0.8rem` (13px); a few picker hints use `0.7-0.75rem` today; don't add more. [T]
 - Sentence case for every label, button, heading and menu item. No uppercase-with-tracking labels in new work
-  (`.divider` and `.picker-group-head` have them today; leave them unless the owner asks). [T]
+  (`.divider` and `.picker-group-head` have them today; leave them unless the owner asks; the permission card's
+  tag line "NETWORK ACCESS · TCP 25565" is the owner's design, 2026-11-20). [T]
 - Colour means state (`--ok`, `--caution`, `--honey` attention, `--action` actionable). Highlight by weight or
   contrast, never by coloured text, marker backgrounds or decorative gradients. [T][I]
 - The interface stays almost all neutral (ground, surface, ink, border). `--action` is the only accent; honey
@@ -134,8 +136,8 @@ owner (PLAN.md open question 75), not a rule. Don't start it unasked.
   "Check again", "Open the sign-in page". A bare "Save" is fine only when the card's title names what is
   saved and there is one Save in view. Never "Learn more", "Click here", "Submit", "OK" or a bare
   "Continue". [T]
-- **One wording per action everywhere.** If the rail says "New chat", every other place says "New chat",
-  not "Start a conversation". [T]
+- **One wording per action everywhere.** If the agent menu says "Fresh start", every other place says "Fresh
+  start", not "Clear chat". Every permission card says "Decline". [T]
 - **Confirm in the page, never with a browser dialog** (`action_button`'s in-page confirm). Skip the
   confirmation when the action is easy to undo. A confirmation says what goes with it and whether it can be
   undone, in one or two short sentences. [M]
@@ -179,7 +181,7 @@ never; *cap* = fine once on a page, a tell when repeated.
   "in just a few clicks", "X made simple". Each hides a fact; write the fact.
 - *ban* **Virtue words about Melissa:** safe(ly), secure(ly), honest, calm, quiet, carefully, genuinely, truly,
   simply, just, easily. Melissa never calls itself safe. Say what it does instead ("Changes need your OK until
-  you start a new chat"). Literal uses are fine ("a quiet note" as a component name, "just now").
+  a fresh start"). Literal uses are fine ("a quiet note" as a component name, "just now").
 - *ban* **Chat residue in UI strings:** "Certainly", "Sure!", "I hope this helps", "Great question", leftover
   Markdown (`**`, `##`) in non-Markdown text, `TODO`, `[placeholder]`, `{{token}}`, "lorem ipsum".
 - *ban* **Stock app phrases:** "Oops", "Uh-oh", "Something went wrong", "Successfully …" (drop the word),
@@ -341,6 +343,20 @@ A quick in-page check to run with `preview_evaluate` (prints problems; empty out
 
 It is a helper for looking, not a gate: an inline link inside a sentence may be smaller than 44px, and a hit
 may be a known exception (picker `kbd` hints). Say in your report which hits you kept and why.
+
+## 9b. The agent workspace's measurements (2026-11-20)
+
+- Columns: sidebar 264px, details 18.5rem at ≥ 1200; each column's head is 56px with a hairline under it.
+- Sidebar rows: icon 18px, name 0.9rem/600, status and sub 0.8rem; Needs attention rows on `--honey-soft` with a
+  3px honey left edge; group heads 0.8rem/600 muted (attention: `--honey-text`), count right.
+- Agent icons: 16-unit line drawings, stroke 1.5, 18px in lists, 22px in headers; Melissa's is the honey hexagon.
+- Messages: agent items indented 28px under the head (icon, name 0.9rem/650, time 0.8rem muted); "You" 0.8rem
+  muted over a `--surface` bubble with a hairline; date marks 0.8rem muted, no rule.
+- Steps card: `--surface`, hairline, radius 10px, rows 32px, 0.875rem, the state 0.8rem on the right (Done in
+  `--ok`, Failed in `--caution`).
+- Permission card: `--honey-soft` with a 1px honey border (caution colours when destructive), radius 10px; tag line
+  0.8rem/600 uppercase with 0.04em tracking.
+- Menus: `[popover]`, min 13rem, radius 12px, items 40px, 0.9rem, a 16px glyph each.
 
 ## 10. Recording decisions
 

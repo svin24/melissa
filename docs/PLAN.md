@@ -377,6 +377,11 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   links only to http/https/mailto (new tab, `noopener noreferrer nofollow`), bare URLs linked, images never loaded.
   Logs and tool output stay escaped plain text.
 - Later: problem+json error codes, a build-id header with an "updated, reload" banner, SSE for live updates.
+- **Agent workspace** (2026-11-20, owner design; DECISIONS): one chat per agent ("Fresh start" clears memory, no
+  "New chat"), silent compaction, a sidebar of agents grouped by state (Needs attention, Pinned, Working, Settled)
+  with search, "+" and a menu per agent, a chat header with status, checklist cards for tool steps, permission
+  cards with a tag line, and "Agent details" (services, files, permissions, recent activity). Phone layouts follow
+  the owner's mobile frames in a separate change.
 
 - **UI direction (owner, 2026-11-18):** simple, like a chat bot. **Home = the chat with the lead agent, with a compact
   preview of the apps' state** (app_grid strip: what runs, what's installing, disk warnings). Approvals appear inline
@@ -992,3 +997,10 @@ Roadmap (rough, phases may overlap):
     a helper's counters go with the helper; keep a total for deleted helpers? (d) Settings search filters
     sections by their settings' titles and the open section's rows; a result list that jumps to a setting in
     another section would need every section rendered or an index.
+78. Agent workspace (2026-11-20; DECISIONS). (a) Compaction writes an extractive summary; a model-written one
+    (a hidden turn, or Claude's `/compact`) would read better: worth a hidden-turn mechanism? (b) Working agents
+    show a still bar: progress is known only from ACP plans (`SessionEvent::Plan`, not kept as events today);
+    record plans to show a share? (c) The device menu lists this device only; switching devices comes with more
+    devices (M3). (d) "Needs attention" counts a failed last turn only for this daemon run (not persisted). (e)
+    Apps' "local only" / reachable state and app-specific facts (player slots) would need the app spec or the
+    reach module in the UI's snapshot. (f) Melissa can't be unpinned or renamed; her icon is fixed.

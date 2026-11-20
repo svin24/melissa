@@ -351,6 +351,16 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             post(providers::remove_var),
         )
         .route(pages::AGENTS_URL, get(agents::page))
+        .route(pages::NEW_AGENT_URL, get(agents::new_page))
+        .route("/ui/settings/agents/new", post(agents::create))
+        .route("/settings/agents/{id}", get(agents::agent_page))
+        .route("/ui/settings/agents/{id}/rename", post(agents::rename))
+        .route("/ui/settings/agents/{id}/icon", post(agents::icon))
+        .route("/ui/settings/agents/{id}/pin", post(agents::pin))
+        .route(
+            "/ui/settings/agents/{id}/fresh-start",
+            post(agents::fresh_start),
+        )
         .route("/ui/settings/agents/{id}/delete", post(agents::delete))
         .route("/settings/permissions", get(permissions::page))
         .route(

@@ -614,6 +614,12 @@ impl SessionBackend for ClaudeBackend {
     fn tool_call_limit(&self) -> Option<std::time::Duration> {
         Some(CLAUDE_TOOL_CALL_LIMIT)
     }
+
+    /// Claude Code compacts its context on its own (auto-compact, also in `-p` stream-json
+    /// mode), keeping its session; Melissa's summary would only lose detail.
+    fn compacts_itself(&self) -> bool {
+        true
+    }
 }
 
 impl Backend for ClaudeBackend {

@@ -11,7 +11,7 @@
 //!   `sudo melissa-server app-credentials <app>`                the owner's view of an app's
 //!                                                            generated credentials
 //!   `melissa-server [--config <path>] chat [--agent <agent>]`      talk to the lead agent or an agent
-//!   `melissa-server [--config <path>] new-chat` (`chat --new`) start a new chat with the lead agent
+//!   `melissa-server [--config <path>] fresh-start [--agent <agent>]` clear an agent's memory
 //!   `melissa-server [--config <path>] ask [--agent <agent>] <message>`  one message, stream it
 //!   `melissa-server [--config <path>] confirm list|approve <id>|deny <id>`
 //!   `melissa-server [--config <path>] agent list|rename <agent> <name>`  this device's agents
@@ -85,8 +85,8 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
                               (answer it with `confirm approve <id>` from another shell)
   app-credentials <app>       show an app's generated credentials (owner only, needs root)
   chat [--agent <agent>]          talk to the lead agent, or directly to an agent (Ctrl-C cancels a turn)
-  chat --new                  start a new chat with the lead agent, then talk (also: new-chat)
-  new-chat                    archive the lead agent's chat and start a fresh one (clears its taint)
+  fresh-start [--agent <agent>]  clear the lead agent's (or an agent's) memory; the chat goes on
+                              (clears its taint; old names: new-chat, chat --new)
   ask [--agent <agent>] <message> send one message and stream the answer
   confirm list|approve <id>|deny <id>
   agent list                    this device's agents (also: agents)
@@ -142,8 +142,9 @@ enum Command {
     App(AppCommand, String),
     /// Talk to the lead agent (None) or an agent.
     Chat(Option<String>),
-    /// Start a new chat with the lead agent (`true`: then talk).
-    NewChat(bool),
+    /// Clear the memory of the lead agent (None) or an agent: "Fresh start" (`true`: then
+    /// talk). `new-chat` and `chat --new` are old names for it (one release).
+    FreshStart(Option<String>, bool),
     Ask(Option<String>, String),
     Confirm(String, Option<u64>),
     Agents,
@@ -236,10 +237,10 @@ async fn main() -> anyhow::Result<()> {
     };
     match &command {
         Command::Chat(agent) => return client::chat(&to(agent)).await,
-        Command::NewChat(talk) => {
-            client::new_chat(&api).await?;
+        Command::FreshStart(agent, talk) => {
+            client::fresh_start(&api, agent.as_deref()).await?;
             if *talk {
-                return client::chat(&api).await;
+                return client::chat(&to(agent)).await;
             }
             return Ok(());
         }
@@ -508,6 +509,10 @@ async fn serve(
             default_timeout: Duration::from_secs(q.agent_timeout_secs),
             max_timeout: Duration::from_secs(q.agent_timeout_max_secs),
             transcript_max_bytes: q.transcript_max_kib.saturating_mul(1024),
+            compact: melissa_agent::lead::CompactPolicy {
+                percent: q.compact_at_percent.min(100),
+                idle: Duration::from_secs(q.compact_idle_secs),
+            },
         },
         events.clone(),
         wiring.registry,
@@ -810,8 +815,11 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             args: serde_json::from_str(args).context("tool arguments must be a JSON object")?,
         },
         [c] if c == "chat" => Command::Chat(None),
-        [c, flag] if c == "chat" && flag == "--new" => Command::NewChat(true),
-        [c] if c == "new-chat" => Command::NewChat(false),
+        [c, flag] if c == "chat" && flag == "--new" => Command::FreshStart(None, true),
+        [c] if c == "new-chat" || c == "fresh-start" => Command::FreshStart(None, false),
+        [c, flag, agent] if c == "fresh-start" && flag == "--agent" => {
+            Command::FreshStart(Some(agent.clone()), false)
+        }
         [c, flag, agent] if c == "chat" && flag == "--agent" => Command::Chat(Some(agent.clone())),
         [c, flag, agent, words @ ..] if c == "ask" && flag == "--agent" && !words.is_empty() => {
             Command::Ask(Some(agent.clone()), words.join(" "))
@@ -1117,12 +1125,19 @@ mod tests {
         assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat(None)));
         assert!(matches!(
             parse(&["chat", "--new"]).unwrap().1,
-            Command::NewChat(true)
+            Command::FreshStart(None, true)
         ));
         assert!(matches!(
             parse(&["new-chat"]).unwrap().1,
-            Command::NewChat(false)
+            Command::FreshStart(None, false)
         ));
+        assert!(matches!(
+            parse(&["fresh-start"]).unwrap().1,
+            Command::FreshStart(None, false)
+        ));
+        assert!(
+            matches!(parse(&["fresh-start", "--agent", "Ada"]).unwrap().1, Command::FreshStart(Some(a), false) if a == "Ada")
+        );
         assert!(
             matches!(parse(&["chat", "--agent", "Ada"]).unwrap().1, Command::Chat(Some(b)) if b == "Ada")
         );

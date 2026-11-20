@@ -25,10 +25,17 @@
 //! - Each chat has a details panel about its agent (`crate::details`): who it is, its apps,
 //!   schedules and file box; `/ui/files/...` serves, adds, sends and deletes files (see
 //!   `crate::files`). `GET /agents/{agent}?draft=` pre-fills the message box like home.
-//! - `POST /ui/new-chat`: a new chat with Melissa (plain form, redirects to `/`);
-//!   `GET /chats/{id}`: an archived chat, read-only.
+//! - One chat per agent (2026-11-20): no new chat. `POST /ui/fresh-start` and
+//!   `POST /ui/agents/{agent}/fresh-start` clear the agent's memory (the chat goes on);
+//!   `POST /ui/agents/{agent}/pin` (`pinned` = `on`|`off`) pins it in the sidebar. Plain forms
+//!   from the agent's menu: they redirect back to its chat.
+//! - `GET /ui/older?before=<n>&epoch=` / `GET /ui/agents/{agent}/older?...`: the feed entries
+//!   before entry `n` (a chat page renders its newest entries and loads older ones as the user
+//!   scrolls up), with a marker for the ones before those.
+//! - `GET /chats`: Melissa's earlier chats (archived by "New chat" before 2026-11-20);
+//!   `GET /chats/{id}`: one of them, read-only.
 //! - Stream cursors carry the log's epoch (`?epoch=`, SSE ids `<epoch>-<seq>`): a page from
-//!   before a daemon restart gets `reload`, and so does every page when a new chat starts.
+//!   before a daemon restart gets `reload`.
 
 use std::{convert::Infallible, time::Duration};
 
@@ -56,11 +63,15 @@ use serde_json::Value;
 
 use crate::{
     agents,
-    components::{model_chip, model_picker, oob_inner, ApprovalState, ModelPicker, MODEL_CHIP_ID},
+    components::{
+        model_chip, model_picker, oob_inner, status_pill, ApprovalState, Avatar, ChatHead,
+        HeadStatus, ModelPicker, CHAT_STATUS_ID, MODEL_CHIP_ID,
+    },
     feed::{always_words, approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
     is_htmx, pages,
-    pages::{ChatView, Frame, View, Who},
+    pages::{ChatView, EntryCtx, Frame, Speaker, View, Who},
     state::ClusterCache,
+    workspace::{MenuUrls, SideData},
 };
 
 #[derive(Clone)]
@@ -131,7 +142,12 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/ui/cancel", post(lead_cancel))
         .route("/ui/agents/{agent}/cancel", post(agent_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
-        .route("/ui/new-chat", post(new_chat))
+        .route("/ui/fresh-start", post(lead_fresh_start))
+        .route("/ui/agents/{agent}/fresh-start", post(agent_fresh_start))
+        .route("/ui/agents/{agent}/pin", post(agent_pin))
+        .route("/ui/older", get(lead_older))
+        .route("/ui/agents/{agent}/older", get(agent_older))
+        .route("/chats", get(past_chats_page))
         .route("/ui/backend", post(lead_backend))
         .route("/ui/agents/{agent}/backend", post(agent_backend))
         .route("/chats/{id}", get(past_chat_page))
@@ -203,21 +219,6 @@ impl Ui {
         }
     }
 
-    /// The agent's status for its details panel: `Working`, `Idle` or `Stopped`.
-    fn status_words_of(&self, who: Who<'_>) -> (&'static str, crate::components::Tone) {
-        let status = match who {
-            Who::Lead => {
-                if self.lead.status().turn.is_some() {
-                    "working"
-                } else {
-                    "idle"
-                }
-            }
-            Who::Agent(id) => self.lead.agents().get(id).map_or("idle", |a| a.status),
-        };
-        crate::settings::agents::status_words(status)
-    }
-
     /// The model picker of a conversation (None if it cannot be read).
     fn picker(&self, who: Who<'_>, error: Option<String>) -> Option<ModelPicker> {
         let views = self.backend_views(who)?;
@@ -240,10 +241,6 @@ impl Ui {
         }
     }
 
-    fn waiting(&self) -> usize {
-        self.lead.confirmations().pending().len()
-    }
-
     /// The agent for a path segment (id or name).
     pub(crate) fn agent(&self, agent: &str) -> Option<AgentView> {
         self.lead.agents().get(agent)
@@ -261,14 +258,13 @@ impl Ui {
         page: impl FnOnce(&Frame<'_>) -> Markup,
     ) -> Markup {
         let snap = self.cluster.get().await;
-        let agents = self.lead.agents().list();
+        let side = self.side_data(&snap);
         let past = self.lead.past_chats();
         page(&Frame {
             bypass: self.registry().permissions().bypass(),
             full_access: self.registry().permissions().full_access_allowed(),
-            waiting: self.waiting(),
             snap: &snap,
-            agents: &agents,
+            side: &side,
             past: &past,
             host,
             update: self.settings.update_hint(),
@@ -282,6 +278,7 @@ impl Ui {
         agent: Option<&AgentView>,
         draft: &str,
         error: Option<&str>,
+        all: bool,
     ) -> Result<Markup, LeadError> {
         let log = self.log(who)?;
         let feed = self.feed(who, &log);
@@ -298,7 +295,7 @@ impl Ui {
             who,
             epoch: log.epoch(),
             feed: &feed,
-            name: agent.map_or("Melissa", |a| a.name.as_str()),
+            speaker: speaker_of(agent),
             backend: backend.as_deref(),
             picker: picker.as_ref(),
             busy: self.status(who).is_some_and(|s| s.turn.is_some()),
@@ -307,13 +304,45 @@ impl Ui {
             voice: self.settings.voice_url(),
             links: &links,
             details: Some(&panel),
+            all,
         };
         Ok(self
-            .framed(|f| match agent {
-                Some(agent) => pages::agent_chat(f, agent, &view),
-                None => pages::home(f, &view),
+            .framed(|f| {
+                let key = who.key();
+                let entry = f.side.entry(&key);
+                let urls = entry.map_or_else(
+                    || MenuUrls::of(&key, false, !f.past.is_empty()),
+                    |e| e.urls.clone(),
+                );
+                let head = ChatHead {
+                    avatar: view.speaker.avatar,
+                    device: f.side.device(),
+                    name: view.speaker.name,
+                    status: entry.and_then(|e| e.head),
+                    menu: urls.menu(view.speaker.name),
+                };
+                pages::chat(f, &view, &head)
             })
             .await)
+    }
+
+    /// The chat header's status of `who` now (from the sidebar's data).
+    fn head_status(&self, who: Who<'_>, side: &SideData) -> Option<HeadStatus> {
+        side.entry(&who.key()).and_then(|e| e.head)
+    }
+}
+
+/// Who a chat is with, for its messages' heads.
+pub(crate) fn speaker_of(agent: Option<&AgentView>) -> Speaker<'_> {
+    match agent {
+        None => Speaker::MELISSA,
+        Some(a) => Speaker {
+            name: &a.name,
+            avatar: Avatar::Agent {
+                shape: &a.icon.shape,
+                color: &a.icon.color,
+            },
+        },
     }
 }
 
@@ -321,12 +350,18 @@ impl Ui {
 struct HomeQuery {
     #[serde(default)]
     draft: String,
+    /// Every entry at once (the older marker's link without script).
+    #[serde(default)]
+    all: Option<String>,
 }
 
 async fn home(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
     // A draft is only a suggestion for the box; it is never sent by itself.
     let draft: String = q.draft.chars().take(300).collect();
-    match ui.chat_page(Who::Lead, None, &draft, None).await {
+    match ui
+        .chat_page(Who::Lead, None, &draft, None, q.all.is_some())
+        .await
+    {
         Ok(page) => page.into_response(),
         Err(e) => error_page(e),
     }
@@ -344,7 +379,13 @@ async fn agent_page(
     // A draft is only a suggestion for the box ("Reference in chat" without script).
     let draft: String = q.draft.chars().take(300).collect();
     match ui
-        .chat_page(Who::Agent(&agent.id), Some(&agent), &draft, None)
+        .chat_page(
+            Who::Agent(&agent.id),
+            Some(&agent),
+            &draft,
+            None,
+            q.all.is_some(),
+        )
         .await
     {
         Ok(page) => page.into_response(),
@@ -423,10 +464,17 @@ struct StreamState {
     ///
     /// [`AgentRegistry::changes`]: melissa_agent::lead::registry::AgentRegistry::changes
     roster: tokio::sync::watch::Receiver<u64>,
-    /// What the page's rail shows of the helpers (id, name, status), as last sent.
-    rail: Vec<(String, String, &'static str)>,
+    /// Melissa's log, in a helper's chat: approvals and helpers' jobs change the sidebar.
+    lead_log: Option<EventLog>,
+    lead_cursor: u64,
+    /// The sidebar as the page shows it (as last sent).
+    side: SideData,
+    /// The header's status as last sent.
+    head: Option<HeadStatus>,
     /// The helper's name (helper chats), to say it was deleted; None once said.
     name: Option<String>,
+    /// Melissa has earlier chats (her menu's "Earlier chats").
+    earlier: bool,
 }
 
 impl StreamState {
@@ -445,26 +493,31 @@ impl StreamState {
             .data(html)
     }
 
-    /// Out-of-band updates for helpers that came, went or changed since the last call: the
-    /// rail's conversations and, when this chat's helper was deleted, a notice in place of
-    /// the composer. Empty if nothing changed.
-    fn roster_update(&mut self) -> String {
-        let agents = self.ui.lead.agents().list();
-        let rail = rail_signature(&agents);
+    /// The sidebar's data now.
+    async fn side_now(&self) -> SideData {
+        let snap = self.ui.cluster.get().await;
+        self.ui.side_data_with(&snap, self.earlier)
+    }
+
+    /// Out-of-band updates for agents that came, went, moved between groups or changed since
+    /// the last call: the sidebar's groups and, when this chat's helper was deleted, a notice
+    /// in place of the composer. `side`: the sidebar now. Empty if nothing changed.
+    fn roster_update(&mut self, side: SideData) -> String {
         let mut out = String::new();
-        if rail != self.rail {
-            self.rail = rail;
-            let melissa = self.agent.is_none() && self.view == View::Chat;
-            out.push_str(
-                &pages::rail_conversations_update(&agents, melissa, self.agent.as_deref())
-                    .into_string(),
-            );
+        if side != self.side {
+            let current = match (&self.agent, self.view) {
+                (Some(id), _) => Some(id.as_str()),
+                (None, View::Chat) => Some("lead"),
+                (None, View::Approvals) => None,
+            };
+            out.push_str(&pages::sidebar_update(&side, current).into_string());
+            self.side = side;
         }
         if let Some(id) = &self.agent {
-            match agents.iter().find(|a| &a.id == id) {
-                Some(a) => {
+            match self.side.entry(id) {
+                Some(e) => {
                     if let Some(name) = self.name.as_mut() {
-                        name.clone_from(&a.name);
+                        name.clone_from(&e.name);
                     }
                 }
                 None => {
@@ -476,14 +529,18 @@ impl StreamState {
         }
         out
     }
-}
 
-/// What the rail shows of each helper.
-fn rail_signature(agents: &[AgentView]) -> Vec<(String, String, &'static str)> {
-    agents
-        .iter()
-        .map(|a| (a.id.clone(), a.name.clone(), a.status))
-        .collect()
+    /// The header's new status, if it changed.
+    fn head_change(&mut self) -> Option<Option<HeadStatus>> {
+        if self.view != View::Chat {
+            return None;
+        }
+        let now = self.ui.head_status(self.who(), &self.side);
+        (now != self.head).then(|| {
+            self.head = now;
+            now
+        })
+    }
 }
 
 /// Until `rx` sees a change; never, once its sender is gone.
@@ -504,7 +561,8 @@ async fn lead_stream(
     };
     let log = ui.lead.events().clone();
     let at = cursor(&headers, &q, log.epoch());
-    stream(ui, log, None, view, at).into_response()
+    let side = side_at_start(&ui).await;
+    stream(ui, log, None, view, at, side).into_response()
 }
 
 async fn agent_stream(
@@ -526,7 +584,8 @@ async fn agent_stream(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let at = cursor(&headers, &q, log.epoch());
-    stream(ui, log, Some(agent.id), View::Chat, at).into_response()
+    let side = side_at_start(&ui).await;
+    stream(ui, log, Some(agent.id), View::Chat, at, side).into_response()
 }
 
 /// Where a stream starts: a reconnecting browser says where it got to (`<epoch>-<seq>`).
@@ -549,12 +608,19 @@ fn cursor(headers: &HeaderMap, q: &StreamQuery, epoch: u64) -> Option<u64> {
     }
 }
 
+/// The sidebar when a stream starts (what its page shows, near enough): later changes go out.
+async fn side_at_start(ui: &Ui) -> SideData {
+    let snap = ui.cluster.get().await;
+    ui.side_data(&snap)
+}
+
 fn stream(
     ui: Ui,
     log: EventLog,
     agent: Option<String>,
     view: View,
     cursor: Option<u64>,
+    side: SideData,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     // The page is from another log or newer than this one (the daemon restarted): its DOM
     // can't be updated.
@@ -569,12 +635,18 @@ fn stream(
     };
     let agents = ui.lead.agents();
     let roster = agents.registry().changes();
-    let list = agents.list();
-    let name = agent
-        .as_ref()
-        .and_then(|id| list.iter().find(|a| &a.id == id).map(|a| a.name.clone()));
+    let name = agent.as_ref().and_then(|id| agents.get(id).map(|a| a.name));
+    let lead_log = helper.then(|| ui.lead.events().clone());
+    let lead_cursor = lead_log.as_ref().map_or(0, EventLog::last_seq);
+    let earlier = !ui.lead.past_chats().is_empty();
+    let head = {
+        let who = match &agent {
+            Some(id) => Who::Agent(id),
+            None => Who::Lead,
+        };
+        ui.head_status(who, &side)
+    };
     let state = StreamState {
-        rail: rail_signature(&list),
         roster,
         name,
         ui,
@@ -584,6 +656,11 @@ fn stream(
         cursor,
         view,
         reload,
+        lead_log,
+        lead_cursor,
+        head,
+        side,
+        earlier,
     };
     let events = futures::stream::unfold(state, |mut st| async move {
         if st.reload {
@@ -595,17 +672,35 @@ fn stream(
         }
         loop {
             // The log first: chat events that came with a roster change go out with it.
+            let lead_log = st.lead_log.clone();
+            let lead_cursor = st.lead_cursor;
+            let lead_wait = async move {
+                match lead_log {
+                    Some(l) => {
+                        l.wait_since(lead_cursor, 1, STREAM_WAIT).await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
             let page = tokio::select! {
                 biased;
                 page = st.log.wait_since(st.cursor, 200, STREAM_WAIT) => Some(page),
                 () = changed(&mut st.roster) => None,
+                () = lead_wait => None,
             };
+            if let Some(l) = &st.lead_log {
+                st.lead_cursor = l.last_seq();
+            }
             let page = match page {
                 Some(page) if !page.events.is_empty() => page,
-                // The helpers changed, or it was quiet (a helper's status may still have
-                // changed by turns in its own chat).
+                // The helpers changed, Melissa's chat moved on (approvals, jobs), or it was
+                // quiet (a helper's status may still have changed by turns in its own chat).
                 _ => {
-                    let html = st.roster_update();
+                    let side = st.side_now().await;
+                    let mut html = st.roster_update(side);
+                    if let Some(h) = st.head_change() {
+                        html.push_str(&oob_inner(CHAT_STATUS_ID, status_pill(h)).into_string());
+                    }
                     if html.is_empty() {
                         continue;
                     }
@@ -618,11 +713,22 @@ fn stream(
             }
             st.cursor = page.next;
             if changes.contains(&Change::Reset) {
-                // A new chat: the page starts over.
+                // A new chat (only in logs from before one chat per agent): start over.
                 st.reload = true;
                 st.cursor = u64::MAX;
                 return Some((Ok(Event::default().event("reload").data("")), st));
             }
+            // Text pieces alone don't move anyone in the sidebar.
+            let moved = changes
+                .iter()
+                .any(|c| matches!(c, Change::Status | Change::Waiting | Change::Added(_)));
+            let roster = if moved {
+                let side = st.side_now().await;
+                st.roster_update(side)
+            } else {
+                String::new()
+            };
+            let head = if moved { st.head_change() } else { None };
             let backend = st.ui.backend(st.who(), &st.feed);
             let picker = changes
                 .contains(&Change::Status)
@@ -639,9 +745,12 @@ fn stream(
                 None
             };
             let files = panel.as_ref().map(|p| p.view());
-            let status = changes
-                .contains(&Change::Status)
-                .then(|| st.ui.status_words_of(st.who()));
+            let agent_view = st.agent.as_ref().and_then(|id| st.ui.agent(id));
+            let x = EntryCtx {
+                links: &links,
+                speaker: speaker_of(agent_view.as_ref()),
+                clock: st.feed.clock(),
+            };
             let mut html = pages::stream_update(
                 &st.feed,
                 &changes,
@@ -650,13 +759,12 @@ fn stream(
                 &pages::StreamExtras {
                     backend: backend.as_deref(),
                     picker: picker.as_ref(),
-                    waiting: st.ui.waiting(),
-                    links: &links,
+                    entry: &x,
                     files: files.as_ref(),
-                    status,
+                    status: head,
                 },
             );
-            html.push_str(&st.roster_update());
+            html.push_str(&roster);
             if html.is_empty() {
                 continue;
             }
@@ -897,7 +1005,7 @@ async fn message_reply(
             who,
             epoch: 0,
             feed: &feed,
-            name: agent.map_or("Melissa", |a| a.name.as_str()),
+            speaker: speaker_of(agent),
             backend,
             picker: picker.as_ref(),
             busy,
@@ -906,6 +1014,7 @@ async fn message_reply(
             voice: ui.settings.voice_url(),
             links: &links,
             details: None,
+            all: false,
         })
         .into_response();
     }
@@ -915,7 +1024,7 @@ async fn message_reply(
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, agent, draft, Some(&e)).await {
+        Some(e) => match ui.chat_page(who, agent, draft, Some(&e), false).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -1109,7 +1218,7 @@ async fn picker_reply(
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, agent, "", Some(&e)).await {
+        Some(e) => match ui.chat_page(who, agent, "", Some(&e), false).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -1213,15 +1322,118 @@ fn from_helper_chat(headers: &HeaderMap) -> bool {
     path.starts_with("/agents/")
 }
 
-async fn new_chat(State(ui): State<Ui>) -> Response {
-    match ui.lead.new_chat().await {
-        Ok(_) => Redirect::to("/").into_response(),
+/// Where a form from an agent's menu goes back to: the page it came from (same origin), else
+/// the agent's chat.
+fn back_to(headers: &HeaderMap, chat: &str) -> String {
+    headers
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|url| {
+            let rest = url.split_once("://").map_or(url, |(_, r)| r);
+            let (host_part, path) = rest.split_at(rest.find('/')?);
+            (Some(host_part) == host(headers)).then(|| path.to_string())
+        })
+        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
+        .unwrap_or_else(|| chat.to_string())
+}
+
+async fn lead_fresh_start(State(ui): State<Ui>, headers: HeaderMap) -> Response {
+    match ui.lead.fresh_start().await {
+        Ok(()) => Redirect::to(&back_to(&headers, "/")).into_response(),
         Err(e) => (
             StatusCode::CONFLICT,
-            pages::error_page("Couldn't start a new chat", &e.to_string()),
+            pages::error_page("Couldn't clear Melissa's memory", &e.to_string()),
         )
             .into_response(),
     }
+}
+
+async fn agent_fresh_start(
+    State(ui): State<Ui>,
+    Path(agent): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(agent) = ui.agent(&agent) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    match ui.lead.agents().fresh_start(&agent.id).await {
+        Ok(_) => Redirect::to(&back_to(&headers, &pages::agent_href(&agent.id))).into_response(),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            pages::error_page(
+                &format!("Couldn't clear {}'s memory", agent.name),
+                &e.to_string(),
+            ),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PinForm {
+    #[serde(default)]
+    pinned: String,
+}
+
+async fn agent_pin(
+    State(ui): State<Ui>,
+    Path(agent): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<PinForm>,
+) -> Response {
+    let Some(agent) = ui.agent(&agent) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    if let Err(e) = ui.lead.agents().set_pinned(&agent.id, form.pinned == "on") {
+        tracing::warn!("cannot pin {}: {e}", agent.id);
+    }
+    Redirect::to(&back_to(&headers, &pages::agent_href(&agent.id))).into_response()
+}
+
+#[derive(Deserialize)]
+struct OlderQuery {
+    #[serde(default)]
+    before: usize,
+    #[serde(default)]
+    epoch: Option<u64>,
+}
+
+async fn lead_older(State(ui): State<Ui>, Query(q): Query<OlderQuery>) -> Response {
+    older(&ui, Who::Lead, None, &q)
+}
+
+async fn agent_older(
+    State(ui): State<Ui>,
+    Path(agent): Path<String>,
+    Query(q): Query<OlderQuery>,
+) -> Response {
+    let Some(agent) = ui.agent(&agent) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    older(&ui, Who::Agent(&agent.id), Some(&agent), &q)
+}
+
+/// The feed entries before `before` (lazy loading), with a marker for the ones before those.
+/// A page from before a restart (another epoch) gets nothing: its stream reloads it.
+fn older(ui: &Ui, who: Who<'_>, agent: Option<&AgentView>, q: &OlderQuery) -> Response {
+    let Ok(log) = ui.log(who) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    if q.epoch.is_some_and(|e| e != log.epoch()) {
+        return maud::html! {}.into_response();
+    }
+    let feed = ui.feed(who, &log);
+    let links = ui.file_links(who);
+    let x = EntryCtx {
+        links: &links,
+        speaker: speaker_of(agent),
+        clock: feed.clock(),
+    };
+    pages::feed_page(&feed, q.before, who, log.epoch(), false, &x).into_response()
+}
+
+async fn past_chats_page(State(ui): State<Ui>) -> Response {
+    ui.framed(pages::past_chats).await.into_response()
 }
 
 async fn past_chat_page(State(ui): State<Ui>, Path(id): Path<u64>) -> Response {

@@ -222,16 +222,23 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 
 ## Agents (2026-11-20)
 - `/settings/agents` (`settings/agents.rs`, `pages::agents_region`): Melissa (the lead agent, "Lead agent", no
-  Delete) and every helper: name (links to its chat), what it runs on ("Claude · Opus 5.5 · High", the picker's
+  Delete) and every helper: name (links to its page), what it runs on ("Claude · Opus 5.5 · High", the picker's
   chip words), status badge, Delete (`action_button`, in-page confirm). `POST /ui/settings/agents/{id}/delete`
   swaps the region (htmx) or redirects back; JSON: `DELETE /api/agents/{agent}` (409 while it looks after apps,
   422 for Melissa, 404 unknown).
 - The rules live in the agent layer (`AgentPool::delete`, shared with the lead agent's `delete_agent` tool):
   refused while the helper looks after any app or when its apps can't be checked; otherwise its turn stops, its
   schedules, file box, transcript/session store and working directory are removed, audited `agent.delete`.
-- The same Delete, plus Rename, is in each helper's chat, in the details panel (`crate::details`:
-  `POST /ui/agents/{agent}/rename|delete`; the panel also turns that agent's schedules on and off,
-  `POST /ui/details/{key}/schedules/{id}/enabled`). See htmx-component.md (`details_panel`).
+- A page per helper (2026-11-20, owner design: where its menu's Rename agent, Change icon, Agent settings and Delete
+  helper lead; `/settings/agents/{id}`, `#agent-name`, `#agent-icon`, `#agent-delete` (melissa.js scrolls to and
+  focuses the part a link names), `pages::agent_settings_region` `#agent-settings`): what it runs on and its status,
+  who made it, Pin, Fresh start (in-page confirm), its name (`POST /ui/settings/agents/{id}/rename`, htmx answers
+  `HX-Refresh`), its icon (`icon_picker`, `/icon`, also `HX-Refresh`), Delete (`/delete` with `HX-Target:
+  agent-settings`: `HX-Redirect: /`, or the region saying why). A refusal shows in the region; without script a
+  redirect back to the page. New helper (the sidebar's "+"): `/settings/agents/new`, `POST
+  /ui/settings/agents/new` (`name`, `shape`, `color`) → `AgentPool::user_create`, `HX-Redirect` to its chat.
+- The details panel turns an agent's schedules on and off (`POST /ui/details/{key}/schedules/{id}/enabled`) and
+  removes its Always-allow rules. See htmx-component.md (`details_panel`).
 
 ## Gotchas
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).

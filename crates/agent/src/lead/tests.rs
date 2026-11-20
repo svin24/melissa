@@ -33,6 +33,7 @@ use crate::{
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
 };
 
+mod compaction;
 mod schedules;
 mod switching;
 
@@ -1094,7 +1095,7 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert_eq!(transcript.matches("Check the logs.").count(), 1);
     assert!(!transcript.contains("earlier_start"));
 
-    // A pending confirmation of the lead agent is withdrawn by the new chat; an agent's stays.
+    // A pending confirmation of the lead agent is withdrawn by a fresh start; an agent's stays.
     let (mine, rx) =
         s.lead
             .confirmations()
@@ -1103,7 +1104,7 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
         .lead
         .confirmations()
         .request(999, "uninstall_app", &json!({}), "test");
-    let archived = s.lead.new_chat().await.unwrap().expect("archived");
+    s.lead.fresh_start().await.unwrap();
     assert!(rx.await.is_err(), "withdrawn without a decision");
     let pending: Vec<u64> = s
         .lead
@@ -1116,23 +1117,32 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert!(!pending.contains(&mine.id));
     let audit = s.audit();
     assert!(audit.contains("confirmation.withdrawn"), "{audit}");
-    assert!(audit.contains("lead.new_chat"), "{audit}");
+    assert!(audit.contains("lead.fresh_start"), "{audit}");
     assert!(!dir.join("lead/session.json").exists());
-    let past = s.lead.past_chats();
-    assert_eq!(past.len(), 1);
-    assert_eq!(past[0].id, archived);
-    assert_eq!(past[0].title, "Check the logs.");
-    assert_eq!(past[0].turns, 1);
-    let old = s.lead.past_chat(archived).unwrap();
-    assert!(old.iter().any(|r| matches!(&r.event,
-        LeadEvent::AgentMessage { text, .. } if text == "The logs look fine.")));
-    let mode = std::fs::metadata(dir.join(format!("lead/chats/{archived}.jsonl")))
-        .unwrap()
-        .permissions();
+    // One chat: nothing is archived, the chat goes on with a fresh start in it.
+    assert!(s.lead.past_chats().is_empty());
+    assert!(!dir.join("lead/chats").exists());
     assert_eq!(
-        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
-        0o600
+        s.lead
+            .events()
+            .since(0, 1000)
+            .events
+            .last()
+            .map(|r| &r.event),
+        Some(&LeadEvent::FreshStart)
     );
+    let transcript = std::fs::read_to_string(dir.join("lead/transcript.jsonl")).unwrap();
+    assert!(transcript.contains("Check the logs."), "the chat is kept");
+    assert!(transcript.contains("fresh_start"));
+    // The new session is primed with nothing from before the fresh start.
+    assert!(s
+        .lead
+        .events()
+        .transcript()
+        .unwrap()
+        .recap(10_000)
+        .messages
+        .is_empty());
 
     // The next message opens a new session (no resume) with no earlier conversation in its
     // preamble, and the chat is untainted: an attended lead agent creates an agent without asking.
@@ -1152,13 +1162,14 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert!(saved.contains(r#""tainted":false"#), "{saved}");
     assert!(saved.contains(r#""session_id":"s-2""#), "{saved}");
 
-    // Another restart restores only the new chat.
+    // Another restart restores the whole chat (one chat per agent), fresh start included.
     let s = setup_in(dir.clone(), vec![], |_| {});
     let page = s.lead.events().since(0, 100);
     assert!(page.events.iter().any(|r| matches!(&r.event,
         LeadEvent::UserMessage { text, .. } if text == "Hello again.")));
-    assert!(!page.events.iter().any(|r| matches!(&r.event,
+    assert!(page.events.iter().any(|r| matches!(&r.event,
         LeadEvent::UserMessage { text, .. } if text == "Check the logs.")));
+    assert!(page.events.iter().any(|r| r.event == LeadEvent::FreshStart));
     s.close().await;
 }
 
@@ -1855,7 +1866,7 @@ async fn an_agents_confirmation_shows_in_its_own_chat_and_the_leads() {
     lead_event(&s, approved).await;
     assert_eq!(call_own.await.unwrap()["isError"], false);
 
-    // A new chat with the lead agent keeps an agent's pending confirmation in view.
+    // A fresh start of the lead agent keeps an agent's pending confirmation in view.
     let call_again = ask(&s);
     let c2 = pending(&s).await;
     lead_event(
@@ -1863,20 +1874,20 @@ async fn an_agents_confirmation_shows_in_its_own_chat_and_the_leads() {
         |e| matches!(e, LeadEvent::ConfirmationNeeded { id, .. } if *id == c2.id),
     )
     .await;
-    s.lead.new_chat().await.unwrap();
-    let after_new_chat: Vec<LeadEvent> = s
+    s.lead.fresh_start().await.unwrap();
+    let log: Vec<LeadEvent> = s
         .lead
         .events()
         .since(0, usize::MAX)
         .events
         .into_iter()
         .map(|r| r.event)
-        .skip_while(|e| *e != LeadEvent::NewChat)
         .collect();
+    assert!(log.contains(&LeadEvent::FreshStart));
     assert!(
-        after_new_chat.iter().any(|e| matches!(e,
+        log.iter().any(|e| matches!(e,
             LeadEvent::ConfirmationNeeded { id, agent: Some(a), .. } if *id == c2.id && a == ADA)),
-        "{after_new_chat:?}"
+        "{log:?}"
     );
     assert_eq!(s.lead.confirmations().pending().len(), 1, "not withdrawn");
     // Withdrawn (e.g. timed out) shows in both chats too.

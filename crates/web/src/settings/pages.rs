@@ -14,6 +14,7 @@ use crate::{
         settings_head, split_card, table, text_field, toggle, var_list, Choice, ConfirmCard, Glyph,
         LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
+    components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
 };
 use melissa_settings::providers::EnvVarView;
@@ -1001,7 +1002,7 @@ fn schedule_form(f: &ScheduleForm, zone: &str) -> Markup {
 pub struct AgentRow {
     pub id: Option<String>,
     pub name: String,
-    /// Its chat.
+    /// Its page in Settings → Agents (Melissa: her chat).
     pub href: String,
     /// "Claude · Opus 5.5 · High".
     pub runs_on: String,
@@ -1044,6 +1045,152 @@ pub fn agents_region(rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
                 }
             }))
             p.quiet { "Change what an agent runs on with the model button under its chat." }
+            p { (link(NEW_AGENT_URL, "New helper")) }
+        },
+    )
+}
+
+/// Where the new-helper form is (the sidebar's "+").
+pub const NEW_AGENT_URL: &str = "/settings/agents/new";
+/// DOM id of a helper's settings (its forms swap it).
+pub const AGENT_ID: &str = "agent-settings";
+
+/// A helper's page in Settings → Agents (its menu's Rename, Change icon, Agent settings and
+/// Delete lead here).
+pub struct AgentPage<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub shape: &'a str,
+    pub color: &'a str,
+    pub shapes: &'a [&'a str],
+    pub colors: &'a [&'a str],
+    /// "Claude · Opus 5.5 · High".
+    pub runs_on: &'a str,
+    pub status: (&'static str, Tone),
+    /// "By Melissa, 20 Nov".
+    pub made: &'a str,
+    pub pinned: bool,
+    /// Why it can't be deleted now ("Looks after Minecraft. …"), if so.
+    pub kept: Option<&'a str>,
+    pub flash: Option<&'a Flash>,
+}
+
+pub fn agent_settings_page(f: &Frame<'_>, a: &AgentPage<'_>) -> Markup {
+    frame_at(f, "Agents", Some(a.name), agent_settings_region(a))
+}
+
+/// A helper's settings (swapped whole by its forms).
+pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
+    let base = format!("/ui/settings/agents/{}", a.id);
+    let chat = crate::pages::agent_href(a.id);
+    region(
+        AGENT_ID,
+        html! {
+            @if let Some(f) = a.flash { (notice(&f.text, f.tone)) }
+            (setting_card(None, html! {
+                (setting_row_with(
+                    html! { (avatar(&Avatar::Agent { shape: a.shape, color: a.color }, "av")) " " (a.name) },
+                    Some(html! { (a.runs_on) }),
+                    html! { (badge(a.status.0, a.status.1)) " " (link(&chat, "Open chat")) },
+                    None,
+                ))
+                (setting_row("Made", None, html! { span { (a.made) } }))
+                (setting_row(
+                    "Pinned",
+                    Some("Pinned helpers stay at the top of the sidebar."),
+                    html! {
+                        form method="post" action={ (base) "/pin" } hx-post={ (base) "/pin" }
+                            hx-target={ "#" (AGENT_ID) } hx-swap="outerHTML" {
+                            input type="hidden" name="pinned" value=(if a.pinned { "off" } else { "on" });
+                            button.secondary type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
+                        }
+                    },
+                ))
+                (setting_row(
+                    "Fresh start",
+                    Some("Clears its memory: the next message starts without the earlier conversation. The chat stays."),
+                    action_button(
+                        &format!("{base}/fresh-start"),
+                        AGENT_ID,
+                        "Clear memory",
+                        &format!("Clear {}'s memory? It can't be brought back.", a.name),
+                    ),
+                ))
+            }))
+            section.setting-group #agent-name {
+                div.setting-card.card-pad {
+                    (settings_form(&format!("{base}/rename"), AGENT_ID, "Save name",
+                        text_field("name", "Name", a.name, "", "text", None)))
+                }
+            }
+            section.setting-group {
+                h2.setting-heading { "Icon" }
+                div.setting-card.card-pad {
+                    (settings_form(&format!("{base}/icon"), AGENT_ID, "Save icon",
+                        icon_picker(a.shapes, a.colors, a.shape, a.color)))
+                }
+            }
+            section.setting-group #agent-delete {
+                h2.setting-heading { "Delete" }
+                div.setting-card.card-pad {
+                    @match a.kept {
+                        Some(why) => p.quiet { (why) },
+                        None => (action_button(
+                            &format!("{base}/delete"),
+                            AGENT_ID,
+                            "Delete helper",
+                            &format!("Delete {}? Its chat, file box and schedules go with it. This can't be undone.", a.name),
+                        )),
+                    }
+                }
+            }
+        },
+    )
+}
+
+/// The new-helper form (the sidebar's "+"): a name and an icon. `name`: what was typed (kept
+/// when it was refused).
+pub fn new_agent_page(
+    f: &Frame<'_>,
+    shapes: &[&str],
+    colors: &[&str],
+    name: &str,
+    icon: (&str, &str),
+    flash: Option<&Flash>,
+) -> Markup {
+    frame_at(
+        f,
+        "Agents",
+        Some("New helper"),
+        new_agent_region(shapes, colors, name, icon, flash),
+    )
+}
+
+/// DOM id of the new-helper form.
+pub const NEW_AGENT_ID: &str = "new-agent";
+
+pub fn new_agent_region(
+    shapes: &[&str],
+    colors: &[&str],
+    name: &str,
+    icon: (&str, &str),
+    flash: Option<&Flash>,
+) -> Markup {
+    region(
+        NEW_AGENT_ID,
+        html! {
+            (page_header("New helper", Some("A helper works on its own, in its own sandbox, and looks after the apps it sets up.")))
+            @if let Some(f) = flash { (notice(&f.text, f.tone)) }
+            form.stack.settings-form method="post" action="/ui/settings/agents/new"
+                hx-post="/ui/settings/agents/new" hx-target={ "#" (NEW_AGENT_ID) } hx-swap="outerHTML" {
+                label.field {
+                    span { "Name" }
+                    input type="text" name="name" value=(name) required maxlength="40"
+                        autocomplete="off" spellcheck="false" autofocus;
+                }
+                (icon_picker(shapes, colors, icon.0, icon.1))
+                div { button.primary type="submit" { "Create helper" } }
+            }
         },
     )
 }

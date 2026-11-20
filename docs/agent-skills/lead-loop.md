@@ -64,16 +64,25 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   Labels: create/job/stop/message Reversible (attended lead agent: allowed; tainted lead agent: confirmation),
   status/list read-only, reassign `Effect::Ownership`.
 - **History after a restart:** `EventLog::with_history` starts the lead agent's and each agent's log with the
-  last 30 turns of the current chat from the transcript (after the last `new_chat`; memory only, renumbered
+  last 100 turns (`RESTORED_TURNS`; 30 before one chat per agent) of the chat from the transcript (after the last `new_chat`; memory only, renumbered
   seqs and turn ids, between `earlier_start`/`earlier_end`); new turn ids continue after them. Each log has an
   `epoch()` so clients notice a cursor from before a restart.
-- **New chat** (`Lead::new_chat`, `POST /api/lead/new-chat`, `POST /ui/new-chat`, `melissa-server new-chat`
-  or `chat --new`; audited `lead.new_chat`): withdraws the lead agent's pending confirmations (audited
-  `confirmation.withdrawn`; agents' stay), stops a running turn (Busy if it doesn't stop within the cancel
-  grace), closes the agent session and deletes `session.json` (no resume, no transcript priming), archives
-  the transcript (+`.1`) to `lead/chats/<id>.jsonl` (0600; id = Unix seconds), clears the taint and pushes
-  `new_chat`. Past chats: `Lead::past_chats/past_chat`, `GET /api/lead/chats`, `/chats/<id>` in the UI.
-  This is the owner-approved way to clear taint. Agents have no new chat: they keep their memory by design.
+- **One chat per agent, Fresh start** (2026-11-20; was "New chat"): `Lead::fresh_start` / `AgentPool::fresh_start`
+  (`POST /api/lead/fresh-start`, `/api/agents/{agent}/fresh-start`, `/ui/fresh-start`, the agent menu, CLI
+  `fresh-start [--agent]`, old names `new-chat`/`chat --new`): withdraws Melissa's own pending confirmations (audited
+  `confirmation.withdrawn`; agents' stay), stops a running turn, closes the session and deletes `session.json`,
+  clears the taint, pushes `fresh_start`. Nothing is archived; `Transcript::recap` (the priming of a new session)
+  stops at the last `fresh_start`/`new_chat`. Archives from before (`lead/chats/<id>.jsonl`) stay readable:
+  `Lead::past_chats/past_chat`, `GET /api/lead/chats`, `/chats` and `/chats/<id>` in the UI. Fresh start is the
+  owner-approved way to clear taint.
+- **Silent compaction** (`CompactPolicy` in `AgentLimits`, `[lead] compact_at_percent` 70, `compact_idle_secs`
+  120; `Conversation::{plan_compaction, compact}`): after a turn with the context past the threshold (the provider's
+  last `Usage`), once idle that long (at once after an overflow), `Transcript::condense` makes a summary of the
+  older messages since the last fresh start (keeping the last 6 whole), `context_compacted {summary}` is pushed
+  (transcript only; the feed ignores it), `session.json` keeps the backend but no session id, and `fresh` makes the
+  next turn close the live session and open a new one; its preamble carries `<earlier-summary>` then the recent
+  messages. Skipped for `SessionBackend::compacts_itself` (Claude). Audited `<kind>.compact`; `Lead::compact` /
+  `POST /api/lead/compact` on request. Tests: `lead/tests/compaction.rs` (paused clock).
 - Taint events: the first time a conversation reads untrusted content it pushes `tainted {tool, subject}`
   (the MCP server remembers the first tainting tool and its `app`/`workspace`/`agent` argument; `tool: "lead agent"` for
   a job or message from a tainted lead agent), right after the tool call.
@@ -186,7 +195,7 @@ empty with no `ms`, and once whole with its time when the agent moves on or the 
 transcript, cut at 20,000 chars; shown only with Settings → Developer → "Show thinking and timings"), `permission`, `confirmation_needed` (id, task, tool, reason),
 `confirmation_resolved` (approved/denied/withdrawn), `session_opened` (backend, resumed), `backend_failed`,
 `session_lost`, `backend_switched` (backend, model, model_label), `turn_finished` (stop_reason: end_turn, cancelled, refusal, max_tokens, max_turn_requests,
-error; tool calls and a thought still open then are shown stopped, as agents send no end for them), `error`, `tainted` (tool, subject), `new_chat`, and in memory only `earlier_start`/`earlier_end`. Only in the lead agent's log: `agent_created` (agent, name, backend), `agent_started` (agent, name,
+error; tool calls and a thought still open then are shown stopped, as agents send no end for them), `error`, `tainted` (tool, subject), `fresh_start`, `context_compacted` (summary; not shown), `new_chat` (old transcripts only), and in memory only `earlier_start`/`earlier_end`. Only in the lead agent's log: `agent_created` (agent, name, backend), `agent_started` (agent, name,
 goal), `agent_finished` (agent, name, status succeeded/failed/cancelled, error), `workspace_reassigned` (workspace, from,
 to, by). Agent text is untrusted: the web UI renders it with the safe `components::markdown`.
 - `GET /api/lead/events?since=<seq>&wait=<s≤30>&limit=<n>` → `{events, next, missed}`. Keep `next` as the

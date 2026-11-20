@@ -19,7 +19,8 @@ use serde::Serialize;
 
 use super::events::{EventRecord, LeadEvent, TurnId};
 
-/// A chat archived by "New chat" (read-only).
+/// A chat archived by "New chat" before 2026-11-20 (read-only; one chat per agent since then,
+/// so no new archives are made).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PastChat {
     /// The archive's id (Unix seconds when it was archived, made unique).
@@ -85,7 +86,7 @@ impl Transcript {
         file.write_all(line.as_bytes())
     }
 
-    /// Where "New chat" archives this transcript.
+    /// Where "New chat" archived this transcript (before 2026-11-20).
     fn archive_dir(&self) -> PathBuf {
         self.path
             .parent()
@@ -107,49 +108,6 @@ impl Transcript {
             self.read_all()
         };
         parse_chat(&text, max_turns)
-    }
-
-    /// Move the current chat to the archive (`chats/<id>.jsonl`, mode 0600) and start an
-    /// empty transcript. Returns the archive's id, or None if there was nothing to keep.
-    pub fn archive(&self) -> std::io::Result<Option<u64>> {
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        let text = self.read_all();
-        if !text.lines().any(|l| {
-            serde_json::from_str::<EventRecord>(l)
-                .is_ok_and(|r| matches!(r.event, LeadEvent::UserMessage { .. }))
-        }) {
-            // Nothing said yet: nothing worth keeping.
-            let _ = std::fs::remove_file(self.rotated());
-            let _ = std::fs::remove_file(&self.path);
-            return Ok(None);
-        }
-        let dir = self.archive_dir();
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)?;
-        let mut id = now_secs();
-        let mut file = loop {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(dir.join(format!("{id}.jsonl")))
-            {
-                Ok(f) => break f,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => id += 1,
-                Err(e) => return Err(e),
-            }
-        };
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        let _ = std::fs::remove_file(self.rotated());
-        std::fs::remove_file(&self.path).or_else(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Ok(()),
-            _ => Err(e),
-        })?;
-        Ok(Some(id))
     }
 
     /// Archived chats, newest first.
@@ -205,45 +163,132 @@ impl Transcript {
         PathBuf::from(name)
     }
 
-    /// The last conversation messages (user and lead agent), oldest first, within about
-    /// `max_chars` characters in total; long messages are shortened. For priming a fresh
-    /// agent session after the previous one was lost.
-    pub fn recent_messages(&self, max_chars: usize) -> Vec<(&'static str, String)> {
-        let text = {
-            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-            self.read_all()
-        };
-        let mut out = Vec::new();
+    /// What a new agent session is primed with (it starts without the earlier conversation):
+    /// the last messages (user and agent) since the last fresh start, oldest first, within
+    /// about `max_chars` characters (long messages shortened), and the summary Melissa made
+    /// when it last condensed the context, if that came after the fresh start (then only the
+    /// messages after it). See [`LeadEvent::FreshStart`] and [`LeadEvent::ContextCompacted`].
+    pub fn recap(&self, max_chars: usize) -> Recap {
+        let records = self.since_boundary();
+        let mut out = Recap::default();
         let mut used = 0;
-        for line in text.lines().rev() {
-            let Ok(record) = serde_json::from_str::<EventRecord>(line) else {
-                continue;
-            };
-            let (who, msg) = match record.event {
+        for record in records.iter().rev() {
+            let (who, msg) = match &record.event {
+                LeadEvent::ContextCompacted { summary } => {
+                    out.summary = Some(summary.clone());
+                    break;
+                }
                 LeadEvent::UserMessage {
                     text, attachments, ..
-                } => ("user", with_file_names(&text, &attachments)),
+                } => ("user", with_file_names(text, attachments)),
                 // Seen from the agent being primed: its own earlier replies.
-                LeadEvent::AgentMessage { text, .. } => ("you", text),
+                LeadEvent::AgentMessage { text, .. } => ("you", text.clone()),
                 _ => continue,
             };
             let msg = shorten(&msg, 600);
             used += msg.len();
-            if used > max_chars && !out.is_empty() {
+            if used > max_chars && !out.messages.is_empty() {
+                // Older messages than this are left out; keep looking for the summary.
+                if let Some(summary) = records.iter().rev().find_map(|r| match &r.event {
+                    LeadEvent::ContextCompacted { summary } if r.seq < record.seq => {
+                        Some(summary.clone())
+                    }
+                    _ => None,
+                }) {
+                    out.summary = Some(summary);
+                }
                 break;
             }
-            out.push((who, msg));
+            out.messages.push((who, msg));
         }
-        out.reverse();
+        out.messages.reverse();
         out
+    }
+
+    /// The summary of the conversation since the last fresh start, for condensing the
+    /// context: the previous summary (if any), then each older message shortened to its
+    /// first lines, leaving out the last `keep` messages (those go to the new session
+    /// whole). At most about `max_chars` characters: the oldest parts go first. None when
+    /// there is nothing older than the kept messages.
+    pub fn condense(&self, keep: usize, max_chars: usize) -> Option<String> {
+        let records = self.since_boundary();
+        let mut previous: Option<String> = None;
+        let mut messages: Vec<(&'static str, String)> = Vec::new();
+        for r in &records {
+            match &r.event {
+                LeadEvent::ContextCompacted { summary } => {
+                    previous = Some(summary.clone());
+                    messages.clear();
+                }
+                LeadEvent::UserMessage {
+                    text, attachments, ..
+                } => messages.push(("user", with_file_names(text, attachments))),
+                LeadEvent::AgentMessage { text, .. } => messages.push(("you", text.clone())),
+                _ => {}
+            }
+        }
+        if messages.len() <= keep {
+            return None;
+        }
+        let older = &messages[..messages.len() - keep];
+        let mut lines: Vec<String> = older
+            .iter()
+            .map(|(who, m)| format!("{who}: {}", shorten(&one_line(m), 240)))
+            .collect();
+        // Newest first within the budget, so what is left out is the oldest.
+        let budget = max_chars.saturating_sub(previous.as_ref().map_or(0, String::len));
+        let mut used = 0;
+        let mut kept = Vec::new();
+        while let Some(line) = lines.pop() {
+            used += line.len() + 1;
+            if used > budget && !kept.is_empty() {
+                break;
+            }
+            kept.push(line);
+        }
+        kept.reverse();
+        let mut out = String::new();
+        if let Some(p) = previous {
+            let p = shorten(&p, max_chars / 2);
+            out.push_str(&p);
+            out.push('\n');
+        }
+        out.push_str(&kept.join("\n"));
+        Some(out)
+    }
+
+    /// Every record since the last fresh start (or new chat), oldest first.
+    fn since_boundary(&self) -> Vec<EventRecord> {
+        let text = {
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            self.read_all()
+        };
+        let mut records: Vec<EventRecord> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<EventRecord>(l).ok())
+            .collect();
+        if let Some(i) = records
+            .iter()
+            .rposition(|r| matches!(r.event, LeadEvent::FreshStart | LeadEvent::NewChat))
+        {
+            records.drain(..=i);
+        }
+        records
     }
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// What a new session is primed with (see [`Transcript::recap`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recap {
+    /// Melissa's summary of the older conversation, if it was condensed.
+    pub summary: Option<String>,
+    /// The last messages: (`user` or `you`, text), oldest first.
+    pub messages: Vec<(&'static str, String)>,
+}
+
+/// The text on one line: line breaks and runs of spaces become single spaces.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Events kept when a chat is read back (the in-memory log's size).
@@ -360,10 +405,10 @@ mod tests {
             std::fs::metadata(t.path()).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let recent = t.recent_messages(40);
+        let recent = t.recap(40).messages;
         assert_eq!(recent.last().unwrap(), &("you", "reply 39".to_string()));
         assert!(recent.len() < 10);
-        let all = t.recent_messages(100_000);
+        let all = t.recap(100_000).messages;
         assert!(all.len() > recent.len());
         // Transcripts from before agents had conversations still read.
         std::fs::write(
@@ -372,7 +417,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            t.recent_messages(100_000).last().unwrap(),
+            t.recap(100_000).messages.last().unwrap(),
             &("you", "old".to_string())
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -451,6 +496,78 @@ mod tests {
                 scheduled: None,
             }
         );
+    }
+
+    fn user(text: &str) -> LeadEvent {
+        LeadEvent::UserMessage {
+            turn: 1,
+            text: text.into(),
+            attachments: vec![],
+            scheduled: None,
+        }
+    }
+
+    fn reply(text: &str) -> LeadEvent {
+        LeadEvent::AgentMessage {
+            turn: 1,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn a_fresh_start_and_a_summary_bound_the_recap() {
+        let dir = std::env::temp_dir().join(format!("melissa-recap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let t = Transcript::new(dir.join("transcript.jsonl"), 1 << 20);
+        for (i, e) in [user("before"), reply("old answer"), LeadEvent::FreshStart]
+            .into_iter()
+            .enumerate()
+        {
+            t.append(&record(i as u64, e));
+        }
+        assert_eq!(
+            t.recap(10_000),
+            Recap::default(),
+            "nothing since the fresh start"
+        );
+        assert_eq!(t.condense(2, 1000), None);
+        for i in 0..6u64 {
+            t.append(&record(10 + 2 * i, user(&format!("ask {i}\nsecond line"))));
+            t.append(&record(11 + 2 * i, reply(&format!("answer {i}"))));
+        }
+        // Keep the last 4 messages whole; the 8 before them are condensed, one line each.
+        let summary = t.condense(4, 10_000).unwrap();
+        assert!(
+            summary.starts_with("user: ask 0 second line\nyou: answer 0"),
+            "{summary}"
+        );
+        assert!(summary.contains("you: answer 3"), "{summary}");
+        assert!(!summary.contains("ask 4"), "{summary}");
+        assert!(
+            !summary.contains("before"),
+            "not from before the fresh start"
+        );
+        t.append(&record(
+            30,
+            LeadEvent::ContextCompacted {
+                summary: summary.clone(),
+            },
+        ));
+        t.append(&record(31, user("new question")));
+        let recap = t.recap(10_000);
+        assert_eq!(recap.summary.as_deref(), Some(summary.as_str()));
+        assert_eq!(recap.messages, [("user", "new question".to_string())]);
+        // A later condense starts from the previous summary.
+        for i in 0..4u64 {
+            t.append(&record(40 + i, reply(&format!("later {i}"))));
+        }
+        let again = t.condense(2, 10_000).unwrap();
+        assert!(again.starts_with(&summary), "{again}");
+        assert!(again.contains("user: new question"));
+        // Over budget: the oldest lines go first.
+        let short = t.condense(2, 60).unwrap();
+        assert!(short.contains("later 1"), "{short}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

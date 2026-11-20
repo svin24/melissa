@@ -297,7 +297,11 @@ impl Printer {
                 ));
             }
             LeadEvent::NewChat => self.line("[new chat] the earlier chat was archived"),
-            LeadEvent::EarlierStart | LeadEvent::EarlierEnd | LeadEvent::FilesChanged => {}
+            LeadEvent::FreshStart => self.line("[fresh start] memory cleared; the chat goes on"),
+            LeadEvent::EarlierStart
+            | LeadEvent::EarlierEnd
+            | LeadEvent::FilesChanged
+            | LeadEvent::ContextCompacted { .. } => {}
             LeadEvent::TurnFinished { stop_reason, .. } => {
                 if stop_reason == "end_turn" {
                     if self.mid_line {
@@ -373,16 +377,16 @@ pub async fn ask(client: &Client, message: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `new-chat` (and `chat --new`): archive the lead agent's chat and start a fresh one.
-pub async fn new_chat(client: &Client) -> anyhow::Result<()> {
-    let (status, body) = client.post("/api/lead/new-chat", json!({})).await?;
-    let body = ok(status, body)?;
-    match body["archived"].as_u64() {
-        Some(id) => println!(
-            "Started a new chat. The earlier one is kept read-only (past chat {id}, in the web UI)."
-        ),
-        None => println!("Started a new chat (the earlier one was empty)."),
-    }
+/// `fresh-start [--agent <agent>]` (old names: `new-chat`, `chat --new`): clear the memory
+/// of the lead agent or an agent; the chat goes on.
+pub async fn fresh_start(client: &Client, agent: Option<&str>) -> anyhow::Result<()> {
+    let path = match agent {
+        None => "/api/lead/fresh-start".to_string(),
+        Some(a) => format!("/api/agents/{}/fresh-start", path_segment(a)),
+    };
+    let (status, body) = client.post(&path, json!({})).await?;
+    ok(status, body)?;
+    println!("Fresh start: the next message begins without the earlier conversation.");
     Ok(())
 }
 

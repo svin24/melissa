@@ -7,27 +7,28 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 
 use crate::{
     components::{
-        action_button, activity_row, add_app_tile, app_dialog, app_grid, app_page, app_strip,
-        app_tile, approval_card, badge, card, chat_divider, composer, composer_status, crumbs,
-        device_card, empty_state, facts, feed, feed_entry, lead_message, link, live_region,
-        live_region_on, log_view, markdown, note, oob_inner, page, page_header, plain_text,
-        post_form, rail, relayed_message, scheduled_message, section, select_field, table,
-        textarea_field, thought_row, truncated, user_message_with, waiting_count, AppWorkspace,
-        ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone,
+        action_button, activity_row, add_app_tile, agent_message, app_dialog, app_grid, app_page,
+        app_strip, app_tile, badge, card, chat_divider, composer, composer_status, crumbs,
+        device_card, empty_state, facts, feed, feed_entry, link, live_region, live_region_on,
+        log_view, markdown, note, oob_inner, page, page_header, permission_card, plain_text,
+        post_form, relayed_message, scheduled_message, section, select_field, steps_card, table,
+        textarea_field, truncated, user_message_with, AppWorkspace, Avatar, Choice, DeviceCard,
+        Health, LogLine, MessageHead, Meter, Nav, PermissionCard, StepLine, StripTile, Tone,
         APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
-        composer_closed, details_panel, details_toggle, feed_archive, file_count, file_panel_inner,
-        model_chip, model_picker, panel, rail_conversations, setting_card, usage_table,
-        ComposerTarget, DetailsPanel, FilePanel, ModelPicker, RailHelper, RailPastChat, SentFile,
-        UpdateHint, UsageRow, DETAILS_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
+        chat_head, composer_closed, details_panel, details_toggle, feed_archive, file_count,
+        file_panel_inner, model_chip, model_picker, panel, setting_card, status_pill, usage_table,
+        ChatHead, ComposerTarget, DetailsPanel, FilePanel, HeadStatus, ModelPicker, SentFile,
+        UpdateHint, UsageRow, CHAT_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
     },
-    feed::{Approval, Change, Entry, Feed, Item},
+    feed::{Approval, Change, Clock, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
+    workspace::{groups_update, sidebar_markup, SideData},
 };
 use melissa_agent::{
     attachments::{human_size, Attachment},
-    lead::{agents::AgentView, transcript::PastChat},
+    lead::transcript::PastChat,
 };
 
 pub const TASKS_ID: &str = "tasks";
@@ -46,31 +47,31 @@ fn device_health(d: &Device) -> (Health, &'static str) {
     }
 }
 
-/// What every page with the rail needs.
+/// What every page with the sidebar needs.
 pub struct Frame<'a> {
     /// No permission prompts is on (developer mode).
     pub bypass: bool,
     /// The developer option "Full access per agent" is on.
     pub full_access: bool,
-    pub waiting: usize,
     pub snap: &'a ClusterSnapshot,
-    pub agents: &'a [AgentView],
-    /// Archived chats with Melissa, newest first.
+    /// The sidebar: agents by state, devices.
+    pub side: &'a SideData,
+    /// Archived chats with Melissa (from before one chat per agent), newest first.
     pub past: &'a [PastChat],
     /// The `Host` the visitor used (for app links), if the page needs it.
     pub host: Option<&'a str>,
-    /// The rail's update button.
+    /// The bottom bar's update button.
     pub update: UpdateHint,
 }
 
-/// A page with the rail. (No permission prompts shows no banner: the owner turned it on
+/// A page with the sidebar. (No permission prompts shows no banner: the owner turned it on
 /// knowingly; Settings → Developer shows it.)
 pub fn shell(_f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
     app_page(title, rail, main)
 }
 
 /// A page that is a panel (Settings, Apps, Usage and resources): the panel alone when the
-/// modal asks for it (see `crate::panel`), else the full page with the rail.
+/// modal asks for it (see `crate::panel`), else the full page with the sidebar.
 pub fn panel_shell(f: &Frame<'_>, title: &str, rail: Markup, panel: Markup) -> Markup {
     if crate::panel::requested() {
         panel
@@ -83,9 +84,6 @@ pub fn panel_shell(f: &Frame<'_>, title: &str, rail: Markup, panel: Markup) -> M
 pub fn past_chat_href(id: u64) -> String {
     format!("/chats/{id}")
 }
-
-/// Past chats shown in the rail.
-const RAIL_PAST_CHATS: usize = 5;
 
 /// A short date ("18 Nov") for Unix seconds, in UTC (no time zone data on the box yet).
 pub fn short_date(secs: u64) -> String {
@@ -111,105 +109,21 @@ pub fn agent_href(id: &str) -> String {
     format!("/agents/{id}")
 }
 
-fn agent_health(status: &str) -> (Health, &'static str) {
-    match status {
-        "working" => (Health::Busy, "working"),
-        "stopped" => (Health::Idle, "stopped"),
-        _ => (Health::Ok, "idle"),
-    }
-}
-
-/// The rail. `current_agent`: the helper whose conversation is open.
+/// The sidebar. `current_agent`: the helper whose conversation is open (Melissa's: `nav` is
+/// [`Nav::Chat`]).
 pub fn rail_for(nav: Nav, f: &Frame<'_>, current_agent: Option<&str>) -> Markup {
-    rail_with(nav, f, current_agent, None)
+    let current = match (nav, current_agent) {
+        (_, Some(id)) => Some(id),
+        (Nav::Chat, None) => Some("lead"),
+        _ => None,
+    };
+    sidebar_markup(nav, f.side, current, &f.update)
 }
 
-/// The rail; `current_past`: the archived chat that is open.
-fn rail_with(
-    nav: Nav,
-    f: &Frame<'_>,
-    current_agent: Option<&str>,
-    current_past: Option<u64>,
-) -> Markup {
-    let devices: Vec<RailDevice<'_>> = f
-        .snap
-        .devices
-        .iter()
-        .map(|d| {
-            let (health, status) = device_health(d);
-            RailDevice {
-                name: &d.name,
-                health,
-                status,
-            }
-        })
-        .collect();
-    let hrefs = helper_hrefs(f.agents);
-    let helpers = rail_helpers(f.agents, &hrefs, current_agent);
-    let shown = &f.past[..f.past.len().min(RAIL_PAST_CHATS)];
-    let past_words: Vec<(String, String, String)> = shown
-        .iter()
-        .map(|p| {
-            let title = if p.title.is_empty() {
-                "A chat".to_string()
-            } else {
-                p.title.clone()
-            };
-            (past_chat_href(p.id), title, short_date(p.ended))
-        })
-        .collect();
-    let past: Vec<RailPastChat<'_>> = shown
-        .iter()
-        .zip(&past_words)
-        .map(|(p, (href, title, when))| RailPastChat {
-            href,
-            title,
-            when,
-            current: current_past == Some(p.id),
-        })
-        .collect();
-    rail(nav, f.waiting, &devices, &helpers, &past, &f.update)
-}
-
-fn helper_hrefs(agents: &[AgentView]) -> Vec<String> {
-    agents.iter().map(|b| agent_href(&b.id)).collect()
-}
-
-/// The rail entries of `agents` (`hrefs` from [`helper_hrefs`]).
-fn rail_helpers<'a>(
-    agents: &'a [AgentView],
-    hrefs: &'a [String],
-    current_agent: Option<&str>,
-) -> Vec<RailHelper<'a>> {
-    agents
-        .iter()
-        .zip(hrefs)
-        .map(|(b, href)| {
-            let (health, status) = agent_health(b.status);
-            RailHelper {
-                href,
-                name: &b.name,
-                health,
-                status,
-                current: current_agent == Some(b.id.as_str()),
-            }
-        })
-        .collect()
-}
-
-/// A live update of the rail's conversations (helpers came, went or changed), for a page
-/// that shows Melissa's chat (`melissa_current`) or helper `current_agent`'s.
-pub fn rail_conversations_update(
-    agents: &[AgentView],
-    melissa_current: bool,
-    current_agent: Option<&str>,
-) -> Markup {
-    let hrefs = helper_hrefs(agents);
-    rail_conversations(
-        melissa_current,
-        &rail_helpers(agents, &hrefs, current_agent),
-        true,
-    )
+/// A live update of the sidebar's agent groups (agents came, went, moved between groups or
+/// changed), for a page that shows `current`'s chat (`lead` or an id).
+pub fn sidebar_update(side: &SideData, current: Option<&str>) -> Markup {
+    groups_update(side, current)
 }
 
 /// A live update for the open chat of a helper that was just deleted: the composer gives
@@ -230,9 +144,11 @@ pub fn helper_gone(f: &Frame<'_>) -> Markup {
         "Conversation not found",
         rail_for(Nav::Helper, f, None),
         html! {
-            (page_header("Conversation not found", None))
-            (crate::components::notice("This helper isn't on this device any more.", Tone::Warn))
-            (link("/", "Back to Melissa's chat"))
+            div.page-pad {
+                (page_header("Conversation not found", None))
+                (crate::components::notice("This helper isn't on this device any more.", Tone::Warn))
+                (link("/", "Back to Melissa's chat"))
+            }
         },
     )
 }
@@ -264,6 +180,30 @@ impl Who<'_> {
         match self {
             Self::Lead => format!("/ui/stream?since={since}&epoch={epoch}"),
             Self::Agent(id) => format!("/ui/agents/{id}/stream?since={since}&epoch={epoch}"),
+        }
+    }
+
+    /// Where older entries load from (lazy loading).
+    pub fn older_url(self, before: usize, epoch: u64) -> String {
+        match self {
+            Self::Lead => format!("/ui/older?before={before}&epoch={epoch}"),
+            Self::Agent(id) => format!("/ui/agents/{id}/older?before={before}&epoch={epoch}"),
+        }
+    }
+
+    /// The chat page.
+    pub fn chat_url(self) -> String {
+        match self {
+            Self::Lead => "/".into(),
+            Self::Agent(id) => agent_href(id),
+        }
+    }
+
+    /// `lead` or the helper's id (the sidebar's key, the file box's key).
+    pub fn key(self) -> String {
+        match self {
+            Self::Lead => "lead".into(),
+            Self::Agent(id) => id.to_string(),
         }
     }
 }
@@ -312,21 +252,70 @@ impl FileLinks {
     }
 }
 
+/// Who the agent of a chat is, for its messages' heads.
+#[derive(Debug, Clone, Copy)]
+pub struct Speaker<'a> {
+    pub name: &'a str,
+    pub avatar: Avatar<'a>,
+}
+
+impl Speaker<'_> {
+    pub const MELISSA: Speaker<'static> = Speaker {
+        name: "Melissa",
+        avatar: Avatar::Melissa,
+    };
+}
+
+/// What rendering an entry needs besides the entry.
+pub struct EntryCtx<'a> {
+    pub links: &'a FileLinks,
+    pub speaker: Speaker<'a>,
+    pub clock: &'a Clock,
+}
+
 /// The content of one feed entry (without its `li`).
-pub fn entry_content(entry: &Entry, links: &FileLinks) -> Markup {
+pub fn entry_content(entry: &Entry, x: &EntryCtx<'_>) -> Markup {
+    let head = |at: u64, head: bool| -> Option<String> { head.then(|| x.clock.time(at)) };
     match &entry.item {
         Item::User {
             text,
             files,
             scheduled: None,
-        } => user_message_with(text, &links.sent(files)),
+            ..
+        } => user_message_with(text, &x.links.sent(files)),
         Item::User {
             text,
             scheduled: Some(name),
             ..
         } => scheduled_message(name, text),
         Item::Relayed { from, text } => relayed_message(from, text),
-        Item::Reply { text } => lead_message(text),
+        Item::Reply { text, at, head: h } => {
+            let time = head(*at, *h);
+            let mh = time.as_deref().map(|t| MessageHead {
+                avatar: x.speaker.avatar,
+                name: x.speaker.name,
+                time: t,
+            });
+            agent_message(mh.as_ref(), x.speaker.name, text)
+        }
+        Item::Steps { steps, at, head: h } => {
+            let time = head(*at, *h);
+            let mh = time.as_deref().map(|t| MessageHead {
+                avatar: x.speaker.avatar,
+                name: x.speaker.name,
+                time: t,
+            });
+            let lines: Vec<StepLine<'_>> = steps
+                .iter()
+                .map(|s| StepLine {
+                    label: &s.label,
+                    detail: s.detail.as_deref(),
+                    state: s.state,
+                    thought: s.thought.as_deref(),
+                })
+                .collect();
+            steps_card(mh.as_ref(), &lines)
+        }
         Item::Activity {
             label,
             detail,
@@ -341,21 +330,23 @@ pub fn entry_content(entry: &Entry, links: &FileLinks) -> Markup {
             *state,
             agent.as_deref().map(agent_href).as_deref(),
         ),
-        Item::Thought { label, text, state } => thought_row(label, text, *state),
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
         Item::Note { text, detail, tone } => note(text, detail.as_deref(), *tone),
         Item::Divider { text } => chat_divider(text),
+        Item::Date { text } => crate::components::chat_date(text),
     }
 }
 
-/// An approval card whose buttons replace the content of `target`.
+/// A permission card whose buttons replace the content of `target`.
 pub fn approval_content(a: &Approval, target: &str) -> Markup {
-    approval_card(&ApprovalCard {
+    permission_card(&PermissionCard {
         id: a.id,
         target,
         title: &a.title,
         consequence: &a.consequence,
         reason: &a.reason,
+        kind: a.kind,
+        detail: a.detail.as_deref(),
         destructive: a.destructive,
         permanent: a.permanent,
         yes: a.yes,
@@ -383,9 +374,41 @@ pub fn approval_gone() -> Markup {
     )
 }
 
-fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>, links: &FileLinks) -> Markup {
+fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>, x: &EntryCtx<'_>) -> Markup {
     html! {
-        @for e in list { (feed_entry(&entry_id(&e.key), entry_content(e, links))) }
+        @for e in list { (feed_entry(&entry_id(&e.key), entry_content(e, x))) }
+    }
+}
+
+/// Entries a chat page renders at first; older ones load as the user scrolls up.
+pub const PAGE_ENTRIES: usize = 60;
+
+/// The newest [`PAGE_ENTRIES`] entries before `before` (all entries: `entries().len()`),
+/// with a marker at the top that loads the ones before them, if any. `all`: every entry (the
+/// marker's link without script).
+pub fn feed_page(
+    feed: &Feed,
+    before: usize,
+    who: Who<'_>,
+    epoch: u64,
+    all: bool,
+    x: &EntryCtx<'_>,
+) -> Markup {
+    let list = feed.entries();
+    let end = before.min(list.len());
+    let start = if all {
+        0
+    } else {
+        end.saturating_sub(PAGE_ENTRIES)
+    };
+    html! {
+        @if start > 0 {
+            (crate::components::older_marker(
+                &who.older_url(start, epoch),
+                &format!("{}?all=1", who.chat_url()),
+            ))
+        }
+        (entries(&list[start..end], x))
     }
 }
 
@@ -411,16 +434,15 @@ impl View {
 pub struct StreamExtras<'a> {
     pub backend: Option<&'a str>,
     pub picker: Option<&'a ModelPicker>,
-    pub waiting: usize,
-    pub links: &'a FileLinks,
+    pub entry: &'a EntryCtx<'a>,
     /// The file panel, when the box changed (chat view).
     pub files: Option<&'a FilePanel<'a>>,
-    /// The agent's status for the details panel, when it changed (chat view).
-    pub status: Option<(&'static str, Tone)>,
+    /// The chat header's status, when it may have changed (chat view).
+    pub status: Option<Option<HeadStatus>>,
 }
 
 /// The HTML for one live update: new entries (appended by the client) and out-of-band
-/// replacements for changed entries, the composer status, the waiting count and the file
+/// replacements for changed entries, the composer status, the header's status and the file
 /// panel. Empty if nothing visible changed.
 pub fn stream_update(
     feed: &Feed,
@@ -429,16 +451,15 @@ pub fn stream_update(
     who: Who<'_>,
     x: &StreamExtras<'_>,
 ) -> String {
-    let (backend, picker, waiting, links) = (x.backend, x.picker, x.waiting, x.links);
+    let (backend, picker) = (x.backend, x.picker);
     let mut added = Vec::new();
     let mut updated = Vec::new();
-    let (mut status, mut count, mut files) = (false, false, false);
+    let (mut status, mut files) = (false, false);
     for c in changes {
         match *c {
             Change::Added(i) if !added.contains(&i) => added.push(i),
             Change::Updated(i) if !updated.contains(&i) => updated.push(i),
             Change::Status => status = true,
-            Change::Waiting => count = true,
             Change::Files => files = true,
             _ => {}
         }
@@ -447,11 +468,11 @@ pub fn stream_update(
     let shown = |i: &usize| list.get(*i).is_some_and(|e| view.shows(&e.item));
     let out = html! {
         @for i in added.iter().filter(|i| shown(i)) {
-            (feed_entry(&entry_id(&list[*i].key), entry_content(&list[*i], links)))
+            (feed_entry(&entry_id(&list[*i].key), entry_content(&list[*i], x.entry)))
         }
         // An entry added in this batch is already rendered in its latest state.
         @for i in updated.iter().filter(|i| shown(i) && !added.contains(i)) {
-            (oob_inner(&entry_id(&list[*i].key), entry_content(&list[*i], links)))
+            (oob_inner(&entry_id(&list[*i].key), entry_content(&list[*i], x.entry)))
         }
         @if let (true, View::Chat, Some(panel)) = (files, view, x.files) {
             (oob_inner(FILE_BODY_ID, file_panel_inner(panel)))
@@ -462,24 +483,23 @@ pub fn stream_update(
                     && !added.contains(i)
                     && !updated.contains(i)
             }) {
-                (oob_inner(&entry_id(&list[i].key), entry_content(e, links)))
+                (oob_inner(&entry_id(&list[i].key), entry_content(e, x.entry)))
             }
         }
-        @if let (true, View::Chat, Some((words, tone))) = (status, view, x.status) {
-            (oob_inner(DETAILS_STATUS_ID, badge(words, tone)))
+        @if let (View::Chat, Some(s)) = (view, x.status) {
+            (oob_inner(CHAT_STATUS_ID, status_pill(s)))
         }
         @if status && view == View::Chat {
             (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), feed.busy(), backend.filter(|_| picker.is_none()))))
             @if let Some(p) = picker { (oob_inner(MODEL_CHIP_ID, model_chip(p))) }
         }
-        @if count { (waiting_count(waiting, true)) }
     };
     out.into_string()
 }
 
 // --- Home: the chat ---------------------------------------------------------------------------
 
-/// The app strip from a snapshot.
+/// The app strip from a snapshot (the Apps panel).
 pub fn strip(snap: &ClusterSnapshot) -> Markup {
     let words: Vec<(String, Health, &str)> = match &snap.apps {
         Apps::Known { installed, .. } => installed
@@ -515,7 +535,7 @@ pub fn strip(snap: &ClusterSnapshot) -> Markup {
 }
 
 /// "Storage almost full" when a device's data disk is above [`Disk::WARN_PERCENT`].
-fn disk_warning(snap: &ClusterSnapshot) -> Option<String> {
+pub(crate) fn disk_warning(snap: &ClusterSnapshot) -> Option<String> {
     let d = snap
         .devices
         .iter()
@@ -540,8 +560,8 @@ pub struct ChatView<'a> {
     pub epoch: u64,
     pub feed: &'a Feed,
     pub backend: Option<&'a str>,
-    /// Who the chat is with ("Melissa" or the helper's name), for the placeholder.
-    pub name: &'a str,
+    /// Who the chat is with ("Melissa" or the helper's name, its icon).
+    pub speaker: Speaker<'a>,
     /// The model picker (switch backend, model or reasoning level), if it can be read.
     pub picker: Option<&'a ModelPicker>,
     pub busy: bool,
@@ -553,76 +573,49 @@ pub struct ChatView<'a> {
     pub links: &'a FileLinks,
     /// The conversation's details panel (None: only the composer is rendered).
     pub details: Option<&'a DetailsPanel<'a>>,
+    /// Render every entry (no lazy loading; the older marker's link without script).
+    pub all: bool,
 }
 
-/// The chat with Melissa (the lead agent): home.
-pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
-    shell(
-        f,
-        "Chat",
-        rail_for(Nav::Chat, f, None),
-        html! {
-            div.chat-layout {
-                div.chat {
-                    div.chat-bar { (details_toggle()) }
-                    (strip(f.snap))
-                    (feed(
-                        FEED_ID,
-                        "Conversation",
-                        &v.who.stream_url(v.feed.last_seq(), v.epoch),
-                        entries(v.feed.entries(), v.links),
-                        empty_state(
-                            "Hi, I'm Melissa.",
-                            "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
-                        ),
-                    ))
-                    (composer_box(v))
-                    @if let Some(p) = v.picker { (model_picker(p)) }
-                }
-                @if let Some(p) = v.details { (details_panel(p)) }
-            }
-            (app_dialog())
-        },
-    )
-}
-
-/// The chat with one helper.
-pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup {
-    let workspaces: Vec<String> = match &f.snap.apps {
-        Apps::Known { installed, .. } => installed
-            .iter()
-            .filter(|a| matches!(&a.keeper, Some(Keeper::Agent { id, .. }) if *id == agent.id))
-            .map(|a| a.display_name())
-            .collect(),
-        _ => Vec::new(),
+/// A chat page: Melissa's (home) or a helper's. `head`: its header.
+pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
+    let (nav, current, title) = match v.who {
+        Who::Lead => (Nav::Chat, None, "Chat"),
+        Who::Agent(id) => (Nav::Helper, Some(id), v.speaker.name),
     };
-    let lead = match workspaces.len() {
-        0 => "A helper on this device. Melissa gives it jobs; you can talk to it here.".to_string(),
-        _ => format!(
-            "A helper on this device. Looks after {}.",
-            workspaces.join(", ")
+    let x = EntryCtx {
+        links: v.links,
+        speaker: v.speaker,
+        clock: v.feed.clock(),
+    };
+    let empty = match v.who {
+        Who::Lead => empty_state(
+            "Hi, I'm Melissa.",
+            "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
+        ),
+        Who::Agent(_) => empty_state(
+            &format!("Nothing here yet with {}.", v.speaker.name),
+            "Its jobs from Melissa and your messages show up here.",
         ),
     };
+    let label = match v.who {
+        Who::Lead => "Conversation".to_string(),
+        Who::Agent(_) => format!("Conversation with {}", v.speaker.name),
+    };
     shell(
         f,
-        &agent.name,
-        rail_for(Nav::Helper, f, Some(&agent.id)),
+        title,
+        rail_for(nav, f, current),
         html! {
             div.chat-layout {
                 div.chat {
-                    div.chat-bar {
-                        (page_header(&agent.name, Some(&lead)))
-                        (details_toggle())
-                    }
+                    (chat_head(head, details_toggle()))
                     (feed(
                         FEED_ID,
-                        &format!("Conversation with {}", agent.name),
+                        &label,
                         &v.who.stream_url(v.feed.last_seq(), v.epoch),
-                        entries(v.feed.entries(), v.links),
-                        empty_state(
-                            &format!("Nothing here yet with {}.", agent.name),
-                            "Its jobs from Melissa and your messages show up here.",
-                        ),
+                        feed_page(v.feed, v.feed.entries().len(), v.who, v.epoch, v.all, &x),
+                        empty,
                     ))
                     (composer_box(v))
                     @if let Some(p) = v.picker { (model_picker(p)) }
@@ -637,7 +630,7 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
 /// The composer (also the response to sending a message).
 pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
-    let placeholder = format!("Message {}", v.name);
+    let placeholder = format!("Message {}…", v.speaker.name);
     composer(
         &ComposerTarget {
             send: &send,
@@ -659,20 +652,51 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks)
         short_date(chat.started),
         short_date(chat.ended)
     );
+    let x = EntryCtx {
+        links,
+        speaker: Speaker::MELISSA,
+        clock: feed.clock(),
+    };
     shell(
         f,
-        "Past chat",
-        rail_with(Nav::PastChat, f, None, Some(chat.id)),
+        "Earlier chat",
+        rail_for(Nav::PastChat, f, None),
         html! {
-            div.chat {
-                (page_header("Past chat", Some(&lead)))
+            div.chat.page-pad {
+                (crumbs(&[("/", "Melissa"), ("/chats", "Earlier chats")], &short_date(chat.ended)))
+                (page_header("Earlier chat", Some(&lead)))
                 (feed_archive(
                     FEED_ID,
-                    "Past chat",
-                    entries(feed.entries(), links),
+                    "Earlier chat",
+                    entries(feed.entries(), &x),
                     empty_state("Nothing in this chat.", "It was closed before anything was said."),
                 ))
-                p.quiet { (link("/", "Back to the current chat")) }
+                p.quiet { (link("/", "Back to Melissa's chat")) }
+            }
+        },
+    )
+}
+
+/// The list of Melissa's earlier chats (archived by "New chat" before one chat per agent).
+pub fn past_chats(f: &Frame<'_>) -> Markup {
+    shell(
+        f,
+        "Earlier chats",
+        rail_for(Nav::PastChat, f, None),
+        html! {
+            div.page-pad {
+                (crumbs(&[("/", "Melissa")], "Earlier chats"))
+                (page_header("Earlier chats", Some("Chats with Melissa from before she kept one chat. Read-only.")))
+                @if f.past.is_empty() {
+                    (empty_state("No earlier chats.", "Melissa keeps one chat; there were none before it."))
+                } @else {
+                    (crate::components::past_chat_list(&f.past.iter().map(|p| crate::components::PastChatRow {
+                        href: past_chat_href(p.id),
+                        title: if p.title.is_empty() { "A chat".to_string() } else { p.title.clone() },
+                        when: short_date(p.ended),
+                        turns: p.turns,
+                    }).collect::<Vec<_>>()))
+                }
             }
         },
     )

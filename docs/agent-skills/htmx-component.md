@@ -17,45 +17,59 @@
   `Scope::Nothing`, read-only tools) plus who looks after each workspace (`lead.agents().workspaces()`, i.e. the
   `melissa.io/owner-agent` labels), cached 30 s; the first request waits, later ones refresh in the background.
 - `settings/`: the Settings pages, forms and `/api/settings/...` (see [settings-ui.md](settings-ui.md)).
+- `workspace.rs` (2026-11-20): the agent workspace's data: `SideData` (each agent's group, status line, sub line,
+  header status, menu links `MenuUrls`), `Ui::side_data`, recent activity lines. Words only.
 - `panel.rs`: the panel-only answer for the modal (`HX-Target: overlay-body`); `usage.rs`: `/usage`.
-- `ui.rs`: the UI routes (`/`, `/cluster`, `/usage`, `/approvals`, `/agents/{agent}`, `/chats/{id}` (a past chat, read-only),
-  `/ui/...`, `POST /ui/new-chat`); `pages::Who` picks the
+- `ui.rs`: the UI routes (`/`, `/cluster`, `/usage`, `/approvals`, `/agents/{agent}`, `/chats` and `/chats/{id}`
+  (earlier chats, read-only), `/ui/...`, `POST /ui/fresh-start`, `/ui/agents/{agent}/fresh-start|pin`,
+  `/ui/older`); `pages::Who` picks the
   conversation (Lead agent or an agent) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
   task pages, assets, security middleware.
 
-## Components (2026-11-18)
-Shell: `app_page` (banner + rail + main + the empty `overlay_dialog`), `page` (no rail: errors, and the task pages when there is no lead agent), `banner`, `mark`, `rail`
-(nav: Chat, Waiting for you; conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
-devices; then `rail_foot`, the bottom bar (2026-11-20): Settings, Apps, Usage and resources as 44px icon links with
-18px `glyph`s, tooltips and hidden labels, and the updates link alone on the right (`UpdateHint`: a `--action` dot
-when a Melissa update is available)), `waiting_count`, `page_header`, `section`, `empty_state`.
+## Components (2026-11-18; agent workspace 2026-11-20)
+Shell: `app_page` (banner + sidebar + main + the empty `overlay_dialog`), `page` (no sidebar: errors, and the task
+pages when there is no lead agent), `banner`, `mark`, `page_header`, `section`, `empty_state`.
+Agent workspace (2026-11-20, owner design; `components/agent.rs`): `sidebar` (`nav.sidebar#sidebar`: the device
+menu button + `[popover]` menu, the collapse button, `div.side-search` with `#agent-search[data-agent-search]` and
+"+" to `/settings/agents/new`, `agent_groups`, `rail_foot`, then `div.side-backdrop`), `agent_groups`
+(`#agent-groups`, swapped out of band by the stream: Needs attention and Pinned are `section`s, Working (open) and
+Settled (closed) are `details[data-group]`; each row `li.agent-row[data-name]` = `a.agent-link` (icon, name, star
+for Melissa, `agent-status`, `agent-sub`, a `progress` while working) + `agent_menu`), `agent_menu` (the "⋯"
+`popovertarget` button and `div.menu[popover]`) whose items are `agent_menu_items` (one place, for other
+containers), `avatar` (`Avatar::Melissa` or a helper's `shape` + colour class `ic-*`), `icon_picker` (radio
+groups `shape`/`color`, `#agent-icon`), `chat_head` (`header.chat-head`: show-agents button, icon, "device /
+name" with the `h1`, `#chat-status` with `status_pill`, the menu as `#menu-head`, `details_toggle`),
+`agent_message` (`MessageHead`: icon, name, time on a turn's first item), `steps_card` (`StepLine`s: mark, words,
+state on the right; a thought opens to its text), `permission_card` (warning mark and question, consequence,
+"Asked because", the `approval-tag` line, verb/Decline/quiet Always allow and "Waiting for your decision").
 Panels (2026-11-20, `components/panel.rs`): `panel` (title, close, body: Apps, Usage and resources),
 `settings_frame_at` (Settings), `glyph` (`Glyph`: the 16-unit line icons of the bar and the section list),
 `usage_table`; see [settings-ui.md](settings-ui.md) for the modal and the row components.
-Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
-"Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `lead_message`,
+Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `older_marker` (lazy loading:
+`li.feed-older[data-older]`, melissa.js loads it as it scrolls into view; its link is `?all=1`), `chat_date`
+("Today, 10:42"), `chat_divider` ("Earlier", "Melissa restarted", "Fresh start"), `feed_entry` (stable `li` id),
+`oob_inner`, `user_message` (with a visible "You"),
 `relayed_message` (a job or message Melissa passed into a helper's chat),
 `markdown` (agent prose), `plain_text` (what the user typed), `activity_row` (its detail is Markdown for a
 helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey "read text from outside" note),
-`approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
-"Can't be undone" variant), `composer` (2026-11-20: grows with its text; paperclip/paste/drop files, shown as chips cloned from its
+`composer` (2026-11-20: grows with its text; paperclip/paste/drop files, shown as chips cloned from its
 `file-chip` template by melissa.js; since the model picker one rounded box: text on top, a bar below with the
-paperclip left and `model_chip`, the mic and a round Send right; placeholder "Message <name>"), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
-`composer_status`, `details_panel` + `details_toggle` (2026-11-20, owner request; replaced `file_panel`): the
-right side of a chat page about its agent. `aside.details#details-panel` with `agent_card` (`#details-agent`:
-name, status badge `#details-status` swapped by the stream on `Change::Status`, role, runs on with a
-`popovertarget` Change button for the model picker, made by/when, Rename disclosure, Delete via `action_button`;
-rename returns `HX-Refresh`, delete `HX-Redirect: /`, a refusal the card with a notice), `detail_apps`
-(`#details-apps`, polls `/ui/details/{key}/apps` every 15 s; rows load the page's `app_dialog`, href `/cluster`
-without script), `detail_schedules` (`#details-schedules`, on/off forms) and the Files section (`file_panel_body`
-`#file-box-body`: usage, upload form (multipart `files`), rows with a download link and a `details.file-more`
-"⋯" menu holding "Reference in chat" (`a[data-insert]`: melissa.js inserts `[file box: <name>]` at the cursor;
-without script `?draft=`), "Send to…" (select + "Move" checkbox) and Delete (`action_button`, never
-`hx-confirm`), then "Keep files for…"). Its actions return `file_panel_body` + `file_count` (oob); the stream swaps
-`file_panel_inner` + `file_count` on `Change::Files`. Layout: column at ≥ 1200 px (melissa.js may hide it,
-`data-closed`), sheet below that with script (`html.js`; `data-open`, backdrop, `inert` on the chat, Esc, focus
-in and back; transitions only after `data-ready`), a plain section after the chat without script; open/closed in
-localStorage per width (`melissa.details.wide|narrow`). `SentFile.href = None` renders an "expired" chip), `model_chip` + `model_picker`
+paperclip left and `model_chip`, the mic and a round Send right; placeholder "Message <name>…"), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
+`composer_status`, `details_panel` + `details_toggle` (2026-11-20, owner design "Agent details"): the right side of
+a chat page about its agent. `aside.details#details-panel` with its head (collapse button), `detail_apps`
+(`#details-apps`, polls `/ui/details/{key}/apps` every 15 s: one `services-card` with the apps (Melissa: grouped
+by who looks after them), each with status dot, facts and a "⋯" that loads the page's `app_dialog`, then this
+device's row with the disk warning), Uploaded files (`file_panel_body` `#file-box-body`: upload and "Keep files
+for" on one row, then `li.file-card`s: an image preview opening full size, name, "PNG · 16 B", the "⋯"
+`details.file-more` with "Reference in chat", "Send to…" and Delete, and "Uploaded in this conversation · <when>"),
+`detail_permissions` (`#details-permissions`: approvals this agent waits for with Review (a link to the card),
+its Always-allow rules with Remove, `POST /ui/details/{key}/rules/{id}/remove`), `detail_activity` (recent
+activity: done steps, requests, decisions, files added, with times) and `detail_schedules` (only when it has
+schedules). Its actions return `file_panel_body` + `file_count` (oob); the stream swaps `file_panel_inner` +
+`file_count` on `Change::Files`. Layout: column at ≥ 1200 px (melissa.js may hide it, `data-closed`), sheet below
+that with script (`html.js`; `data-open`, backdrop, `inert` on the chat, Esc, focus in and back; transitions only
+after `data-ready`), a plain section after the chat without script; open/closed in localStorage per width
+(`melissa.details.wide|narrow`). `SentFile.href = None` renders an "expired" chip), `model_chip` + `model_picker`
 (2026-11-20, owner-requested; replaced the 2026-11-19 `agent_menu`): the chip ("Opus 5.5 · High", the backend's
 `provider_mark`) is a `popovertarget` button in the composer bar (slot `#model-chip`, swapped by the stream on
 `Change::Status`); the picker is a `div[popover]` after the composer with its own form (`choice` = `<backend>[ <model>]`,
@@ -76,7 +90,7 @@ Settings (2026-11-19, owner-requested; a modal since 2026-11-20; details in [set
 `inline_form`, `inline_select`, `inline_number`,
 `settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts` (`dl.facts`), `group`,
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
-`actions`, `region`; the rail's gear (`Nav::Settings`).
+`actions`, `region`; the bottom bar's gear (`Nav::Settings`).
 Task pages (2026-11-19; since the providers integration in Settings → Developer: `/settings/developer` is the
 list, `GET /tasks` redirects there, `/tasks/{id}` uses `settings_frame_at`; bare pages without a lead agent; the built-in `echo` is not offered, a configured
 echo is; the reply (stdout) is `markdown`, stderr a `log_view` "Agent log"; htmx "Run" answers `HX-Redirect` to the
@@ -121,14 +135,17 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
 - The stream re-folds the log up to its cursor before streaming, so keys match the DOM the page rendered.
   Cursors carry the log's epoch (page: `?since=<seq>&epoch=<epoch>`, SSE ids `<epoch>-<seq>`); a cursor from
   another epoch (daemon restarted) or newer than the log gets a `reload` event, and so does every open page
-  when the user starts a new chat (`new_chat` event); `melissa.js` reloads the page.
-- History after a restart: each log starts with the last 30 turns of the current chat, restored from the
+  when an old log's `new_chat` comes by; `melissa.js` reloads the page. A fresh start is a divider, not a reload.
+- The sidebar follows live: each stream keeps the `SideData` its page showed and sends `agent_groups` out of band
+  when it changes (registry changes, events that add entries or change status or approvals, Melissa's log in a
+  helper's chat, quiet ticks), and `status_pill` into `#chat-status` when the header's status changes.
+- History after a restart: each log starts with the last 100 turns of the chat, restored from the
   transcript between `earlier_start`/`earlier_end` (memory only). The feed shows them between "Earlier" and
   "Melissa restarted" dividers under keys prefixed `e` (confirmation and agent tool-call ids repeat after a
   restart); what was running then shows stopped, pending approvals withdrawn.
 - Taint: the first `tainted` event of a conversation becomes a `guard` note at that point ("Melissa read text
-  from outside (Nextcloud's logs). Changes now need your OK until you start a new chat."); no "trust again"
-  button. A new chat is the way to clear it.
+  from outside (Nextcloud's logs). Changes now need your OK until a fresh start."); no "trust again"
+  button. A fresh start (the agent's menu) is the way to clear it.
 - Disk: `device_info` reports `disks`; `state.rs` takes `/var` (else `/`) as the data disk; at 85% used or more
   the app strip and the device card warn ("Storage almost full (1.7 GB left)").
 - Why SSE + the extension and not polling: one connection, low latency for streamed reply text, no
@@ -155,7 +172,7 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
 
 ## Layout (2026-11-20)
 - Above 760px the page is the viewport: `body` is a 100dvh column, the banner takes its height, `.shell` the rest;
-  the rail (`.rail-main` scrolls, `.rail-foot` stays) and `main` scroll on their own. On chat pages at 1200px and
+  the sidebar (`.side-main` scrolls, the head, search and `.rail-foot` stay; collapsible, `html[data-sidebar=collapsed]`; a sheet below 761px with script) and `main` scroll on their own. On chat pages at 1200px and
   up the chat column and the details panel each scroll inside `main`. melissa.js scrolls the feed's nearest
   scrolling box (`scroller()`), the page on phones. Don't reintroduce `100vh - <banner>` heights.
 
@@ -177,4 +194,4 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
 - Router tests: `tower::ServiceExt::oneshot` + `http_body_util::BodyExt::collect` (dev-deps). For SSE, keep the
   response body and read frames with `body.frame()` under a timeout (`the_stream_sends_rendered_updates`).
 - The lead agent test app registers fake read-only `list_apps`/`cluster_health`/`device_info` tools (`Fixed`; its
-  `/var` is 91% used, so the disk warning shows) and keeps a transcript (new chat archives it).
+  `/var` is 91% used, so the disk warning shows) and keeps a transcript.

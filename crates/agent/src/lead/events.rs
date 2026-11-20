@@ -158,8 +158,17 @@ pub enum LeadEvent {
         subject: Option<String>,
     },
     /// The user started a new chat: what came before is archived, the agent starts a fresh
-    /// session and the conversation is untainted again.
+    /// session and the conversation is untainted again. Only in transcripts from before
+    /// 2026-11-20 (one chat per agent since then; see [`LeadEvent::FreshStart`]).
     NewChat,
+    /// The user cleared the agent's memory ("Fresh start"): its next message starts a new
+    /// model session without the earlier conversation, and the conversation is untainted
+    /// again. The chat itself goes on (the feed shows a divider).
+    FreshStart,
+    /// Melissa condensed the older part of the conversation to keep the model's context
+    /// small: the next session starts with `summary` and the recent messages instead of the
+    /// whole history. Not shown in the chat (the visible history stays complete).
+    ContextCompacted { summary: String },
     /// Only in memory: the files in this conversation's file box changed (added by the user
     /// or the agent, deleted, expired), so open file panels refresh.
     FilesChanged,
@@ -245,7 +254,9 @@ impl EventLog {
     pub const CAPACITY: usize = 2000;
 
     /// Turns of the earlier conversation restored by [`EventLog::with_history`].
-    pub const RESTORED_TURNS: usize = 30;
+    /// One chat per agent (2026-11-20): pages render the newest part and load older entries
+    /// as the user scrolls up, so more of the chat comes back than the 30 turns of before.
+    pub const RESTORED_TURNS: usize = 100;
 
     /// A log that also records events in `transcript` (all but text pieces).
     pub fn new(transcript: Option<Transcript>) -> Self {

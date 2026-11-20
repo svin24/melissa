@@ -24,6 +24,16 @@
 //!   takes effect when the next turn starts, never during one ([`super::backends`]). The
 //!   old session closes like at shutdown; the new one resumes it (same backend, other
 //!   model) or starts primed from the transcript, as after a lost session.
+//! - **One chat per agent** (owner, 2026-11-20). The chat never starts over; "Fresh start"
+//!   ([`Conversation::fresh_start`]) only clears the model's memory: the next message opens a
+//!   new session without the earlier conversation and without taint, and the feed shows a
+//!   divider.
+//! - **Silent compaction.** When a turn ends with the context past [`CompactPolicy::percent`]
+//!   of the model's window, and the conversation then stays idle for
+//!   [`CompactPolicy::idle`] (at once after a turn that overflowed), Melissa condenses the
+//!   older messages into a summary from its transcript (`context_compacted`, not shown in the
+//!   chat) and the next message opens a new session primed with that summary and the recent
+//!   messages. Backends that compact on their own (Claude Code) are left alone.
 //! - **System prompt.** The first message of every new session carries the system prompt
 //!   (a reviewed text file shipped with Melissa) as a preamble: ACP has no system prompt
 //!   field that Grok supports.
@@ -65,6 +75,33 @@ use crate::{
 const CANCEL_GRACE: Duration = Duration::from_secs(10);
 /// Characters of earlier conversation replayed into a fresh session.
 const SUMMARY_CHARS: usize = 3000;
+/// Characters of the summary Melissa writes when it condenses the context.
+const COMPACT_CHARS: usize = 6000;
+/// Messages kept whole (not condensed) when the context is condensed.
+const COMPACT_KEEP: usize = 6;
+/// Context use (percent of the window) at which a turn that ended in an error or at its
+/// length limit is taken as an overflow: condensed at once.
+const OVERFLOW_PERCENT: u64 = 90;
+
+/// When Melissa condenses a conversation's context (`[lead] compact_at_percent`,
+/// `compact_idle_secs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactPolicy {
+    /// Context use, in percent of the model's window, from which the older messages are
+    /// condensed. 0: never.
+    pub percent: u8,
+    /// How long the conversation must be idle after such a turn first.
+    pub idle: Duration,
+}
+
+impl Default for CompactPolicy {
+    fn default() -> Self {
+        Self {
+            percent: 70,
+            idle: Duration::from_secs(120),
+        }
+    }
+}
 
 /// Everything that makes a conversation the lead agent's or a particular agent's.
 #[derive(Clone)]
@@ -99,6 +136,8 @@ pub(crate) struct ConversationSpec {
     pub files: FileBoxes,
     /// Whose box (and conversation) this is: the lead agent or the agent.
     pub owner: crate::tools::permissions::Principal,
+    /// When the context is condensed.
+    pub compact: CompactPolicy,
 }
 
 /// What a client sees of a conversation right now.
@@ -214,6 +253,9 @@ struct Inner {
     steps: Mutex<Steps>,
     /// Turns, time, approvals and what the provider reported (`usage.json`).
     usage: Mutex<Usage>,
+    /// The next turn opens a new session without resuming the old one (the context was
+    /// condensed while a session was open).
+    fresh: AtomicBool,
 }
 
 /// The running turn's open steps.
@@ -295,6 +337,7 @@ impl Conversation {
                 notes: Mutex::new(Vec::new()),
                 steps: Mutex::new(Steps::default()),
                 usage: Mutex::new(usage),
+                fresh: AtomicBool::new(false),
             }),
         }
     }
@@ -577,11 +620,12 @@ impl Conversation {
         self.remember_taint(source);
     }
 
-    /// Start a new chat: withdraw nothing here (the lead agent does that), stop a running turn,
-    /// close the agent session without keeping its id (no resume), archive the transcript,
-    /// clear the taint and tell clients (`new_chat`). Returns the archive's id, if the old
-    /// chat had anything in it. `Busy` if a running turn does not stop in time.
-    pub(crate) async fn new_chat(&self, actor: &str) -> Result<Option<u64>, LeadError> {
+    /// "Fresh start": withdraw nothing here (the lead agent does that), stop a running turn,
+    /// close the agent session without keeping its id (no resume), clear the taint and mark
+    /// the boundary in the chat (`fresh_start`): the next message starts a new session that
+    /// knows nothing of the earlier conversation. The chat itself goes on. `Busy` if a
+    /// running turn does not stop in time.
+    pub(crate) async fn fresh_start(&self, actor: &str) -> Result<(), LeadError> {
         if let Some(turn) = self.busy() {
             self.cancel(Some(turn), actor).await;
             if !self
@@ -592,8 +636,7 @@ impl Conversation {
             }
         }
         self.close().await;
-        let spec = &self.inner.spec;
-        let saved = spec.state_dir.join("session.json");
+        let saved = self.inner.spec.state_dir.join("session.json");
         if let Err(e) = std::fs::remove_file(&saved) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 return Err(LeadError::Failed(format!(
@@ -602,27 +645,107 @@ impl Conversation {
                 )));
             }
         }
-        let archived = match self.inner.events.transcript() {
-            Some(t) => t
-                .archive()
-                .map_err(|e| LeadError::Failed(format!("cannot archive the chat: {e}")))?,
-            None => None,
-        };
         // Only now: closing the session above may still have noted its taint.
         self.inner.tainted.store(false, Ordering::SeqCst);
+        self.inner.fresh.store(false, Ordering::SeqCst);
         lock(&self.inner.text).clear();
+        lock(&self.inner.notes).clear();
         *lock(&self.inner.last) = None;
-        self.inner.events.push(LeadEvent::NewChat);
-        let was = match archived {
-            Some(id) => format!("old chat archived as {id}"),
-            None => "old chat was empty".into(),
-        };
+        {
+            let mut usage = lock(&self.inner.usage);
+            usage.context = None;
+            usage.save(&self.inner.spec.state_dir);
+        }
+        self.inner.events.push(LeadEvent::FreshStart);
         self.audit(
-            "new_chat",
+            "fresh_start",
             actor,
-            &format!("{was}; taint cleared; new agent session on the next message"),
+            "memory cleared; taint cleared; new agent session on the next message",
         );
-        Ok(archived)
+        Ok(())
+    }
+
+    /// The context is past the policy's share of the model's window (as last reported).
+    fn context_over(&self, percent: u64) -> bool {
+        lock(&self.inner.usage).context.is_some_and(|c| {
+            c.size > 0 && c.used.saturating_mul(100) >= c.size.saturating_mul(percent)
+        })
+    }
+
+    /// After `turn` ended (`stop_reason`): if the context is over the policy's limit and the
+    /// backend does not compact on its own, condense it once the conversation has been idle
+    /// long enough (at once after an overflow), unless another turn started meanwhile.
+    fn plan_compaction(&self, turn: TurnId, stop_reason: &str) {
+        let policy = self.inner.spec.compact;
+        if policy.percent == 0 || !self.context_over(u64::from(policy.percent)) {
+            return;
+        }
+        let backend = lock(&self.inner.live).as_ref().map(|l| l.backend.clone());
+        if backend
+            .as_deref()
+            .and_then(|b| self.backend(b))
+            .is_some_and(|b| b.compacts_itself())
+        {
+            return;
+        }
+        let overflow =
+            matches!(stop_reason, "max_tokens" | "error") && self.context_over(OVERFLOW_PERCENT);
+        let wait = if overflow {
+            Duration::ZERO
+        } else {
+            policy.idle
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let conv = self.clone();
+        rt.spawn(async move {
+            tokio::time::sleep(wait).await;
+            let idle = {
+                let t = lock(&conv.inner.turn);
+                t.busy.is_none() && t.last == turn
+            };
+            if idle {
+                conv.compact("melissa");
+            }
+        });
+    }
+
+    /// Condense the context now (see [`CompactPolicy`]): the older messages since the last
+    /// fresh start become a summary in the transcript (`context_compacted`), the saved session
+    /// id is forgotten and the next turn opens a new session primed with the summary and the
+    /// recent messages. The chat shows nothing. False if there was nothing to condense.
+    pub(crate) fn compact(&self, actor: &str) -> bool {
+        let Some(t) = self.inner.events.transcript() else {
+            return false;
+        };
+        let Some(summary) = t.condense(COMPACT_KEEP, COMPACT_CHARS) else {
+            return false;
+        };
+        let before = lock(&self.inner.usage).context;
+        let saved_path = self.inner.spec.state_dir.join("session.json");
+        if let Some(mut saved) = load_session(&saved_path) {
+            saved.session_id.clear();
+            save_session(&saved_path, &saved);
+        }
+        self.inner.fresh.store(true, Ordering::SeqCst);
+        self.inner
+            .events
+            .push(LeadEvent::ContextCompacted { summary });
+        {
+            let mut usage = lock(&self.inner.usage);
+            usage.context = None;
+            usage.save(&self.inner.spec.state_dir);
+        }
+        let was = before.map_or_else(String::new, |c| {
+            format!("context {} of {} tokens; ", c.used, c.size)
+        });
+        self.audit(
+            "compact",
+            actor,
+            &format!("{was}older messages condensed; new agent session on the next message"),
+        );
+        true
     }
 
     /// Send a message: starts a turn and returns its id and the event sequence number to
@@ -905,7 +1028,8 @@ impl Conversation {
             self.inner.spec.system_prompt.trim()
         );
         if let Some(t) = self.inner.events.transcript() {
-            let mut recent = t.recent_messages(SUMMARY_CHARS);
+            let recap = t.recap(SUMMARY_CHARS);
+            let mut recent = recap.messages;
             // The message being sent is already in the transcript.
             if recent
                 .last()
@@ -913,11 +1037,20 @@ impl Conversation {
             {
                 recent.pop();
             }
+            if let Some(summary) = recap.summary {
+                p.push_str(
+                    "Summary of the earlier conversation, condensed by Melissa from its \
+                     transcript to keep your context small (details of older turns are left \
+                     out):\n<earlier-summary>\n",
+                );
+                p.push_str(&summary.replace("</earlier-summary", "<\\/earlier-summary"));
+                p.push_str("\n</earlier-summary>\n\n");
+            }
             if !recent.is_empty() {
                 p.push_str(
                     "Earlier conversation, restored by Melissa from its transcript (this session \
-                     starts without it: the previous one was lost or ran on another agent, so \
-                     details may be missing):\n<earlier-conversation>\n",
+                     starts without it: the previous one was lost, condensed or ran on another \
+                     agent, so details may be missing):\n<earlier-conversation>\n",
                 );
                 for (who, msg) in recent {
                     p.push_str(&format!("{who}: {msg}\n"));
@@ -932,6 +1065,13 @@ impl Conversation {
 
     async fn live_session(&self, choice: Option<BackendChoice>) -> Result<Live, String> {
         let live = lock(&self.inner.live).clone();
+        if self.inner.fresh.swap(false, Ordering::SeqCst) {
+            // The context was condensed: a new session, primed with the summary.
+            if live.is_some() {
+                self.close().await;
+            }
+            return self.open_session(choice).await;
+        }
         if let Some(live) = live {
             if choice.is_none() || live.wanted == choice {
                 return Ok(live);
@@ -1035,7 +1175,7 @@ impl Conversation {
             open.files_dir = Some(files_dir);
             open.resume = saved
                 .as_ref()
-                .filter(|s| s.backend == *name)
+                .filter(|s| s.backend == *name && !s.session_id.is_empty())
                 .map(|s| s.session_id.clone());
             let opened = match backend.open(open).await {
                 Ok(o) => o,
@@ -1218,6 +1358,7 @@ impl Conversation {
         drop(t);
         self.withdraw_confirmations();
         self.count_turn(spent);
+        self.plan_compaction(turn, stop_reason);
         // Files the agent saved in its box during the turn show up for the owner.
         let (files, owner) = (self.inner.spec.files.clone(), self.inner.spec.owner.clone());
         match tokio::runtime::Handle::try_current() {

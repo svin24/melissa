@@ -890,7 +890,7 @@
       toggle: document.querySelector("[data-details-toggle]"),
       backdrop: document.querySelector(".details-backdrop"),
       // What the sheet covers: made inert while it is open.
-      covered: document.querySelectorAll(".shell > .rail, .chat-layout > .chat, .banner, .skip"),
+      covered: document.querySelectorAll(".shell > .sidebar, .chat-layout > .chat, .banner, .skip"),
     };
   }
 
@@ -962,6 +962,10 @@
       setDetails(false, true);
       return;
     }
+    // Review: to the permission card in the chat; on narrow screens the sheet steps aside.
+    if (t.closest("[data-review]") && !isWide()) {
+      setDetails(false, false);
+    }
     // "Reference in chat": put the file's reference in the message box (no page load).
     var ref = t.closest("a[data-insert]");
     if (ref && composer()) {
@@ -1012,6 +1016,366 @@
       });
     }
   }
+
+  // --- The sidebar (2026-11-20, owner design): agents grouped by state. --------------------
+  // Here: the search filters the agents as you type; wide screens collapse it (remembered per
+  // browser) and the chat header's button shows it again; on phones it is a sheet over the
+  // page (the header's button opens it; the collapse button, Esc or a click outside close it;
+  // focus moves in and back). Working/Settled keep the open state the user gave them across
+  // live updates (per tab). Without script it is a plain column (above the chat on phones).
+
+  var PHONE = window.matchMedia ? window.matchMedia("(max-width: 760px)") : null;
+
+  function isPhone() {
+    return !!(PHONE && PHONE.matches);
+  }
+
+  function sideParts() {
+    var nav = document.getElementById("sidebar");
+    if (!nav) {
+      return null;
+    }
+    return {
+      nav: nav,
+      backdrop: document.querySelector(".side-backdrop"),
+      covered: document.querySelectorAll("main, .banner, .skip"),
+    };
+  }
+
+  function sideCollapsed() {
+    return document.documentElement.getAttribute("data-sidebar") === "collapsed";
+  }
+
+  function showSideButtons() {
+    var phone = isPhone();
+    var collapsed = sideCollapsed();
+    Array.prototype.forEach.call(document.querySelectorAll("[data-sidebar-expand]"), function (b) {
+      b.hidden = !(phone || collapsed);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-sidebar-collapse]"), function (b) {
+      b.hidden = false;
+      var label = phone ? "Close agents" : "Collapse sidebar";
+      b.title = label;
+      var text = b.querySelector("span");
+      if (text) {
+        text.textContent = label;
+      }
+    });
+  }
+
+  function setCollapsed(collapsed) {
+    if (collapsed) {
+      document.documentElement.setAttribute("data-sidebar", "collapsed");
+    } else {
+      document.documentElement.removeAttribute("data-sidebar");
+    }
+    try {
+      window.localStorage.setItem("melissa.sidebar", collapsed ? "collapsed" : "open");
+    } catch (e) {
+      // Storage unavailable: only this page.
+    }
+    showSideButtons();
+    var to = collapsed
+      ? document.querySelector(".chat-head [data-sidebar-expand]")
+      : document.getElementById("agent-search");
+    if (to) {
+      to.focus();
+    }
+  }
+
+  function setSheet(open, focus) {
+    var p = sideParts();
+    if (!p) {
+      return;
+    }
+    if (open) {
+      p.nav.setAttribute("data-open", "");
+    } else {
+      p.nav.removeAttribute("data-open");
+    }
+    if (p.backdrop) {
+      p.backdrop.hidden = !open;
+    }
+    Array.prototype.forEach.call(p.covered, function (el) {
+      el.inert = open;
+    });
+    if (focus) {
+      var to = open
+        ? document.getElementById("agent-search")
+        : document.querySelector(".chat-head [data-sidebar-expand]");
+      if (to) {
+        to.focus();
+      }
+    }
+  }
+
+  function sheetOpen() {
+    var p = sideParts();
+    return !!(p && isPhone() && p.nav.hasAttribute("data-open"));
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!(t instanceof Element)) {
+      return;
+    }
+    var collapse = t.closest("[data-sidebar-collapse]");
+    if (collapse) {
+      var menu = collapse.closest("[popover]");
+      if (menu && menu.hidePopover && menu.matches(":popover-open")) {
+        menu.hidePopover();
+      }
+      if (isPhone()) {
+        setSheet(false, true);
+      } else {
+        setCollapsed(true);
+      }
+      return;
+    }
+    if (t.closest("[data-sidebar-expand]")) {
+      if (isPhone()) {
+        setSheet(true, true);
+      } else {
+        setCollapsed(false);
+      }
+      return;
+    }
+    if (t.closest("[data-sidebar-close]")) {
+      setSheet(false, true);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && sheetOpen() && !document.querySelector(":popover-open, dialog[open]")) {
+      e.preventDefault();
+      setSheet(false, true);
+    }
+  });
+
+  // The search: rows whose name has the text; groups without any are hidden; closed groups
+  // open while searching (and close again after).
+  function filterAgents() {
+    var input = document.querySelector("[data-agent-search]");
+    var groups = document.getElementById("agent-groups");
+    if (!input || !groups) {
+      return;
+    }
+    var q = input.value.trim().toLowerCase();
+    var any = false;
+    Array.prototype.forEach.call(groups.querySelectorAll(".agent-row"), function (row) {
+      row.hidden = q !== "" && (row.getAttribute("data-name") || "").indexOf(q) < 0;
+      any = any || !row.hidden;
+    });
+    Array.prototype.forEach.call(groups.querySelectorAll(".agent-group"), function (g) {
+      var shown = !!g.querySelector(".agent-row:not([hidden])");
+      g.hidden = q !== "" && !shown;
+      if (g.tagName === "DETAILS") {
+        if (q !== "" && !g.hasAttribute("data-was")) {
+          g.setAttribute("data-was", g.open ? "1" : "0");
+          g.open = true;
+        } else if (q === "" && g.hasAttribute("data-was")) {
+          g.open = g.getAttribute("data-was") === "1";
+          g.removeAttribute("data-was");
+        }
+      }
+    });
+    var none = document.querySelector("[data-search-empty]");
+    if (none) {
+      none.hidden = q === "" || any;
+    }
+  }
+
+  document.addEventListener("input", function (e) {
+    if (e.target instanceof Element && e.target.matches("[data-agent-search]")) {
+      filterAgents();
+    }
+  });
+
+  // Working and Settled: what the user opened or closed stays so across live updates.
+  function groupKey(g) {
+    return "melissa.group." + g.getAttribute("data-group");
+  }
+
+  document.addEventListener(
+    "toggle",
+    function (e) {
+      var g = e.target;
+      if (!(g instanceof Element) || !g.matches("details.agent-group") || g.hasAttribute("data-was")) {
+        return;
+      }
+      try {
+        window.sessionStorage.setItem(groupKey(g), g.open ? "1" : "0");
+      } catch (err) {
+        // Not remembered.
+      }
+    },
+    true
+  );
+
+  function restoreGroups() {
+    Array.prototype.forEach.call(document.querySelectorAll("details.agent-group[data-group]"), function (g) {
+      var v = null;
+      try {
+        v = window.sessionStorage.getItem(groupKey(g));
+      } catch (err) {
+        v = null;
+      }
+      if (v === "1" || v === "0") {
+        g.open = v === "1";
+      }
+    });
+  }
+
+  document.addEventListener("htmx:oobAfterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.id === "agent-groups") {
+      restoreGroups();
+      filterAgents();
+    }
+  });
+
+  function initSidebar() {
+    var p = sideParts();
+    if (!p) {
+      return;
+    }
+    var stored = null;
+    try {
+      stored = window.localStorage.getItem("melissa.sidebar");
+    } catch (e) {
+      stored = null;
+    }
+    if (stored === "collapsed") {
+      document.documentElement.setAttribute("data-sidebar", "collapsed");
+    }
+    showSideButtons();
+    restoreGroups();
+    filterAgents();
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        p.nav.setAttribute("data-ready", "");
+      });
+    });
+    if (PHONE && PHONE.addEventListener) {
+      PHONE.addEventListener("change", function () {
+        setSheet(false, false);
+        showSideButtons();
+      });
+    }
+  }
+
+  // --- Menus ("⋯", the device menu): native popovers; placed next to the button that opened
+  // them, inside the window (without script the browser centres them).
+  var menuInvoker = null;
+
+  document.addEventListener(
+    "click",
+    function (e) {
+      var t = e.target;
+      if (t instanceof Element) {
+        var b = t.closest("[popovertarget]");
+        if (b) {
+          menuInvoker = b;
+        }
+      }
+    },
+    true
+  );
+
+  function placeMenu(menu) {
+    var b = menuInvoker && menuInvoker.getAttribute("popovertarget") === menu.id
+      ? menuInvoker
+      : document.querySelector('[popovertarget="' + CSS.escape(menu.id) + '"]');
+    if (!b) {
+      return;
+    }
+    var r = b.getBoundingClientRect();
+    var w = menu.offsetWidth;
+    var h = menu.offsetHeight;
+    var left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+    var top = r.bottom + 4;
+    if (top + h > window.innerHeight - 8) {
+      top = Math.max(8, r.top - h - 4);
+    }
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+  }
+
+  document.addEventListener(
+    "toggle",
+    function (e) {
+      var m = e.target;
+      if (m instanceof Element && m.matches(".menu[popover]") && e.newState === "open") {
+        placeMenu(m);
+        var first = m.querySelector("a, button, summary");
+        if (first) {
+          first.focus();
+        }
+      }
+    },
+    true
+  );
+
+  // --- Older messages: the top of the feed loads them as it scrolls into view, keeping what
+  // the user looks at in place.
+  var olderSeen = null;
+
+  function loadOlder(marker) {
+    var url = marker.getAttribute("data-older");
+    if (!url || !window.htmx || marker.hasAttribute("data-loading")) {
+      return;
+    }
+    marker.setAttribute("data-loading", "");
+    var s = scroller();
+    var fromBottom = s.scrollHeight - s.scrollTop;
+    window.htmx.ajax("GET", url, { target: marker, swap: "outerHTML" }).then(function () {
+      s.scrollTop = s.scrollHeight - fromBottom;
+      watchOlder();
+    });
+  }
+
+  function watchOlder() {
+    var marker = document.querySelector("#feed .feed-older");
+    if (!marker || !window.IntersectionObserver) {
+      return;
+    }
+    if (olderSeen) {
+      olderSeen.disconnect();
+    }
+    olderSeen = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          olderSeen.disconnect();
+          loadOlder(en.target);
+        }
+      });
+    });
+    olderSeen.observe(marker);
+  }
+
+  // Panels opened at a part of them (`/settings/agents/<id>#agent-icon`): show that part.
+  function showPanelPart(url) {
+    var hash = (url || "").split("#")[1];
+    if (!hash) {
+      return;
+    }
+    var el = document.getElementById(hash);
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      var field = el.querySelector("input:not([type=hidden]), select, textarea, summary");
+      if (field) {
+        field.focus();
+      }
+    }
+  }
+
+  document.addEventListener("click", function (e) {
+    var a = e.target instanceof Element ? e.target.closest(".feed-older a") : null;
+    if (a && window.htmx) {
+      e.preventDefault();
+      loadOlder(a.closest(".feed-older"));
+    }
+  });
 
   // Dismissable notices (the pre-alpha banner): the close button hides one for good in this
   // browser. Storage can be blocked (private windows); then it only hides for this page.
@@ -1116,6 +1480,7 @@
           window.history.replaceState({ panel: at, depth: panelState.depth }, "", at);
         }
         showPanel(o);
+        showPanelPart(url);
       });
   }
 
@@ -1171,6 +1536,7 @@
       o.body.appendChild(own);
       window.history.replaceState({ panel: window.location.pathname + window.location.search, depth: 0 }, "");
       showPanel(o);
+      showPanelPart(window.location.href);
     }
   }
 
@@ -1279,8 +1645,11 @@
     grow(composer());
     showVoice();
     initDetails();
+    initSidebar();
     if (document.getElementById("feed")) {
       scrollToBottom();
+      // After the first scroll, so the top of the feed isn't "in view" while the page loads.
+      window.requestAnimationFrame(watchOlder);
     }
   });
 })();

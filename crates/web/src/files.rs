@@ -248,6 +248,8 @@ impl Ui {
                     href: file_href(&key, &f.id),
                     name: f.name.clone(),
                     size: human_size(f.size),
+                    kind: kind_words(&f.name, &f.mime),
+                    image: f.is_image(),
                     added: self.when(f.added),
                     by: match (f.by, f.from.as_deref().and_then(owner_of_key)) {
                         (AddedBy::Owner, _) => "You".into(),
@@ -801,4 +803,21 @@ pub(crate) fn overrides(ui: &Ui) -> Vec<(String, String, String)> {
             Some((ui.name_of(&owner), chat_url(&owner), keep_label(keep)))
         })
         .collect()
+}
+
+/// A file's kind in a word for its card: `PNG`, `PDF` (from its name, else its sniffed type).
+fn kind_words(name: &str, mime: &str) -> String {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e)
+        .filter(|e| (1..=5).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()));
+    match ext {
+        Some(e) => e.to_ascii_uppercase(),
+        None => mime
+            .split_once('/')
+            .map(|(_, sub)| sub.split(['+', ';']).next().unwrap_or(sub))
+            .filter(|s| s.len() <= 5 && *s != "octet-stream")
+            .map(str::to_ascii_uppercase)
+            .unwrap_or_default(),
+    }
 }
