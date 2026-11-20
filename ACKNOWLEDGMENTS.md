@@ -23,6 +23,11 @@ and license notice must be kept with it and listed below under "Included third-p
   2025 Nous Research. Inspired how Melissa plans to delegate work to short-lived sub-agents: a child gets only its
   goal and a subset of the parent's tools, cannot delegate further, and returns a size-capped summary, with "what was
   done" derived by the harness rather than trusted from the model.
+- **tasteskill** (design-taste-frontend) — <https://github.com/Leonxlnx/taste-skill>, MIT License, Copyright (c)
+  2026 Leonxlnx (studied at commit `f6b7657`). A design skill for marketing websites. Inspired parts of Melissa's
+  UI craft guide (`docs/agent-skills/ui-craft.md`): one system of sizes, equal edges, one main action, plain copy
+  and a list of machine-written copy tells, restrained hover timing with reduced motion, and checking every page
+  in a browser at fixed widths in light and dark. Restated in Melissa's words; no text or scripts copied.
 
 ## Included third-party software
 
@@ -35,6 +40,12 @@ Redistributed **in the Melissa binaries**:
 | Atkinson Hyperlegible Next (font) | SIL Open Font License 1.1, Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (Braille Institute) | `crates/web/assets/fonts/`, from google/fonts, Latin subset as WOFF2; license in `AtkinsonHyperlegibleNext-OFL.txt` |
 | Bricolage Grotesque (font) | SIL Open Font License 1.1, Copyright 2022 The Bricolage Grotesque Project Authors | `crates/web/assets/fonts/`, from google/fonts, instanced (wdth 100, opsz 32), Latin subset as WOFF2; license in `BricolageGrotesque-OFL.txt` |
 | Rust crates (tokio, axum, maud, serde, kube, k8s-openapi, agent-client-protocol, ...) | Various, see below | Full report with license texts: `THIRD-PARTY-LICENSES.md` (generated, see below) |
+
+Included **in the documentation** (short quoted passages, not shipped in binaries or images):
+
+| Component | License | Notes |
+|---|---|---|
+| interface-design (Claude Code skill), <https://github.com/Dammyjay93/interface-design> at commit `2f9be32` | MIT, Copyright (c) 2026 Damola Akinleye | A design skill for dashboards, admin panels and settings pages. Its ideas are adapted and a short passage quoted in `docs/agent-skills/ui-craft.md` (marked [I]); the full copyright and license notice is kept at the end of that file |
 
 Redistributed **in the Melissa OS images** (besides the Fedora base image and its packages, which carry their own
 licenses under `/usr/share/licenses`):

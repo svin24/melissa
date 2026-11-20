@@ -893,3 +893,13 @@ Roadmap (rough, phases may overlap):
     and banner, which needs a current browser. (e) Panel uploads use the message limits (20 MiB a file, 50 MiB
     and 10 files at once); bigger files need another way in. (f) Not verified live: a real agent reading a
     `[file box: …]` reference, and `transfer_file` from a real lead-agent session (covered by tests only).
+75. UI craft guide (2026-11-20; `docs/agent-skills/ui-craft.md`, distilled from tasteskill and interface-design,
+    both MIT). Open, for the owner: (a) `melissa.css` has no spacing or small-type tokens and many near-duplicate
+    values (0.35-1.25rem steps; 0.78-0.925rem small sizes); consolidate into a few tokens? (b) Build the proposed
+    checks: a copy lint over rendered pages in `just check`, a CSS drift test (raw colours outside `:root`,
+    `transition: all`, missing reduced-motion rules), and a headless layout check at 1440/1024/768/390/320?
+    (c) Copy fixes from the first lint pass: "agent" means a helper, a provider and Melissa in different places
+    (Settings → Agents, Providers, "Lead agent", "Claude-backed agents"); several errors show raw error text
+    ("Couldn't save that: {e}") or no next step ("Couldn't save."). (d) Small CSS drift: a raw `#1b2533` on
+    `.count`, untokened overlay shadows and backdrops, `margin-right: -48px` on `.file-more`, `tabular-nums` only
+    on the voice timer.
