@@ -19,6 +19,8 @@
 //!   confirmation card; only a post with `confirm=yes` starts them.
 //! - `POST /ui/settings/restart`: restart Melissa now (saved settings also apply by
 //!   themselves once she is idle, see `apply.rs`).
+//! - `POST /ui/settings/developer/steps` (`enabled=on` or nothing): show the agents'
+//!   thinking and step timings in the chat (`ui.toml`; applies at once).
 //!
 //! API (JSON; never returns secret values):
 //! - `GET /api/settings/providers` → `{"providers": [...], "restart_needed": bool}`.
@@ -38,6 +40,7 @@
 //! sign-in codes never reach the audit log.
 
 mod apply;
+mod developer;
 pub(crate) mod pages;
 mod providers;
 mod updates;
@@ -59,6 +62,7 @@ use axum::{
 use melissa_agent::{AuditLog, AuditRecord};
 use melissa_settings::{
     install::{InstallState, Installer, Job, INSTALLABLE},
+    prefs::{Prefs, PrefsStore},
     providers::{BackendFacts, ProviderOverride, ProviderStore},
     updates::{HostKind, Release, UpdateEnv},
     version::VersionProbe,
@@ -73,6 +77,8 @@ pub type CheckFn = Arc<dyn Fn(&str, &ProviderOverride) -> Result<(), String> + S
 /// What the lead agent hands the Settings pages.
 pub struct SettingsParts {
     pub store: ProviderStore,
+    /// The owner's display preferences (`ui.toml`).
+    pub prefs: PrefsStore,
     /// Every configured backend, also those of disabled providers, plus the built-in echo.
     pub backends: Vec<BackendFacts>,
     /// The backend new agents get when the lead agent names none.
@@ -131,6 +137,7 @@ impl Settings {
         let updates = UpdateEnv::system();
         Self::new(SettingsParts {
             store: ProviderStore::in_memory(),
+            prefs: PrefsStore::in_memory(),
             backends: Vec::new(),
             agent_default: None,
             check: None,
@@ -140,6 +147,11 @@ impl Settings {
             release: Release::read(&melissa_settings::updates::release_file()),
             home: std::env::var_os("HOME").map(PathBuf::from),
         })
+    }
+
+    /// The owner's display preferences.
+    pub(crate) fn prefs(&self) -> Prefs {
+        self.inner.parts.prefs.get()
     }
 
     fn parts(&self) -> &SettingsParts {
@@ -242,6 +254,7 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route("/settings/updates", get(updates::page))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
+        .route("/ui/settings/developer/steps", post(developer::steps))
 }
 
 /// The JSON API routes.

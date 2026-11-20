@@ -383,6 +383,7 @@ mod tests {
                 id: "x".into(),
                 title: "t".into(),
                 status: "done".into(),
+                ms: Some(12),
             },
             LeadEvent::UserMessage {
                 turn: 2,

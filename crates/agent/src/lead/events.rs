@@ -41,6 +41,18 @@ pub enum LeadEvent {
         title: String,
         /// `pending`, `running`, `done` or `failed`.
         status: String,
+        /// How long the call took, in milliseconds (on its last event, where known).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ms: Option<u64>,
+    },
+    /// The agent thought (its reasoning; untrusted like its reply). Sent when a thought
+    /// starts (`ms` None, empty `text`) and again when it ends (the whole thought, shortened,
+    /// and how long it took in milliseconds).
+    Thought {
+        turn: TurnId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ms: Option<u64>,
     },
     /// Melissa answered one of the agent's permission requests.
     Permission {
@@ -144,6 +156,7 @@ impl LeadEvent {
             Self::UserMessage { turn, .. }
             | Self::Text { turn, .. }
             | Self::AgentMessage { turn, .. }
+            | Self::Thought { turn, .. }
             | Self::TurnFinished { turn, .. } => Some(*turn),
             Self::ToolCall { turn, .. }
             | Self::Permission { turn, .. }
@@ -160,6 +173,7 @@ impl LeadEvent {
             Self::UserMessage { turn, .. }
             | Self::Text { turn, .. }
             | Self::AgentMessage { turn, .. }
+            | Self::Thought { turn, .. }
             | Self::TurnFinished { turn, .. } => *turn = f(*turn).unwrap_or(0),
             Self::ToolCall { turn, .. }
             | Self::Permission { turn, .. }

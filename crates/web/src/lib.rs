@@ -165,10 +165,11 @@ async fn dashboard(State(t): State<Tasks>) -> Markup {
     let (backends, tasks) = (t.board.backends(), t.board.list());
     match &t.ui {
         Some(ui) => {
-            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks))
+            let steps = ui.settings.prefs().show_steps;
+            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, steps))
                 .await
         }
-        None => pages::dashboard(None, &backends, &tasks),
+        None => pages::dashboard(None, &backends, &tasks, false),
     }
 }
 
@@ -814,6 +815,9 @@ mod tests {
                         self.dir.join("config/providers.toml"),
                         Default::default(),
                     ),
+                    prefs: melissa_settings::prefs::PrefsStore::open(
+                        self.dir.join("config/ui.toml"),
+                    ),
                     backends: vec![
                         // The lead agent's first backend: Melissa runs on Claude.
                         fact("stuck", "claude", true, Some(claude.into())),
@@ -893,6 +897,88 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("0.3.1") && html.contains("From source"));
             assert!(html.contains("git pull"));
+        }
+
+        #[tokio::test]
+        async fn the_developer_toggle_shows_thinking_and_timings_in_the_chat() {
+            let fx = SettingsFixture::new("steps");
+            let (app, lead) = app_with(Some(fx.settings(HostKind::Other, false)));
+            for e in [
+                LeadEvent::UserMessage {
+                    turn: 1,
+                    text: "Hi".into(),
+                },
+                LeadEvent::Thought {
+                    turn: 1,
+                    text: String::new(),
+                    ms: None,
+                },
+                LeadEvent::Thought {
+                    turn: 1,
+                    text: "Maybe <b>this</b>".into(),
+                    ms: Some(2_500),
+                },
+                LeadEvent::ToolCall {
+                    turn: Some(1),
+                    id: "1".into(),
+                    title: "melissa__device_info".into(),
+                    status: "done".into(),
+                    ms: Some(1_200),
+                },
+                // Stopped while a tool call ran: the agent never ends it.
+                LeadEvent::ToolCall {
+                    turn: Some(1),
+                    id: "2".into(),
+                    title: "some_tool".into(),
+                    status: "running".into(),
+                    ms: None,
+                },
+                LeadEvent::TurnFinished {
+                    turn: 1,
+                    stop_reason: "cancelled".into(),
+                },
+            ] {
+                lead.events().push(e);
+            }
+            // Off by default: the chat looks as it always did, and nothing spins after the stop.
+            let (_, _, html) = send(&app, get("/")).await;
+            assert!(html.contains("Stopped.") && html.contains("Using a tool"));
+            assert!(!html.contains("icon spin"), "{html}");
+            assert!(!html.contains("Thought for") && !html.contains("1.2s"));
+            let (_, _, html) = send(&app, get("/settings/developer")).await;
+            assert!(html.contains("Show thinking and timings"));
+            assert!(html.contains("/ui/settings/developer/steps"));
+
+            let (status, _, region) = send(
+                &app,
+                htmx_post("/ui/settings/developer/steps", "enabled=on"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(region.contains("id=\"chat-prefs\"") && region.contains("checked"));
+            assert!(std::fs::read_to_string(fx.dir.join("config/ui.toml"))
+                .unwrap()
+                .contains("show_steps = true"));
+            let (_, _, html) = send(&app, get("/")).await;
+            assert!(html.contains("Thought for 2.5s"));
+            assert!(html.contains("Checked this device · 1.2s"));
+            // The thought is agent text: escaped, never markup.
+            assert!(html.contains("&lt;b&gt;") && !html.contains("<b>this"));
+            assert!(!html.contains("icon spin"));
+
+            // Off again: a plain form post saves and goes back to the page.
+            let (status, headers, _) = send(
+                &app,
+                post("/ui/settings/developer/steps")
+                    .header("sec-fetch-site", "same-origin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            assert_eq!(headers[header::LOCATION], "/settings/developer");
+            let (_, _, html) = send(&app, get("/")).await;
+            assert!(!html.contains("Thought for"));
         }
 
         #[tokio::test]
@@ -1963,6 +2049,7 @@ mod tests {
                 id: "x\" onclick=\"alert(1)".into(),
                 title: "melissa__list_apps".into(),
                 status: "done".into(),
+                ms: None,
             });
             let (c, _rx) = lead.confirmations().request(
                 1,
@@ -2680,6 +2767,7 @@ mod tests {
                 id: "1".into(),
                 title: "melissa__device_info".into(),
                 status: "running".into(),
+                ms: None,
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("<li class=\"entry\" id=\"f-t1\">"));
@@ -2691,6 +2779,9 @@ mod tests {
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("innerHTML:#composer-status"));
             assert!(frame.contains("Everything is logged."));
+            // The tool call the agent never finished stops spinning with the turn.
+            assert!(frame.contains("innerHTML:#f-t1"), "{frame}");
+            assert!(!frame.contains("icon spin"), "{frame}");
 
             // A reconnect (Last-Event-ID) from the future asks the page to reload.
             let req = axum::http::Request::get("/ui/stream")

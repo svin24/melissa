@@ -157,3 +157,7 @@ Providers and polkit results still apply to the container (same rule, now restar
   tasks (`pages::dashboard` in `frame_at(.., "Developer", ..)`); `/tasks/{id}` is a page below it (breadcrumb
   Settings / Developer / Task #n). `GET /tasks` redirects there when a lead agent is present; the task form and
   fragments keep their `/tasks…` URLs.
+  (2026-11-20) Its **Chat** card has one toggle, "Show thinking and timings" (`POST /ui/settings/developer/steps`,
+  `enabled=on`; off by default). Saved in `ui.toml` next to `providers.toml` (`melissa_settings::prefs`, applies at
+  once, audited `settings.ui`). On: the chat feed (`Feed::with_steps`) shows each `thought` event as a row that opens
+  to the thought (`components::thought_row`) and appends each step's time to tool rows ("Checked this device · 1.2s").

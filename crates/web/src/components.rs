@@ -924,6 +924,24 @@ pub fn activity_row(
     }
 }
 
+/// The agent's thinking in the chat (Settings → Developer): a row like [`activity_row`]
+/// that opens to the thought (agent prose, rendered as [`markdown`]). Without text yet (the
+/// agent still thinks) it is a plain row.
+pub fn thought_row(label: &str, text: &str, state: ActivityState) -> Markup {
+    if text.is_empty() {
+        return activity_row(label, None, false, state, None);
+    }
+    html! {
+        details.thought {
+            summary.activity {
+                (activity_icon(state))
+                span.label { (label) }
+            }
+            div.detail { (markdown(text)) }
+        }
+    }
+}
+
 /// A system line in the chat.
 pub fn note(text: &str, detail: Option<&str>, tone: NoteTone) -> Markup {
     let class = match tone {

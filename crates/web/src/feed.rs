@@ -36,6 +36,13 @@ pub enum Item {
         /// The helper (agent id) this is about, for a link to its conversation.
         agent: Option<String>,
     },
+    /// The agent's thinking (only with [`Feed::with_steps`]). `text` is untrusted; empty
+    /// while the agent still thinks.
+    Thought {
+        label: String,
+        text: String,
+        state: ActivityState,
+    },
     /// A confirmation the user decides on.
     Approval(Approval),
     /// A short system line (session opened, turn stopped, errors, taint).
@@ -112,6 +119,10 @@ pub struct Feed {
     prefix: &'static str,
     /// A helper's conversation (words differ slightly from Melissa's).
     helper: bool,
+    /// Show the agent's thinking and how long each step took (Settings → Developer).
+    steps: bool,
+    /// The thought item the agent is still thinking in.
+    open_thought: Option<usize>,
 }
 
 impl Feed {
@@ -125,6 +136,12 @@ impl Feed {
             helper,
             ..Self::default()
         }
+    }
+
+    /// Also show the agent's thinking and each step's time (`on`).
+    pub fn with_steps(mut self, on: bool) -> Self {
+        self.steps = on;
+        self
     }
 
     /// An empty feed for an archived chat (read-only): confirmation ids in it may now
@@ -189,8 +206,13 @@ impl Feed {
                 vec![self.add(format!("r{}", rec.seq), Item::Reply { text: text.clone() })]
             }
             LeadEvent::ToolCall {
-                id, title, status, ..
-            } => self.tool_call(id, title, status),
+                id,
+                title,
+                status,
+                ms,
+                ..
+            } => self.tool_call(id, title, status, *ms),
+            LeadEvent::Thought { text, ms, .. } => self.thought(rec.seq, text, *ms),
             LeadEvent::Permission {
                 title, decision, ..
             } => {
@@ -394,7 +416,9 @@ impl Feed {
                     self.busy = None;
                 }
                 self.open_reply = None;
-                let mut out = vec![Change::Status];
+                // Steps the agent never finished (a stopped turn) are not running any more.
+                let mut out = self.close_steps();
+                out.push(Change::Status);
                 let text = match stop_reason.as_str() {
                     "end_turn" => None,
                     "cancelled" => Some("Stopped."),
@@ -439,6 +463,7 @@ impl Feed {
                 *self = Self {
                     last_seq: self.last_seq,
                     helper: self.helper,
+                    steps: self.steps,
                     ..Self::default()
                 };
                 vec![Change::Reset, Change::Status, Change::Waiting]
@@ -505,6 +530,7 @@ impl Feed {
         self.settle();
         self.busy = None;
         self.open_reply = None;
+        self.open_thought = None;
         self.reply_break = false;
         self.turns_with_reply.clear();
         self.errored_turns.clear();
@@ -527,7 +553,9 @@ impl Feed {
         self.busy = None;
         for e in &mut self.entries {
             match &mut e.item {
-                Item::Activity { state, .. } if *state == ActivityState::Working => {
+                Item::Activity { state, .. } | Item::Thought { state, .. }
+                    if *state == ActivityState::Working =>
+                {
                     *state = ActivityState::Stopped;
                 }
                 Item::Approval(a) if a.state == ApprovalState::Pending => {
@@ -604,7 +632,64 @@ impl Feed {
         vec![change]
     }
 
-    fn tool_call(&mut self, id: &str, title: &str, status: &str) -> Vec<Change> {
+    /// The turn ended: its tool calls and thought that are still shown as running stop (the
+    /// agent sends no end for a call cut off by a cancel). Helpers' jobs run on.
+    fn close_steps(&mut self) -> Vec<Change> {
+        let thought = self.open_thought.take();
+        let mut open: Vec<usize> = self
+            .tool_keys
+            .values()
+            .filter_map(|k| self.by_key.get(&self.full(k)).copied())
+            .chain(thought)
+            .collect();
+        open.sort_unstable();
+        open.dedup();
+        let mut out = Vec::new();
+        for i in open {
+            if let Item::Activity { state, .. } | Item::Thought { state, .. } =
+                &mut self.entries[i].item
+            {
+                if *state == ActivityState::Working {
+                    *state = ActivityState::Stopped;
+                    out.push(Change::Updated(i));
+                }
+            }
+        }
+        out
+    }
+
+    /// A thought starts (`ms` None) or ends. Not shown unless steps are.
+    fn thought(&mut self, seq: u64, text: &str, ms: Option<u64>) -> Vec<Change> {
+        if !self.steps {
+            return Vec::new();
+        }
+        let Some(ms) = ms else {
+            let change = self.add(
+                format!("k{seq}"),
+                Item::Thought {
+                    label: "Thinking".into(),
+                    text: String::new(),
+                    state: ActivityState::Working,
+                },
+            );
+            self.open_thought = Some(self.entries.len() - 1);
+            return vec![change];
+        };
+        let item = Item::Thought {
+            label: format!("Thought for {}", duration_words(ms)),
+            text: text.to_string(),
+            state: ActivityState::Done,
+        };
+        match self.open_thought.take() {
+            Some(i) => {
+                self.entries[i].item = item;
+                vec![Change::Updated(i)]
+            }
+            None => vec![self.add(format!("k{seq}"), item)],
+        }
+    }
+
+    fn tool_call(&mut self, id: &str, title: &str, status: &str, ms: Option<u64>) -> Vec<Change> {
         let words = tool_words(title);
         // A call first reported under a hidden title stays hidden when its title changes
         // (Grok: `search_tool`, then `Search tools: "..."`).
@@ -624,11 +709,14 @@ impl Feed {
             "failed" => ActivityState::Failed,
             _ => ActivityState::Working,
         };
-        let label = match state {
+        let mut label = match state {
             ActivityState::Done => words.done.to_string(),
             ActivityState::Failed => format!("Couldn't finish: {}", lower_first(words.doing)),
             _ => words.doing.to_string(),
         };
+        if let (true, Some(ms)) = (self.steps, ms) {
+            label = format!("{label} · {}", duration_words(ms));
+        }
         // Unknown tools: the agent's own title as the detail (escaped text), except for an
         // agent's wrapper tool, which says nothing (Grok: `use_tool`, renamed to the real
         // tool when it finishes).
@@ -1065,6 +1153,16 @@ pub fn backend_label(backend: &str) -> &str {
     }
 }
 
+/// A step's time in short words: `<0.1s`, `3.2s`, `42s`, `2m 05s`.
+pub fn duration_words(ms: u64) -> String {
+    match ms {
+        0..=99 => "<0.1s".into(),
+        100..=9_999 => format!("{}.{}s", ms / 1000, ms % 1000 / 100),
+        10_000..=59_999 => format!("{}s", ms / 1000),
+        _ => format!("{}m {:02}s", ms / 60_000, ms % 60_000 / 1000),
+    }
+}
+
 fn lower_first(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -1169,6 +1267,7 @@ mod tests {
                     id: "a".into(),
                     title: "melissa__device_info".into(),
                     status: "running".into(),
+                    ms: None,
                 },
             ),
             rec(
@@ -1178,6 +1277,7 @@ mod tests {
                     id: "a".into(),
                     title: "melissa__device_info".into(),
                     status: "done".into(),
+                    ms: None,
                 },
             ),
             rec(
@@ -1391,6 +1491,7 @@ mod tests {
                     id: id.into(),
                     title: title.into(),
                     status: status.into(),
+                    ms: None,
                 },
             )
         };
@@ -1477,6 +1578,7 @@ mod tests {
                     id: "s".into(),
                     title: "search_tool".into(),
                     status: "pending".into(),
+                    ms: None,
                 },
             ),
             &NoLookup,
@@ -1546,6 +1648,151 @@ mod tests {
             &NoLookup,
         );
         assert!(matches!(&feed.entries()[3].item, Item::Note { text, .. } if text == "Stopped."));
+    }
+
+    /// Folds `events` (numbered from 1) into `feed`; returns each event's changes.
+    fn fold_all(feed: &mut Feed, events: Vec<LeadEvent>) -> Vec<Vec<Change>> {
+        events
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| feed.apply(&rec(i as u64 + 1, e), &NoLookup))
+            .collect()
+    }
+
+    fn tool(id: &str, status: &str, ms: Option<u64>) -> LeadEvent {
+        LeadEvent::ToolCall {
+            turn: Some(1),
+            id: id.into(),
+            title: "melissa__device_info".into(),
+            status: status.into(),
+            ms,
+        }
+    }
+
+    fn state_of(feed: &Feed, i: usize) -> ActivityState {
+        match &feed.entries()[i].item {
+            Item::Activity { state, .. } | Item::Thought { state, .. } => *state,
+            other => panic!("not a step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stopped_turn_stops_its_running_tool_calls_but_not_helpers_jobs() {
+        let mut feed = Feed::new();
+        let changes = fold_all(
+            &mut feed,
+            vec![
+                LeadEvent::UserMessage {
+                    turn: 1,
+                    text: "hi".into(),
+                },
+                LeadEvent::AgentStarted {
+                    agent: "d.a1".into(),
+                    name: "Ada".into(),
+                    goal: "Look around.".into(),
+                },
+                tool("t1", "done", Some(40)),
+                // Cut off by the cancel: the agent never says it ended.
+                tool("t2", "running", None),
+                LeadEvent::TurnFinished {
+                    turn: 1,
+                    stop_reason: "cancelled".into(),
+                },
+            ],
+        );
+        let at = |label: &str| {
+            feed.entries()
+                .iter()
+                .position(|e| matches!(&e.item, Item::Activity { label: l, .. } if l == label))
+                .unwrap()
+        };
+        let (job, done, cut) = (
+            at("Ada is looking into it"),
+            at("Checked this device"),
+            at("Checking this device"),
+        );
+        assert_eq!(state_of(&feed, cut), ActivityState::Stopped);
+        assert_eq!(state_of(&feed, done), ActivityState::Done);
+        // A helper's job runs on after Melissa's turn.
+        assert_eq!(state_of(&feed, job), ActivityState::Working);
+        // The live stream replaces the stopped row (no spinner left on the page).
+        assert!(changes[4].contains(&Change::Updated(cut)));
+        assert!(!feed.busy());
+        // Timings are not shown unless asked for.
+        assert!(!feed
+            .entries()
+            .iter()
+            .any(|e| matches!(&e.item, Item::Activity { label, .. } if label.contains('·'))));
+    }
+
+    #[test]
+    fn thinking_and_timings_show_only_when_asked_for() {
+        let events = || {
+            vec![
+                LeadEvent::UserMessage {
+                    turn: 1,
+                    text: "hi".into(),
+                },
+                LeadEvent::Thought {
+                    turn: 1,
+                    text: String::new(),
+                    ms: None,
+                },
+                LeadEvent::Thought {
+                    turn: 1,
+                    text: "Which **tool**?".into(),
+                    ms: Some(3_240),
+                },
+                tool("t1", "running", None),
+                tool("t1", "done", Some(420)),
+                LeadEvent::Thought {
+                    turn: 1,
+                    text: String::new(),
+                    ms: None,
+                },
+                LeadEvent::TurnFinished {
+                    turn: 1,
+                    stop_reason: "cancelled".into(),
+                },
+            ]
+        };
+        // Off (the default): exactly what the feed showed before thoughts were recorded.
+        let mut off = Feed::new();
+        fold_all(&mut off, events());
+        assert!(!off
+            .entries()
+            .iter()
+            .any(|e| matches!(e.item, Item::Thought { .. })));
+        assert!(
+            matches!(&off.entries()[1].item, Item::Activity { label, .. } if label == "Checked this device")
+        );
+
+        let mut on = Feed::new().with_steps(true);
+        let changes = fold_all(&mut on, events());
+        let e = on.entries();
+        assert!(
+            matches!(&e[1].item, Item::Thought { label, text, state: ActivityState::Done }
+            if label == "Thought for 3.2s" && text == "Which **tool**?")
+        );
+        // The thought's row was added when it started and updated when it ended.
+        assert_eq!(changes[1], vec![Change::Added(1)]);
+        assert_eq!(changes[2], vec![Change::Updated(1)]);
+        assert!(
+            matches!(&e[2].item, Item::Activity { label, .. } if label == "Checked this device · 0.4s")
+        );
+        // A thought cut off by the stop doesn't keep spinning.
+        assert!(
+            matches!(&e[3].item, Item::Thought { label, state: ActivityState::Stopped, .. } if label == "Thinking")
+        );
+    }
+
+    #[test]
+    fn durations_in_short_words() {
+        assert_eq!(duration_words(0), "<0.1s");
+        assert_eq!(duration_words(420), "0.4s");
+        assert_eq!(duration_words(9_999), "9.9s");
+        assert_eq!(duration_words(42_000), "42s");
+        assert_eq!(duration_words(125_000), "2m 05s");
     }
 
     #[test]

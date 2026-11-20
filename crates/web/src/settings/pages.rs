@@ -8,9 +8,9 @@ use crate::{
     components::{
         actions, app_page, badge, card, code, command_block, confirm_card, detail_head, disclosure,
         external_button, facts, group, lines_field, live_region, log_view, notice, one_field_form,
-        pick_list, plain_action, provider_mark, settings_form, settings_frame_at, settings_head,
-        split_card, text_field, toggle, var_list, ConfirmCard, LogLine, Nav, PickRow,
-        SettingsSection, Toggle, Tone, VarRow,
+        pick_list, plain_action, provider_mark, region, settings_form, settings_frame_at,
+        settings_head, split_card, text_field, toggle, var_list, ConfirmCard, LogLine, Nav,
+        PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
@@ -30,6 +30,27 @@ pub const DEVELOPER_URL: &str = "/settings/developer";
 pub const PROVIDERS_ID: &str = "providers";
 /// DOM id of the Updates region.
 pub const UPDATES_ID: &str = "updates";
+/// DOM id of the chat display preference on the Developer page.
+pub const CHAT_PREFS_ID: &str = "chat-prefs";
+const STEPS_URL: &str = "/ui/settings/developer/steps";
+
+/// The Developer page's chat preference: show the agents' thinking and step timings.
+pub fn chat_prefs_region(on: bool, error: Option<&str>) -> Markup {
+    let label = "Show thinking and timings";
+    region(
+        CHAT_PREFS_ID,
+        html! {
+            (facts(&[(label, toggle(&Toggle {
+                action: STEPS_URL,
+                target: CHAT_PREFS_ID,
+                label,
+                on,
+                locked: None,
+            }))]))
+            @if let Some(e) = error { (notice(e, Tone::Error)) }
+        },
+    )
+}
 
 fn frame(f: &Frame<'_>, current: &str, content: Markup) -> Markup {
     frame_at(f, current, None, content)

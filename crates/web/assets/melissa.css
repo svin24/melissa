@@ -842,6 +842,42 @@ main:focus {
   overflow-wrap: anywhere;
 }
 
+/* The agent's thinking (Settings → Developer): an activity row that opens to the thought. */
+.thought > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.thought > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thought > summary .label::after {
+  content: "\203A";
+  display: inline-block;
+  margin-left: 0.4em;
+  color: var(--muted);
+  font-weight: 700;
+  transition: transform 0.15s ease;
+}
+
+.thought[open] > summary .label::after {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thought > summary .label::after {
+    transition: none;
+  }
+}
+
+.thought > .detail {
+  margin: 0.25rem 0 0.5rem calc(40px + 16px + 0.55rem);
+  font-size: 0.85rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .icon {
   width: 16px;
   height: 16px;
@@ -2299,6 +2335,10 @@ ol.steps > li::marker {
   .approval,
   .msg-relayed {
     margin-left: 0;
+  }
+
+  .thought > .detail {
+    margin-left: calc(16px + 0.55rem);
   }
 
   .app_grid {

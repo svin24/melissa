@@ -151,7 +151,9 @@ impl Ui {
     /// A conversation folded from every event in its log.
     fn feed(&self, who: Who<'_>, log: &EventLog) -> Feed {
         let page = log.since(0, EventLog::CAPACITY);
-        Feed::for_helper(matches!(who, Who::Agent(_))).fold(&page.events, self)
+        Feed::for_helper(matches!(who, Who::Agent(_)))
+            .with_steps(self.settings.prefs().show_steps)
+            .fold(&page.events, self)
     }
 
     fn backend(&self, who: Who<'_>, feed: &Feed) -> Option<String> {
@@ -418,7 +420,9 @@ fn stream(
     let helper = agent.is_some();
     let feed = {
         let page = log.since(0, EventLog::CAPACITY);
-        Feed::for_helper(helper).fold(page.events.iter().filter(|r| r.seq <= cursor), &ui)
+        Feed::for_helper(helper)
+            .with_steps(ui.settings.prefs().show_steps)
+            .fold(page.events.iter().filter(|r| r.seq <= cursor), &ui)
     };
     let state = StreamState {
         ui,
@@ -744,7 +748,9 @@ async fn past_chat_page(State(ui): State<Ui>, Path(id): Path<u64>) -> Response {
     ) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
-    let mut feed = Feed::archived().fold(&events, &ui);
+    let mut feed = Feed::archived()
+        .with_steps(ui.settings.prefs().show_steps)
+        .fold(&events, &ui);
     feed.settle();
     ui.framed(|f| pages::past_chat(f, &chat, &feed))
         .await
