@@ -63,7 +63,9 @@ AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `
 - **Network:** podman's default bridge. UI: host `127.0.0.1:8080` → container `:8081` → lead agent on its own
   loopback, nftables-filtered so pods can't reach it. Apps: NodePorts 30000–30079 published on `BIND`
   (127.0.0.1 by default; e.g. the host's Tailscale address). Remote use: `ssh -L` or `tailscale serve` (the UI has
-  no login yet).
+  no login yet). `[apps] addresses` must be covered by `BIND`: install.sh refuses a mismatch and rewrites a stale
+  key on reinstall; the app tools also try each address at run time and drop dead ones from links
+  (DECISIONS 2026-11-20).
 - **Updates:** Quadlet `AutoUpdate=` with `podman-auto-update.timer` (daily), plus Settings → Updates
   Check/Apply/Roll back through a host helper (`melissa-host-update`) that the lead agent triggers with fixed-name
   request files in a bind-mounted directory; the previous image is kept for a rollback (DECISIONS 2026-11-19).

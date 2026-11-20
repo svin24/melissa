@@ -84,6 +84,24 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
   port, node_port, web, address: "<addr>:<port>", url}]`. `port` = NodePort + `[apps] port_offset`.
 - Web UI: the link uses the visitor's `Host` + port; non-web ports show
   `<host>:<port> (TCP|UDP)` on the tile (when there is no link) and in the details dialog.
+- Reachability (`reach.rs`): `deploy_app`, `update_app`, `start_app` and `app_status` try a TCP
+  connect (800 ms timeout; open and timed-out results cached 15 s) to every advertised
+  `address:port`, plus a control connect to the NodePort on the device's own address (in the
+  container: its bridge address, k3s's node address). Control open but an address refused or timed
+  out: the address is dead (ports not published there, e.g. a container install with
+  `BIND=127.0.0.1` and a Tailscale address in `[apps] addresses`); it is dropped from
+  `url`/`urls`/`ports[].address` and listed under `reachability` with a `warning` for the owner.
+  Nothing answers: `app_not_answering` (starting, or listening on another port), links kept.
+  Not checked: UDP (no handshake), loopback addresses (work on the device only). Checked from the
+  device itself, so a firewall that only blocks other machines is not seen.
+
+### Connection problems (agent guidance)
+- Verify reachability (`app_status`: `reachability`, pods ready) before blaming the app. Never
+  restart an app to fix a connection problem without evidence it is down; a dead address is a
+  host/install setting (`BIND`, `[apps] addresses`), so tell the owner the `warning`.
+- An app's own normal log lines are not failures: vanilla Minecraft logs "Server empty for 60
+  seconds, pausing" and idles until a player joins (pause-when-empty, `pause-when-empty-seconds`
+  in server.properties); it still accepts connections. Don't restart for it.
 
 ## Tools and labels
 | tool | labels | notes |

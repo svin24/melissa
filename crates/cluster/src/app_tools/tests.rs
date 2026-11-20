@@ -337,6 +337,7 @@ fn settings() -> AppSettings {
         port_offset: 0,
         device: DEVICE.into(),
         agents: Some(Arc::new(Names)),
+        reach: None,
     }
 }
 
@@ -352,7 +353,7 @@ fn links_add_the_port_offset() {
         node_port: 30002,
         web: true,
     }];
-    let f = link_fields(&shifted, "nextcloud", &web);
+    let f = link_fields(&shifted, &shifted.addresses(), "nextcloud", &web);
     assert_eq!(f["port"], 31002);
     assert_eq!(f["node_port"], 30002);
     assert_eq!(f["url"], "http://203.0.113.10:31002");
@@ -370,7 +371,7 @@ fn links_add_the_port_offset() {
         node_port: 30002,
         web: false,
     }];
-    let f = link_fields(&settings(), "minecraft", &game);
+    let f = link_fields(&settings(), &settings().addresses(), "minecraft", &game);
     assert_eq!(f["url"], Value::Null);
     assert_eq!(f["dns_url"], Value::Null);
     assert_eq!(
@@ -379,9 +380,61 @@ fn links_add_the_port_offset() {
                 "web": false, "address": "203.0.113.10:30002", "url": null}])
     );
     // No port: no links.
-    let f = link_fields(&shifted, "nextcloud", &[]);
+    let f = link_fields(&shifted, &shifted.addresses(), "nextcloud", &[]);
     assert_eq!(f["urls"], json!([]));
     assert_eq!(f["port"], Value::Null);
+}
+
+/// app_status and deploy_app leave a dead address out of the links and say why.
+#[tokio::test]
+async fn links_leave_out_addresses_the_host_does_not_publish_on() {
+    use crate::reach::{PortProbe, Probe, ReachCheck};
+    /// The game port answers on the device and at the LAN address; the Tailscale address
+    /// refuses (ports published on another address only).
+    struct Published;
+    impl PortProbe for Published {
+        fn probe<'a>(&'a self, host: &'a str, port: u16) -> BoxFuture<'a, Probe> {
+            let open = port == 30000 && (host == "10.88.0.2" || host == "203.0.113.10");
+            Box::pin(async move {
+                if open {
+                    Probe::Open
+                } else {
+                    Probe::Refused
+                }
+            })
+        }
+    }
+    let fake = Arc::new(Fake::default());
+    let settings = AppSettings {
+        reach: Some(ReachCheck {
+            probe: Arc::new(Published),
+            control: Some("10.88.0.2".into()),
+        }),
+        ..settings()
+    };
+    let t: BTreeMap<_, _> = app_tools(settings, Some(fake))
+        .into_iter()
+        .map(|t| (t.spec().name, t))
+        .collect();
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    let s = call(&t, "app_status", json!({"app": "minecraft"}))
+        .await
+        .unwrap();
+    for r in [&out, &s] {
+        assert_eq!(r["ports"][0]["address"], "203.0.113.10:30000");
+        let rows = &r["reachability"]["addresses"];
+        assert_eq!(rows[0]["status"], "ok");
+        assert_eq!(rows[1]["status"], "unreachable");
+        let warning = r["reachability"]["warning"].as_str().unwrap();
+        assert!(warning.contains("100.64.0.10:30000 refused"), "{warning}");
+        assert!(r["reachability"]["udp"].is_string());
+    }
 }
 
 fn tools(fake: Option<Arc<Fake>>) -> BTreeMap<&'static str, Arc<dyn Tool>> {
