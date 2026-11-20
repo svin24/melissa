@@ -54,6 +54,9 @@ pub struct BackendChoice {
     /// A model id the backend reported; None: the backend's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// A reasoning level the backend reported for the model; None: the agent's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// One backend the user can choose, as clients see it.
@@ -70,6 +73,9 @@ pub struct BackendView {
     /// The model in use or chosen on the current backend, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The reasoning level chosen on the current backend (None: the agent's default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// Models the backend offers, once Melissa has seen them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<ModelOption>>,
@@ -81,6 +87,8 @@ pub struct Switched {
     pub backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// False: that was already the choice (nothing recorded).
     pub changed: bool,
     /// A turn is running: the switch applies when it has ended.
@@ -190,10 +198,20 @@ impl ModelCache {
             return;
         }
         let mut lists = lock(&self.inner.lists);
+        // An agent may report reasoning levels only for the model its session used (ACP):
+        // levels seen before for the others are kept.
+        let mut next = models.options.clone();
+        if let Some(before) = lists.get(backend) {
+            for m in next.iter_mut().filter(|m| m.efforts.is_empty()) {
+                if let Some(old) = before.models.iter().find(|o| o.id == m.id) {
+                    m.efforts = old.efforts.clone();
+                }
+            }
+        }
         lists.insert(
             backend.to_string(),
             Stored {
-                models: models.options.clone(),
+                models: next,
                 updated: unix_now(),
             },
         );
@@ -377,10 +395,7 @@ mod tests {
             current: None,
             options: ids
                 .iter()
-                .map(|i| ModelOption {
-                    id: (*i).into(),
-                    label: i.to_uppercase(),
-                })
+                .map(|i| ModelOption::new(*i, i.to_uppercase()))
                 .collect(),
         }
     }
@@ -406,6 +421,26 @@ mod tests {
         let mode = std::fs::metadata(&path).map(|m| m.permissions().mode() & 0o777);
         assert_eq!(mode.ok(), Some(0o600));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reasoning_levels_seen_for_one_model_are_kept_when_another_is_used() {
+        let cache = ModelCache::new();
+        let level = |id: &str| crate::session::EffortOption {
+            id: id.into(),
+            label: id.into(),
+        };
+        // An ACP agent reports levels only for the model its session uses.
+        let mut first = list(&["a", "b"]);
+        first.options[0].efforts = vec![level("low"), level("high")];
+        cache.put("grok-acp", &first);
+        let mut second = list(&["a", "b"]);
+        second.options[1].efforts = vec![level("max")];
+        cache.put("grok-acp", &second);
+        let got = cache.get("grok-acp").unwrap_or_default();
+        assert!(got[0].offers_effort("high"));
+        assert!(got[1].offers_effort("max"));
+        assert!(!got[1].offers_effort("low"));
     }
 
     /// A session backend that reports `models` (or hangs), counting opens and prompts.
@@ -563,6 +598,7 @@ mod tests {
         let c = BackendChoice {
             backend: "claude-session".into(),
             model: Some("sonnet".into()),
+            effort: Some("high".into()),
         };
         save_choice(&path, &c).ok();
         assert_eq!(load_choice(&path), Some(c));

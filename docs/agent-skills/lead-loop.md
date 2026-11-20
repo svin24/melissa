@@ -53,7 +53,10 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   reply as `result`, `read_untrusted_content`); `list_agents` (with workspaces per agent and unassigned workspaces);
   `stop_agent` (cancel + close session, `stopped` until the next job or message); `message_agent {agent, text,
   from_agent?}` (agent-to-agent only via the lead agent: text wrapped in `<melissa-data from="…">`, a closing tag
-  inside is escaped, audited `agent.brokered`); `reassign_workspace {workspace, to}` (always the user's confirmation).
+  inside is escaped, audited `agent.brokered`); `reassign_workspace {workspace, to}` (always the user's confirmation);
+  `delete_agent {agent}` (2026-11-20; Destructive: always the user's confirmation, naming the agent; then
+  `AgentPool::delete`, the same as Settings → Agents and `DELETE /api/agents/{agent}`: refused while it looks after
+  apps, else its schedules, file box, transcript/session store and workdir go; event `agent_deleted`).
   Labels: create/job/stop/message Reversible (attended lead agent: allowed; tainted lead agent: confirmation),
   status/list read-only, reassign `Effect::Ownership`.
 - **History after a restart:** `EventLog::with_history` starts the lead agent's and each agent's log with the
@@ -102,6 +105,12 @@ Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends,
   Lead agent and agents; the older bare-list form still reads) whenever a session opens; until then a backend shows no
   models and a model can't be chosen. The agent's whole list is offered, uncurated (q55b). Claude's `--model`
   from the user replaces the config's `--model`; ids are checked with `session::valid_model_id`.
+- **Reasoning levels (2026-11-20)** are only what the agent reports, per model (`ModelOption.efforts`): Claude's
+  `models[].supportedEffortLevels` (worded Low/Medium/High/Extra high/Max; started with `--effort <id>`, replacing
+  the config's), ACP's `thought_level` select (set with `session/set_config_option` after the model; reported for
+  the session's model only, so the cache keeps levels seen earlier for the others). The choice (`effort`) is
+  checked against the chosen model's levels, saved with backend and model (`lead/backend.json`, the agent
+  registry), shown in `backend_switched.effort_label`, and applies from the next turn (the session reopens).
 - **Model probes** (q55a, `backends::probe`, `ModelCache::refresh`): open a session through the backend's own
   `open` (same sandbox/egress as real sessions; no MCP servers, every permission refused, empty cwd
   `<workdir>/../probe/<backend>`), read `OpenedSession.models`, close it; **no prompt is sent**. 15 s timeout.

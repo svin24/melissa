@@ -95,6 +95,9 @@ pub enum LeadError {
     /// The cluster or the state directory failed.
     #[error("{0}")]
     Failed(String),
+    /// Refused while something still depends on it (an agent that looks after apps).
+    #[error("{0}")]
+    InUse(String),
     /// The message's files were refused (too large, too many) or could not be stored.
     #[error(transparent)]
     Attachment(#[from] AttachmentError),
@@ -384,16 +387,27 @@ impl Lead {
         });
     }
 
+    /// The models (and reasoning levels) each backend reported, shared by every conversation.
+    pub fn models(&self) -> &ModelCache {
+        &self.inner.models
+    }
+
     /// The user's saved choice of backend for the lead agent, if any.
     pub fn backend_choice(&self) -> Option<BackendChoice> {
         self.inner.conv.choice()
     }
 
-    /// The user switches the lead agent to `backend` (and `model`, one the backend reported).
-    /// Saved in the state directory, audited `lead.backend`; applies at the next turn,
-    /// with the conversation so far. Refused for a backend that is not usable now.
-    pub fn use_backend(&self, backend: &str, model: Option<&str>) -> Result<Switched, LeadError> {
-        let choice = self.inner.conv.check_choice(backend, model)?;
+    /// The user switches the lead agent to `backend` (and `model` and reasoning level
+    /// `effort`, ones the backend reported). Saved in the state directory, audited
+    /// `lead.backend`; applies at the next turn, with the conversation so far. Refused for a
+    /// backend that is not usable now.
+    pub fn use_backend(
+        &self,
+        backend: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<Switched, LeadError> {
+        let choice = self.inner.conv.check_choice(backend, model, effort)?;
         backends::save_choice(&self.inner.choice_path, &choice).map_err(|e| {
             LeadError::Failed(format!(
                 "cannot save the choice ({}): {e}",
@@ -517,6 +531,8 @@ impl Lead {
                 let runner = Arc::new(schedules::LeadRunner {
                     lead: Arc::downgrade(&self.inner),
                 });
+                // Deleting an agent removes its schedules too.
+                self.inner.pool.attach_schedules(schedules.clone());
                 let scheduler = schedules::Scheduler::new(schedules, runner, grace);
                 scheduler.start();
                 scheduler

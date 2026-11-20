@@ -236,6 +236,30 @@ fn with_model(extra: &[String], model: Option<&str>) -> Result<Vec<String>, Agen
     Ok(out)
 }
 
+/// The arguments with `--effort` replaced by `effort` (the user's choice of reasoning level).
+fn with_effort(extra: &[String], effort: Option<&str>) -> Result<Vec<String>, AgentError> {
+    let Some(effort) = effort else {
+        return Ok(extra.to_vec());
+    };
+    if !crate::session::valid_model_id(effort) {
+        return Err(AgentError::Protocol(format!(
+            "`{effort}` is not a reasoning level"
+        )));
+    }
+    let mut out = Vec::new();
+    let mut args = extra.iter();
+    while let Some(flag) = args.next() {
+        if flag == "--effort" {
+            args.next();
+            continue;
+        }
+        out.push(flag.clone());
+    }
+    out.push("--effort".into());
+    out.push(effort.into());
+    Ok(out)
+}
+
 /// The `--model` value in an argument list, if any.
 fn model_arg(args: &[String]) -> Option<String> {
     args.iter()
@@ -376,6 +400,7 @@ impl ClaudeBackend {
         let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
         let env = claude_env();
         let extra = with_model(&self.spec.args, open.model.as_deref())?;
+        let extra = with_effort(&extra, open.effort.as_deref())?;
         let args = claude_args(&extra, mcp_file.as_ref().map(|f| f.path()), &session);
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
         let (program_path, argv) = sandboxed_command(

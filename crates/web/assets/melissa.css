@@ -1038,12 +1038,28 @@ svg.icon.stopped {
 
 .composer-box {
   display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.15rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 0.4rem 0.4rem 0.4rem 0.9rem;
+  border-radius: 20px;
+  padding: 0.35rem 0.45rem 0.45rem 0.9rem;
+}
+
+/* Under the text: the paperclip left; the model chip, mic and Send right. */
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: -0.45rem;
+}
+
+.bar-gap {
+  flex: 1;
+}
+
+#model-chip {
+  display: contents;
 }
 
 .composer-box:focus-within {
@@ -1052,8 +1068,7 @@ svg.icon.stopped {
 }
 
 .composer textarea {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
   min-height: 44px;
   max-height: min(40vh, 16rem);
   overflow-y: auto;
@@ -1063,7 +1078,7 @@ svg.icon.stopped {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  padding: 0.6rem 0;
+  padding: 0.5rem 0.45rem 0.2rem 0;
   field-sizing: content;
 }
 
@@ -1076,10 +1091,11 @@ svg.icon.stopped {
 }
 
 button.send {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
   padding: 0;
-  border-radius: 12px;
+  border-radius: 50%;
   background: var(--action);
   display: grid;
   place-items: center;
@@ -1139,8 +1155,8 @@ button.send svg {
 }
 
 label.attach {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   flex: none;
   display: grid;
   place-items: center;
@@ -1178,8 +1194,9 @@ label.attach svg,
 /* Voice input: a mic next to the paperclip (shown by melissa.js). Recording turns it into a
    caution-coloured pill with the elapsed time; while the box transcribes it waits, dimmed. */
 button.voice {
-  min-width: 44px;
-  height: 44px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -1344,39 +1361,44 @@ progress {
   opacity: 0.75;
 }
 
-/* Agent menu in the composer status: "Runs on Grok ▾" opens a small panel above the
-   status line (anchored to the line, so it never runs off a phone screen). */
-.composer-status:has(.agent-menu) {
-  position: relative;
-}
-
-.agent-menu {
-  display: inline-block;
-}
-
-.agent-menu > summary {
+/* Model picker (2026-11-20): a chip in the composer bar ("Opus 5.5 · High") opens a popover
+   above it: a rail of providers (Favorites first), a searchable list of models, and the
+   current model's reasoning levels. Anchored to the chip where CSS anchor positioning
+   exists; melissa.js places it otherwise; without script the browser centres it. */
+.model-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  min-height: 32px;
-  padding: 0 0.4rem;
-  border-radius: 8px;
-  color: var(--ink);
+  gap: 0.4rem;
+  min-height: 36px;
+  max-width: min(16rem, 46vw);
+  padding: 0 0.6rem 0 0.35rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
   font-weight: 600;
-  cursor: pointer;
-  list-style: none;
+  anchor-name: --model-chip;
 }
 
-.agent-menu > summary::-webkit-details-marker {
-  display: none;
+.model-chip .pmark,
+.picker .pmark {
+  width: 22px;
+  height: 22px;
 }
 
-.agent-menu > summary:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+.model-chip .pmark span,
+.picker .pmark span {
+  font-size: 0.7rem;
 }
 
-.agent-menu .caret {
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-chip .caret {
+  flex: none;
   width: 0;
   height: 0;
   border-left: 4px solid transparent;
@@ -1384,42 +1406,113 @@ progress {
   border-top: 5px solid currentColor;
 }
 
-.agent-menu[open] .caret {
-  transform: rotate(180deg);
+.model-chip:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
-.agent-panel {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  z-index: 10;
-  width: min(23rem, 100%);
-  box-sizing: border-box;
-  display: grid;
-  gap: 0.5rem;
-  padding: 0.8rem;
+@media (hover: hover) {
+  .model-chip:hover {
+    background: var(--ground);
+    color: var(--ink);
+  }
+}
+
+.model-picker {
+  display: none;
+  margin: auto;
+  width: min(40rem, calc(100vw - 32px));
+  max-height: min(30rem, calc(100dvh - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
   background: var(--surface);
   color: var(--ink);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
   font-size: 0.9rem;
+  overflow: hidden;
 }
 
-.agent-panel label {
-  font-weight: 600;
-}
-
-.agent-row {
+.model-picker:popover-open {
   display: flex;
-  gap: 0.5rem;
 }
 
-.agent-row select {
-  flex: 1;
+@supports (position-area: top) {
+  .model-picker {
+    position-anchor: --model-chip;
+    position-area: top span-left;
+    position-try-fallbacks: flip-block, top, bottom;
+    margin: 0 0 8px;
+  }
+
+  /* Phones: the whole width above the chip, with the page's gutter. */
+  @media (max-width: 560px) {
+    .model-picker {
+      position-area: top span-all;
+      position-try-fallbacks: none;
+      justify-self: stretch;
+      width: auto;
+      margin: 0 16px 8px;
+    }
+  }
+}
+
+/* Placed by melissa.js where anchors are missing. */
+.model-picker.placed {
+  position: fixed;
+  margin: 0;
+  inset: auto;
+}
+
+.picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 0;
+}
+
+.picker-rail {
+  display: none;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.35rem;
+  border-right: 1px solid var(--border);
+  background: var(--ground);
+  overflow-y: auto;
+}
+
+.picker-rail .rail-item {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.picker-rail .rail-item[aria-pressed="true"] {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--ink);
+}
+
+.picker-main {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  min-height: 44px;
-  padding: 0 0.6rem;
+  min-height: 0;
+  padding: 0.5rem;
+  gap: 0.4rem;
+}
+
+.picker-search {
+  display: none;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 0.7rem;
   font: inherit;
   color: var(--ink);
   background: var(--ground);
@@ -1427,29 +1520,259 @@ progress {
   border-radius: 10px;
 }
 
-.agent-note,
-.agent-hint {
+.picker-search:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+  border-color: var(--focus);
+}
+
+.picker-scroll {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.picker-group-head {
+  font-family: var(--font);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0.5rem 0.4rem 0.25rem;
+}
+
+.picker-list {
+  list-style: none;
   margin: 0;
+  padding: 0;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.picker-row[hidden],
+.picker-group[hidden] {
+  display: none;
+}
+
+.picker-row .pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 40px;
+  padding: 0 0.5rem;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.picker-row .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-row .pick[aria-current="true"] {
+  font-weight: 700;
+}
+
+.picker .check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--action);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.picker kbd {
+  display: none;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 0.3rem;
+}
+
+.picker .fav {
+  display: none;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  place-items: center;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--idle);
+}
+
+.picker .star {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+}
+
+.picker .fav[aria-pressed="true"] {
+  color: var(--honey);
+}
+
+.picker .fav[aria-pressed="true"] .star,
+.rail-item[data-filter="favorites"] .star {
+  fill: currentColor;
+}
+
+.rail-item[data-filter="favorites"] {
+  color: var(--honey);
+}
+
+.picker-empty,
+.picker-note,
+.picker-error {
+  margin: 0.4rem;
   color: var(--muted);
 }
 
-.agent-hint code {
-  font-family: var(--mono);
-  font-size: 0.85em;
-  background: var(--ground);
-  padding: 0.05rem 0.3rem;
-  border-radius: 4px;
-  overflow-wrap: anywhere;
+.picker-empty[hidden],
+.picker-more[hidden] {
+  display: none;
 }
 
-.agent-error {
+.picker-error {
   color: var(--caution);
   font-weight: 600;
 }
 
+.picker-more {
+  align-self: flex-start;
+  min-height: 32px;
+  margin-left: 0.4rem;
+}
+
+.picker-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 9.5rem;
+  padding: 0.5rem;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.picker-levels h3 {
+  font-family: var(--font);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0.5rem 0.5rem 0.25rem;
+}
+
+.picker-levels .level {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 38px;
+  padding: 0 0.5rem;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.picker-levels .level[aria-current="true"] {
+  font-weight: 700;
+}
+
+.picker .pick:focus-visible,
+.picker .level:focus-visible,
+.picker .fav:focus-visible,
+.picker .rail-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
 @media (hover: hover) {
-  .agent-menu > summary:hover {
-    background: var(--surface);
+  .picker .pick:hover,
+  .picker .level:hover,
+  .picker .rail-item:hover {
+    background: var(--ground);
+  }
+
+  .picker .fav:hover {
+    color: var(--honey);
+  }
+}
+
+/* With script: the rail filters, so one backend shows at a time without headings. */
+.js .picker-rail {
+  display: flex;
+}
+
+.js .picker-search {
+  display: block;
+}
+
+.js .picker .fav {
+  display: grid;
+}
+
+.js .picker kbd:not(:empty) {
+  display: inline-block;
+}
+
+.js .picker-group-head {
+  display: none;
+}
+
+/* Phones: the levels go below the list. */
+@media (max-width: 560px) {
+  .picker {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .picker-rail {
+    grid-row: 1 / span 2;
+  }
+
+  .picker-levels {
+    flex-direction: row;
+    flex-wrap: wrap;
+    min-width: 0;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .picker-levels h3 {
+    width: 100%;
+    margin-bottom: 0;
+  }
+
+  .picker-levels .level {
+    min-height: 36px;
+    border: 1px solid var(--border);
+  }
+
+  .picker kbd {
+    display: none !important;
   }
 }
 

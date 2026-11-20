@@ -61,7 +61,7 @@ async fn a_switch_waits_for_the_running_turn_and_carries_the_conversation_over()
 
     let (turn, since) = s.lead.send("Remember apple.").unwrap();
     // While the turn runs: recorded, applied afterwards.
-    let sw = s.lead.use_backend("agent-acp", None).unwrap();
+    let sw = s.lead.use_backend("agent-acp", None, None).unwrap();
     assert!(sw.changed && sw.after_turn, "{sw:?}");
     let events = turn_events(&s.lead, since, turn).await;
     assert_eq!(finished(&events), "end_turn");
@@ -72,7 +72,8 @@ async fn a_switch_waits_for_the_running_turn_and_carries_the_conversation_over()
     assert!(events.contains(&LeadEvent::BackendSwitched {
         backend: "agent-acp".into(),
         model: None,
-        model_label: None
+        model_label: None,
+        effort_label: None
     }));
     // The old session still serves until the next turn; the view shows the choice.
     assert_eq!(s.lead.status().backend.as_deref(), Some("fake-acp"));
@@ -87,7 +88,7 @@ async fn a_switch_waits_for_the_running_turn_and_carries_the_conversation_over()
     }));
     assert_eq!(s.lead.status().backend.as_deref(), Some("agent-acp"));
     // Choosing it again changes nothing.
-    let again = s.lead.use_backend("agent-acp", None).unwrap();
+    let again = s.lead.use_backend("agent-acp", None, None).unwrap();
     assert!(!again.changed && !again.after_turn);
     s.close().await;
 
@@ -146,16 +147,16 @@ async fn unusable_backends_and_unknown_models_are_refused_and_models_come_from_t
     });
     // `missing-acp` is not in the test's backends at all: not installed.
     assert!(matches!(
-        s.lead.use_backend("missing-acp", None),
+        s.lead.use_backend("missing-acp", None, None),
         Err(LeadError::Unavailable(m)) if m.contains("not installed")
     ));
     assert!(matches!(
-        s.lead.use_backend("agent-acp", None),
+        s.lead.use_backend("agent-acp", None, None),
         Err(LeadError::Invalid(m)) if m.contains("not a backend the lead agent can use")
     ));
     // No session yet: the models are unknown, so none can be chosen.
     assert!(matches!(
-        s.lead.use_backend("fake-acp", Some("m2")),
+        s.lead.use_backend("fake-acp", Some("m2"), None),
         Err(LeadError::Invalid(m)) if m.contains("does not know the models")
     ));
     let view = s.lead.backends();
@@ -176,10 +177,10 @@ async fn unusable_backends_and_unknown_models_are_refused_and_models_come_from_t
         .collect();
     assert_eq!(ids, ["m1", "m2"]);
     assert!(matches!(
-        s.lead.use_backend("fake-acp", Some("m9")),
+        s.lead.use_backend("fake-acp", Some("m9"), None),
         Err(LeadError::Invalid(m)) if m.contains("does not offer a model `m9`")
     ));
-    let sw = s.lead.use_backend("fake-acp", Some("m2")).unwrap();
+    let sw = s.lead.use_backend("fake-acp", Some("m2"), None).unwrap();
     assert!(sw.changed && !sw.after_turn);
     let (turn, since) = s.lead.send("Again.").unwrap();
     let events = turn_events(&s.lead, since, turn).await;
@@ -216,14 +217,17 @@ async fn the_user_moves_a_agent_to_another_backend() {
     let before = s.pool().backends_of("Ada").unwrap();
     assert!(before.iter().any(|b| b.name == "agent-acp" && b.current));
     assert!(matches!(
-        s.pool().user_use_backend("Nobody", "fake-acp", None),
+        s.pool().user_use_backend("Nobody", "fake-acp", None, None),
         Err(LeadError::NoSuchAgent(_))
     ));
     assert!(matches!(
-        s.pool().user_use_backend("Ada", "nope", None),
+        s.pool().user_use_backend("Ada", "nope", None, None),
         Err(LeadError::Invalid(_))
     ));
-    let sw = s.pool().user_use_backend("ada", "fake-acp", None).unwrap();
+    let sw = s
+        .pool()
+        .user_use_backend("ada", "fake-acp", None, None)
+        .unwrap();
     assert!(sw.changed);
     assert_eq!(
         s.pool().registry().get(ADA).map(|b| b.backend).as_deref(),
@@ -267,7 +271,7 @@ async fn new_agents_follow_the_leads_switch_and_existing_agents_keep_theirs() {
     assert_eq!(backend_of("Ada").as_deref(), Some("agent-acp"));
 
     // The user switches the lead agent: new agents follow, Ada keeps hers.
-    s.lead.use_backend("fake-acp", None).unwrap();
+    s.lead.use_backend("fake-acp", None, None).unwrap();
     create_agents(&s, &q, &["Bo"]).await;
     assert_eq!(backend_of("Bo").as_deref(), Some("fake-acp"));
     assert_eq!(backend_of("Ada").as_deref(), Some("agent-acp"));
@@ -282,9 +286,11 @@ async fn new_agents_follow_the_leads_switch_and_existing_agents_keep_theirs() {
     assert_eq!(r["isError"], false, "{r}");
     assert_eq!(backend_of("Cy").as_deref(), Some("agent-acp"));
     // An agent the user moved keeps the user's choice when the lead agent switches again.
-    s.pool().user_use_backend("Bo", "agent-acp", None).unwrap();
-    s.lead.use_backend("agent-acp", None).unwrap();
-    s.lead.use_backend("fake-acp", None).unwrap();
+    s.pool()
+        .user_use_backend("Bo", "agent-acp", None, None)
+        .unwrap();
+    s.lead.use_backend("agent-acp", None, None).unwrap();
+    s.lead.use_backend("fake-acp", None, None).unwrap();
     assert_eq!(backend_of("Bo").as_deref(), Some("agent-acp"));
     s.close().await;
 
@@ -298,5 +304,97 @@ async fn new_agents_follow_the_leads_switch_and_existing_agents_keep_theirs() {
     assert_eq!(
         s.pool().get("Di").map(|b| b.backend).as_deref(),
         Some("fake-acp")
+    );
+}
+
+/// An ACP `thought_level` option with `low`, `medium` and `high`.
+fn thought_option(current: &str) -> Value {
+    json!({"id": "thought", "name": "Thinking", "category": "thought_level", "type": "select",
+        "currentValue": current, "options": [
+            {"value": "low", "name": "Low"}, {"value": "medium", "name": "Medium"},
+            {"value": "high", "name": "High"}]})
+}
+
+#[tokio::test]
+async fn reasoning_levels_come_from_the_agent_and_apply_at_the_next_session() {
+    let mut first = handshake("unused");
+    first.pop();
+    first.push(Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
+        "sessionId": "s-1", "configOptions": [model_option("m1"), thought_option("medium")]}})));
+    first.extend([
+        prompt(2, "s-1", "<any>"),
+        text("s-1", "Hi."),
+        done(2, "end_turn"),
+    ]);
+    // The same model with another level: the session is resumed and the level set.
+    let mut second = handshake("unused");
+    second.truncate(2);
+    second.extend([
+        Step::send(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume",
+            "params": {"sessionId": "s-1", "cwd": "<any>", "mcpServers": "<any>"}}),
+        ),
+        Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
+            "configOptions": [model_option("m1"), thought_option("medium")]}})),
+        Step::send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
+            "params": {"sessionId": "s-1", "configId": "thought", "value": "high"}}),
+        ),
+        Step::recv(json!({"jsonrpc": "2.0", "id": 2, "result": {
+            "configOptions": [model_option("m1"), thought_option("high")]}})),
+        prompt(3, "s-1", "Again."),
+        text("s-1", "Hello again."),
+        done(3, "end_turn"),
+    ]);
+    let s = setup_in(scratch("switch-effort"), vec![first, second], |_| {});
+    let (turn, since) = s.lead.send("Hello.").unwrap();
+    turn_events(&s.lead, since, turn).await;
+    // The levels are reported with the model the session uses; the other has none known.
+    let fake = s
+        .lead
+        .backends()
+        .into_iter()
+        .find(|b| b.name == "fake-acp")
+        .unwrap();
+    let models = fake.models.unwrap();
+    let levels: Vec<&str> = models[0].efforts.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(levels, ["low", "medium", "high"]);
+    assert!(models[1].efforts.is_empty());
+    assert!(matches!(
+        s.lead.use_backend("fake-acp", Some("m1"), Some("max")),
+        Err(LeadError::Invalid(m)) if m.contains("does not offer reasoning level `max`")
+    ));
+    assert!(matches!(
+        s.lead.use_backend("fake-acp", Some("m2"), Some("high")),
+        Err(LeadError::Invalid(_))
+    ));
+    let sw = s
+        .lead
+        .use_backend("fake-acp", Some("m1"), Some("high"))
+        .unwrap();
+    assert!(sw.changed);
+    assert_eq!(sw.effort.as_deref(), Some("high"));
+    let fake = s
+        .lead
+        .backends()
+        .into_iter()
+        .find(|b| b.name == "fake-acp")
+        .unwrap();
+    assert_eq!(fake.effort.as_deref(), Some("high"));
+    let (turn, since) = s.lead.send("Again.").unwrap();
+    let events = turn_events(&s.lead, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
+    assert!(s.lead.events().since(0, 100).events.iter().any(|r| r.event
+        == LeadEvent::BackendSwitched {
+            backend: "fake-acp".into(),
+            model: Some("m1".into()),
+            model_label: Some("Model One".into()),
+            effort_label: Some("High".into()),
+        }));
+    s.close().await;
+    // Saved with the choice for the next daemon run.
+    assert_eq!(
+        s.lead.backend_choice().and_then(|c| c.effort).as_deref(),
+        Some("high")
     );
 }

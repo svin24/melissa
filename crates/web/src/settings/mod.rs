@@ -69,6 +69,7 @@
 //! for and again with their outcome (`settings.provider.install`, `settings.provider.login`);
 //! sign-in codes never reach the audit log.
 
+mod agents;
 mod apply;
 mod developer;
 mod files;
@@ -99,7 +100,7 @@ use melissa_settings::{
     install::{InstallState, Installer, Job, INSTALLABLE},
     prefs::{Prefs, PrefsStore},
     providers::{BackendFacts, ProviderOverride, ProviderStore},
-    updates::{HostKind, Release, UpdateEnv},
+    updates::{Release, UpdateEnv},
     version::VersionProbe,
 };
 
@@ -162,11 +163,6 @@ impl Settings {
                 audited: Mutex::default(),
             }),
         }
-    }
-
-    /// What kind of host this is (container image, Nix, other), e.g. for setup hints.
-    pub(crate) fn host(&self) -> HostKind {
-        self.inner.parts.updates.kind
     }
 
     /// No settings file, no backends (routers built without a lead agent config).
@@ -299,6 +295,8 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             "/ui/settings/providers/{id}/env/remove",
             post(providers::remove_var),
         )
+        .route(pages::AGENTS_URL, get(agents::page))
+        .route("/ui/settings/agents/{id}/delete", post(agents::delete))
         .route("/settings/permissions", get(permissions::page))
         .route(
             "/ui/settings/permissions/{id}/remove",

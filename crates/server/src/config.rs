@@ -129,7 +129,8 @@ pub struct LeadSection {
     pub backends: Vec<String>,
     /// Tools the lead agent may use (default: all). Include the agent tools (`create_agent`,
     /// `give_agent_job`, `agent_status`, `list_agents`, `stop_agent`, `message_agent`) to let its
-    /// direct agents, and `reassign_workspace` to move workspaces. Agents never get more than this.
+    /// direct agents, `reassign_workspace` to move workspaces and `delete_agent` to delete agents
+    /// (always confirmed). Agents never get more than this.
     pub tools: Option<Vec<String>>,
     /// Backend for new agents when the lead agent names none (default: the first lead agent backend).
     /// Once the user switches the lead agent's backend, new agents follow that instead.

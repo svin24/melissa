@@ -90,6 +90,8 @@ pub enum LeadEvent {
         name: String,
         backend: String,
     },
+    /// The lead agent (approved by the user) or the user deleted an agent.
+    AgentDeleted { agent: String, name: String },
     /// The lead agent gave an agent a job (the agent's turn runs in its own conversation).
     AgentStarted {
         agent: String,
@@ -128,6 +130,9 @@ pub enum LeadEvent {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model_label: Option<String>,
+        /// The reasoning level's display name, if one was chosen.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort_label: Option<String>,
     },
     /// A Lead agent backend could not start; the next one in the list is tried.
     BackendFailed { backend: String, error: String },

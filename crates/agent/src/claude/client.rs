@@ -34,9 +34,9 @@ use crate::{
         OPEN_TIMEOUT,
     },
     session::{
-        AgentSession, ModelList, ModelOption, OpenedSession, PermissionDecision, PermissionHandler,
-        PermissionRequest, PromptBlock, SessionCapabilities, SessionEvent, StopReason, ToolKind,
-        ToolStatus,
+        AgentSession, EffortOption, ModelList, ModelOption, OpenedSession, PermissionDecision,
+        PermissionHandler, PermissionRequest, PromptBlock, SessionCapabilities, SessionEvent,
+        StopReason, ToolKind, ToolStatus,
     },
     AgentError, BoxFuture,
 };
@@ -544,11 +544,43 @@ pub(crate) fn offered_models(models: &Value) -> Vec<ModelOption> {
                     Some(ModelOption {
                         id: id.into(),
                         label: label.chars().take(80).collect(),
+                        efforts: offered_efforts(&m["supportedEffortLevels"]),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A model's reasoning levels in Claude's handshake answer (`supportedEffortLevels`: ids
+/// such as `low` or `xhigh`, which `--effort` takes). Claude gives no names: they are
+/// worded here; an id Melissa has no words for keeps its id.
+pub(crate) fn offered_efforts(levels: &Value) -> Vec<EffortOption> {
+    levels
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| crate::session::valid_model_id(id))
+                .take(12)
+                .map(|id| EffortOption {
+                    id: id.into(),
+                    label: effort_words(id).map_or_else(|| id.to_string(), str::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn effort_words(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Extra high",
+        "max" => "Max",
+        _ => return None,
+    })
 }
 
 pub(crate) fn stop_reason(msg: &Value, interrupted: bool) -> Result<StopReason, AgentError> {

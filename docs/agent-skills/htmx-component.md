@@ -33,17 +33,21 @@ Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), 
 helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey "read text from outside" note),
 `approval_card` (pending / approved / denied / withdrawn; full honey border, caution border when destructive,
 "Can't be undone" variant), `composer` (2026-11-20: grows with its text; paperclip/paste/drop files, shown as chips cloned from its
-`file-chip` template by melissa.js), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
+`file-chip` template by melissa.js; since the model picker one rounded box: text on top, a bar below with the
+paperclip left and `model_chip`, the mic and a round Send right; placeholder "Message <name>"), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
 `composer_status`, `file_panel` (2026-11-20, owner decision: the chat's file box beside it, a `details`
 collapsed by default and remembered per browser by melissa.js (`data-remember`), a section above the chat below
 1280 px; rows with download link and a trash button (`hx-confirm`), "Keep files for…" select; `file_panel_body`
 is what delete/retention return, `file_panel_inner` + `file_count` what the stream swaps on `Change::Files`;
-`SentFile.href = None` renders an "expired" chip), `agent_menu` (2026-11-19, owner-approved: "Runs on
-[Grok ▾]" in the composer status; a `details` panel with a native `select` of agents/models, unavailable agents
-disabled with a host-aware hint (container: Settings → Providers or `sudo podman exec -it melissa melissa-setup …`;
-Nix: the Nix note; from source: `sudo melissa-setup …`); the Switch button posts the composer form like Stop (`formaction` +
-`hx-post` to `/ui/backend` or `/ui/agents/{id}/backend`, form field `choice` = `<backend>[ <model>]`), htmx swaps
-the status line; built from `BackendView`s in `agents.rs`).
+`SentFile.href = None` renders an "expired" chip), `model_chip` + `model_picker`
+(2026-11-20, owner-requested; replaced the 2026-11-19 `agent_menu`): the chip ("Opus 5.5 · High", the backend's
+`provider_mark`) is a `popovertarget` button in the composer bar (slot `#model-chip`, swapped by the stream on
+`Change::Status`); the picker is a `div[popover]` after the composer with its own form (`choice` = `<backend>[ <model>]`,
+or `effort` + hidden `current`) posting to `/ui/backend` or `/ui/agents/{id}/backend`; htmx swaps the picker (closed)
+and the chip out of band; a refusal comes back `data-error` and melissa.js reopens it. Rail of usable backends
+(Favorites first), search, model rows (mark, name, check, star, Ctrl+1..9 hints), "Show more", a Reasoning column
+only when the current model reports levels; built from `BackendView`s in `agents.rs`. Without script every model
+shows grouped by backend and each pick is a plain form post.
 Apps and devices: `app_tile` (hexagon), `add_app_tile`, `app_grid`, `app_strip` (mini workspaces, polls itself),
 `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.md)): `settings_frame`,

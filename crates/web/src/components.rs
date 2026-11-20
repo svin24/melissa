@@ -1245,12 +1245,15 @@ pub struct ComposerTarget<'a> {
     pub voice: Option<&'a str>,
 }
 
-/// The message box at the bottom of the chat. `draft` pre-fills it, `error` explains why
+/// The message box at the bottom of the chat: the text on top, a bar below it with the
+/// paperclip on the left and, on the right, `chip` (the model picker's chip, see
+/// [`model_chip`]), the mic (voice on) and Send. `draft` pre-fills it, `error` explains why
 /// the last message was not sent.
 pub fn composer(
     to: &ComposerTarget<'_>,
     draft: &str,
     error: Option<&str>,
+    chip: Markup,
     status: Markup,
 ) -> Markup {
     html! {
@@ -1275,47 +1278,46 @@ pub fn composer(
                 textarea #message name="text" rows="1" maxlength="16384"
                     placeholder=(to.placeholder)
                     autofocus[draft.is_empty() && error.is_none()] { (draft) }
-                // After the text, so the server reads the text before the files.
-                input #attach .attach-input type="file" name="files" multiple
-                    data-max-file=(MAX_FILE_BYTES) data-max-total=(MAX_MESSAGE_BYTES)
-                    data-max-count=(MAX_FILES);
-                label.attach for="attach" title="Attach files" {
-                    (paperclip_icon())
-                    span.visually-hidden { "Attach files" }
-                }
-                @if let Some(url) = to.voice {
-                    // Voice input: melissa.js shows it (recording needs script), records, sends
-                    // the clip to `url` and puts the text in the box to edit; nothing is sent
-                    // by itself. Where the browser can't record (plain http on the LAN) a
-                    // click says why.
-                    button.voice #voice type="button" hidden data-url=(url) aria-pressed="false"
-                        title="Speak instead of typing" {
-                        (mic_icon())
-                        span.voice-time aria-hidden="true" {}
-                        span.visually-hidden.voice-label { "Speak instead of typing" }
+                div.composer-bar {
+                    // After the text, so the server reads the text before the files.
+                    input #attach .attach-input type="file" name="files" multiple
+                        data-max-file=(MAX_FILE_BYTES) data-max-total=(MAX_MESSAGE_BYTES)
+                        data-max-count=(MAX_FILES);
+                    label.attach for="attach" title="Attach files" {
+                        (paperclip_icon())
+                        span.visually-hidden { "Attach files" }
+                    }
+                    span.bar-gap {}
+                    span id=(MODEL_CHIP_ID) { (chip) }
+                    @if let Some(url) = to.voice {
+                        // Voice input: melissa.js shows it (recording needs script), records,
+                        // sends the clip to `url` and puts the text in the box to edit; nothing
+                        // is sent by itself. Where the browser can't record (plain http on the
+                        // LAN) a click says why.
+                        button.voice #voice type="button" hidden data-url=(url) aria-pressed="false"
+                            title="Speak instead of typing" {
+                            (mic_icon())
+                            span.voice-time aria-hidden="true" {}
+                            span.visually-hidden.voice-label { "Speak instead of typing" }
+                        }
+                    }
+                    button.send type="submit" title="Send" {
+                        svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" {} }
+                        span.visually-hidden { "Send" }
                     }
                 }
-                button.send type="submit" {
-                    svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M2.5 8h10M8.5 3.5L13 8l-4.5 4.5" {} }
-                    span.visually-hidden { "Send" }
-                }
             }
-            // The event stream owns the status (busy, Stop, agent): it arrives in order with
-            // the turn's events. The response to a send can land after the turn already ended,
-            // so `hx-preserve` keeps the status on the page instead of this (stale) copy.
+            // The event stream owns the status (busy, Stop): it arrives in order with the
+            // turn's events. The response to a send can land after the turn already ended, so
+            // `hx-preserve` keeps the status on the page instead of this (stale) copy.
             div.composer-status id=(COMPOSER_STATUS_ID) hx-preserve aria-live="polite" { (status) }
         }
     }
 }
 
-/// The line under the composer: which backend (a menu to switch it, when given), everything
-/// is logged, and a stop button (posting to `cancel`) while a turn runs.
-pub fn composer_status(
-    cancel: &str,
-    backend: Option<&str>,
-    busy: bool,
-    agents: Option<&AgentMenu>,
-) -> Markup {
+/// The line under the composer: a stop button (posting to `cancel`) while a turn runs, what
+/// the chat runs on when there is no model picker (`runs_on`), and that everything is logged.
+pub fn composer_status(cancel: &str, busy: bool, runs_on: Option<&str>) -> Markup {
     html! {
         @if busy {
             span.working { span.icon.spin aria-hidden="true" {} "Working on it" }
@@ -1323,85 +1325,173 @@ pub fn composer_status(
             span.sep aria-hidden="true" { "·" }
         }
         span {
-            @match (agents, backend) {
-                (Some(m), _) => { "Runs on " (agent_menu(m)) ". " },
-                (None, Some(b)) => { "Runs on " (b) ". " },
-                (None, None) => { "Starts when you send a message. " },
-            }
+            @if let Some(b) = runs_on { "Runs on " (b) ". " }
             "Everything is logged."
-        }
-        @if let Some(e) = agents.and_then(|m| m.error.as_deref()) {
-            span.agent-error role="alert" { (e) }
         }
     }
 }
 
-/// One entry of the agent menu: a backend, or one of its models.
-pub struct AgentOption {
-    /// Form value (`choice`).
+/// DOM id of the slot that holds the model chip (updated live).
+pub const MODEL_CHIP_ID: &str = "model-chip";
+/// DOM id of the model picker popover.
+pub const MODEL_PICKER_ID: &str = "model-picker";
+
+/// One model in the picker.
+pub struct PickerModel {
+    /// Form value (`choice`): `<backend>` or `<backend> <model>`.
     pub value: String,
     pub label: String,
-    pub selected: bool,
+    pub current: bool,
 }
 
-/// One agent (backend) in the menu: its models, or one entry for the agent itself.
-pub struct AgentGroup {
+/// One backend (provider) in the picker: its mark on the rail and its models.
+pub struct PickerBackend {
+    /// The backend's name: the rail's filter key, never shown.
+    pub name: String,
     pub label: String,
-    pub options: Vec<AgentOption>,
+    /// The letter in its mark.
+    pub letter: String,
+    pub models: Vec<PickerModel>,
 }
 
-/// An agent that cannot be chosen now, and what to do about it.
-pub struct AgentHint {
+/// One reasoning level of the current model.
+pub struct PickerLevel {
+    /// Form value (`effort`); empty: the agent's default.
+    pub value: String,
     pub label: String,
-    pub text: String,
-    /// A command that fixes it, shown as code.
-    pub command: Option<String>,
+    pub current: bool,
 }
 
-/// The agent menu in the composer status: which agent (and model) the chat runs on, and a
-/// native select to switch it. The switch posts the composer's form (`choice`) to `action`,
-/// like Stop, so there is no nested form; htmx swaps the status line with the answer.
-pub struct AgentMenu {
+/// The model picker of a chat (2026-11-20, owner-requested): a chip in the composer bar
+/// ("Opus 5.5 · High") opens a popover above it with a rail of backends (Favorites first),
+/// a searchable list of the selected backend's models and the current model's reasoning
+/// levels. Only usable backends are in it. Picking posts the picker's own form (`choice`, or
+/// `effort` with the hidden `current`) to `action`; it applies from the next turn. Built from
+/// the API's `BackendView`s in `agents.rs`.
+pub struct ModelPicker {
     pub action: String,
-    /// What the chat runs on now, e.g. "Claude · Sonnet 5.5".
+    /// What the chat runs on, for the chip: "Opus 5.5 · High".
+    pub chip: String,
+    /// The current backend's mark letter (None: no backend is usable).
+    pub letter: Option<String>,
+    /// The `choice` of the current model (sent with a reasoning level).
     pub current: String,
-    pub groups: Vec<AgentGroup>,
-    pub unavailable: Vec<AgentHint>,
+    pub backends: Vec<PickerBackend>,
+    /// The current model's reasoning levels (empty: none; the column is left out).
+    pub levels: Vec<PickerLevel>,
     /// Why the last switch was refused.
     pub error: Option<String>,
 }
 
-/// The agent menu (see [`AgentMenu`]): a `details` disclosure, no script of its own.
-pub fn agent_menu(m: &AgentMenu) -> Markup {
-    let target = format!("#{COMPOSER_STATUS_ID}");
+/// The chip in the composer bar that opens the picker (Popover API: no script needed).
+pub fn model_chip(p: &ModelPicker) -> Markup {
     html! {
-        details.agent-menu {
-            summary {
-                span.visually-hidden { "Agent: " }
-                (m.current)
-                span.caret aria-hidden="true" {}
-            }
-            div.agent-panel {
-                label.visually-hidden for="agent-choice" { "Agent for this chat" }
-                div.agent-row {
-                    select #agent-choice name="choice" {
-                        @for g in &m.groups {
-                            @if g.options.len() == 1 && g.options[0].label == g.label {
-                                option value=(g.options[0].value) selected[g.options[0].selected] { (g.label) }
-                            } @else {
-                                optgroup label=(g.label) {
-                                    @for o in &g.options {
-                                        option value=(o.value) selected[o.selected] { (o.label) }
+        button.model-chip type="button" popovertarget=(MODEL_PICKER_ID) aria-haspopup="dialog"
+            title="Choose the model" {
+            @if let Some(l) = &p.letter { (provider_mark(l, false)) }
+            span.visually-hidden { "Model: " }
+            span.chip-text { (p.chip) }
+            span.caret aria-hidden="true" {}
+        }
+    }
+}
+
+fn star_icon() -> Markup {
+    html! {
+        svg.star viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M8 1.8l1.85 3.9 4.25.55-3.1 2.95.8 4.2L8 11.35 4.2 13.4l.8-4.2L1.9 6.25l4.25-.55z" {}
+        }
+    }
+}
+
+fn check_icon() -> Markup {
+    html! {
+        svg.check viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M3 8.5 6.5 12 13 4.5" {}
+        }
+    }
+}
+
+/// The picker popover (see [`ModelPicker`]). Without script every backend's models show in
+/// groups and each pick is a plain form post; melissa.js adds the rail filter, search,
+/// favorites, Ctrl+1..9 and "Show more".
+pub fn model_picker(p: &ModelPicker) -> Markup {
+    let target = format!("#{MODEL_PICKER_ID}");
+    html! {
+        div.model-picker id=(MODEL_PICKER_ID) popover="auto" role="dialog" aria-label="Choose a model"
+            data-error[p.error.is_some()] {
+            form.picker method="post" action=(p.action) hx-post=(p.action) hx-target=(target)
+                hx-swap="outerHTML" {
+                input type="hidden" name="current" value=(p.current);
+                @if !p.backends.is_empty() {
+                    div.picker-rail role="group" aria-label="Providers" {
+                        button.rail-item type="button" data-filter="favorites" aria-pressed="false" title="Favorites" {
+                            (star_icon())
+                            span.visually-hidden { "Favorites" }
+                        }
+                        @for b in &p.backends {
+                            button.rail-item type="button" data-filter=(b.name)
+                                aria-pressed=(if b.models.iter().any(|m| m.current) { "true" } else { "false" })
+                                title=(b.label) {
+                                (provider_mark(&b.letter, false))
+                                span.visually-hidden { (b.label) }
+                            }
+                        }
+                    }
+                }
+                div.picker-main {
+                    @if let Some(e) = &p.error { p.picker-error role="alert" { (e) } }
+                    @if p.backends.is_empty() {
+                        p.picker-note {
+                            "No provider is ready yet. Set one up in "
+                            a href="/settings/providers" { "Settings → Providers" } "."
+                        }
+                    } @else {
+                        label.visually-hidden for="picker-search" { "Search models" }
+                        input.picker-search #picker-search type="search" placeholder="Search models…"
+                            autocomplete="off" spellcheck="false";
+                        div.picker-scroll {
+                            @for b in &p.backends {
+                                section.picker-group data-backend=(b.name) aria-label=(b.label) {
+                                    h3.picker-group-head { (b.label) }
+                                    ul.picker-list {
+                                        @for m in &b.models {
+                                            li.picker-row data-backend=(b.name) data-value=(m.value)
+                                                data-name=(m.label.to_lowercase()) {
+                                                button.pick type="submit" name="choice" value=(m.value)
+                                                    aria-current=[m.current.then_some("true")] {
+                                                    (provider_mark(&b.letter, false))
+                                                    span.name { (m.label) }
+                                                    @if m.current { (check_icon()) }
+                                                    kbd.key aria-hidden="true" {}
+                                                }
+                                                button.fav type="button" data-fav=(m.value)
+                                                    aria-pressed="false" title="Favorite" {
+                                                    (star_icon())
+                                                    span.visually-hidden { "Favorite " (m.label) }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
+                            p.picker-empty data-empty="search" hidden { "No models match." }
+                            p.picker-empty data-empty="favorites" hidden { "Star a model to keep it here." }
                         }
-                        @for h in &m.unavailable {
-                            option disabled { (h.label) }
+                        button.picker-more.link type="button" hidden { "Show more" }
+                    }
+                }
+                @if !p.levels.is_empty() {
+                    div.picker-levels role="group" aria-labelledby="picker-levels-head" {
+                        h3 #picker-levels-head { "Reasoning" }
+                        @for l in &p.levels {
+                            button.level type="submit" name="effort" value=(l.value)
+                                aria-current=[l.current.then_some("true")] {
+                                span { (l.label) }
+                                @if l.current { (check_icon()) }
+                            }
                         }
                     }
-                    button.secondary type="submit" formaction=(m.action) formnovalidate
-                        hx-post=(m.action) hx-target=(target) hx-swap="innerHTML" { "Switch" }
                 }
             }
         }
