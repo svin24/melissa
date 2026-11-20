@@ -97,6 +97,8 @@ pub(crate) struct Attached {
     pub lead_task: TaskId,
     /// Agents work in `<workroot>/<id>`.
     pub workroot: std::path::PathBuf,
+    /// Shared with the lead agent's conversation.
+    pub attachments: crate::attachments::AttachmentStore,
 }
 
 /// A job the lead agent gave an agent.
@@ -305,6 +307,7 @@ impl AgentPool {
             system_prompt,
             state_dir,
             workdir: a.workroot.join(&agent.id),
+            attachments: a.attachments.clone(),
             task: a.board.reserve_id(),
             ctx: TaskContext {
                 // Agents work on jobs while nobody watches; the user chatting with one does not
@@ -431,11 +434,21 @@ impl AgentPool {
 
     /// The user sends an agent a message directly (wakes a stopped agent).
     pub fn user_send(&self, name_or_id: &str, text: &str) -> Result<(TurnId, u64), LeadError> {
+        self.user_send_with(name_or_id, text, Vec::new())
+    }
+
+    /// [`AgentPool::user_send`] with files (see [`crate::attachments`]).
+    pub fn user_send_with(
+        &self,
+        name_or_id: &str,
+        text: &str,
+        files: Vec<crate::attachments::Upload>,
+    ) -> Result<(TurnId, u64), LeadError> {
         let agent = self.user_agent(name_or_id)?;
         let conv = self
             .conversation(&agent)
             .map_err(|e| LeadError::Failed(e.to_string()))?;
-        let out = conv.send(text, "ui")?;
+        let out = conv.send_with(text, files, "ui")?;
         if let Err(e) = self.inner.registry.set_stopped(&agent.id, false) {
             tracing::warn!("agent registry: {e}");
         }

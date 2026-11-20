@@ -40,6 +40,18 @@ pub struct SessionCapabilities {
     pub close: bool,
     /// Accepts MCP servers over HTTP (Melissa's endpoint) in the session setup.
     pub mcp_http: bool,
+    /// Takes images (PNG, JPEG, GIF, WebP) in a prompt ([`PromptBlock::Image`]).
+    pub images: bool,
+    /// Takes PDFs in a prompt ([`PromptBlock::Pdf`]).
+    pub pdfs: bool,
+}
+
+/// A non-text part of a prompt (a file the user attached), base64-encoded. Only sent to a
+/// session whose [`SessionCapabilities`] say it takes that kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptBlock {
+    Image { mime: String, data: String },
+    Pdf { data: String },
 }
 
 /// An MCP server the agent should connect to for this session.
@@ -358,6 +370,18 @@ pub trait AgentSession: Send + Sync {
     /// Run one turn. Returns when the agent ends the turn. Only one turn runs at a time;
     /// a second call while one runs fails with [`AgentError::Busy`].
     fn prompt<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<StopReason, AgentError>>;
+
+    /// Run one turn with files: like [`AgentSession::prompt`], plus content blocks the
+    /// session's capabilities allow. Sessions without native file support ignore `blocks`
+    /// (callers only pass blocks the capabilities allow).
+    fn prompt_with<'a>(
+        &'a self,
+        text: &'a str,
+        blocks: &'a [PromptBlock],
+    ) -> BoxFuture<'a, Result<StopReason, AgentError>> {
+        let _ = blocks;
+        self.prompt(text)
+    }
 
     /// Ask the agent to stop the current turn. Pending permission requests are answered
     /// `cancelled`; the running [`AgentSession::prompt`] then returns

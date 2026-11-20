@@ -41,7 +41,9 @@ use components::Tone;
 struct Assets;
 
 /// Content Security Policy: everything from this origin only, no inline scripts or styles.
-const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+/// `blob:` images: previews of files picked in the composer (made by the page itself).
+const CSP: &str =
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; \
                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 /// The task UI, without agent tools or the lead agent (`/` goes to the task list).
@@ -295,10 +297,9 @@ async fn security(req: Request, next: Next) -> Response {
     }
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
-    );
+    // A handler may set a stricter policy (attachments: `sandbox`).
+    h.entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static(CSP));
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -907,6 +908,7 @@ mod tests {
                 LeadEvent::UserMessage {
                     turn: 1,
                     text: "Hi".into(),
+                    attachments: vec![],
                 },
                 LeadEvent::Thought {
                     turn: 1,
@@ -2043,6 +2045,7 @@ mod tests {
             lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Install <b>Immich</b>".into(),
+                attachments: vec![],
             });
             lead.events().push(LeadEvent::ToolCall {
                 turn: Some(1),
@@ -2451,6 +2454,132 @@ mod tests {
             assert_eq!(headers[header::LOCATION], "/");
         }
 
+        type Part<'a> = (&'a str, Option<&'a str>, &'a [u8]);
+
+        /// A multipart form post as htmx sends it (`files` parts carry a file name).
+        fn multipart(uri: &str, parts: &[Part<'_>]) -> axum::http::Request<Body> {
+            let boundary = "melissa-test-boundary";
+            let mut body = Vec::new();
+            for (name, file, bytes) in parts {
+                body.extend(
+                    format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"")
+                        .as_bytes(),
+                );
+                if let Some(f) = file {
+                    body.extend(format!("; filename=\"{f}\"").as_bytes());
+                    body.extend(b"\r\nContent-Type: application/octet-stream");
+                }
+                body.extend(b"\r\n\r\n");
+                body.extend(*bytes);
+                body.extend(b"\r\n");
+            }
+            body.extend(format!("--{boundary}--\r\n").as_bytes());
+            axum::http::Request::post(uri)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .header(header::HOST, "127.0.0.1:8080")
+                .header("hx-request", "true")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn sending_and_serving_files() {
+            const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+            let (app, lead) = app();
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains("hx-encoding=\"multipart/form-data\""));
+            assert!(page.contains("name=\"files\" multiple"));
+            assert!(page.contains("<template id=\"file-chip\">"));
+
+            // Too large: refused while it streams in; the text stays, the files must be
+            // attached again, no turn starts.
+            let big = vec![0u8; melissa_agent::attachments::MAX_FILE_BYTES + 1];
+            let req = multipart(
+                "/ui/messages",
+                &[("text", None, b"Look"), ("files", Some("big.bin"), &big)],
+            );
+            let (status, _, html) = send(&app, req).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("big.bin is larger than 20 MiB"), "{html}");
+            // htmx (melissa.js) keeps the picked files; a plain post is asked for them again.
+            assert!(!html.contains("Attach the files again."));
+            let mut req = multipart(
+                "/ui/messages",
+                &[("text", None, b"Look"), ("files", Some("big.bin"), &big)],
+            );
+            req.headers_mut().remove("hx-request");
+            let (status, _, html) = send(&app, req).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(html.contains("Attach the files again."), "{html}");
+            assert!(html.contains(">Look</textarea>"));
+            assert_eq!(lead.status().turn, None);
+
+            // An image and a text file, no text; the empty part of an unused input is skipped.
+            let req = multipart(
+                "/ui/messages",
+                &[
+                    ("text", None, b""),
+                    ("files", Some("shot.png"), PNG),
+                    ("files", Some("my notes.txt"), b"hello"),
+                    ("files", Some(""), b""),
+                ],
+            );
+            let (status, _, html) = send(&app, req).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("></textarea>"), "box is cleared: {html}");
+            assert_eq!(lead.status().turn, Some(1));
+            let files = lead
+                .events()
+                .since(0, 100)
+                .events
+                .into_iter()
+                .find_map(|r| match r.event {
+                    LeadEvent::UserMessage { attachments, .. } => Some(attachments),
+                    _ => None,
+                })
+                .unwrap();
+            let names: Vec<&str> = files.iter().map(|a| a.name.as_str()).collect();
+            assert_eq!(names, ["shot.png", "my_notes.txt"]);
+
+            // The chat shows a thumbnail and a download chip.
+            let (_, _, page) = get_html(&app, "/").await;
+            let png = format!("/ui/attachments/{}", files[0].file);
+            let txt = format!("/ui/attachments/{}", files[1].file);
+            assert!(
+                page.contains(&format!("<img src=\"{png}\" alt=\"shot.png\"")),
+                "{page}"
+            );
+            assert!(page.contains(&format!("href=\"{txt}\" download=\"my_notes.txt\"")));
+
+            // Served: images inline, the rest as downloads; never script, never embedded
+            // by another site.
+            let (status, headers, _) = send(&app, get(&png)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+            assert_eq!(headers[header::CONTENT_DISPOSITION], "inline");
+            assert_eq!(
+                headers[header::CONTENT_SECURITY_POLICY],
+                "default-src 'none'; sandbox"
+            );
+            assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+            assert_eq!(headers["cross-origin-resource-policy"], "same-origin");
+            let (_, headers, body) = send(&app, get(&txt)).await;
+            assert_eq!(headers[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+            assert_eq!(headers[header::CONTENT_DISPOSITION], "attachment");
+            assert_eq!(body, "hello");
+            for bad in [
+                "/ui/attachments/..%2F..%2Fetc%2Fpasswd",
+                "/ui/attachments/nope",
+                "/ui/attachments/0123456789abcdef0123456789abcdef.png",
+            ] {
+                assert_eq!(send(&app, get(bad)).await.0, StatusCode::NOT_FOUND, "{bad}");
+            }
+        }
+
         /// The send reply can reach the browser after the stream already ended the turn
         /// (seen with the echo backend: "Working on it" stuck). The stream owns the status:
         /// the reply's copy is marked `hx-preserve` so htmx keeps the live one, and the
@@ -2610,6 +2739,7 @@ mod tests {
             lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi <there>".into(),
+                attachments: vec![],
             });
             lead.events().push(LeadEvent::TurnFinished {
                 turn: 1,
@@ -2688,6 +2818,7 @@ mod tests {
             lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi".into(),
+                attachments: vec![],
             });
             let mut body = app
                 .clone()
@@ -2733,6 +2864,7 @@ mod tests {
             lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi".into(),
+                attachments: vec![],
             });
             lead.events().push(LeadEvent::Text {
                 turn: 1,
@@ -2804,6 +2936,7 @@ mod tests {
             lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
                 text: "Hi".into(),
+                attachments: vec![],
             });
             let (c, _rx) = lead.confirmations().request(
                 1,

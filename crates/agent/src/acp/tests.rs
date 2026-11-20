@@ -575,3 +575,28 @@ fn opencode_flavor_owns_the_config() {
     generic.model = Some("a/b".into());
     assert!(generic.validate().is_err());
 }
+
+#[test]
+fn prompts_carry_images_but_never_pdfs() {
+    use crate::session::PromptBlock;
+    use serde_json::json;
+    let content = super::client::prompt_content(
+        "Look".into(),
+        vec![
+            PromptBlock::Image {
+                mime: "image/webp".into(),
+                data: "UklG".into(),
+            },
+            PromptBlock::Pdf {
+                data: "JVBE".into(),
+            },
+        ],
+    );
+    assert_eq!(
+        serde_json::to_value(&content).unwrap(),
+        json!([
+            {"type": "image", "data": "UklG", "mimeType": "image/webp"},
+            {"type": "text", "text": "Look"},
+        ])
+    );
+}

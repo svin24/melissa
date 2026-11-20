@@ -21,6 +21,7 @@ mod tests;
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{
+    attachments::{AttachmentError, AttachmentStore, Upload},
     mcp::McpServer,
     session::SessionBackend,
     tools::{
@@ -83,6 +84,9 @@ pub enum LeadError {
     /// The cluster or the state directory failed.
     #[error("{0}")]
     Failed(String),
+    /// The message's files were refused (too large, too many) or could not be stored.
+    #[error(transparent)]
+    Attachment(#[from] AttachmentError),
 }
 
 struct Inner {
@@ -97,6 +101,7 @@ struct Inner {
     models: ModelCache,
     /// Model probes run in `<probe_dir>/<backend>` (empty directories).
     probe_dir: PathBuf,
+    attachments: AttachmentStore,
 }
 
 /// Handle to the lead agent. Cheap to clone.
@@ -159,6 +164,8 @@ impl Lead {
             known
         });
         let choice_backend = choice.as_ref().map(|c| c.backend.clone());
+        // One store for every conversation's files (served by one route).
+        let attachments = AttachmentStore::new(settings.state_dir.join("attachments"));
         let spec = ConversationSpec {
             who: "the lead agent".into(),
             audit_kind: "lead",
@@ -173,6 +180,7 @@ impl Lead {
             task,
             ctx,
             allow: allow.clone(),
+            attachments: attachments.clone(),
         };
         let conv = Conversation::new(
             spec,
@@ -200,6 +208,7 @@ impl Lead {
             lead_allow: allow,
             lead_task: task,
             workroot,
+            attachments: attachments.clone(),
         });
         forward_confirmations(registry.confirmations(), events, pool.clone());
         Ok(Self {
@@ -212,6 +221,7 @@ impl Lead {
                 backends: all_backends,
                 models,
                 probe_dir,
+                attachments,
             }),
         })
     }
@@ -338,6 +348,17 @@ impl Lead {
     /// inside a Tokio runtime.
     pub fn send(&self, text: &str) -> Result<(TurnId, u64), LeadError> {
         self.inner.conv.send(text, "ui")
+    }
+
+    /// [`Lead::send`] with files (validated and stored first; see [`crate::attachments`]).
+    /// The text may be empty when there are files.
+    pub fn send_with(&self, text: &str, files: Vec<Upload>) -> Result<(TurnId, u64), LeadError> {
+        self.inner.conv.send_with(text, files, "ui")
+    }
+
+    /// Where every conversation's attachments are stored (to serve them).
+    pub fn attachments(&self) -> &AttachmentStore {
+        &self.inner.attachments
     }
 
     /// Cancel the running turn. Returns false if no turn runs.

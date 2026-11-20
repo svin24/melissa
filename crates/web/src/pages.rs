@@ -12,15 +12,18 @@ use crate::{
         device_card, empty_state, facts, feed, feed_entry, lead_message, link, live_region,
         live_region_on, log_view, markdown, note, oob_inner, page, page_header, plain_text,
         post_form, rail, relayed_message, section, select_field, table, textarea_field,
-        thought_row, truncated, user_message, waiting_count, AppWorkspace, ApprovalCard, Choice,
-        DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID,
+        thought_row, truncated, user_message_with, waiting_count, AppWorkspace, ApprovalCard,
+        Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID,
         COMPOSER_STATUS_ID, FEED_ID,
     },
-    components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
+    components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat, SentFile},
     feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
 };
-use melissa_agent::lead::{agents::AgentView, transcript::PastChat};
+use melissa_agent::{
+    attachments::{human_size, Attachment},
+    lead::{agents::AgentView, transcript::PastChat},
+};
 
 pub const TASKS_ID: &str = "tasks";
 pub const TASK_ID: &str = "task";
@@ -191,10 +194,28 @@ pub fn entry_id(key: &str) -> String {
     format!("f-{key}")
 }
 
+/// Where the UI serves a stored attachment (see `ui::attachment`).
+pub fn attachment_href(file: &str) -> String {
+    format!("/ui/attachments/{file}")
+}
+
+/// A message's stored files as the chat shows them.
+fn sent_files(files: &[Attachment]) -> Vec<SentFile> {
+    files
+        .iter()
+        .map(|a| SentFile {
+            href: attachment_href(&a.file),
+            name: a.name.clone(),
+            size: human_size(a.size),
+            image: a.is_image(),
+        })
+        .collect()
+}
+
 /// The content of one feed entry (without its `li`).
 pub fn entry_content(entry: &Entry) -> Markup {
     match &entry.item {
-        Item::User { text } => user_message(text),
+        Item::User { text, files } => user_message_with(text, &sent_files(files)),
         Item::Relayed { from, text } => relayed_message(from, text),
         Item::Reply { text } => lead_message(text),
         Item::Activity {

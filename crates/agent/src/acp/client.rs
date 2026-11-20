@@ -18,9 +18,9 @@ use agent_client_protocol::{
     schema::ProtocolVersion,
     v1::{
         schema::{
-            CancelNotification, ClientCapabilities, ContentBlock, HttpHeader, Implementation,
-            InitializeRequest, McpServer, McpServerHttp, NewSessionRequest, PermissionOption,
-            PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
+            CancelNotification, ClientCapabilities, ContentBlock, HttpHeader, ImageContent,
+            Implementation, InitializeRequest, McpServer, McpServerHttp, NewSessionRequest,
+            PermissionOption, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
             RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
             SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
             SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
@@ -36,8 +36,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{
     session::{
         AgentSession, ModelList, ModelOption, OpenSession, OpenedSession, PermissionDecision,
-        PermissionHandler, PermissionRequest, PlanStep, SessionCapabilities, SessionEvent,
-        StopReason, ToolKind, ToolStatus,
+        PermissionHandler, PermissionRequest, PlanStep, PromptBlock, SessionCapabilities,
+        SessionEvent, StopReason, ToolKind, ToolStatus,
     },
     AgentError, BoxFuture,
 };
@@ -81,6 +81,7 @@ impl StderrTail {
 enum Command {
     Prompt {
         text: String,
+        blocks: Vec<PromptBlock>,
         reply: oneshot::Sender<Result<StopReason, AgentError>>,
     },
     Cancel {
@@ -235,15 +236,17 @@ where
                 };
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    Command::Prompt { text, reply } => {
+                    Command::Prompt {
+                        text,
+                        blocks,
+                        reply,
+                    } => {
                         if busy.swap(true, Ordering::SeqCst) {
                             let _ = reply.send(Err(AgentError::Busy));
                             continue;
                         }
-                        let request = PromptRequest::new(
-                            session_id.clone(),
-                            vec![ContentBlock::Text(TextContent::new(text))],
-                        );
+                        let request =
+                            PromptRequest::new(session_id.clone(), prompt_content(text, blocks));
                         let cx2 = cx.clone();
                         let busy = busy.clone();
                         let events = events.clone();
@@ -322,6 +325,10 @@ async fn handshake(
         fork: false,
         close: agent_caps.session_capabilities.close.is_some(),
         mcp_http: agent_caps.mcp_capabilities.http,
+        images: agent_caps.prompt_capabilities.image,
+        // PDFs would be embedded resources, which ACP agents handle unevenly: they go to the
+        // agent's working directory instead.
+        pdfs: false,
     };
     if !open.mcp_servers.is_empty() && !caps.mcp_http {
         return Err(agent_client_protocol::Error::invalid_request()
@@ -625,6 +632,22 @@ fn session_events(update: SessionUpdate, tools: &ToolTable) -> Vec<SessionEvent>
     }
 }
 
+/// A prompt's content: images first (only sent when the agent advertised `image`), then the
+/// text. PDFs never reach here (see the capabilities).
+pub(crate) fn prompt_content(text: String, blocks: Vec<PromptBlock>) -> Vec<ContentBlock> {
+    let mut content: Vec<ContentBlock> = blocks
+        .into_iter()
+        .filter_map(|b| match b {
+            PromptBlock::Image { mime, data } => {
+                Some(ContentBlock::Image(ImageContent::new(data, mime)))
+            }
+            PromptBlock::Pdf { .. } => None,
+        })
+        .collect();
+    content.push(ContentBlock::Text(TextContent::new(text)));
+    content
+}
+
 fn text(block: ContentBlock) -> Option<String> {
     match block {
         ContentBlock::Text(t) => Some(t.text),
@@ -722,11 +745,20 @@ impl AgentSession for AcpSession {
     }
 
     fn prompt<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<StopReason, AgentError>> {
+        self.prompt_with(text, &[])
+    }
+
+    fn prompt_with<'a>(
+        &'a self,
+        text: &'a str,
+        blocks: &'a [PromptBlock],
+    ) -> BoxFuture<'a, Result<StopReason, AgentError>> {
         Box::pin(async move {
             let (reply, rx) = oneshot::channel();
             self.cmd_tx
                 .send(Command::Prompt {
                     text: text.to_string(),
+                    blocks: blocks.to_vec(),
                     reply,
                 })
                 .map_err(|_| self.closed())?;

@@ -172,7 +172,9 @@ impl Transcript {
                 let title = events
                     .iter()
                     .find_map(|r| match &r.event {
-                        LeadEvent::UserMessage { text, .. } => Some(shorten(text.trim(), 60)),
+                        LeadEvent::UserMessage {
+                            text, attachments, ..
+                        } => Some(shorten(&with_file_names(text, attachments), 60)),
                         _ => None,
                     })
                     .unwrap_or_default();
@@ -218,7 +220,9 @@ impl Transcript {
                 continue;
             };
             let (who, msg) = match record.event {
-                LeadEvent::UserMessage { text, .. } => ("user", text),
+                LeadEvent::UserMessage {
+                    text, attachments, ..
+                } => ("user", with_file_names(&text, &attachments)),
                 // Seen from the agent being primed: its own earlier replies.
                 LeadEvent::AgentMessage { text, .. } => ("you", text),
                 _ => continue,
@@ -301,6 +305,22 @@ pub(crate) fn shorten(text: &str, max: usize) -> String {
     }
 }
 
+/// A user message's text with its files named (`[files: a.png, b.pdf]`), for titles and
+/// the conversation replayed into a new session (the files themselves are not resent).
+fn with_file_names(text: &str, files: &[crate::attachments::Attachment]) -> String {
+    let text = text.trim();
+    if files.is_empty() {
+        return text.to_string();
+    }
+    let names: Vec<&str> = files.iter().map(|a| a.name.as_str()).collect();
+    let files = format!("[files: {}]", names.join(", "));
+    if text.is_empty() {
+        files
+    } else {
+        format!("{text} {files}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +341,7 @@ mod tests {
                 LeadEvent::UserMessage {
                     turn: i,
                     text: format!("message {i}"),
+                    attachments: vec![],
                 },
             ));
             t.append(&record(
@@ -363,12 +384,14 @@ mod tests {
             LeadEvent::UserMessage {
                 turn: 1,
                 text: "old".into(),
+                attachments: vec![],
             },
             LeadEvent::NewChat,
             // Two daemon runs, both counting turns from 1.
             LeadEvent::UserMessage {
                 turn: 1,
                 text: "a".into(),
+                attachments: vec![],
             },
             LeadEvent::AgentMessage {
                 turn: 1,
@@ -377,6 +400,7 @@ mod tests {
             LeadEvent::UserMessage {
                 turn: 1,
                 text: "b".into(),
+                attachments: vec![],
             },
             LeadEvent::ToolCall {
                 turn: Some(1),
@@ -388,6 +412,7 @@ mod tests {
             LeadEvent::UserMessage {
                 turn: 2,
                 text: "c".into(),
+                attachments: vec![],
             },
             LeadEvent::TurnFinished {
                 turn: 2,
@@ -416,7 +441,8 @@ mod tests {
             last_two[0].event,
             LeadEvent::UserMessage {
                 turn: 1,
-                text: "b".into()
+                text: "b".into(),
+                attachments: vec![]
             }
         );
     }

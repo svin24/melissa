@@ -331,7 +331,15 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `providers.toml` over `server.toml`, applied at restart) and `/settings/updates` (Melissa version and revision,
   the running/downloaded/available/previous container image, check/apply/rollback through the host's update
   helper, host commands where it isn't connected); JSON API `/api/settings/...`, CLI `melissa-server provider|update`; see
-  [settings-ui.md](agent-skills/settings-ui.md). Not yet: disk usage, upkeep line, several conversations with
+  [settings-ui.md](agent-skills/settings-ui.md). Chat composer (2026-11-20, owner-requested): the message box grows
+  with its text (CSS `field-sizing`, a few lines of melissa.js where missing; no resize handle), and files go with a
+  message (paperclip, paste, drop; chips with remove before sending; thumbnails and download chips in the chat).
+  Files: `melissa_agent::attachments` (20 MiB per file, 50 MiB and 10 files per message; type sniffed from the bytes;
+  stored under random names in `<state>/lead/attachments`, kept in the transcript's events; served only by
+  `GET /ui/attachments/{file}`, images inline, the rest as downloads, with `sandbox` CSP). Images go to the model as
+  image blocks (Claude; ACP agents that advertise `image`), PDFs as document blocks (Claude); everything else, and
+  anything over the native limits, is copied into the agent's working directory and the message names the path.
+  Not yet: disk usage, upkeep line, several conversations with
   the lead agent / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
 
 ## 6b. Clients (later)
@@ -685,3 +693,9 @@ Roadmap (rough, phases may overlap):
     the user (e.g. `rcon-cli`)? (c) On timeout the command may keep running in the container (the exec
     stream closes, the process is not killed). (d) The confirmation card is the generic one with the argv
     in its reason; a dedicated card (owner's UI) could show argv and stdin size more clearly.
+66. Chat attachments (2026-11-20): (a) Claude Code's stream-json input with `document` (PDF) blocks is built
+    from the API's format but not yet tried live; images likewise only in tests. (b) Stored files are never
+    deleted (not on New chat either): keep them with archived chats, or prune after some time / a size cap?
+    (c) Text files could go to the model inline instead of by path; worth it? (d) ACP PDFs as embedded
+    resources once the agents we use handle them. (e) A refused message keeps its files only with JavaScript (a plain
+    form post asks for them again: browsers can't refill a file input). (f) No JSON API for files yet (`/api/lead/messages`).

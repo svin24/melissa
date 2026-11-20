@@ -9,7 +9,7 @@ description = "Melissa web UI: axum + maud, fixed component library, embedded ht
 [dependencies]
 melissa-agent = { workspace = true }
 melissa-settings = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["multipart"] }
 maud = { workspace = true }
 pulldown-cmark = { workspace = true }
 rust-embed = { workspace = true }

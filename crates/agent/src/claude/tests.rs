@@ -677,3 +677,26 @@ fn models_come_from_the_handshake_and_the_choice_replaces_the_configs_model() {
     assert!(super::with_model(&config, Some("--dangerously-skip-permissions")).is_err());
     assert!(super::with_model(&config, Some("a b")).is_err());
 }
+
+#[test]
+fn files_go_before_the_text_as_image_and_document_blocks() {
+    use crate::session::PromptBlock;
+    assert_eq!(super::client::user_content("hi".into(), &[]), json!("hi"));
+    let blocks = [
+        PromptBlock::Image {
+            mime: "image/png".into(),
+            data: "iVBO".into(),
+        },
+        PromptBlock::Pdf {
+            data: "JVBE".into(),
+        },
+    ];
+    assert_eq!(
+        super::client::user_content("What is this?".into(), &blocks),
+        json!([
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBO"}},
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBE"}},
+            {"type": "text", "text": "What is this?"},
+        ])
+    );
+}
