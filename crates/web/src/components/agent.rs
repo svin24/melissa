@@ -143,7 +143,8 @@ fn menu_link(href: &str, icon: Glyph, label: &str, danger: bool) -> Markup {
     }
 }
 
-/// The "⋯" button and its menu (`id`: the popover's DOM id, unique on the page).
+/// The "⋯" button and its menu (`id`: the popover's DOM id, unique on the page). The items are
+/// [`agent_menu_items`], so another container (a sheet on phones) can show the same.
 pub fn agent_menu(id: &str, m: &AgentMenu<'_>) -> Markup {
     html! {
         button.icon-button.more-button type="button" popovertarget=(id) aria-haspopup="true"
@@ -152,6 +153,15 @@ pub fn agent_menu(id: &str, m: &AgentMenu<'_>) -> Markup {
             span.visually-hidden { "More for " (m.name) }
         }
         div.menu id=(id) popover="auto" aria-label={ "Menu for " (m.name) } {
+            (agent_menu_items(m))
+        }
+    }
+}
+
+/// The items of an agent's menu, in order: Rename agent, Change icon, Agent settings,
+/// Pin/Unpin, Fresh start (asks in place), Earlier chats, Delete helper.
+pub fn agent_menu_items(m: &AgentMenu<'_>) -> Markup {
+    html! {
             @if let Some(href) = m.rename { (menu_link(href, Glyph::Pencil, "Rename agent", false)) }
             @if let Some(href) = m.icon { (menu_link(href, Glyph::Shapes, "Change icon", false)) }
             (menu_link(m.settings, Glyph::Gear, "Agent settings", false))
@@ -174,7 +184,6 @@ pub fn agent_menu(id: &str, m: &AgentMenu<'_>) -> Markup {
             }
             @if let Some(href) = m.earlier { (menu_link(href, Glyph::History, "Earlier chats", false)) }
             @if let Some(href) = m.delete { (menu_link(href, Glyph::Trash, "Delete helper", true)) }
-        }
     }
 }
 

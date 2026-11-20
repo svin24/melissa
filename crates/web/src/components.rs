@@ -2078,10 +2078,10 @@ pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup
 
 mod agent;
 pub use agent::{
-    agent_groups, agent_menu, agent_message, avatar, chat_head, icon_picker, permission_card,
-    shape, sidebar, status_pill, steps_card, AgentMenu, Avatar, ChatHead, GroupKind, HeadStatus,
-    MessageHead, PermissionCard, SideAgent, SideDevice, SideGroup, Sidebar, StepLine,
-    AGENT_GROUPS_ID, CHAT_STATUS_ID, SIDEBAR_ID,
+    agent_groups, agent_menu, agent_menu_items, agent_message, avatar, chat_head, icon_picker,
+    permission_card, shape, sidebar, status_pill, steps_card, AgentMenu, Avatar, ChatHead,
+    GroupKind, HeadStatus, MessageHead, PermissionCard, SideAgent, SideDevice, SideGroup, Sidebar,
+    StepLine, AGENT_GROUPS_ID, CHAT_STATUS_ID, SIDEBAR_ID,
 };
 mod panel;
 mod provider_add;

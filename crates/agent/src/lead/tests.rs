@@ -33,6 +33,7 @@ use crate::{
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
 };
 
+mod compaction;
 mod schedules;
 mod switching;
 

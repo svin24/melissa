@@ -2450,7 +2450,13 @@ mod tests {
             "Runs docker.io/itzg/minecraft-server:java21. Open: game 25565/tcp. Storage: data 5Gi."
         );
         assert_eq!(a.yes, "Set up");
+        assert_eq!(a.no, "Decline");
         assert!(!a.destructive);
+        // The tag line: it opens a port to the network (only the public one).
+        assert_eq!(
+            (a.kind, a.detail.as_deref()),
+            ("Network access", Some("TCP 25565"))
+        );
         let a = approval_words(
             4,
             "update_app",
@@ -2459,6 +2465,44 @@ mod tests {
             &NoLookup,
         );
         assert_eq!(a.title, "Change Minecraft?");
+        // No ports: it runs software, named by the app.
+        assert_eq!(
+            (a.kind, a.detail.as_deref()),
+            ("Runs software", Some("Minecraft"))
+        );
+    }
+
+    #[test]
+    fn every_kind_of_request_has_a_tag_line() {
+        let tag = |tool: &str, args: Value| {
+            let a = approval_words(1, tool, "r", Some(&args), &Known);
+            (a.kind, a.detail)
+        };
+        assert_eq!(
+            tag(
+                "uninstall_app",
+                json!({"app": "nextcloud", "delete_data": true})
+            ),
+            ("Deletes data", Some("Nextcloud".into()))
+        );
+        assert_eq!(
+            tag("stop_app", json!({"app": "nextcloud"})),
+            ("App", Some("Nextcloud".into()))
+        );
+        assert_eq!(
+            tag("give_agent_job", json!({"agent": "d.a1", "goal": "x"})),
+            ("Helpers", Some("Ada".into()))
+        );
+        assert_eq!(
+            tag("transfer_file", json!({"file": "a.pdf"})),
+            ("Files", Some("a.pdf".into()))
+        );
+        assert_eq!(tag("agent:execute", json!({})), ("Command", None));
+        assert_eq!(
+            tag("app_logs", json!({"app": "immich"})),
+            ("Outside text", Some("Immich".into()))
+        );
+        assert_eq!(tag("Read", json!({})), ("Tool", Some("Read".into())));
     }
 
     #[test]

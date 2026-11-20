@@ -3761,6 +3761,43 @@ mod tests {
             assert_eq!(body["fresh_start"], true);
         }
 
+        /// A long chat renders its newest entries; older ones load as the user scrolls up (a
+        /// marker at the top), and without script the marker's link shows them all.
+        #[tokio::test]
+        async fn older_messages_load_on_demand() {
+            let (app, lead) = app();
+            for i in 0..100 {
+                lead.events().push(LeadEvent::UserMessage {
+                    turn: i + 1,
+                    text: format!("message number {i}."),
+                    attachments: vec![],
+                    scheduled: None,
+                });
+            }
+            let epoch = lead.events().epoch();
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains("message number 99."));
+            assert!(!home.contains("message number 30."), "not the oldest");
+            let marker = "data-older=\"/ui/older?before=".to_string();
+            assert!(home.contains(&marker), "{home}");
+            assert!(home.contains("<a href=\"/?all=1\">Load earlier messages</a>"));
+            let start = home.find(&marker).unwrap() + marker.len();
+            let before: usize = home[start..].split('&').next().unwrap().parse().unwrap();
+            let (status, _, older) =
+                get_html(&app, &format!("/ui/older?before={before}&epoch={epoch}")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(older.contains("message number 30."), "{older}");
+            assert!(!older.contains("message number 99."));
+            assert!(!older.contains("<html"), "a fragment");
+            // A page from before a restart gets nothing (its stream reloads it).
+            let (_, _, stale) = get_html(&app, &format!("/ui/older?before={before}&epoch=1")).await;
+            assert!(stale.is_empty());
+            // Without script: everything at once.
+            let (_, _, all) = get_html(&app, "/?all=1").await;
+            assert!(all.contains("message number 0.") && all.contains("message number 99."));
+            assert!(!all.contains("data-older"));
+        }
+
         #[tokio::test]
         async fn a_stream_from_another_epoch_reloads() {
             let (app, lead) = app();
