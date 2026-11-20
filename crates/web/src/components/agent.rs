@@ -12,6 +12,7 @@ use maud::{html, Markup};
 
 use super::{
     activity_icon, approval_state_outcome, markdown,
+    mobile::{back_link, menu_cancel, menu_head, new_agent_round, tab_bar, MenuWho},
     panel::{glyph, rail_foot, Glyph, UpdateHint},
     ActivityState, ApprovalState, Health, Nav,
 };
@@ -133,6 +134,8 @@ pub struct AgentMenu<'a> {
     pub earlier: Option<&'a str>,
     /// Delete (helpers): where it is (Agent settings, which says why when it can't be).
     pub delete: Option<&'a str>,
+    /// On phones the menu is an action sheet with the agent at the top (None: no header).
+    pub who: Option<MenuWho<'a>>,
 }
 
 fn menu_link(href: &str, icon: Glyph, label: &str, danger: bool) -> Markup {
@@ -152,8 +155,13 @@ pub fn agent_menu(id: &str, m: &AgentMenu<'_>) -> Markup {
             (glyph(Glyph::More))
             span.visually-hidden { "More for " (m.name) }
         }
-        div.menu id=(id) popover="auto" aria-label={ "Menu for " (m.name) } {
-            (agent_menu_items(m))
+        div.menu.agent-menu id=(id) popover="auto" aria-label={ "Menu for " (m.name) } {
+            // The items in one block: on phones an action sheet's card, Cancel apart below.
+            div.menu-sheet {
+                @if let Some(who) = &m.who { (menu_head(who, m.name)) }
+                (agent_menu_items(m))
+            }
+            (menu_cancel(id))
         }
     }
 }
@@ -310,6 +318,7 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                     (glyph(Glyph::Sidebar))
                     span.visually-hidden { "Collapse sidebar" }
                 }
+                (new_agent_round(s.new_agent))
             }
             div.side-search role="search" {
                 label.visually-hidden for="agent-search" { "Search agents" }
@@ -326,6 +335,7 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                 p.side-none.quiet role="status" data-search-empty hidden { "No agents match." }
             }
             (rail_foot(s.current, s.update))
+            (tab_bar(s.current, s.update))
         }
         div.side-backdrop data-sidebar-close hidden {}
     }
@@ -456,6 +466,7 @@ pub struct ChatHead<'a> {
 pub fn chat_head(h: &ChatHead<'_>, details: Markup) -> Markup {
     html! {
         header.chat-head {
+            (back_link("/", "Back to agents"))
             button.icon-button.side-expand type="button" data-sidebar-expand hidden title="Show agents" {
                 (glyph(Glyph::Sidebar))
                 span.visually-hidden { "Show agents" }

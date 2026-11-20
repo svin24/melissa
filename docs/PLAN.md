@@ -380,8 +380,12 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 - **Agent workspace** (2026-11-20, owner design; DECISIONS): one chat per agent ("Fresh start" clears memory, no
   "New chat"), silent compaction, a sidebar of agents grouped by state (Needs attention, Pinned, Working, Settled)
   with search, "+" and a menu per agent, a chat header with status, checklist cards for tool steps, permission
-  cards with a tag line, and "Agent details" (services, files, permissions, recent activity). Phone layouts follow
-  the owner's mobile frames in a separate change.
+  cards with a tag line, and "Agent details" (services, files, permissions, recent activity).
+- **Phone views** (2026-11-20, owner design "Melissa — Mobile"; `components/mobile.rs`): at 760px and below `/` is
+  the agent list (the sidebar as a screen, a tab bar Settings/Apps/Usage/Updates at the bottom) and Melissa's chat
+  is `/chat` (`/?draft=` and `/?all=1` stay the chat); a chat has a back button to the list; "Agent details" is a
+  bottom sheet (grab handle, drag down to close); an agent's "⋯" is an action sheet (agent header, the same items,
+  Cancel); "Review" jumps to the permission card. CSS only plus a little melissa.js; works without script.
 
 - **UI direction (owner, 2026-11-18):** simple, like a chat bot. **Home = the chat with the lead agent, with a compact
   preview of the apps' state** (app_grid strip: what runs, what's installing, disk warnings). Approvals appear inline
@@ -1004,3 +1008,10 @@ Roadmap (rough, phases may overlap):
     devices (M3). (d) "Needs attention" counts a failed last turn only for this daemon run (not persisted). (e)
     Apps' "local only" / reachable state and app-specific facts (player slots) would need the app spec or the
     reach module in the UI's snapshot. (f) Melissa can't be unpinned or renamed; her icon is fixed.
+79. Phone views (2026-11-20). (a) `/` is the agent list on phones but Melissa's chat on wide screens, so Melissa's
+    row links to `/chat` everywhere; is a separate URL for her chat fine, or should wide screens move to `/chat`
+    too? (b) The caption "Device changes require your permission." (the owner's words) is hidden when No
+    permission prompts is on, but "Always allow" rules make it not true for every change; reword it ("Changes
+    on your devices ask first")? (c) The Figma frames show the agent list's attention card on `--surface` with
+    a honey edge; the desktop's honey-soft row is kept for one look per element. (d) The approvals page and
+    other pages reached by link have no back button on phones (only the browser's).

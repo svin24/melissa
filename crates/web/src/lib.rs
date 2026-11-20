@@ -540,6 +540,7 @@ mod tests {
         use super::*;
 
         mod details;
+        mod mobile;
 
         /// A Lead agent backend whose session never finishes opening.
         /// Melissa's first backend (provider claude in the Settings fixture); `signed_out`:
@@ -2477,7 +2478,7 @@ mod tests {
             let pinned = &side[side.find("group-pinned").unwrap()..];
             assert!(pinned.contains("<span class=\"name\">Melissa</span><svg class=\"star-mark\""));
             assert!(pinned.contains("<span class=\"agent-sub\">Lead agent</span>"));
-            assert!(pinned.contains("class=\"agent-link\" href=\"/\" aria-current=\"page\""));
+            assert!(pinned.contains("class=\"agent-link\" href=\"/chat\" aria-current=\"page\""));
             // No "New chat", no past chats list: one chat per agent.
             assert!(!body.contains("New chat"));
             assert!(!body.contains("/ui/new-chat"));
@@ -4553,7 +4554,7 @@ mod tests {
             let has_cy = |f: &str| f.contains(groups) && f.contains(&name("Cy"));
             let frame = frame_where(&mut main, has_cy).await;
             assert!(
-                frame.contains("<a class=\"agent-link\" href=\"/\" aria-current=\"page\">"),
+                frame.contains("<a class=\"agent-link\" href=\"/chat\" aria-current=\"page\">"),
                 "{frame}"
             );
             assert!(frame.contains(&format!("href=\"/agents/{cy}\"")), "{frame}");
@@ -4601,7 +4602,10 @@ mod tests {
                 frame.contains("hx-swap-oob=\"outerHTML:#composer\""),
                 "{frame}"
             );
-            assert!(frame.contains("<a href=\"/\">Back to Melissa"), "{frame}");
+            assert!(
+                frame.contains("<a href=\"/chat\">Back to Melissa"),
+                "{frame}"
+            );
 
             // His address (and any unknown one) says so in the app, with a way back.
             for page in [format!("/agents/{pip}"), "/agents/nobody".to_string()] {

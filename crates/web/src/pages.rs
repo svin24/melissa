@@ -22,6 +22,7 @@ use crate::{
         ChatHead, ComposerTarget, DetailsPanel, FilePanel, HeadStatus, ModelPicker, SentFile,
         UpdateHint, UsageRow, CHAT_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
     },
+    components::{phone_view, PhoneView, SheetWho},
     feed::{Approval, Change, Clock, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
     workspace::{groups_update, sidebar_markup, SideData},
@@ -104,6 +105,28 @@ pub fn short_date(secs: u64) -> String {
     format!("{day} {name}")
 }
 
+/// Melissa's chat. `/` shows it too, except on phones, where `/` is the agent list
+/// (`components::mobile`).
+pub const MELISSA_CHAT_URL: &str = "/chat";
+
+tokio::task_local! {
+    /// The page is the home page `/`, which phones show as the agent list.
+    static PHONE_HOME: bool;
+}
+
+/// Render `page` as the home page: on phones the agent list instead of Melissa's chat.
+pub(crate) async fn as_phone_home<F: std::future::Future>(page: F) -> F::Output {
+    PHONE_HOME.scope(true, page).await
+}
+
+fn phone_view_now() -> PhoneView {
+    if PHONE_HOME.try_with(|h| *h).unwrap_or(false) {
+        PhoneView::List
+    } else {
+        PhoneView::Page
+    }
+}
+
 /// A helper's page.
 pub fn agent_href(id: &str) -> String {
     format!("/agents/{id}")
@@ -131,7 +154,7 @@ pub fn sidebar_update(side: &SideData, current: Option<&str>) -> Markup {
 pub fn helper_deleted(name: &str) -> Markup {
     composer_closed(
         &format!("{name} was deleted."),
-        "/",
+        MELISSA_CHAT_URL,
         "Back to Melissa's chat",
         true,
     )
@@ -147,7 +170,7 @@ pub fn helper_gone(f: &Frame<'_>) -> Markup {
             div.page-pad {
                 (page_header("Conversation not found", None))
                 (crate::components::notice("This helper isn't on this device any more.", Tone::Warn))
-                (link("/", "Back to Melissa's chat"))
+                (link(MELISSA_CHAT_URL, "Back to Melissa's chat"))
             }
         },
     )
@@ -575,6 +598,9 @@ pub struct ChatView<'a> {
     pub details: Option<&'a DetailsPanel<'a>>,
     /// Render every entry (no lazy loading; the older marker's link without script).
     pub all: bool,
+    /// Say under the composer (phones) that device changes need the user's OK: false when
+    /// No permission prompts is on.
+    pub caption: bool,
 }
 
 /// A chat page: Melissa's (home) or a helper's. `head`: its header.
@@ -598,6 +624,8 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
             "Its jobs from Melissa and your messages show up here.",
         ),
     };
+    // The details sheet's line on phones: "Minecraft agent · melissa".
+    let sheet_sub = format!("{} · {}", head.name, head.device);
     let label = match v.who {
         Who::Lead => "Conversation".to_string(),
         Who::Agent(_) => format!("Conversation with {}", v.speaker.name),
@@ -607,6 +635,7 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
         title,
         rail_for(nav, f, current),
         html! {
+            (phone_view(phone_view_now()))
             div.chat-layout {
                 div.chat {
                     (chat_head(head, details_toggle()))
@@ -620,7 +649,9 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
                     (composer_box(v))
                     @if let Some(p) = v.picker { (model_picker(p)) }
                 }
-                @if let Some(p) = v.details { (details_panel(p)) }
+                @if let Some(p) = v.details {
+                    (details_panel(p, Some(&SheetWho { avatar: head.avatar, sub: &sheet_sub })))
+                }
             }
             (app_dialog())
         },
@@ -637,6 +668,9 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
             cancel: &cancel,
             placeholder: &placeholder,
             voice: v.voice,
+            caption: v
+                .caption
+                .then_some("Device changes require your permission."),
         },
         v.draft,
         v.error,
@@ -671,7 +705,7 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks)
                     entries(feed.entries(), &x),
                     empty_state("Nothing in this chat.", "It was closed before anything was said."),
                 ))
-                p.quiet { (link("/", "Back to Melissa's chat")) }
+                p.quiet { (link(MELISSA_CHAT_URL, "Back to Melissa's chat")) }
             }
         },
     )

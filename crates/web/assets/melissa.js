@@ -1283,6 +1283,12 @@
   );
 
   function placeMenu(menu) {
+    if (isPhone() && menu.classList.contains("agent-menu")) {
+      // On phones an agent's menu is an action sheet at the bottom (CSS).
+      menu.style.left = "";
+      menu.style.top = "";
+      return;
+    }
     var b = menuInvoker && menuInvoker.getAttribute("popovertarget") === menu.id
       ? menuInvoker
       : document.querySelector('[popovertarget="' + CSS.escape(menu.id) + '"]');
@@ -1638,6 +1644,83 @@
       filterSettings(o.body, input.value);
     }
   });
+
+  // === Phone views (2026-11-20, owner design "Melissa — Mobile"; components::mobile) =========
+  // The agent details sheet closes when its header is dragged down (the handle shows where);
+  // "Review" in its Permissions brings the permission card into view, marks it for a moment
+  // and puts focus on its first button (without script: the link's #anchor).
+
+  var drag = null;
+  var REDUCED = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+
+  document.addEventListener("pointerdown", function (e) {
+    var t = e.target;
+    if (!(t instanceof Element) || isWide() || !detailsOpen() || e.button !== 0) {
+      return;
+    }
+    var head = t.closest(".details-head");
+    if (!head || t.closest("button, a")) {
+      return;
+    }
+    var panel = document.getElementById("details-panel");
+    drag = { panel: panel, y: e.clientY, dy: 0, id: e.pointerId };
+    panel.setAttribute("data-dragging", "");
+    head.setPointerCapture(e.pointerId);
+  });
+
+  document.addEventListener("pointermove", function (e) {
+    if (!drag || e.pointerId !== drag.id) {
+      return;
+    }
+    drag.dy = Math.max(0, e.clientY - drag.y);
+    drag.panel.style.transform = drag.dy ? "translateY(" + drag.dy + "px)" : "";
+  });
+
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.id) {
+      return;
+    }
+    var d = drag;
+    drag = null;
+    d.panel.removeAttribute("data-dragging");
+    d.panel.style.transform = "";
+    // Far enough (a fifth of the sheet, at least 64px): close it.
+    if (e.type === "pointerup" && d.dy > Math.max(64, d.panel.offsetHeight / 5)) {
+      setDetails(false, true);
+    }
+  }
+
+  document.addEventListener("pointerup", endDrag);
+  document.addEventListener("pointercancel", endDrag);
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    var review = t instanceof Element && t.closest("a[data-review]");
+    if (!review) {
+      return;
+    }
+    var href = review.getAttribute("href") || "";
+    var at = href.indexOf("#");
+    var entry = at >= 0 ? document.getElementById(href.slice(at + 1)) : null;
+    if (!entry) {
+      // Not in this chat's page (an older part, another chat): follow the link.
+      return;
+    }
+    // (The details' own click handler already moved the sheet aside on narrow screens.)
+    e.preventDefault();
+    var card = entry.querySelector(".approval") || entry;
+    card.scrollIntoView({ block: "center", behavior: REDUCED && REDUCED.matches ? "auto" : "smooth" });
+    card.setAttribute("data-flash", "");
+    setTimeout(function () {
+      card.removeAttribute("data-flash");
+    }, 1600);
+    var first = card.querySelector(".actions button");
+    if (first) {
+      first.focus({ preventScroll: true });
+    }
+  });
+
+  // === End of phone views =====================================================================
 
   document.addEventListener("DOMContentLoaded", function () {
     initDismiss();

@@ -5406,3 +5406,524 @@ label.attach.upload {
 .setting-card.card-pad {
   padding: 1rem;
 }
+
+/* === Phone views (2026-11-20, owner design "Melissa — Mobile"; components::mobile) ==========
+   At 760px and below: `/` is the agent list (the sidebar as a screen, a tab bar at the
+   bottom); a chat is a screen of its own with a back button; the agent details are a bottom
+   sheet; an agent's "⋯" menu is an action sheet. Above 760px nothing here shows. */
+
+.tab-bar,
+.phone-new,
+.back-link,
+.sheet-handle,
+.sheet-avatar,
+.sheet-sub,
+.menu-head,
+.menu-cancel,
+.composer-caption,
+.close-phone {
+  display: none;
+}
+
+.close-wide,
+.close-phone {
+  line-height: 0;
+}
+
+/* "Review" in the details brought this permission card into view (melissa.js). */
+.approval[data-flash] {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  /* Room for the home indicator and rounded corners when the page fills the screen. */
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* --- Agents (home): the sidebar is the screen. --- */
+  .shell:has([data-phone-view="list"]) > main {
+    display: none;
+  }
+
+  .shell:has([data-phone-view="list"]) > .sidebar,
+  .js .shell:has([data-phone-view="list"]) > .sidebar {
+    position: static;
+    width: auto;
+    min-height: 0;
+    padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
+    background: var(--ground);
+    border: 0;
+    box-shadow: none;
+    transform: none;
+    visibility: visible;
+  }
+
+  .shell:has([data-phone-view="list"]) .side-head {
+    min-height: 64px;
+    padding: 0.5rem 1rem;
+    border-bottom: 0;
+  }
+
+  .shell:has([data-phone-view="list"]) .device-button {
+    flex: 0 1 auto;
+    gap: 0.6rem;
+    padding: 0;
+  }
+
+  .shell:has([data-phone-view="list"]) .device-button .mark {
+    width: 26px;
+    height: 26px;
+  }
+
+  .shell:has([data-phone-view="list"]) .brand-word {
+    font-size: 1.75rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .device-button .glyph {
+    margin-left: 0;
+  }
+
+  .shell:has([data-phone-view="list"]) .side-head > .side-collapse,
+  .shell:has([data-phone-view="list"]) .side-search > .side-new,
+  .shell:has([data-phone-view="list"]) .rail-foot,
+  .shell:has([data-phone-view="list"]) ~ .side-backdrop,
+  .side-backdrop {
+    display: none;
+  }
+
+  .shell:has([data-phone-view="list"]) .phone-new {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .round-button {
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--ink);
+  }
+
+  .shell:has([data-phone-view="list"]) .side-search {
+    margin: 0 1rem 0.5rem;
+    padding: 0 0.5rem 0 0.75rem;
+    gap: 0.5rem;
+    background: var(--surface);
+    border-radius: 10px;
+  }
+
+  .shell:has([data-phone-view="list"]) .side-search input {
+    font-size: 1rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .side-main {
+    overflow: visible;
+    padding: 0.5rem 1rem 1rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-groups {
+    gap: 1rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-groups > .group-working,
+  .shell:has([data-phone-view="list"]) .agent-groups > .group-pinned + .group-settled {
+    margin-top: 0;
+  }
+
+  .shell:has([data-phone-view="list"]) .group-head {
+    min-height: 44px;
+    padding: 0 0.25rem;
+    font-size: 0.85rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-list {
+    gap: 0.5rem;
+  }
+
+  /* Rows that want a look are cards: the one asking (honey edge) and the ones working. */
+  .shell:has([data-phone-view="list"]) .agent-row {
+    border-radius: var(--radius);
+  }
+
+  .shell:has([data-phone-view="list"]) .group-working .agent-row {
+    background: var(--surface);
+  }
+
+  /* Nothing is open on the list. */
+  .shell:has([data-phone-view="list"]) .agent-row:not(.attention):has(.agent-link[aria-current="page"]) {
+    background: none;
+  }
+
+  .shell:has([data-phone-view="list"]) .group-working .agent-row:has(.agent-link[aria-current="page"]) {
+    background: var(--surface);
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-link {
+    min-height: 56px;
+    padding: 0.75rem 0 0.75rem 0.75rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-name {
+    font-size: 1rem;
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-row > .more-button {
+    width: 44px;
+  }
+
+  .shell:has([data-phone-view="list"]) .agent-status,
+  .shell:has([data-phone-view="list"]) .agent-sub {
+    font-size: 0.85rem;
+  }
+
+  /* The tab bar. */
+  .shell:has([data-phone-view="list"]) .tab-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 0.25rem calc(0.5rem + env(safe-area-inset-right)) calc(0.25rem + env(safe-area-inset-bottom))
+      calc(0.5rem + env(safe-area-inset-left));
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+
+  .tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    min-height: 56px;
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-decoration: none;
+  }
+
+  .tab .glyph {
+    width: 20px;
+    height: 20px;
+  }
+
+  .tab[aria-current="page"],
+  .tab.has-update {
+    color: var(--ink);
+  }
+
+  .tab-icon {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .tab .update-dot {
+    top: -2px;
+    right: -4px;
+  }
+
+  /* --- A chat (and every other page): no sidebar, a back button in the header. --- */
+  .shell:not(:has([data-phone-view="list"])) > .sidebar,
+  .js .shell:not(:has([data-phone-view="list"])) > .sidebar {
+    display: none;
+  }
+
+  .chat-head {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "back av title details more"
+      "back av status details more";
+    column-gap: 0.5rem;
+    align-items: center;
+    min-height: 64px;
+    padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  }
+
+  .chat-head > .back-link {
+    display: inline-flex;
+    grid-area: back;
+    color: var(--ink);
+  }
+
+  .chat-head > .side-expand,
+  .chat-head > .side-expand:not([hidden]) {
+    display: none;
+  }
+
+  .chat-head > .avatar {
+    grid-area: av;
+  }
+
+  .chat-head > .chat-title {
+    grid-area: title;
+    align-self: end;
+  }
+
+  .chat-head:has(.chat-status:empty) > .chat-title {
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+
+  .chat-title h1 {
+    font-size: 1rem;
+  }
+
+  .chat-head > .chat-status {
+    grid-area: status;
+    align-self: start;
+    min-width: 0;
+  }
+
+  .chat-status .pill {
+    min-height: 0;
+    padding: 0;
+    background: none;
+    font-size: 0.85rem;
+    font-weight: 400;
+  }
+
+  .chat-head > .details-toggle {
+    grid-area: details;
+  }
+
+  .chat-head > .more-button {
+    grid-area: more;
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--ink);
+  }
+
+  /* The permission card: Allow and Decline side by side across the card, the wait below. */
+  .approval .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .approval .actions form,
+  .approval .actions button {
+    width: 100%;
+  }
+
+  .approval .actions button {
+    justify-content: center;
+    min-height: 48px;
+  }
+
+  .approval .actions > form:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  .approval .waiting {
+    grid-column: 1 / -1;
+    margin: 0;
+    text-align: center;
+  }
+
+  .composer-caption {
+    display: block;
+    margin: 0.25rem 0 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-align: center;
+  }
+
+  .chat > .composer {
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  }
+
+  /* --- Agent details: a bottom sheet (with script; without, a section after the chat). --- */
+  .sheet-avatar {
+    display: inline-flex;
+  }
+
+  .sheet-sub {
+    display: block;
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .details-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 0.75rem;
+    align-items: center;
+    padding: 0.5rem 0.75rem 0.75rem 1rem;
+  }
+
+  .details-head h2 {
+    font-family: var(--font-head);
+    font-size: 1.15rem;
+  }
+
+  .details-close .close-wide {
+    display: none;
+  }
+
+  .details-close .close-phone {
+    display: inline;
+  }
+
+  .details-close:not([hidden]) {
+    border-radius: 50%;
+    background: var(--ground);
+    color: var(--ink);
+  }
+
+  .js .details {
+    top: auto;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: calc(100dvh - 2.5rem);
+    padding-bottom: env(safe-area-inset-bottom);
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    box-shadow: 0 -12px 32px var(--shadow-float);
+    transform: translateY(100%);
+  }
+
+  .js .details[data-open] {
+    transform: none;
+  }
+
+  /* While the handle is dragged the sheet follows the finger (melissa.js). */
+  .js .details[data-dragging] {
+    transition: none;
+  }
+
+  .js .details .sheet-handle {
+    display: block;
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: 36px;
+    height: 4px;
+    margin-bottom: 0.5rem;
+    border-radius: 999px;
+    background: var(--border);
+  }
+
+  .js .details .details-head {
+    touch-action: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+
+  /* --- An agent's "⋯": an action sheet at the bottom. --- */
+  .menu.agent-menu[popover]:popover-open,
+  .js .menu.agent-menu[popover]:popover-open {
+    position: fixed;
+    inset: auto calc(0.5rem + env(safe-area-inset-right)) calc(0.5rem + env(safe-area-inset-bottom))
+      calc(0.5rem + env(safe-area-inset-left));
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    max-height: calc(100dvh - 2rem);
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    overflow-y: auto;
+    background: none;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .menu.agent-menu::backdrop {
+    background: var(--backdrop);
+  }
+
+  .agent-menu .menu-sheet,
+  .agent-menu .menu-cancel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 32px var(--shadow-float);
+  }
+
+  .agent-menu .menu-sheet {
+    overflow: hidden;
+  }
+
+  .menu-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .menu-head-text {
+    min-width: 0;
+  }
+
+  .menu-head-name,
+  .menu-head-sub {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .menu-head-name {
+    font-weight: 650;
+  }
+
+  .menu-head-sub {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .agent-menu .menu-item {
+    min-height: 52px;
+    padding: 0 1rem;
+    border-radius: 0;
+    font-size: 1rem;
+  }
+
+  .agent-menu .menu-sheet > * + * {
+    border-top: 1px solid var(--border);
+  }
+
+  .agent-menu .menu-sheet > .menu-head + * {
+    border-top: 0;
+  }
+
+  .agent-menu .menu-item .glyph {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* The card clips its rows: keep the focus ring inside them. */
+  .agent-menu .menu-item:focus-visible {
+    outline-offset: -3px;
+  }
+
+  .menu-cancel {
+    display: block;
+    width: 100%;
+    min-height: 52px;
+    color: var(--ink);
+    font-weight: 600;
+  }
+}
+
+/* The panels (Settings, Apps, Usage) fill the phone's screen; keep their bottom clear. */
+@media (max-width: 760px) {
+  dialog.overlay {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (max-width: 760px) and (hover: hover) {
+  .tab:hover,
+  .menu-cancel:hover {
+    background: var(--ground);
+  }
+}
+/* === End of phone views ===================================================================== */

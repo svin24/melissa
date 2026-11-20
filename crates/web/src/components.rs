@@ -117,7 +117,7 @@ pub const APPROVALS_ID: &str = "approvals";
 fn head(title: &str) -> Markup {
     html! {
         meta charset="utf-8";
-        meta name="viewport" content="width=device-width, initial-scale=1";
+        meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
         meta name="color-scheme" content="light dark";
         // Keep htmx from injecting inline styles, so the CSP can forbid them.
         meta name="htmx-config" content=r#"{"includeIndicatorStyles":false,"allowEval":false}"#;
@@ -975,16 +975,23 @@ pub fn details_toggle() -> Markup {
     }
 }
 
-/// The details panel beside a chat.
-pub fn details_panel(p: &DetailsPanel<'_>) -> Markup {
+/// The details panel beside a chat. On phones it is a bottom sheet with a grab handle, and
+/// its header shows `who` (the agent's icon and a line under the title).
+pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup {
     html! {
         div.details-backdrop data-details-close hidden {}
         aside.details id=(DETAILS_ID) aria-labelledby="details-h" tabindex="-1" {
             div.details-head {
-                h2 #details-h { "Agent details" }
+                (sheet_handle())
+                @if let Some(w) = who { (sheet_avatar(w)) }
+                div.details-title {
+                    h2 #details-h { "Agent details" }
+                    @if let Some(w) = who { (sheet_sub(w)) }
+                }
                 button.icon-button.details-close type="button" data-details-close
                     hidden title="Hide details" {
-                    (glyph(Glyph::Sidebar))
+                    span.close-wide { (glyph(Glyph::Sidebar)) }
+                    span.close-phone { (glyph(Glyph::Close)) }
                     span.visually-hidden { "Hide details" }
                 }
             }
@@ -1503,6 +1510,8 @@ pub struct ComposerTarget<'a> {
     pub placeholder: &'a str,
     /// POST URL that turns a recording into text (voice input on and ready), if any.
     pub voice: Option<&'a str>,
+    /// A line under the box on phones ([`composer_caption`]), if any.
+    pub caption: Option<&'a str>,
 }
 
 /// The message box at the bottom of the chat: the text on top, a bar below it with the
@@ -1571,6 +1580,7 @@ pub fn composer(
             // turn's events. The response to a send can land after the turn already ended, so
             // `hx-preserve` keeps the status on the page instead of this (stale) copy.
             div.composer-status id=(COMPOSER_STATUS_ID) hx-preserve aria-live="polite" { (status) }
+            @if let Some(c) = to.caption { (composer_caption(c)) }
         }
     }
 }
@@ -2082,6 +2092,11 @@ pub use agent::{
     permission_card, shape, sidebar, status_pill, steps_card, AgentMenu, Avatar, ChatHead,
     GroupKind, HeadStatus, MessageHead, PermissionCard, SideAgent, SideDevice, SideGroup, Sidebar,
     StepLine, AGENT_GROUPS_ID, CHAT_STATUS_ID, SIDEBAR_ID,
+};
+mod mobile;
+pub use mobile::{
+    back_link, composer_caption, menu_cancel, menu_head, new_agent_round, phone_view, sheet_avatar,
+    sheet_handle, sheet_sub, tab_bar, MenuWho, PhoneView, SheetWho,
 };
 mod panel;
 mod provider_add;
