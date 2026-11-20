@@ -46,6 +46,8 @@ struct Replay {
     scripts: Mutex<VecDeque<Vec<Step>>>,
     server: McpServer,
     agents: Mutex<Vec<tokio::task::JoinHandle<Result<(), String>>>>,
+    /// Its agents' own tool-call limit ([`SessionBackend::tool_call_limit`]); none by default.
+    limit: Mutex<Option<Duration>>,
 }
 
 impl Replay {
@@ -57,7 +59,13 @@ impl Replay {
             scripts: Mutex::new(scripts.into()),
             server,
             agents: Mutex::new(Vec::new()),
+            limit: Mutex::new(None),
         })
+    }
+
+    /// Its agents give up on a tool call after `limit` (like Claude Code's 300 s).
+    fn set_limit(&self, limit: Option<Duration>) {
+        *self.limit.lock().unwrap() = limit;
     }
 
     fn broken(name: &'static str, server: McpServer) -> Arc<Self> {
@@ -98,6 +106,10 @@ impl SessionBackend for Replay {
     fn not_ready(&self) -> Option<crate::session::NotReady> {
         self.signed_out
             .then_some(crate::session::NotReady::NotLoggedIn)
+    }
+
+    fn tool_call_limit(&self) -> Option<Duration> {
+        *self.limit.lock().unwrap()
     }
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {
@@ -766,6 +778,97 @@ async fn cancel_stops_the_turn() {
     s.lead.close().await;
     s.replay.check().await;
     assert!(s.audit().contains(r#""action":"lead.cancel""#));
+}
+
+#[tokio::test]
+async fn a_finished_turn_withdraws_its_confirmations_that_still_wait() {
+    let mut script = handshake("s-1");
+    script.extend([
+        prompt(2, "s-1", "<any>"),
+        Step::mcp(
+            "uninstall_app",
+            json!({"app": "nextcloud"}),
+            json!({"result": {"isError": false}}),
+        ),
+        text("s-1", "Removed."),
+        done(2, "end_turn"),
+    ]);
+    let s = setup("finish-withdraws", vec![script]);
+    s.workspaces.set("nextcloud", Owner::Unassigned);
+    let (turn, since) = s.lead.send("Remove nextcloud.").unwrap();
+    // The agent's call waits for the user's yes.
+    let asked = pending(&s).await;
+    assert_eq!(asked.task, s.lead.task_id());
+    // An earlier request of this chat its agent stopped waiting for (as Claude Code does
+    // after about 300 s), and another agent's.
+    let (stale, stale_rx) = s.lead.confirmations().request(
+        s.lead.task_id(),
+        "uninstall_app",
+        &json!({"app": "wiki"}),
+        "destructive action",
+    );
+    let (other, _other_rx) =
+        s.lead
+            .confirmations()
+            .request(999, "uninstall_app", &json!({}), "test");
+    s.lead.confirmations().resolve(asked.id, Verdict::Approved);
+    let events = turn_events(&s.lead, since, turn).await;
+    assert_eq!(finished(&events), "end_turn");
+    // The turn's end took its request back: approving it now would act for nobody.
+    assert!(stale_rx.await.is_err(), "withdrawn without a decision");
+    let pending: Vec<u64> = s
+        .lead
+        .confirmations()
+        .pending()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(pending, [other.id]);
+    lead_event(&s, |e| {
+        matches!(e, LeadEvent::ConfirmationResolved { id, outcome } if *id == stale.id && outcome != "approved" && outcome != "denied")
+    })
+    .await;
+    s.close().await;
+    let lines = s.audit_lines();
+    let withdrawn: Vec<&Value> = lines
+        .iter()
+        .filter(|l| l["action"] == "confirmation.withdrawn")
+        .collect();
+    assert_eq!(withdrawn.len(), 1, "{withdrawn:?}");
+    assert_eq!(withdrawn[0]["actor"], "melissa");
+    assert_eq!(
+        withdrawn[0]["detail"],
+        format!("confirmation {}: the run ended", stale.id)
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_withdraws_its_confirmations_but_not_other_chats() {
+    let s = setup("cancel-withdraws", vec![agent_until_cancelled("s-1")]);
+    let (turn, since) = s.lead.send("Do something long.").unwrap();
+    lead_event(&s, |e| matches!(e, LeadEvent::Text { .. })).await;
+    let (_mine, rx) =
+        s.lead
+            .confirmations()
+            .request(s.lead.task_id(), "uninstall_app", &json!({}), "test");
+    let (other, _other_rx) =
+        s.lead
+            .confirmations()
+            .request(999, "uninstall_app", &json!({}), "test");
+    assert!(s.lead.cancel().await);
+    let events = turn_events(&s.lead, since, turn).await;
+    assert_eq!(finished(&events), "cancelled");
+    assert!(rx.await.is_err(), "withdrawn without a decision");
+    let pending: Vec<u64> = s
+        .lead
+        .confirmations()
+        .pending()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(pending, [other.id]);
+    s.close().await;
+    assert!(s.audit().contains("the run ended"));
 }
 
 #[tokio::test]

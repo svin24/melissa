@@ -271,7 +271,10 @@ Install → ready (cold 513 MB pull) 6 m 18 s with a grok worker polling `app_st
   the untrusted content. No reset yet (open question).
 - **Confirmation waits are capped** by `confirm_timeout_secs` (default 240): Claude Code abandons an
   MCP call at 300 s without closing or cancelling it, which left approvable "ghost" confirmations.
-  The MCP server also handles `notifications/cancelled` (audited `tool.cancelled`).
+  The MCP server also handles `notifications/cancelled` (audited `tool.cancelled`). Since 2026-11-20 every
+  turn end (`Conversation::finish_turn`) withdraws the conversation's still-pending confirmations
+  (`confirmation.withdrawn`, "the run ended"), and scheduled runs wait at most the backend's
+  `tool_call_limit` less a minute (Claude: 4 min).
 - Grok's lead agent started a worker to wait for readiness and still polled `app_status` itself between
   `worker_status` waits; Claude's lead agent read `app_logs` on its own while waiting (tainting itself).
 

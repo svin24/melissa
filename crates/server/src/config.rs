@@ -23,7 +23,8 @@ pub struct ServerConfig {
     /// it is withdrawn and the agent is told. Keep it below the agents' own MCP request
     /// timeouts: Claude Code gives up after 300 s but leaves the request open (no cancel,
     /// no close), so a longer wait would leave a confirmation that runs, once approved,
-    /// for an agent that stopped waiting.
+    /// for an agent that stopped waiting (until its turn ends, which withdraws it).
+    /// Scheduled runs use their own wait, capped below the backend's limit.
     pub confirm_timeout_secs: u64,
     /// Agent backends: one-shot CLIs (`kind = "cli"`, the default), ACP agents
     /// (`kind = "acp"`) and Claude Code sessions over stream-json (`kind = "claude"`). The

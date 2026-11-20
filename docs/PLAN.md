@@ -780,12 +780,11 @@ Roadmap (rough, phases may overlap):
 68. Scheduled jobs (2026-11-20, see §5): (a) skip vs queue: a run due while the user chats with the lead agent is
     skipped; would "queue once, up to N minutes" be friendlier for the main chat? (b) Nobody is told when a run
     fails, is skipped, missed or waits for a confirmation (needs notifications); "Waiting for you" and Settings →
-    Schedules show it. (c) Since 2026-11-20 a run's confirmation waits the owner's setting (Settings →
-    Schedules, default 10 min, 1 min–24 h; `TaskContext::confirm_wait`), then is withdrawn and the call fails
-    as before. Claude Code gives up on an MCP call after about 300 s and leaves it open (see
-    `confirm_timeout_secs`): with a longer wait a Claude-backed run may stop waiting while the request is still
-    in the inbox, and an approval after that runs the call for a run that moved on. Cap the wait for Claude
-    backends, or withdraw a turn's requests when it ends? Approving a schedule's expected calls up front is
+    Schedules show it. (c) Resolved 2026-11-20 (DECISIONS): a run's confirmation waits the owner's setting
+    (Settings → Schedules, default 10 min), but at most its backend's own tool-call limit less a minute
+    (Claude Code: 4 min; the card says so), and every turn's still-waiting confirmations are withdrawn when the
+    turn ends ("the run ended"). Still open: ACP agents that wrap Claude Code (e.g. an ACP adapter) report no
+    limit, so they get the full wait until the turn ends; approving a schedule's expected calls up front is
     still only possible with "Always allow" rules. (d) The time zone is read when Melissa starts; a
     change needs a restart. (e) A removed agent's schedules stay and fail ("no agent"); remove them with the
     agent? (f) Runs share the agent's conversation, so taint carries over between runs and chats. (g) Anyone

@@ -57,6 +57,24 @@ pub const DEFAULT_APPROVAL_WAIT_MINUTES: u32 = 10;
 /// The shortest and longest wait the owner can set, in minutes (1 minute to a day).
 pub const MIN_APPROVAL_WAIT_MINUTES: u32 = 1;
 pub const MAX_APPROVAL_WAIT_MINUTES: u32 = 24 * 60;
+/// How much sooner than its agent's own tool-call limit a scheduled run's confirmation gives
+/// up, so it is withdrawn before the agent stops waiting for it.
+pub const TOOL_CALL_MARGIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a scheduled run's confirmation really waits: the owner's `setting`, but never
+/// past the backend's own tool-call `limit` (less [`TOOL_CALL_MARGIN`]), if it has one; at
+/// least a second.
+pub fn effective_wait(
+    setting: std::time::Duration,
+    limit: Option<std::time::Duration>,
+) -> std::time::Duration {
+    match limit {
+        Some(limit) => setting
+            .min(limit.saturating_sub(TOOL_CALL_MARGIN))
+            .max(std::time::Duration::from_secs(1)),
+        None => setting,
+    }
+}
 
 /// Who made a schedule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

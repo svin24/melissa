@@ -846,3 +846,15 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   connect (NodePort on the device's own address) still tells "app not answering". Env var rather than a server.toml
   key: it comes from the same line that publishes the ports (can't drift), and an older image after a rollback
   ignores it, whereas `[apps]` rejects unknown keys and the server wouldn't start.
+- **2026-11-20 — A turn's confirmations end with the turn; scheduled waits stop before the agent's own limit**
+  (owner-approved direction, resolves 68c). When any turn ends (finished, cancelled, the schedule's time limit,
+  an error), its conversation's confirmations that still wait are withdrawn (audited `confirmation.withdrawn`,
+  actor `melissa`, "the run ended"; the waiting call gets `tool.withdrawn` and fails; the card shows "No
+  longer needed"). This applies to attended turns too: every confirmation of a conversation's task comes from
+  its agent's session, which asks only during a turn, so none legitimately outlives it. A scheduled run's wait
+  is the owner's setting but at most its backend's own tool-call limit less a minute
+  (`SessionBackend::tool_call_limit`; Claude Code 300 s, so 4 minutes); Settings → Schedules says so under the
+  wait when a usable Claude backend is configured and the setting is longer. Why: an approval after the agent
+  stopped waiting would run an action for a run that moved on. Alternatives: cap only (leaves stale requests
+  from cancelled or failed turns); withdraw only (a Claude-backed run would still lose the call after 300 s
+  while the owner thinks it waits 10 minutes).

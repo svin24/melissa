@@ -170,6 +170,31 @@ impl ConfirmationStore {
         }
     }
 
+    /// Withdraw every pending confirmation of `task` (its run ended); returns them, oldest
+    /// first. Their waiters see the request withdrawn.
+    pub fn withdraw_task(&self, task: TaskId) -> Vec<Confirmation> {
+        let removed: Vec<Confirmation> = {
+            let mut inner = lock(&self.inner);
+            let ids: Vec<ConfirmationId> = inner
+                .pending
+                .values()
+                .filter(|p| p.info.task == task)
+                .map(|p| p.info.id)
+                .collect();
+            ids.iter()
+                .filter_map(|id| inner.pending.remove(id))
+                .map(|p| p.info)
+                .collect()
+        };
+        for c in &removed {
+            let _ = self.events.send(ConfirmationEvent::Resolved {
+                id: c.id,
+                verdict: None,
+            });
+        }
+        removed
+    }
+
     pub fn get(&self, id: ConfirmationId) -> Option<Confirmation> {
         lock(&self.inner).pending.get(&id).map(|p| p.info.clone())
     }
@@ -200,6 +225,28 @@ mod tests {
         assert_eq!(rx.await.unwrap(), Verdict::Approved);
         assert!(store.pending().is_empty());
         assert!(store.resolve(info.id, Verdict::Denied).is_none());
+    }
+
+    #[tokio::test]
+    async fn withdraw_task_takes_back_only_that_tasks_requests() {
+        let store = ConfirmationStore::new();
+        let mut events = store.subscribe();
+        let args = serde_json::json!({});
+        let (a, rx_a) = store.request(7, "remove_app", &args, "destructive");
+        let (other, _rx_other) = store.request(8, "remove_app", &args, "destructive");
+        let (b, rx_b) = store.request(7, "update_app", &args, "unattended");
+        let gone: Vec<ConfirmationId> = store.withdraw_task(7).iter().map(|c| c.id).collect();
+        assert_eq!(gone, [a.id, b.id]);
+        assert!(rx_a.await.is_err() && rx_b.await.is_err(), "no decision");
+        assert_eq!(store.pending(), [other]);
+        assert!(store.withdraw_task(7).is_empty());
+        let mut resolved = Vec::new();
+        while let Ok(e) = events.try_recv() {
+            if let ConfirmationEvent::Resolved { id, verdict } = e {
+                resolved.push((id, verdict));
+            }
+        }
+        assert_eq!(resolved, [(a.id, None), (b.id, None)]);
     }
 
     #[test]
