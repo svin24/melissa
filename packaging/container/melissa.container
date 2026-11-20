@@ -16,6 +16,8 @@ Wants=melissa-update.path
 [Container]
 ContainerName=melissa
 HostName=melissa
+# Scheduled jobs run in local time: follow the host's time zone (the image defaults to UTC).
+Timezone=local
 Image=@IMAGE@
 @AUTO_UPDATE_LINE@
 # k3s mounts, writes netfilter rules and creates pod network namespaces; the agent sandbox needs
