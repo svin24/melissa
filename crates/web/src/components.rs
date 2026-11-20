@@ -166,12 +166,19 @@ pub fn page(title: &str, content: Markup) -> Markup {
     }
 }
 
-/// The slim pre-alpha notice at the top of every page.
+/// The slim pre-alpha notice at the top of every page. Its close button hides it in this
+/// browser (melissa.js remembers it; without JavaScript it stays).
 pub fn banner() -> Markup {
     html! {
-        p.banner role="note" {
-            strong { "Pre-alpha." }
-            " Things will break. Don't trust Melissa with data you can't lose yet."
+        div.banner #prealpha role="note" {
+            p {
+                strong { "Pre-alpha." }
+                " Things will break. Don't trust Melissa with data you can't lose yet."
+            }
+            button.banner-close type="button" data-dismiss="prealpha" title="Dismiss" hidden {
+                span aria-hidden="true" { "×" }
+                span.visually-hidden { "Dismiss" }
+            }
         }
     }
 }
@@ -1639,18 +1646,17 @@ pub fn composer(
     }
 }
 
-/// The line under the composer: a stop button (posting to `cancel`) while a turn runs, what
-/// the chat runs on when there is no model picker (`runs_on`), and that everything is logged.
+/// The line under the composer: a stop button (posting to `cancel`) while a turn runs, and
+/// what the chat runs on when there is no model picker (`runs_on`). Empty otherwise.
 pub fn composer_status(cancel: &str, busy: bool, runs_on: Option<&str>) -> Markup {
     html! {
         @if busy {
             span.working { span.icon.spin aria-hidden="true" {} "Working on it" }
             button.link type="submit" formaction=(cancel) hx-post=(cancel) hx-swap="none" formnovalidate { "Stop" }
-            span.sep aria-hidden="true" { "·" }
         }
-        span {
-            @if let Some(b) = runs_on { "Runs on " (b) ". " }
-            "Everything is logged."
+        @if let Some(b) = runs_on {
+            @if busy { span.sep aria-hidden="true" { "·" } }
+            span { "Runs on " (b) }
         }
     }
 }

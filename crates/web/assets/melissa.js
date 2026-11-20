@@ -997,7 +997,41 @@
     }
   }
 
+  // Dismissable notices (the pre-alpha banner): the close button hides one for good in this
+  // browser. Storage can be blocked (private windows); then it only hides for this page.
+  function initDismiss() {
+    var buttons = document.querySelectorAll("[data-dismiss]");
+    Array.prototype.forEach.call(buttons, function (b) {
+      var id = b.getAttribute("data-dismiss");
+      var el = document.getElementById(id);
+      if (!el) {
+        return;
+      }
+      var key = "melissa.dismissed." + id;
+      var gone = false;
+      try {
+        gone = window.localStorage.getItem(key) === "1";
+      } catch (e) {
+        gone = false;
+      }
+      if (gone) {
+        el.remove();
+        return;
+      }
+      b.hidden = false;
+      b.addEventListener("click", function () {
+        try {
+          window.localStorage.setItem(key, "1");
+        } catch (e) {
+          // Not remembered; it still goes away now.
+        }
+        el.remove();
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
+    initDismiss();
     grow(composer());
     showVoice();
     initDetails();

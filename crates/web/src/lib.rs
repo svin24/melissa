@@ -3671,7 +3671,7 @@ mod tests {
             });
             let frame = next_frame(&mut body).await;
             assert!(frame.contains("innerHTML:#composer-status"));
-            assert!(frame.contains("Everything is logged."));
+            assert!(!frame.contains("Working on it"), "{frame}");
             // The tool call the agent never finished stops spinning with the turn.
             assert!(frame.contains("innerHTML:#f-t1"), "{frame}");
             assert!(!frame.contains("icon spin"), "{frame}");
