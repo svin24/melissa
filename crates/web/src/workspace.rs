@@ -21,11 +21,11 @@ use melissa_agent::{
 
 use crate::{
     components::{
-        agent_groups, sidebar, ActivityLine, AgentMenu, Avatar, GroupKind, HeadStatus, Health, Nav,
-        SideAgent, SideDevice, SideGroup, Sidebar, UpdateHint,
+        agent_groups, sidebar, ActivityLine, AgentMenu, Avatar, GroupKind, HeadStatus, Health,
+        MenuWho, Nav, SideAgent, SideDevice, SideGroup, Sidebar, UpdateHint,
     },
     feed::{approval_words, tool_words, Clock, Lookup},
-    pages::agent_href,
+    pages::{agent_href, MELISSA_CHAT_URL},
     state::{phase_words, Apps, ClusterSnapshot, Keeper},
     ui::Ui,
 };
@@ -78,6 +78,7 @@ impl MenuUrls {
             fresh: &self.fresh,
             earlier: self.earlier.as_deref(),
             delete: self.delete.as_deref(),
+            who: None,
         }
     }
 }
@@ -200,7 +201,14 @@ fn side_groups<'a>(side: &'a SideData, current: Option<&str>) -> Vec<SideGroup<'
                 sub: e.sub.as_deref(),
                 progress: e.working.then_some(None),
                 current: current == Some(e.key.as_str()),
-                menu: e.urls.menu(&e.name),
+                menu: AgentMenu {
+                    who: Some(MenuWho {
+                        avatar: e.avatar(),
+                        device: side.device(),
+                        status: e.status.as_deref(),
+                    }),
+                    ..e.urls.menu(&e.name)
+                },
             })
             .collect(),
     })
@@ -305,7 +313,8 @@ impl Ui {
         };
         entries.push(SideEntry {
             key: "lead".into(),
-            href: "/".into(),
+            // Not `/`: on phones `/` is the agent list (components::mobile).
+            href: MELISSA_CHAT_URL.into(),
             name: "Melissa".into(),
             icon: None,
             group,

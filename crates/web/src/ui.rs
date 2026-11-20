@@ -64,8 +64,8 @@ use serde_json::Value;
 use crate::{
     agents,
     components::{
-        model_chip, model_picker, oob_inner, status_pill, ApprovalState, Avatar, ChatHead,
-        HeadStatus, ModelPicker, CHAT_STATUS_ID, MODEL_CHIP_ID,
+        model_chip, model_picker, oob_inner, status_pill, AgentMenu, ApprovalState, Avatar,
+        ChatHead, HeadStatus, MenuWho, ModelPicker, CHAT_STATUS_ID, MODEL_CHIP_ID,
     },
     feed::{always_words, approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
     is_htmx, pages,
@@ -123,6 +123,7 @@ impl Ui {
 pub(crate) fn routes(ui: Ui) -> Router {
     Router::new()
         .route("/", get(home))
+        .route(pages::MELISSA_CHAT_URL, get(melissa_chat))
         .route("/cluster", get(cluster_page))
         .route("/usage", get(crate::usage::page))
         .route("/approvals", get(approvals_page))
@@ -305,6 +306,7 @@ impl Ui {
             links: &links,
             details: Some(&panel),
             all,
+            caption: !self.registry().permissions().bypass(),
         };
         Ok(self
             .framed(|f| {
@@ -319,7 +321,14 @@ impl Ui {
                     device: f.side.device(),
                     name: view.speaker.name,
                     status: entry.and_then(|e| e.head),
-                    menu: urls.menu(view.speaker.name),
+                    menu: AgentMenu {
+                        who: Some(MenuWho {
+                            avatar: view.speaker.avatar,
+                            device: f.side.device(),
+                            status: entry.and_then(|e| e.status.as_deref()),
+                        }),
+                        ..urls.menu(view.speaker.name)
+                    },
                 };
                 pages::chat(f, &view, &head)
             })
@@ -355,7 +364,18 @@ struct HomeQuery {
     all: Option<String>,
 }
 
-async fn home(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
+/// The home page: Melissa's chat; on phones the agent list (a draft or `all` asks for the
+/// chat itself, so those links still land in it).
+async fn home(state: State<Ui>, q: Query<HomeQuery>) -> Response {
+    if q.draft.is_empty() && q.all.is_none() {
+        pages::as_phone_home(melissa_chat(state, q)).await
+    } else {
+        melissa_chat(state, q).await
+    }
+}
+
+/// Melissa's chat (`/chat`; also `/` on wide screens).
+async fn melissa_chat(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
     // A draft is only a suggestion for the box; it is never sent by itself.
     let draft: String = q.draft.chars().take(300).collect();
     match ui
@@ -1015,11 +1035,16 @@ async fn message_reply(
             links: &links,
             details: None,
             all: false,
+            caption: !ui.registry().permissions().bypass(),
         })
         .into_response();
     }
     let back = match agent {
         Some(b) => pages::agent_href(&b.id),
+        // Back where it was sent from: `/chat` on a phone (`/` is the agent list there).
+        None if back_to(headers, "/").starts_with(pages::MELISSA_CHAT_URL) => {
+            pages::MELISSA_CHAT_URL.to_string()
+        }
         None => "/".to_string(),
     };
     match error {

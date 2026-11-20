@@ -42,6 +42,16 @@ name" with the `h1`, `#chat-status` with `status_pill`, the menu as `#menu-head`
 `agent_message` (`MessageHead`: icon, name, time on a turn's first item), `steps_card` (`StepLine`s: mark, words,
 state on the right; a thought opens to its text), `permission_card` (warning mark and question, consequence,
 "Asked because", the `approval-tag` line, verb/Decline/quiet Always allow and "Waiting for your decision").
+Phone views (2026-11-20, owner design "Melissa — Mobile"; `components/mobile.rs`, CSS between the "Phone views"
+markers at the end of melissa.css, JS in the "Phone views" section of melissa.js): `phone_view(PhoneView::List)`
+(a hidden `[data-phone-view=list]` in `main`; `pages::as_phone_home` sets it for `/` without `draft`/`all`; CSS
+`.shell:has(...)` then shows the sidebar as the Agents screen and hides `main`; every other page hides the
+sidebar on phones), `tab_bar` (`nav.tab-bar` in the sidebar: Settings, Apps, Usage, Updates with the update dot;
+the links open the panels like the rail's), `new_agent_round` (the "+" beside the brand), `back_link` (first in
+`chat_head`, to `/`), `menu_head` + `menu_cancel` (`AgentMenu::who` gives the action sheet's header; the items stay
+`agent_menu_items` inside `div.menu-sheet`), `sheet_handle`, `sheet_avatar`, `sheet_sub` (`details_panel(p, who)`:
+the bottom sheet's header; drag the head down to close), `composer_caption` (`ComposerTarget::caption`, inside
+the sticky composer). All hidden above 760px. `pages::MELISSA_CHAT_URL` (`/chat`) is Melissa's chat everywhere.
 Panels (2026-11-20, `components/panel.rs`): `panel` (title, close, body: Apps, Usage and resources),
 `settings_frame_at` (Settings), `glyph` (`Glyph`: the 16-unit line icons of the bar and the section list),
 `usage_table`; see [settings-ui.md](settings-ui.md) for the modal and the row components.
@@ -175,6 +185,8 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   the sidebar (`.side-main` scrolls, the head, search and `.rail-foot` stay; collapsible, `html[data-sidebar=collapsed]`; a sheet below 761px with script) and `main` scroll on their own. On chat pages at 1200px and
   up the chat column and the details panel each scroll inside `main`. melissa.js scrolls the feed's nearest
   scrolling box (`scroller()`), the page on phones. Don't reintroduce `100vh - <banner>` heights.
+- At 760px and below (phone views): the page scrolls; the chat header and composer are sticky; the tab bar is fixed
+  at the bottom of the agent list; sheets and bars pad with `env(safe-area-inset-*)` (`viewport-fit=cover`).
 
 ## Gotchas
 - OOB with `outerHTML:#id` replaces the target with the *wrapper* element; use `innerHTML:#id` on a stable

@@ -65,8 +65,9 @@ touched: `.count` text is a raw `#1b2533`, and the overlay shadows and backdrops
   `999px` pills and badges, `50%` round buttons and dots. Small radius on small things. [I]
 - **Controls:** every button, link row and toggle is at least 44px tall or wide (`min-height: 44px` on
   `button`, nav links, the brand). Focus is `outline: 3px solid var(--focus); outline-offset: 2px`.
-- **Breakpoints:** `1200px` (details panel: a column at ≥ 1200, a sheet below), `760px` (rail becomes a top
-  bar, one column; settings two-pane from 761), `560px` (model picker stacks), `520px` (one-field forms stack),
+- **Breakpoints:** `1200px` (details panel: a column at ≥ 1200, a sheet below), `760px` (phone views: `/` is
+  the agent list with a tab bar, a chat has a back button, the details panel is a bottom sheet, an agent's "⋯"
+  is an action sheet; settings two-pane from 761), `560px` (model picker stacks), `520px` (one-field forms stack),
   `40rem` (sheets go full screen).
 
 Consolidating spacing and small type into a few tokens (`--space-1..6`, `--text-sm`) is a **proposal** for the
