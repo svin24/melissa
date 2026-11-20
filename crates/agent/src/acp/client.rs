@@ -794,10 +794,19 @@ fn session_events(update: SessionUpdate, tools: &ToolTable) -> Vec<SessionEvent>
                 })
                 .collect(),
         )],
-        SessionUpdate::UsageUpdate(u) => vec![SessionEvent::Usage {
-            used: u.used,
-            size: u.size,
-        }],
+        SessionUpdate::UsageUpdate(u) => {
+            let mut out = vec![SessionEvent::Usage {
+                used: u.used,
+                size: u.size,
+            }];
+            out.extend(u.cost.and_then(|c| {
+                crate::session::micros(c.amount).map(|micros| SessionEvent::Cost {
+                    unit: c.currency,
+                    micros,
+                })
+            }));
+            out
+        }
         other => {
             let kind = serde_json::to_value(&other)
                 .ok()

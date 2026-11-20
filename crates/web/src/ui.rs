@@ -113,6 +113,7 @@ pub(crate) fn routes(ui: Ui) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/cluster", get(cluster_page))
+        .route("/usage", get(crate::usage::page))
         .route("/approvals", get(approvals_page))
         .route("/agents/{agent}", get(agent_page))
         .route("/ui/stream", get(lead_stream))
@@ -270,6 +271,7 @@ impl Ui {
             agents: &agents,
             past: &past,
             host,
+            update: self.settings.update_hint(),
         })
     }
 

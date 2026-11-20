@@ -456,6 +456,22 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `<agents' home>/.local/share/melissa-agents/<id>/<version>`. Both are audited (`settings.provider.registry`,
   `settings.provider.add`), send nothing about the device or owner (User-Agent `melissa`), and never load the
   registry's remote icons.
+- **Panels and the rail's bottom bar (2026-11-20, owner request; DECISIONS):** the rail's top nav is Chat and
+  Waiting for you. A bar pinned to the bottom of the rail holds small icons: Settings (gear), Apps (hexagon) and
+  Usage and resources (chart) on the left, updates (circular arrows) alone on the right, with a dot when a Melissa
+  update is available (from the existing update check; nothing extra is fetched). Settings, Apps and Usage and
+  resources open as a large modal (`<dialog>`) over the current page; each is still a page of its own
+  (`/settings/<section>`, `/tasks/{id}`, `/cluster`, `/usage`): without script it is that page, with script a deep
+  link or reload opens the modal, and moving between sections pushes the URL (Back works). Settings has a search
+  field ("/" focuses it) over sections grouped Agents (Providers, Agents, Permissions, Schedules), Chat (Voice,
+  Files) and System (Updates, Developer), an icon per section, a breadcrumb header and a close button; sections use
+  cards of rows (title and one-line description left, the control right). Apps lists the apps (tiles, status,
+  who looks after them, the app dialog); **devices moved to Usage and resources** (they are resources). Usage and
+  resources shows per agent (Melissa, each helper) turns, time spent, approvals asked, and tokens in context and
+  cost **only where the provider reports them** (Claude Code's `total_cost_usd`, ACP `usage_update` cost; both
+  are the provider's own running totals per session, summed across sessions), plus the device cards and how many
+  apps run. Counters: `usage.json` in each conversation's state directory, written once per turn.
+  Details: [settings-ui.md](agent-skills/settings-ui.md).
 
 ## 6b. Clients (later)
 
@@ -936,3 +952,11 @@ Roadmap (rough, phases may overlap):
     guidelines were read on 2026-11-20; recheck before adding logos, and if a brand objects, drop its logo (letter
     mark). (g) Removing a provider while its chat sessions exist leaves their transcripts; switching a chat to a
     removed provider is refused once it is gone after the restart.
+77. Panels and usage (2026-11-20; DECISIONS): (a) Provider CLI updates: Providers only probe the installed
+    version, so the rail's update dot covers Melissa only. A "newer version" check per provider would be a new
+    third-party call (npm registry, GitHub releases); worth it, and on request only like the ACP registry?
+    (b) Cost is the provider's own figure (Claude Code reports an estimate even on subscription plans); show it
+    for subscriptions at all? (c) Usage counters start when this version runs (no backfill from transcripts) and
+    a helper's counters go with the helper; keep a total for deleted helpers? (d) Settings search filters
+    sections by their settings' titles and the open section's rows; a result list that jumps to a setting in
+    another section would need every section rendered or an index.

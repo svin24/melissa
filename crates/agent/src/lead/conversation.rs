@@ -45,6 +45,7 @@ use super::{
     backends::{self, BackendChoice, BackendView, ModelCache, Switched},
     events::{EventLog, LeadEvent, TurnId},
     transcript::shorten,
+    usage::{Context as UsageContext, Usage},
     LeadError,
 };
 use crate::{
@@ -186,6 +187,8 @@ struct TurnState {
     scheduled: bool,
     /// How long the scheduled turn's confirmations wait for the owner (Settings → Schedules).
     confirm_wait: Option<Duration>,
+    /// When the running turn started (usage: time spent).
+    started: Option<Instant>,
 }
 
 struct Inner {
@@ -209,6 +212,8 @@ struct Inner {
     notes: Mutex<Vec<String>>,
     /// When the running turn's steps started (for their timings).
     steps: Mutex<Steps>,
+    /// Turns, time, approvals and what the provider reported (`usage.json`).
+    usage: Mutex<Usage>,
 }
 
 /// The running turn's open steps.
@@ -222,6 +227,12 @@ struct Steps {
 
 /// The most of a thought kept in the event log and transcript.
 const MAX_THOUGHT_CHARS: usize = 20_000;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 fn millis(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
@@ -265,6 +276,7 @@ impl Conversation {
             ..TurnState::default()
         };
         let choice = spec.choice.clone();
+        let usage = Usage::load(&spec.state_dir).unwrap_or_else(|| Usage::starting(now_secs()));
         Self {
             inner: Arc::new(Inner {
                 spec,
@@ -282,6 +294,7 @@ impl Conversation {
                 last: Mutex::new(None),
                 notes: Mutex::new(Vec::new()),
                 steps: Mutex::new(Steps::default()),
+                usage: Mutex::new(usage),
             }),
         }
     }
@@ -297,6 +310,11 @@ impl Conversation {
     #[cfg(test)]
     pub(crate) fn spec(&self) -> &ConversationSpec {
         &self.inner.spec
+    }
+
+    /// What this conversation has used so far.
+    pub(crate) fn usage(&self) -> Usage {
+        lock(&self.inner.usage).clone()
     }
 
     pub(crate) fn status(&self) -> LeadStatus {
@@ -677,6 +695,7 @@ impl Conversation {
         t.last += 1;
         let turn = t.last;
         t.busy = Some(turn);
+        t.started = Some(Instant::now());
         t.scheduled = scheduled.is_some();
         t.confirm_wait = wait;
         let since = self.inner.events.last_seq();
@@ -1161,6 +1180,7 @@ impl Conversation {
         t.busy = None;
         t.abort = None;
         t.confirm_wait = None;
+        let spent = t.started.take().map_or(0, millis);
         if std::mem::take(&mut t.scheduled) {
             if let Some(token) = lock(&self.inner.live).as_ref().map(|l| l.token.clone()) {
                 self.inner
@@ -1197,6 +1217,7 @@ impl Conversation {
         // Released last, so the next turn's events come after this turn's end.
         drop(t);
         self.withdraw_confirmations();
+        self.count_turn(spent);
         // Files the agent saved in its box during the turn show up for the owner.
         let (files, owner) = (self.inner.spec.files.clone(), self.inner.spec.owner.clone());
         match tokio::runtime::Handle::try_current() {
@@ -1238,6 +1259,19 @@ impl Conversation {
         }
     }
 
+    /// Count a finished turn (`ms` long) and the confirmations it asked for; saved.
+    fn count_turn(&self, ms: u64) {
+        let asked = self
+            .inner
+            .server
+            .registry()
+            .confirmations()
+            .take_asked(self.inner.spec.task);
+        let mut usage = lock(&self.inner.usage);
+        usage.count_turn(ms, asked);
+        usage.save(&self.inner.spec.state_dir);
+    }
+
     /// The thought being received has ended: publish it whole, with how long it took.
     fn end_thought(&self) {
         let Some((turn, text, start)) = lock(&self.inner.steps).thought.take() else {
@@ -1256,7 +1290,10 @@ impl Conversation {
         // Anything the agent does next ends its thought (usage reports don't).
         if !matches!(
             event,
-            SessionEvent::Thought(_) | SessionEvent::Usage { .. } | SessionEvent::Other(_)
+            SessionEvent::Thought(_)
+                | SessionEvent::Usage { .. }
+                | SessionEvent::Cost { .. }
+                | SessionEvent::Other(_)
         ) {
             self.end_thought();
         }
@@ -1334,10 +1371,17 @@ impl Conversation {
                     self.finish_turn(turn, stop.as_str(), None);
                 }
             }
-            SessionEvent::ToolUpdated { .. }
-            | SessionEvent::Plan(_)
-            | SessionEvent::Usage { .. }
-            | SessionEvent::Other(_) => {}
+            // Saved with the turn's count (once per turn, not per report).
+            SessionEvent::Usage { used, size } => {
+                lock(&self.inner.usage).context = Some(UsageContext { used, size });
+            }
+            SessionEvent::Cost { unit, micros } => {
+                let session = lock(&self.inner.live).as_ref().map(|l| l.token.clone());
+                if let Some(session) = session {
+                    lock(&self.inner.usage).report_cost(&session, &unit, micros);
+                }
+            }
+            SessionEvent::ToolUpdated { .. } | SessionEvent::Plan(_) | SessionEvent::Other(_) => {}
         }
     }
 

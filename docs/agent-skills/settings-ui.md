@@ -15,7 +15,10 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 - `crates/web/src/settings/`: `mod.rs` (context `Settings`/`SettingsParts`, routes, audit), `providers.rs`,
   `updates.rs` (view building + handlers, UI and JSON API), `apply.rs` (saved changes apply by themselves when
   Melissa is idle), `pages.rs` (assembly from components; `SECTIONS`).
-- Components (all in `components.rs`): `settings_frame` (section nav + breadcrumb), `settings_head` ("Checked
+- Components (all in `components.rs`; the panel parts in `components/panel.rs`): `settings_frame_at` (the
+  Settings panel: search, grouped section list with icons, breadcrumb, close), `setting_card` + `setting_row` /
+  `setting_row_with` (the row pattern), `inline_form` + `inline_select` / `inline_number` (a row's control),
+  `settings_head` ("Checked
   just now · Check again"), `split_card` + `pick_list`/`PickRow` (two panes), `provider_mark` (lettered hex)
   and `provider_logo` (a vendored logo where allowed, else the letter mark; see "Logos"),
   `toggle` (styled native checkbox, `role=switch`, htmx `hx-trigger="change"`, a Save button that
@@ -24,7 +27,7 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   `.copy-code` JS), `confirm_card`, `plain_action`, `actions`, `region`, `disclosure` (native `<details>`:
   "Details", "Use an API key instead", "Log"), `external_button` (vendor sign-in link, new tab,
   `noopener noreferrer`, http(s) only), `one_field_form` (one field + primary button: the code, the API key).
-  Rail: `Nav::Settings`.
+  Rail: the gear in the bottom bar (`rail_foot`, `Nav::Settings`).
 - Packaging: `packaging/common/usr/share/polkit-1/rules.d/50-melissa.rules` (restart the lead agent; shared with
   Nix), `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`); container only
   (`packaging/container/rootfs`): `polkit-1/rules.d/51-melissa-agent-install.rules` (start
@@ -39,8 +42,35 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 ## Adding a section
 1. A view + handlers file in `crates/web/src/settings/` (copy `updates.rs`' shape: `view()`, `page()`, a
    region with a stable id that forms swap, an `api_*` pair).
-2. An entry in `pages::SECTIONS` and routes in `mod.rs` (`ui_routes`, `api_routes`).
+2. An entry in `pages::SECTIONS` (href, label, group, icon `Glyph`, keywords: the titles of its settings, for the
+   search) and routes in `mod.rs` (`ui_routes`, `api_routes`). The page goes through `pages::frame`/`frame_at`,
+   which makes it a panel (below).
 3. New markup only as a reviewed component. Router tests in `crates/web/src/lib.rs` (`SettingsFixture`).
+
+## The Settings modal and the row pattern (2026-11-20, owner request)
+- **Opening:** the gear at the bottom of the rail (`a href="/settings"`). melissa.js turns any click on a link to
+  `/settings…`, `/tasks/<n>`, `/cluster` or `/usage` into `htmx.ajax` into `#overlay-body` and opens
+  `dialog#overlay` with `showModal()` (Esc, ×, a click on the backdrop close it; focus moves in and back; the page
+  behind is inert). Requests with `HX-Target: overlay-body` get the panel alone (`crate::panel` sets a task-local
+  in a middleware; `pages::panel_shell`), every other request the full page. Responses say `Vary: HX-Target`.
+- **URLs:** each panel is a real page. Without script it renders in the main column; with script a deep link or a
+  reload moves that panel into the modal (closing then goes to `/`). Opening and moving between sections push
+  history entries (`{panel, depth}`); Back moves back through them and closes the modal; closing goes back past
+  them. Links inside the panel that leave it (a helper's chat) navigate normally.
+- **Frame:** left the title, a search field (hidden without script; "/" focuses it), sections grouped **Agents**
+  (Providers, Agents, Permissions, Schedules), **Chat** (Voice, Files), **System** (Updates, Developer), each with
+  its `Glyph`. Right: the breadcrumb ("Settings / Voice", "Settings / Developer / Task #3"), the close button,
+  then the section, scrolling inside. Phones: full-screen modal, the sections a row of tabs above.
+- **Search:** filters the section list by name and `keywords`, and hides rows (`[data-setting]`) of the open
+  section that don't match; kept across htmx swaps. "No settings match." when nothing does.
+- **Rows:** `setting_card(heading, rows)` is one card of `setting_row`s (title, one-line muted description, the
+  control right; `extra` spans below for a confirmation, progress, notices, details). Use it for switches, a
+  select or a number (`inline_form`: saves on change, a Save button for keyboard and no script), and short lists
+  where each item has one or two actions (Agents, Files' boxes). Tables stay for many columns (Schedules, the
+  rules in Permissions, Agent tasks); forms with several fields stay `card` + `settings_form`. Providers keeps its
+  split card. Region ids still wrap what htmx swaps (a region can be one row inside a card: `chat_prefs_region`,
+  `bypass_region`, `full_access_region`).
+- **Restore defaults:** none of today's sections has a defaults concept, so the header has no such button.
 
 ## Providers: rules
 - **Less text** (owner, 2026-11-19): the list plus one status word or short phrase (Not installed,

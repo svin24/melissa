@@ -14,9 +14,11 @@ mod files;
 mod logos;
 mod markdown;
 mod pages;
+mod panel;
 mod settings;
 mod state;
 mod ui;
+mod usage;
 
 use axum::{
     extract::{Form, FromRef, Path, Request, State},
@@ -99,6 +101,7 @@ pub fn router_with_settings(
                 .with_state(mcp),
         )
         .merge(api::routes(lead))
+        .layer(middleware::from_fn(panel::layer))
         .layer(middleware::from_fn(security))
 }
 
@@ -2363,6 +2366,10 @@ mod tests {
             assert!(body.contains("class=\"hex h-busy\""));
             assert!(body.contains("href=\"http://nextcloud.example.com\""));
             assert!(body.contains("Add an app"));
+            // Devices and their resources are in Usage and resources (2026-11-20).
+            assert!(!body.contains("Fedora Linux 45"));
+            let (status, _, body) = get_html(&app, "/usage").await;
+            assert_eq!(status, StatusCode::OK);
             assert!(body.contains("Fedora Linux 45"));
             assert!(body.contains("4.0 GB of 8.0 GB used"));
             // device_info's /var is 91% used: a storage meter and a warning on the card.
@@ -2376,6 +2383,116 @@ mod tests {
                 .contains("<span class=\"strip-warn\">Storage almost full (1.7 GB left)</span>"));
             let (_, _, body) = get_html(&app, "/ui/cluster/apps").await;
             assert!(body.starts_with("<div id=\"cluster-apps\""));
+        }
+
+        fn panel_get(uri: &str) -> axum::http::Request<Body> {
+            axum::http::Request::get(uri)
+                .header("hx-request", "true")
+                .header("hx-target", "overlay-body")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn panels_answer_alone_for_the_modal_and_as_pages_without_it() {
+            let (app, _) = app();
+            for (uri, root) in [
+                ("/settings/voice", "<div class=\"panel settings\" data-panel data-title=\"Settings\">"),
+                ("/settings/developer", "<div class=\"panel settings\""),
+                ("/cluster", "<div class=\"panel panel-plain\" data-panel data-title=\"Apps\">"),
+                ("/usage", "<div class=\"panel panel-plain\" data-panel data-title=\"Usage and resources\">"),
+            ] {
+                // Without script (and on a deep link): the whole page, the panel in the main column.
+                let (status, headers, page) = get_html(&app, uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(page.starts_with("<!DOCTYPE html>"), "{uri}");
+                assert!(page.contains("<nav class=\"rail\""), "{uri}");
+                assert!(page.contains("<main id=\"main\" tabindex=\"-1\">"), "{uri}");
+                assert!(page.contains(root), "{uri}");
+                assert!(page.contains("<dialog class=\"overlay\" id=\"overlay\""), "{uri}");
+                assert!(headers[header::VARY].to_str().unwrap().contains("HX-Target"), "{uri}");
+                // The modal asks for the panel alone.
+                let (status, _, alone) = send(&app, panel_get(uri)).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(alone.starts_with(root), "{uri}: {}", &alone[..alone.len().min(120)]);
+                assert!(!alone.contains("<nav class=\"rail\""), "{uri}");
+                assert!(!alone.contains("<html"), "{uri}");
+                assert!(alone.contains("data-panel-close"), "{uri}");
+            }
+            // Another htmx target gets what it got before (a page here, not a panel).
+            let req = axum::http::Request::get("/settings/voice")
+                .header("hx-request", "true")
+                .header("hx-target", "voice-settings")
+                .body(Body::empty())
+                .unwrap();
+            let (_, _, body) = send(&app, req).await;
+            assert!(body.starts_with("<!DOCTYPE html>"));
+        }
+
+        #[tokio::test]
+        async fn settings_lists_grouped_sections_with_icons_and_a_search_field() {
+            let (app, _) = app();
+            let (_, _, body) = send(&app, panel_get("/settings/files")).await;
+            // The search field (shown by script) and its keyboard hint.
+            assert!(body.contains("data-settings-search hidden"));
+            assert!(body.contains("id=\"settings-q\" type=\"search\""));
+            assert!(body.contains("aria-keyshortcuts=\"/\""));
+            assert!(body.contains("class=\"settings-none quiet\" role=\"status\" hidden"));
+            // Groups in order, each section with an icon and the titles of its settings.
+            let agents = body.find(">Agents</p>").unwrap();
+            let chat = body.find(">Chat</p>").unwrap();
+            let system = body.find(">System</p>").unwrap();
+            assert!(agents < chat && chat < system);
+            assert!(body.contains("data-keywords=\"Keep files for file boxes expired\""));
+            assert!(body.matches("<svg class=\"glyph\"").count() >= 8);
+            // Breadcrumb and the current section.
+            assert!(body.contains("<li aria-current=\"page\">Files</li>"));
+            assert!(body.contains("href=\"/settings/files\" aria-current=\"page\""));
+            // The row pattern: title, description, control.
+            assert!(body.contains("<div class=\"setting-row\" data-setting>"));
+            assert!(body.contains("<p class=\"setting-title\">Keep files for</p>"));
+            assert!(body.contains("hx-trigger=\"change, submit\""));
+        }
+
+        #[tokio::test]
+        async fn the_rail_has_a_bottom_bar_and_no_settings_or_apps_items() {
+            let (app, _) = app();
+            let (_, _, body) = get_html(&app, "/").await;
+            let nav_start = body.find("<ul class=\"nav\">").unwrap();
+            let nav = &body[nav_start..nav_start + body[nav_start..].find("</ul>").unwrap()];
+            assert!(nav.contains(">Chat<") && nav.contains(">Waiting for you<"));
+            assert!(!nav.contains("Settings") && !nav.contains("Apps"));
+            let foot = &body[body.find("<div class=\"rail-foot\">").unwrap()..];
+            for want in [
+                "href=\"/settings\" title=\"Settings\"",
+                "href=\"/cluster\" title=\"Apps\"",
+                "href=\"/usage\" title=\"Usage and resources\"",
+                "<span class=\"visually-hidden\">Usage and resources</span>",
+                // No update known (not a container with the update helper): quiet, no dot.
+                "class=\"rail-icon rail-update\" href=\"/settings/updates\" title=\"Updates\" data-update=\"none\"",
+            ] {
+                assert!(foot.contains(want), "missing {want}");
+            }
+            assert!(!foot.contains("update-dot"));
+        }
+
+        #[tokio::test]
+        async fn usage_lists_melissa_and_helpers_with_only_reported_numbers() {
+            let (app, _) = app();
+            let (status, _, body) = get_html(&app, "/usage").await;
+            assert_eq!(status, StatusCode::OK);
+            for want in [
+                "Usage and resources",
+                "<th scope=\"row\"><a href=\"/\">Melissa</a>",
+                "Lead agent",
+                "Approvals asked",
+                // The echo test backend reports neither context nor cost.
+                "<td class=\"num\">Not reported</td>",
+                "Counted since",
+                "4.0 GB of 8.0 GB used",
+            ] {
+                assert!(body.contains(want), "missing {want}");
+            }
         }
 
         // --- App details --------------------------------------------------------------------
@@ -3433,7 +3550,7 @@ mod tests {
                 assert!(body.contains("<nav class=\"rail\""), "{uri}");
                 assert!(!body.contains("href=\"/tasks\""), "{uri}");
                 assert!(
-                    body.contains("href=\"/settings\" aria-current=\"page\""),
+                    body.contains("href=\"/settings\" title=\"Settings\" aria-current=\"page\""),
                     "{uri}"
                 );
                 assert!(
@@ -3447,7 +3564,8 @@ mod tests {
             assert!(body.contains("<title>Task #") && body.contains("Developer · Settings"));
             // Every Settings page lists the Developer section.
             let (_, _, body) = get_html(&app, "/settings/updates").await;
-            assert!(body.contains("<a href=\"/settings/developer\">Developer</a>"));
+            assert!(body.contains("<a href=\"/settings/developer\"><svg class=\"glyph\""));
+            assert!(body.contains("<span>Developer</span>"));
 
             // A message goes to her conversation, not the lead agent's.
             let res = app

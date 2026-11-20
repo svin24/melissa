@@ -1059,3 +1059,21 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   (the model ignored it), hiding `deploy_app` from the lead (loses bringing back an uninstalled app and the
   refusal's hint), letting the lead deploy on a helper's behalf with `agent` (the old way; the helper never saw the
   work it now owns).
+- **2026-11-20 — Settings, Apps and Usage and resources are panels in a modal, opened from a bar at the bottom of
+  the rail** (owner request with a reference screenshot of a coding app's settings). The gear, hexagon and chart
+  icons replace the rail's "Settings" and "Apps and devices" items; an updates icon sits alone on the right and
+  shows a dot when the last Melissa update check found something (or a download waits). Each panel stays a page
+  (works without script, deep links and reloads work); the modal asks for the panel alone with
+  `HX-Target: overlay-body`, so the server needs no second set of routes. Devices went to Usage and resources
+  rather than the Apps panel: a device card is CPU, memory, storage and uptime, i.e. resources, and the Apps panel
+  stays one list of one kind of thing. Providers have no "newer version" check (only the installed version), so
+  the update dot covers Melissa only until one exists; adding one would mean a new third-party call (open
+  question). Usage numbers are counted, never estimated: Melissa counts turns, time in turns and approvals
+  asked; context and cost appear only as the provider reports them. Alternatives: a separate settings page per
+  section (what we had; the owner wanted the modal), devices in the Apps panel (mixes two kinds of item), an
+  estimated cost from token counts (would be invented numbers).
+- **2026-11-20 — The page is the viewport above phone width.** The banner takes its height and the rail and main
+  column fill the rest and scroll on their own. The rail and the details panel used to be sticky and
+  `100vh - 2rem` tall, which left a 2rem gap at the bottom once the banner was dismissed or the page scrolled
+  (owner: "a weird gap with the bottom left and right panels"). Phones keep the page scrolling (the browser's bars
+  collapse as usual).

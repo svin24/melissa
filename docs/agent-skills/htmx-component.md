@@ -17,15 +17,21 @@
   `Scope::Nothing`, read-only tools) plus who looks after each workspace (`lead.agents().workspaces()`, i.e. the
   `melissa.io/owner-agent` labels), cached 30 s; the first request waits, later ones refresh in the background.
 - `settings/`: the Settings pages, forms and `/api/settings/...` (see [settings-ui.md](settings-ui.md)).
-- `ui.rs`: the UI routes (`/`, `/cluster`, `/approvals`, `/agents/{agent}`, `/chats/{id}` (a past chat, read-only),
+- `panel.rs`: the panel-only answer for the modal (`HX-Target: overlay-body`); `usage.rs`: `/usage`.
+- `ui.rs`: the UI routes (`/`, `/cluster`, `/usage`, `/approvals`, `/agents/{agent}`, `/chats/{id}` (a past chat, read-only),
   `/ui/...`, `POST /ui/new-chat`); `pages::Who` picks the
   conversation (Lead agent or an agent) for chat pages, streams, the composer and Stop; `api.rs`: the JSON API; `lib.rs`: router,
   task pages, assets, security middleware.
 
 ## Components (2026-11-18)
-Shell: `app_page` (banner + rail + main), `page` (no rail: errors, and the task pages when there is no lead agent), `banner`, `mark`, `rail`
-(nav, conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
-devices; no task link: Agent tasks live in Settings → Developer), `waiting_count`, `page_header`, `section`, `empty_state`.
+Shell: `app_page` (banner + rail + main + the empty `overlay_dialog`), `page` (no rail: errors, and the task pages when there is no lead agent), `banner`, `mark`, `rail`
+(nav: Chat, Waiting for you; conversations: Melissa, each helper, "New chat" (a plain form to `/ui/new-chat`), the last 5 past chats;
+devices; then `rail_foot`, the bottom bar (2026-11-20): Settings, Apps, Usage and resources as 44px icon links with
+18px `glyph`s, tooltips and hidden labels, and the updates link alone on the right (`UpdateHint`: a `--action` dot
+when a Melissa update is available)), `waiting_count`, `page_header`, `section`, `empty_state`.
+Panels (2026-11-20, `components/panel.rs`): `panel` (title, close, body: Apps, Usage and resources),
+`settings_frame_at` (Settings), `glyph` (`Glyph`: the 16-unit line icons of the bar and the section list),
+`usage_table`; see [settings-ui.md](settings-ui.md) for the modal and the row components.
 Chat: `feed` (live list), `feed_archive` (the same list, read-only, no stream), `chat_divider` ("Earlier",
 "Melissa restarted"), `feed_entry` (stable `li` id), `oob_inner`, `user_message`, `lead_message`,
 `relayed_message` (a job or message Melissa passed into a helper's chat),
@@ -63,13 +69,14 @@ reports a fast mode (`ModelOption::fast`; a fast model itself reports none), Acc
 the developer option "Full access per agent"; Full access asks in place (`details.seg-confirm`, no browser dialog).
 The chip adds `span.chip-tag` "Fast" and `span.chip-warn` (warning icon) on Full access. Never add a group a
 backend doesn't report.
-Apps and devices: `app_tile` (hexagon), `add_app_tile`, `app_grid`, `app_strip` (mini workspaces, polls itself),
+Apps (the Apps panel, `/cluster`) and devices (in Usage and resources, `/usage`): `app_tile` (hexagon), `add_app_tile`, `app_grid`, `app_strip` (mini workspaces, polls itself),
 `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
-Settings (2026-11-19, owner-requested; details in [settings-ui.md](settings-ui.md)): `settings_frame`,
-`settings_frame_at` (a page below a section: Settings / Section / page),
+Settings (2026-11-19, owner-requested; a modal since 2026-11-20; details in [settings-ui.md](settings-ui.md)):
+`settings_frame_at` (a page below a section: Settings / Section / page), `setting_card`, `setting_row(_with)`,
+`inline_form`, `inline_select`, `inline_number`,
 `settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts` (`dl.facts`), `group`,
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
-`actions`, `region`; rail link "Settings" (`Nav::Settings`).
+`actions`, `region`; the rail's gear (`Nav::Settings`).
 Task pages (2026-11-19; since the providers integration in Settings → Developer: `/settings/developer` is the
 list, `GET /tasks` redirects there, `/tasks/{id}` uses `settings_frame_at`; bare pages without a lead agent; the built-in `echo` is not offered, a configured
 echo is; the reply (stdout) is `markdown`, stderr a `log_view` "Agent log"; htmx "Run" answers `HX-Redirect` to the
@@ -145,6 +152,12 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   `keydown[key=='Enter']` won't work; put such behaviour in `melissa.js`).
 - Mutating requests must be same-origin (`Sec-Fetch-Site` or `Origin` vs `Host`), including all `/ui/*` POSTs.
   Real CSRF tokens and `__Host-` session cookies come with login.
+
+## Layout (2026-11-20)
+- Above 760px the page is the viewport: `body` is a 100dvh column, the banner takes its height, `.shell` the rest;
+  the rail (`.rail-main` scrolls, `.rail-foot` stays) and `main` scroll on their own. On chat pages at 1200px and
+  up the chat column and the details panel each scroll inside `main`. melissa.js scrolls the feed's nearest
+  scrolling box (`scroller()`), the page on phones. Don't reintroduce `100vh - <banner>` heights.
 
 ## Gotchas
 - OOB with `outerHTML:#id` replaces the target with the *wrapper* element; use `innerHTML:#id` on a stable

@@ -1,4 +1,4 @@
-//! App details: the dialog on "Apps and devices" and its JSON API.
+//! App details: the dialog in Apps (the rail's hexagon) and its JSON API.
 //!
 //! - `GET /ui/apps/{app}`: the dialog's content (status, logs region, actions).
 //! - `GET /ui/apps/{app}/logs?container=`: the last [`LOG_LINES`] log lines (escaped text).

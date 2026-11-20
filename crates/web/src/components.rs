@@ -101,6 +101,8 @@ pub enum Nav {
     PastChat,
     /// The Settings pages.
     Settings,
+    /// Usage and resources.
+    Usage,
 }
 
 /// DOM id of the pending-confirmations count in the rail (updated live).
@@ -144,6 +146,7 @@ pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
                     (rail)
                     main #main tabindex="-1" { (main) }
                 }
+                (overlay_dialog())
             }
         }
     }
@@ -222,13 +225,16 @@ pub struct RailPastChat<'a> {
 pub const NEW_CHAT_URL: &str = "/ui/new-chat";
 
 /// The side rail: brand, navigation, conversations (Melissa, each helper, past chats with
-/// Melissa), devices. On phones it collapses to a top bar with the navigation only.
+/// Melissa), devices, and the bottom bar ([`rail_foot`]: Settings, Apps, Usage and resources,
+/// updates). On phones it collapses to a top bar with the brand, the bar's icons and the
+/// navigation.
 pub fn rail(
     current: Nav,
     waiting: usize,
     devices: &[RailDevice<'_>],
     helpers: &[RailHelper<'_>],
     past: &[RailPastChat<'_>],
+    update: &UpdateHint,
 ) -> Markup {
     let item = |nav: Nav, href: &str, label: &str, extra: Markup| {
         html! {
@@ -241,50 +247,51 @@ pub fn rail(
     };
     html! {
         nav.rail aria-label="Main" {
-            a.brand href="/" { (mark("mark")) span { "Melissa" } }
-            ul.nav {
-                (item(Nav::Chat, "/", "Chat", html! {}))
-                (item(Nav::Cluster, "/cluster", "Apps and devices", html! {}))
-                (item(Nav::Waiting, "/approvals", "Waiting for you", waiting_count(waiting, false)))
-                (item(Nav::Settings, "/settings", "Settings", html! {}))
-            }
-            section.rail-section aria-labelledby="conv-h" {
-                h2 #conv-h { "Conversations" }
-                (rail_conversations(current == Nav::Chat, helpers, false))
-                // A plain form: works without JS; the server redirects to the empty chat.
-                form method="post" action=(NEW_CHAT_URL) {
-                    button.ghost type="submit" title="Start over with Melissa. This chat is kept under Past chats." { "New chat" }
+            div.rail-main {
+                a.brand href="/" { (mark("mark")) span { "Melissa" } }
+                ul.nav {
+                    (item(Nav::Chat, "/", "Chat", html! {}))
+                    (item(Nav::Waiting, "/approvals", "Waiting for you", waiting_count(waiting, false)))
                 }
-                @if !past.is_empty() {
-                    h3.rail-sub #past-h { "Past chats" }
-                    ul.conversations.past aria-labelledby="past-h" {
-                        @for p in past {
-                            li {
-                                a href=(p.href) aria-current=[p.current.then_some("page")] {
-                                    span.name { (p.title) }
-                                    span.when { (p.when) }
+                section.rail-section aria-labelledby="conv-h" {
+                    h2 #conv-h { "Conversations" }
+                    (rail_conversations(current == Nav::Chat, helpers, false))
+                    // A plain form: works without JS; the server redirects to the empty chat.
+                    form method="post" action=(NEW_CHAT_URL) {
+                        button.ghost type="submit" title="Start over with Melissa. This chat is kept under Past chats." { "New chat" }
+                    }
+                    @if !past.is_empty() {
+                        h3.rail-sub #past-h { "Past chats" }
+                        ul.conversations.past aria-labelledby="past-h" {
+                            @for p in past {
+                                li {
+                                    a href=(p.href) aria-current=[p.current.then_some("page")] {
+                                        span.name { (p.title) }
+                                        span.when { (p.when) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                section.rail-section aria-labelledby="dev-h" {
+                    h2 #dev-h { "Devices" }
+                    @if devices.is_empty() {
+                        p.quiet { "Checking…" }
+                    } @else {
+                        ul.devices {
+                            @for d in devices {
+                                li {
+                                    span class={ "dot " (d.health.class()) } aria-hidden="true" {}
+                                    span.name { (d.name) }
+                                    span.visually-hidden { ": " (d.status) }
                                 }
                             }
                         }
                     }
                 }
             }
-            section.rail-section aria-labelledby="dev-h" {
-                h2 #dev-h { "Devices" }
-                @if devices.is_empty() {
-                    p.quiet { "Checking…" }
-                } @else {
-                    ul.devices {
-                        @for d in devices {
-                            li {
-                                span class={ "dot " (d.health.class()) } aria-hidden="true" {}
-                                span.name { (d.name) }
-                                span.visually-hidden { ": " (d.status) }
-                            }
-                        }
-                    }
-                }
-            }
+            (rail_foot(current, update))
         }
     }
 }
@@ -607,7 +614,7 @@ pub fn app_strip(
                 span { (summary) }
                 @if let Some(w) = warning { span.strip-warn { (w) } }
             }
-            a.strip-link href="/cluster" { "Apps and devices" }
+            a.strip-link href="/cluster" { "Apps" }
         }
     }
 }
@@ -1142,7 +1149,7 @@ pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
                     }
                 }
             }
-            a.detail-more href="/cluster" { "Apps and devices" }
+            a.detail-more href="/cluster" { "All apps" }
         }
     }
 }
@@ -2105,55 +2112,11 @@ fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Mark
 // The Settings pages: a list of sections on the left (tabs on phones), a breadcrumb
 // header, and each section's content. Built for more sections than Providers and Updates.
 
-/// One section in the Settings navigation.
-pub struct SettingsSection<'a> {
-    pub href: &'a str,
-    pub label: &'a str,
-    pub current: bool,
-}
-
-/// The Settings frame: section navigation, breadcrumb ("Settings / Providers") and content.
-pub fn settings_frame(sections: &[SettingsSection<'_>], current: &str, content: Markup) -> Markup {
-    settings_frame_at(sections, current, None, content)
-}
-
-/// [`settings_frame`] for a page below a section (e.g. one task under Developer): the
-/// breadcrumb reads Settings / <section, a link> / `page`.
-pub fn settings_frame_at(
-    sections: &[SettingsSection<'_>],
-    current: &str,
-    page: Option<&str>,
-    content: Markup,
-) -> Markup {
-    let section_href = sections.iter().find(|s| s.label == current).map(|s| s.href);
-    html! {
-        div.settings {
-            nav.settings-nav aria-label="Settings sections" {
-                p.settings-title { "Settings" }
-                ul {
-                    @for s in sections {
-                        li { a href=(s.href) aria-current=[s.current.then_some("page")] { (s.label) } }
-                    }
-                }
-            }
-            div.settings-main {
-                nav.crumbs aria-label="Breadcrumb" {
-                    ol {
-                        li { a href="/settings" { "Settings" } }
-                        @match (page, section_href) {
-                            (Some(page), Some(href)) => {
-                                li { a href=(href) { (current) } }
-                                li aria-current="page" { (page) }
-                            }
-                            _ => { li aria-current="page" { (current) } }
-                        }
-                    }
-                }
-                (content)
-            }
-        }
-    }
-}
+pub use panel::{
+    glyph, inline_form, inline_number, inline_select, overlay_dialog, panel, rail_foot,
+    setting_card, setting_row, setting_row_with, settings_frame_at, usage_table, Glyph,
+    SettingsSection, UpdateHint, UsageRow, OVERLAY_BODY_ID, OVERLAY_ID,
+};
 
 /// A heading row with an action on the right, e.g. "Providers" and "Checked just now · Check
 /// again". `action` posts to `action_url`, and htmx swaps the response into `#target`.
@@ -2191,6 +2154,7 @@ pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup
     }
 }
 
+mod panel;
 mod provider_add;
 pub use provider_add::{
     add_panel, link_button, provider_tiles, registry_list, search_box, stepper, ProviderTile,

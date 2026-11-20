@@ -68,6 +68,8 @@ struct Pending {
 struct Inner {
     next_id: ConfirmationId,
     pending: BTreeMap<ConfirmationId, Pending>,
+    /// Confirmations requested per task since its owner last took the count (usage counters).
+    asked: BTreeMap<TaskId, u64>,
 }
 
 /// Shared store of pending confirmations. Cheap to clone.
@@ -144,6 +146,7 @@ impl ConfirmationStore {
         let (tx, rx) = oneshot::channel();
         let mut inner = lock(&self.inner);
         inner.next_id += 1;
+        *inner.asked.entry(task).or_default() += 1;
         let info = Confirmation {
             id: inner.next_id,
             task,
@@ -165,6 +168,11 @@ impl ConfirmationStore {
         // No subscribers is fine.
         let _ = self.events.send(ConfirmationEvent::Requested(info.clone()));
         (info, rx)
+    }
+
+    /// How many confirmations `task` asked for since the last call (then starts again at 0).
+    pub fn take_asked(&self, task: TaskId) -> u64 {
+        lock(&self.inner).asked.remove(&task).unwrap_or(0)
     }
 
     /// Pending confirmations, oldest first.
@@ -253,6 +261,18 @@ mod tests {
         assert_eq!(rx.await.unwrap(), Verdict::Approved);
         assert!(store.pending().is_empty());
         assert!(store.resolve(info.id, Verdict::Denied).is_none());
+    }
+
+    #[test]
+    fn counts_requests_per_task_until_taken() {
+        let store = ConfirmationStore::new();
+        let _a = store.request(1, "t", &Value::Null, "r");
+        let _b = store.request(1, "t", &Value::Null, "r");
+        let _c = store.request_user_only(2, "t", &Value::Null, "r");
+        assert_eq!(store.take_asked(1), 2);
+        assert_eq!(store.take_asked(1), 0, "taken");
+        assert_eq!(store.take_asked(2), 1);
+        assert_eq!(store.take_asked(3), 0);
     }
 
     #[tokio::test]

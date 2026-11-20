@@ -640,6 +640,7 @@ impl<'a> Render<'a> {
             SessionEvent::ToolUpdated { .. }
             | SessionEvent::Thought(_)
             | SessionEvent::Usage { .. }
+            | SessionEvent::Cost { .. }
             | SessionEvent::TurnFinished(_)
             | SessionEvent::Other(_) => {}
         }

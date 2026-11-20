@@ -39,6 +39,9 @@
   --bubble: #1b2533;
   --bubble-ink: #ffffff;
   --focus: #1f55c2;
+  /* Behind a modal or a sheet, and the shadow of things that float over the page. */
+  --backdrop: rgb(10 14 20 / 0.45);
+  --shadow-float: rgb(0 0 0 / 0.18);
   --radius: 12px;
   --font: "Atkinson Hyperlegible Next", system-ui, sans-serif;
   --font-head: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
@@ -65,6 +68,8 @@
     --bubble: #2d3a4e;
     --bubble-ink: #eef1f5;
     --focus: #8db0f5;
+    --backdrop: rgb(10 14 20 / 0.6);
+    --shadow-float: rgb(0 0 0 / 0.45);
   }
 }
 
@@ -260,11 +265,38 @@ button.link {
 .shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
-  min-height: calc(100vh - 2rem);
 }
 
 main {
   min-width: 0;
+}
+
+/* Wider than a phone, the page is the viewport (2026-11-20): the banner takes its own height,
+   the rail and the main column fill the rest and scroll on their own. Both run to the bottom
+   edge whether the banner shows or not. (They used to be `100vh - 2rem` tall and sticky,
+   which left a 2rem gap under them once the banner was dismissed or the page scrolled.) */
+@media (min-width: 761px) {
+  body {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .banner {
+    flex: none;
+  }
+
+  .shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  main {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 main:focus {
@@ -299,17 +331,95 @@ main:focus {
 /* --- Rail ------------------------------------------------------------------------------- */
 
 .rail {
-  position: sticky;
-  top: 0;
-  align-self: start;
-  height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+/* Everything but the bottom bar; scrolls when the conversations run long. */
+.rail-main {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
   padding: 1rem 0.9rem;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+}
+
+/* The bottom bar (2026-11-20, owner's reference): small muted icons on the left, updates alone
+   on the right. No boxes; hover changes the colour. Flush with the rail's bottom edge. */
+.rail-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.rail-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.rail-icon .glyph {
+  width: 18px;
+  height: 18px;
+}
+
+.rail-icon[aria-current="page"] {
+  color: var(--ink);
+}
+
+.rail-update {
+  margin-left: auto;
+}
+
+.rail-update.has-update {
+  color: var(--ink);
+}
+
+.update-dot {
+  position: absolute;
+  top: 10px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--action);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+@media (hover: hover) {
+  .rail-icon:hover {
+    color: var(--ink);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rail-icon {
+    transition: color 0.15s ease-out;
+  }
+}
+
+svg.glyph {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .rail ul {
@@ -483,6 +593,22 @@ main:focus {
   min-height: calc(100vh - 2rem);
   display: flex;
   flex-direction: column;
+}
+
+/* Wider than a phone the main column is the scroller (see the shell): fill it exactly. */
+@media (min-width: 761px) {
+  .chat {
+    min-height: 100%;
+  }
+
+  .chat-layout {
+    min-height: 100%;
+  }
+
+  .chat-layout > .chat {
+    flex: 1 0 auto;
+    min-height: 0;
+  }
 }
 
 .chat > .page-header {
@@ -2300,15 +2426,140 @@ form.inline {
   margin-top: 0.75rem;
 }
 
-/* --- Settings (2026-11-19) -------------------------------------------------------------- */
+/* --- Panels: Settings, Apps, Usage and resources (2026-11-20) ---------------------------- */
+/* One panel is a page of its own (in the main column, also without script) and the content of
+   the modal (`dialog.overlay`) that melissa.js opens over the current page. */
 
+.panel {
+  min-height: 100%;
+  background: var(--ground);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3.5rem;
+  padding: 0.5rem 0.75rem 0.5rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-head h1 {
+  font-size: 1.15rem;
+}
+
+.panel-head .crumbs ol {
+  margin: 0;
+}
+
+.panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.panel-close .glyph {
+  width: 18px;
+  height: 18px;
+}
+
+@media (hover: hover) {
+  .panel-close:hover {
+    color: var(--ink);
+    background: var(--surface);
+  }
+}
+
+.panel-body {
+  padding: 1.5rem;
+}
+
+.panel-plain .panel-body {
+  max-width: 1120px;
+}
+
+.panel-body > .lead {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+}
+
+/* Settings: the section list on the left, the section on the right. */
 .settings {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  gap: 2rem;
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 2rem 1.5rem 3rem;
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 0.75rem;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.settings-title {
+  margin: 0 0 0.5rem;
+  padding: 0 0.6rem;
+  font-family: var(--font-head);
+  font-size: 1.15rem;
+  font-weight: 650;
+}
+
+.settings-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0 0.6rem;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--ground);
+  color: var(--muted);
+}
+
+.settings-search[hidden] {
+  display: none;
+}
+
+.settings-search:focus-within {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.settings-search input {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+
+.settings-search kbd {
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.settings-group {
+  margin: 0.75rem 0 0.25rem;
+  padding: 0 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: var(--muted);
 }
 
 .settings-nav ul {
@@ -2319,65 +2570,213 @@ form.inline {
   gap: 0.15rem;
 }
 
-.settings-title {
-  margin: 0 0 0.5rem;
-  padding: 0 0.7rem;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
 .settings-nav a {
   display: flex;
   align-items: center;
+  gap: 0.6rem;
   min-height: 40px;
-  padding: 0 0.7rem;
+  padding: 0 0.6rem;
   border-radius: 10px;
   color: var(--ink);
   text-decoration: none;
 }
 
+.settings-nav a .glyph {
+  color: var(--muted);
+}
+
 .settings-nav a[aria-current="page"] {
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--border);
+  background: var(--ground);
   font-weight: 650;
+}
+
+.settings-nav a[aria-current="page"] .glyph {
+  color: var(--ink);
 }
 
 @media (hover: hover) {
   .settings-nav a:hover {
-    background: var(--surface);
+    background: var(--ground);
   }
 }
 
-/* Desktop: the section list is a panel of its own, so the list and the content read as one
-   centred block (a bare list looked like empty space and the block looked pushed right; owner,
-   2026-11-19). Phones keep the compact top bar below. */
-@media (min-width: 761px) {
-  .settings {
-    max-width: 1200px;
-    gap: 1.5rem;
-  }
+.settings-none {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.85rem;
+}
 
-  .settings-nav {
-    align-self: start;
-    position: sticky;
-    top: 1.5rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.85rem 0.6rem;
-  }
+.settings-main {
+  min-width: 0;
+}
 
-  .settings-nav a[aria-current="page"] {
-    background: var(--ground);
-    box-shadow: none;
-  }
+.settings-main .panel-body {
+  max-width: 980px;
+}
 
-  .settings-nav a:hover {
-    background: var(--ground);
-  }
+/* The modal. */
+dialog.overlay {
+  width: min(1120px, calc(100vw - 2rem));
+  height: min(820px, calc(100dvh - 2rem));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--ground);
+  color: var(--ink);
+  overflow: hidden;
+  box-shadow: 0 24px 64px var(--shadow-float);
+}
+
+dialog.overlay::backdrop {
+  background: var(--backdrop);
+}
+
+dialog.overlay:focus {
+  outline: none;
+}
+
+#overlay-body {
+  height: 100%;
+}
+
+.overlay .panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.overlay .panel-plain {
+  display: flex;
+  flex-direction: column;
+}
+
+.overlay .panel-plain .panel-body,
+.overlay .settings-main .panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.overlay .settings {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.overlay .settings-nav {
+  overflow-y: auto;
+}
+
+.overlay .settings-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* A page that opened as the modal (deep link) leaves its place empty. */
+main:empty {
+  background: var(--ground);
+}
+
+/* --- Setting rows (2026-11-20): cards of rows, title and description left, control right -- */
+
+.setting-group + .setting-group,
+.setting-group + .card,
+.card + .setting-group {
+  margin-top: 1.5rem;
+}
+
+.setting-heading {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.setting-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.setting-card > * + * {
+  border-top: 1px solid var(--border);
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  padding: 0.75rem 1rem;
+}
+
+.setting-row[hidden] {
+  display: none;
+}
+
+.setting-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.setting-desc {
+  margin: 0.15rem 0 0;
+  max-width: 60ch;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-wrap: pretty;
+}
+
+.setting-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.setting-control .toggle,
+.setting-control form {
+  margin: 0;
+}
+
+.setting-extra {
+  grid-column: 1 / -1;
+}
+
+.setting-extra > :first-child {
+  margin-top: 0;
+}
+
+.setting-extra > :last-child {
+  margin-bottom: 0;
+}
+
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inline-form select,
+.inline-form input {
+  min-height: 40px;
+}
+
+.inline-number {
+  width: 6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Usage and resources. */
+table.usage td.num,
+table.usage th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+table.usage th[scope="row"] {
+  font-weight: 600;
+  text-align: left;
 }
 
 .crumbs ol {
@@ -2871,8 +3270,8 @@ a.button-like {
   gap: 0.75rem;
 }
 
-.settings-main > div > .md-code.command,
-.settings-main > div > .action-row {
+.settings-main .panel-body > div > .md-code.command,
+.settings-main .panel-body > div > .action-row {
   margin-bottom: 1rem;
 }
 
@@ -3002,17 +3401,26 @@ ol.steps > li::marker {
     align-content: start;
   }
 
-  .settings {
+  /* Settings on a phone: the sections are one row of tabs above the section. */
+  .settings,
+  .overlay .settings {
     grid-template-columns: minmax(0, 1fr);
-    gap: 1rem;
-    padding: 1rem 1rem 2rem;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .settings-title {
+  .settings-nav {
+    padding: 0.75rem 1rem 0.5rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-title,
+  .settings-group,
+  .settings-search kbd {
     display: none;
   }
 
-  .settings-nav ul {
+  #settings-sections {
     display: flex;
     overflow-x: auto;
     gap: 0.25rem;
@@ -3020,8 +3428,36 @@ ol.steps > li::marker {
     scrollbar-color: var(--idle) transparent;
   }
 
+  .settings-nav ul {
+    display: flex;
+    gap: 0.25rem;
+  }
+
   .settings-nav a {
     white-space: nowrap;
+  }
+
+  .panel-head {
+    padding-left: 1rem;
+  }
+
+  .panel-body {
+    padding: 1rem;
+  }
+
+  dialog.overlay {
+    width: 100vw;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .setting-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting-control {
+    justify-content: flex-start;
   }
 
   .split-card {
@@ -3054,9 +3490,8 @@ ol.steps > li::marker {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* The rail is a top bar: the brand and the bottom bar's icons on one line, the nav below. */
   .rail {
-    position: static;
-    height: auto;
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
@@ -3066,8 +3501,29 @@ ol.steps > li::marker {
     border-bottom: 1px solid var(--border);
   }
 
+  .rail-main {
+    display: contents;
+  }
+
   .rail .brand {
+    order: 1;
     font-size: 1.1rem;
+  }
+
+  .rail-foot {
+    order: 2;
+    margin-left: auto;
+    padding: 0;
+    border-top: 0;
+    gap: 0;
+  }
+
+  .rail-update {
+    margin-left: 0;
+  }
+
+  .rail .nav {
+    order: 3;
   }
 
   /* Sideways-scrolling rows: a thin scrollbar in the theme's colours (the default track is
@@ -3673,13 +4129,34 @@ label.attach.upload {
 }
 
 /* Wide: the chat and its details side by side. */
+/* The chat and the panel each scroll on their own and fill the main column's height, so the
+   panel's border runs to the bottom edge. The chat's scroller is full width (its scrollbar at
+   the panel's edge); its content keeps the chat's width. */
 @media (min-width: 1200px) {
+  .chat-layout {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .chat-layout > .chat {
+    height: 100%;
+    max-width: none;
+    margin: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .chat-layout > .chat > :not([popover]) {
+    width: 100%;
+    max-width: calc(760px - 3rem);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
   .details {
     flex: 0 0 20rem;
-    position: sticky;
-    top: 0;
-    align-self: flex-start;
-    height: calc(100vh - 2rem);
+    align-self: stretch;
+    height: 100%;
     border-left: 1px solid var(--border);
   }
 
@@ -3714,7 +4191,7 @@ label.attach.upload {
     margin: 0;
     border-top: 0;
     border-left: 1px solid var(--border);
-    box-shadow: -12px 0 32px rgb(0 0 0 / 0.18);
+    box-shadow: -12px 0 32px var(--shadow-float);
     transform: translateX(100%);
     visibility: hidden;
   }
@@ -4058,4 +4535,9 @@ label.attach.upload {
     background: var(--ground);
     color: var(--ink);
   }
+}
+
+/* A disclosure at the end of a setting card ("Details" under Updates). */
+.setting-more {
+  padding: 0.25rem 1rem;
 }

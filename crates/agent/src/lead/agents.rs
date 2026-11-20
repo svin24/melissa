@@ -699,6 +699,18 @@ impl AgentPool {
         })
     }
 
+    /// What a helper's conversation has used (by id). Read from its file when its
+    /// conversation isn't open, so listing usage doesn't start conversations.
+    pub fn usage_of(&self, id: &str) -> super::usage::Usage {
+        let open = lock(&self.inner.convs).get(id).cloned();
+        match open {
+            Some(c) => c.usage(),
+            None => {
+                super::usage::Usage::load(&self.inner.registry.agent_dir(id)).unwrap_or_default()
+            }
+        }
+    }
+
     /// The agent's conversation status (turn, backend, last event).
     pub fn conversation_status(&self, name_or_id: &str) -> Result<super::LeadStatus, LeadError> {
         let agent = self.user_agent(name_or_id)?;
