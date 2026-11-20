@@ -29,12 +29,13 @@
 //!   field that Grok supports.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -161,6 +162,24 @@ struct Inner {
     last: Mutex<Option<TurnOutcome>>,
     /// Things Melissa tells the agent with its next message (data, never a turn of its own).
     notes: Mutex<Vec<String>>,
+    /// When the running turn's steps started (for their timings).
+    steps: Mutex<Steps>,
+}
+
+/// The running turn's open steps.
+#[derive(Default)]
+struct Steps {
+    /// The thought being received: its text so far and when it started.
+    thought: Option<(TurnId, String, Instant)>,
+    /// Tool calls that have not finished: agent id → when they started.
+    tools: HashMap<String, Instant>,
+}
+
+/// The most of a thought kept in the event log and transcript.
+const MAX_THOUGHT_CHARS: usize = 20_000;
+
+fn millis(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Handle to one conversation. Cheap to clone.
@@ -217,6 +236,7 @@ impl Conversation {
                 tainted: AtomicBool::new(tainted),
                 last: Mutex::new(None),
                 notes: Mutex::new(Vec::new()),
+                steps: Mutex::new(Steps::default()),
             }),
         }
     }
@@ -900,6 +920,8 @@ impl Conversation {
         }
         t.busy = None;
         t.abort = None;
+        self.end_thought();
+        lock(&self.inner.steps).tools.clear();
         let text = std::mem::take(&mut *lock(&self.inner.text));
         *lock(&self.inner.last) = Some(TurnOutcome {
             turn,
@@ -925,10 +947,46 @@ impl Conversation {
         drop(t);
     }
 
+    /// The thought being received has ended: publish it whole, with how long it took.
+    fn end_thought(&self) {
+        let Some((turn, text, start)) = lock(&self.inner.steps).thought.take() else {
+            return;
+        };
+        self.inner.events.push(LeadEvent::Thought {
+            turn,
+            text: shorten(&text, MAX_THOUGHT_CHARS),
+            ms: Some(millis(start)),
+        });
+    }
+
     fn on_session_event(&self, event: SessionEvent) {
         let turn = self.busy();
         let events = &self.inner.events;
+        // Anything the agent does next ends its thought (usage reports don't).
+        if !matches!(
+            event,
+            SessionEvent::Thought(_) | SessionEvent::Usage { .. } | SessionEvent::Other(_)
+        ) {
+            self.end_thought();
+        }
         match event {
+            SessionEvent::Thought(text) => {
+                // Like text, thoughts outside a turn are dropped.
+                let Some(turn) = turn else { return };
+                let mut steps = lock(&self.inner.steps);
+                match &mut steps.thought {
+                    Some((_, so_far, _)) => so_far.push_str(&text),
+                    None => {
+                        steps.thought = Some((turn, text, Instant::now()));
+                        drop(steps);
+                        events.push(LeadEvent::Thought {
+                            turn,
+                            text: String::new(),
+                            ms: None,
+                        });
+                    }
+                }
+            }
             SessionEvent::Text(text) => {
                 // Text outside a turn (late chunks after a cancel) is dropped.
                 if let Some(turn) = turn {
@@ -939,11 +997,16 @@ impl Conversation {
             SessionEvent::ToolStarted {
                 id, title, status, ..
             } => {
+                lock(&self.inner.steps)
+                    .tools
+                    .entry(id.clone())
+                    .or_insert_with(Instant::now);
                 events.push(LeadEvent::ToolCall {
                     turn,
                     id,
                     title,
                     status: status.as_str().into(),
+                    ms: None,
                 });
             }
             SessionEvent::ToolFinished { id, title, status }
@@ -952,11 +1015,13 @@ impl Conversation {
                 title,
                 status: Some(status @ ToolStatus::Failed),
             } => {
+                let ms = lock(&self.inner.steps).tools.remove(&id).map(millis);
                 events.push(LeadEvent::ToolCall {
                     turn,
                     id,
                     title: title.unwrap_or_else(|| "tool call".into()),
                     status: status.as_str().into(),
+                    ms,
                 });
                 // A tool that read untrusted content: say so right after it.
                 let token = lock(&self.inner.live).as_ref().map(|l| l.token.clone());
@@ -979,7 +1044,6 @@ impl Conversation {
                 }
             }
             SessionEvent::ToolUpdated { .. }
-            | SessionEvent::Thought(_)
             | SessionEvent::Plan(_)
             | SessionEvent::Usage { .. }
             | SessionEvent::Other(_) => {}

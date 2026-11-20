@@ -11,10 +11,10 @@ use crate::{
         app_tile, approval_card, badge, card, chat_divider, composer, composer_status, crumbs,
         device_card, empty_state, facts, feed, feed_entry, lead_message, link, live_region,
         live_region_on, log_view, markdown, note, oob_inner, page, page_header, plain_text,
-        post_form, rail, relayed_message, section, select_field, table, textarea_field, truncated,
-        user_message, waiting_count, AppWorkspace, ApprovalCard, Choice, DeviceCard, Health,
-        LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
-        FEED_ID,
+        post_form, rail, relayed_message, section, select_field, table, textarea_field,
+        thought_row, truncated, user_message, waiting_count, AppWorkspace, ApprovalCard, Choice,
+        DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID,
+        COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat},
     feed::{Approval, Change, Entry, Feed, Item},
@@ -211,6 +211,7 @@ pub fn entry_content(entry: &Entry) -> Markup {
             *state,
             agent.as_deref().map(agent_href).as_deref(),
         ),
+        Item::Thought { label, text, state } => thought_row(label, text, *state),
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
         Item::Note { text, detail, tone } => note(text, detail.as_deref(), *tone),
         Item::Divider { text } => chat_divider(text),
@@ -691,10 +692,12 @@ fn tasks_page(f: Option<&Frame<'_>>, title: &str, sub: bool, content: Markup) ->
     }
 }
 
+/// The task page; in Settings → Developer also the chat preference (`show_steps`: on).
 pub fn dashboard(
     f: Option<&Frame<'_>>,
     backends: &[BackendInfo],
     tasks: &[TaskSnapshot],
+    show_steps: bool,
 ) -> Markup {
     let offered: Vec<&BackendInfo> = backends.iter().filter(|b| offered(b)).collect();
     let lead = "Try one agent with one prompt, outside the chat.";
@@ -703,6 +706,7 @@ pub fn dashboard(
             (page_header("Developer", Some(lead)))
             (card("New agent task", new_task_form(&offered)))
             (card("Agent tasks", tasks_region(tasks, None)))
+            (card("Chat", crate::settings::pages::chat_prefs_region(show_steps, None)))
         }
     } else {
         html! {

@@ -433,6 +433,23 @@ fn text(sid: &str, t: &str) -> Step {
     )
 }
 
+fn thought(sid: &str, t: &str) -> Step {
+    update(
+        sid,
+        json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": t}}),
+    )
+}
+
+/// The event with any timing set to 0 (timings vary from run to run).
+fn timeless(mut e: LeadEvent) -> LeadEvent {
+    if let LeadEvent::ToolCall { ms, .. } | LeadEvent::Thought { ms, .. } = &mut e {
+        if ms.is_some() {
+            *ms = Some(0);
+        }
+    }
+    e
+}
+
 fn tool(sid: &str, id: &str, title: &str) -> Step {
     update(
         sid,
@@ -520,6 +537,8 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
     script.extend([
         // The first message carries the system prompt.
         prompt(2, "s-1", "<contains:You are the lead agent (test).>"),
+        thought("s-1", "Which tool "),
+        thought("s-1", "tells the kernel?"),
         tool("s-1", "t1", "melissa__device_info"),
         Step::recv(
             json!({"jsonrpc": "2.0", "id": "perm-1", "method": "session/request_permission",
@@ -563,11 +582,23 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
             backend: "fake-acp".into(),
             resumed: false,
         },
+        // A thought: when it starts, then whole with its time when the agent moves on.
+        LeadEvent::Thought {
+            turn,
+            text: String::new(),
+            ms: None,
+        },
+        LeadEvent::Thought {
+            turn,
+            text: "Which tool tells the kernel?".into(),
+            ms: Some(0),
+        },
         LeadEvent::ToolCall {
             turn: Some(turn),
             id: "t1".into(),
             title: "melissa__device_info".into(),
             status: "pending".into(),
+            ms: None,
         },
         LeadEvent::Permission {
             turn: Some(turn),
@@ -579,6 +610,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
             id: "t1".into(),
             title: "melissa__device_info".into(),
             status: "done".into(),
+            ms: Some(0),
         },
         LeadEvent::Text {
             turn,
@@ -597,6 +629,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
             stop_reason: "end_turn".into(),
         },
     ];
+    let events: Vec<LeadEvent> = events.into_iter().map(timeless).collect();
     assert_eq!(events, expect);
     assert_eq!(s.lead.status().backend.as_deref(), Some("fake-acp"));
 

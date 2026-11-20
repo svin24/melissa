@@ -604,8 +604,12 @@ async fn serve(
     });
     let check: melissa_web::CheckFn = Arc::new(move |id, o| base.check_provider(id, o));
     let updates = UpdateEnv::system();
+    let prefs = melissa_settings::prefs::PrefsStore::open(
+        path.with_file_name(melissa_settings::prefs::FILE_NAME),
+    );
     let settings = melissa_web::Settings::new(melissa_web::SettingsParts {
         store: ProviderStore::new(path, file),
+        prefs,
         backends: facts,
         agent_default: q
             .agent_backend

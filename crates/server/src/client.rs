@@ -175,6 +175,8 @@ impl Printer {
             // Shown as typed (chat) or given on the command line (ask); the whole reply was
             // already streamed.
             LeadEvent::UserMessage { .. } | LeadEvent::AgentMessage { .. } => {}
+            // The agent's thinking is shown only in the web UI (Settings → Developer).
+            LeadEvent::Thought { .. } => {}
             LeadEvent::ToolCall { title, status, .. } => {
                 self.line(&format!("[tool] {} → {status}", one_line(title)));
             }

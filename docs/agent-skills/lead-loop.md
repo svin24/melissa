@@ -122,10 +122,12 @@ Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends,
 ## Event model (`LeadEvent`, JSON `{"seq", "ts", "type", ...}`)
 Same shape for the lead agent and every agent. `user_message`, `text` (reply piece), `agent_message` (whole reply,
 at turn end; was `lead_message`, still read from old transcripts), `tool_call` (id, title, status
-pending/running/done/failed), `permission`, `confirmation_needed` (id, task, tool, reason),
+pending/running/done/failed, `ms` on the finishing event), `thought` (turn, text, ms: once when a thought starts,
+empty with no `ms`, and once whole with its time when the agent moves on or the turn ends; kept in the
+transcript, cut at 20,000 chars; shown only with Settings → Developer → "Show thinking and timings"), `permission`, `confirmation_needed` (id, task, tool, reason),
 `confirmation_resolved` (approved/denied/withdrawn), `session_opened` (backend, resumed), `backend_failed`,
 `session_lost`, `backend_switched` (backend, model, model_label), `turn_finished` (stop_reason: end_turn, cancelled, refusal, max_tokens, max_turn_requests,
-error), `error`, `tainted` (tool, subject), `new_chat`, and in memory only `earlier_start`/`earlier_end`. Only in the lead agent's log: `agent_created` (agent, name, backend), `agent_started` (agent, name,
+error; tool calls and a thought still open then are shown stopped, as agents send no end for them), `error`, `tainted` (tool, subject), `new_chat`, and in memory only `earlier_start`/`earlier_end`. Only in the lead agent's log: `agent_created` (agent, name, backend), `agent_started` (agent, name,
 goal), `agent_finished` (agent, name, status succeeded/failed/cancelled, error), `workspace_reassigned` (workspace, from,
 to, by). Agent text is untrusted: the web UI renders it with the safe `components::markdown`.
 - `GET /api/lead/events?since=<seq>&wait=<s≤30>&limit=<n>` → `{events, next, missed}`. Keep `next` as the
