@@ -31,7 +31,7 @@ Shell: `app_page` (banner + sidebar + main + the empty `overlay_dialog`), `page`
 pages when there is no lead agent), `banner`, `mark`, `page_header`, `section`, `empty_state`.
 Agent workspace (2026-11-20, owner design; `components/agent.rs`): `sidebar` (`nav.sidebar#sidebar`: the device
 menu button + `[popover]` menu, the collapse button, `div.side-search` with `#agent-search[data-agent-search]` and
-"+" to `/settings/agents/new`, `agent_groups`, `rail_foot`, then `div.side-backdrop`), `agent_groups`
+"+" to `/settings/agents/new`, `agent_groups`, `section_bar`), `agent_groups`
 (`#agent-groups`, swapped out of band by the stream: Needs attention and Pinned are `section`s, Working (open) and
 Settled (closed) are `details[data-group]`; each row `li.agent-row[data-name]` = `a.agent-link` (icon, name, star
 for Melissa, `agent-status`, `agent-sub`, a `progress` while working) + `agent_menu`), `agent_menu` (the "⋯"
@@ -46,12 +46,16 @@ Phone views (2026-11-20, owner design "Melissa — Mobile"; `components/mobile.r
 markers at the end of melissa.css, JS in the "Phone views" section of melissa.js): `phone_view(PhoneView::List)`
 (a hidden `[data-phone-view=list]` in `main`; `pages::as_phone_home` sets it for `/` without `draft`/`all`; CSS
 `.shell:has(...)` then shows the sidebar as the Agents screen and hides `main`; every other page hides the
-sidebar on phones), `tab_bar` (`nav.tab-bar` in the sidebar: Settings, Apps, Usage, Updates with the update dot;
-the links open the panels like the rail's), `new_agent_round` (the "+" beside the brand), `back_link` (first in
+sidebar on phones), `new_agent_round` (the "+" beside the brand), `back_link` (first in
 `chat_head`, to `/`), `menu_head` + `menu_cancel` (`AgentMenu::who` gives the action sheet's header; the items stay
 `agent_menu_items` inside `div.menu-sheet`), `sheet_handle`, `sheet_avatar`, `sheet_sub` (`details_panel(p, who)`:
 the bottom sheet's header; drag the head down to close), `composer_caption` (`ComposerTarget::caption`, inside
 the sticky composer). All hidden above 760px. `pages::MELISSA_CHAT_URL` (`/chat`) is Melissa's chat everywhere.
+Sections bar (2026-11-20, `components/panel.rs`; one component for every width since the 2026-11-20 cleanup):
+`section_bar` (`nav.tab-bar` "Sections" at the bottom of the sidebar: Settings, Apps, Usage and resources, Updates
+with the update dot, `UpdateHint`; each `a.tab` has its icon and a `span.tab-label`. Above 760px: small muted
+icons, Updates on the right, the words visually hidden. On the phone's agent list: the fixed tab bar with the words
+under the icons. The links open the panels.)
 Panels (2026-11-20, `components/panel.rs`): `panel` (title, close, body: Apps, Usage and resources),
 `settings_frame_at` (Settings), `glyph` (`Glyph`: the 16-unit line icons of the bar and the section list),
 `usage_table`; see [settings-ui.md](settings-ui.md) for the modal and the row components.
@@ -93,14 +97,14 @@ reports a fast mode (`ModelOption::fast`; a fast model itself reports none), Acc
 the developer option "Full access per agent"; Full access asks in place (`details.seg-confirm`, no browser dialog).
 The chip adds `span.chip-tag` "Fast" and `span.chip-warn` (warning icon) on Full access. Never add a group a
 backend doesn't report.
-Apps (the Apps panel, `/cluster`) and devices (in Usage and resources, `/usage`): `app_tile` (hexagon), `add_app_tile`, `app_grid`, `app_strip` (mini workspaces, polls itself),
+Apps (the Apps panel, `/cluster`) and devices (in Usage and resources, `/usage`): `app_tile` (hexagon), `add_app_tile`, `app_grid`,
 `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; a modal since 2026-11-20; details in [settings-ui.md](settings-ui.md)):
 `settings_frame_at` (a page below a section: Settings / Section / page), `setting_card`, `setting_row(_with)`,
 `inline_form`, `inline_select`, `inline_number`,
 `settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts` (`dl.facts`), `group`,
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
-`actions`, `region`; the bottom bar's gear (`Nav::Settings`).
+`actions`, `region`; the sections bar's gear (`Nav::Settings`).
 Task pages (2026-11-19; since the providers integration in Settings → Developer: `/settings/developer` is the
 list, `GET /tasks` redirects there, `/tasks/{id}` uses `settings_frame_at`; bare pages without a lead agent; the built-in `echo` is not offered, a configured
 echo is; the reply (stdout) is `markdown`, stderr a `log_view` "Agent log"; htmx "Run" answers `HX-Redirect` to the
@@ -157,12 +161,13 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   from outside (Nextcloud's logs). Changes now need your OK until a fresh start."); no "trust again"
   button. A fresh start (the agent's menu) is the way to clear it.
 - Disk: `device_info` reports `disks`; `state.rs` takes `/var` (else `/`) as the data disk; at 85% used or more
-  the app strip and the device card warn ("Storage almost full (1.7 GB left)").
+  the details panel's device row and the device card warn ("Storage almost full (1.7 GB left)").
 - Why SSE + the extension and not polling: one connection, low latency for streamed reply text, no
   re-rendering of the whole conversation (which would also steal focus from approval buttons).
 - Files: a box change pushes `files_changed` (memory only) into that conversation's log; the stream answers
   with the panel's body and count out of band, and re-renders sent messages so removed files show as expired.
-- Apps change slowly: `app_strip` and the cluster's apps region poll (`/ui/strip`, `/ui/cluster/apps`, 15 s).
+- Apps change slowly: the details panel's services and the cluster's apps region poll (`/ui/details/{key}/apps`,
+  `/ui/cluster/apps`, 15 s).
 
 ## Patterns
 - `live_region(id, url, secs, live, content)`: a region that polls itself; `live = false` stops polling.
@@ -182,7 +187,7 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
 
 ## Layout (2026-11-20)
 - Above 760px the page is the viewport: `body` is a 100dvh column, the banner takes its height, `.shell` the rest;
-  the sidebar (`.side-main` scrolls, the head, search and `.rail-foot` stay; collapsible, `html[data-sidebar=collapsed]`; a sheet below 761px with script) and `main` scroll on their own. On chat pages at 1200px and
+  the sidebar (`.side-main` scrolls, the head, search and the sections bar stay; collapsible, `html[data-sidebar=collapsed]`; on phones the agent list at `/`, hidden on other pages) and `main` scroll on their own. On chat pages at 1200px and
   up the chat column and the details panel each scroll inside `main`. melissa.js scrolls the feed's nearest
   scrolling box (`scroller()`), the page on phones. Don't reintroduce `100vh - <banner>` heights.
 - At 760px and below (phone views): the page scrolls; the chat header and composer are sticky; the tab bar is fixed

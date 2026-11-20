@@ -51,7 +51,6 @@ pub enum Glyph {
     Check,
     Server,
     Expand,
-    Upload,
     Image,
 }
 
@@ -126,7 +125,6 @@ pub fn glyph(g: Glyph) -> Markup {
                     path d="M5 4.75h.01M5 11.25h.01" {}
                 }
                 Glyph::Expand => { path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9.25 6.75M2.5 13.5l4.25-4.25" {} }
-                Glyph::Upload => { path d="M8 10.5V2.5M4.8 5.7 8 2.5l3.2 3.2M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" {} }
                 Glyph::Image => {
                     rect x="2" y="2.5" width="12" height="11" rx="1.5" {}
                     circle cx="5.75" cy="6.25" r="1.25" {}
@@ -327,9 +325,9 @@ pub fn inline_number(name: &str, label: &str, value: &str, min: u32, max: u32) -
     }
 }
 
-// --- The rail's bottom bar ----------------------------------------------------------------------
+// --- The sections bar ---------------------------------------------------------------------------
 
-/// What the rail's update button says and where it leads.
+/// What the sections bar's Updates link says and where it leads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpdateHint {
     pub href: &'static str,
@@ -348,27 +346,33 @@ impl UpdateHint {
     };
 }
 
-/// The bar at the bottom of the rail: Settings, Apps, Usage and resources on the left, updates
-/// on the right (with a dot when one is available).
-pub fn rail_foot(current: Nav, update: &UpdateHint) -> Markup {
-    let item = |href: &str, label: &str, icon: Glyph, here: bool| {
+/// The sections bar at the bottom of the sidebar: Settings, Apps, Usage and resources, and
+/// Updates (with a dot when one is available). One bar for every width: above 760px small
+/// muted icons with Updates alone on the right (the words are for screen readers); on the
+/// phone's agent list a tab bar with the words under the icons (CSS). The links open the
+/// panels (melissa.js); without script they are pages.
+pub fn section_bar(current: Nav, update: &UpdateHint) -> Markup {
+    let tab = |href: &str, label: &str, title: &str, icon: Glyph, here: bool| {
         html! {
-            a.rail-icon href=(href) title=(label) aria-current=[here.then_some("page")] {
+            a.tab href=(href) title=(title) aria-current=[here.then_some("page")] {
                 (glyph(icon))
-                span.visually-hidden { (label) }
+                span.tab-label { (label) }
             }
         }
     };
     html! {
-        div.rail-foot {
-            (item("/settings", "Settings", Glyph::Gear, current == Nav::Settings))
-            (item("/cluster", "Apps", Glyph::Hexagon, current == Nav::Cluster))
-            (item("/usage", "Usage and resources", Glyph::Chart, current == Nav::Usage))
-            a class={ "rail-icon rail-update" @if update.available { " has-update" } }
-                href=(update.href) title=(update.label) data-update=(if update.available { "available" } else { "none" }) {
-                (glyph(Glyph::Refresh))
-                @if update.available { span.update-dot aria-hidden="true" {} }
-                span.visually-hidden { (update.label) }
+        nav.tab-bar aria-label="Sections" {
+            (tab("/settings", "Settings", "Settings", Glyph::Gear, current == Nav::Settings))
+            (tab("/cluster", "Apps", "Apps", Glyph::Hexagon, current == Nav::Cluster))
+            (tab("/usage", "Usage", "Usage and resources", Glyph::Chart, current == Nav::Usage))
+            a class={ "tab tab-update" @if update.available { " has-update" } } href=(update.href)
+                title=(update.label) data-update=(if update.available { "available" } else { "none" }) {
+                span.tab-icon {
+                    (glyph(Glyph::Refresh))
+                    @if update.available { span.update-dot aria-hidden="true" {} }
+                }
+                span.tab-label { "Updates" }
+                @if update.available { span.visually-hidden { ": " (update.label) } }
             }
         }
     }
@@ -427,8 +431,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_update_button_shows_a_dot_only_when_an_update_is_available() {
-        let quiet = rail_foot(Nav::Chat, &UpdateHint::NONE).into_string();
+    fn the_sections_bar_has_four_labelled_tabs() {
+        let html = section_bar(Nav::Chat, &UpdateHint::NONE).into_string();
+        for (href, label) in [
+            ("/settings", "Settings"),
+            ("/cluster", "Apps"),
+            ("/usage", "Usage"),
+            ("/settings/updates", "Updates"),
+        ] {
+            assert!(html.contains(&format!("href=\"{href}\"")), "{href}");
+            assert!(
+                html.contains(&format!("<span class=\"tab-label\">{label}</span>")),
+                "{label}"
+            );
+        }
+        assert!(html.contains("aria-label=\"Sections\""));
+        assert!(html.contains("href=\"/usage\" title=\"Usage and resources\""));
+        assert!(!html.contains("aria-current"));
+    }
+
+    #[test]
+    fn the_updates_tab_shows_a_dot_only_when_an_update_is_available() {
+        let quiet = section_bar(Nav::Chat, &UpdateHint::NONE).into_string();
         assert!(quiet.contains("data-update=\"none\""));
         assert!(quiet.contains("title=\"Updates\""));
         assert!(!quiet.contains("update-dot") && !quiet.contains("has-update"));
@@ -437,19 +461,21 @@ mod tests {
             label: "Melissa update available",
             available: true,
         };
-        let dot = rail_foot(Nav::Chat, &hint).into_string();
-        assert!(dot.contains("class=\"rail-icon rail-update has-update\""));
+        let dot = section_bar(Nav::Chat, &hint).into_string();
+        assert!(dot.contains("class=\"tab tab-update has-update\""));
         assert!(dot.contains("data-update=\"available\""));
         assert!(dot.contains("<span class=\"update-dot\" aria-hidden=\"true\"></span>"));
-        assert!(dot.contains("<span class=\"visually-hidden\">Melissa update available</span>"));
+        assert!(dot.contains(": Melissa update available"));
     }
 
     #[test]
-    fn the_current_panel_is_marked_in_the_bottom_bar() {
-        let html = rail_foot(Nav::Usage, &UpdateHint::NONE).into_string();
+    fn the_current_panel_is_marked_in_the_sections_bar() {
+        let html = section_bar(Nav::Usage, &UpdateHint::NONE).into_string();
         assert!(
             html.contains("href=\"/usage\" title=\"Usage and resources\" aria-current=\"page\"")
         );
         assert!(!html.contains("href=\"/settings\" title=\"Settings\" aria-current"));
+        let html = section_bar(Nav::Settings, &UpdateHint::NONE).into_string();
+        assert!(html.contains("href=\"/settings\" title=\"Settings\" aria-current=\"page\""));
     }
 }

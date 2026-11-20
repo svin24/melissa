@@ -37,6 +37,7 @@ nearest one that is. Don't add a one-off. A new token is a reviewed change to `m
 | `--ok` | success marks (a finished tool call, a healthy status) |
 | `--idle` | stopped/idle status dots |
 | `--bubble`, `--bubble-ink` | the user's chat bubble |
+| `--backdrop`, `--shadow-float` | behind a modal or sheet; the shadow of things that float (menus, popovers, sheets) |
 | `--icon-green` … `--icon-slate` | helpers' icon colours only (green, teal, blue, violet, rose, orange, lime, slate; 2026-11-20) |
 | `--radius` | 12px: cards and panels |
 | `--font` | Atkinson Hyperlegible Next: all text |
@@ -47,8 +48,7 @@ Local custom properties (`--w`, `--h`, `--gap`, `--n`) are per-component geometr
 are not tokens.
 
 **Every colour is a token.** [I] No hex or `rgb()` outside `:root` and its dark block. Known drift to fix when
-touched: `.count` text is a raw `#1b2533`, and the overlay shadows and backdrops (`rgb(0 0 0 / 0.18)`,
-`rgb(10 14 20 / 0.45|0.55)`) have no tokens yet.
+touched: the banner's close button hovers with a raw `rgb(0 0 0 / 0.06)`.
 
 **There are no spacing or type-size tokens yet.** These are the values already in use. Reuse them [M]:
 
@@ -121,7 +121,7 @@ owner (PLAN.md open question 75), not a rule. Don't start it unasked.
   groups before reaching for another border or divider. Borders should be findable, not the first thing you see.
 - **No dead space** next to short content. A narrow form doesn't sit alone in a wide empty card. [T]
 - **No structural hacks:** negative margins that undo a parent's padding, escape-hatch `calc()`, absolute
-  positioning to dodge the layout. Fix the layout instead. [I] Known: `.file-more` has `margin-right: -48px`.
+  positioning to dodge the layout. Fix the layout instead. [I]
 
 ## 3. Actions and focus of a view
 
@@ -358,6 +358,10 @@ may be a known exception (picker `kbd` hints). Say in your report which hits you
 - Permission card: `--honey-soft` with a 1px honey border (caution colours when destructive), radius 10px; tag line
   0.8rem/600 uppercase with 0.04em tracking.
 - Menus: `[popover]`, min 13rem, radius 12px, items 40px, 0.9rem, a 16px glyph each.
+- Counts beside a heading (`.count`: group heads, the details' sections): 0.8rem/600, tabular figures, the
+  heading's colour (muted in the details). No pill.
+- Sections bar (`section_bar`, one for every width): above 760px 44px icon links with an 18px glyph, muted, Updates
+  on the right; on the phone's agent list a fixed four-column tab bar, 56px tabs, 20px glyph over a 0.8rem word.
 
 ## 10. Recording decisions
 

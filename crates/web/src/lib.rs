@@ -2365,7 +2365,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn cluster_and_strip_show_apps_and_devices() {
+        async fn cluster_and_details_show_apps_and_devices() {
             let (app, _) = app();
             let (status, _, body) = get_html(&app, "/cluster").await;
             assert_eq!(status, StatusCode::OK);
@@ -2383,11 +2383,13 @@ mod tests {
             assert!(body.contains("<span>Storage</span>"));
             assert!(body.contains("value=\"91\""));
             assert!(body.contains("Storage is almost full: 1.7 GB left."));
-            let (status, _, body) = get_html(&app, "/ui/strip").await;
+            // The chat's details panel warns on this device's row.
+            let (status, _, body) = get_html(&app, "/chat").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(body.starts_with("<section class=\"strip\""));
-            assert!(body
-                .contains("<span class=\"strip-warn\">Storage almost full (1.7 GB left)</span>"));
+            assert!(body.contains("Storage almost full (1.7 GB left)"));
+            // The app strip is gone (2026-11-20): its fragment no longer exists.
+            let (status, _, _) = get_html(&app, "/ui/strip").await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
             let (_, _, body) = get_html(&app, "/ui/cluster/apps").await;
             assert!(body.starts_with("<div id=\"cluster-apps\""));
         }
@@ -2482,14 +2484,16 @@ mod tests {
             // No "New chat", no past chats list: one chat per agent.
             assert!(!body.contains("New chat"));
             assert!(!body.contains("/ui/new-chat"));
-            let foot = &body[body.find("<div class=\"rail-foot\">").unwrap()..];
+            let foot = &body[body
+                .find("<nav class=\"tab-bar\" aria-label=\"Sections\">")
+                .unwrap()..];
             for want in [
                 "href=\"/settings\" title=\"Settings\"",
                 "href=\"/cluster\" title=\"Apps\"",
                 "href=\"/usage\" title=\"Usage and resources\"",
-                "<span class=\"visually-hidden\">Usage and resources</span>",
+                "<span class=\"tab-label\">Usage</span>",
                 // No update known (not a container with the update helper): quiet, no dot.
-                "class=\"rail-icon rail-update\" href=\"/settings/updates\" title=\"Updates\" data-update=\"none\"",
+                "class=\"tab tab-update\" href=\"/settings/updates\" title=\"Updates\" data-update=\"none\"",
             ] {
                 assert!(foot.contains(want), "missing {want}");
             }

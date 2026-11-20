@@ -284,11 +284,6 @@ button.link {
   grid-template-columns: 264px minmax(0, 1fr);
 }
 
-/* The sidebar's backdrop on phones (melissa.js shows it with the sheet). */
-.side-backdrop {
-  display: none;
-}
-
 /* Wide, collapsed by its button (melissa.js, remembered per browser): the chat takes the room;
    the header's button shows the sidebar again. */
 @media (min-width: 761px) {
@@ -298,23 +293,6 @@ button.link {
 
   html[data-sidebar="collapsed"] .sidebar {
     display: none;
-  }
-}
-
-@media (max-width: 760px) {
-  .js .side-backdrop:not([hidden]) {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 39;
-    background: var(--backdrop);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .js .sidebar[data-ready],
-  .js .sidebar[data-ready][data-open] {
-    transition: none;
   }
 }
 
@@ -500,16 +478,6 @@ main:focus {
 
 .group-attention .group-head {
   color: var(--honey-text);
-}
-
-.group-head .count {
-  min-width: 0;
-  padding: 0;
-  background: none;
-  color: inherit;
-  font-weight: 600;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
 }
 
 details.agent-group > summary {
@@ -930,9 +898,10 @@ details.menu-confirm > summary::-webkit-details-marker {
   stroke-width: 2.2;
 }
 
-/* The bottom bar (2026-11-20, owner's reference): small muted icons on the left, updates alone
-   on the right. No boxes; hover changes the colour. Flush with the rail's bottom edge. */
-.rail-foot {
+/* The sections bar at the bottom of the sidebar (2026-11-20, owner's reference): small muted
+   icons on the left, updates alone on the right. No boxes; hover changes the colour. Flush with
+   the sidebar's bottom edge. On the phone's agent list it is the tab bar (Phone views). */
+.tab-bar {
   flex: none;
   display: flex;
   align-items: center;
@@ -941,7 +910,7 @@ details.menu-confirm > summary::-webkit-details-marker {
   border-top: 1px solid var(--border);
 }
 
-.rail-icon {
+.tab {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -950,29 +919,32 @@ details.menu-confirm > summary::-webkit-details-marker {
   height: 44px;
   border-radius: 10px;
   color: var(--muted);
+  text-decoration: none;
 }
 
-.rail-icon .glyph {
+.tab .glyph {
   width: 18px;
   height: 18px;
 }
 
-.rail-icon[aria-current="page"] {
+.tab[aria-current="page"],
+.tab.has-update {
   color: var(--ink);
 }
 
-.rail-update {
+.tab-update {
   margin-left: auto;
 }
 
-.rail-update.has-update {
-  color: var(--ink);
+.tab-icon {
+  position: relative;
+  display: inline-flex;
 }
 
 .update-dot {
   position: absolute;
-  top: 10px;
-  right: 9px;
+  top: -3px;
+  right: -4px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -980,14 +952,26 @@ details.menu-confirm > summary::-webkit-details-marker {
   box-shadow: 0 0 0 2px var(--surface);
 }
 
-@media (hover: hover) {
-  .rail-icon:hover {
+/* Wider than a phone the words are for screen readers only. */
+@media (min-width: 761px) {
+  .tab-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (min-width: 761px) and (hover: hover) {
+  .tab:hover {
     color: var(--ink);
   }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .rail-icon {
+  .tab {
     transition: color 0.15s ease-out;
   }
 }
@@ -1003,16 +987,12 @@ svg.glyph {
   stroke-linejoin: round;
 }
 
+/* A count beside a heading (group heads, the details' sections): the heading's colour. */
 .count {
-  min-width: 1.6rem;
-  padding: 0 0.45rem;
-  border-radius: 999px;
-  background: var(--honey);
-  color: #1b2533;
   font-size: 0.8rem;
-  font-weight: 700;
-  text-align: center;
-  line-height: 1.6rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .activity .label a {
@@ -1185,76 +1165,11 @@ svg.glyph {
   height: 12px;
 }
 
-.side-expand:not([hidden]),
-.details-toggle:not([hidden]) {
-  display: inline-flex;
-}
-
-.strip {
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  padding: 0.6rem 0.9rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.925rem;
-}
-
-.mini-tiles {
-  display: flex;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  flex: none;
-}
-
-.mini {
-  width: 18px;
-  height: 21px;
-  margin-right: -2px;
-  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
-  background: var(--idle);
-}
-
-.mini.h-ok {
-  background: var(--ok);
-}
-
-.mini.h-busy {
-  background: var(--honey);
-}
-
-.mini.h-problem {
-  background: var(--caution);
-}
-
-.strip-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 0.75rem;
-}
-
-.strip-warn {
-  color: var(--caution);
-  font-weight: 650;
-}
-
 .device-warn {
   margin: 0;
   color: var(--caution);
   font-size: 0.875rem;
   font-weight: 600;
-}
-
-.strip-link {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  white-space: nowrap;
 }
 
 .feed-wrap {
@@ -2338,7 +2253,7 @@ svg.warn .mark {
   border-radius: 14px;
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+  box-shadow: 0 12px 32px var(--shadow-float);
   font-size: 0.9rem;
   overflow: hidden;
 }
@@ -2781,8 +2696,9 @@ svg.warn .mark {
     border: 1px solid var(--border);
   }
 
-  .picker kbd {
-    display: none !important;
+  .picker kbd,
+  .js .picker kbd:not(:empty) {
+    display: none;
   }
 }
 
@@ -4204,41 +4120,6 @@ ol.steps > li::marker {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* Without script the sidebar is a block above the chat. With script it is a sheet over the
-     page, opened with the header's "Show agents" button (melissa.js). */
-  .sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .js .sidebar {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    z-index: 40;
-    width: min(20rem, 88vw);
-    border-right: 1px solid var(--border);
-    box-shadow: 12px 0 32px var(--shadow-float);
-    transform: translateX(-100%);
-    visibility: hidden;
-  }
-
-  .js .sidebar[data-open] {
-    transform: none;
-    visibility: visible;
-  }
-
-  .js .sidebar[data-ready] {
-    transition:
-      transform 0.2s ease,
-      visibility 0s linear 0.2s;
-  }
-
-  .js .sidebar[data-ready][data-open] {
-    transition: transform 0.2s ease;
-  }
-
   .chat > .feed-wrap,
   .chat > .composer,
   .page-pad,
@@ -4254,15 +4135,6 @@ ol.steps > li::marker {
   .chat-device,
   .chat-sep {
     display: none;
-  }
-
-  .strip {
-    flex-wrap: wrap;
-    row-gap: 0.25rem;
-  }
-
-  .strip-link {
-    min-height: 32px;
   }
 
   .activity,
@@ -4349,7 +4221,7 @@ dialog.sheet:modal {
 }
 
 dialog.sheet::backdrop {
-  background: rgb(10 14 20 / 0.55);
+  background: var(--backdrop);
   overflow: hidden;
   overscroll-behavior: contain;
 }
@@ -4516,10 +4388,6 @@ dialog.sheet::backdrop {
   font-size: 0.95rem;
 }
 
-.details-close[hidden] {
-  display: none;
-}
-
 .details-section {
   padding: 0.85rem 1rem;
 }
@@ -4566,14 +4434,9 @@ main,
   color: var(--ink);
 }
 
-.details-label .count {
-  min-width: 0;
-  padding: 0;
-  background: none;
+.details-label .count,
+.services-head .count {
   color: var(--muted);
-  font-weight: 600;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
 }
 
 /* On-device services: one card, the apps then this device, divided by hairlines. */
@@ -4594,14 +4457,6 @@ main,
   font-size: 0.85rem;
   font-weight: 600;
   border-bottom: 1px solid var(--border);
-}
-
-.services-head .count {
-  min-width: 0;
-  padding: 0;
-  background: none;
-  color: var(--muted);
-  line-height: 1;
 }
 
 .service-list {
@@ -5081,23 +4936,6 @@ label.attach.upload {
   }
 }
 
-@media (max-width: 760px) {
-  .details-toggle .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  .details-toggle:not([hidden]) {
-    width: 44px;
-    padding: 0;
-    justify-content: center;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .js .details[data-ready],
   .js .details[data-ready][data-open] {
@@ -5412,7 +5250,6 @@ label.attach.upload {
    bottom); a chat is a screen of its own with a back button; the agent details are a bottom
    sheet; an agent's "⋯" menu is an action sheet. Above 760px nothing here shows. */
 
-.tab-bar,
 .phone-new,
 .back-link,
 .sheet-handle,
@@ -5448,17 +5285,10 @@ label.attach.upload {
     display: none;
   }
 
-  .shell:has([data-phone-view="list"]) > .sidebar,
-  .js .shell:has([data-phone-view="list"]) > .sidebar {
-    position: static;
-    width: auto;
-    min-height: 0;
+  .shell:has([data-phone-view="list"]) > .sidebar {
     padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
     background: var(--ground);
     border: 0;
-    box-shadow: none;
-    transform: none;
-    visibility: visible;
   }
 
   .shell:has([data-phone-view="list"]) .side-head {
@@ -5488,9 +5318,7 @@ label.attach.upload {
 
   .shell:has([data-phone-view="list"]) .side-head > .side-collapse,
   .shell:has([data-phone-view="list"]) .side-search > .side-new,
-  .shell:has([data-phone-view="list"]) .rail-foot,
-  .shell:has([data-phone-view="list"]) ~ .side-backdrop,
-  .side-backdrop {
+  .device-menu [data-sidebar-collapse] {
     display: none;
   }
 
@@ -5499,7 +5327,8 @@ label.attach.upload {
     margin-left: auto;
   }
 
-  .round-button {
+  .round-button,
+  .chat-head > .more-button {
     border-radius: 50%;
     background: var(--surface);
     color: var(--ink);
@@ -5586,38 +5415,30 @@ label.attach.upload {
     z-index: 20;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 0;
     padding: 0.25rem calc(0.5rem + env(safe-area-inset-right)) calc(0.25rem + env(safe-area-inset-bottom))
       calc(0.5rem + env(safe-area-inset-left));
     background: var(--surface);
-    border-top: 1px solid var(--border);
   }
 
   .tab {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
     gap: 0.25rem;
+    width: auto;
+    height: auto;
     min-height: 56px;
-    border-radius: 10px;
-    color: var(--muted);
     font-size: 0.8rem;
-    text-decoration: none;
+  }
+
+  .tab-update {
+    margin-left: 0;
   }
 
   .tab .glyph {
     width: 20px;
     height: 20px;
-  }
-
-  .tab[aria-current="page"],
-  .tab.has-update {
-    color: var(--ink);
-  }
-
-  .tab-icon {
-    position: relative;
-    display: inline-flex;
   }
 
   .tab .update-dot {
@@ -5626,8 +5447,7 @@ label.attach.upload {
   }
 
   /* --- A chat (and every other page): no sidebar, a back button in the header. --- */
-  .shell:not(:has([data-phone-view="list"])) > .sidebar,
-  .js .shell:not(:has([data-phone-view="list"])) > .sidebar {
+  .shell:not(:has([data-phone-view="list"])) > .sidebar {
     display: none;
   }
 
@@ -5649,8 +5469,7 @@ label.attach.upload {
     color: var(--ink);
   }
 
-  .chat-head > .side-expand,
-  .chat-head > .side-expand:not([hidden]) {
+  .chat-head > .side-expand {
     display: none;
   }
 
@@ -5692,9 +5511,6 @@ label.attach.upload {
 
   .chat-head > .more-button {
     grid-area: more;
-    border-radius: 50%;
-    background: var(--surface);
-    color: var(--ink);
   }
 
   /* The permission card: Allow and Decline side by side across the card, the wait below. */
@@ -5768,7 +5584,7 @@ label.attach.upload {
     display: inline;
   }
 
-  .details-close:not([hidden]) {
+  .details-close {
     border-radius: 50%;
     background: var(--ground);
     color: var(--ink);

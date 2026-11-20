@@ -58,7 +58,7 @@ async fn the_agent_list_has_a_new_button_and_a_tab_bar() {
     let (app, _lead) = app();
     let (_, _, page) = get_html(&app, "/").await;
     let side = &page[page.find("<nav class=\"sidebar\"").unwrap()..];
-    let side = &side[..side.find("</nav><div class=\"side-backdrop\"").unwrap()];
+    let side = &side[..side.find("<main").unwrap()];
     // "+" next to the brand (phones) as well as in the search row (wide).
     assert!(side.contains(
         "<a class=\"icon-button round-button phone-new\" href=\"/settings/agents/new\" title=\"New helper\">"
