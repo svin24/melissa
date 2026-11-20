@@ -858,3 +858,25 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   stopped waiting would run an action for a run that moved on. Alternatives: cap only (leaves stale requests
   from cancelled or failed turns); withdraw only (a Claude-backed run would still lose the call after 300 s
   while the owner thinks it waits 10 minutes).
+- **2026-11-20 — An agent never touches another agent's app on its own; the user may allow one call** (owner
+  request). New read-only tool `my_apps` (named like `my_files` and the `*_app(s)` tools): an agent's own apps
+  with the essentials (phase, image, url, ports, reachability as `app_status` reports them, `assigned_by`/`at`)
+  and, separately, the other apps by name and owner only; the lead agent gets every app grouped by owner. It is
+  in every agent's tool list. The scope check now covers **reads too**: `app_status` (Read) and `app_logs`
+  (ReadScoped) on another agent's app are no longer open to agents, and `list_apps` shows an agent the others by
+  name and owner only. Why reads: the owner said "touching", and a status or log read of the wrong app is exactly
+  how an agent ends up acting on it (two Minecraft servers); `my_apps` gives the only cross-owner read an agent
+  needs (which apps exist and whose they are). Instead of the old hard refusal, an agent's call on another
+  agent's (or an unassigned) app becomes a **user-only confirmation** ("Ada wants to run commands in Bo's
+  `minecraft` (not Ada's). Only you can allow this, and only this once"): no "Always allow" offered, never
+  matched by a rule, and **not answered by No permission prompts** (neither at request time nor when the bypass
+  is switched on). Why not the bypass: ownership is a safety boundary between agents, not a convenience prompt;
+  the developer switch exists to stop prompt fatigue on an agent's own work, and letting it silently open every
+  agent's apps to every other agent would erase the boundary for anyone who turns it on. A yes covers that one
+  call (nothing is remembered). The lead agent keeps acting on any app of its device (destructive still asks)
+  and reassigns with the user's yes; reassignment flips access at once because the owner is read at every call.
+  Audit: `tool.cross_owner` names both sides at each step (`asked`, `approved by the user (this call only)`,
+  `denied by the user`, `not approved (…)`, `refused`, and the lead agent's `allowed (lead agent)` override).
+  Alternatives: keep the hard refusal and make the agent ask the user in chat (no way to authorize a single
+  call); a `cross_owner: true` argument on every tool (the agent decides when to ask, more surface); allow reads
+  of others' status (an agent would keep using them to guess which app is its own).

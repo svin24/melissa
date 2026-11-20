@@ -856,6 +856,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Looked at the app catalog",
     ),
     ("list_apps", "Listing your apps", "Listed your apps"),
+    (
+        "my_apps",
+        "Checking whose apps are whose",
+        "Checked whose apps are whose",
+    ),
     ("deploy_app", "Setting up an app", "Set up an app"),
     ("update_app", "Changing an app", "Changed an app"),
     (

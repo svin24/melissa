@@ -31,7 +31,8 @@ Read this at the start of every session. One file per skill; update the skill wh
   `app-credentials`, the migration of catalog installs (Nextcloud).
 - [workspaces-and-ownership.md](workspaces-and-ownership.md) — the cluster model in code: device/agent ids, workspaces owned by
   agents (`melissa.io/owner-agent`), scopes (User/Lead/Agent/Nothing), the one scope check in the registry
-  (refused vs confirmation naming the agent), reassign path (Lead agent + user's yes, or the user's CLI),
+  (another agent's workspace: user-only confirmation, no rule/bypass; `my_apps`; `tool.cross_owner` audit),
+  reassign path (Lead agent + user's yes, or the user's CLI),
   migration of old owner labels, admission rules, declaring a tool's target.
 - [settings-ui.md](settings-ui.md) — Settings pages: Providers (`providers.toml` over `server.toml`, secrets
   write-only, versions, disable rules, Install button via the polkit-limited `melissa-agent-install@` unit, Nix note, sign-in guidance; echo hidden) and Updates (container image status, host update helper via request files,

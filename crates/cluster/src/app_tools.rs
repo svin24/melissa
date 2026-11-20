@@ -310,7 +310,7 @@ fn merge(target: &mut Value, fields: Value) {
     }
 }
 
-/// All nine tools over one cluster connection (`None` = no k3s on this device).
+/// All ten tools over one cluster connection (`None` = no k3s on this device).
 pub fn app_tools<C>(settings: AppSettings, cluster: Option<Arc<C>>) -> Vec<Arc<dyn Tool>>
 where
     C: AppRead + AppDeployer + AppExec + 'static,
@@ -327,6 +327,10 @@ where
     vec![
         Arc::new(DeployApp(deployer.clone())),
         Arc::new(UpdateApp(deployer)),
+        Arc::new(MyApps(AppStatus {
+            settings: settings.clone(),
+            read: read.clone(),
+        })),
         Arc::new(ListApps(AppStatus {
             settings: settings.clone(),
             read: read.clone(),
@@ -1444,7 +1448,9 @@ impl Tool for AppStatus {
 struct ListApps(AppStatus);
 
 impl ListApps {
-    async fn list(&self, args: Value) -> Result<Value, ToolError> {
+    /// `scope` an agent: its own apps in full, the others by name and owner only (an agent
+    /// reads nothing more of another agent's workspace without the user's yes).
+    async fn list(&self, args: Value, scope: &Scope) -> Result<Value, ToolError> {
         reject_unknown(arg_object(&args)?, &[])?;
         let mut apps = Vec::new();
         let Some(read) = &self.0.read else {
@@ -1460,6 +1466,16 @@ impl ListApps {
             Err(e) => return Err(failed(e)),
         };
         for name in names {
+            if let Some(me) = scope.agent() {
+                match self.0.owner_unless(read.as_ref(), &name, me).await? {
+                    Ownedness::Mine => {}
+                    Ownedness::Gone => continue,
+                    Ownedness::Other(owner) => {
+                        apps.push(not_yours(&name, &owner, &self.0.settings));
+                        continue;
+                    }
+                }
+            }
             let report = self.0.status(json!({ "app": name })).await?;
             if report["k3s_reachable"] == false {
                 return Ok(report);
@@ -1494,7 +1510,9 @@ impl Tool for ListApps {
             description: "Apps on this device: running, starting, failing, stopped, \
                 uninstalled with data kept, or being deleted (phase as in app_status), with \
                 ready replicas, URL (web UI), `ports` (address:port and protocol), volumes \
-                and problem pods. Use it to find leftovers such as kept data.",
+                and problem pods. Use it to find leftovers such as kept data. An agent sees \
+                other agents' apps by name and `owner` only (`not_yours`); to find your own, \
+                call my_apps.",
             // Same content as app_status: names, counts, phases, reason codes.
             labels: Labels::READ_ONLY,
             params: json!({
@@ -1506,7 +1524,206 @@ impl Tool for ListApps {
     }
 
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(self.list(args))
+        Box::pin(async move { self.list(args, &Scope::Nothing).await })
+    }
+
+    fn call_in<'a>(
+        &'a self,
+        _task: TaskId,
+        ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.list(args, &ctx.scope))
+    }
+}
+
+// ---- my_apps -----------------------------------------------------------------------------
+
+/// Whose an app is, from the caller's side.
+enum Ownedness {
+    Mine,
+    /// Another agent's, or unassigned.
+    Other(Owner),
+    /// No longer there, or being deleted.
+    Gone,
+}
+
+impl AppStatus {
+    /// Is app `name` agent `me`'s? One namespace read.
+    async fn owner_unless(
+        &self,
+        read: &dyn AppRead,
+        name: &str,
+        me: &str,
+    ) -> Result<Ownedness, ToolError> {
+        let ns = match read.namespace(name).await.map_err(failed)? {
+            Some(ns) if !is_terminating(&ns) => ns,
+            _ => return Ok(Ownedness::Gone),
+        };
+        Ok(match Ownership::of(&ns).owner {
+            Owner::Agent(id) if id == me => Ownedness::Mine,
+            owner => Ownedness::Other(owner),
+        })
+    }
+}
+
+/// The name of an app's owner (`None`: no agent looks after it).
+fn owner_name(owner: &Owner, settings: &AppSettings) -> Option<String> {
+    match owner {
+        Owner::Agent(id) => Some(
+            settings
+                .agents
+                .as_ref()
+                .and_then(|n| n.name_of(id))
+                .unwrap_or_else(|| id.clone()),
+        ),
+        Owner::Unassigned => None,
+    }
+}
+
+/// Another agent's app as an agent sees it: its name and owner, nothing else.
+fn not_yours(app: &str, owner: &Owner, settings: &AppSettings) -> Value {
+    json!({"app": app, "owner": owner_name(owner, settings), "not_yours": true})
+}
+
+/// The essentials of one app from its `app_status` report: what an agent needs to tell its
+/// apps apart and reach them.
+fn essentials(report: &Value) -> Value {
+    let ports: Vec<Value> = report["ports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| json!({"name": p["name"], "protocol": p["protocol"], "address": p["address"]}))
+        .collect();
+    let image = match &report["image"] {
+        Value::Null => report["spec"]["image"].clone(),
+        image => image.clone(),
+    };
+    let mut out = json!({
+        "app": report["app"],
+        "description": report["description"],
+        "phase": report["phase"],
+        "image": image,
+        "url": report["url"],
+        "ports": ports,
+        "assigned_by": report["assigned_by"],
+        "assigned_at": report["assigned_at"],
+    });
+    if !report["reachability"].is_null() {
+        out["reachability"] = report["reachability"].clone();
+    }
+    out
+}
+
+/// The caller's own apps, and the others by name and owner (an agent); every app grouped by
+/// owner (the lead agent, the user).
+struct MyApps(AppStatus);
+
+impl MyApps {
+    async fn list(&self, args: Value, scope: &Scope) -> Result<Value, ToolError> {
+        reject_unknown(arg_object(&args)?, &[])?;
+        let Some(read) = &self.0.read else {
+            return Ok(unreachable(&ClusterError::NotConfigured));
+        };
+        let names = match read.app_names().await {
+            Ok(names) => names,
+            Err(
+                e @ (ClusterError::Unreachable(_)
+                | ClusterError::NotConfigured
+                | ClusterError::Starting),
+            ) => return Ok(unreachable(&e)),
+            Err(e) => return Err(failed(e)),
+        };
+        let settings = &self.0.settings;
+        let me = scope.agent();
+        let mut yours = Vec::new();
+        let mut others = Vec::new();
+        // The lead agent's view: owner id (None: unassigned) → apps.
+        let mut groups: BTreeMap<Option<String>, Vec<Value>> = BTreeMap::new();
+        for name in names {
+            if let Some(me) = me {
+                match self.0.owner_unless(read.as_ref(), &name, me).await? {
+                    Ownedness::Mine => {}
+                    Ownedness::Gone => continue,
+                    Ownedness::Other(owner) => {
+                        // Name and owner only: nothing more of another agent's app is read.
+                        others.push(json!({"app": name, "owner": owner_name(&owner, settings)}));
+                        continue;
+                    }
+                }
+            }
+            let report = self.0.status(json!({ "app": name })).await?;
+            if report["k3s_reachable"] == false {
+                return Ok(report);
+            }
+            if report["phase"] == "not_installed" {
+                continue;
+            }
+            if me.is_some() {
+                yours.push(essentials(&report));
+            } else {
+                let id = report["agent"].as_str().map(str::to_string);
+                groups.entry(id).or_default().push(essentials(&report));
+            }
+        }
+        if let Some(me) = me {
+            return Ok(json!({
+                "you": settings.agents.as_ref().and_then(|n| n.name_of(me)).unwrap_or_else(|| me.to_string()),
+                "yours": yours,
+                "not_yours": others,
+                "rule": "Act only on `yours`. `not_yours` belong to other agents (owner null: \
+                    nobody): don't touch them; any call on one waits for the user's yes. When \
+                    names look alike (two Minecraft servers), yours is the one in `yours`.",
+            }));
+        }
+        // Agents' groups first (by id), the unassigned last.
+        let unassigned = groups.remove(&None);
+        let mut by_owner: Vec<Value> = groups
+            .into_iter()
+            .map(|(id, apps)| {
+                let owner = Owner::Agent(id.unwrap_or_default());
+                json!({"owner": owner_name(&owner, settings), "agent": owner.label_value(), "apps": apps})
+            })
+            .collect();
+        if let Some(apps) = unassigned {
+            by_owner.push(json!({"owner": Value::Null, "agent": Value::Null, "apps": apps}));
+        }
+        Ok(json!({ "by_owner": by_owner }))
+    }
+}
+
+impl Tool for MyApps {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "my_apps",
+            description: "Call this first whenever a request mentions an app. Agents: the apps \
+                you look after (`yours`: phase, image, `url`, `ports` addresses and \
+                `reachability` as app_status reports them, who assigned it to you and when) \
+                and, separately, the other agents' apps by name and `owner` only \
+                (`not_yours`): never touch those. When two apps look alike (e.g. two Minecraft \
+                servers), act on the one in `yours`. The lead agent: every app grouped by \
+                owner (`by_owner`; owner null = unassigned).",
+            // Names, phases, image references, addresses: what app_status reports.
+            labels: Labels::READ_ONLY,
+            params: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(async move { self.list(args, &Scope::Nothing).await })
+    }
+
+    fn call_in<'a>(
+        &'a self,
+        _task: TaskId,
+        ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.list(args, &ctx.scope))
     }
 }
 
@@ -1587,6 +1804,7 @@ pub(crate) fn status_report(
         "agent": ownership.as_ref().and_then(|o| o.owner.label_value()),
         "device": ownership.as_ref().and_then(|o| o.device.as_ref()),
         "assigned_by": ownership.as_ref().and_then(|o| o.assigned_by.as_ref()),
+        "assigned_at": ownership.as_ref().and_then(|o| o.assigned_at.as_ref()),
         "legacy_owner": ownership.as_ref().and_then(|o| o.legacy_owner.as_ref()),
         "installed_by": ownership.as_ref().map(|o| &o.installed_by),
         "installed_at": ownership.as_ref().map(|o| &o.installed_at),

@@ -27,6 +27,9 @@ pub struct Confirmation {
     /// The rule "Always allow" would save (who asks, the tool, its target). None: the call
     /// cannot become a rule (the user's own calls).
     pub rule: Option<Box<RuleOffer>>,
+    /// Only the user's own yes answers this one, for this one call: never an "Always allow"
+    /// rule, never No permission prompts (an agent acting on another agent's workspace).
+    pub user_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +117,30 @@ impl ConfirmationStore {
         reason: &str,
         rule: Option<RuleOffer>,
     ) -> (Confirmation, oneshot::Receiver<Verdict>) {
+        self.insert(task, tool, args, reason, rule, false)
+    }
+
+    /// [`ConfirmationStore::request`] that only the user's own yes answers
+    /// ([`Confirmation::user_only`]): no rule is offered and No permission prompts skips it.
+    pub fn request_user_only(
+        &self,
+        task: TaskId,
+        tool: &str,
+        args: &Value,
+        reason: &str,
+    ) -> (Confirmation, oneshot::Receiver<Verdict>) {
+        self.insert(task, tool, args, reason, None, true)
+    }
+
+    fn insert(
+        &self,
+        task: TaskId,
+        tool: &str,
+        args: &Value,
+        reason: &str,
+        rule: Option<RuleOffer>,
+        user_only: bool,
+    ) -> (Confirmation, oneshot::Receiver<Verdict>) {
         let (tx, rx) = oneshot::channel();
         let mut inner = lock(&self.inner);
         inner.next_id += 1;
@@ -125,6 +152,7 @@ impl ConfirmationStore {
             reason: reason.into(),
             created: SystemTime::now(),
             rule: rule.map(Box::new),
+            user_only,
         };
         inner.pending.insert(
             info.id,

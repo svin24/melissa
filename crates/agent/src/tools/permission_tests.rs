@@ -75,6 +75,7 @@ fn registry(audit: Option<AuditLog>, permissions: Permissions) -> ToolRegistry {
             ("minecraft", ADA),
             ("nextcloud", ADA),
             ("valheim", BO),
+            ("far", "d-ffffffff.a1"),
         ]))))
         .with_permissions(permissions)
         .with_confirm_timeout(Duration::from_secs(10))
@@ -198,7 +199,7 @@ async fn always_allow_saves_a_narrow_rule_and_later_calls_skip_the_prompt() {
 }
 
 #[tokio::test]
-async fn rules_do_not_cross_agents_and_never_override_refusals() {
+async fn rules_and_bypass_never_cross_agents_or_owners() {
     let reg = registry(None, Permissions::in_memory());
     // Ada may restart (no target) and update minecraft for good.
     for (tool, args) in [
@@ -222,17 +223,23 @@ async fn rules_do_not_cross_agents_and_never_override_refusals() {
     reg.confirmations().resolve(c.id, Verdict::Denied);
     assert_eq!(bo.await.unwrap(), Err(ToolError::Denied));
 
-    // Bo touching Ada's minecraft is refused outright, rule or bypass.
+    // Bo touching Ada's minecraft waits for the user's own yes, rule or bypass: neither
+    // answers it, "Always allow" can't make a rule of it, switching the bypass on skips it.
     reg.set_bypass(true).unwrap();
-    assert!(matches!(
-        runs_now(&reg, BO, "update_app", json!({"app": "minecraft"})).await,
-        Err(ToolError::Refused(_))
-    ));
-    // And so is Ada touching Bo's valheim.
-    assert!(matches!(
-        runs_now(&reg, ADA, "update_app", json!({"app": "valheim"})).await,
-        Err(ToolError::Refused(_))
-    ));
+    for (who, app) in [(BO, "minecraft"), (ADA, "valheim")] {
+        let call = spawn(&reg, 3, who, "update_app", json!({"app": app}));
+        let c = pending(&reg, 1).await.remove(0);
+        assert!(c.user_only && c.rule.is_none(), "{c:?}");
+        assert!(matches!(
+            reg.always_allow(c.id),
+            Err(AlwaysAllowError::NotOffered)
+        ));
+        assert!(reg.set_bypass(true).unwrap().is_empty());
+        assert_eq!(reg.confirmations().pending().len(), 1);
+        reg.confirmations().resolve(c.id, Verdict::Denied);
+        assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
+    }
+    assert_eq!(reg.permissions().rules().len(), 2);
     // Bad arguments too.
     assert!(matches!(
         runs_now(&reg, ADA, "update_app", json!({})).await,
@@ -416,4 +423,33 @@ async fn rules_and_bypass_survive_a_restart() {
     assert!(reg.permissions().rules().is_empty());
     assert!(reg.permissions().bypass());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn refusals_with_an_owner_are_audited_with_both_sides() {
+    let dir = temp("cross-refused");
+    let path = dir.join("audit.jsonl");
+    let reg = registry(Some(AuditLog::new(&path)), Permissions::in_memory());
+    reg.set_bypass(true).unwrap();
+    // Another device's workspace is that device's lead agent's: refused, bypass or not.
+    let mut lead = TaskContext {
+        scope: Scope::Lead {
+            device: "d-0a1b2c3d".into(),
+        },
+        ..TaskContext::default()
+    };
+    let r = reg
+        .call(1, &mut lead, "update_app", json!({"app": "far"}))
+        .await;
+    assert!(matches!(r, Err(ToolError::Refused(_))), "{r:?}");
+    let crossed: Vec<Value> = audit_lines(&path)
+        .into_iter()
+        .filter(|l| l["action"] == "tool.cross_owner")
+        .collect();
+    assert_eq!(crossed.len(), 1);
+    assert_eq!(
+        crossed[0]["detail"],
+        "refused: the lead agent of d-0a1b2c3d → update `far` of agent d-ffffffff.a1"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }

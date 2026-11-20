@@ -1,23 +1,30 @@
-//! Workspace ownership and agent scopes: an agent changes only the workspaces it looks after.
+//! Workspace ownership and agent scopes: an agent acts only on the workspaces it looks after.
 //!
 //! The cluster model (docs/AGENT-MODEL.md): every **workspace** (today: an installed app) is owned by
-//! exactly one **agent**; an agent may change only its own workspaces; only the **Lead agent** or the
-//! **user** reassign workspaces. Every task has a [`Scope`] that says who it is. A tool declares
+//! exactly one **agent**; an agent may act only on its own workspaces; only the **lead agent** or
+//! the **user** reassign workspaces. Every task has a [`Scope`] that says who it is. A tool declares
 //! which argument names its workspace ([`Tool::target`]); the [`super::ToolRegistry`] checks the
 //! scope **before** the label policy, for every tool, in one place ([`check`]):
 //!
-//! - an agent on another agent's (or an unassigned) workspace → refused outright
-//!   (`ToolError::Refused("not yours: …")`, audited `tool.refused`), never a confirmation a
-//!   tired human might click through;
+//! - an agent on another agent's (or an unassigned) workspace, for anything (reads included) →
+//!   never on its own: a confirmation only the user answers, for that one call
+//!   ([`ScopeDecision::AskUser`]: no "Always allow" rule and not No permission prompts either,
+//!   since ownership is a safety boundary, not a convenience prompt);
 //! - the lead agent on an agent's workspace → allowed; if the label policy asks the user anyway
 //!   (destructive actions always do), the confirmation names the owning agent
 //!   ([`ScopeDecision::Note`]);
 //! - the lead agent on an unassigned workspace (from before agents existed) → a confirmation: only the
 //!   user decides about those;
+//! - the lead agent on another device's workspace, or a session without a scope reading into or
+//!   changing a workspace → refused outright (`ToolError::Refused("not yours: …")`);
 //! - otherwise → the usual label policy.
 //!
+//! Every cross-owner attempt (asked, approved, denied, refused, and the lead agent's override) is
+//! audited `tool.cross_owner` naming both sides ([`crossing`]).
+//!
 //! Ownership is stored with the workspace (the `melissa.io/owner-agent` label on the app namespace)
-//! and read through [`ResourceOwners`]. A workspace without that label is [`Owner::Unassigned`].
+//! and read through [`ResourceOwners`] at every call, so a reassignment takes effect at once.
+//! A workspace without that label is [`Owner::Unassigned`].
 //!
 //! [`Tool::target`]: super::Tool::target
 
@@ -41,7 +48,8 @@ impl ResourceKind {
 /// What a call does to its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
-    /// Names, phases, counts: any task may read any workspace (e.g. `app_status`).
+    /// Names, phases, counts, addresses (e.g. `app_status`): the user, the lead agent, unscoped
+    /// readers (the UI) and the owning agent. Another agent needs the user's yes, each time.
     Read,
     /// Reads content from the workspace that the workspace controls (e.g. `app_logs`): its own agent,
     /// the lead agent and the user.
@@ -137,9 +145,9 @@ impl Scope {
     /// Does a call with `access` need the workspace's current owner to decide?
     pub fn needs_owner(&self, access: Access) -> bool {
         match (self, access) {
-            (_, Access::Read) | (Self::User | Self::Nothing, _) => false,
-            (Self::Lead { .. }, Access::ReadScoped) => false,
-            (Self::Lead { .. } | Self::Agent { .. }, _) => true,
+            (Self::User | Self::Nothing, _) => false,
+            (Self::Lead { .. }, Access::Read | Access::ReadScoped) => false,
+            (Self::Lead { .. }, Access::Change) | (Self::Agent { .. }, _) => true,
         }
     }
 
@@ -161,8 +169,46 @@ pub enum ScopeDecision {
     Note(String),
     /// Allowed after the user approves; the reason says why.
     Confirm(String),
+    /// Another agent's (or an unassigned) workspace: only the user may allow it, for this one
+    /// call. No "Always allow" rule and not No permission prompts can answer it.
+    AskUser(String),
     /// Out of scope: refused without asking anyone.
     Refuse(String),
+}
+
+/// `Ada`, or `agent <id>` when the name is unknown: for short confirmation texts.
+fn short_agent(names: Option<&dyn AgentNames>, id: &str) -> String {
+    names
+        .and_then(|n| n.name_of(id))
+        .unwrap_or_else(|| format!("agent {id}"))
+}
+
+/// Who acts on whose workspace, for the `tool.cross_owner` audit line, when `scope` acts on a
+/// workspace owned by someone else (another agent, or nobody): e.g. "agent Pip (d-….a3) → stop
+/// `minecraft` of agent Ada (d-….a1)". None: its own workspace, a new one, the user's call, or
+/// the owner was not looked up.
+pub fn crossing(
+    scope: &Scope,
+    target: &Target,
+    name: &str,
+    owner: Option<&Owner>,
+    names: Option<&dyn AgentNames>,
+) -> Option<String> {
+    let who = match scope {
+        Scope::Agent { id } => {
+            if owner == Some(&Owner::Agent(id.clone())) {
+                return None;
+            }
+            describe_agent(names, id)
+        }
+        Scope::Lead { device } => format!("the lead agent of {device}"),
+        Scope::User | Scope::Nothing => return None,
+    };
+    let whose = match owner? {
+        Owner::Agent(o) => describe_agent(names, o),
+        Owner::Unassigned => "nobody (unassigned)".into(),
+    };
+    Some(format!("{who} → {} `{name}` of {whose}", target.verb))
 }
 
 /// Decide whether a task with `scope` may do `target.access` to workspace `name`, owned by
@@ -175,7 +221,7 @@ pub fn check(
     names: Option<&dyn AgentNames>,
 ) -> ScopeDecision {
     let kind = target.kind.as_str();
-    if target.access == Access::Read {
+    if target.access == Access::Read && !matches!(scope, Scope::Agent { .. }) {
         return ScopeDecision::Allow;
     }
     match scope {
@@ -200,37 +246,39 @@ pub fn check(
             )),
             _ => ScopeDecision::Allow,
         },
-        Scope::Agent { id } => match owner {
-            Some(Owner::Agent(o)) if o == id => ScopeDecision::Allow,
-            // Creating is a change to a workspace that doesn't exist yet; it becomes the agent's.
-            None => ScopeDecision::Allow,
-            Some(Owner::Agent(other)) => ScopeDecision::Refuse(format!(
-                "not yours: the {kind} `{name}` belongs to {}; ask the lead agent",
-                describe_agent(names, other)
-            )),
-            Some(Owner::Unassigned) => ScopeDecision::Refuse(format!(
-                "not yours: the {kind} `{name}` is not assigned to any agent; only the lead agent or \
-                 the user may change it"
-            )),
-        },
+        Scope::Agent { id } => {
+            let me = short_agent(names, id);
+            let only = "Only you can allow this, and only this once";
+            match owner {
+                Some(Owner::Agent(o)) if o == id => ScopeDecision::Allow,
+                // Creating is a change to a workspace that doesn't exist yet; it becomes the
+                // agent's. Reading one that doesn't exist reads nothing of anyone's.
+                None => ScopeDecision::Allow,
+                Some(Owner::Agent(other)) => ScopeDecision::AskUser(format!(
+                    "{me} wants to {} {}'s `{name}` (not {me}'s). {only}",
+                    target.verb,
+                    short_agent(names, other),
+                )),
+                Some(Owner::Unassigned) => ScopeDecision::AskUser(format!(
+                    "{me} wants to {} `{name}`, which no agent looks after. {only}",
+                    target.verb,
+                )),
+            }
+        }
     }
 }
 
 /// Adjust what a task sees of a targeted tool: `false` hides the tool; otherwise the target
 /// argument's description says what is in scope.
 pub fn present(scope: &Scope, target: &Target, params: &mut serde_json::Value) -> bool {
-    if target.access == Access::Read {
-        return true;
-    }
     match scope {
         Scope::User | Scope::Lead { .. } => return true,
-        Scope::Nothing => return false,
+        Scope::Nothing => return target.access == Access::Read,
         Scope::Agent { .. } => {}
     }
     let note = format!(
-        "You may only {} the {}s you look after and new ones you create (they become yours). \
-         Others are refused.",
-        target.verb,
+        "Only the {}s you look after (my_apps lists them) and new ones you create (they become \
+         yours). Another agent's needs the user's yes, each time.",
         target.kind.as_str(),
     );
     if let Some(prop) = params
@@ -365,42 +413,69 @@ mod tests {
     }
 
     #[test]
-    fn a_agent_may_not_touch_another_agents_workspace() {
-        let d = check_(
-            &agent(ADA),
-            &UNINSTALL,
-            "nextcloud",
-            Some(&Owner::Agent(BO.into())),
-        );
+    fn a_agent_never_touches_another_agents_workspace_on_its_own() {
+        // Changes, scoped reads and plain reads alike: only the user's yes, for one call.
+        for t in [&UNINSTALL, &LOGS, &STATUS] {
+            let d = check_(&agent(ADA), t, "nextcloud", Some(&Owner::Agent(BO.into())));
+            assert_eq!(
+                d,
+                ScopeDecision::AskUser(format!(
+                    "Ada wants to {} Bo's `nextcloud` (not Ada's). Only you can allow this, and \
+                     only this once",
+                    t.verb
+                ))
+            );
+        }
         assert_eq!(
-            d,
-            ScopeDecision::Refuse(
-                "not yours: the workspace `nextcloud` belongs to agent Bo (d-0a1b2c3d.a2); ask the lead agent"
+            check_(&agent(ADA), &UNINSTALL, "old", Some(&Owner::Unassigned)),
+            ScopeDecision::AskUser(
+                "Ada wants to uninstall `old`, which no agent looks after. Only you can allow \
+                 this, and only this once"
                     .into()
             )
         );
+        // Without names, the ids.
         assert!(matches!(
-            check_(&agent(ADA), &UNINSTALL, "old", Some(&Owner::Unassigned)),
-            ScopeDecision::Refuse(r) if r.contains("not assigned to any agent")
+            check(&agent(ADA), &STATUS, "n", Some(&Owner::Agent(BO.into())), None),
+            ScopeDecision::AskUser(r) if r.starts_with("agent d-0a1b2c3d.a1 wants to check agent d-0a1b2c3d.a2's `n`")
         ));
-        assert!(matches!(
-            check_(
-                &agent(ADA),
-                &LOGS,
-                "nextcloud",
-                Some(&Owner::Agent(BO.into()))
-            ),
-            ScopeDecision::Refuse(_)
-        ));
-        // Reads of names and phases stay open.
+    }
+
+    #[test]
+    fn crossings_name_both_sides() {
+        let bo = Owner::Agent(BO.into());
         assert_eq!(
-            check_(
+            crossing(
                 &agent(ADA),
-                &STATUS,
+                &UNINSTALL,
                 "nextcloud",
-                Some(&Owner::Agent(BO.into()))
-            ),
-            ScopeDecision::Allow
+                Some(&bo),
+                Some(&Names)
+            )
+            .as_deref(),
+            Some("agent Ada (d-0a1b2c3d.a1) → uninstall `nextcloud` of agent Bo (d-0a1b2c3d.a2)")
+        );
+        assert_eq!(
+            crossing(
+                &lead(),
+                &UNINSTALL,
+                "old",
+                Some(&Owner::Unassigned),
+                Some(&Names)
+            )
+            .as_deref(),
+            Some("the lead agent of d-0a1b2c3d → uninstall `old` of nobody (unassigned)")
+        );
+        // Its own, a new one, the user's: no crossing.
+        let ada = Owner::Agent(ADA.into());
+        assert_eq!(
+            crossing(&agent(ADA), &UNINSTALL, "n", Some(&ada), None),
+            None
+        );
+        assert_eq!(crossing(&agent(ADA), &UNINSTALL, "n", None, None), None);
+        assert_eq!(
+            crossing(&Scope::User, &UNINSTALL, "n", Some(&bo), None),
+            None
         );
     }
 
@@ -489,7 +564,9 @@ mod tests {
         assert!(!lead().needs_owner(Access::ReadScoped));
         assert!(lead().needs_owner(Access::Change));
         assert!(agent(ADA).needs_owner(Access::ReadScoped));
-        assert!(!agent(ADA).needs_owner(Access::Read));
+        assert!(agent(ADA).needs_owner(Access::Read));
+        assert!(!lead().needs_owner(Access::Read));
+        assert!(!Scope::Nothing.needs_owner(Access::Read));
         assert!(!Scope::User.needs_owner(Access::Change));
         assert_eq!(agent(ADA).agent(), Some(ADA));
         assert_eq!(lead().agent(), None);

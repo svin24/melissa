@@ -6,7 +6,8 @@
 //! its arguments. Before the policy, the registry checks the task's [`Scope`]: agents
 //! change only resources that belong to them ([`scope`]). A confirmation the owner answered
 //! for good ("Always allow" rules, or No permission prompts in developer mode) is approved
-//! without asking ([`permissions`]); refusals stay refusals.
+//! without asking ([`permissions`]); refusals stay refusals, and an agent's call on another
+//! agent's workspace waits for the user's own yes, every time.
 
 mod builtin;
 mod confirm;
@@ -28,8 +29,8 @@ pub use permissions::{
 };
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext, RUNS_SOFTWARE};
 pub use scope::{
-    describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope, ScopeDecision,
-    Target, WorkspaceInfo, WorkspaceStore,
+    crossing, describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope,
+    ScopeDecision, Target, WorkspaceInfo, WorkspaceStore,
 };
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
@@ -308,14 +309,24 @@ impl ToolRegistry {
 
         let mut reasons = Vec::new();
         let mut note = None;
+        // Only the user's own yes, for this call (another agent's workspace).
+        let mut user_only = false;
+        // Who acts on whose workspace, when it is not the caller's own (audited both sides).
+        let mut crossed = None;
         // Refusals end here (the scope check), before any rule or the bypass is looked at.
         let mut offer = match tool.target() {
             Some(target) => {
-                match self
+                let (decision, crossing) = self
                     .check_scope(task, ctx, name, &target, &args, &hash)
-                    .await?
-                {
+                    .await?;
+                crossed = crossing;
+                match decision {
                     ScopeDecision::Confirm(reason) => reasons.push(reason),
+                    ScopeDecision::AskUser(reason) => {
+                        // Asked whatever the label policy says; whose it is goes first.
+                        user_only = true;
+                        note = Some(reason);
+                    }
                     ScopeDecision::Note(n) => note = Some(n),
                     ScopeDecision::Allow | ScopeDecision::Refuse(_) => {}
                 }
@@ -327,6 +338,10 @@ impl ToolRegistry {
         };
         if let Decision::Confirm(reason) = decide(name, &spec.labels, ctx) {
             reasons.push(reason);
+        }
+        if user_only {
+            // Nothing to remember: no rule may ever cover it.
+            offer = None;
         }
         match tool.owner_approval(ctx, &args) {
             Ok(None) => {}
@@ -340,7 +355,7 @@ impl ToolRegistry {
                 return Err(e);
             }
         }
-        if !reasons.is_empty() {
+        if !reasons.is_empty() || user_only {
             // Whoever answers sees whose workspace it is first, then what the call does.
             if let Some(d) = tool.describe_call(&args) {
                 reasons.insert(0, d);
@@ -348,15 +363,51 @@ impl ToolRegistry {
             if let Some(n) = note {
                 reasons.insert(0, n);
             }
-            self.confirm_within(
+            if let Some(c) = &crossed {
+                self.audit(
+                    task,
+                    "tool.cross_owner",
+                    name,
+                    &hash,
+                    &format!("asked: {c}"),
+                );
+            }
+            let answer = self
+                .ask(
+                    task,
+                    offer,
+                    name,
+                    &args,
+                    &reasons.join("; "),
+                    ctx.confirm_wait,
+                    user_only,
+                )
+                .await;
+            if let Some(c) = &crossed {
+                let outcome = match &answer {
+                    Ok(()) if user_only => "approved by the user (this call only)".to_string(),
+                    Ok(()) => "approved".to_string(),
+                    Err(ToolError::Denied) => "denied by the user".to_string(),
+                    Err(e) => format!("not approved ({e})"),
+                };
+                self.audit(
+                    task,
+                    "tool.cross_owner",
+                    name,
+                    &hash,
+                    &format!("{outcome}: {c}"),
+                );
+            }
+            answer?;
+        } else if let Some(c) = &crossed {
+            // The lead agent's override (its device's agents' workspaces): allowed, on record.
+            self.audit(
                 task,
-                offer,
+                "tool.cross_owner",
                 name,
-                &args,
-                &reasons.join("; "),
-                ctx.confirm_wait,
-            )
-            .await?;
+                &hash,
+                &format!("allowed (lead agent): {c}"),
+            );
         }
 
         let audited = args.clone();
@@ -375,8 +426,9 @@ impl ToolRegistry {
         result
     }
 
-    /// The scope check for a targeted call: `Allow`, `Note` or `Confirm`; out of scope is
-    /// `Err(Refused)` (audited `tool.refused`).
+    /// The scope check for a targeted call: `Allow`, `Note`, `Confirm` or `AskUser`, with who
+    /// acts on whose workspace when it is not the caller's ([`crossing`]); out of scope is
+    /// `Err(Refused)` (audited `tool.refused`, and `tool.cross_owner` when it had an owner).
     async fn check_scope(
         &self,
         task: TaskId,
@@ -385,7 +437,7 @@ impl ToolRegistry {
         target: &Target,
         args: &Value,
         hash: &str,
-    ) -> Result<ScopeDecision, ToolError> {
+    ) -> Result<(ScopeDecision, Option<String>), ToolError> {
         let resource = match args.get(target.arg) {
             Some(Value::String(s)) => s.as_str(),
             _ => {
@@ -408,6 +460,13 @@ impl ToolRegistry {
         } else {
             None
         };
+        let crossed = crossing(
+            &ctx.scope,
+            target,
+            resource,
+            owner.as_ref(),
+            self.agent_names(),
+        );
         match scope::check(
             &ctx.scope,
             target,
@@ -417,9 +476,13 @@ impl ToolRegistry {
         ) {
             ScopeDecision::Refuse(reason) => {
                 self.audit(task, "tool.refused", name, hash, &reason);
+                if let Some(c) = &crossed {
+                    let detail = format!("refused: {c}");
+                    self.audit(task, "tool.cross_owner", name, hash, &detail);
+                }
                 Err(ToolError::Refused(reason))
             }
-            other => Ok(other),
+            other => Ok((other, crossed)),
         }
     }
 
@@ -454,15 +517,42 @@ impl ToolRegistry {
         reason: &str,
         wait: Option<Duration>,
     ) -> Result<(), ToolError> {
+        self.ask(task, rule, name, args, reason, wait, false).await
+    }
+
+    /// [`ToolRegistry::confirm_within`]; `user_only`: only the user's own answer counts (no
+    /// rule, no bypass; [`Confirmation::user_only`]).
+    #[allow(clippy::too_many_arguments)]
+    async fn ask(
+        &self,
+        task: TaskId,
+        rule: Option<RuleOffer>,
+        name: &str,
+        args: &Value,
+        reason: &str,
+        wait: Option<Duration>,
+        user_only: bool,
+    ) -> Result<(), ToolError> {
         let hash = args_hash(args);
         let key = rule.as_ref().map(|r| r.key.clone());
-        if let Some(grant) = self.permissions.grant(key.as_ref()) {
+        let grant = || {
+            if user_only {
+                None
+            } else {
+                self.permissions.grant(key.as_ref())
+            }
+        };
+        if let Some(grant) = grant() {
             self.audit_grant(task, "tool.auto_approved", name, &hash, grant, reason);
             return Ok(());
         }
-        let (info, rx) = self
-            .confirmations
-            .request_with(task, name, args, reason, rule);
+        let (info, rx) = if user_only {
+            self.confirmations
+                .request_user_only(task, name, args, reason)
+        } else {
+            self.confirmations
+                .request_with(task, name, args, reason, rule)
+        };
         let _withdraw = Withdraw {
             store: &self.confirmations,
             id: info.id,
@@ -470,7 +560,7 @@ impl ToolRegistry {
         self.audit(task, "tool.confirm_requested", name, &hash, reason);
         // A rule saved (or the bypass switched on) while this was being registered may have
         // looked at the inbox just before it: check once more.
-        if let Some(grant) = self.permissions.grant(key.as_ref()) {
+        if let Some(grant) = grant() {
             self.approve_granted(&info, grant);
         }
         let verdict = match tokio::time::timeout(wait.unwrap_or(self.confirm_timeout), rx).await {
@@ -546,7 +636,7 @@ impl ToolRegistry {
 
     /// The owner switches No permission prompts (audited `permissions.bypass`, `on`/`off`).
     /// Switching it on approves every pending confirmation (`confirmation.auto_approved`, actor
-    /// `bypass`), which are returned.
+    /// `bypass`) except user-only ones ([`Confirmation::user_only`]), and returns them.
     pub fn set_bypass(&self, on: bool) -> Result<Vec<Confirmation>, PermissionsError> {
         if self.permissions.set_bypass(on)? {
             let detail = if on { "on" } else { "off" };
@@ -559,6 +649,8 @@ impl ToolRegistry {
             .confirmations
             .pending()
             .iter()
+            // Another agent's workspace: the user's own yes only, never the bypass.
+            .filter(|c| !c.user_only)
             .filter_map(|c| self.approve_granted(c, Grant::Bypass))
             .collect())
     }

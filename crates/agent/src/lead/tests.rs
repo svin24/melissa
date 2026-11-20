@@ -1597,7 +1597,7 @@ async fn agent_tool_guards_time_limits_and_concurrency() {
 }
 
 #[tokio::test]
-async fn agent_a_is_refused_on_agent_bs_workspace_and_never_sees_the_leads_tools() {
+async fn agent_a_needs_the_users_yes_on_agent_bs_workspace_and_never_sees_the_leads_tools() {
     let s = setup_full(
         scratch("agent-scope"),
         Vec::new(),
@@ -1640,26 +1640,35 @@ async fn agent_a_is_refused_on_agent_bs_workspace_and_never_sees_the_leads_tools
     .await;
     assert!(err_text(&r).contains("unknown tool"), "{r}");
 
-    // Bo's workspace: refused outright, audited, nobody asked.
-    let r = call(
-        &s.server,
-        &ada,
-        "uninstall_app",
-        json!({"app": "nextcloud"}),
-    )
-    .await;
+    // Bo's workspace: never on Ada's own, only the user's yes for this one call (denied here),
+    // audited on Ada's task with both agents.
+    let call_bos = {
+        let (server, ada) = (s.server.clone(), ada.clone());
+        tokio::spawn(async move {
+            call(&server, &ada, "uninstall_app", json!({"app": "nextcloud"})).await
+        })
+    };
+    let c = pending(&s).await;
+    assert!(c.user_only && c.rule.is_none(), "{c:?}");
     assert_eq!(
-        err_text(&r),
-        "refused: not yours: the workspace `nextcloud` belongs to agent Bo (d-0a1b2c3d.a2); ask the lead agent"
+        c.reason,
+        "Ada wants to uninstall Bo's `nextcloud` (not Ada's). Only you can allow this, and only \
+         this once; destructive action"
     );
-    assert!(s.lead.confirmations().pending().is_empty());
-    let refused: Vec<Value> = s
+    s.lead.confirmations().resolve(c.id, Verdict::Denied);
+    assert_eq!(err_text(&call_bos.await.unwrap()), "denied by a human");
+    let crossed: Vec<Value> = s
         .audit_lines()
         .into_iter()
-        .filter(|l| l["action"] == "tool.refused")
+        .filter(|l| l["action"] == "tool.cross_owner")
         .collect();
-    assert_eq!(refused.len(), 1);
-    assert_ne!(refused[0]["task"], json!(s.lead.task_id()));
+    assert_eq!(crossed.len(), 2);
+    assert_ne!(crossed[0]["task"], json!(s.lead.task_id()));
+    assert_eq!(
+        crossed[1]["detail"],
+        "denied by the user: agent Ada (d-0a1b2c3d.a1) → uninstall `nextcloud` of agent Bo \
+         (d-0a1b2c3d.a2)"
+    );
     // Its own workspace: the usual policy (destructive: asks), nothing about ownership.
     let call_own = {
         let (server, ada) = (s.server.clone(), ada.clone());
