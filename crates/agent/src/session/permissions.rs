@@ -9,7 +9,9 @@
 //!   human becomes a confirmation in the inbox ([`ToolRegistry::confirm`]).
 //!
 //! Every answer is audited as `agent.permission` (actor `agent`, input hashed). Answers are
-//! always one-off; "always" grants are never given (see [`PermissionDecision`]).
+//! always one-off; "always" grants are never given to the CLI (see [`PermissionDecision`]):
+//! the owner's "Always allow" rules live in Melissa and are checked on every request
+//! ([`ToolRegistry::confirm`]).
 
 use serde_json::Value;
 
@@ -18,7 +20,7 @@ use crate::{
     mcp::McpServer,
     tools::{
         policy::{self, Decision, Effect, Labels, TaskContext},
-        ToolError, ToolRegistry,
+        RuleOffer, ToolError, ToolRegistry,
     },
     BoxFuture, TaskId,
 };
@@ -96,9 +98,12 @@ impl PolicyPermissions {
             Decision::Allow => (PermissionDecision::AllowOnce, "policy: allowed".into()),
             Decision::Confirm(reason) => {
                 let args = serde_json::json!({"title": req.title, "input": req.raw_input});
+                // "Always allow" for an agent's own tool covers that kind for that agent
+                // (e.g. Ada may run commands in her sandbox).
+                let rule = RuleOffer::new(&ctx.scope, &name, None);
                 match self
                     .registry
-                    .confirm(self.ctx.task, &name, &args, &reason)
+                    .confirm(self.ctx.task, rule, &name, &args, &reason)
                     .await
                 {
                     Ok(()) => (PermissionDecision::AllowOnce, format!("approved: {reason}")),

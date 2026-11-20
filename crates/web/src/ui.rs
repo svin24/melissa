@@ -13,8 +13,9 @@
 //! - `GET /ui/strip`, `GET /ui/cluster/apps`: fragments that poll (apps change slowly).
 //! - `POST /ui/messages` / `POST /ui/agents/{agent}/messages` (multipart: `text` and any
 //!   number of `files`; or a urlencoded `text`), `POST /ui/cancel` /
-//!   `POST /ui/agents/{agent}/cancel`, `POST /ui/confirmations/{id}/approve|deny`: the same calls
-//!   as the JSON API. htmx gets a fragment; a plain form post gets a redirect.
+//!   `POST /ui/agents/{agent}/cancel`, `POST /ui/confirmations/{id}/approve|deny|always`: the
+//!   same calls as the JSON API (`always` approves and saves the "Always allow" rule). htmx
+//!   gets a fragment; a plain form post gets a redirect.
 //! - `POST /ui/backend` / `POST /ui/agents/{agent}/backend` (form `choice`: `<backend>` or
 //!   `<backend> <model>`, posted with the composer like Stop): switch the agent from the
 //!   next turn. htmx gets the composer status (with the menu, or why it was refused);
@@ -43,7 +44,7 @@ use maud::Markup;
 use melissa_agent::{
     attachments::{self, AttachmentError, Upload, MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES},
     lead::{agents::AgentView, events::EventLog, Lead, LeadError, LeadStatus},
-    tools::Verdict,
+    tools::{AlwaysAllowError, RuleOffer, ToolRegistry, Verdict},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -51,7 +52,7 @@ use serde_json::Value;
 use crate::{
     agents,
     components::{composer_status, AgentMenu, ApprovalState},
-    feed::{approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
+    feed::{always_words, approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, Frame, View, Who},
     state::ClusterCache,
@@ -141,9 +142,22 @@ impl Lookup for Ui {
     fn agent_name(&self, agent: &str) -> Option<String> {
         self.lead.agents().get(agent).map(|b| b.name)
     }
+
+    fn rule_offer(&self, id: u64) -> Option<RuleOffer> {
+        self.lead
+            .confirmations()
+            .get(id)
+            .and_then(|c| c.rule)
+            .map(|r| *r)
+    }
 }
 
 impl Ui {
+    /// The tool registry: confirmations and the owner's standing permissions.
+    pub(crate) fn registry(&self) -> &ToolRegistry {
+        self.lead.server().registry()
+    }
+
     /// A conversation's event log.
     fn log(&self, who: Who<'_>) -> Result<EventLog, LeadError> {
         match who {
@@ -219,6 +233,7 @@ impl Ui {
         let agents = self.lead.agents().list();
         let past = self.lead.past_chats();
         page(&Frame {
+            bypass: self.registry().permissions().bypass(),
             waiting: self.waiting(),
             snap: &snap,
             agents: &agents,
@@ -323,6 +338,7 @@ async fn approvals_page(State(ui): State<Ui>) -> Markup {
         .into_iter()
         .map(|c| {
             let mut a = approval_words(c.id, &c.tool, &c.reason, Some(&c.args), &ui);
+            a.always = c.rule.as_ref().map(|o| always_words(o, &ui));
             ui.label_asker(&mut a, c.task);
             a
         })
@@ -898,6 +914,7 @@ async fn resolve(
     let verdict = match verdict.as_str() {
         "approve" => Verdict::Approved,
         "deny" => Verdict::Denied,
+        "always" => return always_allow(&ui, &headers, id),
         _ => return (StatusCode::NOT_FOUND, pages::not_found()).into_response(),
     };
     let resolved = ui.lead.resolve_confirmation(id, verdict);
@@ -920,6 +937,32 @@ async fn resolve(
             pages::approval_content(&a, &target).into_response()
         }
         None => pages::approval_gone().into_response(),
+    }
+}
+
+/// "Always allow": approve confirmation `id` and save its rule (with any other pending
+/// confirmation the rule matches). The card shows the outcome.
+fn always_allow(ui: &Ui, headers: &HeaderMap, id: u64) -> Response {
+    let done = ui.registry().always_allow(id);
+    if !is_htmx(headers) {
+        return Redirect::to("/approvals").into_response();
+    }
+    match done {
+        Ok(done) => match done.approved.into_iter().find(|c| c.id == id) {
+            Some(c) => {
+                let mut a = approval_words(c.id, &c.tool, &c.reason, Some(&c.args), ui);
+                if !from_helper_chat(headers) {
+                    ui.label_asker(&mut a, c.task);
+                }
+                a.state = ApprovalState::Approved;
+                let target = pages::entry_id(&format!("c{id}"));
+                pages::approval_content(&a, &target).into_response()
+            }
+            // Saved, but this one timed out meanwhile.
+            None => pages::approval_gone().into_response(),
+        },
+        Err(AlwaysAllowError::Gone(_)) => pages::approval_gone().into_response(),
+        Err(e) => pages::approval_error(&e.to_string()).into_response(),
     }
 }
 

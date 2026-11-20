@@ -7,11 +7,11 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 
 use crate::{
     components::{
-        action_button, activity_row, add_app_tile, app_dialog, app_grid, app_page, app_strip,
-        app_tile, approval_card, badge, card, chat_divider, composer, composer_status, crumbs,
-        device_card, empty_state, facts, feed, feed_entry, lead_message, link, live_region,
-        live_region_on, log_view, markdown, note, oob_inner, page, page_header, plain_text,
-        post_form, rail, relayed_message, section, select_field, table, textarea_field,
+        action_button, activity_row, add_app_tile, app_dialog, app_grid, app_page_warned,
+        app_strip, app_tile, approval_card, badge, bypass_banner, card, chat_divider, composer,
+        composer_status, crumbs, device_card, empty_state, facts, feed, feed_entry, lead_message,
+        link, live_region, live_region_on, log_view, markdown, note, oob_inner, page, page_header,
+        plain_text, post_form, rail, relayed_message, section, select_field, table, textarea_field,
         thought_row, truncated, user_message_with, waiting_count, AppWorkspace, ApprovalCard,
         Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID,
         COMPOSER_STATUS_ID, FEED_ID,
@@ -43,6 +43,8 @@ fn device_health(d: &Device) -> (Health, &'static str) {
 
 /// What every page with the rail needs.
 pub struct Frame<'a> {
+    /// No permission prompts is on (developer mode): every page warns.
+    pub bypass: bool,
     pub waiting: usize,
     pub snap: &'a ClusterSnapshot,
     pub agents: &'a [AgentView],
@@ -50,6 +52,14 @@ pub struct Frame<'a> {
     pub past: &'a [PastChat],
     /// The `Host` the visitor used (for app links), if the page needs it.
     pub host: Option<&'a str>,
+}
+
+/// A page with the rail, warned while No permission prompts is on.
+pub fn shell(f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
+    let warning = f
+        .bypass
+        .then(|| bypass_banner(crate::settings::pages::DEVELOPER_URL));
+    app_page_warned(title, warning, rail, main)
 }
 
 /// An archived chat's page.
@@ -252,7 +262,17 @@ pub fn approval_content(a: &Approval, target: &str) -> Markup {
         yes: a.yes,
         no: a.no,
         state: a.state,
+        always: a.always.as_deref(),
     })
+}
+
+/// Shown when "Always allow" could not save its rule (nothing was approved).
+pub fn approval_error(text: &str) -> Markup {
+    note(
+        "Couldn't save that. Nothing was allowed.",
+        Some(text),
+        crate::components::NoteTone::Caution,
+    )
 }
 
 /// Shown when an approve/deny button is pressed for a confirmation that is already gone.
@@ -402,7 +422,8 @@ pub struct ChatView<'a> {
 
 /// The chat with Melissa (the lead agent): home.
 pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
-    app_page(
+    shell(
+        f,
         "Chat",
         rail_for(Nav::Chat, f, None),
         html! {
@@ -441,7 +462,8 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
             workspaces.join(", ")
         ),
     };
-    app_page(
+    shell(
+        f,
         &agent.name,
         rail_for(Nav::Helper, f, Some(&agent.id)),
         html! {
@@ -489,7 +511,8 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed) -> Markup {
         short_date(chat.started),
         short_date(chat.ended)
     );
-    app_page(
+    shell(
+        f,
         "Past chat",
         rail_with(Nav::PastChat, f, None, Some(chat.id)),
         html! {
@@ -648,7 +671,8 @@ pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
 
 pub fn cluster(f: &Frame<'_>) -> Markup {
     let snap = f.snap;
-    app_page(
+    shell(
+        f,
         "Apps and devices",
         rail_for(Nav::Cluster, f, None),
         html! {
@@ -672,7 +696,8 @@ pub fn cluster(f: &Frame<'_>) -> Markup {
 
 pub fn approvals(f: &Frame<'_>, list: &[Approval], since: u64, epoch: u64) -> Markup {
     let stream = format!("/ui/stream?since={since}&epoch={epoch}&view=approvals");
-    app_page(
+    shell(
+        f,
         "Waiting for you",
         rail_for(Nav::Waiting, f, None),
         html! {
@@ -725,6 +750,7 @@ pub fn dashboard(
     let content = if f.is_some() {
         html! {
             (page_header("Developer", Some(lead)))
+            (card("Developer mode", crate::settings::pages::bypass_region(f.is_some_and(|f| f.bypass), false, None)))
             (card("New agent task", new_task_form(&offered)))
             (card("Agent tasks", tasks_region(tasks, None)))
             (card("Chat", crate::settings::pages::chat_prefs_region(show_steps, None)))

@@ -133,6 +133,12 @@ fn head(title: &str) -> Markup {
 
 /// A full page with the side rail: banner, rail, main column.
 pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
+    app_page_warned(title, None, rail, main)
+}
+
+/// [`app_page`] with a warning under the banner that stays on every page until it is dealt
+/// with (e.g. [`bypass_banner`]).
+pub fn app_page_warned(title: &str, warning: Option<Markup>, rail: Markup, main: Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -140,6 +146,7 @@ pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
             body {
                 a.skip href="#main" { "Skip to content" }
                 (banner())
+                @if let Some(w) = warning { (w) }
                 div.shell {
                     (rail)
                     main #main tabindex="-1" { (main) }
@@ -172,6 +179,18 @@ pub fn banner() -> Markup {
         p.banner role="note" {
             strong { "Pre-alpha." }
             " Things will break. Don't trust Melissa with data you can't lose yet."
+        }
+    }
+}
+
+/// The warning on every page while No permission prompts (developer mode) is on, with the
+/// way to turn it off at `href`.
+pub fn bypass_banner(href: &str) -> Markup {
+    html! {
+        p.banner.alarm role="alert" {
+            strong { "No permission prompts is on." }
+            " Agents act without asking you. "
+            a href=(href) { "Turn it off" }
         }
     }
 }
@@ -1033,6 +1052,8 @@ pub struct ApprovalCard<'a> {
     pub yes: &'a str,
     pub no: &'a str,
     pub state: ApprovalState,
+    /// The "Always allow" question (the rule it saves); None: no such button.
+    pub always: Option<&'a str>,
 }
 
 pub fn approval_card(c: &ApprovalCard<'_>) -> Markup {
@@ -1060,6 +1081,12 @@ pub fn approval_card(c: &ApprovalCard<'_>) -> Markup {
                     form method="post" action=(action("deny")) hx-post=(action("deny"))
                         hx-target=(target) hx-swap="innerHTML" {
                         button.secondary type="submit" { (c.no) }
+                    }
+                    @if let Some(question) = c.always {
+                        form method="post" action=(action("always")) hx-post=(action("always"))
+                            hx-target=(target) hx-swap="innerHTML" hx-confirm=(question) {
+                            button.secondary type="submit" title=(question) { "Always allow" }
+                        }
                     }
                 },
                 ApprovalState::Approved => p.outcome.ok { "You allowed this." },
@@ -2027,6 +2054,7 @@ mod tests {
             yes: "Remove",
             no: "Keep it",
             state,
+            always: None,
         })
         .into_string()
     }

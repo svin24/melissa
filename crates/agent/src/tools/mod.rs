@@ -4,10 +4,15 @@
 //! [`Labels`] and the [`policy`] decides per call whether it runs now or waits for a human
 //! ([`ConfirmationStore`]). Every call, confirmation and refusal is audited with a hash of
 //! its arguments. Before the policy, the registry checks the task's [`Scope`]: agents
-//! change only resources that belong to them ([`scope`]).
+//! change only resources that belong to them ([`scope`]). A confirmation the owner answered
+//! for good ("Always allow" rules, or No permission prompts in developer mode) is approved
+//! without asking ([`permissions`]); refusals stay refusals.
 
 mod builtin;
 mod confirm;
+#[cfg(test)]
+mod permission_tests;
+pub mod permissions;
 pub mod policy;
 pub mod scope;
 
@@ -18,6 +23,9 @@ use sha2::{Digest, Sha256};
 
 pub use builtin::DeviceInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
+pub use permissions::{
+    ActionKey, Grant, Permissions, PermissionsError, Principal, Rule, RuleOffer,
+};
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext, RUNS_SOFTWARE};
 pub use scope::{
     describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope, ScopeDecision,
@@ -120,6 +128,28 @@ pub struct ToolRegistry {
     owners: Option<Arc<dyn ResourceOwners>>,
     /// Agent names for messages and confirmations.
     agents: Option<Arc<dyn AgentNames>>,
+    /// The owner's standing permissions (rules, bypass). Default: none, in memory.
+    permissions: Permissions,
+}
+
+/// Why "Always allow" could not save a rule.
+#[derive(Debug, thiserror::Error)]
+pub enum AlwaysAllowError {
+    #[error("no pending confirmation {0}")]
+    Gone(ConfirmationId),
+    #[error("this request cannot become a rule (it is not an agent's)")]
+    NotOffered,
+    #[error(transparent)]
+    Save(#[from] PermissionsError),
+}
+
+/// What "Always allow" did.
+#[derive(Debug, Clone)]
+pub struct AlwaysAllowed {
+    pub rule: Rule,
+    /// The confirmations it approved: the one asked about first, then any other pending
+    /// one the rule matches.
+    pub approved: Vec<Confirmation>,
 }
 
 impl ToolRegistry {
@@ -132,7 +162,22 @@ impl ToolRegistry {
             confirm_timeout: Duration::from_secs(15 * 60),
             owners: None,
             agents: None,
+            permissions: Permissions::default(),
         }
+    }
+
+    /// The owner's standing permissions ("Always allow" rules, No permission prompts).
+    /// Default: none, in memory only.
+    pub fn with_permissions(mut self, permissions: Permissions) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    /// The owner's standing permissions (read-only here; changes go through
+    /// [`ToolRegistry::always_allow`], [`ToolRegistry::remove_rule`] and
+    /// [`ToolRegistry::set_bypass`], which audit them).
+    pub fn permissions(&self) -> &Permissions {
+        &self.permissions
     }
 
     /// Where the scope check learns who owns a workspace. Without it, every workspace is treated as
@@ -246,16 +291,23 @@ impl ToolRegistry {
 
         let mut reasons = Vec::new();
         let mut note = None;
-        if let Some(target) = tool.target() {
-            match self
-                .check_scope(task, ctx, name, &target, &args, &hash)
-                .await?
-            {
-                ScopeDecision::Confirm(reason) => reasons.push(reason),
-                ScopeDecision::Note(n) => note = Some(n),
-                ScopeDecision::Allow | ScopeDecision::Refuse(_) => {}
+        // Refusals end here (the scope check), before any rule or the bypass is looked at.
+        let offer = match tool.target() {
+            Some(target) => {
+                match self
+                    .check_scope(task, ctx, name, &target, &args, &hash)
+                    .await?
+                {
+                    ScopeDecision::Confirm(reason) => reasons.push(reason),
+                    ScopeDecision::Note(n) => note = Some(n),
+                    ScopeDecision::Allow | ScopeDecision::Refuse(_) => {}
+                }
+                args.get(target.arg)
+                    .and_then(Value::as_str)
+                    .and_then(|r| RuleOffer::new(&ctx.scope, name, Some((&target, r))))
             }
-        }
+            None => RuleOffer::new(&ctx.scope, name, None),
+        };
         if let Decision::Confirm(reason) = decide(name, &spec.labels, ctx) {
             reasons.push(reason);
         }
@@ -267,7 +319,8 @@ impl ToolRegistry {
             if let Some(n) = note {
                 reasons.insert(0, n);
             }
-            self.confirm(task, name, &args, &reasons.join("; ")).await?;
+            self.confirm(task, offer, name, &args, &reasons.join("; "))
+                .await?;
         }
 
         let audited = args.clone();
@@ -338,20 +391,37 @@ impl ToolRegistry {
     /// the confirmation timeout. Audited (`tool.confirm_requested`, then `tool.approved`,
     /// `tool.denied` or `tool.confirm_timeout`). If the returned future is dropped (task
     /// cancelled), the confirmation is withdrawn from the inbox.
+    ///
+    /// `rule`: what "Always allow" would save. A saved rule matching it, or No permission
+    /// prompts, approves at once without asking (audited `tool.auto_approved`, actor `rule` or
+    /// `bypass`). Call this only for calls that passed the scope and argument checks.
     pub async fn confirm(
         &self,
         task: TaskId,
+        rule: Option<RuleOffer>,
         name: &str,
         args: &Value,
         reason: &str,
     ) -> Result<(), ToolError> {
         let hash = args_hash(args);
-        let (info, rx) = self.confirmations.request(task, name, args, reason);
+        let key = rule.as_ref().map(|r| r.key.clone());
+        if let Some(grant) = self.permissions.grant(key.as_ref()) {
+            self.audit_grant(task, "tool.auto_approved", name, &hash, grant, reason);
+            return Ok(());
+        }
+        let (info, rx) = self
+            .confirmations
+            .request_with(task, name, args, reason, rule);
         let _withdraw = Withdraw {
             store: &self.confirmations,
             id: info.id,
         };
         self.audit(task, "tool.confirm_requested", name, &hash, reason);
+        // A rule saved (or the bypass switched on) while this was being registered may have
+        // looked at the inbox just before it: check once more.
+        if let Some(grant) = self.permissions.grant(key.as_ref()) {
+            self.approve_granted(&info, grant);
+        }
         let verdict = match tokio::time::timeout(self.confirm_timeout, rx).await {
             Ok(Ok(v)) => v,
             // Store dropped the sender (shouldn't happen): treat as no.
@@ -367,6 +437,142 @@ impl ToolRegistry {
         }
         self.audit(task, "tool.approved", name, &hash, reason);
         Ok(())
+    }
+
+    /// The owner's "Always allow" on pending confirmation `id`: saves the rule it offers
+    /// (audited `permissions.rule_added`, actor `ui`), approves it (`confirmation.approved`)
+    /// and every other pending confirmation the rule matches (`confirmation.auto_approved`,
+    /// actor `rule`). Never reachable from a tool: only the owner's UI and API call this.
+    pub fn always_allow(&self, id: ConfirmationId) -> Result<AlwaysAllowed, AlwaysAllowError> {
+        let asked = self
+            .confirmations
+            .get(id)
+            .ok_or(AlwaysAllowError::Gone(id))?;
+        let offer = asked.rule.clone().ok_or(AlwaysAllowError::NotOffered)?;
+        let (rule, new) = self.permissions.add(&offer)?;
+        if new {
+            self.audit_owner(
+                asked.task,
+                "permissions.rule_added",
+                &format!("rule {}: {}", rule.id, self.describe_rule(&rule)),
+                Some((&asked.tool, &args_hash(&asked.args))),
+            );
+        }
+        let mut approved = Vec::new();
+        // The one asked about first, as the owner's own yes.
+        if let Some(c) = self.confirmations.resolve(id, Verdict::Approved) {
+            self.audit_owner(
+                c.task,
+                "confirmation.approved",
+                &format!("confirmation {id} (always, rule {}): {}", rule.id, c.reason),
+                Some((&c.tool, &args_hash(&c.args))),
+            );
+            approved.push(c);
+        }
+        for c in self.confirmations.pending() {
+            if c.rule.as_ref().is_some_and(|o| o.key == rule.key) {
+                if let Some(c) = self.approve_granted(&c, Grant::Rule(rule.id)) {
+                    approved.push(c);
+                }
+            }
+        }
+        Ok(AlwaysAllowed { rule, approved })
+    }
+
+    /// The owner removes rule `id` (audited `permissions.rule_removed`). None: no such rule.
+    pub fn remove_rule(&self, id: u64) -> Result<Option<Rule>, PermissionsError> {
+        let removed = self.permissions.remove(id)?;
+        if let Some(rule) = &removed {
+            let detail = format!("rule {}: {}", rule.id, self.describe_rule(rule));
+            self.audit_owner(0, "permissions.rule_removed", &detail, None);
+        }
+        Ok(removed)
+    }
+
+    /// The owner switches No permission prompts (audited `permissions.bypass`, `on`/`off`).
+    /// Switching it on approves every pending confirmation (`confirmation.auto_approved`, actor
+    /// `bypass`), which are returned.
+    pub fn set_bypass(&self, on: bool) -> Result<Vec<Confirmation>, PermissionsError> {
+        if self.permissions.set_bypass(on)? {
+            let detail = if on { "on" } else { "off" };
+            self.audit_owner(0, "permissions.bypass", detail, None);
+        }
+        if !on {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .confirmations
+            .pending()
+            .iter()
+            .filter_map(|c| self.approve_granted(c, Grant::Bypass))
+            .collect())
+    }
+
+    /// `let agent Ada (d-….a1) update minecraft (tool update_app)`, for the audit log.
+    pub fn describe_rule(&self, rule: &Rule) -> String {
+        let who = match &rule.key.principal {
+            Principal::Lead => "the lead agent".to_string(),
+            Principal::Agent(id) => describe_agent(self.agent_names(), id),
+        };
+        let what = match &rule.key.target {
+            Some(t) => format!("{} {t}", rule.verb),
+            None => rule.verb.clone(),
+        };
+        format!("let {who} {what} (tool {})", rule.key.tool)
+    }
+
+    /// Approve pending confirmation `c` because of `grant` (audited
+    /// `confirmation.auto_approved`). None if it was no longer pending.
+    fn approve_granted(&self, c: &Confirmation, grant: Grant) -> Option<Confirmation> {
+        let c = self.confirmations.resolve(c.id, Verdict::Approved)?;
+        let detail = format!(
+            "confirmation {} by {}: {}",
+            c.id,
+            grant.describe(),
+            c.reason
+        );
+        if let Some(log) = &self.audit {
+            let record = AuditRecord::now("confirmation.auto_approved", c.task, "", detail)
+                .by(grant.actor())
+                .with_tool(&c.tool, &args_hash(&c.args));
+            if let Err(e) = log.append(&record) {
+                tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
+            }
+        }
+        Some(c)
+    }
+
+    fn audit_grant(
+        &self,
+        task: TaskId,
+        action: &str,
+        tool: &str,
+        hash: &str,
+        grant: Grant,
+        reason: &str,
+    ) {
+        if let Some(log) = &self.audit {
+            let detail = format!("{}: {reason}", grant.describe());
+            let record = AuditRecord::now(action, task, "", detail)
+                .by(grant.actor())
+                .with_tool(tool, hash);
+            if let Err(e) = log.append(&record) {
+                tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
+            }
+        }
+    }
+
+    /// An audit record for the owner's own change (actor `ui`).
+    fn audit_owner(&self, task: TaskId, action: &str, detail: &str, tool: Option<(&str, &str)>) {
+        if let Some(log) = &self.audit {
+            let mut record = AuditRecord::now(action, task, "", detail).by("ui");
+            if let Some((tool, hash)) = tool {
+                record = record.with_tool(tool, hash);
+            }
+            if let Err(e) = log.append(&record) {
+                tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
+            }
+        }
     }
 
     /// Write an agent action to the audit log (actor `agent`, arguments hashed, not logged).
