@@ -397,9 +397,17 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `sandbox` CSP). 2 GiB of owner uploads per box. **Retention:** Settings → Files "Keep files for" (default 5 days,
   1–3650 days or Forever, `retention.json`), each box can override it from its chat's file panel; an hourly prune
   removes files older than that since they were added (audited `files.pruned`); messages that sent them show
-  "expired". **File panel:** a collapsible `details` beside each chat (above it on narrow screens; open/closed
-  remembered per browser), listing name, size, when, by whom, with download and delete; live over the chat's SSE
-  stream (`files_changed` event). JSON API `/api/files/{key}...`, `/api/settings/files`. The old shared store
+  "expired". **Details panel (2026-11-20, owner request; DECISIONS):** the right side of each chat is about its
+  agent: name (rename), role, runs on (opens the model picker), live status, who made it, Delete for a helper
+  (in-page confirmation, refused while it looks after apps); its apps (Melissa: all, by who looks after them);
+  its schedules (on/off); its files (name, size, when, by whom; add from the panel, download, delete,
+  "Reference in chat" = `[file box: <name>]` in the message box, "Send to…" another box, copy by default, and
+  "Keep files for…"). A column at ≥ 1200 px (hideable), a sheet over the chat below that (Details button, Esc,
+  focus handling), always shown without script; open/closed remembered per browser and width. Live over the
+  chat's SSE stream (`files_changed`, status) and polling for apps. **Transfers:** `FileBoxes::transfer` by the
+  owner (panel, API) or the lead agent's lead-only `transfer_file` (always the owner's yes); receiving box's
+  caps; audited `files.transferred`. JSON API `/api/details/{key}`, `/api/files/{key}...` (upload, transfer,
+  delete, retention), `/api/settings/files`. The old shared store
   (`<state>/lead/attachments`) is copied once into the boxes at startup (by the transcripts that sent each file,
   else Melissa's), then renamed `attachments.migrated`.
   Not yet: disk usage, upkeep line, several conversations with
@@ -849,3 +857,12 @@ Roadmap (rough, phases may overlap):
     herself can't be deleted. Open: (d) a Standard/Fast toggle: Claude reports `supportsFastMode`, but Melissa
     has no fast-mode plumbing, so the picker has no footer; add it if the owner wants it. (e) Not verified live: a
     real Claude/ACP session started with a chosen level, the picker in Firefox (anchor positioning fallback).
+73. Details panel and file transfers (2026-11-20, owner request; DECISIONS). Decided: (a) a column/sheet per chat
+    (agent, apps, schedules, files), (b) "Reference in chat" inserts `[file box: <name>]` rather than re-sending
+    the stored file as an attachment, (c) transfers copy by default, count as added now in the receiving box, and
+    are done by the owner or by the lead agent with the owner's yes (No permission prompts may answer the lead
+    agent's request; an agent's call on another agent's app it may not). Open: (d) the sheet is not a modal
+    `dialog` (the same element is the wide-screen column); focus is kept in it with `inert` on the chat, rail
+    and banner, which needs a current browser. (e) Panel uploads use the message limits (20 MiB a file, 50 MiB
+    and 10 files at once); bigger files need another way in. (f) Not verified live: a real agent reading a
+    `[file box: …]` reference, and `transfer_file` from a real lead-agent session (covered by tests only).

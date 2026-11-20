@@ -106,7 +106,7 @@ controls: not unscoped sessions either), `Change`. For an agent all three mean "
 `arg` is a required string. Audit of every app tool (2026-11-20): `app_status` Read; `app_logs` ReadScoped;
 `app_exec`, `deploy_app`, `update_app`, `stop_app`, `start_app`, `uninstall_app` Change; `list_apps` and
 `my_apps` untargeted but scope-filtered; `reassign_workspace` lead-only; `my_files` is the agent's own file box
-(no workspace); there is no volume tool (volumes show in `app_status`).
+(no workspace); `transfer_file` (lead-only, `owner_approval` every call) copies or moves a file between boxes; there is no volume tool (volumes show in `app_status`).
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
 a tool by name. `describe_call(args)` adds a one-line description to confirmations;
 `audit_detail(ctx, args, result)` adds what the `tool.call` audit line must record beyond the

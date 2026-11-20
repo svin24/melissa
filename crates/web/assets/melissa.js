@@ -2,8 +2,9 @@
 // forbids inline code); no eval, no markup building (file chips are copies of a server-rendered
 // template). Everything works without it, except Enter-to-send, automatic scrolling, pasting
 // or dropping files, previews of picked files (the attach button still works), voice input
-// (its button stays hidden) and the model picker's filter, search, favorites and shortcuts
-// (without script it lists every model and each pick is a plain form post).
+// (its button stays hidden), the model picker's filter, search, favorites and shortcuts
+// (without script it lists every model and each pick is a plain form post) and the details
+// panel's sheet on narrow screens (without script it is a section below the chat).
 (function () {
   "use strict";
 
@@ -822,34 +823,176 @@
     }, 0);
   });
 
-  // --- Panels that remember whether they were open (the chat's file panel). ---------------
-  // Per browser, in localStorage; without it (private mode, blocked storage) they start closed.
+  // --- The details panel beside the chat (the agent, its apps, schedules and files). -------
+  // Wide screens: a column; Details hides or shows it. Narrow screens: a sheet over the chat;
+  // Details opens it, Close, Esc or a click outside shut it, focus moves in and back, and the
+  // chat can't be reached while it is open (inert). Whether it is open is remembered per
+  // browser and per width (localStorage; without it: open when wide, closed when narrow).
+  // Without script the panel is simply always shown.
 
-  function rememberOpen() {
-    var panels = document.querySelectorAll("details[data-remember]");
-    Array.prototype.forEach.call(panels, function (d) {
-      var key = "melissa.open." + d.getAttribute("data-remember");
-      try {
-        if (window.localStorage.getItem(key) === "1") {
-          d.open = true;
-        }
-      } catch (e) {
-        // Storage unavailable: keep the default (closed).
+  var WIDE = window.matchMedia ? window.matchMedia("(min-width: 1200px)") : null;
+
+  function isWide() {
+    return !WIDE || WIDE.matches;
+  }
+
+  function storedOpen(wide) {
+    try {
+      var v = window.localStorage.getItem("melissa.details." + (wide ? "wide" : "narrow"));
+      if (v === "1" || v === "0") {
+        return v === "1";
       }
-      d.addEventListener("toggle", function () {
-        try {
-          window.localStorage.setItem(key, d.open ? "1" : "0");
-        } catch (e) {
-          // Storage unavailable: nothing to remember.
-        }
+    } catch (e) {
+      // Storage unavailable: the default.
+    }
+    return wide;
+  }
+
+  function storeOpen(wide, open) {
+    try {
+      window.localStorage.setItem("melissa.details." + (wide ? "wide" : "narrow"), open ? "1" : "0");
+    } catch (e) {
+      // Storage unavailable: nothing to remember.
+    }
+  }
+
+  function detailsParts() {
+    var panel = document.getElementById("details-panel");
+    if (!panel) {
+      return null;
+    }
+    return {
+      panel: panel,
+      toggle: document.querySelector("[data-details-toggle]"),
+      backdrop: document.querySelector(".details-backdrop"),
+      // What the sheet covers: made inert while it is open.
+      covered: document.querySelectorAll(".shell > .rail, .chat-layout > .chat, .banner, .skip"),
+    };
+  }
+
+  // Show the panel open or closed for the current width (`focus`: move focus as a user
+  // action would).
+  function showDetails(open, focus) {
+    var p = detailsParts();
+    if (!p) {
+      return;
+    }
+    var wide = isWide();
+    var sheet = open && !wide;
+    if (wide) {
+      p.panel.removeAttribute("data-open");
+      if (open) {
+        p.panel.removeAttribute("data-closed");
+      } else {
+        p.panel.setAttribute("data-closed", "");
+      }
+    } else {
+      p.panel.removeAttribute("data-closed");
+      if (open) {
+        p.panel.setAttribute("data-open", "");
+      } else {
+        p.panel.removeAttribute("data-open");
+      }
+    }
+    if (p.backdrop) {
+      p.backdrop.hidden = !sheet;
+    }
+    Array.prototype.forEach.call(p.covered, function (el) {
+      el.inert = sheet;
+    });
+    if (p.toggle) {
+      p.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    if (focus) {
+      if (open) {
+        p.panel.focus();
+      } else if (p.toggle) {
+        p.toggle.focus();
+      }
+    }
+  }
+
+  function detailsOpen() {
+    var p = detailsParts();
+    if (!p) {
+      return false;
+    }
+    return isWide() ? !p.panel.hasAttribute("data-closed") : p.panel.hasAttribute("data-open");
+  }
+
+  function setDetails(open, focus) {
+    storeOpen(isWide(), open);
+    showDetails(open, focus);
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!(t instanceof Element)) {
+      return;
+    }
+    if (t.closest("[data-details-toggle]")) {
+      setDetails(!detailsOpen(), true);
+      return;
+    }
+    if (t.closest("[data-details-close]")) {
+      setDetails(false, true);
+      return;
+    }
+    // "Reference in chat": put the file's reference in the message box (no page load).
+    var ref = t.closest("a[data-insert]");
+    if (ref && composer()) {
+      e.preventDefault();
+      if (!isWide()) {
+        setDetails(false, false);
+      }
+      var more = ref.closest("details");
+      if (more) {
+        more.open = false;
+      }
+      insertText(ref.getAttribute("data-insert"));
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !isWide() && detailsOpen()) {
+      // Not while a popover or dialog above it handles its own Escape.
+      if (document.querySelector(":popover-open, dialog[open]")) {
+        return;
+      }
+      e.preventDefault();
+      setDetails(false, true);
+    }
+  });
+
+  function initDetails() {
+    var p = detailsParts();
+    if (!p) {
+      return;
+    }
+    if (p.toggle) {
+      p.toggle.hidden = false;
+    }
+    Array.prototype.forEach.call(p.panel.querySelectorAll(".details-close"), function (b) {
+      b.hidden = false;
+    });
+    showDetails(storedOpen(isWide()), false);
+    // Slide from now on (not while the page settles).
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        p.panel.setAttribute("data-ready", "");
       });
     });
+    if (WIDE && WIDE.addEventListener) {
+      WIDE.addEventListener("change", function () {
+        showDetails(storedOpen(isWide()), false);
+      });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", function () {
     grow(composer());
     showVoice();
-    rememberOpen();
+    initDetails();
     if (document.getElementById("feed")) {
       scrollToBottom();
     }

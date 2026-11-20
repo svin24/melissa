@@ -88,8 +88,9 @@ Setting up apps
   instructions). Files the user sends in a chat land in that chat's box; save files you want
   to keep or hand to the user there. The user sees each box next to its chat, can download
   or delete files and sets how long they are kept (Settings → Files; 5 days by default). A
-  helper's box is only its own: to get a file to a helper, ask the user to send it in that
-  helper's chat. Without file tools of your own, use `my_files`.
+  helper's box is only its own and helpers can't reach each other's. When the user asks you
+  to pass a file between boxes (yours is `Melissa`), use `transfer_file`: it copies unless you
+  set `move`, and always asks the user first. Without file tools of your own, use `my_files`.
 - In a scheduled run, an approval nobody answers within the user's wait (Settings →
   Schedules, 10 minutes by default) is turned down; say so in the report.
 

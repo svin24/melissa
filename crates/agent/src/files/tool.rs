@@ -58,7 +58,11 @@ fn view(f: &BoxFile) -> Value {
         "name": f.name,
         "type": f.mime,
         "size": human_size(f.size),
-        "added_by": match f.by { AddedBy::Owner => "user", AddedBy::Agent => "you" },
+        "added_by": match f.by {
+            AddedBy::Owner => "user",
+            AddedBy::Agent => "you",
+            AddedBy::Sent => "sent from another file box",
+        },
         "added": f.added,
     })
 }

@@ -348,6 +348,7 @@ fn uploads_stop_at_the_box_cap() {
             added: 0,
             by: AddedBy::Agent,
             modified: 0,
+            from: None,
         });
     }
     assert_eq!(
@@ -355,6 +356,101 @@ fn uploads_stop_at_the_box_cap() {
         Err(AttachmentError::BoxFull)
     );
     assert!(b.save_named(&ada(), "y.txt", b"abc").is_err());
+}
+
+#[test]
+fn transfers_copy_or_move_between_boxes_and_are_audited() {
+    let fx = fixture("transfer");
+    let log = AuditLog::new(fx.root.join("audit.jsonl"));
+    let b = fx.boxes.clone().with_audit(Some(log));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let hook = seen.clone();
+    b.on_change(Arc::new(move |o: &Principal| {
+        hook.lock().unwrap().push(o.clone())
+    }));
+    let a = b
+        .store_uploads(&ada(), vec![up("plan.txt", b"step one")])
+        .unwrap();
+    let id = attachment_id(&a[0].file).to_string();
+    // Bo already has a plan.txt: the copy gets a free name.
+    b.save_named(&bo(), "plan.txt", b"his own").unwrap();
+    seen.lock().unwrap().clear();
+    fx.now.store(2_000_000, Ordering::SeqCst);
+
+    // Copy: both keep it; the new one is Bo's, sent from Ada's box, added now.
+    let t = b
+        .transfer(&ada(), &id, &bo(), Transfer::Copy, "ui")
+        .unwrap();
+    assert_eq!(t.file.name, "plan-2.txt");
+    assert_eq!(t.file.by, AddedBy::Sent);
+    assert_eq!(t.file.from.as_deref(), Some(ADA));
+    assert_eq!(t.file.added, 2_000_000);
+    assert_ne!(t.file.id, id);
+    assert_eq!(read_all(&b, &bo(), &t.file.id), b"step one");
+    assert!(b.get(&ada(), &id).is_some());
+    assert_eq!(*seen.lock().unwrap(), vec![bo()]);
+
+    // Move to Melissa's box: Ada loses it.
+    let m = b
+        .transfer(&ada(), &id, &Principal::Lead, Transfer::Move, "lead")
+        .unwrap();
+    assert_eq!(m.file.name, "plan.txt");
+    assert!(b.get(&ada(), &id).is_none());
+    assert!(!b.dir(&ada()).unwrap().join("plan.txt").exists());
+    assert_eq!(read_all(&b, &Principal::Lead, &m.file.id), b"step one");
+
+    // Not to the same box, not a file that isn't there.
+    assert!(matches!(
+        b.transfer(&bo(), &t.file.id, &bo(), Transfer::Copy, "ui"),
+        Err(FileBoxError::Invalid(_))
+    ));
+    assert!(matches!(
+        b.transfer(&ada(), &id, &bo(), Transfer::Copy, "ui"),
+        Err(FileBoxError::NotFound)
+    ));
+
+    let audit = fs::read_to_string(fx.root.join("audit.jsonl")).unwrap();
+    assert!(
+        audit.contains("files.transferred")
+            && audit.contains(&format!(
+                "copied plan.txt (8 bytes) from {ADA}'s box to {BO}'s box as plan-2.txt"
+            ))
+            && audit.contains(&format!(
+                "moved plan.txt (8 bytes) from {ADA}'s box to lead's box"
+            ))
+            && audit.contains(r#""actor":"lead""#),
+        "{audit}"
+    );
+}
+
+#[test]
+fn transfers_respect_the_receiving_boxs_cap_and_never_follow_links() {
+    let fx = fixture("transfer-cap");
+    let b = &fx.boxes;
+    let a = b.store_uploads(&ada(), vec![up("x.txt", b"abc")]).unwrap();
+    let id = attachment_id(&a[0].file).to_string();
+    // Bo's box is nearly full (a sparse file: no real disk use).
+    let dir = b.ensure_dir(&bo()).unwrap();
+    fs::File::create(dir.join("huge.bin"))
+        .unwrap()
+        .set_len(MAX_BOX_BYTES - 2)
+        .unwrap();
+    assert_eq!(
+        b.transfer(&ada(), &id, &bo(), Transfer::Move, "ui"),
+        Err(FileBoxError::Full(BO.into()))
+    );
+    // Nothing moved.
+    assert!(b.get(&ada(), &id).is_some());
+    assert_eq!(b.list(&bo()).len(), 1);
+
+    // Ada swaps her file for a link to Bo's: nothing is sent.
+    let ada_dir = b.dir(&ada()).unwrap();
+    fs::remove_file(ada_dir.join("x.txt")).unwrap();
+    std::os::unix::fs::symlink(dir.join("huge.bin"), ada_dir.join("x.txt")).unwrap();
+    assert!(b
+        .transfer(&ada(), &id, &Principal::Lead, Transfer::Copy, "ui")
+        .is_err());
+    assert!(b.list(&Principal::Lead).is_empty());
 }
 
 #[tokio::test]

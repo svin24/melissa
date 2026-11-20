@@ -18,8 +18,11 @@
 //!   [`Keep`]: the owner's default (5 days) or the agent's override; [`Keep::Forever`] keeps
 //!   them. [`FileBoxes::prune`] does it (audited `files.pruned`); messages that named a
 //!   removed file show it as expired.
-//! - **Size.** At most [`MAX_BOX_BYTES`] of owner uploads per box (agent files are counted but
-//!   can't be refused: the agent writes them directly).
+//! - **Size.** At most [`MAX_BOX_BYTES`] of owner uploads and sent files per box (agent files
+//!   are counted but can't be refused: the agent writes them directly).
+//! - **Between boxes.** A file moves to another box only by [`FileBoxes::transfer`]: the owner
+//!   (details panel, API) or the lead agent's `transfer_file` tool with the owner's yes. No
+//!   agent reads another agent's box. Every transfer is audited `files.transferred`.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -139,6 +142,9 @@ pub enum AddedBy {
     Owner,
     /// The agent whose box it is.
     Agent,
+    /// Sent over from another box ([`FileBoxes::transfer`]: the owner from the details panel,
+    /// or the lead agent with the owner's yes); [`BoxFile::from`] names that box.
+    Sent,
 }
 
 /// A file in a box.
@@ -157,6 +163,9 @@ pub struct BoxFile {
     /// Last modification (Unix seconds), to notice an agent rewriting a file.
     #[serde(default)]
     pub modified: i64,
+    /// The box it was sent from (a box key), for [`AddedBy::Sent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 impl BoxFile {
@@ -176,6 +185,9 @@ pub enum FileBoxError {
     BadOwner,
     #[error("{0}")]
     Invalid(String),
+    /// The receiving box is at its size or file limit.
+    #[error("{0}'s file box is full")]
+    Full(String),
     #[error("{0}")]
     Io(String),
 }
@@ -521,6 +533,7 @@ impl FileBoxes {
                             added: now,
                             by: AddedBy::Owner,
                             modified: modified_of(&dir.join(&name)),
+                            from: None,
                         },
                         Attachment {
                             file: format!("{id}.{ext}"),
@@ -624,6 +637,7 @@ impl FileBoxes {
                         added: now,
                         by: AddedBy::Agent,
                         modified,
+                        from: None,
                     });
                     changed = true;
                 }
@@ -745,6 +759,7 @@ impl FileBoxes {
             added: now,
             by: AddedBy::Agent,
             modified: modified_of(&dir.join(&name)),
+            from: None,
         };
         let mut boxes = lock(&self.inner.boxes);
         let index = self.index(&mut boxes, &key);
@@ -1020,6 +1035,7 @@ impl FileBoxes {
                     added: now,
                     by: AddedBy::Owner,
                     modified: modified_of(&dir.join(&name)),
+                    from: None,
                 };
                 index.push(f.clone());
                 let snapshot = index.clone();
@@ -1078,5 +1094,7 @@ fn modified_of(path: &Path) -> i64 {
 #[cfg(test)]
 mod tests;
 mod tool;
+mod transfer;
 
 pub use tool::MyFilesTool;
+pub use transfer::{Transfer, Transferred};

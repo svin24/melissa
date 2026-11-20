@@ -570,7 +570,8 @@ pub(crate) fn file_box_words(files: &FileBoxes, owner: &Principal) -> String {
          to keep or hand to the user there: reports, exports, configs. Only plain files \
          directly in it count, no subfolders. Without file tools, use the `my_files` tool. \
          Files are removed after a while (the user's setting), so don't rely on them as \
-         long-term storage."
+         long-term storage. When the user writes `[file box: report.pdf]`, they mean that \
+         file in your file box."
     )
 }
 

@@ -880,3 +880,40 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   Alternatives: keep the hard refusal and make the agent ask the user in chat (no way to authorize a single
   call); a `cross_owner: true` argument on every tool (the agent decides when to ask, more surface); allow reads
   of others' status (an agent would keep using them to guess which app is its own).
+- **2026-11-20 — Each chat gets a details panel; files move between boxes only by the owner or the lead agent
+  with the owner's yes** (owner request; replaces the collapsed file panel). **Panel:** the right side of a chat
+  page is about the agent whose chat it is (Melissa on home, a helper on its page): name (rename in place,
+  helpers only), role, what it runs on (Change opens the chat's model picker), status (live), who made it and
+  when, Delete for a helper (in-page confirmation; not offered, with the reason, while it looks after apps);
+  its apps (Melissa: every app with who looks after it, grouped by that; each opens the app dialog; polls every
+  15 s like the app strip); its schedules (on/off in place, link to Settings → Schedules); its file box (list,
+  add files from the panel, download, delete with in-page confirmation, "Reference in chat", "Send to…",
+  "Keep files for…"). Components `details_panel`, `agent_card`, `detail_apps`, `detail_schedules`,
+  `details_toggle`; the file panel's body is its Files section. **Layout:** at 1200 px and wider a column beside
+  the chat; the Details button hides or shows it. Narrower, with script, a sheet over the chat: Details opens
+  it, Close, Esc or a click outside shut it, focus moves into it and back to the button, the chat and rail are
+  `inert` while it is open. Open/closed is remembered per browser and per width (localStorage, wrapped in
+  try/catch; default open when wide, closed when narrow). Without script it is always shown (beside the chat, or
+  a section after it on narrow screens) and every action is a plain form post that redirects back. **Reference
+  in chat:** inserts `[file box: <name>]` at the cursor (the agent's prompt says what it means); without script
+  the link opens the chat with that text as the draft (`?draft=`, now also on helper pages). Chosen over an
+  attachment chip that resends the stored file: the file is already in the agent's box, so a name is all the
+  agent needs (it reads the file with its tools or `my_files`), it costs no message plumbing and no second copy,
+  and it reads plainly in the transcript; the chip would only add inlining images/PDFs into the prompt, which
+  the owner can still get by attaching the file. **Transfers** (`FileBoxes::transfer`): copy by default (both
+  keep it; moving is a checkbox, "Move (remove it here)"), because a copy can't lose anything and the owner
+  can delete the original; a move removes the original only after the copy is written. The new file has a new
+  id, counts as added now (the receiving box's retention starts again, so a file isn't pruned the moment it
+  arrives), is shown "From <agent>" (`AddedBy::Sent`, `from` = the box it came from), takes a free name
+  (`report-2.md`), and must fit the receiving box (2 GiB, 1000 files: `FileBoxError::Full`, nothing changes).
+  The source is opened like a served file (by id, `O_NOFOLLOW`), never through a link the agent planted.
+  Audited `files.transferred` (actor `ui` or `lead`, from, to, file, size, copy or move). **Who:** the owner
+  (panel, `POST /api/files/{key}/{id}/transfer`) or the lead agent with the new lead-only tool `transfer_file
+  {from_agent, file, to_agent, move?}` (`Melissa` names its own box), which always asks the owner naming the
+  file and both boxes (`Tool::owner_approval`: no "Always allow" rule covers it). No permission prompts may
+  answer it, unlike an agent's call on another agent's app: the lead agent already acts on every workspace of
+  its device, so a transfer it asks for is within its authority, and the developer switch is the owner's own
+  choice. Helpers never see the tool, and their sandboxes still bind only their own box: no agent reads another
+  agent's box. Alternatives: move by default (one click loses the sender's copy); keep the original added time
+  (an old file would be pruned on arrival); a helper-callable "send to" tool (breaks box isolation); a
+  user-only confirmation like cross-owner app calls (the lead agent is the one asking, see above).

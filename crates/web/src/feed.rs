@@ -914,6 +914,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Handed an app to a helper",
     ),
     ("delete_agent", "Deleting a helper", "Deleted a helper"),
+    (
+        "transfer_file",
+        "Passing a file to another file box",
+        "Passed a file to another file box",
+    ),
 ];
 
 /// Agents' own tool calls not shown as rows: looking up their tool list.
@@ -1149,6 +1154,37 @@ pub fn approval_words(
                     .into();
             a.yes = "Delete";
             a.no = "Keep it";
+        }
+        "transfer_file" => {
+            // `Melissa` (or `lead`) is Melissa's own box.
+            let boxed = |k: &str| {
+                arg(k).map(|b| {
+                    if b.eq_ignore_ascii_case("lead") || b.eq_ignore_ascii_case("melissa") {
+                        "Melissa".to_string()
+                    } else {
+                        look.agent_name(b).unwrap_or_else(|| b.to_string())
+                    }
+                })
+            };
+            let moving = args
+                .and_then(|a| a.get("move"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let verb = if moving { "Move" } else { "Copy" };
+            a.title = match (arg("file"), boxed("from_agent"), boxed("to_agent")) {
+                (Some(file), Some(from), Some(to)) => format!(
+                    "{verb} {} from {from}'s files to {to}'s?",
+                    shorten(file, 60)
+                ),
+                _ => format!("{verb} a file to another agent's files?"),
+            };
+            a.consequence = match (boxed("to_agent"), moving) {
+                (Some(to), false) => format!("{to} can read it; both keep a copy."),
+                (Some(to), true) => format!("{to} can read it; it leaves the other box."),
+                (None, _) => "Another agent can read it.".into(),
+            };
+            a.yes = if moving { "Move it" } else { "Copy it" };
+            a.no = "Don't";
         }
         "reassign_workspace" => {
             let to = agent("to");
@@ -1988,5 +2024,30 @@ mod tests {
         assert!(!a.destructive);
         assert_eq!(tool_words("melissa__stop_app").done, "Stopped an app");
         assert_eq!(tool_words("start_app").doing, "Starting an app");
+    }
+
+    #[test]
+    fn a_file_transfer_names_the_file_and_both_boxes() {
+        let args = json!({"from_agent": "Ada", "file": "plan.txt", "to_agent": "melissa"});
+        let a = approval_words(
+            5,
+            "mcp__melissa__transfer_file",
+            "x",
+            Some(&args),
+            &NoLookup,
+        );
+        assert_eq!(a.title, "Copy plan.txt from Ada's files to Melissa's?");
+        assert_eq!(a.consequence, "Melissa can read it; both keep a copy.");
+        assert_eq!((a.yes, a.no), ("Copy it", "Don't"));
+        assert!(!a.destructive);
+        let args =
+            json!({"from_agent": "lead", "file": "plan.txt", "to_agent": "Bo", "move": true});
+        let a = approval_words(6, "transfer_file", "x", Some(&args), &NoLookup);
+        assert_eq!(a.title, "Move plan.txt from Melissa's files to Bo's?");
+        assert_eq!(a.yes, "Move it");
+        assert_eq!(
+            tool_words("transfer_file").done,
+            "Passed a file to another file box"
+        );
     }
 }

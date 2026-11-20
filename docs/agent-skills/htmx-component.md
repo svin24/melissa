@@ -35,11 +35,21 @@ helper's job, plain for a tool), `note` (tones quiet, caution, guard: the honey 
 "Can't be undone" variant), `composer` (2026-11-20: grows with its text; paperclip/paste/drop files, shown as chips cloned from its
 `file-chip` template by melissa.js; since the model picker one rounded box: text on top, a bar below with the
 paperclip left and `model_chip`, the mic and a round Send right; placeholder "Message <name>"), `user_message_with` + `SentFile` (a sent message's thumbnails and download chips),
-`composer_status`, `file_panel` (2026-11-20, owner decision: the chat's file box beside it, a `details`
-collapsed by default and remembered per browser by melissa.js (`data-remember`), a section above the chat below
-1280 px; rows with download link and a trash button (`hx-confirm`), "Keep files for…" select; `file_panel_body`
-is what delete/retention return, `file_panel_inner` + `file_count` what the stream swaps on `Change::Files`;
-`SentFile.href = None` renders an "expired" chip), `model_chip` + `model_picker`
+`composer_status`, `details_panel` + `details_toggle` (2026-11-20, owner request; replaced `file_panel`): the
+right side of a chat page about its agent. `aside.details#details-panel` with `agent_card` (`#details-agent`:
+name, status badge `#details-status` swapped by the stream on `Change::Status`, role, runs on with a
+`popovertarget` Change button for the model picker, made by/when, Rename disclosure, Delete via `action_button`;
+rename returns `HX-Refresh`, delete `HX-Redirect: /`, a refusal the card with a notice), `detail_apps`
+(`#details-apps`, polls `/ui/details/{key}/apps` every 15 s; rows load the page's `app_dialog`, href `/cluster`
+without script), `detail_schedules` (`#details-schedules`, on/off forms) and the Files section (`file_panel_body`
+`#file-box-body`: usage, upload form (multipart `files`), rows with a download link and a `details.file-more`
+"⋯" menu holding "Reference in chat" (`a[data-insert]`: melissa.js inserts `[file box: <name>]` at the cursor;
+without script `?draft=`), "Send to…" (select + "Move" checkbox) and Delete (`action_button`, never
+`hx-confirm`), then "Keep files for…"). Its actions return `file_panel_body` + `file_count` (oob); the stream swaps
+`file_panel_inner` + `file_count` on `Change::Files`. Layout: column at ≥ 1200 px (melissa.js may hide it,
+`data-closed`), sheet below that with script (`html.js`; `data-open`, backdrop, `inert` on the chat, Esc, focus
+in and back; transitions only after `data-ready`), a plain section after the chat without script; open/closed in
+localStorage per width (`melissa.details.wide|narrow`). `SentFile.href = None` renders an "expired" chip), `model_chip` + `model_picker`
 (2026-11-20, owner-requested; replaced the 2026-11-19 `agent_menu`): the chip ("Opus 5.5 · High", the backend's
 `provider_mark`) is a `popovertarget` button in the composer bar (slot `#model-chip`, swapped by the stream on
 `Change::Status`); the picker is a `div[popover]` after the composer with its own form (`choice` = `<backend>[ <model>]`,

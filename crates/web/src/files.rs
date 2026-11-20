@@ -1,7 +1,9 @@
-//! File boxes in the UI and the JSON API: each conversation's file panel, serving a file,
-//! deleting one, and how long a box keeps files (see `melissa_agent::files`).
+//! File boxes in the UI and the JSON API: the Files section of each chat's details panel
+//! (`crate::details`), serving, adding, sending and deleting files, and how long a box keeps
+//! them (see `melissa_agent::files`).
 //!
-//! `{key}` is the box: `lead` (Melissa's) or an agent's id; `{id}` a file's generated id.
+//! `{key}` is the box: `lead` (Melissa's) or an agent's id (the API and the panel's actions also
+//! take an agent's name, or `melissa`); `{id}` a file's generated id.
 //!
 //! UI (same-origin checked like every POST; htmx gets the panel's body, a plain form post a
 //! redirect back to the chat):
@@ -9,6 +11,10 @@
 //!   download; never script (CSP `sandbox`), never embedded by another site.
 //! - `POST /ui/files/{key}/{id}/delete`: delete it (audited `files.deleted`, actor `ui`).
 //! - `POST /ui/files/{key}/retention` (`keep` = `default`, a number of days or `forever`).
+//! - `POST /ui/files/{key}/upload` (multipart `files`, the message limits): add files to the box
+//!   from the panel (by the owner, no message).
+//! - `POST /ui/files/{key}/{id}/send` (`to` = a box key or agent name, `mode=move` to move;
+//!   copies otherwise): [`melissa_agent::files::FileBoxes::transfer`], actor `ui`.
 //!
 //! API:
 //! - `GET /api/files/{key}` → `{"box", "path", "files": [{id, name, type, size, added, by}],
@@ -17,14 +23,20 @@
 //! - `POST /api/files/{key}/{id}/delete` → the deleted file; 404 unknown.
 //! - `POST /api/files/{key}/retention` `{"keep_days": n|null}` or `{"default": true}` → the
 //!   box's retention; 422 out of bounds (1–3650 days).
+//! - `POST /api/files/{key}/upload` (multipart `files`) → `{"added": [file]}`; 422 refused.
+//! - `POST /api/files/{key}/{id}/transfer` `{"to": "<key or name>", "move": false}` → `{"file":
+//!   <the new file>, "from", "to", "moved"}`; 404 unknown file or box, 422 the same box, 507 the
+//!   receiving box is full.
 //! - `GET /api/settings/files` → `{"keep_days": n|null, "overrides": {key: n|null}}`;
 //!   `POST /api/settings/files` `{"keep_days": n|null}` → the same.
+//!
+//! A file's JSON: `{id, name, type, size, added, by: owner|agent|sent, from, url, reference}`.
 
 use std::io::Read;
 
 use axum::{
     body::{Body, Bytes},
-    extract::{Form, Path, State},
+    extract::{DefaultBodyLimit, Form, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -33,17 +45,17 @@ use axum::{
 use maud::html;
 use melissa_agent::{
     attachments::human_size,
-    files::{box_key, owner_of_key, AddedBy, BoxFile, FileBoxError, Keep},
+    files::{box_key, owner_of_key, AddedBy, BoxFile, FileBoxError, Keep, Transfer, Transferred},
     tools::permissions::Principal,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    components::{file_count, file_panel_body, FilePanel, PanelFile},
+    components::{file_count, file_panel_body, FilePanel, PanelFile, Tone},
     is_htmx,
     pages::{file_href, short_date, FileLinks, Who},
-    ui::Ui,
+    ui::{NewMessage, Ui, MESSAGE_BODY_LIMIT},
 };
 
 /// Retention choices offered in the panel and Settings (days), besides default and forever.
@@ -117,6 +129,9 @@ pub(crate) struct PanelData {
     choices: Vec<(String, String)>,
     selected: String,
     whose: String,
+    upload: String,
+    send_to: Vec<(String, String)>,
+    flash: Option<(String, Tone)>,
 }
 
 impl PanelData {
@@ -129,8 +144,35 @@ impl PanelData {
             keep_choices: &self.choices,
             keep_selected: &self.selected,
             whose: &self.whose,
+            upload: &self.upload,
+            send_to: &self.send_to,
+            flash: self.flash.as_ref().map(|(t, tone)| (t.as_str(), *tone)),
         }
     }
+
+    fn with_flash(mut self, flash: Option<(String, Tone)>) -> Self {
+        self.flash = flash;
+        self
+    }
+}
+
+/// What "Reference in chat" puts in the message box for a file (the agent's prompt explains
+/// it: `melissa_agent::lead` `file_box_words`).
+pub(crate) fn reference(name: &str) -> String {
+    format!("[file box: {name}]")
+}
+
+/// `text` for a query string (RFC 3986 unreserved characters kept, everything else `%XX`).
+pub(crate) fn query_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 impl Ui {
@@ -175,23 +217,49 @@ impl Ui {
         self.panel_of(owner)
     }
 
+    /// The boxes a file of `owner`'s can be sent to: Melissa's and every other helper's.
+    fn send_targets(&self, owner: &Principal) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if *owner != Principal::Lead {
+            out.push(("lead".to_string(), "Melissa".to_string()));
+        }
+        out.extend(
+            self.lead
+                .agents()
+                .list()
+                .into_iter()
+                .filter(|a| !matches!(owner, Principal::Agent(id) if *id == a.id))
+                .map(|a| (a.id, a.name)),
+        );
+        out
+    }
+
     fn panel_of(&self, owner: &Principal) -> PanelData {
         let files = self.lead.files();
         let key = box_key(owner).unwrap_or_default();
         let list = files.list(owner);
         let name = self.name_of(owner);
+        let chat = chat_url(owner);
         let rows = list
             .iter()
-            .map(|f| PanelFile {
-                href: file_href(&key, &f.id),
-                name: f.name.clone(),
-                size: human_size(f.size),
-                added: self.when(f.added),
-                by: match f.by {
-                    AddedBy::Owner => "You".into(),
-                    AddedBy::Agent => name.clone(),
-                },
-                delete: format!("/ui/files/{key}/{}/delete", f.id),
+            .map(|f| {
+                let reference = reference(&f.name);
+                PanelFile {
+                    href: file_href(&key, &f.id),
+                    name: f.name.clone(),
+                    size: human_size(f.size),
+                    added: self.when(f.added),
+                    by: match (f.by, f.from.as_deref().and_then(owner_of_key)) {
+                        (AddedBy::Owner, _) => "You".into(),
+                        (AddedBy::Agent, _) => name.clone(),
+                        (AddedBy::Sent, Some(from)) => format!("From {}", self.name_of(&from)),
+                        (AddedBy::Sent, None) => "Sent here".into(),
+                    },
+                    delete: format!("/ui/files/{key}/{}/delete", f.id),
+                    send: format!("/ui/files/{key}/{}/send", f.id),
+                    reference_href: format!("{chat}?draft={}", query_escape(&reference)),
+                    reference,
+                }
             })
             .collect();
         let own = files.override_for(owner);
@@ -209,7 +277,25 @@ impl Ui {
             choices: keep_choices(Some(files.retention().default), own),
             selected: own.map_or_else(|| "default".to_string(), Keep::value),
             whose: name,
+            upload: format!("/ui/files/{key}/upload"),
+            send_to: self.send_targets(owner),
+            flash: None,
         }
+    }
+
+    /// The box named in a request: `lead`, an agent's id, or an agent's name.
+    pub(crate) fn box_named(&self, key: &str) -> Option<Principal> {
+        if key.eq_ignore_ascii_case("melissa") {
+            return Some(Principal::Lead);
+        }
+        if let Some(owner) = owner_of_key(key) {
+            // An agent's box only while the agent exists (a deleted one's box is gone).
+            return match &owner {
+                Principal::Agent(id) if self.lead.agents().get(id).is_none() => None,
+                _ => Some(owner),
+            };
+        }
+        self.lead.agents().get(key).map(|a| Principal::Agent(a.id))
     }
 }
 
@@ -218,6 +304,11 @@ pub(crate) fn routes() -> Router<Ui> {
         .route("/ui/files/{key}/{id}", get(serve))
         .route("/ui/files/{key}/{id}/delete", post(delete))
         .route("/ui/files/{key}/retention", post(retention))
+        .route(
+            "/ui/files/{key}/upload",
+            post(upload).layer(DefaultBodyLimit::max(MESSAGE_BODY_LIMIT)),
+        )
+        .route("/ui/files/{key}/{id}/send", post(send))
 }
 
 pub(crate) fn api_routes() -> Router<Ui> {
@@ -226,6 +317,11 @@ pub(crate) fn api_routes() -> Router<Ui> {
         .route("/api/files/{key}/{id}", get(serve))
         .route("/api/files/{key}/{id}/delete", post(api_delete))
         .route("/api/files/{key}/retention", post(api_retention))
+        .route(
+            "/api/files/{key}/upload",
+            post(api_upload).layer(DefaultBodyLimit::max(MESSAGE_BODY_LIMIT)),
+        )
+        .route("/api/files/{key}/{id}/transfer", post(api_transfer))
         .route(
             "/api/settings/files",
             get(api_settings).post(api_set_default),
@@ -313,18 +409,26 @@ async fn serve(State(ui): State<Ui>, Path((key, id)): Path<(String, String)>) ->
 }
 
 /// The panel body after an action (htmx), else back to the chat.
-fn panel_reply(ui: &Ui, owner: &Principal, headers: &HeaderMap, error: Option<String>) -> Response {
+fn panel_reply(
+    ui: &Ui,
+    owner: &Principal,
+    headers: &HeaderMap,
+    flash: Option<(String, Tone)>,
+) -> Response {
     if !is_htmx(headers) {
         return Redirect::to(&chat_url(owner)).into_response();
     }
-    let data = ui.panel_of(owner);
+    let data = ui.panel_of(owner).with_flash(flash);
     let view = data.view();
     html! {
         (file_panel_body(&view))
         (file_count(view.files.len(), true))
-        @if let Some(e) = error { (crate::components::notice(&e, crate::components::Tone::Error)) }
     }
     .into_response()
+}
+
+fn failed(text: String) -> Option<(String, Tone)> {
+    Some((text, Tone::Error))
 }
 
 async fn delete(
@@ -332,18 +436,18 @@ async fn delete(
     headers: HeaderMap,
     Path((key, id)): Path<(String, String)>,
 ) -> Response {
-    let Some(owner) = owner_of_key(&key) else {
+    let Some(owner) = ui.box_named(&key) else {
         return not_found();
     };
     let files = ui.lead.files().clone();
     let o = owner.clone();
     let result = tokio::task::spawn_blocking(move || files.delete(&o, &id, "ui")).await;
-    let error = match result {
+    let flash = match result {
         Ok(Ok(_)) | Ok(Err(FileBoxError::NotFound)) => None,
-        Ok(Err(e)) => Some(format!("Couldn't delete it: {e}")),
-        Err(e) => Some(format!("Couldn't delete it: {e}")),
+        Ok(Err(e)) => failed(format!("Couldn't delete it: {e}")),
+        Err(e) => failed(format!("Couldn't delete it: {e}")),
     };
-    panel_reply(&ui, &owner, &headers, error)
+    panel_reply(&ui, &owner, &headers, flash)
 }
 
 #[derive(Deserialize)]
@@ -366,14 +470,123 @@ async fn retention(
     Path(key): Path<String>,
     Form(form): Form<KeepForm>,
 ) -> Response {
-    let Some(owner) = owner_of_key(&key) else {
+    let Some(owner) = ui.box_named(&key) else {
         return not_found();
     };
-    let error = parse_choice(&form.keep)
+    let flash = parse_choice(&form.keep)
         .and_then(|k| ui.lead.files().set_override(&owner, k, "ui"))
         .err()
-        .map(|e| format!("Couldn't save that: {e}"));
-    panel_reply(&ui, &owner, &headers, error)
+        .and_then(|e| failed(format!("Couldn't save that: {e}")));
+    panel_reply(&ui, &owner, &headers, flash)
+}
+
+/// "Added report.pdf." / "Added 3 files."
+fn added_words(names: &[String]) -> String {
+    match names {
+        [one] => format!("Added {one}."),
+        many => format!("Added {} files.", many.len()),
+    }
+}
+
+/// Store uploaded files in `owner`'s box (on the blocking pool).
+async fn store(ui: &Ui, owner: &Principal, msg: NewMessage) -> Result<Vec<String>, String> {
+    if let Some(e) = msg.refused {
+        return Err(e.to_string());
+    }
+    if msg.files.is_empty() {
+        return Err("Choose a file first.".into());
+    }
+    let files = ui.lead.files().clone();
+    let o = owner.clone();
+    match tokio::task::spawn_blocking(move || files.store_uploads(&o, msg.files)).await {
+        Ok(Ok(added)) => Ok(added.into_iter().map(|a| a.name).collect()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Files added from the panel (multipart `files`), as if sent in the chat but without a
+/// message: the agent finds them in its box.
+async fn upload(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    msg: NewMessage,
+) -> Response {
+    let Some(owner) = ui.box_named(&key) else {
+        return not_found();
+    };
+    let flash = match store(&ui, &owner, msg).await {
+        Ok(names) => Some((added_words(&names), Tone::Ok)),
+        Err(e) => failed(format!("Couldn't add that: {e}")),
+    };
+    panel_reply(&ui, &owner, &headers, flash)
+}
+
+#[derive(Deserialize)]
+struct SendForm {
+    to: String,
+    /// `move` to move; anything else (or missing) copies.
+    #[serde(default)]
+    mode: String,
+}
+
+/// Send a file to another box (the owner, from the panel): copy unless `move`.
+async fn transfer_as_owner(
+    ui: &Ui,
+    from: &Principal,
+    id: String,
+    to: &Principal,
+    mode: Transfer,
+) -> Result<Transferred, FileBoxError> {
+    let files = ui.lead.files().clone();
+    let (f, t) = (from.clone(), to.clone());
+    tokio::task::spawn_blocking(move || files.transfer(&f, &id, &t, mode, "ui"))
+        .await
+        .map_err(|e| FileBoxError::Io(e.to_string()))?
+}
+
+fn transfer_error(ui: &Ui, to: &Principal, e: &FileBoxError) -> String {
+    match e {
+        FileBoxError::Full(_) => format!("{}'s file box is full.", ui.name_of(to)),
+        FileBoxError::NotFound => "That file is gone.".into(),
+        other => format!("Couldn't send it: {other}"),
+    }
+}
+
+async fn send(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Path((key, id)): Path<(String, String)>,
+    Form(form): Form<SendForm>,
+) -> Response {
+    let Some(owner) = ui.box_named(&key) else {
+        return not_found();
+    };
+    let Some(to) = ui.box_named(&form.to) else {
+        return panel_reply(&ui, &owner, &headers, failed("Choose who gets it.".into()));
+    };
+    let mode = if form.mode == "move" {
+        Transfer::Move
+    } else {
+        Transfer::Copy
+    };
+    let flash = match transfer_as_owner(&ui, &owner, id, &to, mode).await {
+        Ok(t) => Some((
+            format!(
+                "{} {} to {}.",
+                match t.mode {
+                    Transfer::Copy => "Copied",
+                    Transfer::Move => "Moved",
+                },
+                t.source.name,
+                ui.name_of(&to)
+            ),
+            Tone::Ok,
+        )),
+        Err(e) => failed(transfer_error(&ui, &to, &e)),
+    };
+    panel_reply(&ui, &owner, &headers, flash)
 }
 
 fn file_json(key: &str, f: &BoxFile) -> Value {
@@ -383,12 +596,18 @@ fn file_json(key: &str, f: &BoxFile) -> Value {
         "type": f.mime,
         "size": f.size,
         "added": f.added,
-        "by": match f.by { AddedBy::Owner => "owner", AddedBy::Agent => "agent" },
+        "by": match f.by {
+            AddedBy::Owner => "owner",
+            AddedBy::Agent => "agent",
+            AddedBy::Sent => "sent",
+        },
+        "from": f.from,
         "url": file_href(key, &f.id),
+        "reference": reference(&f.name),
     })
 }
 
-fn box_json(ui: &Ui, owner: &Principal) -> Value {
+pub(crate) fn box_json(ui: &Ui, owner: &Principal) -> Value {
     let files = ui.lead.files();
     let key = box_key(owner).unwrap_or_default();
     let list = files.list(owner);
@@ -407,7 +626,7 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> Response {
 }
 
 async fn api_list(State(ui): State<Ui>, Path(key): Path<String>) -> Response {
-    let Some(owner) = owner_of_key(&key) else {
+    let Some(owner) = ui.box_named(&key) else {
         return api_error(StatusCode::NOT_FOUND, "no such file box");
     };
     let ui2 = ui.clone();
@@ -418,10 +637,11 @@ async fn api_list(State(ui): State<Ui>, Path(key): Path<String>) -> Response {
 }
 
 async fn api_delete(State(ui): State<Ui>, Path((key, id)): Path<(String, String)>) -> Response {
-    let Some(owner) = owner_of_key(&key) else {
+    let Some(owner) = ui.box_named(&key) else {
         return api_error(StatusCode::NOT_FOUND, "no such file box");
     };
     let files = ui.lead.files().clone();
+    let key = box_key(&owner).unwrap_or_default();
     match tokio::task::spawn_blocking(move || files.delete(&owner, &id, "ui")).await {
         Ok(Ok(f)) => Json(json!({"deleted": file_json(&key, &f)})).into_response(),
         Ok(Err(FileBoxError::NotFound)) => api_error(StatusCode::NOT_FOUND, "no such file"),
@@ -451,7 +671,7 @@ async fn api_retention(
     Path(key): Path<String>,
     Json(body): Json<RetentionBody>,
 ) -> Response {
-    let Some(owner) = owner_of_key(&key) else {
+    let Some(owner) = ui.box_named(&key) else {
         return api_error(StatusCode::NOT_FOUND, "no such file box");
     };
     let keep = if body.default {
@@ -463,7 +683,7 @@ async fn api_retention(
         Ok(()) => {
             let files = ui.lead.files();
             Json(json!({
-                "box": key,
+                "box": box_key(&owner),
                 "keep_days": files.keep_for(&owner).as_days(),
                 "override": files.override_for(&owner).is_some(),
             }))
@@ -496,6 +716,76 @@ async fn api_set_default(State(ui): State<Ui>, Json(body): Json<DefaultBody>) ->
     match keep_of(body.keep_days).and_then(|k| ui.lead.files().set_default(k, "ui")) {
         Ok(()) => Json(settings_json(&ui)).into_response(),
         Err(e) => api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+    }
+}
+
+/// `POST /api/files/{key}/upload` (multipart `files`) → `{"added": [file]}`.
+async fn api_upload(State(ui): State<Ui>, Path(key): Path<String>, msg: NewMessage) -> Response {
+    let Some(owner) = ui.box_named(&key) else {
+        return api_error(StatusCode::NOT_FOUND, "no such file box");
+    };
+    let key = box_key(&owner).unwrap_or_default();
+    match store(&ui, &owner, msg).await {
+        Ok(names) => {
+            let files = ui.lead.files().indexed(&owner);
+            let added: Vec<Value> = files
+                .iter()
+                .filter(|f| names.contains(&f.name))
+                .map(|f| file_json(&key, f))
+                .collect();
+            Json(json!({"added": added})).into_response()
+        }
+        Err(e) => api_error(StatusCode::UNPROCESSABLE_ENTITY, e),
+    }
+}
+
+/// `{"to": "<box key or agent name>", "move": false}`.
+#[derive(Deserialize)]
+struct TransferBody {
+    to: String,
+    #[serde(default, rename = "move")]
+    moved: bool,
+}
+
+/// `POST /api/files/{key}/{id}/transfer` → `{"file": <the new file>, "from", "to", "moved"}`.
+async fn api_transfer(
+    State(ui): State<Ui>,
+    Path((key, id)): Path<(String, String)>,
+    Json(body): Json<TransferBody>,
+) -> Response {
+    let Some(owner) = ui.box_named(&key) else {
+        return api_error(StatusCode::NOT_FOUND, "no such file box");
+    };
+    let Some(to) = ui.box_named(&body.to) else {
+        return api_error(StatusCode::NOT_FOUND, "no such file box to send it to");
+    };
+    let mode = if body.moved {
+        Transfer::Move
+    } else {
+        Transfer::Copy
+    };
+    match transfer_as_owner(&ui, &owner, id, &to, mode).await {
+        Ok(t) => {
+            let (from_key, to_key) = (
+                box_key(&owner).unwrap_or_default(),
+                box_key(&to).unwrap_or_default(),
+            );
+            Json(json!({
+                "file": file_json(&to_key, &t.file),
+                "from": from_key,
+                "to": to_key,
+                "moved": t.mode == Transfer::Move,
+            }))
+            .into_response()
+        }
+        Err(FileBoxError::NotFound) => api_error(StatusCode::NOT_FOUND, "no such file"),
+        Err(e @ FileBoxError::Full(_)) => {
+            api_error(StatusCode::INSUFFICIENT_STORAGE, e.to_string())
+        }
+        Err(e @ FileBoxError::Invalid(_)) => {
+            api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 

@@ -11,11 +11,14 @@
 //! `max_concurrent` agents work at once, each job has a time limit), `agent_status`, `list_agents`,
 //! `stop_agent`, `message_agent` (passes data, e.g. another agent's result, tagged as data:
 //! agent-to-agent talk goes through the lead agent only, audited), `reassign_workspace` (always asks
-//! the user) and `delete_agent` (destructive: always asks the user; see [`AgentPool::delete`]). The user talks to any agent directly (API `/api/agents/{agent}/messages`, CLI
+//! the user), `delete_agent` (destructive: always asks the user; see [`AgentPool::delete`]) and
+//! `transfer_file` (a file from one file box to another; always asks the user). The user talks to any agent directly (API `/api/agents/{agent}/messages`, CLI
 //! `melissa-server chat --agent <name>`), renames agents and reassigns workspaces.
 //!
 //! Taint flows both ways: a job or message from a tainted lead agent taints the agent, and the
 //! Lead agent becomes tainted when it reads the status of an agent that read untrusted content.
+
+mod transfer;
 
 use std::{
     collections::HashMap,
@@ -245,6 +248,7 @@ impl AgentPool {
             Arc::new(MessageAgent(self.clone())),
             Arc::new(ReassignWorkspace(self.clone())),
             Arc::new(DeleteAgent(self.clone())),
+            Arc::new(transfer::TransferFile(self.clone())),
         ]
     }
 
