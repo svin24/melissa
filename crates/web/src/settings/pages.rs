@@ -7,22 +7,29 @@ use super::apply::Pending;
 use crate::{
     components::{
         action_button, actions, badge, card, code, command_block, confirm_card, detail_head,
-        disclosure, external_button, facts, group, lines_field, live_region, log_view, notice,
-        one_field_form, page_header, pick_list, plain_action, provider_mark, region, settings_form,
-        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list,
-        ConfirmCard, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
+        disclosure, external_button, facts, group, lines_field, link, live_region, log_view,
+        notice, one_field_form, page_header, pick_list, plain_action, provider_mark, region,
+        select_field_at, settings_form, settings_frame_at, settings_head, split_card, table,
+        text_field, toggle, var_list, Choice, ConfirmCard, LogLine, Nav, PickRow, SettingsSection,
+        Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
 use melissa_settings::providers::EnvVarView;
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 4] = [
+pub const SECTIONS: [(&str, &str); 5] = [
     ("/settings/providers", "Providers"),
     (PERMISSIONS_URL, "Permissions"),
+    (SCHEDULES_URL, "Schedules"),
     ("/settings/updates", "Updates"),
     (DEVELOPER_URL, "Developer"),
 ];
+
+/// The Schedules section: scheduled jobs.
+pub const SCHEDULES_URL: &str = "/settings/schedules";
+/// DOM id of the Schedules section (every action swaps it).
+pub const SCHEDULES_ID: &str = "schedules";
 
 /// The Permissions section: the "Always allow" rules.
 pub const PERMISSIONS_URL: &str = "/settings/permissions";
@@ -665,6 +672,194 @@ pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Marku
                     }
                 },
             ))
+        },
+    )
+}
+
+// --- Schedules -----------------------------------------------------------------------------------
+
+/// A schedule's last run, in words.
+pub struct LastRunCell {
+    /// "Done", "Skipped".
+    pub words: String,
+    pub tone: Tone,
+    /// Local time, `2026-11-20 03:00`.
+    pub at: String,
+    /// Why, if there is more to say ("the agent was busy").
+    pub detail: Option<String>,
+}
+
+/// One schedule in the list.
+pub struct ScheduleRow {
+    pub id: u64,
+    pub name: String,
+    /// "Melissa", "Ada".
+    pub who: String,
+    /// Their conversation.
+    pub chat: String,
+    /// "Every day at 03:00" (or the cron expression).
+    pub when: String,
+    /// Local time, or "Off".
+    pub next: String,
+    pub last: Option<LastRunCell>,
+    pub enabled: bool,
+}
+
+/// The add/edit form's values.
+pub struct ScheduleForm {
+    /// Editing this schedule (None: adding one).
+    pub id: Option<u64>,
+    pub name: String,
+    /// `lead` or an agent id.
+    pub agent: String,
+    /// (value, label): Melissa and the helpers.
+    pub agents: Vec<(String, String)>,
+    pub instruction: String,
+    /// `hourly`, `daily`, `weekly` or `custom`.
+    pub repeat: String,
+    /// `0` (Sunday) … `6`.
+    pub day: String,
+    /// `HH:MM`.
+    pub time: String,
+    pub cron: String,
+    pub max_minutes: String,
+}
+
+pub struct SchedulesView {
+    pub rows: Vec<ScheduleRow>,
+    pub form: ScheduleForm,
+    pub flash: Option<Flash>,
+    /// False: this device runs no scheduler (nothing to show but a note).
+    pub available: bool,
+    /// The box's time zone, e.g. `Europe/Athens`.
+    pub zone: String,
+}
+
+pub fn schedules_page(f: &Frame<'_>, v: &SchedulesView) -> Markup {
+    frame(f, "Schedules", schedules_region(v))
+}
+
+/// The whole section (every action swaps it).
+pub fn schedules_region(v: &SchedulesView) -> Markup {
+    let rows: Vec<Vec<Markup>> = v
+        .rows
+        .iter()
+        .map(|r| {
+            let base = format!("/ui/settings/schedules/{}", r.id);
+            vec![
+                toggle(&Toggle {
+                    action: &format!("{base}/enabled"),
+                    target: SCHEDULES_ID,
+                    label: &format!("Run {} on its schedule", r.name),
+                    on: r.enabled,
+                    locked: None,
+                }),
+                html! { (r.name) },
+                link(&r.chat, &r.who),
+                html! { (r.when) },
+                html! { (r.next) },
+                match &r.last {
+                    None => html! { "Not yet" },
+                    Some(l) => html! {
+                        (badge(&l.words, l.tone)) " " (l.at)
+                        @if let Some(d) = &l.detail { " · " (d) }
+                    },
+                },
+                actions(html! {
+                    (plain_action(&format!("{base}/run"), SCHEDULES_ID, "Run now", false))
+                    (link(&format!("{SCHEDULES_URL}?edit={}", r.id), "Edit"))
+                    (action_button(
+                        &format!("{base}/remove"),
+                        SCHEDULES_ID,
+                        "Remove",
+                        &format!("Remove \u{201c}{}\u{201d}? It won't run again.", r.name),
+                    ))
+                }),
+            ]
+        })
+        .collect();
+    region(
+        SCHEDULES_ID,
+        html! {
+            (page_header("Schedules", Some("Jobs your helpers do on their own, on a timetable. Nobody watches them: what needs your yes waits for you, unless you allowed it in Permissions.")))
+            @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
+            @if v.available {
+                (card("Scheduled jobs", table(
+                    &["On", "Name", "Who", "When", "Next run", "Last run", ""],
+                    rows,
+                    "Nothing scheduled yet.",
+                )))
+                (schedule_form(&v.form, &v.zone))
+            } @else {
+                (notice("Schedules don't run on this device.", Tone::Muted))
+            }
+        },
+    )
+}
+
+fn schedule_form(f: &ScheduleForm, zone: &str) -> Markup {
+    let agents: Vec<Choice<'_>> = f
+        .agents
+        .iter()
+        .map(|(value, label)| Choice {
+            value,
+            label,
+            enabled: true,
+        })
+        .collect();
+    let repeats = [
+        ("hourly", "Every hour"),
+        ("daily", "Every day"),
+        ("weekly", "Every week"),
+        ("custom", "Custom (cron)"),
+    ]
+    .map(|(value, label)| Choice {
+        value,
+        label,
+        enabled: true,
+    });
+    let days: Vec<(String, &str)> = melissa_agent::lead::schedules::DAYS
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (i.to_string(), *d))
+        .collect();
+    let days: Vec<Choice<'_>> = days
+        .iter()
+        .map(|(value, label)| Choice {
+            value,
+            label,
+            enabled: true,
+        })
+        .collect();
+    let (title, action, submit) = match f.id {
+        Some(id) => (
+            format!("Edit \u{201c}{}\u{201d}", f.name),
+            format!("/ui/settings/schedules/{id}"),
+            "Save",
+        ),
+        None => (
+            "Add a schedule".to_string(),
+            "/ui/settings/schedules".to_string(),
+            "Add",
+        ),
+    };
+    let cron_hint = format!("minute hour day month weekday, {zone} time. Used with Custom.");
+    card(
+        &title,
+        html! {
+            (settings_form(&action, SCHEDULES_ID, submit, html! {
+                (text_field("name", "Name", &f.name, "Nightly updates", "text", None))
+                (select_field_at("agent", "Who", &agents, Some(&f.agent)))
+                (lines_field("instruction", "What to do", &f.instruction, Some("Sent as a message on every run.")))
+                (select_field_at("repeat", "Repeats", &repeats, Some(&f.repeat)))
+                (select_field_at("day", "Day (every week)", &days, Some(&f.day)))
+                (text_field("time", "Time", &f.time, "03:00", "time", Some("Every hour uses only the minutes.")))
+                (disclosure("Advanced", f.repeat == "custom", html! {
+                    (text_field("cron", "Cron expression", &f.cron, "0 3 * * *", "text", Some(&cron_hint)))
+                    (text_field("max_minutes", "Time limit (minutes)", &f.max_minutes, "60", "number", Some("A run still going after this is stopped.")))
+                }))
+            }))
+            @if f.id.is_some() { (link(SCHEDULES_URL, "Cancel")) }
         },
     )
 }

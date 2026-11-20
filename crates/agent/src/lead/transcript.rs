@@ -342,6 +342,7 @@ mod tests {
                     turn: i,
                     text: format!("message {i}"),
                     attachments: vec![],
+                    scheduled: None,
                 },
             ));
             t.append(&record(
@@ -385,6 +386,7 @@ mod tests {
                 turn: 1,
                 text: "old".into(),
                 attachments: vec![],
+                scheduled: None,
             },
             LeadEvent::NewChat,
             // Two daemon runs, both counting turns from 1.
@@ -392,6 +394,7 @@ mod tests {
                 turn: 1,
                 text: "a".into(),
                 attachments: vec![],
+                scheduled: None,
             },
             LeadEvent::AgentMessage {
                 turn: 1,
@@ -401,6 +404,7 @@ mod tests {
                 turn: 1,
                 text: "b".into(),
                 attachments: vec![],
+                scheduled: None,
             },
             LeadEvent::ToolCall {
                 turn: Some(1),
@@ -413,6 +417,7 @@ mod tests {
                 turn: 2,
                 text: "c".into(),
                 attachments: vec![],
+                scheduled: None,
             },
             LeadEvent::TurnFinished {
                 turn: 2,
@@ -442,7 +447,8 @@ mod tests {
             LeadEvent::UserMessage {
                 turn: 1,
                 text: "b".into(),
-                attachments: vec![]
+                attachments: vec![],
+                scheduled: None,
             }
         );
     }

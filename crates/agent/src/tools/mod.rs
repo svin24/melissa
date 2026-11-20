@@ -97,6 +97,20 @@ pub trait Tool: Send + Sync {
         Ok(())
     }
 
+    /// Calls only the owner may approve, every time (e.g. `schedule_job` creating a schedule:
+    /// a standing order to act later). `Ok(Some(reason))` asks the owner whatever the label
+    /// policy says, and the confirmation offers no "Always allow": no rule covers it, so the
+    /// owner sees each one (No permission prompts, the developer's approve-everything switch,
+    /// still answers it). `Err` refuses the call before anyone is asked (e.g. a schedule for
+    /// another agent). Runs after the argument and scope checks. Default: `Ok(None)`.
+    fn owner_approval(
+        &self,
+        _ctx: &TaskContext,
+        _args: &Value,
+    ) -> Result<Option<String>, ToolError> {
+        Ok(None)
+    }
+
     /// A short description of this call for the person asked to confirm it (e.g. "move workspace
     /// `nextcloud` to agent `Bo`"). Default: none (the arguments are shown anyway).
     fn describe_call(&self, _args: &Value) -> Option<String> {
@@ -292,7 +306,7 @@ impl ToolRegistry {
         let mut reasons = Vec::new();
         let mut note = None;
         // Refusals end here (the scope check), before any rule or the bypass is looked at.
-        let offer = match tool.target() {
+        let mut offer = match tool.target() {
             Some(target) => {
                 match self
                     .check_scope(task, ctx, name, &target, &args, &hash)
@@ -310,6 +324,18 @@ impl ToolRegistry {
         };
         if let Decision::Confirm(reason) = decide(name, &spec.labels, ctx) {
             reasons.push(reason);
+        }
+        match tool.owner_approval(ctx, &args) {
+            Ok(None) => {}
+            Ok(Some(reason)) => {
+                // Asked every time: nothing to remember, so no rule can answer it.
+                offer = None;
+                reasons.push(reason);
+            }
+            Err(e) => {
+                self.audit(task, "tool.refused", name, &hash, &e.to_string());
+                return Err(e);
+            }
         }
         if !reasons.is_empty() {
             // Whoever answers sees whose workspace it is first, then what the call does.

@@ -24,10 +24,12 @@ use crate::components::{ActivityState, ApprovalState, NoteTone};
 /// One thing shown in the chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    /// What the user wrote, and the files sent with it.
+    /// What the user wrote, and the files sent with it. `scheduled`: the schedule's name
+    /// when Melissa sent it for a scheduled job (labelled "Scheduled: <name>").
     User {
         text: String,
         files: Vec<Attachment>,
+        scheduled: Option<String>,
     },
     /// Something passed into a helper's conversation by Melissa (a job, or a message from
     /// Melissa or another helper). `text` is untrusted.
@@ -205,11 +207,17 @@ impl Feed {
                 turn,
                 text,
                 attachments,
+                scheduled,
             } => {
                 self.busy = Some(*turn);
-                let item = relayed(text).unwrap_or_else(|| Item::User {
+                let item = match scheduled {
+                    Some(_) => None,
+                    None => relayed(text),
+                }
+                .unwrap_or_else(|| Item::User {
                     text: text.clone(),
                     files: attachments.clone(),
+                    scheduled: scheduled.clone(),
                 });
                 let added = self.add(format!("u{}", rec.seq), item);
                 vec![added, Change::Status]
@@ -869,6 +877,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Checked on a helper",
     ),
     ("list_agents", "Listing helpers", "Listed helpers"),
+    (
+        "schedule_job",
+        "Working on a schedule",
+        "Worked on a schedule",
+    ),
     ("stop_agent", "Stopping a helper", "Stopped a helper"),
     (
         "message_agent",
@@ -1292,6 +1305,7 @@ mod tests {
                     turn: 1,
                     text: "Install Nextcloud".into(),
                     attachments: vec![],
+                    scheduled: None,
                 },
             ),
             rec(
@@ -1657,6 +1671,7 @@ mod tests {
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
+                    scheduled: None,
                 },
             ),
             &NoLookup,
@@ -1690,6 +1705,7 @@ mod tests {
                     turn: 2,
                     text: "again".into(),
                     attachments: vec![],
+                    scheduled: None,
                 },
             ),
             &NoLookup,
@@ -1743,6 +1759,7 @@ mod tests {
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
+                    scheduled: None,
                 },
                 LeadEvent::AgentStarted {
                     agent: "d.a1".into(),
@@ -1791,6 +1808,7 @@ mod tests {
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
+                    scheduled: None,
                 },
                 LeadEvent::Thought {
                     turn: 1,

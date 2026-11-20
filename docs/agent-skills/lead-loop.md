@@ -119,8 +119,31 @@ Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends,
   echo-b" and the echo said it got 2 earlier messages; switch to Claude · Sonnet 5.5 shown, not sent; CLI list/use
   and 422 refusals; audit lines as above.
 
+## Scheduled jobs (2026-11-20)
+`crates/agent/src/lead/schedules/`: `Schedules` (store, `$XDG_STATE_HOME/melissa/schedules.json`, 0600; owner changes
+audited `schedule.*` actor `ui`), `Scheduler` (one Tokio task, started by `Lead::start_schedules`; reach it with
+`Lead::scheduler()`), `ScheduleJobTool` (`schedule_job`, registered in the server next to the pool's tools).
+- A schedule = name, agent (`Principal`: lead or agent id, rename-safe), instruction, 5-field cron (croner, jiff
+  time zone = the box's `TimeZone::system()`), enabled, `max_minutes` (default 60), created_by, `handled_until`,
+  `last_run`. `next_run` is computed (`Schedules::next_run`), not stored.
+- Firing = `Conversation::send_scheduled(name, text)`: the event is a normal `user_message` with `scheduled`, the
+  prompt gets a short "Scheduled job … nobody is watching" note, and the MCP session is `attended = false` for the
+  turn (`McpServer::set_attended`; restored in `finish_turn`). Agents: `AgentPool::scheduled_send` (wakes a stopped
+  agent, by id). Busy conversation → the run is skipped, never queued.
+- Rules: skip on overlap or busy agent; a due time found up to `DEFAULT_GRACE` (1 h) late runs once, older is
+  recorded `missed` (only the latest due time counts); a change or switching on counts from now; a run past
+  `max_minutes` is cancelled (`timed_out`); `running` at startup becomes `interrupted`.
+- `schedule_job` create/remove always ask the owner via `Tool::owner_approval` (new hook in `ToolRegistry::call`):
+  the confirmation carries no rule offer, so "Always allow" can't cover it; the developer bypass still does.
+  Scope: an agent only for itself (else refused "not yours" before anyone is asked), the lead agent any agent.
+- Tests use `FakeClock` (follows Tokio's paused clock) + a `FakeRunner`, never real sleeps
+  (`schedules/tests.rs`); real conversations in `lead/tests/schedules.rs`.
+- UI: Settings → Schedules (`settings/schedules.rs`), API `/api/schedules` (documented in `api.rs`); feed label via
+  `components::scheduled_message`.
+
 ## Event model (`LeadEvent`, JSON `{"seq", "ts", "type", ...}`)
-Same shape for the lead agent and every agent. `user_message`, `text` (reply piece), `agent_message` (whole reply,
+Same shape for the lead agent and every agent. `user_message` (`scheduled`: the schedule's name when Melissa
+sent it for a scheduled job), `text` (reply piece), `agent_message` (whole reply,
 at turn end; was `lead_message`, still read from old transcripts), `tool_call` (id, title, status
 pending/running/done/failed, `ms` on the finishing event), `thought` (turn, text, ms: once when a thought starts,
 empty with no `ms`, and once whole with its time when the agent moves on or the turn ends; kept in the

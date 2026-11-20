@@ -33,6 +33,10 @@ pub enum LeadEvent {
         /// Files sent with the message (stored by Melissa; see [`crate::attachments`]).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<Attachment>,
+        /// The schedule's name when Melissa sent this message for a scheduled job (the feed
+        /// labels it "Scheduled: <name>"); None for a message someone typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scheduled: Option<String>,
     },
     /// A piece of the lead agent's reply (not line-buffered).
     Text { turn: TurnId, text: String },

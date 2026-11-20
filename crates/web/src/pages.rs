@@ -11,10 +11,10 @@ use crate::{
         app_strip, app_tile, approval_card, badge, bypass_banner, card, chat_divider, composer,
         composer_status, crumbs, device_card, empty_state, facts, feed, feed_entry, lead_message,
         link, live_region, live_region_on, log_view, markdown, note, oob_inner, page, page_header,
-        plain_text, post_form, rail, relayed_message, section, select_field, table, textarea_field,
-        thought_row, truncated, user_message_with, waiting_count, AppWorkspace, ApprovalCard,
-        Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone, APPROVALS_ID,
-        COMPOSER_STATUS_ID, FEED_ID,
+        plain_text, post_form, rail, relayed_message, scheduled_message, section, select_field,
+        table, textarea_field, thought_row, truncated, user_message_with, waiting_count,
+        AppWorkspace, ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice,
+        StripTile, Tone, APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat, SentFile},
     feed::{Approval, Change, Entry, Feed, Item},
@@ -225,7 +225,16 @@ fn sent_files(files: &[Attachment]) -> Vec<SentFile> {
 /// The content of one feed entry (without its `li`).
 pub fn entry_content(entry: &Entry) -> Markup {
     match &entry.item {
-        Item::User { text, files } => user_message_with(text, &sent_files(files)),
+        Item::User {
+            text,
+            files,
+            scheduled: None,
+        } => user_message_with(text, &sent_files(files)),
+        Item::User {
+            text,
+            scheduled: Some(name),
+            ..
+        } => scheduled_message(name, text),
         Item::Relayed { from, text } => relayed_message(from, text),
         Item::Reply { text } => lead_message(text),
         Item::Activity {

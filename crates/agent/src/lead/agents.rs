@@ -455,6 +455,34 @@ impl AgentPool {
         Ok(out)
     }
 
+    /// A scheduled job's turn for agent `id` (see [`super::schedules`]); wakes a stopped agent.
+    /// Busy: refused ([`LeadError::Busy`]), like any message.
+    pub(crate) fn scheduled_send(
+        &self,
+        id: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<TurnId, LeadError> {
+        let agent = self
+            .inner
+            .registry
+            .get(id)
+            .ok_or_else(|| LeadError::NoSuchAgent(id.into()))?;
+        let conv = self
+            .conversation(&agent)
+            .map_err(|e| LeadError::Failed(e.to_string()))?;
+        let (turn, _) = conv.send_scheduled(name, text, "schedule")?;
+        if let Err(e) = self.inner.registry.set_stopped(&agent.id, false) {
+            tracing::warn!("agent registry: {e}");
+        }
+        Ok(turn)
+    }
+
+    /// Agent `id`'s conversation, if it has one yet.
+    pub(crate) fn conversation_of(&self, id: &str) -> Option<Conversation> {
+        lock(&self.inner.convs).get(id).cloned()
+    }
+
     /// The user cancels an agent's running turn.
     pub async fn user_cancel(&self, name_or_id: &str) -> Result<bool, LeadError> {
         let agent = self.user_agent(name_or_id)?;

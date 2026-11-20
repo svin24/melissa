@@ -924,6 +924,18 @@ fn paperclip_icon() -> Markup {
     }
 }
 
+/// A scheduled job's instruction, sent by Melissa in the user's place: the user's bubble with a
+/// small "Scheduled: <name>" label above it.
+pub fn scheduled_message(name: &str, text: &str) -> Markup {
+    html! {
+        div.msg.msg-user.msg-scheduled {
+            h3.visually-hidden { "Scheduled job" }
+            p.msg-tag { "Scheduled: " (name) }
+            div.bubble { (plain_text(text)) }
+        }
+    }
+}
+
 /// Something Melissa passed into a helper's conversation (a job or a message): a quiet
 /// block with who it is from. `text` is untrusted.
 pub fn relayed_message(from: &str, text: &str) -> Markup {
@@ -1381,12 +1393,23 @@ pub struct Choice<'a> {
 
 /// A labelled drop-down.
 pub fn select_field(name: &str, label: &str, choices: &[Choice<'_>]) -> Markup {
+    select_field_at(name, label, choices, None)
+}
+
+/// [`select_field`] with the choice whose value is `selected` chosen (e.g. in an edit form).
+pub fn select_field_at(
+    name: &str,
+    label: &str,
+    choices: &[Choice<'_>],
+    selected: Option<&str>,
+) -> Markup {
     html! {
         label.field {
             span { (label) }
             select name=(name) required {
                 @for c in choices {
-                    option value=(c.value) disabled[!c.enabled] { (c.label) }
+                    option value=(c.value) disabled[!c.enabled]
+                        selected[selected == Some(c.value)] { (c.label) }
                 }
             }
         }

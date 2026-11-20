@@ -144,6 +144,8 @@ struct TurnState {
     busy: Option<TurnId>,
     last: TurnId,
     abort: Option<AbortHandle>,
+    /// The running turn is a scheduled job's: nobody watches it (see [`Conversation::send_scheduled`]).
+    scheduled: bool,
 }
 
 struct Inner {
@@ -523,6 +525,31 @@ impl Conversation {
         files: Vec<Upload>,
         actor: &str,
     ) -> Result<(TurnId, u64), LeadError> {
+        self.start(text, files, actor, None)
+    }
+
+    /// Start a scheduled job's turn: the instruction is shown as the message, labelled with
+    /// the schedule's name (`scheduled` on the `user_message` event), and the agent is told
+    /// that nobody is watching. The turn runs unattended: its MCP session's policy context
+    /// says so for the length of the turn, so actions that need a watching human ask for a
+    /// confirmation (or match one of the owner's "Always allow" rules). Busy: refused, like
+    /// any message.
+    pub(crate) fn send_scheduled(
+        &self,
+        name: &str,
+        text: &str,
+        actor: &str,
+    ) -> Result<(TurnId, u64), LeadError> {
+        self.start(text, Vec::new(), actor, Some(name))
+    }
+
+    fn start(
+        &self,
+        text: &str,
+        files: Vec<Upload>,
+        actor: &str,
+        scheduled: Option<&str>,
+    ) -> Result<(TurnId, u64), LeadError> {
         let text = text.trim();
         if text.is_empty() && files.is_empty() {
             return Err(LeadError::Empty);
@@ -545,24 +572,31 @@ impl Conversation {
         t.last += 1;
         let turn = t.last;
         t.busy = Some(turn);
+        t.scheduled = scheduled.is_some();
         let since = self.inner.events.last_seq();
         self.inner.events.push(LeadEvent::UserMessage {
             turn,
             text: text.to_string(),
             attachments: stored.clone(),
+            scheduled: scheduled.map(str::to_string),
         });
         let mut audited = shorten(text, 500);
         if !stored.is_empty() {
             let names: Vec<&str> = stored.iter().map(|a| a.name.as_str()).collect();
             audited.push_str(&format!(" [files: {}]", names.join(", ")));
         }
+        if let Some(name) = scheduled {
+            audited = format!("scheduled `{name}`: {audited}");
+        }
         self.audit("message", actor, &audited);
         // The turn runs on the backend chosen when it starts; a later switch waits for it.
         let choice = self.choice();
-        let handle = tokio::spawn(
-            self.clone()
-                .run_turn(turn, text.to_string(), stored, choice),
-        );
+        let note = scheduled.map(scheduled_note);
+        let handle =
+            tokio::spawn(
+                self.clone()
+                    .run_turn(turn, text.to_string(), stored, choice, note),
+            );
         t.abort = Some(handle.abort_handle());
         Ok((turn, since))
     }
@@ -644,6 +678,7 @@ impl Conversation {
         text: String,
         files: Vec<Attachment>,
         choice: Option<BackendChoice>,
+        note: Option<String>,
     ) {
         let live = match self.live_session(choice).await {
             Ok(live) => live,
@@ -652,10 +687,19 @@ impl Conversation {
                 return;
             }
         };
+        // A scheduled turn runs unattended; the others are as the conversation was set up.
+        let unattended = lock(&self.inner.turn).scheduled;
+        self.inner
+            .server
+            .set_attended(&live.token, self.inner.spec.ctx.attended && !unattended);
+        let body = match note {
+            Some(note) => format!("{note}\n\n{text}"),
+            None => text.clone(),
+        };
         let mut prompt = if live.primed.swap(true, Ordering::SeqCst) {
-            self.with_notes(text)
+            self.with_notes(body)
         } else {
-            self.preamble(&text)
+            self.preamble(&text, body)
         };
         // Files: native blocks where the session takes them, else copies in its workdir.
         let blocks = if files.is_empty() {
@@ -713,7 +757,7 @@ impl Conversation {
 
     /// The system prompt, the earlier conversation if this session starts without it, then
     /// the message.
-    fn preamble(&self, text: &str) -> String {
+    fn preamble(&self, text: &str, body: String) -> String {
         let mut p = format!(
             "<melissa-system-prompt>\n{}\n</melissa-system-prompt>\n\n",
             self.inner.spec.system_prompt.trim()
@@ -740,7 +784,7 @@ impl Conversation {
             }
         }
         p.push_str("The message:\n\n");
-        p.push_str(&self.with_notes(text.to_string()));
+        p.push_str(&self.with_notes(body));
         p
     }
 
@@ -976,6 +1020,13 @@ impl Conversation {
         }
         t.busy = None;
         t.abort = None;
+        if std::mem::take(&mut t.scheduled) {
+            if let Some(token) = lock(&self.inner.live).as_ref().map(|l| l.token.clone()) {
+                self.inner
+                    .server
+                    .set_attended(&token, self.inner.spec.ctx.attended);
+            }
+        }
         self.end_thought();
         lock(&self.inner.steps).tools.clear();
         let text = std::mem::take(&mut *lock(&self.inner.text));
@@ -1174,6 +1225,16 @@ impl Drop for TokenGuard {
             self.server.close_session(&token);
         }
     }
+}
+
+/// What the agent reads before a scheduled job's instruction.
+fn scheduled_note(name: &str) -> String {
+    format!(
+        "Scheduled job \"{}\" (one of the owner's schedules, see Settings → Schedules). The owner is not \
+         watching: do the instruction below on your own and end with a short report. Actions \
+         that need the owner wait in their inbox unless an \"Always allow\" rule covers them.",
+        name.replace('"', "'")
+    )
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

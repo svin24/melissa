@@ -44,6 +44,21 @@
 //!   reachable. The caller is the user (scope `User`: no ownership checks). Errors: 404 unknown
 //!   tool, 422 bad arguments, 403 denied or refused, 408 confirmation
 //!   timeout, 502 tool failure.
+//! - Scheduled jobs (the owner's own changes: no confirmation; audited `schedule.*`, actor `ui`;
+//!   handlers in `settings/schedules.rs`). 503 when this device runs no scheduler.
+//!   - `GET /api/schedules` → `{"schedules": [{id, name, agent ("lead" or an agent id),
+//!     agent_name, instruction, schedule (5-field cron, local time), when, enabled,
+//!     max_minutes, created_by, created_at, next_run (Unix s)|null, next_run_local, running,
+//!     last_run: {at, outcome, detail?, turn?, ended?, manual?}|null}], "time_zone": "..."}`.
+//!   - `POST /api/schedules` `{"name", "agent"? (name, id or "lead"; default lead),
+//!     "instruction", "schedule", "enabled"? (true), "max_minutes"? (60)}` → 201 the schedule;
+//!     422 invalid (bad cron, empty name or instruction, unknown agent).
+//!   - `POST /api/schedules/{id}` (same fields; missing ones keep their value) → the schedule;
+//!     404 unknown, 422 invalid. A new timing counts from now (no catch-up runs).
+//!   - `POST /api/schedules/{id}/enabled` `{"on": bool}` → the schedule.
+//!   - `POST /api/schedules/{id}/run` → 202 `{"run": last_run}`: run now (outcome `running`,
+//!     or `skipped` while the previous run or the agent is busy, or `failed`).
+//!   - `POST /api/schedules/{id}/remove` → the removed schedule; 404 unknown.
 //! - `GET /api/apps/{app}`, `GET /api/apps/{app}/logs`, `POST /api/apps/{app}/force-delete`: see
 //!   [`crate::apps`].
 

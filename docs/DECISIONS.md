@@ -738,3 +738,19 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   prompts for the same thing from the same agent train people to click yes without reading; a narrow standing
   yes is better than a habit. Alternatives: per-argument rules (too narrow to be useful for spec updates),
   per-effect or per-agent blanket rules (too broad), rules with expiry (later, open question 67).
+- **2026-11-20 — Scheduled jobs (cron) run unattended in the agent's own conversation** (owner request). A
+  schedule is (name, agent id or the lead agent, instruction, 5-field cron in the box's local time, on/off, time
+  limit). The scheduler sends the instruction as a labelled turn ("Scheduled: <name>") and marks the session
+  unattended for that turn, so the owner's "Always allow" rules decide what it may do alone. Overlap: skip and
+  record, never queue. Missed while down: run once if less than an hour late, else record "missed". Time limit:
+  cancel and record "timed out" (default 60 min). Agents propose schedules with `schedule_job` (only for
+  themselves; the lead agent for any agent); each create/remove needs the owner's yes, never coverable by
+  "Always allow" rules but answered by the developer bypass like every confirmation. Why: recurring maintenance
+  is what people want from an always-on box, and the owner's standing permissions are the one place that says
+  what may happen unwatched. A schedule is itself a standing order, so letting a rule approve new ones would turn
+  one yes into unlimited unattended work. Alternatives: queue on overlap (starts at times nobody chose, piles up
+  behind a stuck run), catch up every missed run (a week offline would replay a week of jobs), a separate
+  "scheduled" conversation per job (loses the agent's memory and the owner's one place to look), letting rules
+  cover `schedule_job` (see above), excluding it from the bypass (the bypass would no longer mean "approve
+  everything"). Cron crate: croner (maintained, standard Vixie/OCPS semantics, DST-aware, jiff support; jiff is
+  already in the build).

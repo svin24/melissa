@@ -21,6 +21,12 @@
 //!   themselves once she is idle, see `apply.rs`).
 //! - `POST /ui/settings/developer/steps` (`enabled=on` or nothing): show the agents'
 //!   thinking and step timings in the chat (`ui.toml`; applies at once).
+//! - `GET /settings/schedules[?edit=<id>]`: scheduled jobs; `POST /ui/settings/schedules`
+//!   (`name`, `agent` = `lead` or an agent id, `instruction`, `repeat` = `hourly`|`daily`|
+//!   `weekly`|`custom`, `day` 0–6, `time` HH:MM, `cron`, `max_minutes`) adds one,
+//!   `POST /ui/settings/schedules/{id}` (same fields) saves one, and `.../{id}/enabled`
+//!   (`enabled=on` or nothing), `.../{id}/run`, `.../{id}/remove` act on one. Their JSON API
+//!   is `/api/schedules` (see `crate::api`).
 //! - `GET /settings/permissions`: the "Always allow" rules; `POST
 //!   /ui/settings/permissions/{id}/remove` removes one.
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
@@ -54,6 +60,7 @@ mod developer;
 pub(crate) mod pages;
 mod permissions;
 mod providers;
+mod schedules;
 mod updates;
 
 use std::{
@@ -272,6 +279,18 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             "/ui/settings/developer/bypass/on",
             post(permissions::bypass_on),
         )
+        .route("/settings/schedules", get(schedules::page))
+        .route("/ui/settings/schedules", post(schedules::create))
+        .route("/ui/settings/schedules/{id}", post(schedules::update))
+        .route(
+            "/ui/settings/schedules/{id}/enabled",
+            post(schedules::enabled),
+        )
+        .route("/ui/settings/schedules/{id}/run", post(schedules::run))
+        .route(
+            "/ui/settings/schedules/{id}/remove",
+            post(schedules::remove),
+        )
         .route("/settings/updates", get(updates::page))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
@@ -308,6 +327,14 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
             "/api/settings/permissions/bypass",
             post(permissions::api_bypass),
         )
+        .route(
+            "/api/schedules",
+            get(schedules::api_list).post(schedules::api_create),
+        )
+        .route("/api/schedules/{id}", post(schedules::api_update))
+        .route("/api/schedules/{id}/enabled", post(schedules::api_enabled))
+        .route("/api/schedules/{id}/run", post(schedules::api_run))
+        .route("/api/schedules/{id}/remove", post(schedules::api_remove))
         .route("/api/settings/updates", get(updates::api_status))
         .route("/api/settings/updates/{action}", post(updates::api_action))
         .with_state(ui)
