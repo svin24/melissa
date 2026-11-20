@@ -2012,7 +2012,21 @@ async fn deleting_a_helper_by_the_lead_needs_the_users_confirmation() {
         "{r}"
     );
     assert!(s.pool().get("Ada").is_some());
-    // Approved: Bo is gone, with its chat.
+    // Approved: Bo is gone, with its chat and its "Always allow" rules (Ada's stay).
+    let perms = s.server.registry().permissions();
+    for agent in [BO, ADA] {
+        let key = crate::tools::permissions::ActionKey {
+            principal: Principal::Agent(agent.into()),
+            tool: "start_app".into(),
+            target: Some("minecraft".into()),
+        };
+        perms
+            .add(&crate::tools::permissions::RuleOffer {
+                key,
+                verb: "start".into(),
+            })
+            .unwrap();
+    }
     let bo_dir = s.pool().agent_dir(BO);
     std::fs::create_dir_all(&bo_dir).unwrap();
     std::fs::write(bo_dir.join("transcript.jsonl"), "{}\n").unwrap();
@@ -2024,6 +2038,8 @@ async fn deleting_a_helper_by_the_lead_needs_the_users_confirmation() {
     assert_eq!(r["structuredContent"]["agent"], "Bo");
     assert!(s.pool().get("Bo").is_none());
     assert!(!bo_dir.exists());
+    let left: Vec<Principal> = perms.rules().into_iter().map(|r| r.key.principal).collect();
+    assert_eq!(left, vec![Principal::Agent(ADA.into())]);
     lead_event(&s, |e| {
         *e == LeadEvent::AgentDeleted {
             agent: BO.into(),

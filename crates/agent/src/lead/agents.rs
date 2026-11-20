@@ -332,6 +332,23 @@ impl AgentPool {
             }
         }
         if let Some(a) = self.inner.attached.get() {
+            // Its "Always allow" rules go too: they name an agent that no longer exists.
+            let registry = a.server.registry();
+            let rules: Vec<u64> = registry
+                .permissions()
+                .rules()
+                .into_iter()
+                .filter(|r| r.key.principal == owner)
+                .map(|r| r.id)
+                .collect();
+            for id in &rules {
+                if let Err(e) = registry.remove_rule(*id) {
+                    tracing::warn!("cannot remove rule {id} of agent {}: {e}", agent.id);
+                }
+            }
+            if !rules.is_empty() {
+                removed.push(format!("{} \"Always allow\" rule(s)", rules.len()));
+            }
             match a.files.remove_box(&owner, actor) {
                 Ok(n) => removed.push(format!("its file box ({n} files)")),
                 Err(e) => tracing::warn!("cannot remove the file box of {}: {e}", agent.id),

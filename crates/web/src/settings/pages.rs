@@ -632,12 +632,8 @@ pub fn permissions_region(rules: &[RuleRow], flash: Option<&Flash>) -> Markup {
                 html! { (r.who) },
                 html! { (r.what) " " (code(&r.tool)) },
                 html! { (crate::pages::short_date(r.created)) },
-                action_button(
-                    &remove,
-                    PERMISSIONS_ID,
-                    "Remove",
-                    "Remove this rule? Melissa asks you again next time.",
-                ),
+                // No second step: removing a rule only means Melissa asks again.
+                plain_action(&remove, PERMISSIONS_ID, "Remove", false),
             ]
         })
         .collect();
