@@ -1118,7 +1118,6 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                 ))
             }))
             section.setting-group #agent-name {
-                h2.setting-heading { "Name" }
                 div.setting-card.card-pad {
                     (settings_form(&format!("{base}/rename"), AGENT_ID, "Save name",
                         text_field("name", "Name", a.name, "", "text", None)))

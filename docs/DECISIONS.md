@@ -1120,3 +1120,45 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   binary with a checksum, but deprecated and pinned to an old Codex), `npx` at run time (downloads on every
   start, unpinned), bundling Node per agent (bigger, more to update), Node 22 (larger here), installing npm
   packages into the image (the image ships no vendor agent software; `melissa-setup` installs it on request).
+- **2026-11-20 — One chat per agent; "Fresh start" instead of "New chat"** (owner design "Melissa — Agent
+  workspace"). The talk with Melissa is the only talk with Melissa, a helper's the only talk with it. "New chat"
+  (UI, `POST /api/lead/new-chat`, CLI `new-chat`/`chat --new`) is gone; no new archives are made. Chats archived
+  before stay on disk and readable (`/chats`, Melissa's menu "Earlier chats"). **Fresh start**
+  (`Lead::fresh_start`, `AgentPool::fresh_start`, the agent menu, `POST /api/{lead,agents/{a}}/fresh-start`, CLI
+  `fresh-start [--agent]` with the old names as aliases) clears the model's memory: running turn stopped, session
+  closed without keeping its id, taint cleared (still the owner-approved way to clear it), Melissa's own pending
+  confirmations withdrawn; the chat goes on with a `fresh_start` event (a "Fresh start" divider), and the next
+  session is primed with nothing from before it. After a restart the chat comes back with its last 100 turns
+  (was 30); chat pages render the newest 60 entries and load older ones as the user scrolls up (`/ui/older`,
+  `?all=1` without script). Why: one place per agent to look, no lost context by accident; memory is cleared on
+  purpose, not by starting over.
+- **2026-11-20 — Silent compaction from Melissa's transcript; Claude Code compacts itself.** When a turn ends with
+  the context (as the provider last reported it) at `[lead] compact_at_percent` (70) or more of the window and the
+  conversation then stays idle `compact_idle_secs` (120), Melissa condenses the older messages since the last
+  fresh start into a summary (the previous summary, then each older message on one shortened line; the last 6
+  messages stay whole; about 6,000 characters), writes it to the transcript as `context_compacted` (not shown in
+  the chat; the visible history stays complete), forgets the session id and marks the next turn to open a new
+  session, primed with the summary and the recent messages. After an overflow (a turn ending in `max_tokens` or an
+  error with the context at 90%+) it condenses at once. Backends that compact on their own
+  (`SessionBackend::compacts_itself`: Claude Code's auto-compact, which also runs in `-p` stream-json mode and
+  keeps the session) are left alone. Why not a model-written summary: it needs a hidden turn whose events must not
+  reach the chat, and ACP has no compaction call; the extractive summary is deterministic, testable and costs no
+  tokens. Audited `<kind>.compact`; `POST /api/lead/compact` does it on request.
+- **2026-11-20 — The sidebar groups agents by state.** It replaces the rail: a device menu ("Melissa ▾", this
+  device only for now, Collapse sidebar), agent search, "+" (a new helper: name and icon), then **Needs
+  attention** (an approval it asked for waits, its last turn failed, or an app it looks after has a problem),
+  **Pinned** (Melissa always; helpers the user pins), **Working** (a turn runs; a still bar, as the share is not
+  known) and **Settled** (closed until opened). An agent is in the first group that applies. Live over the chat's
+  stream (registry changes, Melissa's log in a helper's chat, quiet ticks). Helpers get an icon from Melissa's own
+  shapes and colours (`lead::icon`; existing ones get a default for their id, saved once). Each row and the chat
+  header have the same menu (Rename agent, Change icon, Agent settings, Pin/Unpin, Fresh start, Earlier chats,
+  Delete helper); renaming, icons and deleting live on the helper's page in Settings → Agents. The chat header
+  shows "device / name" and a status (Needs permission, Needs a look, Working). The details panel became "Agent
+  details": on-device services, uploaded files (previews), permissions (waiting, with Review, and the agent's
+  Always-allow rules, removable), recent activity, schedules when there are any. The app strip above the chat is
+  gone (its apps are the services; the disk warning is on the device row). Tool calls of a turn are one checklist
+  card; permission cards carry a tag line ("Network access · TCP 25565") in small capitals as the design shows,
+  and every card's no is "Decline". Deviations from the design: primary buttons stay `--action` (honey is not for
+  buttons, ui-craft); apps show the facts Melissa knows (a game port, a web port), not "local only" or player
+  slots; there is no "System agent" (Melissa keeps updates and device health); the caption "Device changes require
+  your permission" is left out (not true for every change). Phone layouts are a separate change.
