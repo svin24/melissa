@@ -33,7 +33,9 @@ a lead agent. Until 2026-11-19 these were bee terms (hive, comb, queen, bee, cel
 contributors aren't confused, with a migration for existing installs (DECISIONS.md, 2026-11-19).
 **Status (2026-11-18):** the code follows the model on one device: `crates/device`, device/agent ids, persistent named
 agents with their own resumable sessions, workspaces owned by agents (namespace labels + admission), reassign only by the
-lead agent with the user's yes or by the user, user chat with any agent, agent-to-agent only via the lead agent. Mapping table in
+lead agent with the user's yes or by the user, user chat with any agent, agent-to-agent only via the lead agent. Since
+2026-11-20 new apps are always created by a helper: the lead agent hands "make/install/set up X" to one (`create_agent`
+with its first `job`, or `give_agent_job`) and its own `deploy_app` of a new app is refused (AGENT-MODEL rule 10). Mapping table in
 AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `lead-loop.md`. Multi-device is M3.
 
 ## 2. Packaging: container first (host-first)

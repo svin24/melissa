@@ -35,7 +35,7 @@ Code: `crates/agent/src/tools/scope.rs` (model + the one check), `crates/agent/s
 | who (scope) | list names + owners (`my_apps`, `list_apps`) | read a workspace (`app_status`) | read into a workspace (`app_logs`) | create a workspace | change its own workspace | anything on another agent's or an unassigned workspace | reassign a workspace |
 |---|---|---|---|---|---|---|---|
 | user (`User`) | yes | yes | yes | yes; owner = `agent` arg or unassigned | — | yes (policy only) | `melissa-server workspace reassign <workspace> --to <agent>` (no confirmation) |
-| Lead agent (`Lead{device}`) | yes, all by owner | yes | yes (taints) | yes; **must name the agent** (`agent`) | — | another agent's: allowed (audited `tool.cross_owner` "allowed (lead agent)"); when the policy asks (destructive always, tainted always) the reason starts "`x` is looked after by agent Ada (id)". Unassigned: **confirmation** ("not assigned to any agent (only you decide about it)") | `reassign_workspace`: **always** the user's confirmation (`Effect::Ownership`) |
+| Lead agent (`Lead{device}`) | yes, all by owner | yes | yes (taints) | **refused** (2026-11-20: hands it to a helper, `create_agent` with `job` or `give_agent_job`; `LEAD_HANDS_OFF`, no confirmation). Bringing back an uninstalled app (namespace kept) is a change | — | another agent's: allowed (audited `tool.cross_owner` "allowed (lead agent)"); when the policy asks (destructive always, tainted always) the reason starts "`x` is looked after by agent Ada (id)". Unassigned: **confirmation** ("not assigned to any agent (only you decide about it)") | `reassign_workspace`: **always** the user's confirmation (`Effect::Ownership`) |
 | agent (`Agent{id}`) | own in full, others name + owner only | own only | own only | yes; the new workspace is its own | yes (policy: unattended, so reversible asks unless pre-approved; destructive always) | **user-only confirmation**, reads included: "Ada wants to stop Bo's `x` (not Ada's). Only you can allow this, and only this once" | never (tool hidden + refused) |
 | nobody (`Nothing`, the UI's reads) | yes, all | yes | refused | refused | — | refused | — |
 | Lead agent on a workspace of another device | | | | | | refused "on device c-…; ask that device's lead agent" | |
@@ -47,8 +47,9 @@ Code: `crates/agent/src/tools/scope.rs` (model + the one check), `crates/agent/s
   agent cannot approve it either. A yes covers that one call; the next call asks again. Why not the bypass:
   ownership is a safety boundary, see DECISIONS 2026-11-20.
 - **Refused** = `ToolError::Refused("not yours: …")`, MCP `isError`, audit `tool.refused`, **no
-  confirmation created**: only an unscoped session reading into or changing a workspace, and the lead agent on
-  another device's workspace. Owner unknown (k3s unreachable) → fail closed (`could not check who owns …`).
+  confirmation created**: only an unscoped session reading into or changing a workspace, the lead agent on
+  another device's workspace, and the lead agent creating a new workspace (`LEAD_HANDS_OFF`: "hand this to a
+  helper …"). Owner unknown (k3s unreachable) → fail closed (`could not check who owns …`).
 - **Audit `tool.cross_owner`** (registry, one line per step, detail "<outcome>: <who> → <verb> `<app>` of
   <owner>", e.g. "asked: agent Ada (d-….a1) → run commands in `minecraft` of agent Bo (d-….a2)"): `asked`,
   `approved by the user (this call only)`, `denied by the user`, `not approved (<timeout/withdrawn>)`,
@@ -97,14 +98,15 @@ fn target(&self) -> Option<Target> {
     Some(Target { kind: ResourceKind::Workspace, arg: "app", access: Access::Change, verb: "restart" })
 }
 ```
-Examples: `deploy_app` ("deploy over"), `update_app` ("update"), `stop_app` ("stop"), `start_app` ("start"), `uninstall_app`
+Examples: `deploy_app` ("deploy over") is `Create` (2026-11-20: a new name is creating, which the lead agent may
+not do; an existing one is a change like `Change`); `update_app` ("update"), `stop_app` ("stop"), `start_app` ("start"), `uninstall_app`
 ("uninstall"), `app_exec` ("run commands in") are `Change`; `app_logs` is `ReadScoped`; `app_status` is `Read`. A stop by another agent is
 a user-only confirmation ("Ada wants to stop Bo's `nextcloud` …", audited `tool.cross_owner`); the lead agent's stop of Ada's workspace asks the
 user with "`nextcloud` is looked after by agent Ada (…); stop `nextcloud` (…)" (2026-11-19).
 `access`: `Read` (names, phases, addresses: everyone but another agent), `ReadScoped` (content the workspace
 controls: not unscoped sessions either), `Change`. For an agent all three mean "its own, or the user's yes".
 `arg` is a required string. Audit of every app tool (2026-11-20): `app_status` Read; `app_logs` ReadScoped;
-`app_exec`, `deploy_app`, `update_app`, `stop_app`, `start_app`, `uninstall_app` Change; `list_apps` and
+`deploy_app` Create; `app_exec`, `update_app`, `stop_app`, `start_app`, `uninstall_app` Change; `list_apps` and
 `my_apps` untargeted but scope-filtered; `reassign_workspace` lead-only; `my_files` is the agent's own file box
 (no workspace); `transfer_file` (lead-only, `owner_approval` every call) copies or moves a file between boxes; there is no volume tool (volumes show in `app_status`).
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in

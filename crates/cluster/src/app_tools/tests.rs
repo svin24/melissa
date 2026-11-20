@@ -1041,16 +1041,16 @@ fn labels_are_honest() {
 async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None).with_confirm_timeout(Duration::from_secs(5));
-    let mut ctx = lead();
     approved(
         &reg,
         1,
-        &mut ctx,
+        &mut agent(ADA),
         "deploy_app",
-        json!({"spec": nc(), "app": "nextcloud", "agent": "Ada"}),
+        json!({"spec": nc(), "app": "nextcloud"}),
     )
     .await
     .unwrap();
+    let mut ctx = lead();
     fake.state().pods = vec![pod("p", 1, true, None)];
     fake.state().log = "hello".into();
     reg.call(1, &mut ctx, "app_logs", json!({"app": "nextcloud"}))
@@ -1698,23 +1698,29 @@ async fn unassigned_workspaces_from_before_agents_are_only_the_leads_with_approv
 async fn every_install_gets_an_owning_agent_and_reinstalls_keep_it() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None);
-    // The lead agent must say which agent looks after a new workspace.
-    let r = approved(
-        &reg,
-        3,
-        &mut lead(),
-        "deploy_app",
+    // The lead agent creates no new workspace, with or without naming an agent: it hands the
+    // job to a helper. Refused before anyone is asked.
+    for args in [
         json!({"spec": nc(), "app": "nextcloud"}),
-    )
-    .await;
-    assert!(
-        matches!(&r, Err(ToolError::BadArgs(m)) if m.contains("which agent")),
-        "{r:?}"
-    );
+        json!({"spec": nc(), "app": "nextcloud", "agent": "ada"}),
+    ] {
+        let r = reg.call(3, &mut lead(), "deploy_app", args).await;
+        assert!(
+            matches!(&r, Err(ToolError::Refused(m)) if m == LEAD_HANDS_OFF
+                && m.contains("create_agent") && m.contains("give_agent_job")),
+            "{r:?}"
+        );
+        assert!(reg.confirmations().pending().is_empty());
+    }
+    let mut operator = TaskContext {
+        attended: true,
+        scope: Scope::User,
+        ..TaskContext::default()
+    };
     let r = approved(
         &reg,
-        3,
-        &mut lead(),
+        0,
+        &mut operator,
         "deploy_app",
         json!({"spec": nc(), "app": "nextcloud", "agent": "Nobody"}),
     )
@@ -1724,13 +1730,13 @@ async fn every_install_gets_an_owning_agent_and_reinstalls_keep_it() {
         "{r:?}"
     );
     assert!(fake.state().applied.is_empty());
-    // "Ada looks after Nextcloud."
+    // Ada (the helper the job went to) deploys it: hers from the start.
     let out = approved(
         &reg,
         3,
-        &mut lead(),
+        &mut agent(ADA),
         "deploy_app",
-        json!({"spec": nc(), "app": "nextcloud", "agent": "ada"}),
+        json!({"spec": nc(), "app": "nextcloud"}),
     )
     .await
     .unwrap();
@@ -1741,18 +1747,39 @@ async fn every_install_gets_an_owning_agent_and_reinstalls_keep_it() {
     );
     assert_eq!(
         ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
-        Some("the lead agent (task 3)")
+        Some("agent Ada (d-0a1b2c3d.a1) (task 3)")
     );
     let at = ns_annotation(&fake, "melissa.io/installed-at").unwrap();
     assert!(at.ends_with('Z') && at.len() == 20, "{at}");
 
+    // The lead agent keeps its override on the existing app: an update (the user approves),
+    // and bringing it back after a keep-data uninstall. Ada stays the owner.
+    approved(
+        &reg,
+        4,
+        &mut lead(),
+        "update_app",
+        json!({"spec": nc(), "app": "nextcloud"}),
+    )
+    .await
+    .unwrap();
+    fake.state().deployment = None;
+    approved(
+        &reg,
+        4,
+        &mut lead(),
+        "deploy_app",
+        json!({"app": "nextcloud"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        ns_label(&fake, "melissa.io/owner-agent").as_deref(),
+        Some(ADA)
+    );
+
     // The user (operator) reinstalls: no ownership question, record unchanged; naming a
     // different agent is not how workspaces move.
-    let mut operator = TaskContext {
-        attended: true,
-        scope: Scope::User,
-        ..TaskContext::default()
-    };
     approved(
         &reg,
         0,
@@ -2584,14 +2611,20 @@ async fn a_catalog_install_gets_its_spec_and_stays_manageable() {
 async fn a_bad_spec_fails_before_anyone_is_asked() {
     let fake = Arc::new(Fake::default());
     let reg = registry(&fake, None);
+    // An attended helper: not pre-approved, so a good deploy asks.
+    let helper = || TaskContext {
+        attended: true,
+        scope: Scope::Agent { id: ADA.into() },
+        ..TaskContext::default()
+    };
     let mut spec = minecraft();
     spec["containers"][0]["image"] = json!("itzg/minecraft-server");
     let r = reg
         .call(
             1,
-            &mut lead(),
+            &mut helper(),
             "deploy_app",
-            json!({"app": "minecraft", "spec": spec, "agent": "Ada"}),
+            json!({"app": "minecraft", "spec": spec}),
         )
         .await;
     assert!(
@@ -2610,9 +2643,9 @@ async fn a_bad_spec_fails_before_anyone_is_asked() {
     // A good one asks, with what will run.
     let reason = confirmation_reason(
         &reg,
-        lead(),
+        helper(),
         "deploy_app",
-        json!({"app": "minecraft", "spec": minecraft(), "agent": "Ada"}),
+        json!({"app": "minecraft", "spec": minecraft()}),
     )
     .await;
     assert_eq!(

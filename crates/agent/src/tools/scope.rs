@@ -54,10 +54,22 @@ pub enum Access {
     /// Reads content from the workspace that the workspace controls (e.g. `app_logs`): its own agent,
     /// the lead agent and the user.
     ReadScoped,
-    /// Creates, changes or deletes the workspace (install over, uninstall, update, restart,
-    /// scale, stop).
+    /// Changes or deletes the workspace (install over, uninstall, update, restart, scale,
+    /// stop).
     Change,
+    /// Creates a new workspace, or (when it exists) changes it like [`Access::Change`]
+    /// (`deploy_app`). New workspaces come only from agents (they become theirs) or the user:
+    /// the lead agent hands creation to an agent ([`LEAD_HANDS_OFF`]).
+    Create,
 }
+
+/// Why the lead agent may not create a workspace itself: every new app gets an agent owner
+/// from the start, so the lead hands the job to one.
+pub const LEAD_HANDS_OFF: &str = "the lead agent does not set up new apps itself: hand this to a \
+    helper. create_agent with `job` (the goal, `user_request`: the user's words, `research`: what \
+    you found out) creates one and starts it at once; or give_agent_job to a helper that already \
+    looks after related apps. The helper deploys the app and looks after it; you keep watching \
+    (agent_status) and can still stop, update or uninstall it.";
 
 /// The workspace a tool works on, declared once per tool ([`super::Tool::target`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +137,7 @@ pub enum Scope {
     User,
     /// The lead agent of device `device`: every workspace on its device; destructive actions name the
     /// owning agent; unassigned workspaces need the user's approval. Workspaces on other devices are
-    /// their own lead agent's.
+    /// their own lead agent's. It creates no new workspaces: agents do ([`Access::Create`]).
     Lead { device: String },
     /// Agent `id`: only the workspaces it owns, and new workspaces (which then belong to it).
     Agent { id: String },
@@ -147,7 +159,7 @@ impl Scope {
         match (self, access) {
             (Self::User | Self::Nothing, _) => false,
             (Self::Lead { .. }, Access::Read | Access::ReadScoped) => false,
-            (Self::Lead { .. }, Access::Change) | (Self::Agent { .. }, _) => true,
+            (Self::Lead { .. }, Access::Change | Access::Create) | (Self::Agent { .. }, _) => true,
         }
     }
 
@@ -230,7 +242,9 @@ pub fn check(
             "not yours: this session may not change or read the {kind} `{name}`"
         )),
         Scope::Lead { device } => match (target.access, owner) {
-            (Access::Change, Some(Owner::Agent(id))) => match device_of(id) {
+            // A new workspace: an agent creates it (and owns it from the start).
+            (Access::Create, None) => ScopeDecision::Refuse(LEAD_HANDS_OFF.into()),
+            (Access::Change | Access::Create, Some(Owner::Agent(id))) => match device_of(id) {
                 Some(c) if c != device => ScopeDecision::Refuse(format!(
                     "not yours: the {kind} `{name}` is on device {c}; ask that device's Lead"
                 )),
@@ -239,11 +253,13 @@ pub fn check(
                     describe_agent(names, id)
                 )),
             },
-            (Access::Change, Some(Owner::Unassigned)) => ScopeDecision::Confirm(format!(
+            (Access::Change | Access::Create, Some(Owner::Unassigned)) => {
+                ScopeDecision::Confirm(format!(
                 "`{name}` is not assigned to any agent (only you decide about it); the lead agent \
                  wants to {} it",
                 target.verb
-            )),
+            ))
+            }
             _ => ScopeDecision::Allow,
         },
         Scope::Agent { id } => {
@@ -361,6 +377,11 @@ mod tests {
     const STATUS: Target = Target {
         access: Access::Read,
         verb: "check",
+        ..UNINSTALL
+    };
+    const DEPLOY: Target = Target {
+        access: Access::Create,
+        verb: "deploy over",
         ..UNINSTALL
     };
 
@@ -550,6 +571,51 @@ mod tests {
                 None
             ),
             ScopeDecision::Note("`n` is looked after by agent d-0a1b2c3d.a1".into())
+        );
+    }
+
+    #[test]
+    fn new_workspaces_come_from_agents_never_the_lead() {
+        // The lead agent hands creation to an agent: refused before anyone is asked.
+        assert_eq!(
+            check_(&lead(), &DEPLOY, "minecraft", None),
+            ScopeDecision::Refuse(LEAD_HANDS_OFF.into())
+        );
+        assert!(
+            LEAD_HANDS_OFF.contains("create_agent") && LEAD_HANDS_OFF.contains("give_agent_job")
+        );
+        // An existing workspace (uninstalled, data kept): the lead's override, as for a change.
+        assert_eq!(
+            check_(
+                &lead(),
+                &DEPLOY,
+                "minecraft",
+                Some(&Owner::Agent(ADA.into()))
+            ),
+            ScopeDecision::Note("`minecraft` is looked after by agent Ada (d-0a1b2c3d.a1)".into())
+        );
+        assert!(matches!(
+            check_(&lead(), &DEPLOY, "old", Some(&Owner::Unassigned)),
+            ScopeDecision::Confirm(_)
+        ));
+        assert!(lead().needs_owner(Access::Create));
+        // An agent creates (the workspace becomes its own); the user may too.
+        assert_eq!(
+            check_(&agent(ADA), &DEPLOY, "minecraft", None),
+            ScopeDecision::Allow
+        );
+        assert!(matches!(
+            check_(
+                &agent(ADA),
+                &DEPLOY,
+                "minecraft",
+                Some(&Owner::Agent(BO.into()))
+            ),
+            ScopeDecision::AskUser(_)
+        ));
+        assert_eq!(
+            check_(&Scope::User, &DEPLOY, "minecraft", None),
+            ScopeDecision::Allow
         );
     }
 

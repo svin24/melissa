@@ -953,10 +953,58 @@ impl AgentPool {
 
     // ---- the lead agent's tools -------------------------------------------------------------
 
-    fn create(&self, task: TaskId, args: &Value) -> Result<Value, ToolError> {
+    /// `create_agent`: a new agent, and with `job` its first job at once (one step for the
+    /// lead agent's hand-off: the agent owns what it deploys from the start).
+    fn create(&self, task: TaskId, ctx: &TaskContext, args: &Value) -> Result<Value, ToolError> {
+        lead_only(ctx)?;
+        let args = object(
+            args,
+            &[
+                "name",
+                "backend",
+                "tools",
+                "job",
+                "user_request",
+                "research",
+                "timeout_secs",
+            ],
+        )?;
+        // Checked before the agent exists, so a bad brief creates nothing.
+        let brief = match args.get("job") {
+            None | Some(Value::Null) => {
+                if let Some(k) = BRIEF_EXTRAS.iter().find(|k| args.contains_key(**k)) {
+                    return Err(ToolError::BadArgs(format!("`{k}` goes with `job`")));
+                }
+                None
+            }
+            Some(_) => Some(self.brief(&args, "job")?),
+        };
+        let (agent, mut out) = self.create_record(task, &args)?;
+        let Some(brief) = brief else {
+            return Ok(out);
+        };
+        match self.start_job(ctx, &agent, brief) {
+            Ok(job) => {
+                out["status"] = job["status"].clone();
+                out["job"] = job;
+            }
+            // The agent exists either way; the lead agent can retry with give_agent_job.
+            Err(e) => {
+                out["job_error"] =
+                    format!("{e}; the agent was created, give it the job with give_agent_job")
+                        .into();
+            }
+        }
+        Ok(out)
+    }
+
+    fn create_record(
+        &self,
+        task: TaskId,
+        args: &serde_json::Map<String, Value>,
+    ) -> Result<(AgentRecord, Value), ToolError> {
         let a = self.attached()?;
-        let args = object(args, &["name", "backend", "tools"])?;
-        let name = str_arg(&args, "name")?;
+        let name = str_arg(args, "name")?;
         let backend = match args.get("backend") {
             None | Some(Value::Null) => lock(&a.lead_choice)
                 .clone()
@@ -1035,21 +1083,42 @@ impl AgentPool {
             name: agent.name.clone(),
             backend: agent.backend.clone(),
         });
-        Ok(json!({
+        let out = json!({
             // The name is what the agent says (and may pass back); the id is for reference.
             "agent": agent.name,
             "agent_id": agent.id,
             "backend": agent.backend,
             "tools": agent.tools,
             "status": "idle",
-        }))
+        });
+        Ok((agent, out))
     }
 
     async fn give_job(&self, ctx: &TaskContext, args: &Value) -> Result<Value, ToolError> {
         lead_only(ctx)?;
-        let args = object(args, &["agent", "goal", "timeout_secs"])?;
+        let args = object(
+            args,
+            &["agent", "goal", "user_request", "research", "timeout_secs"],
+        )?;
         let agent = self.resolve(str_arg(&args, "agent")?)?;
-        let goal = str_arg(&args, "goal")?;
+        let brief = self.brief(&args, "goal")?;
+        self.start_job(ctx, &agent, brief)
+    }
+
+    /// A job from `goal_key` (`goal` or `job`), the optional `user_request` and `research`,
+    /// and `timeout_secs`.
+    fn brief(
+        &self,
+        args: &serde_json::Map<String, Value>,
+        goal_key: &str,
+    ) -> Result<Brief, ToolError> {
+        let goal = str_arg(args, goal_key)?.to_string();
+        let optional = |k: &str| match args.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(_) => str_arg(args, k).map(|s| Some(s.to_string())),
+        };
+        let user_request = optional("user_request")?;
+        let research = optional("research")?;
         let limits = &self.inner.limits;
         let max = limits.max_timeout.as_secs();
         let timeout = match args.get("timeout_secs") {
@@ -1063,8 +1132,26 @@ impl AgentPool {
                 }
             },
         };
-        let conv = self.conversation(&agent)?;
-        let text = format!("A job from the lead agent:\n\n{goal}");
+        Ok(Brief {
+            goal,
+            user_request,
+            research,
+            timeout,
+        })
+    }
+
+    /// Wake `agent` with the job in `brief` (at most `max_concurrent` agents work at once).
+    fn start_job(
+        &self,
+        ctx: &TaskContext,
+        agent: &AgentRecord,
+        brief: Brief,
+    ) -> Result<Value, ToolError> {
+        let limits = &self.inner.limits;
+        let timeout = brief.timeout;
+        let goal = brief.goal.as_str();
+        let conv = self.conversation(agent)?;
+        let text = brief.text();
         let (turn, since) = {
             let _start = lock(&self.inner.start);
             let working = lock(&self.inner.convs)
@@ -1418,6 +1505,32 @@ fn str_arg<'a>(args: &'a serde_json::Map<String, Value>, name: &str) -> Result<&
         .ok_or_else(|| ToolError::BadArgs(format!("`{name}` must be a non-empty string")))
 }
 
+/// `create_agent`'s arguments that only go with a `job`.
+const BRIEF_EXTRAS: [&str; 3] = ["user_request", "research", "timeout_secs"];
+
+/// A job for an agent: the lead agent's goal, the user's own words and what the lead agent
+/// already found out (its read-only pre-research), so the agent starts well briefed.
+struct Brief {
+    goal: String,
+    user_request: Option<String>,
+    research: Option<String>,
+    timeout: Duration,
+}
+
+impl Brief {
+    /// The job message the agent receives.
+    fn text(&self) -> String {
+        let mut text = format!("A job from the lead agent:\n\n{}", self.goal);
+        if let Some(r) = &self.user_request {
+            text.push_str(&format!("\n\nThe user's request, in their words:\n{r}"));
+        }
+        if let Some(r) = &self.research {
+            text.push_str(&format!("\n\nWhat the lead agent already found out:\n{r}"));
+        }
+        text
+    }
+}
+
 /// Creating an agent, giving it a job, passing it a message or stopping it changes state and
 /// spends money: reversible. Attended lead agent sessions may do it without asking; a tainted
 /// Lead agent needs a human.
@@ -1446,12 +1559,14 @@ fn agent_param(what: &str) -> Value {
 
 impl Tool for CreateAgent {
     fn spec(&self) -> ToolSpec {
+        let l = self.0.limits();
         ToolSpec {
             name: "create_agent",
             description: "Create a new agent on this device: a persistent, sandboxed agent with a \
                           name you choose (e.g. a short first name). An agent looks after its own \
                           workspaces (apps): it may change only those, plus new ones it creates. It \
-                          keeps its memory between jobs. Give it work with give_agent_job.",
+                          keeps its memory between jobs. With `job` it starts on its first job at \
+                          once (as give_agent_job); follow it with agent_status.",
             labels: ACT_LABELS,
             params: json!({
                 "type": "object",
@@ -1459,6 +1574,10 @@ impl Tool for CreateAgent {
                     "name": {"type": "string", "description": "Display name, unique on this device (letters, digits, spaces, - _ .; at most 40)."},
                     "backend": {"type": "string", "description": "Agent session backend (default: the backend the user chose for you, else the configured agent backend)."},
                     "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools the agent may use, by plain names such as `device_info`. Default: all of yours except the agent and workspace tools."},
+                    "job": {"type": "string", "description": "Its first job: a self-contained goal (it does not see this chat). Starts it at once."},
+                    "user_request": {"type": "string", "description": "With `job`: the user's request, word for word."},
+                    "research": {"type": "string", "description": "With `job`: what you already found out (image, ports, settings) so it starts well briefed."},
+                    "timeout_secs": {"type": "integer", "minimum": 1, "maximum": l.max_timeout.as_secs(), "description": format!("With `job`: its time limit (default {}).", l.default_timeout.min(l.max_timeout).as_secs())},
                 },
                 "required": ["name"],
                 "additionalProperties": false,
@@ -1474,10 +1593,7 @@ impl Tool for CreateAgent {
         ctx: &'a mut TaskContext,
         args: Value,
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async move {
-            lead_only(ctx)?;
-            self.0.create(task, &args)
-        })
+        Box::pin(async move { self.0.create(task, ctx, &args) })
     }
     fn lead_only(&self) -> bool {
         true
@@ -1500,6 +1616,8 @@ impl Tool for GiveAgentJob {
                 "properties": {
                     "agent": agent_param("Who does the job"),
                     "goal": {"type": "string", "description": "What the agent should do and report back."},
+                    "user_request": {"type": "string", "description": "The user's request, word for word (optional)."},
+                    "research": {"type": "string", "description": "What you already found out (optional), so it starts well briefed."},
                     "timeout_secs": {"type": "integer", "minimum": 1, "maximum": l.max_timeout.as_secs(), "description": format!("Time limit (default {}).", l.default_timeout.min(l.max_timeout).as_secs())},
                 },
                 "required": ["agent", "goal"],

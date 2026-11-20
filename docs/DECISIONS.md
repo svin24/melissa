@@ -967,3 +967,16 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   agent's box. Alternatives: move by default (one click loses the sender's copy); keep the original added time
   (an old file would be pruned on arrival); a helper-callable "send to" tool (breaks box isolation); a
   user-only confirmation like cross-owner app calls (the lead agent is the one asking, see above).
+- **2026-11-20 — The lead agent hands app creation to helpers; it never deploys a new app itself** (owner feedback:
+  asked to set up a Minecraft server, Melissa deployed it herself). Enforced in code, not only in the prompt:
+  `deploy_app` targets the new `Access::Create`, and the scope check refuses `Scope::Lead` creating a workspace that
+  does not exist yet (`LEAD_HANDS_OFF`, before any confirmation; `Deployer::new_owner` refuses too). Every app so has
+  a helper owner from the start (the deploying agent, `melissa.io/owner-agent`). The lead keeps every oversight and
+  override power from the ownership rules on existing apps (status, logs, stop/start, exec, update, uninstall,
+  reassign, bringing back an uninstalled app), with the same confirmations. Fast hand-off: `create_agent` takes an
+  optional first `job` (plus `user_request`, the user's words verbatim, and `research`, the lead's read-only
+  findings; `give_agent_job` takes the same two), so creating and starting a helper is one call. Why: the owner
+  wants helpers to do hands-on work and own the result, the lead to direct and relay. Alternatives: prompt-only
+  (the model ignored it), hiding `deploy_app` from the lead (loses bringing back an uninstalled app and the
+  refusal's hint), letting the lead deploy on a helper's behalf with `agent` (the old way; the helper never saw the
+  work it now owns).

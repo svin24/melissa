@@ -30,7 +30,7 @@ pub use permissions::{
 pub use policy::{check_tool_set, decide, Decision, Effect, Labels, TaskContext, RUNS_SOFTWARE};
 pub use scope::{
     crossing, describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope,
-    ScopeDecision, Target, WorkspaceInfo, WorkspaceStore,
+    ScopeDecision, Target, WorkspaceInfo, WorkspaceStore, LEAD_HANDS_OFF,
 };
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
