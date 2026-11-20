@@ -301,6 +301,7 @@ impl AcpBackend {
                 Vec::new(),
             ),
         };
+        let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
         let (program_path, argv) = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
@@ -309,6 +310,7 @@ impl AcpBackend {
             &cwd,
             &[],
             &binds,
+            &rw_dirs,
             &env,
             bridge,
             self.spec.args.clone(),

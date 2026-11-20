@@ -130,6 +130,13 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   Tests use fakes behind `melissa_voice::fetch::Fetch` and `engine::Engine` (no network, no whisper);
   `real_whisper_transcribes_a_recording` (ignored) runs the real CLI by hand.
 
+## Files and the Schedules wait (2026-11-20)
+- `settings/files.rs`, view in `pages::files_region`: the default "Keep files for" (`FileBoxes::set_default`,
+  saved in `<state>/files/retention.json`, audited `files.retention`) and a read-only list of boxes with their own
+  setting (changed in the chat's file panel, `crate::files`). API `GET|POST /api/settings/files`.
+- Schedules: the card "When a run needs your OK" (`POST /ui/settings/schedules/wait`, `minutes` 1–1440, default
+  10; `Schedules::set_approval_wait`, audited `schedule.settings`). API `GET|POST /api/settings/schedules`.
+
 ## Gotchas
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).
 - The toggle posts `enabled=on` or nothing; parse the form as `Vec<(String, String)>`.

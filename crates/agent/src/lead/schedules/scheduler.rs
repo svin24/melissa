@@ -319,12 +319,17 @@ impl Runner for LeadRunner {
             .lead
             .upgrade()
             .ok_or_else(|| StartError::Failed("Melissa is stopping".into()))?;
+        // Confirmations of the run wait as long as the owner set for scheduled runs.
+        let wait = lead.scheduler.get().map_or(
+            Duration::from_secs(u64::from(super::DEFAULT_APPROVAL_WAIT_MINUTES) * 60),
+            |s| s.schedules().approval_wait(),
+        );
         let started = match agent {
             Principal::Lead => lead
                 .conv
-                .send_scheduled(name, text, "schedule")
+                .send_scheduled(name, text, "schedule", wait)
                 .map(|(t, _)| t),
-            Principal::Agent(id) => lead.pool.scheduled_send(id, name, text),
+            Principal::Agent(id) => lead.pool.scheduled_send(id, name, text, wait),
         };
         started.map_err(|e| match e {
             LeadError::Busy => StartError::Busy,

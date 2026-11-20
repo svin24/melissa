@@ -20,8 +20,8 @@
 //!   `<backend> <model>`, posted with the composer like Stop): switch the agent from the
 //!   next turn. htmx gets the composer status (with the menu, or why it was refused);
 //!   a plain form post gets a redirect.
-//! - `GET /ui/attachments/{file}`: a file sent with a message (images inline, the rest as
-//!   downloads; see `melissa_agent::attachments`).
+//! - Files: each chat has a file panel (its agent's file box); `/ui/files/...` serves and
+//!   deletes them (see `crate::files`).
 //! - `POST /ui/new-chat`: a new chat with Melissa (plain form, redirects to `/`);
 //!   `GET /chats/{id}`: an archived chat, read-only.
 //! - Stream cursors carry the log's epoch (`?epoch=`, SSE ids `<epoch>-<seq>`): a page from
@@ -122,7 +122,6 @@ pub(crate) fn routes(ui: Ui) -> Router {
             "/ui/agents/{agent}/messages",
             post(agent_message).layer(DefaultBodyLimit::max(MESSAGE_BODY_LIMIT)),
         )
-        .route("/ui/attachments/{file}", get(attachment))
         .route("/ui/cancel", post(lead_cancel))
         .route("/ui/agents/{agent}/cancel", post(agent_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
@@ -131,6 +130,7 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/ui/agents/{agent}/backend", post(agent_backend))
         .route("/chats/{id}", get(past_chat_page))
         .merge(crate::settings::ui_routes())
+        .merge(crate::files::routes())
         .with_state(ui)
 }
 
@@ -257,6 +257,15 @@ impl Ui {
         // they show in the menu from the next render.
         self.lead.refresh_models_soon();
         let agents = self.agents(who, None);
+        let links = self.file_links(who);
+        let panel = {
+            let ui = self.clone();
+            let owner = crate::files::owner_of(who);
+            tokio::task::spawn_blocking(move || ui.panel_of_owner(&owner))
+                .await
+                .map_err(|e| LeadError::Failed(e.to_string()))?
+        };
+        let files = panel.view();
         let view = ChatView {
             who,
             epoch: log.epoch(),
@@ -267,6 +276,8 @@ impl Ui {
             draft,
             error,
             voice: self.settings.voice_url(),
+            links: &links,
+            files: Some(&files),
         };
         Ok(self
             .framed(|f| match agent {
@@ -490,14 +501,29 @@ fn stream(
                 .contains(&Change::Status)
                 .then(|| st.ui.agents(st.who(), None))
                 .flatten();
+            let links = st.ui.file_links(st.who());
+            let panel = if changes.contains(&Change::Files) && st.view == View::Chat {
+                let ui = st.ui.clone();
+                let owner = crate::files::owner_of(st.who());
+                tokio::task::spawn_blocking(move || ui.panel_of_owner(&owner))
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            let files = panel.as_ref().map(|p| p.view());
             let html = pages::stream_update(
                 &st.feed,
                 &changes,
                 st.view,
                 st.who(),
-                backend.as_deref(),
-                agents.as_ref(),
-                st.ui.waiting(),
+                &pages::StreamExtras {
+                    backend: backend.as_deref(),
+                    agents: agents.as_ref(),
+                    waiting: st.ui.waiting(),
+                    links: &links,
+                    files: files.as_ref(),
+                },
             );
             if html.is_empty() {
                 continue;
@@ -702,41 +728,6 @@ async fn agent_message(
     .await
 }
 
-/// A file sent with a message (any conversation's; names are unguessable). Images are shown
-/// inline, everything else is a download. The file may not run script or be embedded by
-/// another site.
-async fn attachment(State(ui): State<Ui>, Path(file): Path<String>) -> Response {
-    let not_found = || (StatusCode::NOT_FOUND, pages::not_found()).into_response();
-    let Some(path) = ui.lead.attachments().path(&file) else {
-        return not_found();
-    };
-    let Ok(bytes) = tokio::fs::read(path).await else {
-        return not_found();
-    };
-    let (content_type, inline) = attachments::content_type(&file);
-    let disposition = if inline { "inline" } else { "attachment" };
-    (
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, disposition),
-            (
-                header::CACHE_CONTROL,
-                "private, max-age=31536000, immutable",
-            ),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; sandbox",
-            ),
-            (
-                header::HeaderName::from_static("cross-origin-resource-policy"),
-                "same-origin",
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
-}
-
 /// The answer to a sent message: the composer (cleared, or with the text and why it wasn't
 /// sent) for htmx; a redirect or the page with the error otherwise.
 async fn message_reply(
@@ -773,6 +764,7 @@ async fn message_reply(
             .map(backend_label);
         let feed = Feed::new();
         let agents = ui.agents(who, None);
+        let links = pages::FileLinks::none();
         return pages::composer_box(&ChatView {
             who,
             epoch: 0,
@@ -783,6 +775,8 @@ async fn message_reply(
             draft,
             error: error.as_deref(),
             voice: ui.settings.voice_url(),
+            links: &links,
+            files: None,
         })
         .into_response();
     }
@@ -1001,7 +995,9 @@ async fn past_chat_page(State(ui): State<Ui>, Path(id): Path<u64>) -> Response {
         .with_steps(ui.settings.prefs().show_steps)
         .fold(&events, &ui);
     feed.settle();
-    ui.framed(|f| pages::past_chat(f, &chat, &feed))
+    // Past chats are Melissa's: their files are in her box.
+    let links = ui.file_links(Who::Lead);
+    ui.framed(|f| pages::past_chat(f, &chat, &feed, &links))
         .await
         .into_response()
 }

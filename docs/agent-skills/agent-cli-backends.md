@@ -54,7 +54,9 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 - Inside: `/usr` and `/etc` read-only, `/bin` etc. as usr-merge symlinks, `/run/systemd/resolve` read-only
   (Fedora's `/etc/resolv.conf` points there), fresh `/proc`, minimal `/dev`, private `/tmp` and `/var/tmp`,
   `$HOME` an empty read-only tmpfs plus the preset's paths, the CLI binary (symlinks resolved, bound read-only,
-  executed by its real path), and the task workdir (the only writable host path; `--chdir` into it).
+  executed by its real path), and the task workdir (`--chdir` into it); for conversations also the agent's own
+  file box (`OpenSession::files_dir` → `SandboxPlan::with_rw_dirs`, same path). Those are the only writable host
+  paths; no other box is ever bound (`crates/agent/tests/sandbox.rs` checks it with real bwrap).
 - `--unshare-all --die-with-parent --new-session --cap-drop ALL --hostname melissa-agent --clearenv`.
   Env: HOME, PATH (`<binary dir>:/usr/bin`), NO_COLOR, TERM, plus USER/LOGNAME/LANG/LC_ALL/TZ if set and the
   names in `sandbox.env`.

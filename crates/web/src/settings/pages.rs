@@ -18,10 +18,11 @@ use crate::{
 use melissa_settings::providers::EnvVarView;
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 6] = [
+pub const SECTIONS: [(&str, &str); 7] = [
     ("/settings/providers", "Providers"),
     (PERMISSIONS_URL, "Permissions"),
     (SCHEDULES_URL, "Schedules"),
+    (FILES_URL, "Files"),
     (VOICE_URL, "Voice"),
     ("/settings/updates", "Updates"),
     (DEVELOPER_URL, "Developer"),
@@ -31,6 +32,11 @@ pub const SECTIONS: [(&str, &str); 6] = [
 pub const SCHEDULES_URL: &str = "/settings/schedules";
 /// DOM id of the Schedules section (every action swaps it).
 pub const SCHEDULES_ID: &str = "schedules";
+
+/// The Files section: how long file boxes keep files.
+pub const FILES_URL: &str = "/settings/files";
+/// DOM id of the Files region.
+pub const FILES_ID: &str = "files-settings";
 
 /// The Permissions section: the "Always allow" rules.
 pub const PERMISSIONS_URL: &str = "/settings/permissions";
@@ -739,6 +745,8 @@ pub struct SchedulesView {
     pub available: bool,
     /// The box's time zone, e.g. `Europe/Athens`.
     pub zone: String,
+    /// Minutes a scheduled run's request waits for the owner.
+    pub wait: String,
 }
 
 pub fn schedules_page(f: &Frame<'_>, v: &SchedulesView) -> Markup {
@@ -796,6 +804,11 @@ pub fn schedules_region(v: &SchedulesView) -> Markup {
                     "Nothing scheduled yet.",
                 )))
                 (schedule_form(&v.form, &v.zone))
+                (card("When a run needs your OK", html! {
+                    (settings_form("/ui/settings/schedules/wait", SCHEDULES_ID, "Save", html! {
+                        (text_field("minutes", "Wait for your answer (minutes)", &v.wait, "10", "number", Some("Then the request is turned down and the run goes on without it. 1 to 1440 minutes (a day).")))
+                    }))
+                }))
             } @else {
                 (notice("Schedules don't run on this device.", Tone::Muted))
             }
@@ -866,6 +879,54 @@ fn schedule_form(f: &ScheduleForm, zone: &str) -> Markup {
                 }))
             }))
             @if f.id.is_some() { (link(SCHEDULES_URL, "Cancel")) }
+        },
+    )
+}
+
+/// What the Files page shows.
+pub struct FilesView {
+    /// (value, label) choices and the chosen one.
+    pub choices: Vec<(String, String)>,
+    pub selected: String,
+    /// Boxes with their own setting: (who, their chat, how long).
+    pub overrides: Vec<(String, String, String)>,
+    pub flash: Option<Flash>,
+}
+
+pub fn files_page(f: &Frame<'_>, v: &FilesView) -> Markup {
+    frame(f, "Files", files_region(v))
+}
+
+pub fn files_region(v: &FilesView) -> Markup {
+    let choices: Vec<Choice<'_>> = v
+        .choices
+        .iter()
+        .map(|(value, label)| Choice {
+            value,
+            label,
+            enabled: true,
+        })
+        .collect();
+    let rows: Vec<Vec<Markup>> = v
+        .overrides
+        .iter()
+        .map(|(who, chat, keep)| vec![link(chat, who), html! { (keep) }])
+        .collect();
+    region(
+        FILES_ID,
+        html! {
+            (page_header("Files", Some("Melissa and each helper keep the files you send them, and the files they save, in their own file box. Only that helper can see its box; you see it next to its chat.")))
+            @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
+            (card("Keep files for", html! {
+                (settings_form("/ui/settings/files", FILES_ID, "Save", html! {
+                    (select_field_at("keep", "Keep files for", &choices, Some(&v.selected)))
+                }))
+                p.quiet { "Older files are removed, counted from when they were added. Messages that sent them then show the file as expired." }
+            }))
+            (card("Boxes with their own setting", html! {
+                (table(&["Who", "Keeps files"], rows, "None. Every box uses the setting above."))
+                p.quiet { "Change it in the Files panel next to a chat." }
+            }))
         },
     )
 }

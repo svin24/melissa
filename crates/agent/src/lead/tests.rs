@@ -26,8 +26,9 @@ use crate::{
     mcp::McpServer,
     session::{OpenSession, OpenedSession, SessionBackend},
     tools::{
-        Access, DeviceInfo, Effect, Labels, Owner, ResourceKind, ResourceOwners, Target, Tool,
-        ToolError, ToolRegistry, ToolSpec, Verdict, WorkspaceInfo, WorkspaceStore,
+        permissions::Principal, Access, DeviceInfo, Effect, Labels, Owner, ResourceKind,
+        ResourceOwners, Target, Tool, ToolError, ToolRegistry, ToolSpec, Verdict, WorkspaceInfo,
+        WorkspaceStore,
     },
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
 };
@@ -372,6 +373,7 @@ fn setup_full(
         workdir: dir.join("work/lead"),
         tools: None,
         device: DEVICE.into(),
+        files: crate::files::FileBoxes::open(dir.join("files")),
     };
     tune(&mut settings);
     let signed_out = Replay::signed_out("signed-out-acp", server.clone());
@@ -2073,10 +2075,10 @@ fn upload(name: &str, bytes: &[u8]) -> crate::attachments::Upload {
 }
 
 #[tokio::test]
-async fn files_reach_the_agent_as_images_or_copies_in_its_workdir() {
+async fn files_reach_the_agent_as_images_and_land_in_its_file_box() {
     use base64::Engine as _;
     let png64 = base64::engine::general_purpose::STANDARD.encode(PNG);
-    // An ACP agent that takes images: the PNG goes inline, the text file is copied.
+    // An ACP agent that takes images: the PNG goes inline, both are listed in its box.
     let mut script = vec![
         Step::send(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": "<any>"})),
         Step::recv(
@@ -2093,7 +2095,7 @@ async fn files_reach_the_agent_as_images_or_copies_in_its_workdir() {
             json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
             "params": {"sessionId": "s-1", "prompt": [
                 {"type": "image", "data": png64, "mimeType": "image/png"},
-                {"type": "text", "text": "<contains:Attached above: shot.png.>"}]}}),
+                {"type": "text", "text": "<contains:Attached above: shot.png.\nThe user's files are in your file box,>"}]}}),
         ),
         text("s-1", "A screenshot and notes."),
         done(2, "end_turn"),
@@ -2109,7 +2111,7 @@ async fn files_reach_the_agent_as_images_or_copies_in_its_workdir() {
             crate::attachments::AttachmentError::TooMany
         ))
     ));
-    assert!(!s.lead.attachments().dir().exists());
+    assert!(s.lead.files().list(&Principal::Lead).is_empty());
     // Files without text are a message.
     let (turn, since) = s
         .lead
@@ -2135,16 +2137,17 @@ async fn files_reach_the_agent_as_images_or_copies_in_its_workdir() {
         names,
         [("shot.png", "image/png"), ("notes.txt", "text/plain")]
     );
-    // Stored for the UI; the non-image copied where the agent's tools can reach it.
-    assert_eq!(
-        s.lead.attachments().read(&attachments[0].file).unwrap(),
-        PNG
-    );
-    let copy = s
-        .dir
-        .join("work/lead/attachments")
-        .join(attachments[1].workdir_name());
-    assert_eq!(std::fs::read(copy).unwrap(), b"hello");
+    // Stored in the lead agent's box, where its tools (and the owner) can reach them.
+    let dir = s.lead.files().dir(&Principal::Lead).unwrap();
+    assert_eq!(dir, s.dir.join("files/boxes/lead"));
+    assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), PNG);
+    assert_eq!(std::fs::read(dir.join("notes.txt")).unwrap(), b"hello");
+    let listed = s.lead.files().list(&Principal::Lead);
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().all(|f| f.by == crate::files::AddedBy::Owner));
+    assert!(listed
+        .iter()
+        .any(|f| f.id == crate::files::attachment_id(&attachments[0].file)));
     // The transcript keeps the files (the feed shows them after a restart).
     let json = serde_json::to_string(&events[0]).unwrap();
     assert!(json.contains("\"attachments\""), "{json}");

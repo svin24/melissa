@@ -374,6 +374,7 @@ impl ClaudeBackend {
         let env = claude_env();
         let extra = with_model(&self.spec.args, open.model.as_deref())?;
         let args = claude_args(&extra, mcp_file.as_ref().map(|f| f.path()), &session);
+        let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
         let (program_path, argv) = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
@@ -382,6 +383,7 @@ impl ClaudeBackend {
             cwd,
             &[],
             &binds,
+            &rw_dirs,
             &env,
             bridge,
             args,

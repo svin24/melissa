@@ -12,7 +12,10 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
 ## Architecture
 - `Conversation` (`conversation.rs`) is everything below, for the lead agent and for each agent (own
   `ConversationSpec`: who, audit prefix `lead.*`/`agent.*`, backends, system prompt, state dir, workdir,
-  task id, MCP policy context, tool allowlist). `Lead` = one conversation + the agent pool.
+  task id, MCP policy context, tool allowlist, the file boxes and whose box it is). Sent files are stored in
+  the conversation's box (`FileBoxes::store_uploads`), the session binds the box (`OpenSession::files_dir`), and
+  the box is synced when a turn ends (files the agent saved show in the panel). A scheduled turn also sets
+  `TaskContext::confirm_wait` (Settings → Schedules) on its MCP session for the length of the turn. `Lead` = one conversation + the agent pool.
 - `Lead` (one per daemon) holds at most one agent session (`AgentSession`: ACP or Claude stream-json). Opened
   lazily on the first message from `[lead] backends` in order (default `grok-acp`, `claude-session`,
   `opencode-acp`); a backend that fails to start (missing CLI, not logged in, handshake error) emits

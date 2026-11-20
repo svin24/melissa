@@ -20,17 +20,22 @@ pub mod transcript;
 mod tests;
 
 use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
+use tokio::task::AbortHandle;
+
 use crate::{
-    attachments::{AttachmentError, AttachmentStore, Upload},
+    attachments::{AttachmentError, Upload},
+    files::FileBoxes,
     mcp::McpServer,
     session::SessionBackend,
     tools::{
-        Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Scope, TaskContext,
-        Verdict,
+        permissions::Principal, Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore,
+        Scope, TaskContext, Verdict,
     },
     AuditRecord, TaskBoard, TaskId, MAX_PROMPT_BYTES,
 };
@@ -61,6 +66,8 @@ pub struct LeadSettings {
     pub tools: Option<Vec<String>>,
     /// This device's id (the lead agent acts on the workspaces of its device).
     pub device: String,
+    /// Every agent's file box (the lead agent's and its agents'; see [`crate::files`]).
+    pub files: FileBoxes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -105,9 +112,11 @@ struct Inner {
     models: ModelCache,
     /// Model probes run in `<probe_dir>/<backend>` (empty directories).
     probe_dir: PathBuf,
-    attachments: AttachmentStore,
+    files: FileBoxes,
     /// Runs the scheduled jobs, once [`Lead::start_schedules`] was called.
     scheduler: OnceLock<schedules::Scheduler>,
+    /// The background task that removes expired files.
+    prune: Mutex<Option<AbortHandle>>,
 }
 
 /// Handle to the lead agent. Cheap to clone.
@@ -170,8 +179,13 @@ impl Lead {
             known
         });
         let choice_backend = choice.as_ref().map(|c| c.backend.clone());
-        // One store for every conversation's files (served by one route).
-        let attachments = AttachmentStore::new(settings.state_dir.join("attachments"));
+        let files = settings.files.clone();
+        migrate_attachments(&settings.state_dir, &files, pool);
+        let system_prompt = format!(
+            "{}\n\n{}",
+            settings.system_prompt.trim_end(),
+            file_box_words(&files, &Principal::Lead)
+        );
         let spec = ConversationSpec {
             who: "the lead agent".into(),
             audit_kind: "lead",
@@ -180,13 +194,14 @@ impl Lead {
             choice,
             failover: true,
             models: models.clone(),
-            system_prompt: settings.system_prompt.clone(),
+            system_prompt,
             state_dir: settings.state_dir.clone(),
             workdir: settings.workdir.clone(),
             task,
             ctx,
             allow: allow.clone(),
-            attachments: attachments.clone(),
+            files: files.clone(),
+            owner: Principal::Lead,
         };
         let conv = Conversation::new(
             spec,
@@ -214,10 +229,10 @@ impl Lead {
             lead_allow: allow,
             lead_task: task,
             workroot,
-            attachments: attachments.clone(),
+            files: files.clone(),
         });
         forward_confirmations(registry.confirmations(), events, pool.clone());
-        Ok(Self {
+        let lead = Self {
             inner: Arc::new(Inner {
                 conv,
                 choice_path,
@@ -227,10 +242,56 @@ impl Lead {
                 backends: all_backends,
                 models,
                 probe_dir,
-                attachments,
+                files,
                 scheduler: OnceLock::new(),
+                prune: Mutex::new(None),
             }),
-        })
+        };
+        // An open chat page shows a box's new files at once (the file panel).
+        let weak = Arc::downgrade(&lead.inner);
+        lead.inner
+            .files
+            .on_change(Arc::new(move |owner: &Principal| {
+                let Some(inner) = weak.upgrade() else { return };
+                let log = match owner {
+                    Principal::Lead => Some(inner.conv.events().clone()),
+                    Principal::Agent(id) => {
+                        inner.pool.conversation_of(id).map(|c| c.events().clone())
+                    }
+                };
+                if let Some(log) = log {
+                    log.push(LeadEvent::FilesChanged);
+                }
+            }));
+        Ok(lead)
+    }
+
+    /// Every agent's file box.
+    pub fn files(&self) -> &FileBoxes {
+        &self.inner.files
+    }
+
+    /// Remove expired files now and then every `every` (the first run right away). Once;
+    /// stopped by [`Lead::close`]. Must be called inside a Tokio runtime.
+    pub fn start_file_prune(&self, every: Duration) {
+        let mut slot = conversation::lock(&self.inner.prune);
+        if slot.is_some() {
+            return;
+        }
+        let files = self.inner.files.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let f = files.clone();
+                let removed = tokio::task::spawn_blocking(move || f.prune().len())
+                    .await
+                    .unwrap_or(0);
+                if removed > 0 {
+                    tracing::info!(removed, "removed expired files from the file boxes");
+                }
+                tokio::time::sleep(every).await;
+            }
+        });
+        *slot = Some(task.abort_handle());
     }
 
     pub fn events(&self) -> &EventLog {
@@ -363,11 +424,6 @@ impl Lead {
         self.inner.conv.send_with(text, files, "ui")
     }
 
-    /// Where every conversation's attachments are stored (to serve them).
-    pub fn attachments(&self) -> &AttachmentStore {
-        &self.inner.attachments
-    }
-
     /// Cancel the running turn. Returns false if no turn runs.
     pub async fn cancel(&self) -> bool {
         self.inner.conv.cancel(None, "ui").await
@@ -465,8 +521,95 @@ impl Lead {
         if let Some(s) = self.scheduler() {
             s.stop();
         }
+        if let Some(prune) = conversation::lock(&self.inner.prune).take() {
+            prune.abort();
+        }
         self.inner.pool.close_all().await;
         self.inner.conv.close().await;
+    }
+}
+
+/// What an agent's system prompt says about its file box.
+pub(crate) fn file_box_words(files: &FileBoxes, owner: &Principal) -> String {
+    let dir = files
+        .dir(owner)
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    format!(
+        "Your file box is {dir}/ (only you can see it; the user sees it too, in the files \
+         panel next to your chat). Files the user sends you land there. Save files you want \
+         to keep or hand to the user there: reports, exports, configs. Only plain files \
+         directly in it count, no subfolders. Without file tools, use the `my_files` tool. \
+         Files are removed after a while (the user's setting), so don't rely on them as \
+         long-term storage."
+    )
+}
+
+/// Move the files of the old shared attachment store (`<lead state>/attachments`) into the
+/// file boxes, once: each into the box of the conversation that sent it, as far as the
+/// transcripts tell (the rest into the lead agent's box).
+fn migrate_attachments(lead_state: &Path, files: &FileBoxes, pool: &AgentPool) {
+    let old = lead_state.join("attachments");
+    if !old.is_dir() {
+        return;
+    }
+    let mut whose: HashMap<String, (Principal, String)> = HashMap::new();
+    // Agents first: a file found in an agent's chat is that agent's.
+    for agent in pool.registry_ids() {
+        let dir = pool.agent_dir(&agent);
+        collect_attachments(&dir, &Principal::Agent(agent), &mut whose);
+    }
+    collect_attachments(lead_state, &Principal::Lead, &mut whose);
+    match files.migrate_attachments(&old, &whose) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            files = n,
+            "moved earlier chat attachments into the file boxes"
+        ),
+        Err(e) => tracing::warn!("moving earlier chat attachments into the file boxes: {e}"),
+    }
+}
+
+/// Every attachment named in the transcripts (`*.jsonl*`) under `dir` (and its `chats/`),
+/// recorded for `owner` unless already claimed.
+fn collect_attachments(
+    dir: &Path,
+    owner: &Principal,
+    whose: &mut HashMap<String, (Principal, String)>,
+) {
+    let mut paths = Vec::new();
+    for d in [dir.to_path_buf(), dir.join("chats")] {
+        if let Ok(entries) = std::fs::read_dir(&d) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.contains(".jsonl") {
+                    paths.push(e.path());
+                }
+            }
+        }
+    }
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(list) = v.get("attachments").and_then(|a| a.as_array()) else {
+                continue;
+            };
+            for a in list {
+                if let (Some(file), Some(name)) = (
+                    a.get("file").and_then(|f| f.as_str()),
+                    a.get("name").and_then(|n| n.as_str()),
+                ) {
+                    whose
+                        .entry(file.to_string())
+                        .or_insert_with(|| (owner.clone(), name.to_string()));
+                }
+            }
+        }
     }
 }
 

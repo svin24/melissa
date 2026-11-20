@@ -103,7 +103,7 @@ impl PolicyPermissions {
                 let rule = RuleOffer::new(&ctx.scope, &name, None);
                 match self
                     .registry
-                    .confirm(self.ctx.task, rule, &name, &args, &reason)
+                    .confirm_within(self.ctx.task, rule, &name, &args, &reason, ctx.confirm_wait)
                     .await
                 {
                     Ok(()) => (PermissionDecision::AllowOnce, format!("approved: {reason}")),

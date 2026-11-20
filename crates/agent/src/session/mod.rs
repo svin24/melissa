@@ -95,6 +95,9 @@ pub struct OpenSession {
     /// Model to use (an id from the backend's [`ModelList`]); None: the backend's default.
     /// Backends that cannot choose a model ignore it.
     pub model: Option<String>,
+    /// The agent's file box ([`crate::files`]): bound read-write at the same path inside the
+    /// sandbox (absolute; created by the caller). None: no box.
+    pub files_dir: Option<PathBuf>,
 }
 
 impl OpenSession {
@@ -112,6 +115,7 @@ impl OpenSession {
             resume: None,
             task: None,
             model: None,
+            files_dir: None,
         }
     }
 }

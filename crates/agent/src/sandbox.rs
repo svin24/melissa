@@ -231,6 +231,8 @@ pub enum SandboxError {
         "sandbox path `{0}` must be relative to $HOME, non-empty and without `.`/`..` components"
     )]
     BadPath(String),
+    #[error("sandbox directory `{0}` must be absolute and without `.`/`..` components")]
+    BadDir(String),
     #[error("sandbox env `{0}` is not a valid, non-reserved variable name")]
     BadEnv(String),
     #[error(transparent)]
@@ -315,6 +317,9 @@ pub struct SandboxPlan {
     pub network: Network,
     /// The host's system directories besides `/usr` and `/etc`.
     pub system: SystemRoot,
+    /// Further host directories bound read-write at the same path, after the working
+    /// directory: the agent's own file box ([`crate::files`]). Absolute, without `..`.
+    pub rw_dirs: Vec<PathBuf>,
 }
 
 /// A top-level system directory (`/bin`, `/lib64`, ...) inside the sandbox.
@@ -455,6 +460,7 @@ impl SandboxPlan {
             env,
             network,
             system,
+            rw_dirs: Vec::new(),
         })
     }
 
@@ -491,6 +497,23 @@ impl SandboxPlan {
             });
         }
         self.mounts.sort_by_key(|m| m.path().components().count());
+        Ok(self)
+    }
+
+    /// Bind `dirs` read-write at the same path (the agent's file box). Each must be an
+    /// absolute path without `.`/`..` components.
+    pub fn with_rw_dirs(mut self, dirs: &[PathBuf]) -> Result<Self, SandboxError> {
+        for d in dirs {
+            let clean = d.is_absolute()
+                && d.components()
+                    .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+            if !clean {
+                return Err(SandboxError::BadDir(d.display().to_string()));
+            }
+            if !self.rw_dirs.contains(d) {
+                self.rw_dirs.push(d.clone());
+            }
+        }
         Ok(self)
     }
 }
@@ -631,6 +654,10 @@ pub fn command(
 
     // The task's working directory: the only writable host path. Then freeze the rest.
     push(&[&"--bind", &workdir, &workdir]);
+    // The agent's file box: its own, read-write; no other agent's box is ever bound.
+    for dir in &plan.rw_dirs {
+        push(&[&"--bind", dir, dir]);
+    }
     // `--remount-ro` affects one mount only: the binds and tmpfs mounts inside stay as set.
     push(&[&"--remount-ro", &plan.home]);
     push(&[&"--remount-ro", &"/"]);
@@ -676,6 +703,7 @@ mod tests {
             env: vec![("LANG".into(), "C.UTF-8".into())],
             network: Network::Host,
             system: SystemRoot::default(),
+            rw_dirs: Vec::new(),
         }
     }
 
@@ -757,6 +785,45 @@ mod tests {
         let last_bind = a.iter().rposition(|x| x.starts_with("--bind")).unwrap();
         assert!(remount > last_bind);
         assert_eq!(&a[a.len() - 4..], ["--", bin, "-p", prompt]);
+    }
+
+    #[test]
+    fn the_agents_file_box_is_bound_and_nothing_else_of_the_state() {
+        let ada = PathBuf::from("/state/files/boxes/d-0a1b2c3d.a1");
+        let p = plan(vec![], "/usr/bin/cli")
+            .with_rw_dirs(std::slice::from_ref(&ada))
+            .unwrap();
+        let (_, argv) = command(&p, Path::new("/state/work/agents/d-0a1b2c3d.a1"), &[], &[]);
+        let a = strs(&argv);
+        let rw: Vec<_> = a
+            .windows(2)
+            .filter(|w| w[0] == "--bind")
+            .map(|w| w[1])
+            .collect();
+        assert_eq!(
+            rw,
+            [
+                "/state/work/agents/d-0a1b2c3d.a1",
+                "/state/files/boxes/d-0a1b2c3d.a1"
+            ]
+        );
+        // Not the other boxes, not their parent directory.
+        assert!(!a
+            .iter()
+            .any(|x| *x == "/state/files/boxes" || *x == "/state/files"));
+        assert!(!a.iter().any(|x| x.contains("d-0a1b2c3d.a2")));
+        let remount = a.iter().position(|x| *x == "--remount-ro").unwrap();
+        let last_bind = a.iter().rposition(|x| *x == "--bind").unwrap();
+        assert!(remount > last_bind);
+        // Only clean absolute paths.
+        for bad in ["relative/box", "/state/files/boxes/../boxes/x", ""] {
+            assert!(
+                plan(vec![], "/usr/bin/cli")
+                    .with_rw_dirs(&[PathBuf::from(bad)])
+                    .is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

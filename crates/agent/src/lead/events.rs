@@ -152,6 +152,9 @@ pub enum LeadEvent {
     /// The user started a new chat: what came before is archived, the agent starts a fresh
     /// session and the conversation is untainted again.
     NewChat,
+    /// Only in memory: the files in this conversation's file box changed (added by the user
+    /// or the agent, deleted, expired), so open file panels refresh.
+    FilesChanged,
     /// Only in memory: the events up to [`LeadEvent::EarlierEnd`] were restored from the
     /// transcript after a daemon restart (the earlier conversation).
     EarlierStart,
@@ -303,7 +306,10 @@ impl EventLog {
             &self.inner.transcript,
             matches!(
                 record.event,
-                LeadEvent::Text { .. } | LeadEvent::EarlierStart | LeadEvent::EarlierEnd
+                LeadEvent::Text { .. }
+                    | LeadEvent::EarlierStart
+                    | LeadEvent::EarlierEnd
+                    | LeadEvent::FilesChanged
             ),
         ) {
             t.append(&record);

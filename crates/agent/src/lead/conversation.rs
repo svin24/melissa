@@ -49,7 +49,8 @@ use super::{
 };
 use crate::{
     acp::MCP_SERVER_NAME,
-    attachments::{self, Attachment, AttachmentStore, Upload},
+    attachments::{self, Attachment, Upload},
+    files::FileBoxes,
     mcp::{McpServer, TaintSource},
     session::{
         valid_model_id, AgentSession, McpServerSpec, NotReady, OpenSession, PermissionContext,
@@ -93,8 +94,10 @@ pub(crate) struct ConversationSpec {
     pub ctx: TaskContext,
     /// Tools the agent may see (None = all its context allows).
     pub allow: Option<Vec<&'static str>>,
-    /// Where files sent with messages are stored (shared by every conversation).
-    pub attachments: AttachmentStore,
+    /// Every agent's file box; this conversation uses `owner`'s.
+    pub files: FileBoxes,
+    /// Whose box (and conversation) this is: the lead agent or the agent.
+    pub owner: crate::tools::permissions::Principal,
 }
 
 /// What a client sees of a conversation right now.
@@ -146,6 +149,8 @@ struct TurnState {
     abort: Option<AbortHandle>,
     /// The running turn is a scheduled job's: nobody watches it (see [`Conversation::send_scheduled`]).
     scheduled: bool,
+    /// How long the scheduled turn's confirmations wait for the owner (Settings → Schedules).
+    confirm_wait: Option<Duration>,
 }
 
 struct Inner {
@@ -534,13 +539,15 @@ impl Conversation {
     /// says so for the length of the turn, so actions that need a watching human ask for a
     /// confirmation (or match one of the owner's "Always allow" rules). Busy: refused, like
     /// any message.
+    /// `wait`: how long its confirmations wait for the owner before they are withdrawn.
     pub(crate) fn send_scheduled(
         &self,
         name: &str,
         text: &str,
         actor: &str,
+        wait: Duration,
     ) -> Result<(TurnId, u64), LeadError> {
-        self.start(text, Vec::new(), actor, Some(name))
+        self.start(text, Vec::new(), actor, Some((name, wait)))
     }
 
     fn start(
@@ -548,8 +555,12 @@ impl Conversation {
         text: &str,
         files: Vec<Upload>,
         actor: &str,
-        scheduled: Option<&str>,
+        scheduled: Option<(&str, Duration)>,
     ) -> Result<(TurnId, u64), LeadError> {
+        let (scheduled, wait) = match scheduled {
+            Some((name, wait)) => (Some(name), Some(wait)),
+            None => (None, None),
+        };
         let text = text.trim();
         if text.is_empty() && files.is_empty() {
             return Err(LeadError::Empty);
@@ -562,17 +573,19 @@ impl Conversation {
             return Err(LeadError::Busy);
         }
         // Written outside the turn lock (it can take a moment).
-        let stored = self.inner.spec.attachments.save(files)?;
+        let spec = &self.inner.spec;
+        let stored = spec.files.store_uploads(&spec.owner, files)?;
         let mut t = lock(&self.inner.turn);
         if t.busy.is_some() {
             drop(t);
-            self.inner.spec.attachments.remove(&stored);
+            spec.files.remove_uploads(&spec.owner, &stored);
             return Err(LeadError::Busy);
         }
         t.last += 1;
         let turn = t.last;
         t.busy = Some(turn);
         t.scheduled = scheduled.is_some();
+        t.confirm_wait = wait;
         let since = self.inner.events.last_seq();
         self.inner.events.push(LeadEvent::UserMessage {
             turn,
@@ -687,11 +700,23 @@ impl Conversation {
                 return;
             }
         };
-        // A scheduled turn runs unattended; the others are as the conversation was set up.
-        let unattended = lock(&self.inner.turn).scheduled;
+        // A scheduled turn runs unattended, and its confirmations wait as long as the owner
+        // set for scheduled runs; the others are as the conversation was set up.
+        let (unattended, wait) = {
+            let t = lock(&self.inner.turn);
+            (t.scheduled, t.confirm_wait)
+        };
         self.inner
             .server
             .set_attended(&live.token, self.inner.spec.ctx.attended && !unattended);
+        self.inner.server.set_confirm_wait(
+            &live.token,
+            if unattended {
+                wait
+            } else {
+                self.inner.spec.ctx.confirm_wait
+            },
+        );
         let body = match note {
             Some(note) => format!("{note}\n\n{text}"),
             None => text.clone(),
@@ -701,15 +726,15 @@ impl Conversation {
         } else {
             self.preamble(&text, body)
         };
-        // Files: native blocks where the session takes them, else copies in its workdir.
+        // Files: native blocks where the session takes them; all are listed in its file box.
         let blocks = if files.is_empty() {
             Vec::new()
         } else {
-            let store = self.inner.spec.attachments.clone();
-            let workdir = self.inner.spec.workdir.clone();
+            let boxes = self.inner.spec.files.clone();
+            let owner = self.inner.spec.owner.clone();
             let caps = live.session.capabilities().clone();
             let delivery = tokio::task::spawn_blocking(move || {
-                attachments::deliver(&store, &files, &caps, &workdir)
+                attachments::deliver(&boxes, &owner, &files, &caps)
             })
             .await
             .unwrap_or_else(|e| {
@@ -862,6 +887,13 @@ impl Conversation {
                 self.backend_failed(name, &format!("cannot create its working directory: {e}"));
                 continue;
             }
+            let files_dir = match spec.files.ensure_dir(&spec.owner) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    self.backend_failed(name, &format!("cannot create its file box: {e}"));
+                    continue;
+                }
+            };
             let mut open = OpenSession::new(
                 spec.workdir.clone(),
                 vec![McpServerSpec {
@@ -874,6 +906,7 @@ impl Conversation {
             open.state_dir = Some(spec.state_dir.join("agent-sessions").join(name));
             open.task = Some(spec.task);
             open.model = model.clone();
+            open.files_dir = Some(files_dir);
             open.resume = saved
                 .as_ref()
                 .filter(|s| s.backend == *name)
@@ -1020,11 +1053,15 @@ impl Conversation {
         }
         t.busy = None;
         t.abort = None;
+        t.confirm_wait = None;
         if std::mem::take(&mut t.scheduled) {
             if let Some(token) = lock(&self.inner.live).as_ref().map(|l| l.token.clone()) {
                 self.inner
                     .server
                     .set_attended(&token, self.inner.spec.ctx.attended);
+                self.inner
+                    .server
+                    .set_confirm_wait(&token, self.inner.spec.ctx.confirm_wait);
             }
         }
         self.end_thought();
@@ -1052,6 +1089,16 @@ impl Conversation {
         });
         // Released last, so the next turn's events come after this turn's end.
         drop(t);
+        // Files the agent saved in its box during the turn show up for the owner.
+        let (files, owner) = (self.inner.spec.files.clone(), self.inner.spec.owner.clone());
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                rt.spawn_blocking(move || files.sync(&owner));
+            }
+            Err(_) => {
+                files.sync(&owner);
+            }
+        }
     }
 
     /// The thought being received has ended: publish it whole, with how long it took.

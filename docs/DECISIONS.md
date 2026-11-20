@@ -787,3 +787,35 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   run ends; the log records lengths only. Alternatives: Web Speech API (cloud, rejected by the owner);
   whisper-rs (above); whisper.cpp's HTTP server as a resident service (keeps the model in memory all the time
   for little gain); candle (pure Rust, but much slower on CPU and a heavy build).
+- **2026-11-20 — Every agent has its own file box; files are kept 5 days by default** (owner decision; replaces
+  the shared attachment store). A box is `<state>/files/boxes/<lead|agent id>/`, bound read-write at the same
+  path into that agent's sandbox only (`SandboxPlan::with_rw_dirs`, after the workdir); the agent is told the path
+  in its system prompt. Owner uploads land there (attachment limits, sniffed type, cleaned name, unique in the
+  box), and the agent saves what it wants to keep or hand over there, with its own tools or `my_files` (an MCP
+  tool for agents without file tools; only the caller's own box, by task scope; labelled read-only like the
+  sandbox's own writes). **Why a separate bind and not `<workdir>/files`:** the box directory itself is then
+  Melissa's (a mount point the agent can't rename or replace with a symlink), so Melissa never acts on a path
+  the agent controls; it reads, deletes and prunes only regular files directly in the box, opening them with
+  `openat(box dir, name, O_NOFOLLOW)` and serving them by a generated id from an index kept outside every
+  sandbox (`<state>/files/index/`). The same path inside and outside the sandbox keeps it right for agents that
+  run unsandboxed. **Retention:** Settings → Files sets the default (5 days; 1–3650 days or Forever), each box
+  may override it from its chat's file panel; an hourly prune removes files older than that since Melissa first
+  saw them (audited `files.pruned`, one line per box); messages that sent a removed file show it as expired.
+  Deleting from the panel or API is audited `files.deleted`. **Caps:** 2 GiB of owner uploads per box; agent
+  files are counted but not limited (open question 70). **Migration:** at startup the old
+  `<state>/lead/attachments` is copied once into the boxes (by which chat's transcript sent each file, else
+  Melissa's), keeping each file's id so earlier messages still find it, counted as added at migration time;
+  then the old directory is renamed `attachments.migrated` (nothing deleted). **UI:** a new component, the file
+  panel (`components::file_panel`): a collapsed `details` beside the chat (a section above it below 1280 px),
+  open/closed remembered in localStorage, live over the chat's SSE stream (`files_changed`, memory only).
+  Alternatives: keep the shared store with a per-conversation index (no isolation in the sandbox; an agent
+  could not save files for the owner); the box inside the workdir (simplest bind, but the agent controls the
+  directory itself, see above); per-file retention (more UI for little gain).
+- **2026-11-20 — A scheduled run's confirmation waits the owner's setting (default 10 minutes)** (owner
+  decision). Settings → Schedules "When a run needs your OK" (1–1440 minutes, `approval_wait_minutes` in
+  `schedules.json`, audited `schedule.settings`). The scheduler hands the wait to the run's turn, which puts it
+  in its MCP session's policy context (`TaskContext::confirm_wait`) for the length of the turn; the registry and
+  the agent's own permission requests wait that long, then withdraw the request and fail the call as before
+  (`tool.confirm_timeout`). Interactive turns keep `confirm_timeout_secs`. Why: unattended runs should not hold a
+  tool call open for the general timeout when nobody is there, and the owner wants to choose. Caveat: Claude Code
+  abandons an MCP call after about 300 s (open question 68c).

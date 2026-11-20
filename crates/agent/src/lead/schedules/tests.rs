@@ -321,6 +321,44 @@ fn schedules_are_saved_privately_and_come_back_after_a_restart() {
 }
 
 #[test]
+fn the_wait_for_a_scheduled_runs_requests_is_the_owners_setting() {
+    let dir = temp("wait");
+    let path = dir.join("schedules.json");
+    let s = Schedules::open(&path, tz()).unwrap();
+    // Default: 10 minutes, also for files saved before the setting existed.
+    assert_eq!(s.approval_wait_minutes(), DEFAULT_APPROVAL_WAIT_MINUTES);
+    assert_eq!(s.approval_wait(), std::time::Duration::from_secs(600));
+    std::fs::write(&path, r#"{"next_id": 0, "schedules": []}"#).unwrap();
+    assert_eq!(
+        Schedules::open(&path, tz())
+            .unwrap()
+            .approval_wait_minutes(),
+        10
+    );
+    // Bounds: 1 minute to a day.
+    for bad in [0, MAX_APPROVAL_WAIT_MINUTES + 1] {
+        assert!(matches!(
+            s.set_approval_wait(bad, &Creator::Owner),
+            Err(ScheduleError::Invalid(_))
+        ));
+    }
+    s.set_approval_wait(1, &Creator::Owner).unwrap();
+    s.set_approval_wait(MAX_APPROVAL_WAIT_MINUTES, &Creator::Owner)
+        .unwrap();
+    // Saved.
+    let again = Schedules::open(&path, tz()).unwrap();
+    assert_eq!(again.approval_wait_minutes(), 24 * 60);
+    // A value edited by hand out of bounds is clamped.
+    std::fs::write(&path, r#"{"approval_wait_minutes": 0}"#).unwrap();
+    assert_eq!(
+        Schedules::open(&path, tz())
+            .unwrap()
+            .approval_wait_minutes(),
+        1
+    );
+}
+
+#[test]
 fn bad_input_is_refused_and_nothing_is_saved() {
     let s = Schedules::in_memory(tz());
     let mut cases = vec![

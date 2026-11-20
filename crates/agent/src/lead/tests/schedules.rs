@@ -55,6 +55,9 @@ async fn a_scheduled_turn_in_the_lead_chat_is_labelled_and_runs_unattended() {
             &Creator::Owner,
         )
         .unwrap();
+    // The owner's wait for a scheduled run's requests (default 10 minutes).
+    assert_eq!(schedules.approval_wait(), Duration::from_secs(600));
+    schedules.set_approval_wait(30, &Creator::Owner).unwrap();
     let scheduler = s.lead.start_schedules(schedules.clone());
     let run = scheduler.run_now(a.id, &Creator::Owner).unwrap();
     assert_eq!(run.outcome, Outcome::Running);
@@ -74,6 +77,11 @@ async fn a_scheduled_turn_in_the_lead_chat_is_labelled_and_runs_unattended() {
     lead_event(&s, |e| matches!(e, LeadEvent::Text { .. })).await;
     let token = s.lead.inner.conv.token().unwrap();
     assert!(!s.server.session_context(&token).unwrap().attended);
+    // Its requests wait the owner's setting for scheduled runs.
+    assert_eq!(
+        s.server.session_context(&token).unwrap().confirm_wait,
+        Some(Duration::from_secs(30 * 60))
+    );
     assert_eq!(s.lead.send("hi"), Err(LeadError::Busy));
     assert_eq!(
         scheduler.run_now(a.id, &Creator::Owner).unwrap().outcome,
@@ -81,8 +89,9 @@ async fn a_scheduled_turn_in_the_lead_chat_is_labelled_and_runs_unattended() {
     );
     assert!(s.lead.cancel().await);
     outcome(&schedules, a.id, Outcome::Cancelled).await;
-    // The user's next message is attended again.
+    // The user's next message is attended again, with the usual confirmation timeout.
     assert!(s.server.session_context(&token).unwrap().attended);
+    assert_eq!(s.server.session_context(&token).unwrap().confirm_wait, None);
     s.close().await;
     let lines = s.audit_lines();
     let actions: Vec<&str> = lines.iter().filter_map(|l| l["action"].as_str()).collect();
@@ -92,6 +101,7 @@ async fn a_scheduled_turn_in_the_lead_chat_is_labelled_and_runs_unattended() {
         "schedule.run_started",
         "schedule.run_skipped",
         "schedule.run_finished",
+        "schedule.settings",
     ] {
         assert!(actions.contains(&want), "{want}: {actions:?}");
     }

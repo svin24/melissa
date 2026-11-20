@@ -164,7 +164,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   stream-json (below).
 - **Sandbox (2026-11-18):** every agent CLI runs under bubblewrap by default (`crates/agent/src/sandbox.rs`):
   read-only `/usr` and `/etc`, private `/tmp`, empty read-only home with only the CLI's credential file(s), the
-  task workdir as the only writable host path, own PID/user/IPC/UTS namespaces, no capabilities, dies with the
+  task workdir as the only writable host path (plus, for the lead agent and agents, their own file box, since
+  2026-11-20), own PID/user/IPC/UTS namespaces, no capabilities, dies with the
   lead agent's task. Verified with claude (incl. MCP tool calls), grok and opencode. Next: seccomp, Melissa-owned
   CLI logins.
 - **Egress (2026-11-18):** deny-by-default network for every sandboxed agent (`crates/agent/src/egress`): own
@@ -371,10 +372,24 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   with its text (CSS `field-sizing`, a few lines of melissa.js where missing; no resize handle), and files go with a
   message (paperclip, paste, drop; chips with remove before sending; thumbnails and download chips in the chat).
   Files: `melissa_agent::attachments` (20 MiB per file, 50 MiB and 10 files per message; type sniffed from the bytes;
-  stored under random names in `<state>/lead/attachments`, kept in the transcript's events; served only by
-  `GET /ui/attachments/{file}`, images inline, the rest as downloads, with `sandbox` CSP). Images go to the model as
-  image blocks (Claude; ACP agents that advertise `image`), PDFs as document blocks (Claude); everything else, and
-  anything over the native limits, is copied into the agent's working directory and the message names the path.
+  cleaned names), stored in the conversation's **file box** (below), named in the transcript's events by the box
+  file's generated id. Images go to the model as image blocks (Claude; ACP agents that advertise `image`), PDFs as
+  document blocks (Claude); every file stays in the box and the message lists them with the box's path.
+- **File boxes (2026-11-20, owner decision; DECISIONS):** Melissa and each helper have their own file box
+  (`melissa_agent::files`): `<state>/files/boxes/<lead|agent id>/`, bound read-write at the same path into that
+  agent's sandbox only (`SandboxPlan::with_rw_dirs`); the index (id, name, type, size, added, by owner/agent) lives
+  in `<state>/files/index/`, outside every sandbox. Owner uploads land there; the agent saves its own files there
+  (its tools, or the `my_files` MCP tool for agents without file tools, e.g. Claude Code). Melissa reads only
+  regular files directly in the box, never through a symlink (`openat` + `O_NOFOLLOW` from the box directory),
+  and serves them by generated id: `GET /ui/files/{key}/{id}` (sniffed images inline, the rest as downloads,
+  `sandbox` CSP). 2 GiB of owner uploads per box. **Retention:** Settings → Files "Keep files for" (default 5 days,
+  1–3650 days or Forever, `retention.json`), each box can override it from its chat's file panel; an hourly prune
+  removes files older than that since they were added (audited `files.pruned`); messages that sent them show
+  "expired". **File panel:** a collapsible `details` beside each chat (above it on narrow screens; open/closed
+  remembered per browser), listing name, size, when, by whom, with download and delete; live over the chat's SSE
+  stream (`files_changed` event). JSON API `/api/files/{key}...`, `/api/settings/files`. The old shared store
+  (`<state>/lead/attachments`) is copied once into the boxes at startup (by the transcripts that sent each file,
+  else Melissa's), then renamed `attachments.migrated`.
   Not yet: disk usage, upkeep line, several conversations with
   the lead agent / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
 - **Voice input (2026-11-20, owner decision; DECISIONS):** Settings → Voice turns on a mic in the chat composer
@@ -745,11 +760,12 @@ Roadmap (rough, phases may overlap):
     stream closes, the process is not killed). (d) The confirmation card is the generic one with the argv
     in its reason; a dedicated card (owner's UI) could show argv and stdin size more clearly.
 66. Chat attachments (2026-11-20): (a) Claude Code's stream-json input with `document` (PDF) blocks is built
-    from the API's format but not yet tried live; images likewise only in tests. (b) Stored files are never
-    deleted (not on New chat either): keep them with archived chats, or prune after some time / a size cap?
-    (c) Text files could go to the model inline instead of by path; worth it? (d) ACP PDFs as embedded
-    resources once the agents we use handle them. (e) A refused message keeps its files only with JavaScript (a plain
-    form post asks for them again: browsers can't refill a file input). (f) No JSON API for files yet (`/api/lead/messages`).
+    from the API's format but not yet tried live; images likewise only in tests. (b) Resolved 2026-11-20 by the
+    file boxes: files are pruned after the owner's retention time (default 5 days; see 70). (c) Text files could
+    go to the model inline instead of by path; worth it? (d) ACP PDFs as embedded resources once the agents we
+    use handle them. (e) A refused message keeps its files only with JavaScript (a plain form post asks for them
+    again: browsers can't refill a file input). (f) Box files have a JSON API now (`/api/files/{key}`); sending
+    files with `/api/lead/messages` still has none.
 67. Standing permissions (2026-11-20, see §5): (a) a rule matches tool + target, not the arguments: "Always let
     Ada update Minecraft" also allows a later `update_app` with different images, ports or storage, and
     `agent:execute` rules allow any command in that agent's sandbox. Narrower rules (argument digests, image
@@ -762,9 +778,13 @@ Roadmap (rough, phases may overlap):
 68. Scheduled jobs (2026-11-20, see §5): (a) skip vs queue: a run due while the user chats with the lead agent is
     skipped; would "queue once, up to N minutes" be friendlier for the main chat? (b) Nobody is told when a run
     fails, is skipped, missed or waits for a confirmation (needs notifications); "Waiting for you" and Settings →
-    Schedules show it. (c) A confirmation a run waits for still times out after the confirmation timeout
-    (15 min) and the tool call fails; the owner may want runs to wait longer, or to approve a schedule's
-    expected calls up front (today: "Always allow" rules). (d) The time zone is read when Melissa starts; a
+    Schedules show it. (c) Since 2026-11-20 a run's confirmation waits the owner's setting (Settings →
+    Schedules, default 10 min, 1 min–24 h; `TaskContext::confirm_wait`), then is withdrawn and the call fails
+    as before. Claude Code gives up on an MCP call after about 300 s and leaves it open (see
+    `confirm_timeout_secs`): with a longer wait a Claude-backed run may stop waiting while the request is still
+    in the inbox, and an approval after that runs the call for a run that moved on. Cap the wait for Claude
+    backends, or withdraw a turn's requests when it ends? Approving a schedule's expected calls up front is
+    still only possible with "Always allow" rules. (d) The time zone is read when Melissa starts; a
     change needs a restart. (e) A removed agent's schedules stay and fail ("no agent"); remove them with the
     agent? (f) Runs share the agent's conversation, so taint carries over between runs and chats. (g) Anyone
     who reaches the UI/API can add schedules, the same trust as approving (28, 37, 67d). (h) A broken
@@ -782,3 +802,14 @@ Roadmap (rough, phases may overlap):
     only when downloaded; re-hash it at startup (about 0.3 s)? (f) A restart during the download leaves no
     model; the page then offers "Download the speech model" (no automatic resume). (g) No JSON API for the
     toggle yet (`/api/settings/voice`).
+70. File boxes (2026-11-20; DECISIONS): (a) Files an agent writes are not limited by Melissa (only owner
+    uploads count against the 2 GiB box cap); a runaway agent can fill the disk. A quota per box (filesystem
+    or a check before each turn)? (b) Only plain files directly in the box are listed; subfolders an agent
+    makes are ignored (and never pruned). (c) Agent files are noticed when a turn ends, the panel opens, or
+    `my_files` is used; a file written mid-turn shows at the end of the turn. (d) Retention counts from when
+    Melissa first saw a file; rewriting a file in place keeps its age (`my_files` `save` resets it). (e) A
+    removed agent's box stays (with its index) until pruned; remove it with the agent? (f) Migrated attachments
+    count as added at migration time, so they get a full retention period. (g) Files the agent reads from its
+    box don't taint the conversation (like files sent inline). (h) Box files reach the model only by path (the
+    agent opens them) except images and PDFs sent with a message. (i) Not verified live: sandbox bind with real
+    bwrap, the panel's look at all widths, the hourly prune on a real box.

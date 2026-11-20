@@ -554,9 +554,34 @@
     });
   });
 
+  // --- Panels that remember whether they were open (the chat's file panel). ---------------
+  // Per browser, in localStorage; without it (private mode, blocked storage) they start closed.
+
+  function rememberOpen() {
+    var panels = document.querySelectorAll("details[data-remember]");
+    Array.prototype.forEach.call(panels, function (d) {
+      var key = "melissa.open." + d.getAttribute("data-remember");
+      try {
+        if (window.localStorage.getItem(key) === "1") {
+          d.open = true;
+        }
+      } catch (e) {
+        // Storage unavailable: keep the default (closed).
+      }
+      d.addEventListener("toggle", function () {
+        try {
+          window.localStorage.setItem(key, d.open ? "1" : "0");
+        } catch (e) {
+          // Storage unavailable: nothing to remember.
+        }
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     grow(composer());
     showVoice();
+    rememberOpen();
     if (document.getElementById("feed")) {
       scrollToBottom();
     }

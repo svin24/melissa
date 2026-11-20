@@ -866,8 +866,9 @@ pub fn user_message(text: &str) -> Markup {
 
 /// A file the user sent with a message, as the chat shows it.
 pub struct SentFile {
-    /// Where the UI serves it (same origin).
-    pub href: String,
+    /// Where the UI serves it (same origin); None: removed from the file box (expired or
+    /// deleted), shown as a plain "expired" chip.
+    pub href: Option<String>,
     /// The cleaned file name.
     pub name: String,
     /// Human-readable size (`1.2 MiB`).
@@ -887,15 +888,25 @@ pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
                     ul.sent-files {
                         @for f in files {
                             li {
-                                @if f.image {
-                                    a.sent-image href=(f.href) target="_blank" rel="noopener" title=(f.name) {
-                                        img src=(f.href) alt=(f.name) loading="lazy" decoding="async";
+                                @match &f.href {
+                                    None => {
+                                        span.file-chip.expired title="No longer kept" {
+                                            (file_icon())
+                                            span.name { (f.name) }
+                                            span.size { "expired" }
+                                        }
                                     }
-                                } @else {
-                                    a.file-chip href=(f.href) download=(f.name) {
-                                        (file_icon())
-                                        span.name { (f.name) }
-                                        span.size { (f.size) }
+                                    Some(href) if f.image => {
+                                        a.sent-image href=(href) target="_blank" rel="noopener" title=(f.name) {
+                                            img src=(href) alt=(f.name) loading="lazy" decoding="async";
+                                        }
+                                    }
+                                    Some(href) => {
+                                        a.file-chip href=(href) download=(f.name) {
+                                            (file_icon())
+                                            span.name { (f.name) }
+                                            span.size { (f.size) }
+                                        }
                                     }
                                 }
                             }
@@ -904,6 +915,130 @@ pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
                 }
                 @if !text.trim().is_empty() { (plain_text(text)) }
             }
+        }
+    }
+}
+
+// --- File panel (2026-11-20, owner decision) ---------------------------------------------
+//
+// A conversation's file box, beside its chat: what the owner sent and what the agent saved.
+// Collapsed by default (`details`; melissa.js remembers open/closed per browser); on narrow
+// screens it sits above the chat as a section. Live: the stream swaps its body and count.
+
+/// DOM id of the file panel's body (delete and retention swap it; the stream replaces its
+/// content).
+pub const FILE_BODY_ID: &str = "file-box-body";
+/// DOM id of the file count in the panel's summary.
+pub const FILE_COUNT_ID: &str = "file-count";
+
+/// One file in a chat's file panel.
+pub struct PanelFile {
+    /// Download URL (same origin).
+    pub href: String,
+    pub name: String,
+    /// `1.2 MiB`.
+    pub size: String,
+    /// When it was added, for people (`20 Nov 14:03`).
+    pub added: String,
+    /// Who added it: `You` or the agent's name.
+    pub by: String,
+    /// POST here to delete it.
+    pub delete: String,
+}
+
+/// A chat's file panel.
+pub struct FilePanel<'a> {
+    pub files: &'a [PanelFile],
+    /// `3 files, 12 MiB`.
+    pub usage: &'a str,
+    /// `Kept for 5 days`.
+    pub keep: &'a str,
+    /// POST here to change how long this box keeps files (form field `keep`).
+    pub keep_action: &'a str,
+    /// (value, label): `default`, day counts, `forever`.
+    pub keep_choices: &'a [(String, String)],
+    pub keep_selected: &'a str,
+    /// Whose box, for the empty text ("Melissa", "Ada").
+    pub whose: &'a str,
+}
+
+/// The file panel beside a chat.
+pub fn file_panel(p: &FilePanel<'_>) -> Markup {
+    html! {
+        aside.file-panel aria-label="Files" {
+            details.file-box data-remember="file-panel" {
+                summary {
+                    (file_icon())
+                    span.label { "Files" }
+                    (file_count(p.files.len(), false))
+                }
+                (file_panel_body(p))
+            }
+        }
+    }
+}
+
+/// The count in the file panel's summary (`oob`: as an out-of-band swap).
+pub fn file_count(n: usize, oob: bool) -> Markup {
+    html! {
+        span.count id=(FILE_COUNT_ID) hx-swap-oob=[oob.then_some("true")] { (n) }
+    }
+}
+
+/// The file panel's body with its id (the response to delete and retention changes).
+pub fn file_panel_body(p: &FilePanel<'_>) -> Markup {
+    html! { div.file-box-body id=(FILE_BODY_ID) { (file_panel_inner(p)) } }
+}
+
+/// The file panel's body content (the stream replaces it).
+pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
+    let target = format!("#{FILE_BODY_ID}");
+    html! {
+        p.file-usage { (p.usage) " · " (p.keep) }
+        @if p.files.is_empty() {
+            p.quiet { "Nothing here yet. Files you send " (p.whose) ", and files it saves, show up here." }
+        } @else {
+            ul.box-files {
+                @for f in p.files {
+                    li {
+                        a.box-file href=(f.href) download=(f.name) title=(f.name) {
+                            span.name { (f.name) }
+                            span.meta { (f.size) " · " (f.added) " · " (f.by) }
+                        }
+                        form.inline method="post" action=(f.delete) hx-post=(f.delete)
+                            hx-target=(target) hx-swap="outerHTML"
+                            hx-confirm={ "Delete " (f.name) "? It can't be brought back." } {
+                            button.icon-button type="submit" title={ "Delete " (f.name) } {
+                                span.visually-hidden { "Delete " (f.name) }
+                                (trash_icon())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        details.disclosure.keep-files {
+            summary { "Keep files for…" }
+            form.one-field method="post" action=(p.keep_action) hx-post=(p.keep_action)
+                hx-target=(target) hx-swap="outerHTML" {
+                label.field {
+                    span.visually-hidden { "Keep files for" }
+                    select name="keep" {
+                        @for (value, label) in p.keep_choices {
+                            option value=(value) selected[value == p.keep_selected] { (label) }
+                        }
+                    }
+                }
+                button.secondary type="submit" { "Save" }
+            }
+        }
+    }
+}
+
+fn trash_icon() -> Markup {
+    html! {
+        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 6.5v5M9.5 6.5v5" {}
         }
     }
 }

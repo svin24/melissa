@@ -11,7 +11,8 @@ use axum::{
 };
 use melissa_agent::lead::schedules::{
     describe, Creator, LastRun, Outcome, Preset, Principal, Schedule, ScheduleError, ScheduleInput,
-    Scheduler, DEFAULT_MAX_MINUTES,
+    Scheduler, DEFAULT_APPROVAL_WAIT_MINUTES, DEFAULT_MAX_MINUTES, MAX_APPROVAL_WAIT_MINUTES,
+    MIN_APPROVAL_WAIT_MINUTES,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -137,6 +138,7 @@ fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesV
             flash,
             available: true,
             zone: zone(s),
+            wait: s.schedules().approval_wait_minutes().to_string(),
         },
         None => SchedulesView {
             rows: Vec::new(),
@@ -144,6 +146,7 @@ fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesV
             flash,
             available: false,
             zone: String::new(),
+            wait: DEFAULT_APPROVAL_WAIT_MINUTES.to_string(),
         },
     }
 }
@@ -453,7 +456,78 @@ pub(super) async fn remove(
     reply(&ui, &headers, None, Some(flash)).await
 }
 
+#[derive(Deserialize)]
+pub(super) struct WaitIn {
+    #[serde(default)]
+    minutes: String,
+}
+
+/// How long a scheduled run's request waits for the owner's answer.
+pub(super) async fn wait(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Form(form): Form<WaitIn>,
+) -> Response {
+    let flash = match ui.lead.scheduler() {
+        None => no_scheduler(),
+        Some(s) => match form.minutes.trim().parse::<u32>() {
+            Err(_) => Flash {
+                text: format!(
+                    "Couldn't save that: give a number of minutes, {MIN_APPROVAL_WAIT_MINUTES} to {MAX_APPROVAL_WAIT_MINUTES}"
+                ),
+                tone: Tone::Error,
+            },
+            Ok(m) => match s.schedules().set_approval_wait(m, &OWNER) {
+                Ok(()) => Flash {
+                    text: "Saved. Applies to runs that start from now.".into(),
+                    tone: Tone::Ok,
+                },
+                Err(e) => error_flash(&e),
+            },
+        },
+    };
+    reply(&ui, &headers, None, Some(flash)).await
+}
+
 // --- API ---------------------------------------------------------------------------------------
+
+fn settings_json(sched: &Scheduler) -> Value {
+    json!({
+        "approval_wait_minutes": sched.schedules().approval_wait_minutes(),
+        "min": MIN_APPROVAL_WAIT_MINUTES,
+        "max": MAX_APPROVAL_WAIT_MINUTES,
+    })
+}
+
+/// `GET /api/settings/schedules`.
+pub(super) async fn api_settings(State(ui): State<Ui>) -> Response {
+    match ui.lead.scheduler() {
+        Some(s) => Json(settings_json(s)).into_response(),
+        None => unavailable(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct SettingsIn {
+    approval_wait_minutes: u32,
+}
+
+/// `POST /api/settings/schedules` `{"approval_wait_minutes": n}`.
+pub(super) async fn api_set_settings(
+    State(ui): State<Ui>,
+    Json(body): Json<SettingsIn>,
+) -> Response {
+    let Some(s) = ui.lead.scheduler() else {
+        return unavailable();
+    };
+    match s
+        .schedules()
+        .set_approval_wait(body.approval_wait_minutes, &OWNER)
+    {
+        Ok(()) => Json(settings_json(s)).into_response(),
+        Err(e) => schedule_error(&e),
+    }
+}
 
 fn api_error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({"error": message.into()}))).into_response()
