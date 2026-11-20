@@ -5,6 +5,9 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [dev-shell-and-checks.md](dev-shell-and-checks.md) — devenv shell, `just check`, committing with hooks, host gotchas.
 - [agent-cli-backends.md](agent-cli-backends.md) — driving claude/grok/opencode headlessly, safety rules, config.
 - [htmx-component.md](htmx-component.md) — the fixed component library, htmx patterns, CSP/CSRF, router tests.
+- [ui-craft.md](ui-craft.md) — how UI work should look and read: the CSS tokens and sizes in use, edges, one
+  primary action, copy rules and tells to avoid, motion and states, icons, the browser check at 1440/1024/768/390
+  in light and dark, reviewing UI, proposed checks, and what from third-party design skills does not apply.
 - [acp-sessions.md](acp-sessions.md) — agent sessions: ACP (`grok-acp`, `opencode-acp`) and Claude's stream-json
   (`claude-session`): session API, verified protocol facts per agent, permission mapping, cancel, resume,
   recording/replay transcripts, gotchas.
@@ -42,6 +45,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 
 ## Claude Code plugins and project skills (2026-11-18)
 - Project skill `.claude/skills/melissa-ui/SKILL.md`: binding UI rules; overrides third-party design skills.
+  Its details live in [ui-craft.md](ui-craft.md) (2026-11-20), distilled from tasteskill and interface-design
+  (both MIT; credited in ACKNOWLEDGMENTS.md). Neither is installed in the project.
 - Plugins enabled at project scope (`.claude/settings.json`, skill-only, no MCP/hooks/network):
   `frontend-design` (Anthropic) and `modern-web-guidance` (Google Chrome, pinned commit). Use them for typography,
   spacing, accessibility and modern CSS inside the fixed component library, never for runtime agent UI.

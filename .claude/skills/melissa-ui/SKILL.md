@@ -1,6 +1,6 @@
 ---
 name: melissa-ui
-description: Melissa's binding web UI rules. Load before any work on crates/web (components, pages, CSS, htmx) or when another design skill (frontend-design, modern-web-guidance) is in play; these rules override them.
+description: Melissa's binding web UI rules. Load before any work on crates/web (components, pages, CSS, htmx, UI strings) or when another design skill (frontend-design, modern-web-guidance, design-taste-frontend/tasteskill, interface-design) is in play; these rules override them.
 ---
 
 # Melissa web UI rules (binding; AGENTS.md wins on conflict)
@@ -18,10 +18,23 @@ description: Melissa's binding web UI rules. Load before any work on crates/web 
    http/https/mailto links, images never loaded), user text through `plain_text`, logs through `log_view`.
    Never raw HTML, no remote images. Mutating requests must pass the same-origin check.
 5. **Style.** Calm, boring, reliable over flashy: Melissa is infrastructure people trust with their data. Use
-   design skills (frontend-design, modern-web-guidance) for typography, spacing, accessibility and modern CSS,
-   but not for "aesthetic risk". Accessible by default: semantic HTML, keyboard use, contrast, light/dark via
+   design skills for typography, spacing, accessibility and modern CSS, but not for "aesthetic risk", a new
+   direction, or anything website-only (heroes, photos, effects, load animations, remote assets).
+   Accessible by default: semantic HTML, keyboard use, contrast, light/dark via
    `prefers-color-scheme`, works at phone width.
    No browser dialogs (`alert`, `confirm`, `hx-confirm`): confirm inside the page (`action_button`'s
    in-page confirm), or not at all when the action is easy to undo (owner, 2026-11-20).
-6. **Verify.** `devenv shell -- just check`; router tests with `tower::ServiceExt::oneshot`. Details and patterns:
-   `docs/agent-skills/htmx-component.md`.
+6. **Craft** (details: `docs/agent-skills/ui-craft.md`):
+   - Values come from the existing tokens and the sizes listed there: no one-off spacing or font sizes, no hex or
+     `rgb()` outside `:root`. One look per kind of element on every page.
+   - One focal point and one filled primary button per view and per card; button text is a verb plus the thing.
+   - Every region has empty, working, error and disabled states, and works without script.
+   - Copy: facts only, short; UI words "Melissa", "helper", "app", "provider", no internal terms. No hype or
+     virtue words, `!`, em dashes, "Oops"/"Something went wrong", or raw error text as the message.
+   - Motion only for a state change: colour-only hover under `(hover: hover)`, under 300ms, `transform`/`opacity`/
+     colours only (never `transition: all`), and a `prefers-reduced-motion` rule for each.
+   - An existing component, then a native element (`button`, `a`, `details`, `dialog`, `[popover]`); never a
+     clickable `div`.
+7. **Verify.** `devenv shell -- just check`; router tests with `tower::ServiceExt::oneshot`. Then look at every changed
+   page in a browser at 1440, 1024, 768 and 390 px (and 320 for sideways scroll), light and dark, with a Tab walk
+   (`ui-craft.md` section 9). Patterns: `docs/agent-skills/htmx-component.md`.
