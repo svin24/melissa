@@ -1215,11 +1215,15 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
         p.file-usage { (p.usage) " · " (p.keep) }
         form.file-upload method="post" action=(p.upload) enctype="multipart/form-data"
             hx-post=(p.upload) hx-target=(target) hx-swap="outerHTML" {
-            label.field {
-                span { "Add files" }
-                input type="file" name="files" multiple required;
+            // One upload icon: picking files uploads them (melissa.js, `data-autosubmit`).
+            // Without JavaScript the Upload button below does it.
+            input #box-upload .attach-input type="file" name="files" multiple required
+                data-autosubmit;
+            label.attach.upload for="box-upload" title="Upload files" {
+                (upload_icon())
+                span.visually-hidden { "Upload files" }
             }
-            button.secondary type="submit" { "Upload" }
+            noscript { button.secondary type="submit" { "Upload" } }
         }
         @if p.files.is_empty() {
             p.quiet { "Nothing here yet. Files you add or send " (p.whose) ", and files it saves, show up here." }
@@ -1329,6 +1333,14 @@ fn mic_icon() -> Markup {
         svg viewBox="0 0 20 20" aria-hidden="true" focusable="false" {
             rect x="7" y="2.5" width="6" height="10" rx="3" {}
             path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" {}
+        }
+    }
+}
+
+fn upload_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M8 10.5V2.5M4.8 5.7 8 2.5l3.2 3.2M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" {}
         }
     }
 }

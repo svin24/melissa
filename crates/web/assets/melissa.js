@@ -158,6 +158,14 @@
   }
 
   document.addEventListener("change", function (e) {
+    // A file input that uploads as soon as files are picked (the details panel's upload icon).
+    var t = e.target;
+    if (t && t.hasAttribute && t.hasAttribute("data-autosubmit") && t.files && t.files.length > 0) {
+      if (t.form && t.form.requestSubmit) {
+        t.form.requestSubmit();
+      }
+      return;
+    }
     if (e.target === attachInput()) {
       // The picker replaces the input's list: take the new files, keep the earlier ones.
       var fresh = Array.prototype.slice.call(e.target.files);
