@@ -828,6 +828,20 @@ async fn a_finished_turn_withdraws_its_confirmations_that_still_wait() {
         matches!(e, LeadEvent::ConfirmationResolved { id, outcome } if *id == stale.id && outcome != "approved" && outcome != "denied")
     })
     .await;
+    // Usage: one turn that asked twice (the other task's request isn't this chat's).
+    let usage = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let u = s.lead.usage();
+            if u.turns == 1 {
+                return u;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(usage.approvals, 2);
+    assert!(usage.since > 0);
     s.close().await;
     let lines = s.audit_lines();
     let withdrawn: Vec<&Value> = lines

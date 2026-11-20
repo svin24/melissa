@@ -10,12 +10,28 @@
 
   var stickToBottom = true;
 
+  // What scrolls the chat: the nearest scrolling box around the feed (the main column, or the
+  // chat column beside the details panel), or the page on phones.
+  function scroller() {
+    var el = document.getElementById("feed");
+    while (el && el !== document.body) {
+      var o = window.getComputedStyle(el).overflowY;
+      if (o === "auto" || o === "scroll") {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
   function nearBottom() {
-    return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 200;
+    var s = scroller();
+    return s.scrollTop + s.clientHeight >= s.scrollHeight - 200;
   }
 
   function scrollToBottom() {
-    window.scrollTo(0, document.documentElement.scrollHeight);
+    var s = scroller();
+    s.scrollTop = s.scrollHeight;
   }
 
   function composer() {
@@ -1030,8 +1046,236 @@
     });
   }
 
+
+  // Panels (Settings, Apps, Usage and resources) open in a modal over the current page. A
+  // link to one loads it with htmx into #overlay-body (the server answers with the panel
+  // alone) and pushes its URL, so reload and Back work; closing goes back to where the page
+  // was. A page that is a panel (a deep link, a reload) moves its panel into the modal; closing
+  // it then goes to the chat. Without script every panel is a plain page.
+  var PANEL_PATHS = /^\/(settings(\/|$|\?)|tasks\/\d|cluster($|\?)|usage($|\?))/;
+
+  function overlayParts() {
+    var dialog = document.getElementById("overlay");
+    return dialog && dialog.showModal ? { dialog: dialog, body: document.getElementById("overlay-body") } : null;
+  }
+
+  var panelState = { depth: 0, deep: false, opener: null, title: document.title, loaded: null };
+
+  function panelPath(a) {
+    if (!a || a.target || a.hasAttribute("download") || a.hasAttribute("hx-get")) {
+      return null;
+    }
+    var href = a.getAttribute("href");
+    if (!href || href.charAt(0) !== "/" || href.charAt(1) === "/") {
+      return null;
+    }
+    return PANEL_PATHS.test(href) ? href : null;
+  }
+
+  function showPanel(o) {
+    var panel = o.body.querySelector("[data-panel]");
+    var title = panel ? panel.getAttribute("data-title") : "Panel";
+    o.dialog.setAttribute("aria-label", title);
+    document.title = title + " · Melissa";
+    if (!o.dialog.open) {
+      panelState.opener = document.activeElement;
+      o.dialog.showModal();
+    }
+    initSettingsSearch(o.body);
+    // Focus the section list's current item (Settings) or the panel's first control.
+    var focus = o.body.querySelector(".settings-nav [aria-current='page']") || o.body.querySelector("[data-panel-close]");
+    if (focus) {
+      focus.focus();
+    }
+  }
+
+  // Load `url` into the modal; `push`: a new history entry (else the current one is replaced).
+  function openPanel(url, push) {
+    var o = overlayParts();
+    if (!o || !window.htmx) {
+      window.location.assign(url);
+      return;
+    }
+    var before = o.body.firstElementChild;
+    panelState.loaded = null;
+    window.htmx
+      .ajax("GET", url, { target: "#overlay-body", swap: "innerHTML" })
+      .then(function () {
+        var now = o.body.firstElementChild;
+        if (!now || now === before || !now.hasAttribute("data-panel")) {
+          // Nothing came back as a panel (an error, a page that isn't one): open it as a page.
+          window.location.assign(url);
+          return;
+        }
+        // Where it ended up (`/settings` redirects to the first section).
+        var at = panelState.loaded || url;
+        if (push) {
+          panelState.depth += 1;
+          window.history.pushState({ panel: at, depth: panelState.depth }, "", at);
+        } else {
+          window.history.replaceState({ panel: at, depth: panelState.depth }, "", at);
+        }
+        showPanel(o);
+      });
+  }
+
+  function closePanel() {
+    var o = overlayParts();
+    if (o && o.dialog.open) {
+      o.dialog.close();
+    }
+  }
+
+  function initPanel() {
+    var o = overlayParts();
+    if (!o) {
+      return;
+    }
+    o.dialog.addEventListener("close", function () {
+      document.title = panelState.title;
+      if (panelState.deep) {
+        window.location.assign("/");
+        return;
+      }
+      o.body.replaceChildren();
+      if (panelState.opener && panelState.opener.focus) {
+        panelState.opener.focus();
+      }
+      var back = panelState.depth;
+      panelState.depth = 0;
+      if (back > 0) {
+        window.history.go(-back);
+      }
+    });
+    // A click on the backdrop (the dialog itself, outside its content) closes it.
+    o.dialog.addEventListener("click", function (e) {
+      if (e.target === o.dialog) {
+        closePanel();
+      }
+    });
+    window.addEventListener("popstate", function (e) {
+      var st = e.state;
+      if (st && st.panel) {
+        panelState.depth = st.depth || 0;
+        openPanel(st.panel, false);
+      } else if (o.dialog.open && !panelState.deep) {
+        panelState.depth = 0;
+        o.dialog.close();
+      }
+    });
+    // This page is a panel: show it as the modal (closing goes to the chat).
+    var main = document.getElementById("main");
+    var own = main && main.querySelector(":scope > [data-panel]");
+    if (own) {
+      panelState.deep = true;
+      o.body.appendChild(own);
+      window.history.replaceState({ panel: window.location.pathname + window.location.search, depth: 0 }, "");
+      showPanel(o);
+    }
+  }
+
+  document.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+      return;
+    }
+    var t = e.target;
+    if (!(t instanceof Element)) {
+      return;
+    }
+    if (t.closest("[data-panel-close]") && overlayParts() && overlayParts().dialog.open) {
+      e.preventDefault();
+      closePanel();
+      return;
+    }
+    var url = panelPath(t.closest("a[href]"));
+    if (url && overlayParts()) {
+      e.preventDefault();
+      openPanel(url, true);
+    }
+  });
+
+  document.addEventListener("htmx:afterRequest", function (e) {
+    var d = e.detail;
+    if (d && d.target && d.target.id === "overlay-body" && d.xhr && d.xhr.responseURL) {
+      try {
+        var u = new URL(d.xhr.responseURL);
+        if (u.origin === window.location.origin) {
+          panelState.loaded = u.pathname + u.search;
+        }
+      } catch (err) {
+        // Keep the requested URL.
+      }
+    }
+  });
+
+  // Settings search: filters the section list by name and the settings in each section, and
+  // the rows of the open section. "/" focuses it while Settings is open.
+  function initSettingsSearch(root) {
+    var box = root.querySelector("[data-settings-search]");
+    if (!box) {
+      return;
+    }
+    box.hidden = false;
+    var input = box.querySelector("input");
+    if (input.value) {
+      filterSettings(root, input.value);
+    }
+    input.addEventListener("input", function () {
+      filterSettings(root, input.value);
+    });
+  }
+
+  function filterSettings(root, query) {
+    var q = query.trim().toLowerCase();
+    var any = false;
+    Array.prototype.forEach.call(root.querySelectorAll(".settings-nav li"), function (li) {
+      var text = (li.textContent + " " + (li.getAttribute("data-keywords") || "")).toLowerCase();
+      li.hidden = q !== "" && text.indexOf(q) < 0;
+      any = any || !li.hidden;
+    });
+    Array.prototype.forEach.call(root.querySelectorAll(".settings-nav ul"), function (ul) {
+      var shown = ul.querySelector("li:not([hidden])");
+      ul.hidden = !shown;
+      var label = ul.previousElementSibling;
+      if (label && label.classList.contains("settings-group")) {
+        label.hidden = !shown;
+      }
+    });
+    var none = root.querySelector(".settings-none");
+    if (none) {
+      none.hidden = any;
+    }
+    Array.prototype.forEach.call(root.querySelectorAll("[data-setting]"), function (row) {
+      row.hidden = q !== "" && row.textContent.toLowerCase().indexOf(q) < 0;
+    });
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) {
+      return;
+    }
+    var o = overlayParts();
+    var field = o && o.dialog.open && o.body.querySelector("[data-settings-search] input");
+    var t = e.target;
+    if (!field || (t instanceof Element && t.closest("input, textarea, select, [contenteditable]"))) {
+      return;
+    }
+    e.preventDefault();
+    field.focus();
+  });
+
+  // A section's content was swapped (a form inside the panel): keep the search applied.
+  document.addEventListener("htmx:afterSettle", function () {
+    var o = overlayParts();
+    var input = o && o.dialog.open && o.body.querySelector("[data-settings-search] input");
+    if (input && input.value) {
+      filterSettings(o.body, input.value);
+    }
+  });
+
   document.addEventListener("DOMContentLoaded", function () {
     initDismiss();
+    initPanel();
     grow(composer());
     showVoice();
     initDetails();

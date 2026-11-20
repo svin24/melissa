@@ -7,26 +7,85 @@ use super::apply::Pending;
 use crate::{
     components::{
         action_button, actions, badge, card, code, command_block, confirm_card, detail_head,
-        disclosure, external_button, facts, group, lines_field, link, link_button, live_region,
-        log_view, notice, one_field_form, page_header, pick_list, plain_action, progress_bar,
-        provider_logo, region, select_field_at, settings_form, settings_frame_at, settings_head,
-        split_card, table, text_field, toggle, var_list, Choice, ConfirmCard, LogLine, Nav,
-        PickRow, SettingsSection, Toggle, Tone, VarRow,
+        disclosure, external_button, facts, group, inline_form, inline_number, inline_select,
+        lines_field, link, link_button, live_region, log_view, notice, one_field_form, page_header,
+        pick_list, plain_action, progress_bar, provider_logo, region, select_field_at,
+        setting_card, setting_row, setting_row_with, settings_form, settings_frame_at,
+        settings_head, split_card, table, text_field, toggle, var_list, Choice, ConfirmCard, Glyph,
+        LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
 use melissa_settings::providers::EnvVarView;
 
-/// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 8] = [
-    ("/settings/providers", "Providers"),
-    (AGENTS_URL, "Agents"),
-    (PERMISSIONS_URL, "Permissions"),
-    (SCHEDULES_URL, "Schedules"),
-    (FILES_URL, "Files"),
-    (VOICE_URL, "Voice"),
-    ("/settings/updates", "Updates"),
-    (DEVELOPER_URL, "Developer"),
+/// A Settings section: where it is, its name, the group it is listed under, its icon and the
+/// titles of the settings in it (for the search field).
+pub struct Section {
+    pub href: &'static str,
+    pub label: &'static str,
+    pub group: &'static str,
+    pub icon: Glyph,
+    pub keywords: &'static str,
+}
+
+/// The Settings sections, in order and grouped. Add new ones here (and a route in `mod.rs`).
+pub const SECTIONS: [Section; 8] = [
+    Section {
+        href: "/settings/providers",
+        label: "Providers",
+        group: "Agents",
+        icon: Glyph::Plug,
+        keywords: "Claude Code Grok OpenCode install sign in API key add provider remove provider version",
+    },
+    Section {
+        href: AGENTS_URL,
+        label: "Agents",
+        group: "Agents",
+        icon: Glyph::Person,
+        keywords: "Melissa helpers delete lead agent runs on",
+    },
+    Section {
+        href: PERMISSIONS_URL,
+        label: "Permissions",
+        group: "Agents",
+        icon: Glyph::Key,
+        keywords: "Always allow rules allowed requests",
+    },
+    Section {
+        href: SCHEDULES_URL,
+        label: "Schedules",
+        group: "Agents",
+        icon: Glyph::Clock,
+        keywords: "Scheduled jobs run now timetable When a run needs your OK wait minutes",
+    },
+    Section {
+        href: VOICE_URL,
+        label: "Voice",
+        group: "Chat",
+        icon: Glyph::Mic,
+        keywords: "Voice input speech model microphone",
+    },
+    Section {
+        href: FILES_URL,
+        label: "Files",
+        group: "Chat",
+        icon: Glyph::File,
+        keywords: "Keep files for file boxes expired",
+    },
+    Section {
+        href: "/settings/updates",
+        label: "Updates",
+        group: "System",
+        icon: Glyph::Refresh,
+        keywords: "Melissa version check for updates update roll back restart automatic updates",
+    },
+    Section {
+        href: DEVELOPER_URL,
+        label: "Developer",
+        group: "System",
+        icon: Glyph::Code,
+        keywords: "Developer mode No permission prompts Full access per agent agent tasks Show thinking and timings chat",
+    },
 ];
 
 /// The Agents section: Melissa and her helpers (Delete).
@@ -74,16 +133,18 @@ pub fn chat_prefs_region(on: bool, error: Option<&str>) -> Markup {
     let label = "Show thinking and timings";
     region(
         CHAT_PREFS_ID,
-        html! {
-            (facts(&[(label, toggle(&Toggle {
+        setting_row_with(
+            html! { (label) },
+            Some(html! { "Each thought opens in the chat, and steps show how long they took." }),
+            toggle(&Toggle {
                 action: STEPS_URL,
                 target: CHAT_PREFS_ID,
                 label,
                 on,
                 locked: None,
-            }))]))
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
-        },
+            }),
+            error.map(|e| notice(e, Tone::Error)),
+        ),
     )
 }
 
@@ -100,17 +161,20 @@ pub(crate) fn frame_at(
 ) -> Markup {
     let sections: Vec<SettingsSection<'_>> = SECTIONS
         .iter()
-        .map(|(href, label)| SettingsSection {
-            href,
-            label,
-            current: *label == current,
+        .map(|s| SettingsSection {
+            href: s.href,
+            label: s.label,
+            current: s.label == current,
+            group: s.group,
+            icon: s.icon,
+            keywords: s.keywords,
         })
         .collect();
     let title = match page {
         Some(p) => format!("{p} · {current} · Settings"),
         None => format!("{current} · Settings"),
     };
-    crate::pages::shell(
+    crate::pages::panel_shell(
         f,
         &title,
         rail_for(Nav::Settings, f, None),
@@ -534,7 +598,7 @@ pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
 
 pub fn updates_region(v: &UpdatesView) -> Markup {
     let melissa = html! {
-        (v.version)
+        "Version " (v.version)
         @if let Some((word, tone)) = v.status { " " (badge(word, tone)) }
     };
     let mut detail_rows: Vec<(&str, Markup)> = v
@@ -591,21 +655,26 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                     }))
                 }
             }
-            (card("This device", html! {
-                (facts(&[("Melissa", melissa)]))
-                @if let Some(n) = v.note { p.quiet { (n) } }
-                @if let Some(l) = &v.last { (notice(&l.text, l.tone)) }
-                @if v.can_apply || v.can_rollback {
-                    (actions(html! {
-                        @if v.can_apply { (plain_action("/ui/settings/updates/apply", UPDATES_ID, "Update", true)) }
+            (setting_card(Some("This device"), html! {
+                (setting_row_with(
+                    html! { "Melissa" },
+                    Some(melissa),
+                    html! {
                         @if v.can_rollback { (plain_action("/ui/settings/updates/rollback", UPDATES_ID, "Roll back", false)) }
+                        @if v.can_apply { (plain_action("/ui/settings/updates/apply", UPDATES_ID, "Update", true)) }
+                    },
+                    (v.note.is_some() || v.last.is_some() || v.commands_open).then(|| html! {
+                        @if let Some(n) = v.note { p.quiet { (n) } }
+                        @if let Some(l) = &v.last { (notice(&l.text, l.tone)) }
+                        @if v.commands_open { (commands) }
+                    }),
+                ))
+                div.setting-more {
+                    (disclosure("Details", false, html! {
+                        (facts(&detail_rows))
+                        @if !v.commands_open { (commands) }
                     }))
                 }
-                @if v.commands_open { (commands) }
-                (disclosure("Details", false, html! {
-                    (facts(&detail_rows))
-                    @if !v.commands_open { (commands) }
-                }))
             }))
         }
     }
@@ -664,37 +733,40 @@ pub fn permissions_region(rules: &[RuleRow], flash: Option<&Flash>) -> Markup {
 pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Markup {
     region(
         BYPASS_ID,
-        html! {
-            (group(
-                "No permission prompts",
-                Some("Every request is allowed without asking you, except what Melissa refuses outright. Each one is logged."),
-                html! {
-                    (notice(
-                        "Risky: helpers can change, stop and delete apps without your yes.",
-                        Tone::Warn,
-                    ))
-                    @if let Some(f) = flash { (notice(&f.text, f.tone)) }
-                    @if confirming {
-                        (confirm_card(&ConfirmCard {
-                            title: "Turn off permission prompts?",
-                            text: "Melissa and every helper act without asking you until you turn this off. A warning shows on every page.",
-                            action: "/ui/settings/developer/bypass/on",
-                            target: BYPASS_ID,
-                            confirm: "Turn off prompts",
-                            cancel_href: DEVELOPER_URL,
-                        }))
-                    } @else {
-                        (toggle(&Toggle {
-                            action: "/ui/settings/developer/bypass",
-                            target: BYPASS_ID,
-                            label: "No permission prompts",
-                            on,
-                            locked: None,
-                        }))
-                    }
-                },
-            ))
-        },
+        setting_row_with(
+            html! { "No permission prompts" },
+            Some(
+                html! { "Every request is allowed without asking you, except what Melissa refuses outright. Each one is logged." },
+            ),
+            html! {
+                @if !confirming {
+                    (toggle(&Toggle {
+                        action: "/ui/settings/developer/bypass",
+                        target: BYPASS_ID,
+                        label: "No permission prompts",
+                        on,
+                        locked: None,
+                    }))
+                }
+            },
+            Some(html! {
+                (notice(
+                    "Risky: helpers can change, stop and delete apps without your yes.",
+                    Tone::Warn,
+                ))
+                @if let Some(f) = flash { (notice(&f.text, f.tone)) }
+                @if confirming {
+                    (confirm_card(&ConfirmCard {
+                        title: "Turn off permission prompts?",
+                        text: "Melissa and every helper act without asking you until you turn this off. A warning shows on every page.",
+                        action: "/ui/settings/developer/bypass/on",
+                        target: BYPASS_ID,
+                        confirm: "Turn off prompts",
+                        cancel_href: DEVELOPER_URL,
+                    }))
+                }
+            }),
+        ),
     )
 }
 
@@ -704,22 +776,20 @@ pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Marku
 pub fn full_access_region(on: bool, flash: Option<&Flash>) -> Markup {
     region(
         FULL_ACCESS_ID,
-        html! {
-            (group(
-                "Full access per agent",
-                Some("Adds Access to each chat's model picker. An agent on Full access does what it asks for itself without asking you; other agents' apps, schedules and moves still ask. Each one is logged."),
-                html! {
-                    @if let Some(f) = flash { (notice(&f.text, f.tone)) }
-                    (toggle(&Toggle {
-                        action: "/ui/settings/developer/full-access",
-                        target: FULL_ACCESS_ID,
-                        label: "Full access per agent",
-                        on,
-                        locked: None,
-                    }))
-                },
-            ))
-        },
+        setting_row_with(
+            html! { "Full access per agent" },
+            Some(
+                html! { "Adds Access to each chat's model picker. An agent on Full access does what it asks for itself without asking you; other agents' apps, schedules and moves still ask. Each one is logged." },
+            ),
+            toggle(&Toggle {
+                action: "/ui/settings/developer/full-access",
+                target: FULL_ACCESS_ID,
+                label: "Full access per agent",
+                on,
+                locked: None,
+            }),
+            flash.map(|f| notice(&f.text, f.tone)),
+        ),
     )
 }
 
@@ -841,12 +911,18 @@ pub fn schedules_region(v: &SchedulesView) -> Markup {
                     "Nothing scheduled yet.",
                 )))
                 (schedule_form(&v.form, &v.zone))
-                (card("When a run needs your OK", html! {
-                    (settings_form("/ui/settings/schedules/wait", SCHEDULES_ID, "Save", html! {
-                        (text_field("minutes", "Wait for your answer (minutes)", &v.wait, "10", "number", Some("Then the request is turned down and the run goes on without it. 1 to 1440 minutes (a day).")))
-                    }))
-                    @if let Some(n) = &v.wait_note { (notice(n, Tone::Muted)) }
-                }))
+                (setting_card(Some("When a run needs your OK"), setting_row_with(
+                    html! { "Wait for your answer (minutes)" },
+                    Some(html! { "Then the request is turned down and the run goes on without it. 1 to 1440 minutes (a day)." }),
+                    inline_form("/ui/settings/schedules/wait", SCHEDULES_ID, inline_number(
+                        "minutes",
+                        "Wait for your answer (minutes)",
+                        &v.wait,
+                        1,
+                        1440,
+                    )),
+                    v.wait_note.as_deref().map(|n| notice(n, Tone::Muted)),
+                )))
             } @else {
                 (notice("Schedules don't run on this device.", Tone::Muted))
             }
@@ -938,34 +1014,35 @@ pub fn agents_page(f: &Frame<'_>, rows: &[AgentRow], flash: Option<&Flash>) -> M
 
 /// The agent list (swapped whole by Delete).
 pub fn agents_region(rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
-    let rows: Vec<Vec<Markup>> = rows
-        .iter()
-        .map(|r| {
-            vec![
-                link(&r.href, &r.name),
-                html! { (r.runs_on) },
-                badge(r.status.0, r.status.1),
-                match &r.id {
-                    None => html! { span.quiet { "Lead agent" } },
-                    Some(id) => action_button(
-                        &format!("/ui/settings/agents/{id}/delete"),
-                        AGENTS_ID,
-                        "Delete",
-                        &format!(
-                            "Delete {}? Its chat, file box and schedules go with it. This can't be undone.",
-                            r.name
-                        ),
-                    ),
-                },
-            ]
-        })
-        .collect();
     region(
         AGENTS_ID,
         html! {
             (page_header("Agents", Some("Melissa and her helpers. A helper that looks after apps can't be deleted until you reassign or remove them.")))
             @if let Some(f) = flash { (notice(&f.text, f.tone)) }
-            (table(&["Name", "Runs on", "Status", ""], rows, "No agents."))
+            (setting_card(None, html! {
+                @for r in rows {
+                    (setting_row_with(
+                        link(&r.href, &r.name),
+                        Some(html! { (r.runs_on) }),
+                        html! {
+                            (badge(r.status.0, r.status.1))
+                            @match &r.id {
+                                None => span.quiet { "Lead agent" },
+                                Some(id) => (action_button(
+                                    &format!("/ui/settings/agents/{id}/delete"),
+                                    AGENTS_ID,
+                                    "Delete",
+                                    &format!(
+                                        "Delete {}? Its chat, file box and schedules go with it. This can't be undone.",
+                                        r.name
+                                    ),
+                                )),
+                            }
+                        },
+                        None,
+                    ))
+                }
+            }))
             p.quiet { "Change what an agent runs on with the model button under its chat." }
         },
     )
@@ -986,35 +1063,25 @@ pub fn files_page(f: &Frame<'_>, v: &FilesView) -> Markup {
 }
 
 pub fn files_region(v: &FilesView) -> Markup {
-    let choices: Vec<Choice<'_>> = v
-        .choices
-        .iter()
-        .map(|(value, label)| Choice {
-            value,
-            label,
-            enabled: true,
-        })
-        .collect();
-    let rows: Vec<Vec<Markup>> = v
-        .overrides
-        .iter()
-        .map(|(who, chat, keep)| vec![link(chat, who), html! { (keep) }])
-        .collect();
     region(
         FILES_ID,
         html! {
             (page_header("Files", Some("Melissa and each helper keep the files you send them, and the files they save, in their own file box. Only that helper can see its box; you see it next to its chat.")))
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
-            (card("Keep files for", html! {
-                (settings_form("/ui/settings/files", FILES_ID, "Save", html! {
-                    (select_field_at("keep", "Keep files for", &choices, Some(&v.selected)))
-                }))
-                p.quiet { "Older files are removed, counted from when they were added. Messages that sent them then show the file as expired." }
+            (setting_card(None, setting_row(
+                "Keep files for",
+                Some("Older files are removed, counted from when they were added. Messages that sent them then show the file as expired."),
+                inline_form("/ui/settings/files", FILES_ID, inline_select("keep", "Keep files for", &v.choices, &v.selected)),
+            )))
+            (setting_card(Some("Boxes with their own setting"), html! {
+                @if v.overrides.is_empty() {
+                    (setting_row("Every box uses the setting above", Some("Change one in the Files panel next to a chat."), html! {}))
+                }
+                @for (who, chat, keep) in &v.overrides {
+                    (setting_row_with(link(chat, who), None, html! { (keep) }, None))
+                }
             }))
-            (card("Boxes with their own setting", html! {
-                (table(&["Who", "Keeps files"], rows, "None. Every box uses the setting above."))
-                p.quiet { "Change it in the Files panel next to a chat." }
-            }))
+            @if !v.overrides.is_empty() { p.quiet { "Change it in the Files panel next to a chat." } }
         },
     )
 }
@@ -1061,43 +1128,77 @@ pub fn voice_page(f: &Frame<'_>, v: &VoiceView) -> Markup {
 pub fn voice_region(v: &VoiceView) -> Markup {
     let label = "Voice input";
     let locked = (!v.available).then_some("Not available on this install");
-    let body = html! {
-        (facts(&[(label, toggle(&Toggle {
-            action: "/ui/settings/voice",
-            target: VOICE_ID,
-            label,
-            on: v.on && v.available,
-            locked,
-        }))]))
-        @if !v.available {
-            p.quiet { "This install has no speech engine." }
-        } @else {
-            @match (&v.model, v.on) {
-                (VoiceModel::Downloading { done, total }, _) => {
-                    (progress_bar(
-                        "Downloading the speech model",
-                        &format!("{} of {}", mb(*done), mb(*total)),
-                        *done,
-                        *total,
-                    ))
-                }
-                (VoiceModel::Ready, true) => p.quiet { "Ready. Use the microphone next to Send." },
-                (VoiceModel::Ready, false) => {
-                    p.quiet { "The speech model is still here (" (v.size) ")." }
-                    (actions(plain_action("/ui/settings/voice/delete", VOICE_ID, "Delete it", false)))
-                }
-                (VoiceModel::Failed(why), true) => {
+    // The state in one line under the title; progress, retries and errors below the row.
+    let (desc, extra): (Option<String>, Markup) = if !v.available {
+        (Some("This install has no speech engine.".into()), html! {})
+    } else {
+        match (&v.model, v.on) {
+            (VoiceModel::Downloading { done, total }, _) => (
+                None,
+                progress_bar(
+                    "Downloading the speech model",
+                    &format!("{} of {}", mb(*done), mb(*total)),
+                    *done,
+                    *total,
+                ),
+            ),
+            (VoiceModel::Ready, true) => (
+                Some("Ready. Use the microphone next to Send.".into()),
+                html! {},
+            ),
+            (VoiceModel::Ready, false) => (
+                Some(format!("The speech model is still here ({}).", v.size)),
+                actions(plain_action(
+                    "/ui/settings/voice/delete",
+                    VOICE_ID,
+                    "Delete it",
+                    false,
+                )),
+            ),
+            (VoiceModel::Failed(why), true) => (
+                None,
+                html! {
                     (notice(why, Tone::Error))
                     (actions(plain_action("/ui/settings/voice/retry", VOICE_ID, "Try again", true)))
-                }
-                (VoiceModel::Absent, true) => {
-                    (actions(plain_action("/ui/settings/voice/retry", VOICE_ID, "Download the speech model", true)))
-                }
-                (_, false) => p.quiet { "Turning it on downloads a " (v.size) " speech model once." },
-            }
+                },
+            ),
+            (VoiceModel::Absent, true) => (
+                None,
+                actions(plain_action(
+                    "/ui/settings/voice/retry",
+                    VOICE_ID,
+                    "Download the speech model",
+                    true,
+                )),
+            ),
+            (_, false) => (
+                Some(format!(
+                    "Turning it on downloads a {} speech model once.",
+                    v.size
+                )),
+                html! {},
+            ),
         }
+    };
+    let extra = html! {
+        (extra)
         @if let Some(e) = &v.error { (notice(e, Tone::Error)) }
     };
+    let body = setting_card(
+        None,
+        setting_row_with(
+            html! { (label) },
+            desc.map(|d| html! { (d) }),
+            toggle(&Toggle {
+                action: "/ui/settings/voice",
+                target: VOICE_ID,
+                label,
+                on: v.on && v.available,
+                locked,
+            }),
+            (!extra.0.is_empty()).then_some(extra),
+        ),
+    );
     live_region(
         VOICE_ID,
         "/ui/settings/voice/poll",

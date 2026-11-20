@@ -209,6 +209,12 @@ impl ModelList {
     }
 }
 
+/// A reported amount (dollars, credits) in millionths; None for negative or non-finite input.
+pub(crate) fn micros(amount: f64) -> Option<u64> {
+    // `as` saturates for values above u64::MAX; the checks keep out NaN and negatives.
+    (amount.is_finite() && amount >= 0.0).then(|| (amount * 1_000_000.0).round() as u64)
+}
+
 /// A model id Melissa passes to an agent (a command-line argument or a protocol value):
 /// short, printable, no spaces, not an option.
 pub fn valid_model_id(id: &str) -> bool {
@@ -358,6 +364,9 @@ pub enum SessionEvent {
     Plan(Vec<PlanStep>),
     /// Context window usage in tokens.
     Usage { used: u64, size: u64 },
+    /// The session's running cost as the provider reports it (a total since the session
+    /// started, not per turn), in millionths of `unit` (`USD`, `credits`, ...).
+    Cost { unit: String, micros: u64 },
     /// Melissa answered a permission request.
     Permission {
         tool_call_id: String,

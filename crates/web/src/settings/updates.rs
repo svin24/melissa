@@ -7,17 +7,22 @@ use axum::{
     Json,
 };
 use melissa_settings::updates::{
-    ago, now_secs, HostKind, ImageView, UpdateAction, UpdateEnv, UpdateState,
+    ago, now_secs, HostKind, ImageStatus, ImageView, UpdateAction, UpdateEnv, UpdateState,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::Settings;
 use super::{
     apply,
     pages::{self, Flash, ImageLine, UpdatesView},
     providers::{agent_versions, manual_restart},
 };
-use crate::{components::Tone, is_htmx, ui::Ui};
+use crate::{
+    components::{Tone, UpdateHint},
+    is_htmx,
+    ui::Ui,
+};
 
 /// What a from-source install does.
 const SOURCE_UPDATE: &str = "git pull && just demo";
@@ -89,6 +94,28 @@ fn note(env: &UpdateEnv) -> Option<&'static str> {
         HostKind::Container => Some("Updating from here isn't set up on this device."),
         HostKind::Nix => Some("Melissa updates with your Nix configuration."),
         HostKind::Other => Some("Running from source: update it in the source folder."),
+    }
+}
+
+/// The rail's update button: a dot when the last check found a newer Melissa, or one is
+/// downloaded and waits (container with the helper only; nothing is fetched for this).
+/// Providers have no "newer version" check (only the installed version), so they add none.
+pub(super) fn hint(s: &Settings) -> UpdateHint {
+    let env = &s.parts().updates;
+    if env.kind != HostKind::Container || !env.helper_installed() {
+        return UpdateHint::NONE;
+    }
+    hint_for(env.state().status.as_ref())
+}
+
+fn hint_for(status: Option<&ImageStatus>) -> UpdateHint {
+    match status {
+        Some(st) if st.staged.is_some() || st.available.is_some() => UpdateHint {
+            href: "/settings/updates",
+            label: "Melissa update available",
+            available: true,
+        },
+        _ => UpdateHint::NONE,
     }
 }
 
@@ -425,5 +452,29 @@ pub(super) async fn api_action(
         Outcome::Failed(f) => {
             (StatusCode::BAD_GATEWAY, Json(json!({"error": f.text}))).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+
+    #[test]
+    fn a_found_or_downloaded_update_lights_the_rail_button() {
+        assert_eq!(hint_for(None), UpdateHint::NONE);
+        let up_to_date = ImageStatus::default();
+        assert_eq!(hint_for(Some(&up_to_date)), UpdateHint::NONE);
+        let found = ImageStatus {
+            available: Some(ImageView::default()),
+            ..ImageStatus::default()
+        };
+        let hint = hint_for(Some(&found));
+        assert!(hint.available);
+        assert_eq!(hint.href, "/settings/updates");
+        let staged = ImageStatus {
+            staged: Some(ImageView::default()),
+            ..ImageStatus::default()
+        };
+        assert!(hint_for(Some(&staged)).available);
     }
 }

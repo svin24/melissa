@@ -119,7 +119,7 @@ fn delta(text: &str) -> Step {
 fn result_ok(text: &str) -> Step {
     Step::recv(
         json!({"type": "result", "subtype": "success", "is_error": false,
-        "stop_reason": "end_turn", "result": text,
+        "stop_reason": "end_turn", "result": text, "total_cost_usd": 0.0123,
         "usage": {"input_tokens": 3, "cache_read_input_tokens": 1000, "output_tokens": 20},
         "modelUsage": {"m": {"contextWindow": 200000}}}),
     )
@@ -336,6 +336,10 @@ async fn tool_turn_maps_events_and_asks_policy() {
     assert!(got.contains(&SessionEvent::Usage {
         used: 1023,
         size: 200000
+    }));
+    assert!(got.contains(&SessionEvent::Cost {
+        unit: "USD".into(),
+        micros: 12_300
     }));
     let ends = got
         .iter()

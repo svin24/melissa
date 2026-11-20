@@ -15,6 +15,7 @@ pub mod events;
 pub mod registry;
 pub mod schedules;
 pub mod transcript;
+pub mod usage;
 
 #[cfg(test)]
 mod tests;
@@ -362,6 +363,11 @@ impl Lead {
 
     pub fn status(&self) -> LeadStatus {
         self.inner.conv.status()
+    }
+
+    /// What Melissa's conversation has used (turns, time, approvals, provider reports).
+    pub fn usage(&self) -> usage::Usage {
+        self.inner.conv.usage()
     }
 
     /// The session backends the user can switch the lead agent to (`[lead] backends`), with

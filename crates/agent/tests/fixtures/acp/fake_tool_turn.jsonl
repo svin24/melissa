@@ -15,5 +15,5 @@
 {"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"vendor_specific_thing","x":1}}}}
 {"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Kernel: 6.1"}}}}}
 {"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".0-test\nDone."}}}}}
-{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"usage_update","used":1200,"size":256000}}}}
+{"dir":"recv","msg":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"usage_update","used":1200,"size":256000,"cost":{"amount":0.5,"currency":"credits"}}}}}
 {"dir":"recv","msg":{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}}

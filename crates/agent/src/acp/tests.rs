@@ -149,6 +149,10 @@ async fn tool_turn_streams_events_and_allows_once() {
         used: 1200,
         size: 256000
     }));
+    assert!(got.contains(&SessionEvent::Cost {
+        unit: "credits".into(),
+        micros: 500_000
+    }));
     assert!(got.contains(&SessionEvent::Other("vendor_specific_thing".into())));
     assert!(
         matches!(got.iter().find(|e| matches!(e, SessionEvent::Plan(_))), Some(SessionEvent::Plan(p)) if p.len() == 2)

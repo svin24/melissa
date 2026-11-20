@@ -218,6 +218,11 @@ impl Settings {
             .then_some(voice::TRANSCRIBE_URL)
     }
 
+    /// The rail's update button (a dot when a Melissa update is available).
+    pub(crate) fn update_hint(&self) -> crate::components::UpdateHint {
+        updates::hint(self)
+    }
+
     fn voice(&self) -> &melissa_voice::Voice {
         &self.inner.parts.voice
     }

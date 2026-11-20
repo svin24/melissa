@@ -18,9 +18,9 @@ use crate::{
     },
     components::{
         composer_closed, details_panel, details_toggle, feed_archive, file_count, file_panel_inner,
-        model_chip, model_picker, rail_conversations, ComposerTarget, DetailsPanel, FilePanel,
-        ModelPicker, RailHelper, RailPastChat, SentFile, DETAILS_STATUS_ID, FILE_BODY_ID,
-        MODEL_CHIP_ID,
+        model_chip, model_picker, panel, rail_conversations, setting_card, usage_table,
+        ComposerTarget, DetailsPanel, FilePanel, ModelPicker, RailHelper, RailPastChat, SentFile,
+        UpdateHint, UsageRow, DETAILS_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
     },
     feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
@@ -59,12 +59,24 @@ pub struct Frame<'a> {
     pub past: &'a [PastChat],
     /// The `Host` the visitor used (for app links), if the page needs it.
     pub host: Option<&'a str>,
+    /// The rail's update button.
+    pub update: UpdateHint,
 }
 
 /// A page with the rail. (No permission prompts shows no banner: the owner turned it on
 /// knowingly; Settings → Developer shows it.)
 pub fn shell(_f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
     app_page(title, rail, main)
+}
+
+/// A page that is a panel (Settings, Apps, Usage and resources): the panel alone when the
+/// modal asks for it (see `crate::panel`), else the full page with the rail.
+pub fn panel_shell(f: &Frame<'_>, title: &str, rail: Markup, panel: Markup) -> Markup {
+    if crate::panel::requested() {
+        panel
+    } else {
+        shell(f, title, rail, panel)
+    }
 }
 
 /// An archived chat's page.
@@ -156,7 +168,7 @@ fn rail_with(
             current: current_past == Some(p.id),
         })
         .collect();
-    rail(nav, f.waiting, &devices, &helpers, &past)
+    rail(nav, f.waiting, &devices, &helpers, &past, &f.update)
 }
 
 fn helper_hrefs(agents: &[AgentView]) -> Vec<String> {
@@ -805,26 +817,55 @@ pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
     )
 }
 
+/// Apps (the rail's hexagon): every app with its status and who looks after it. Devices and
+/// their resources are in Usage and resources.
 pub fn cluster(f: &Frame<'_>) -> Markup {
-    let snap = f.snap;
-    shell(
+    panel_shell(
         f,
-        "Apps and devices",
+        "Apps",
         rail_for(Nav::Cluster, f, None),
-        html! {
-            div.wide {
-                (page_header("Apps and devices", Some("What runs where. Ask in the chat to change anything.")))
-                (section("Apps", cluster_apps(snap, f.host)))
+        panel(
+            "Apps",
+            html! {
+                p.lead { "What runs on your devices. Ask in the chat to change anything." }
+                (cluster_apps(f.snap, f.host))
                 (app_dialog())
+            },
+        ),
+    )
+}
+
+/// Usage and resources (the rail's chart): what each agent used, then the devices.
+pub fn usage(f: &Frame<'_>, rows: &[UsageRow<'_>], since: &str) -> Markup {
+    let snap = f.snap;
+    let running = match &snap.apps {
+        Apps::Known { installed } => Some(installed.iter().filter(|a| a.phase == "ready").count()),
+        _ => None,
+    };
+    panel_shell(
+        f,
+        "Usage and resources",
+        rail_for(Nav::Usage, f, None),
+        panel(
+            "Usage and resources",
+            html! {
+                (section("Agents", usage_table(rows, since)))
                 (section("Devices", html! {
+                    p.quiet {
+                        @match running {
+                            Some(1) => "1 app running.",
+                            Some(n) => { (n) " apps running." }
+                            None => "Couldn't read the app list yet.",
+                        }
+                    }
                     @if snap.devices.is_empty() {
                         p.quiet { "Couldn't read device details yet." }
                     } @else {
                         div.devices-grid { @for d in &snap.devices { (device(d)) } }
                     }
                 }))
-            }
-        },
+            },
+        ),
     )
 }
 
@@ -886,13 +927,13 @@ pub fn dashboard(
     let content = if f.is_some() {
         html! {
             (page_header("Developer", Some(lead)))
-            (card("Developer mode", html! {
+            (setting_card(Some("Developer mode"), html! {
                 (crate::settings::pages::bypass_region(f.is_some_and(|f| f.bypass), false, None))
                 (crate::settings::pages::full_access_region(f.is_some_and(|f| f.full_access), None))
             }))
+            (setting_card(Some("Chat"), crate::settings::pages::chat_prefs_region(show_steps, None)))
             (card("New agent task", new_task_form(&offered)))
             (card("Agent tasks", tasks_region(tasks, None)))
-            (card("Chat", crate::settings::pages::chat_prefs_region(show_steps, None)))
         }
     } else {
         html! {

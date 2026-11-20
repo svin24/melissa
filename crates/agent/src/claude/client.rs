@@ -517,6 +517,16 @@ impl Actor {
         if let Some((used, size)) = usage(msg) {
             self.emit(SessionEvent::Usage { used, size });
         }
+        // The CLI reports the session's running cost (its own estimate, in US dollars).
+        if let Some(micros) = msg["total_cost_usd"]
+            .as_f64()
+            .and_then(crate::session::micros)
+        {
+            self.emit(SessionEvent::Cost {
+                unit: "USD".into(),
+                micros,
+            });
+        }
         let result = stop_reason(msg, self.interrupted);
         if let Ok(stop) = &result {
             self.emit(SessionEvent::TurnFinished(*stop));
