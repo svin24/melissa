@@ -516,6 +516,26 @@ impl ServerConfig {
     /// leave the lead agent with none: then the setting is ignored, with a warning). Returns every
     /// backend before leaving any out, for the Settings page.
     pub fn apply_providers(&mut self, file: &ProviderFile) -> Vec<BackendFacts> {
+        // ACP agents the owner added (Settings → Providers → Add provider): one session backend
+        // each, offered to the lead agent after the configured ones. Deny-by-default network:
+        // only the hosts the owner gave, through the egress proxy.
+        for (id, a) in &file.added {
+            let name = format!("{id}-acp");
+            if self.backends.iter().any(|b| b.name() == name) {
+                tracing::warn!(backend = %name, "providers.toml adds a backend that exists; ignored");
+                continue;
+            }
+            let args: Vec<&str> = a.args.iter().map(String::as_str).collect();
+            let spec = AcpSpec::new(&name, &a.command, &args).with_allow(a.allow.clone());
+            if let Err(e) = spec.validate() {
+                tracing::warn!(backend = %name, "ignoring added provider: {e}");
+                continue;
+            }
+            self.backends.push(BackendSpec::Acp(spec));
+            if !self.lead.backends.contains(&name) {
+                self.lead.backends.push(name);
+            }
+        }
         for b in &mut self.backends {
             let o = file.get(&b.provider());
             let before = b.clone();
@@ -1144,5 +1164,51 @@ mod tests {
         let facts = config.apply_providers(&ProviderFile::default());
         assert_eq!(config, ServerConfig::default());
         assert_eq!(facts.len(), config.backends.len());
+    }
+
+    #[test]
+    fn added_providers_become_lead_backends_with_their_hosts() {
+        let mut config = ServerConfig::default();
+        let facts = config.apply_providers(&providers(
+            r#"
+            [added.kimi]
+            label = "Kimi"
+            command = "/opt/agents/kimi"
+            args = ["acp"]
+            allow = ["api.example.com"]
+            [provider.kimi.env]
+            KIMI_API_KEY = "k"
+            "#,
+        ));
+        config.validate().unwrap();
+        let BackendSpec::Acp(a) = spec(&config, "kimi-acp") else {
+            panic!("not acp")
+        };
+        assert_eq!(a.command, "/opt/agents/kimi");
+        assert_eq!(a.args, ["acp"]);
+        let sb = a.effective_sandbox();
+        assert!(sb.enabled);
+        assert_eq!(
+            sb.allow.as_deref(),
+            Some(&["api.example.com".to_string()][..])
+        );
+        // Its API key from the provider settings reaches the sandbox.
+        assert_eq!(sb.vars, [("KIMI_API_KEY".to_string(), "k".to_string())]);
+        assert!(config.lead.backends.contains(&"kimi-acp".to_string()));
+        assert!(facts
+            .iter()
+            .any(|f| f.provider == "kimi" && f.session && f.enabled));
+    }
+
+    #[test]
+    fn a_removed_provider_is_gone_from_the_lead_agent_and_the_picker() {
+        let mut config = ServerConfig::default();
+        let facts = config.apply_providers(&providers("[provider.grok]\nremoved = true\n"));
+        config.validate().unwrap();
+        // No grok backend runs, so the lead agent (and the picker built from it) never
+        // offers it; the Settings page still knows it, to add it again.
+        assert!(!config.backends.iter().any(|b| b.provider() == "grok"));
+        assert!(!config.lead.backends.iter().any(|b| b.starts_with("grok")));
+        assert!(facts.iter().any(|f| f.provider == "grok" && !f.enabled));
     }
 }

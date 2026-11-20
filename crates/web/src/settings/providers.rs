@@ -41,7 +41,13 @@ const HIDDEN: &str = "echo";
 /// The providers in display order (known ones first), each with its backends.
 fn grouped(s: &Settings) -> Vec<(String, Vec<&BackendFacts>)> {
     let mut map: BTreeMap<String, Vec<&BackendFacts>> = BTreeMap::new();
-    for b in s.parts().backends.iter().filter(|b| b.provider != HIDDEN) {
+    // Removed providers are hidden (Add provider brings them back).
+    for b in s
+        .parts()
+        .backends
+        .iter()
+        .filter(|b| b.provider != HIDDEN && !s.parts().store.is_removed(&b.provider))
+    {
         map.entry(b.provider.clone()).or_default().push(b);
     }
     let rank = |id: &str| match id {
@@ -377,6 +383,12 @@ async fn info(
         .iter()
         .find_map(|f| f.command.clone())
         .unwrap_or_default();
+    // Melissa uninstalls only what she installed (the container's install units).
+    let remove_confirm = if way == InstallWay::Button {
+        format!("Uninstall {label} and delete its sign-in and API key?")
+    } else {
+        format!("Remove {label} from Melissa? Its program stays on this computer.")
+    };
     Info {
         card: ProviderCard {
             id: id.to_string(),
@@ -389,6 +401,7 @@ async fn info(
             step,
             key,
             key_open: key == Some(false) && way != InstallWay::Button,
+            remove_confirm,
             details: ProviderDetails {
                 used_by,
                 backends,
@@ -425,7 +438,7 @@ pub(super) fn manual_restart(s: &Settings) -> Option<String> {
         .then(|| "# stop melissa-server (Ctrl-C) and start it again".to_string())
 }
 
-async fn view(ui: &Ui, selected: Option<&str>, flash: Option<Flash>) -> ProvidersView {
+pub(super) async fn view(ui: &Ui, selected: Option<&str>, flash: Option<Flash>) -> ProvidersView {
     let s = &ui.settings;
     let all = infos(ui).await;
     let cards: Vec<ProviderCard> = all.into_iter().map(|i| i.card).collect();
@@ -477,14 +490,14 @@ pub(super) enum ChangeError {
 }
 
 impl ChangeError {
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         match self {
             Self::Unknown => "No such provider.".into(),
             Self::Refused(m) | Self::Invalid(m) => m.clone(),
         }
     }
 
-    fn status(&self) -> StatusCode {
+    pub(super) fn status(&self) -> StatusCode {
         match self {
             Self::Unknown => StatusCode::NOT_FOUND,
             Self::Refused(_) => StatusCode::CONFLICT,

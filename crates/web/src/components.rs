@@ -1736,7 +1736,9 @@ pub fn model_chip(p: &ModelPicker) -> Markup {
     html! {
         button.model-chip type="button" popovertarget=(MODEL_PICKER_ID) aria-haspopup="dialog"
             title="Choose the model" {
-            @if let Some(l) = &p.letter { (provider_mark(l, false)) }
+            @if let Some(l) = &p.letter {
+                (provider_logo(p.current.split(' ').next().unwrap_or_default(), l, false))
+            }
             span.visually-hidden { "Model: " }
             span.chip-text { (p.chip) }
             @if p.fast { span.chip-tag { "Fast" } }
@@ -1797,7 +1799,7 @@ pub fn model_picker(p: &ModelPicker) -> Markup {
                             button.rail-item type="button" data-filter=(b.name)
                                 aria-pressed=(if b.models.iter().any(|m| m.current) { "true" } else { "false" })
                                 title=(b.label) {
-                                (provider_mark(&b.letter, false))
+                                (provider_logo(&b.name, &b.letter, false))
                                 span.visually-hidden { (b.label) }
                             }
                         }
@@ -1824,7 +1826,7 @@ pub fn model_picker(p: &ModelPicker) -> Markup {
                                                 data-name=(m.label.to_lowercase()) {
                                                 button.pick type="submit" name="choice" value=(m.value)
                                                     aria-current=[m.current.then_some("true")] {
-                                                    (provider_mark(&b.letter, false))
+                                                    (provider_logo(&b.name, &b.letter, false))
                                                     span.name { (m.label) }
                                                     @if m.current { (check_icon()) }
                                                     kbd.key aria-hidden="true" {}
@@ -2189,7 +2191,31 @@ pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup
     }
 }
 
-/// A provider's mark: a hexagon with a letter (no vendor logos).
+mod provider_add;
+pub use provider_add::{
+    add_panel, link_button, provider_tiles, registry_list, search_box, stepper, ProviderTile,
+    RegistryAction, RegistryRow,
+};
+
+/// A provider's logo where Melissa ships one for `name` (a backend name, provider id or ACP
+/// registry id; see `crate::logos`), else its letter mark. The logo is drawn from the
+/// vendored file's checked paths, in one colour (black, white in dark mode).
+pub fn provider_logo(name: &str, letter: &str, muted: bool) -> Markup {
+    let Some(logo) = crate::logos::logo(name) else {
+        return provider_mark(letter, muted);
+    };
+    html! {
+        span class={ "pmark plogo" @if muted { " muted" } } aria-hidden="true" {
+            svg viewBox=(logo.view_box) focusable="false" {
+                @for p in &logo.paths {
+                    path d=(p.d) fill-rule=[p.evenodd.then_some("evenodd")] {}
+                }
+            }
+        }
+    }
+}
+
+/// A provider's mark: a hexagon with a letter (no vendor logo; see [`provider_logo`]).
 pub fn provider_mark(letter: &str, muted: bool) -> Markup {
     html! {
         span class={ "pmark" @if muted { " muted" } } aria-hidden="true" {

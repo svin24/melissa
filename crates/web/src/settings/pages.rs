@@ -7,11 +7,11 @@ use super::apply::Pending;
 use crate::{
     components::{
         action_button, actions, badge, card, code, command_block, confirm_card, detail_head,
-        disclosure, external_button, facts, group, lines_field, link, live_region, log_view,
-        notice, one_field_form, page_header, pick_list, plain_action, progress_bar, provider_mark,
-        region, select_field_at, settings_form, settings_frame_at, settings_head, split_card,
-        table, text_field, toggle, var_list, Choice, ConfirmCard, LogLine, Nav, PickRow,
-        SettingsSection, Toggle, Tone, VarRow,
+        disclosure, external_button, facts, group, lines_field, link, link_button, live_region,
+        log_view, notice, one_field_form, page_header, pick_list, plain_action, progress_bar,
+        provider_logo, region, select_field_at, settings_form, settings_frame_at, settings_head,
+        split_card, table, text_field, toggle, var_list, Choice, ConfirmCard, LogLine, Nav,
+        PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
@@ -203,6 +203,8 @@ pub struct ProviderCard {
     pub key: Option<bool>,
     /// Open the key field at once (there is no sign-in from the page here).
     pub key_open: bool,
+    /// The in-page question before Remove provider.
+    pub remove_confirm: String,
     pub details: ProviderDetails,
 }
 
@@ -268,7 +270,7 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
         .enumerate()
         .map(|(i, c)| PickRow {
             href: &hrefs[i],
-            mark: provider_mark(&letter(&c.label), !c.enabled),
+            mark: provider_logo(&c.id, &letter(&c.label), !c.enabled),
             name: &c.label,
             version: &versions[i],
             status: &c.status,
@@ -303,6 +305,7 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
             ))
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
             @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
+            (actions(link_button("/settings/providers/add", "Add provider", false)))
             (split_card("provider-card", "Providers", pick_list("Providers", &rows, None), detail))
         },
     )
@@ -329,11 +332,14 @@ fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
         .map(|v| format!("Version {v}"))
         .unwrap_or_default();
     html! {
-        (detail_head(provider_mark(&letter(&c.label), !c.enabled), &c.label, &sub,
+        (detail_head(provider_logo(&c.id, &letter(&c.label), !c.enabled), &c.label, &sub,
             html! { (badge(&c.status, c.tone)) }))
         (step_view(c, &url))
         @if let Some(set) = c.key { (key_view(set, c.key_open, &url)) }
         (details_view(c, v, &url))
+        div.remove-provider {
+            (action_button(&format!("{url}/remove"), PROVIDERS_ID, "Remove provider", &c.remove_confirm))
+        }
     }
 }
 

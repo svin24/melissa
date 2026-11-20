@@ -11,6 +11,7 @@ pub mod components;
 mod details;
 mod feed;
 mod files;
+mod logos;
 mod markdown;
 mod pages;
 mod settings;
@@ -34,7 +35,7 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 
 pub use axum::Router;
-pub use settings::{CheckFn, Settings, SettingsParts};
+pub use settings::{Catalog, CheckFn, ProbeFn, ProbeRequest, Settings, SettingsParts};
 
 use components::Tone;
 
@@ -730,6 +731,7 @@ mod tests {
         struct SettingsFixture {
             dir: std::path::PathBuf,
             voice: melissa_voice::Voice,
+            catalog: Catalog,
         }
 
         impl SettingsFixture {
@@ -748,6 +750,7 @@ mod tests {
                 Self {
                     dir,
                     voice: melissa_voice::Voice::unavailable(),
+                    catalog: Catalog::unavailable(),
                 }
             }
 
@@ -855,9 +858,10 @@ mod tests {
                         runtime: Some("container".into()),
                         source: "image",
                     },
-                    home: Some("/var/lib/melissa/home".into()),
+                    home: Some(self.dir.join("home")),
                     installer: self.installer(way),
                     voice: self.voice.clone(),
+                    catalog: self.catalog.clone(),
                 })
             }
 
@@ -870,6 +874,11 @@ mod tests {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.dir);
             }
+        }
+
+        // Provider logos, Remove provider, Add provider (2026-11-20).
+        mod provider_flow {
+            include!("settings/provider_flow_tests.rs");
         }
 
         fn form(uri: &str, body: &str, htmx: bool) -> axum::http::Request<Body> {

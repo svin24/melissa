@@ -12,7 +12,9 @@ and license notice must be kept with it and listed below under "Included third-p
 - **T3 Code** — <https://github.com/pingdotgg/t3code>, MIT License, Copyright (c) 2026 T3 Tools Inc.
   Inspired how Melissa talks to many agent backends: one session interface over several protocols, the Agent Client
   Protocol (ACP) flow, mapping agents' permission requests onto an approval policy, and testing with recorded,
-  replayed agent sessions.
+  replayed agent sessions. Since 2026-11-20 also the Settings → Providers "Add provider" flow and its use of the
+  public ACP agent registry (studied as a reference; Melissa's flow, registry parsing and components are its own
+  code, and no T3 Code icons or source files are included).
 - **Universal Blue** (ublue-os) — <https://github.com/ublue-os>, Apache License 2.0, by the Universal Blue
   contributors. Inspired how Melissa built and maintained its bootc images: Containerfile structure and layer order,
   image linting, signing and update practices, and the choice to stay on Fedora's signed kernel for Secure Boot.
@@ -39,6 +41,8 @@ Redistributed **in the Melissa binaries**:
 | htmx SSE extension (htmx-ext-sse) 2.2.4 | BSD Zero Clause (0BSD), Copyright (c) 2023 Alexander Petros | `crates/web/assets/htmx-ext-sse.min.js` from the npm package (integrity checked); license in `htmx-ext-sse.LICENSE.txt` |
 | Atkinson Hyperlegible Next (font) | SIL Open Font License 1.1, Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (Braille Institute) | `crates/web/assets/fonts/`, from google/fonts, Latin subset as WOFF2; license in `AtkinsonHyperlegibleNext-OFL.txt` |
 | Bricolage Grotesque (font) | SIL Open Font License 1.1, Copyright 2022 The Bricolage Grotesque Project Authors | `crates/web/assets/fonts/`, from google/fonts, instanced (wdth 100, opsz 32), Latin subset as WOFF2; license in `BricolageGrotesque-OFL.txt` |
+| Simple Icons 16.38.0 (OpenCode, Cursor and Cline marks) | CC0 1.0 Universal | `crates/web/assets/logos/{opencode,cursor,cline}.svg`, from the npm package `simple-icons` (integrity `sha512-B0Wws90e…FhiWSQ==`), reduced to `viewBox` + `path` |
+| LobeHub Icons 1.104.0 (Grok and Goose marks) | MIT, Copyright (c) 2023 LobeHub | `crates/web/assets/logos/{grok,goose}.svg`, from the npm package `@lobehub/icons-static-svg`, reduced to `viewBox` + `path`; licence in `crates/web/assets/logos/LobeHub-icons-LICENSE.txt` |
 | Rust crates (tokio, axum, maud, serde, kube, k8s-openapi, agent-client-protocol, ...) | Various, see below | Full report with license texts: `THIRD-PARTY-LICENSES.md` (generated, see below) |
 
 Included **in the documentation** (short quoted passages, not shipped in binaries or images):
@@ -63,6 +67,13 @@ Downloaded **at runtime, only when the owner turns voice input on** (Settings �
 | Component | License | Source |
 |---|---|---|
 | Whisper `base` speech model, ggml format (`ggml-base.bin`, 147,951,465 bytes, SHA-256 pinned) | MIT (OpenAI's Whisper weights; the ggml conversion by the whisper.cpp project) | <https://huggingface.co/ggerganov/whisper.cpp>, revision `5359861c` |
+
+**Trademarks.** The provider logos above are trademarks of their owners (xAI, Anomaly/OpenCode, Anysphere/Cursor,
+Cline Bot Inc., the Goose project). Melissa shows them only to identify which agent a model belongs to (nominative
+use); no affiliation or endorsement is implied. The icon licences cover the drawings, not the marks. Brands whose
+guidelines ask for permission or the unaltered official asset (Anthropic/Claude, OpenAI/Codex, Google Gemini,
+GitHub Copilot, Moonshot Kimi, Mistral) get Melissa's letter mark instead; see docs/DECISIONS.md (2026-11-20).
+Agent names from the ACP registry are shown as the registry lists them; its remote icons are never loaded.
 
 ## Where the notices live in the images
 

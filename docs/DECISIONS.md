@@ -986,3 +986,63 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   asked for discovery), Full access as an agent-registry field (would split standing permissions across two
   stores), turning No permission prompts into the per-agent switch (would change what an existing setting
   means).
+- **2026-11-20 — Provider logos only where the brand allows it; letter marks for the rest** (owner request:
+  real logos instead of letter marks). Melissa ships small one-colour SVG marks in `crates/web/assets/logos/`
+  from icon sets made for this: **Simple Icons** 16.38.0 (CC0 1.0; npm `simple-icons`, sha512 integrity
+  `B0Wws90e…FhiWSQ==`) for OpenCode, Cursor and Cline, and **LobeHub Icons** 1.104.0 (MIT, © 2023 LobeHub; npm
+  `@lobehub/icons-static-svg`) for Grok and Goose. T3 Code, our reference, inlines its marks as path data in
+  its own components (some credited to Simple Icons, CC0); Melissa does the same through its own allowlist:
+  `crates/web/src/logos.rs` parses each file (one `<svg>` with `xmlns` and `viewBox`, a `<title>`, `<path d
+  fill-rule>` only; no script, `foreignObject`, `href`, `style`, events, entities or comments) and the component
+  draws the paths itself, escaped; a file that fails is dropped (letter mark) and a test fails. No remote icons
+  (the ACP registry's `icon` URLs are never loaded). Drawn in pure black, white in dark mode (the brands'
+  one-colour variants), never recoloured to brand-unlike colours. The icon licences cover the drawings, not the
+  trademarks: the logos are trademarks of their owners, shown only to identify which agent a model belongs to
+  (nominative use), with no endorsement implied. Brand guidelines read on 2026-11-20 (public pages, not legal
+  advice): **Anthropic/Claude** (anthropic.com/legal/trademark-guidelines; code.claude.com legal page) — logo use
+  only as permitted in approved materials, no recolouring; third parties may say in plain text that they run
+  Claude Code → **letter mark**. **OpenAI/Codex** (openai.com/brand) — logo only exactly as provided, no added
+  colours, "don't use the logo without permission" → **letter mark**. **Google Gemini/Gemini CLI** (Google brand
+  resource centre; geminicli.com/brand-kit) — prefer plain text, don't alter icons (gradient) → **letter
+  mark**. **GitHub Copilot** (github.com/logos) — prior written permission → **letter mark**. **Moonshot Kimi**
+  (kimi.com logo usage terms) — non-commercial use only, no recolouring → **letter mark**. **Mistral**
+  (mistral.ai/brand) — welcome to use, prefers the gradient, no modifications → **letter mark** (we draw one
+  colour). **xAI/Grok** (x.ai/legal/brand-guidelines) — marks may be used to accurately refer to xAI's services,
+  unaltered, no endorsement → **logo** (its one-colour mark, black/white). **OpenCode** (opencode.ai/brand) —
+  one-colour variant offered; don't recolour, no endorsement → **logo**. **Cursor** (cursor.com/brand), **Cline**
+  (cline.bot/brand), **Goose** (Linux Foundation project trademark policy: no implied endorsement) — asset kits
+  without written restrictions → **logo**, one colour, identification only. Amp, Qwen, Augment, Factory: no logo
+  shipped (Simple Icons' `amp` is a different project; Qwen's mark is purple, and one colour would alter it).
+  Unknown providers keep the letter mark. Alternatives: logos for everyone (conflicts with the guidelines above),
+  the brands' own asset files (heavier, multi-colour, and several forbid any change in size context), T3 Code's
+  inline drawings (owner: reference for backends only; sources not stated per icon).
+- **2026-11-20 — Add provider: built-ins, the public ACP registry (on request), or a local ACP command; Remove
+  provider uninstalls what Melissa installed** (owner request, twice for Remove). Modelled on T3 Code's add-provider
+  flow and ACP registry support (MIT; ideas re-implemented in Melissa's own components and words, no code
+  copied). **Registry:** the Agent Client Protocol project's
+  `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` (format 1.0.0: `agents[]` with `id`,
+  `name`, `version`, `description`, `repository`/`website`, `license`, `icon`, `distribution.{binary.<os-arch>
+  {archive, cmd, args, sha256}, npx, uvx}`), the list other ACP clients (T3 Code among them) use. Fetched only on
+  the owner's explicit action (Load the list / Refresh / the API's refresh), never in the background or when a
+  page opens; cached in Melissa's state directory; searched locally. Melissa installs only `binary` entries for
+  this machine that carry a SHA-256, from https, ≤ 512 MiB, unpacked with the system's `tar`/`unzip` (which
+  refuse `..` members) into `<agents' home>/.local/share/melissa-agents/<id>/<version>`; the program must resolve
+  inside that folder. `npx`/`uvx` entries and binaries without a checksum show "Enter manually". Built-in names
+  (`claude`, `grok`, `opencode`, `echo`) can't be taken. **Manual:** a name and a command line (no shell: words,
+  quotes only); the program must exist, its file name is the provider id (lowercase), and it must answer ACP
+  `initialize` with protocol 1 and MCP over HTTP (Melissa's tools need it) within 20 s
+  (`melissa_agent::acp::probe`, the program run once as Melissa's user with a clean environment, like an
+  installer). Added agents: `providers.toml` `[added.<id>]` (label, command, args, allowed hosts, registry id,
+  version, install folder) → session backend `<id>-acp` (generic ACP, Melissa's sandbox with an empty home,
+  network through the egress proxy with only the owner's hosts), appended to the lead agent's backends, applied
+  at the next idle restart. Identity: an API key under a variable name the owner may change (must look secret:
+  KEY/TOKEN/...), stored like other provider secrets. **Remove:** refused, naming them, while Melissa or helpers
+  use it ("Ada and Melissa use Grok. Switch them to another provider first."), while its install or sign-in runs,
+  or when no other provider would be left; else, where Melissa installed it (container image), a fixed list of
+  install and sign-in paths per built-in (from `melissa-setup` and the sandbox presets) or the registry install
+  folder is deleted inside the agents' home (no symlink following, never outside home); elsewhere (Nix, a run
+  from source) files stay. Its settings and keys go (built-ins: `removed = true`, hidden; added: deleted), audited
+  `settings.provider.remove`, applied at the next idle restart, so it leaves the model picker. Alternatives:
+  fetching the registry when the panel opens (owner allowed it; a button is more clearly explicit and costs one
+  click), installing `npx` packages (needs Node in the image), signing registry downloads (the registry publishes
+  only checksums), uninstalling through a root unit (the files belong to `melissa`, which the server runs as).
