@@ -119,6 +119,8 @@ in
         description = ''
           Addresses people reach this machine at, used in app links `http://<address>:<port>`
           (`[apps] addresses`). Null: found automatically (default route and Tailscale addresses).
+          k3s serves NodePorts on every host address, so there is no bind setting to match; the
+          app tools still try each address at run time and leave out ones that don't answer.
         '';
       };
 

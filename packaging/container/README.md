@@ -30,8 +30,9 @@ sudo IMAGE_ARCHIVE=melissa.tar packaging/container/install.sh
 sudo IMAGE=registry.example.com/melissa:latest packaging/container/install.sh   # a registry image
 ```
 Settings (environment of install.sh): `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `APP_PORT_BASE`
-(30000), `BIND` (127.0.0.1; `0.0.0.0` makes apps reachable from the LAN), `APP_ADDRESSES`,
-`AUTO_UPDATE` (`registry` | `local` | `off`), `SET_SYSCTLS` (yes). `install.sh --preflight` only checks.
+(30000), `BIND` (127.0.0.1; `0.0.0.0` makes apps reachable from the LAN), `APP_ADDRESSES`
+(see "Network"), `ALLOW_ADDRESS_MISMATCH` (no), `AUTO_UPDATE` (`registry` | `local` | `off`),
+`SET_SYSCTLS` (yes). `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
 
 Then set up an agent in the web UI: Settings → Providers → Install (OpenCode works with free models
@@ -72,6 +73,16 @@ can't reach the UI**; the smoke test checks that from inside a pod's network nam
 Apps are reached by their NodePort: container 30000–30079 → host `BIND:APP_PORT_BASE…+79`. install.sh
 writes `[apps] addresses` (and `port_offset` for another base) into the server's config so app links
 name the right address. Traefik's :80/:443 inside are not published.
+
+`APP_ADDRESSES` defaults from `BIND`: 127.0.0.1 for loopback, `BIND` itself for one address, the
+default route's address for `0.0.0.0`. Every address must be one where `BIND` publishes the ports
+(`0.0.0.0` covers all, loopback only loopback, one address only itself), or app links get "connection
+refused": the preflight refuses such a mix (e.g. `BIND=127.0.0.1` with a Tailscale address). On a
+reinstall, an existing server.toml whose `[apps] addresses` differ from an explicit `APP_ADDRESSES`, or
+name addresses `BIND` doesn't cover, gets just that key rewritten (install.sh prints old and new).
+`ALLOW_ADDRESS_MISMATCH=yes` skips both, for addresses something else forwards. Apps on Tailscale:
+`BIND=<the host's Tailscale address>` (or `0.0.0.0`). At run time the app tools also try each address
+(TCP) and leave dead ones out of the links they give agents (`reachability` in `app_status`).
 
 ### From another machine
 The UI has **no login yet**: anyone who reaches it controls Melissa. Keep `UI_BIND=127.0.0.1` and use:

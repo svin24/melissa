@@ -57,7 +57,9 @@ use melissa_agent::{
     AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EchoSessionBackend,
     EgressProxy, McpLink, TaskBoard,
 };
-use melissa_cluster::{app_tools, AppSettings, ClusterHealth, KubeApps, LazyCluster, Workspaces};
+use melissa_cluster::{
+    app_tools, AppSettings, ClusterHealth, KubeApps, LazyCluster, ReachCheck, Workspaces,
+};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
@@ -319,6 +321,9 @@ async fn main() -> anyhow::Result<()> {
         port_offset: config.apps.port_offset,
         device: device.id.clone(),
         agents: Some(names.clone()),
+        // Links name only addresses that really reach the app (incident: a container install
+        // published app ports on loopback while links named the Tailscale address).
+        reach: Some(ReachCheck::tcp()),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
     // Who owns which workspace, for the scope check before every workspace-changing tool call; also
@@ -1131,6 +1136,7 @@ mod tests {
             port_offset: 0,
             device: "d-0a1b2c3d".into(),
             agents: None,
+            reach: None,
         };
         let workspaces = Arc::new(Workspaces::new::<KubeApps>(settings, None));
         let wiring = Wiring {

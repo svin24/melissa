@@ -57,6 +57,7 @@ use crate::{
     apps::{AppDeployer, AppExec, AppObject, AppRead, ExecRequest, LogRequest, NamedKind},
     device,
     health::reason_code,
+    reach::{self, CheckedPort, ReachCheck},
     render::{
         assign_patch, files_name, parse_ports_annotation, port_service_name, render, secret_object,
         AppObjects, Ownership, Placement, APP_PORTS, CONFIG_ANNOTATION, ORIGIN_SPEC,
@@ -93,6 +94,8 @@ pub struct AppSettings {
     pub device: String,
     /// Agent names, for the `agent` argument of `deploy_app` and for messages.
     pub agents: Option<Arc<dyn AgentNames>>,
+    /// Check that the addresses in links really reach the app (`reach.rs`); `None`: no check.
+    pub reach: Option<ReachCheck>,
 }
 
 impl AppSettings {
@@ -229,11 +232,15 @@ fn device_ports(ns: &Namespace, spec: Option<&AppSpec>) -> Vec<DevicePort> {
     out
 }
 
-/// Link fields for an app with `ports` on the device (empty: none, e.g. uninstalled). `port`
-/// and `url` are the web port's (where people reach it: the NodePort plus `[apps]
-/// port_offset`); `ports` lists every port with `address:port` and its protocol.
-fn link_fields(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value {
-    let addresses = settings.addresses();
+/// Link fields for an app with `ports` on the device (empty: none, e.g. uninstalled) at
+/// `addresses`. `port` and `url` are the web port's (where people reach it: the NodePort plus
+/// `[apps] port_offset`); `ports` lists every port with `address:port` and its protocol.
+fn link_fields(
+    settings: &AppSettings,
+    addresses: &[String],
+    app: &str,
+    ports: &[DevicePort],
+) -> Value {
     let first = addresses.first();
     let web = ports.iter().find(|p| p.web);
     let published = |p: &DevicePort| device::published_port(p.node_port, settings.port_offset);
@@ -264,6 +271,35 @@ fn link_fields(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value
         "dns_url": web.map(|_| settings.dns_url(app)),
         "ports": list,
     })
+}
+
+/// [`link_fields`] after the reachability check (when configured): addresses where the app's
+/// ports are not published are left out of the links and reported under `reachability`, so
+/// agents don't hand out dead addresses.
+async fn checked_links(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value {
+    let mut addresses = settings.addresses();
+    let mut report = None;
+    if let Some(check) = &settings.reach {
+        let checked: Vec<CheckedPort> = ports
+            .iter()
+            .filter_map(|p| {
+                Some(CheckedPort {
+                    protocol: p.protocol,
+                    node_port: p.node_port,
+                    published: device::published_port(p.node_port, settings.port_offset)?,
+                })
+            })
+            .collect();
+        if let Some(r) = reach::check(check, &addresses, &checked).await {
+            addresses.retain(|a| !r.dead.contains(a));
+            report = Some(r.report);
+        }
+    }
+    let mut fields = link_fields(settings, &addresses, app, ports);
+    if let Some(r) = report {
+        fields["reachability"] = r;
+    }
+    fields
 }
 
 /// Copy `fields`' entries into `target` (both JSON objects).
@@ -1057,7 +1093,7 @@ impl Deployer {
                 })
             })
             .collect();
-        merge(&mut out, link_fields(&self.settings, &app, &ports));
+        merge(&mut out, checked_links(&self.settings, &app, &ports).await);
         Ok(out)
     }
 
@@ -1352,7 +1388,10 @@ impl AppStatus {
             Some(_) => device_ports(&ns, spec.as_ref()),
             None => Vec::new(),
         };
-        merge(&mut report, link_fields(&self.settings, &app, &ports));
+        merge(
+            &mut report,
+            checked_links(&self.settings, &app, &ports).await,
+        );
         report["description"] = json!(spec.as_ref().map(|s| s.description.clone()));
         report["spec"] = json!(spec);
         if let (Some(id), Some(names)) = (report["agent"].as_str(), &self.settings.agents) {
@@ -1370,7 +1409,9 @@ impl Tool for AppStatus {
                 stopping, stopped, uninstalled_data_kept, deleting), ready replicas, `url` \
                 (web UI: http://<this device>:<its port>; `urls`: every address of the \
                 device; `dns_url` only works with the owner's own DNS), `ports` (each port on \
-                the device: `address` host:port and `protocol`), its current `spec` (edit it \
+                the device: `address` host:port and `protocol`), `reachability` (each address \
+                tried from the device: an `unreachable` one is left out of the links, pass its \
+                `warning` to the user; UDP isn't checked), its current `spec` (edit it \
                 for update_app), the agent that looks after the workspace (`agent`: id, \
                 `agent_name`; null = no agent) and who installed it, volumes, and pods with \
                 sanitized problem reasons (e.g. ImagePullBackOff, CrashLoopBackOff, OOMKilled).",
@@ -2324,7 +2365,7 @@ impl StartApp {
                 "next": "it starts in the background with its data; poll app_status",
             })
         };
-        merge(&mut out, link_fields(&self.settings, &app, &ports));
+        merge(&mut out, checked_links(&self.settings, &app, &ports).await);
         Ok(out)
     }
 }

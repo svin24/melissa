@@ -13,6 +13,7 @@ pub mod apps;
 pub mod cluster;
 mod device;
 mod health;
+mod reach;
 pub mod render;
 
 pub use app_tools::{app_tools, generate_secret, AppSettings, ForceTiming, Workspaces};
@@ -22,3 +23,4 @@ pub use cluster::{
     RUNTIME_DIR, RUNTIME_FILE,
 };
 pub use health::ClusterHealth;
+pub use reach::{PortProbe, Probe, ReachCheck, TcpProbe};

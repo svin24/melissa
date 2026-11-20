@@ -787,3 +787,17 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   run ends; the log records lengths only. Alternatives: Web Speech API (cloud, rejected by the owner);
   whisper-rs (above); whisper.cpp's HTTP server as a resident service (keeps the model in memory all the time
   for little gain); candle (pure Rust, but much slower on CPU and a heavy build).
+- **2026-11-20 — App addresses must match where app ports are published; checked at install and at run time.**
+  Incident: a container install with `BIND=127.0.0.1` and the Tailscale address in `[apps] addresses` (written once,
+  never rewritten): every app link was "connection refused", and an agent restarted a healthy Minecraft server over
+  its normal "Server empty for 60 seconds, pausing" log line. Now install.sh's preflight **refuses** an
+  `APP_ADDRESSES` entry `BIND` does not cover (override: `ALLOW_ADDRESS_MISMATCH=yes`, for addresses something else
+  forwards), because a warning scrolls past and the dead links only show up when someone's client fails; on a
+  reinstall it rewrites just the `[apps] addresses` key when it disagrees with an explicit `APP_ADDRESSES` or names
+  uncovered addresses. The app tools (`deploy_app`, `update_app`, `start_app`, `app_status`) TCP-connect to each
+  advertised address plus the NodePort on the device's own address (800 ms, cached 15 s); an address that fails while
+  the control answers is dropped from links and reported under `reachability` for the owner. UDP and loopback are not
+  checked (said so). Agent prompts: verify reachability before blaming an app, never restart for a connection problem
+  without evidence, normal "pausing when empty" logs are not failures. Alternatives: warn only in install.sh (missed
+  the incident's silent case), rewrite server.toml at every container start (would override hand edits), probe from
+  outside the device (not possible from Melissa itself).

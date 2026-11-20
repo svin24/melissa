@@ -13,7 +13,12 @@
 #   UI_BIND=127.0.0.1               keep it on loopback: the UI has no login yet (README, "Remote")
 #   APP_PORT_BASE=30000             host port of app NodePort 30000 (80 ports: base..base+79)
 #   BIND=127.0.0.1                  host address for the app ports (0.0.0.0: reachable from the LAN)
-#   APP_ADDRESSES=                  [apps] addresses for app links (comma separated; default from BIND)
+#   APP_ADDRESSES=                  [apps] addresses for app links (comma separated). Default from
+#                                   BIND: 127.0.0.1 for loopback, BIND itself for one address, the
+#                                   default route's address for 0.0.0.0. Each one must be covered
+#                                   by BIND (else links are dead: install refuses, and an existing
+#                                   server.toml's addresses are rewritten to match).
+#   ALLOW_ADDRESS_MISMATCH=no       yes: skip that check (something else forwards those addresses)
 #   AUTO_UPDATE=                    registry (default for registry images), local (default for
 #                                   localhost/ images) or off. Not off: enables podman-auto-update.timer.
 #   SET_SYSCTLS=yes                 write the kubelet's host sysctls to /etc/sysctl.d (see below)
@@ -26,6 +31,7 @@ UI_BIND=${UI_BIND:-127.0.0.1}
 APP_PORT_BASE=${APP_PORT_BASE:-30000}
 BIND=${BIND:-127.0.0.1}
 SET_SYSCTLS=${SET_SYSCTLS:-yes}
+ALLOW_ADDRESS_MISMATCH=${ALLOW_ADDRESS_MISMATCH:-no}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
 
@@ -52,6 +58,85 @@ overlaps() {
     ip2n() { local IFS=.; set -- $1; echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 )); }
     m=$(( al < bl ? al : bl ))
     [ $(( ($(ip2n "$a") ^ $(ip2n "$b")) >> (32 - m) )) = 0 ]
+}
+
+is_loopback() { case "$1" in 127.*|::1|'[::1]'|localhost) return 0 ;; *) return 1 ;; esac; }
+
+# bind_covers ADDRESS: are app ports published on BIND reachable at ADDRESS (an IP or a name)?
+# 0.0.0.0 covers everything; loopback covers loopback only; one address covers itself.
+bind_covers() {
+    local a=$1 ip
+    case "$BIND" in 0.0.0.0|::|'') return 0 ;; esac
+    if is_loopback "$BIND"; then is_loopback "$a"; return; fi
+    [ "$a" = "$BIND" ] && return 0
+    # A host name: covered when it resolves to BIND.
+    case "$a" in *[!0-9.:]*)
+        for ip in $(getent ahosts "$a" 2>/dev/null | cut -d' ' -f1 | sort -u); do
+            [ "$ip" = "$BIND" ] && return 0
+        done ;;
+    esac
+    return 1
+}
+
+# uncovered LIST: the entries of the comma-separated LIST that BIND does not cover.
+uncovered() {
+    local a out=''
+    for a in ${1//,/ }; do bind_covers "$a" || out+="${out:+,}$a"; done
+    echo "$out"
+}
+
+# check_addresses LIST: app links name LIST; the app ports must be reachable there.
+check_addresses() {
+    local bad
+    bad=$(uncovered "$1")
+    if [ -z "$bad" ]; then echo "ok: app addresses ${1:-(found at run time)} are covered by BIND=$BIND"; return 0; fi
+    if [ "$ALLOW_ADDRESS_MISMATCH" = yes ]; then
+        echo "WARNING: app addresses $bad are not covered by BIND=$BIND (ALLOW_ADDRESS_MISMATCH=yes: going on)"
+        return 0
+    fi
+    echo "FAIL: app links would name $bad, but app ports are published on BIND=$BIND only: those links"
+    echo "      would get 'connection refused'. Use a BIND that covers them (that address, or 0.0.0.0),"
+    echo "      or other APP_ADDRESSES; ALLOW_ADDRESS_MISMATCH=yes if something else forwards them."
+    return 1
+}
+
+# toml_addresses: [apps] addresses of the server.toml on stdin, comma separated (empty: none).
+toml_addresses() {
+    awk '
+        /^[[:space:]]*\[/ { sect = $0; gsub(/[[:space:]]/, "", sect) }
+        sect == "[apps]" && /^[[:space:]]*addresses[[:space:]]*=/ { grab = 1 }
+        grab { buf = buf $0; if ($0 ~ /\]/) grab = 0 }
+        END {
+            n = 0
+            while (match(buf, /"[^"]*"/)) {
+                out = out (n++ ? "," : "") substr(buf, RSTART + 1, RLENGTH - 2)
+                buf = substr(buf, RSTART + RLENGTH)
+            }
+            print out
+        }'
+}
+
+# toml_set_addresses LIST: server.toml on stdin with [apps] addresses set to LIST (comma
+# separated), everything else kept. Adds the key (or the [apps] table) when missing.
+toml_set_addresses() {
+    local a toml=''
+    for a in ${1//,/ }; do toml+="${toml:+, }\"$a\""; done
+    awk -v line="addresses = [$toml]" '
+        function put() { if (!done) { print line; done = 1 } }
+        /^[[:space:]]*\[/ {
+            if (in_apps) put()
+            sect = $0; gsub(/[[:space:]]/, "", sect); in_apps = (sect == "[apps]"); seen = seen || in_apps
+            print; next
+        }
+        in_apps && /^[[:space:]]*addresses[[:space:]]*=/ {
+            put(); skip = ($0 !~ /\]/); next
+        }
+        skip { if ($0 ~ /\]/) skip = 0; next }
+        { print }
+        END {
+            if (in_apps) put()
+            else if (!seen) { print ""; print "[apps]"; print line }
+        }'
 }
 
 version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
@@ -90,6 +175,7 @@ preflight() {
             if overlaps "$sub" "$c"; then echo "FAIL: podman network 'podman' ($sub) overlaps k3s's $c"; ok=1; fi
         done
     done
+    check_addresses "$(app_addresses)" || ok=1
     if systemctl is-active -q k3s.service 2>/dev/null; then
         echo "note: a k3s runs on this host too; Melissa's k3s has its own network namespace (works, tested)."
     fi
@@ -184,13 +270,14 @@ configure() {
     local list toml='' a offset=$((APP_PORT_BASE - 30000)) body=''
     # Before the rename to generic terms (2026-11-19) the file was queen.toml: keep it.
     podman exec melissa sh -c 'cd /etc/melissa && if [ -e queen.toml ] && [ ! -e server.toml ]; then mv queen.toml server.toml; fi' || true
+    list=$(app_addresses)
     if podman exec melissa test -e /etc/melissa/server.toml; then
         if [ "$offset" != 0 ] && ! podman exec melissa grep -qsx "port_offset = $offset" /etc/melissa/server.toml; then
             say "note: /etc/melissa/server.toml has no 'port_offset = $offset' under [apps]; app links name the wrong port"
         fi
+        update_addresses "$list"
         return 0
     fi
-    list=$(app_addresses)
     for a in ${list//,/ }; do toml+="${toml:+, }\"$a\""; done
     [ -z "$toml" ] || body+="addresses = [$toml]"$'\n'
     [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
@@ -201,6 +288,34 @@ configure() {
     say "server config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
 }
 
+# The server.toml from an earlier install keeps its [apps] addresses; rewrite just that key when
+# APP_ADDRESSES asks for others, or when they name addresses BIND does not cover (links that
+# would be refused). The rest of the file stays as it is.
+update_addresses() {
+    local want=$1 have toml why=''
+    toml=$(podman exec melissa cat /etc/melissa/server.toml) || return 0
+    have=$(printf '%s\n' "$toml" | toml_addresses)
+    [ "$have" = "$want" ] && return 0
+    if [ -n "${APP_ADDRESSES:-}" ]; then
+        why="APP_ADDRESSES=$APP_ADDRESSES"
+    elif [ -n "$have" ] && [ -n "$(uncovered "$have")" ]; then
+        if [ "$ALLOW_ADDRESS_MISMATCH" = yes ]; then
+            say "WARNING: server.toml [apps] addresses $(uncovered "$have") are not covered by BIND=$BIND (ALLOW_ADDRESS_MISMATCH=yes: kept)"
+            return 0
+        fi
+        why="the old ones ($(uncovered "$have")) are not covered by BIND=$BIND: their links were refused"
+    fi
+    [ -n "$why" ] || return 0
+    [ -n "$want" ] || { say "WARNING: no app address to write; server.toml [apps] addresses kept ($have)"; return 0; }
+    printf '%s\n' "$toml" | toml_set_addresses "$want" \
+        | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/server.toml.new && mv /etc/melissa/server.toml.new /etc/melissa/server.toml'
+    podman exec melissa systemctl try-restart melissa-server
+    say "NOTICE: server.toml [apps] addresses: ${have:-none} -> $want ($why)"
+    case "$BIND" in 127.*|::1|localhost)
+        say "  Apps are on loopback only. To reach them from other machines: BIND=<that address> or 0.0.0.0" ;;
+    esac
+}
+
 wait_for() { # seconds, description, command...
     local end=$(( $(date +%s) + $1 )) what=$2; shift 2
     until "$@" >/dev/null 2>&1; do
@@ -209,10 +324,13 @@ wait_for() { # seconds, description, command...
     done
 }
 
+# Sourced (packaging/container/test-install.sh): only the functions.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,22p' "$0"; exit 2 ;;
+*) sed -n '2,24p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"

@@ -49,7 +49,9 @@ pub(crate) fn valid_host_name(name: &str) -> bool {
         })
 }
 
-fn default_route_address() -> Option<Ipv4Addr> {
+/// The source address of the default route (inside the container: its own address, which is
+/// also k3s's node address).
+pub(crate) fn default_route_address() -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     // `connect` on UDP sends nothing; it only fixes the route and so the source address.
     socket.connect(ROUTE_PROBE).ok()?;
