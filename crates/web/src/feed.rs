@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use melissa_agent::lead::events::{EventRecord, LeadEvent, TurnId};
+use melissa_agent::tools::{Principal, RuleOffer};
 use serde_json::Value;
 
 use crate::components::{ActivityState, ApprovalState, NoteTone};
@@ -63,6 +64,9 @@ pub struct Approval {
     pub yes: &'static str,
     pub no: &'static str,
     pub state: ApprovalState,
+    /// What "Always allow" would save, as a question ("Always let Ada update Minecraft?").
+    /// None: no such button (the user's own requests, archived chats).
+    pub always: Option<String>,
 }
 
 /// A feed item with its stable key (used as the DOM id suffix).
@@ -222,6 +226,9 @@ impl Feed {
                     None
                 };
                 let mut approval = approval_words(*id, tool, reason, args.as_ref(), look);
+                if self.prefix.is_empty() {
+                    approval.always = look.rule_offer(*id).map(|o| always_words(&o, look));
+                }
                 // In Melissa's chat, say which helper asks (its own chat needs no label).
                 if let (false, Some(agent)) = (self.helper, agent) {
                     asked_by(&mut approval, agent, look);
@@ -663,6 +670,10 @@ pub trait Lookup {
     fn agent_name(&self, _agent: &str) -> Option<String> {
         None
     }
+    /// The rule "Always allow" would save for a pending confirmation.
+    fn rule_offer(&self, _id: u64) -> Option<RuleOffer> {
+        None
+    }
 }
 
 /// No extra knowledge.
@@ -832,6 +843,35 @@ pub fn asked_by(a: &mut Approval, agent: &str, look: &dyn Lookup) {
     a.title = format!("{name} asks: {}", a.title);
 }
 
+/// Who a rule lets act and what it lets them do: ("Ada", "update Minecraft").
+pub fn rule_words(
+    principal: &Principal,
+    verb: &str,
+    target: Option<&str>,
+    look: &dyn Lookup,
+) -> (String, String) {
+    let who = match principal {
+        Principal::Lead => "Melissa".to_string(),
+        Principal::Agent(id) => look.agent_name(id).unwrap_or_else(|| id.clone()),
+    };
+    let what = match target {
+        Some(t) => format!("{verb} {}", display_app(t)),
+        None => verb.to_string(),
+    };
+    (who, what)
+}
+
+/// The question "Always allow" asks before saving `offer`: "Always let Ada update Minecraft?".
+pub fn always_words(offer: &RuleOffer, look: &dyn Lookup) -> String {
+    let (who, what) = rule_words(
+        &offer.key.principal,
+        &offer.verb,
+        offer.key.target.as_deref(),
+        look,
+    );
+    format!("Always let {who} {what}? It won't ask again for this.")
+}
+
 /// The plain-language confirmation card for `tool` (see [`TOOLS`] for names).
 pub fn approval_words(
     id: u64,
@@ -855,6 +895,7 @@ pub fn approval_words(
         yes: "Allow",
         no: "Don't allow",
         state: ApprovalState::Pending,
+        always: None,
     };
     match tool_name(tool) {
         "deploy_app" | "update_app" => {

@@ -6,22 +6,30 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        actions, app_page, badge, card, code, command_block, confirm_card, detail_head, disclosure,
-        external_button, facts, group, lines_field, live_region, log_view, notice, one_field_form,
-        pick_list, plain_action, provider_mark, settings_form, settings_frame_at, settings_head,
-        split_card, text_field, toggle, var_list, ConfirmCard, LogLine, Nav, PickRow,
-        SettingsSection, Toggle, Tone, VarRow,
+        action_button, actions, badge, card, code, command_block, confirm_card, detail_head,
+        disclosure, external_button, facts, group, lines_field, live_region, log_view, notice,
+        one_field_form, page_header, pick_list, plain_action, provider_mark, region, settings_form,
+        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list,
+        ConfirmCard, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
     pages::{rail_for, Frame},
 };
 use melissa_settings::providers::EnvVarView;
 
 /// The Settings sections, in order. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [(&str, &str); 3] = [
+pub const SECTIONS: [(&str, &str); 4] = [
     ("/settings/providers", "Providers"),
+    (PERMISSIONS_URL, "Permissions"),
     ("/settings/updates", "Updates"),
     (DEVELOPER_URL, "Developer"),
 ];
+
+/// The Permissions section: the "Always allow" rules.
+pub const PERMISSIONS_URL: &str = "/settings/permissions";
+/// DOM id of the rule list (Remove swaps it).
+pub const PERMISSIONS_ID: &str = "permissions";
+/// DOM id of No permission prompts on the Developer page.
+pub const BYPASS_ID: &str = "bypass";
 
 /// The Developer section: Agent tasks (`/tasks` redirects here when the lead agent is present).
 pub const DEVELOPER_URL: &str = "/settings/developer";
@@ -54,7 +62,8 @@ pub(crate) fn frame_at(
         Some(p) => format!("{p} · {current} · Settings"),
         None => format!("{current} · Settings"),
     };
-    app_page(
+    crate::pages::shell(
+        f,
         &title,
         rail_for(Nav::Settings, f, None),
         settings_frame_at(&sections, current, page, content),
@@ -546,4 +555,95 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
             }))
         }
     }
+}
+
+// --- Permissions ---------------------------------------------------------------------------------
+
+/// One "Always allow" rule, in words.
+pub struct RuleRow {
+    pub id: u64,
+    /// "Ada", "Melissa".
+    pub who: String,
+    /// "update Minecraft", "run commands".
+    pub what: String,
+    /// The tool, for the curious.
+    pub tool: String,
+    /// Unix seconds.
+    pub created: u64,
+}
+
+pub fn permissions_page(f: &Frame<'_>, rules: &[RuleRow], flash: Option<&Flash>) -> Markup {
+    frame(f, "Permissions", permissions_region(rules, flash))
+}
+
+/// The rule list (swapped whole by Remove).
+pub fn permissions_region(rules: &[RuleRow], flash: Option<&Flash>) -> Markup {
+    let rows: Vec<Vec<Markup>> = rules
+        .iter()
+        .map(|r| {
+            let remove = format!("/ui/settings/permissions/{}/remove", r.id);
+            vec![
+                html! { (r.who) },
+                html! { (r.what) " " (code(&r.tool)) },
+                html! { (crate::pages::short_date(r.created)) },
+                action_button(
+                    &remove,
+                    PERMISSIONS_ID,
+                    "Remove",
+                    "Remove this rule? Melissa asks you again next time.",
+                ),
+            ]
+        })
+        .collect();
+    region(
+        PERMISSIONS_ID,
+        html! {
+            (page_header("Permissions", Some("What helpers may do without asking you. Add one with Always allow on a request.")))
+            @if let Some(f) = flash { (notice(&f.text, f.tone)) }
+            (card("Always allowed", table(
+                &["Who", "May", "Since", ""],
+                rows,
+                "Nothing yet. Every request asks you first.",
+            )))
+        },
+    )
+}
+
+/// No permission prompts on the Developer page: the switch with its warning, or the
+/// confirmation before it goes on.
+pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Markup {
+    region(
+        BYPASS_ID,
+        html! {
+            (group(
+                "No permission prompts",
+                Some("Every request is allowed without asking you, except what Melissa refuses outright. Each one is logged."),
+                html! {
+                    (notice(
+                        "Risky: helpers can change, stop and delete apps without your yes.",
+                        Tone::Warn,
+                    ))
+                    @if let Some(f) = flash { (notice(&f.text, f.tone)) }
+                    @if confirming {
+                        (confirm_card(&ConfirmCard {
+                            title: "Turn off permission prompts?",
+                            text: "Melissa and every helper act without asking you until you turn this off. A warning shows on every page.",
+                            action: "/ui/settings/developer/bypass/on",
+                            target: BYPASS_ID,
+                            confirm: "Turn off prompts",
+                            cancel_href: DEVELOPER_URL,
+                        }))
+                    } @else {
+                        (toggle(&Toggle {
+                            action: "/ui/settings/developer/bypass",
+                            target: BYPASS_ID,
+                            label: "No permission prompts",
+                            on,
+                            locked: None,
+                        }))
+                    }
+                },
+            ))
+        },
+    )
 }

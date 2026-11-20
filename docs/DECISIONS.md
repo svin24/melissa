@@ -717,3 +717,11 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   stop/start/update/uninstall keep working and keep the data and password. `[apps] catalog` and the Nix
   option `apps.catalog` are accepted and ignored with a warning; `manifests/` and `/usr/share/melissa/catalog`
   are gone.
+- **2026-11-20 — Standing permissions: "Always allow" rules and No permission prompts** (owner-approved, the owner
+  accepts the risk). A rule is exactly (asking agent id or the lead agent, tool, target workspace); it answers
+  matching confirmations without a prompt, audited with its id. The developer bypass approves every
+  confirmation, audited as `bypass`, behind a confirm step and with a warning on every page. Both are checked
+  after the scope check, so refusals stay refusals, and only the owner's UI/API changes them. Why: repeated
+  prompts for the same thing from the same agent train people to click yes without reading; a narrow standing
+  yes is better than a habit. Alternatives: per-argument rules (too narrow to be useful for spec updates),
+  per-effect or per-agent blanket rules (too broad), rules with expiry (later, open question 65).

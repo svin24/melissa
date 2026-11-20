@@ -2224,6 +2224,138 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
         }
 
+        /// "Always allow" on a helper's request: the card asks with the rule's words, saves
+        /// the rule, and Settings → Permissions lists it until it is removed.
+        #[tokio::test]
+        async fn always_allow_saves_a_rule_listed_in_settings() {
+            use melissa_agent::tools::{ActionKey, Principal, RuleOffer, Verdict};
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "games", None, "the lead agent (task 1)")
+                .unwrap();
+            let offer = RuleOffer {
+                key: ActionKey {
+                    principal: Principal::Agent(ada.id.clone()),
+                    tool: "update_app".into(),
+                    target: Some("minecraft".into()),
+                },
+                verb: "update".into(),
+            };
+            let args = serde_json::json!({"app": "minecraft"});
+            let (c, rx) = lead.confirmations().request_with(
+                1,
+                "update_app",
+                &args,
+                "runs software",
+                Some(offer.clone()),
+            );
+            let (_, _, body) = get_html(&app, "/approvals").await;
+            assert!(body.contains(&format!("hx-post=\"/ui/confirmations/{}/always\"", c.id)));
+            assert!(body.contains("Always let Ada update Minecraft?"));
+            // The user's own request (no rule to offer) has no such button.
+            let (own, _own_rx) =
+                lead.confirmations()
+                    .request(0, "touch", &serde_json::json!({}), "because");
+            let (_, _, body) = get_html(&app, "/approvals").await;
+            assert!(!body.contains(&format!("/ui/confirmations/{}/always", own.id)));
+            let (status, body) = send_json(
+                &app,
+                json_post(&format!("/api/confirmations/{}/always", own.id), "{}"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+            let uri = format!("/ui/confirmations/{}/always", c.id);
+            let (status, _, html) = send(&app, htmx_post(&uri, "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("You allowed this."));
+            assert_eq!(rx.await.unwrap(), Verdict::Approved);
+            let rules = lead.server().registry().permissions().rules();
+            assert_eq!(rules.len(), 1);
+            assert_eq!(rules[0].key, offer.key);
+
+            let (status, _, body) = get_html(&app, "/settings/permissions").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("Ada"));
+            assert!(body.contains("update Minecraft"));
+            let (status, body) = send_json(&app, get("/api/settings/permissions")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["rules"][0]["target"], "minecraft");
+            assert_eq!(body["bypass"], false);
+
+            let remove = format!("/ui/settings/permissions/{}/remove", rules[0].id);
+            let (status, _, html) = send(&app, htmx_post(&remove, "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Nothing yet."));
+            assert!(lead.server().registry().permissions().rules().is_empty());
+        }
+
+        /// No permission prompts: off by default, on only after the confirmation card, then
+        /// a warning on every page and waiting requests allowed; off again at once.
+        #[tokio::test]
+        async fn no_permission_prompts_needs_a_yes_and_warns_everywhere() {
+            let (app, lead) = app();
+            const WARNING: &str = "No permission prompts is on.";
+            let (_, _, body) = get_html(&app, "/settings/developer").await;
+            assert!(body.contains("action=\"/ui/settings/developer/bypass\""));
+            assert!(!body.contains(WARNING));
+
+            // The switch alone only asks.
+            let (status, _, html) = send(
+                &app,
+                htmx_post("/ui/settings/developer/bypass", "enabled=on"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("/ui/settings/developer/bypass/on"));
+            assert!(html.contains("name=\"confirm\" value=\"yes\""));
+            assert!(!lead.server().registry().permissions().bypass());
+            // The API wants the yes too.
+            let (status, _) = send_json(
+                &app,
+                json_post("/api/settings/permissions/bypass", r#"{"on": true}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(!lead.server().registry().permissions().bypass());
+
+            let (_c, rx) =
+                lead.confirmations()
+                    .request(1, "touch", &serde_json::json!({}), "because");
+            let (status, headers, _) = send(
+                &app,
+                htmx_post("/ui/settings/developer/bypass/on", "confirm=yes"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers["hx-refresh"], "true");
+            assert!(lead.server().registry().permissions().bypass());
+            assert_eq!(rx.await.unwrap(), melissa_agent::tools::Verdict::Approved);
+            for page in [
+                "/",
+                "/approvals",
+                "/cluster",
+                "/settings/providers",
+                "/settings/developer",
+            ] {
+                let (_, _, body) = get_html(&app, page).await;
+                assert!(body.contains(WARNING), "{page}");
+                assert!(
+                    body.contains("href=\"/settings/developer\">Turn it off"),
+                    "{page}"
+                );
+            }
+
+            // Off: no confirmation needed.
+            let (status, _, _) = send(&app, htmx_post("/ui/settings/developer/bypass", "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(!lead.server().registry().permissions().bypass());
+            let (_, _, body) = get_html(&app, "/").await;
+            assert!(!body.contains(WARNING));
+        }
+
         /// The SSE frames of `body` until one contains `needle` (returns it).
         async fn frame_with(body: &mut Body, needle: &str) -> String {
             loop {

@@ -33,7 +33,10 @@
 //! - `POST /api/workspaces/{workspace}/reassign` `{"to": "<agent>"}` → the workspace: the user's own
 //!   reassignment (no confirmation; audited `workspace.reassign`, actor ui). 404 no such agent,
 //!   422 no such workspace.
-//! - `GET /api/confirmations`; `POST /api/confirmations/{id}/approve|deny` → 200 or 404.
+//! - `GET /api/confirmations`; `POST /api/confirmations/{id}/approve|deny` → 200 or 404;
+//!   `POST /api/confirmations/{id}/always` approves and saves its "Always allow" rule (the
+//!   asking agent + tool + target) → 200 with the rule and every confirmation it approved,
+//!   404 gone, 409 nothing to remember (the user's own request).
 //! - `POST /api/tools/{name}` (JSON arguments) → 200 `{"result": ...}`: runs one tool for an
 //!   operator (`melissa-server tool --wait`) through the daemon's registry, as an unattended
 //!   task (task 0): the policy applies and confirmations land in the same inbox, so the call
@@ -56,7 +59,7 @@ use axum::{
 use melissa_agent::{
     lead::{backends::BackendView, Lead, LeadError},
     mcp::McpServer,
-    tools::{Scope, TaskContext, ToolError, Verdict},
+    tools::{AlwaysAllowError, Scope, TaskContext, ToolError, Verdict},
     AuditRecord,
 };
 use serde::Deserialize;
@@ -360,6 +363,12 @@ async fn confirmations(State(lead): State<Lead>) -> Response {
                 "tool": c.tool,
                 "reason": c.reason,
                 "args": c.args,
+                "always": c.rule.as_ref().map(|o| json!({
+                    "principal": o.key.principal,
+                    "tool": o.key.tool,
+                    "target": o.key.target,
+                    "verb": o.verb,
+                })),
                 "created": c.created.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             })
         })
@@ -371,7 +380,8 @@ async fn resolve(State(lead): State<Lead>, Path((id, verdict)): Path<(u64, Strin
     let verdict = match verdict.as_str() {
         "approve" => Verdict::Approved,
         "deny" => Verdict::Denied,
-        _ => return error(StatusCode::NOT_FOUND, "use approve or deny"),
+        "always" => return always(&lead, id),
+        _ => return error(StatusCode::NOT_FOUND, "use approve, deny or always"),
     };
     match lead.resolve_confirmation(id, verdict) {
         Some(c) => {
@@ -381,5 +391,30 @@ async fn resolve(State(lead): State<Lead>, Path((id, verdict)): Path<(u64, Strin
             StatusCode::NOT_FOUND,
             format!("no pending confirmation {id}"),
         ),
+    }
+}
+
+/// "Always allow" on confirmation `id`: approve it and save its rule.
+fn always(lead: &Lead, id: u64) -> Response {
+    let registry = lead.server().registry();
+    match registry.always_allow(id) {
+        Ok(done) => Json(json!({
+            "rule": {
+                "id": done.rule.id,
+                "principal": done.rule.key.principal,
+                "tool": done.rule.key.tool,
+                "target": done.rule.key.target,
+                "verb": done.rule.verb,
+                "description": registry.describe_rule(&done.rule),
+            },
+            "approved": done.approved.iter().map(|c| c.id).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(AlwaysAllowError::Gone(_)) => error(
+            StatusCode::NOT_FOUND,
+            format!("no pending confirmation {id}"),
+        ),
+        Err(e @ AlwaysAllowError::NotOffered) => error(StatusCode::CONFLICT, e.to_string()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

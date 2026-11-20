@@ -35,6 +35,10 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
    workspaces (one app needing another) are declared, approved and audited.
 6. **Policy still applies.** Ownership decides *whether* an agent may act on a workspace at all; the label policy and
    confirmations decide *how* (destructive actions always ask the user, whoever owns the workspace).
+7. **Standing permissions are the user's.** The user may answer a kind of request ahead of time: "Always allow"
+   saves a rule for one agent (by id) or the lead agent, one tool and one workspace; developer mode's "No
+   permission prompts" approves every request. Both only answer confirmations, never turn a refusal into a yes,
+   and only the user creates or removes them (no agent tool can). Every auto-approval is audited.
 
 ## Naming
 

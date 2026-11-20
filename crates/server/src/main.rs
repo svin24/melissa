@@ -48,8 +48,8 @@ use melissa_agent::{
     mcp::McpServer,
     session::SessionBackend,
     tools::{
-        AgentNames, DeviceInfo, ResourceOwners, Scope, TaskContext, Tool, ToolRegistry,
-        WorkspaceStore,
+        AgentNames, DeviceInfo, Permissions, ResourceOwners, Scope, TaskContext, Tool,
+        ToolRegistry, WorkspaceStore,
     },
     AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EchoSessionBackend,
     EgressProxy, McpLink, TaskBoard,
@@ -485,11 +485,19 @@ async fn serve(
         Some(wiring.workspaces),
     );
     tools.extend(pool.tools());
+    // The owner's "Always allow" rules and No permission prompts, kept in the state directory
+    // (outside every agent's sandbox). A broken file grants nothing: every request asks again.
+    let permissions_path = dirs.state.join("permissions.json");
+    let permissions = Permissions::open(&permissions_path).unwrap_or_else(|e| {
+        tracing::error!("{e}; starting with no saved permissions (changes are not saved)");
+        Permissions::in_memory()
+    });
     // Confirmations wait less long than the agents' MCP clients do (see the config field).
     let mcp = McpServer::new(
         ToolRegistry::new(tools, Some(audit.clone()))
             .with_owners(wiring.owners)
             .with_agents(wiring.names)
+            .with_permissions(permissions)
             .with_confirm_timeout(config.confirm_timeout()),
     );
     // Sandboxed agents reach the network only through this (allowlist, audited) and

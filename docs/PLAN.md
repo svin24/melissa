@@ -184,6 +184,21 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 - **Cluster tools (2026-11-18):** `cluster_health` (read-only) in `crates/cluster`, registered next to `device_info`;
   Verified in the headless VM (bootc, archived) and again in the rootful container (2026-11-19) through the lead agent's own credentials. `melissa-server tool <name> [json]` runs one tool
   through the MCP session path (unattended policy, no waiting for confirmations) for operators and tests.
+- **Standing permissions (owner, 2026-11-20):** two owner-approved ways to answer confirmations ahead of time,
+  both in `melissa_agent::tools::permissions` and checked in `ToolRegistry::confirm`, i.e. only *after* the scope
+  and argument checks, so refusals ("not yours", bad arguments, an agent switching its own permission mode)
+  stay refusals. (1) **Always allow**: a third button on every approval card (an agent's or the lead agent's
+  request; never the user's own). It approves the call and saves a rule keyed on the asking principal (agent id,
+  so renames keep it; the lead agent is its own principal) + tool name + target (the workspace, for targeted
+  tools; untargeted tools such as an agent's `agent:execute` match only untargeted calls of that kind). Exact
+  match only. Matching calls are approved without a prompt (audited `tool.auto_approved`, actor `rule`, detail
+  `rule <id>`); pending ones the new rule matches are approved at once (`confirmation.auto_approved`). Rules are
+  listed and removed in Settings → Permissions. (2) **No permission prompts** (Settings → Developer, off by
+  default, confirm card to switch on): every confirmation is approved (actor `bypass`), all pending ones too;
+  a warning banner with "Turn it off" shows on every page with the rail. Both live in
+  `$XDG_STATE_HOME/melissa/permissions.json` (0600, outside every sandbox); a broken file grants nothing.
+  Agents have no tool for either: only the owner's UI and API (`/api/confirmations/{id}/always`,
+  `/api/settings/permissions*`) change them, audited `permissions.rule_added|rule_removed|bypass`.
 - **ACP sessions (2026-11-18):** long-lived agent sessions behind a protocol-neutral API (`crates/agent/src/session`:
   open, prompt, cancel, close, typed events, permission handler) implemented over ACP with the official Rust crate
   (`crates/agent/src/acp`). Built-in backend `grok-acp` (`grok --permission-mode default agent --no-leader stdio`,
@@ -671,3 +686,12 @@ Roadmap (rough, phases may overlap):
     (seen live: 4 restarts, phase ready); count recent restarts as `failing`, or require a probe? (i) The lead
     agent needed 4 tries to get a first spec past validation (OpenCode free model); a short example in the
     tool description or an `example` tool may help.
+65. Standing permissions (2026-11-20, see §5): (a) a rule matches tool + target, not the arguments: "Always let
+    Ada update Minecraft" also allows a later `update_app` with different images, ports or storage, and
+    `agent:execute` rules allow any command in that agent's sandbox. Narrower rules (argument digests, image
+    allowlists) or forbidding rules for `Deploy`/`Destructive`/`Ownership` effects? (b) Rules also skip the
+    taint check ("read untrusted content"): a prompt-injected agent can use its rules. Should a tainted task
+    ignore rules? (c) Rules have no expiry or use count. (d) Anyone who reaches the UI/API can add rules or switch
+    the bypass, the same trust as approving (28, 37). (e) The bypass banner is on pages with the rail; bare error
+    pages don't show it. (f) A request answered by a rule leaves no card in the chat (audit log only); show a
+    quiet "allowed by your rule" line? (g) The operator CLI's one-shot `tool` calls ignore rules and the bypass.

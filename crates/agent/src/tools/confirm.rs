@@ -9,6 +9,7 @@ use std::{
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot};
 
+use super::permissions::RuleOffer;
 use crate::TaskId;
 
 pub type ConfirmationId = u64;
@@ -23,6 +24,9 @@ pub struct Confirmation {
     /// Why the policy asked (e.g. "destructive action").
     pub reason: String,
     pub created: SystemTime,
+    /// The rule "Always allow" would save (who asks, the tool, its target). None: the call
+    /// cannot become a rule (the user's own calls).
+    pub rule: Option<Box<RuleOffer>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +102,18 @@ impl ConfirmationStore {
         args: &Value,
         reason: &str,
     ) -> (Confirmation, oneshot::Receiver<Verdict>) {
+        self.request_with(task, tool, args, reason, None)
+    }
+
+    /// [`ConfirmationStore::request`] with the rule "Always allow" would save.
+    pub fn request_with(
+        &self,
+        task: TaskId,
+        tool: &str,
+        args: &Value,
+        reason: &str,
+        rule: Option<RuleOffer>,
+    ) -> (Confirmation, oneshot::Receiver<Verdict>) {
         let (tx, rx) = oneshot::channel();
         let mut inner = lock(&self.inner);
         inner.next_id += 1;
@@ -108,6 +124,7 @@ impl ConfirmationStore {
             args: args.clone(),
             reason: reason.into(),
             created: SystemTime::now(),
+            rule: rule.map(Box::new),
         };
         inner.pending.insert(
             info.id,

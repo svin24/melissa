@@ -19,6 +19,11 @@
 //!   confirmation card; only a post with `confirm=yes` starts them.
 //! - `POST /ui/settings/restart`: restart Melissa now (saved settings also apply by
 //!   themselves once she is idle, see `apply.rs`).
+//! - `GET /settings/permissions`: the "Always allow" rules; `POST
+//!   /ui/settings/permissions/{id}/remove` removes one.
+//! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
+//!   On returns a confirmation card first; only `POST .../bypass/on` with `confirm=yes`
+//!   switches it on. Off applies at once.
 //!
 //! API (JSON; never returns secret values):
 //! - `GET /api/settings/providers` → `{"providers": [...], "restart_needed": bool}`.
@@ -31,6 +36,11 @@
 //!   for apply/rollback) → 202; 409 without `confirm`; 501 where the root helper is missing.
 //!
 //! - `POST /api/settings/providers/{id}/login/code` `{"code": "..."}` (empty: cancel).
+//! - `GET /api/settings/permissions` → `{"rules": [...], "bypass": bool}`;
+//!   `POST /api/settings/permissions/rules/{id}/remove` → the rule, 404 unknown;
+//!   `POST /api/settings/permissions/bypass` `{"on": bool, "confirm": bool}` → 200 with the
+//!   confirmations it approved; 409 switching on without `confirm`. Rules are made only by
+//!   "Always allow" on a pending request (`POST /api/confirmations/{id}/always`).
 //!
 //! Every change is audited (`settings.provider`, `settings.update`): what changed and the
 //! SHA-256 of the new value, never the value. Installs and sign-ins are audited when asked
@@ -39,6 +49,7 @@
 
 mod apply;
 pub(crate) mod pages;
+mod permissions;
 mod providers;
 mod updates;
 
@@ -239,6 +250,16 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             "/ui/settings/providers/{id}/env/remove",
             post(providers::remove_var),
         )
+        .route("/settings/permissions", get(permissions::page))
+        .route(
+            "/ui/settings/permissions/{id}/remove",
+            post(permissions::remove),
+        )
+        .route("/ui/settings/developer/bypass", post(permissions::bypass))
+        .route(
+            "/ui/settings/developer/bypass/on",
+            post(permissions::bypass_on),
+        )
         .route("/settings/updates", get(updates::page))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
@@ -264,6 +285,15 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
         .route(
             "/api/settings/providers/{id}/login/code",
             post(providers::api_login_code),
+        )
+        .route("/api/settings/permissions", get(permissions::api_list))
+        .route(
+            "/api/settings/permissions/rules/{id}/remove",
+            post(permissions::api_remove),
+        )
+        .route(
+            "/api/settings/permissions/bypass",
+            post(permissions::api_bypass),
         )
         .route("/api/settings/updates", get(updates::api_status))
         .route("/api/settings/updates/{action}", post(updates::api_action))
