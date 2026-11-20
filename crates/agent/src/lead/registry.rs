@@ -82,6 +82,9 @@ pub enum RegistryError {
 struct Inner {
     path: PathBuf,
     file: Mutex<RegistryFile>,
+    /// Bumped after every saved change, and when an agent's status may have changed
+    /// (see [`AgentRegistry::changes`]).
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 /// The agents of one device. Cheap to clone.
@@ -143,6 +146,7 @@ impl AgentRegistry {
             inner: Arc::new(Inner {
                 path,
                 file: Mutex::new(file),
+                changed: tokio::sync::watch::Sender::new(0),
             }),
         })
     }
@@ -302,13 +306,27 @@ impl AgentRegistry {
         self.save(&file)
     }
 
+    /// Wakes whenever an agent was created, renamed, moved, stopped or deleted, or its status
+    /// may have changed ([`Self::touch`]): live views (the UI's rail) re-read the list then.
+    /// Changes are seen once the change is complete (they are made under the registry lock).
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.changed.subscribe()
+    }
+
+    /// Wake [`Self::changes`] watchers (an agent's status may have changed).
+    pub fn touch(&self) {
+        self.inner.changed.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
     fn save(&self, file: &RegistryFile) -> Result<(), RegistryError> {
         let io = |reason: String| RegistryError::Io {
             path: self.inner.path.display().to_string(),
             reason,
         };
         let json = serde_json::to_vec_pretty(file).map_err(|e| io(e.to_string()))?;
-        write_private(&self.inner.path, &json).map_err(|e| io(e.to_string()))
+        write_private(&self.inner.path, &json).map_err(|e| io(e.to_string()))?;
+        self.touch();
+        Ok(())
     }
 }
 

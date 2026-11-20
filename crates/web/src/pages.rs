@@ -17,9 +17,10 @@ use crate::{
         APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
-        details_panel, details_toggle, feed_archive, file_count, file_panel_inner, model_chip,
-        model_picker, ComposerTarget, DetailsPanel, FilePanel, ModelPicker, RailHelper,
-        RailPastChat, SentFile, DETAILS_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
+        composer_closed, details_panel, details_toggle, feed_archive, file_count, file_panel_inner,
+        model_chip, model_picker, rail_conversations, ComposerTarget, DetailsPanel, FilePanel,
+        ModelPicker, RailHelper, RailPastChat, SentFile, DETAILS_STATUS_ID, FILE_BODY_ID,
+        MODEL_CHIP_ID,
     },
     feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
@@ -129,22 +130,8 @@ fn rail_with(
             }
         })
         .collect();
-    let hrefs: Vec<String> = f.agents.iter().map(|b| agent_href(&b.id)).collect();
-    let helpers: Vec<RailHelper<'_>> = f
-        .agents
-        .iter()
-        .zip(&hrefs)
-        .map(|(b, href)| {
-            let (health, status) = agent_health(b.status);
-            RailHelper {
-                href,
-                name: &b.name,
-                health,
-                status,
-                current: current_agent == Some(b.id.as_str()),
-            }
-        })
-        .collect();
+    let hrefs = helper_hrefs(f.agents);
+    let helpers = rail_helpers(f.agents, &hrefs, current_agent);
     let shown = &f.past[..f.past.len().min(RAIL_PAST_CHATS)];
     let past_words: Vec<(String, String, String)> = shown
         .iter()
@@ -168,6 +155,72 @@ fn rail_with(
         })
         .collect();
     rail(nav, f.waiting, &devices, &helpers, &past)
+}
+
+fn helper_hrefs(agents: &[AgentView]) -> Vec<String> {
+    agents.iter().map(|b| agent_href(&b.id)).collect()
+}
+
+/// The rail entries of `agents` (`hrefs` from [`helper_hrefs`]).
+fn rail_helpers<'a>(
+    agents: &'a [AgentView],
+    hrefs: &'a [String],
+    current_agent: Option<&str>,
+) -> Vec<RailHelper<'a>> {
+    agents
+        .iter()
+        .zip(hrefs)
+        .map(|(b, href)| {
+            let (health, status) = agent_health(b.status);
+            RailHelper {
+                href,
+                name: &b.name,
+                health,
+                status,
+                current: current_agent == Some(b.id.as_str()),
+            }
+        })
+        .collect()
+}
+
+/// A live update of the rail's conversations (helpers came, went or changed), for a page
+/// that shows Melissa's chat (`melissa_current`) or helper `current_agent`'s.
+pub fn rail_conversations_update(
+    agents: &[AgentView],
+    melissa_current: bool,
+    current_agent: Option<&str>,
+) -> Markup {
+    let hrefs = helper_hrefs(agents);
+    rail_conversations(
+        melissa_current,
+        &rail_helpers(agents, &hrefs, current_agent),
+        true,
+    )
+}
+
+/// A live update for the open chat of a helper that was just deleted: the composer gives
+/// way to a notice and a link back to Melissa.
+pub fn helper_deleted(name: &str) -> Markup {
+    composer_closed(
+        &format!("{name} was deleted."),
+        "/",
+        "Back to Melissa's chat",
+        true,
+    )
+}
+
+/// The page for a helper that isn't on this device (deleted, or a wrong address).
+pub fn helper_gone(f: &Frame<'_>) -> Markup {
+    shell(
+        f,
+        "Conversation not found",
+        rail_for(Nav::Helper, f, None),
+        html! {
+            (page_header("Conversation not found", None))
+            (crate::components::notice("This helper isn't on this device any more.", Tone::Warn))
+            (link("/", "Back to Melissa's chat"))
+        },
+    )
 }
 
 /// Whose conversation a chat page or stream shows.

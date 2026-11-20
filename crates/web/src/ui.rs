@@ -7,7 +7,9 @@
 //!   (SSE). Each `feed` event carries server-rendered HTML: new entries (the htmx SSE
 //!   extension appends them to the list) and out-of-band replacements for entries that
 //!   changed (a growing reply, a finished tool call, a decided approval), the composer status
-//!   and the waiting count. The event id is the conversation's event sequence number; on
+//!   and the waiting count, and the rail's conversations when helpers come, go, are renamed
+//!   or change status (a helper's open chat whose helper is deleted gets a notice in place
+//!   of its composer). The event id is the conversation's event sequence number; on
 //!   reconnect the browser sends it back as `Last-Event-ID` and the stream continues from
 //!   there. The stream re-folds the log up to the cursor first, so its keys match the page.
 //! - `GET /ui/strip`, `GET /ui/cluster/apps`: fragments that poll (apps change slowly).
@@ -329,7 +331,8 @@ async fn agent_page(
     Query(q): Query<HomeQuery>,
 ) -> Response {
     let Some(agent) = ui.agent(&agent) else {
-        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+        // Deleted (an old link, a stale rail) or a wrong address: say so in the app.
+        return (StatusCode::NOT_FOUND, ui.framed(pages::helper_gone).await).into_response();
     };
     // A draft is only a suggestion for the box ("Reference in chat" without script).
     let draft: String = q.draft.chars().take(300).collect();
@@ -409,6 +412,14 @@ struct StreamState {
     cursor: u64,
     view: View,
     reload: bool,
+    /// Wakes when the helpers change (see [`AgentRegistry::changes`]).
+    ///
+    /// [`AgentRegistry::changes`]: melissa_agent::lead::registry::AgentRegistry::changes
+    roster: tokio::sync::watch::Receiver<u64>,
+    /// What the page's rail shows of the helpers (id, name, status), as last sent.
+    rail: Vec<(String, String, &'static str)>,
+    /// The helper's name (helper chats), to say it was deleted; None once said.
+    name: Option<String>,
 }
 
 impl StreamState {
@@ -417,6 +428,61 @@ impl StreamState {
             Some(id) => Who::Agent(id),
             None => Who::Lead,
         }
+    }
+
+    /// A live update at the current cursor.
+    fn event(&self, html: String) -> Event {
+        Event::default()
+            .event("feed")
+            .id(format!("{}-{}", self.log.epoch(), self.cursor))
+            .data(html)
+    }
+
+    /// Out-of-band updates for helpers that came, went or changed since the last call: the
+    /// rail's conversations and, when this chat's helper was deleted, a notice in place of
+    /// the composer. Empty if nothing changed.
+    fn roster_update(&mut self) -> String {
+        let agents = self.ui.lead.agents().list();
+        let rail = rail_signature(&agents);
+        let mut out = String::new();
+        if rail != self.rail {
+            self.rail = rail;
+            let melissa = self.agent.is_none() && self.view == View::Chat;
+            out.push_str(
+                &pages::rail_conversations_update(&agents, melissa, self.agent.as_deref())
+                    .into_string(),
+            );
+        }
+        if let Some(id) = &self.agent {
+            match agents.iter().find(|a| &a.id == id) {
+                Some(a) => {
+                    if let Some(name) = self.name.as_mut() {
+                        name.clone_from(&a.name);
+                    }
+                }
+                None => {
+                    if let Some(name) = self.name.take() {
+                        out.push_str(&pages::helper_deleted(&name).into_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// What the rail shows of each helper.
+fn rail_signature(agents: &[AgentView]) -> Vec<(String, String, &'static str)> {
+    agents
+        .iter()
+        .map(|a| (a.id.clone(), a.name.clone(), a.status))
+        .collect()
+}
+
+/// Until `rx` sees a change; never, once its sender is gone.
+async fn changed(rx: &mut tokio::sync::watch::Receiver<u64>) {
+    if rx.changed().await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -441,7 +507,12 @@ async fn agent_stream(
     Query(q): Query<StreamQuery>,
 ) -> Response {
     let Some(agent) = ui.agent(&agent) else {
-        return StatusCode::NOT_FOUND.into_response();
+        // Gone (deleted while the page was closed or the connection was down): the page
+        // reloads and says so.
+        let reload = futures::stream::once(async {
+            Ok::<_, Infallible>(Event::default().event("reload").data(""))
+        });
+        return Sse::new(reload).into_response();
     };
     let log = match ui.log(Who::Agent(&agent.id)) {
         Ok(log) => log,
@@ -489,7 +560,16 @@ fn stream(
             .with_steps(ui.settings.prefs().show_steps)
             .fold(page.events.iter().filter(|r| r.seq <= cursor), &ui)
     };
+    let agents = ui.lead.agents();
+    let roster = agents.registry().changes();
+    let list = agents.list();
+    let name = agent
+        .as_ref()
+        .and_then(|id| list.iter().find(|a| &a.id == id).map(|a| a.name.clone()));
     let state = StreamState {
+        rail: rail_signature(&list),
+        roster,
+        name,
         ui,
         log,
         agent,
@@ -507,10 +587,24 @@ fn stream(
             return Some((Ok(Event::default().event("reload").data("")), st));
         }
         loop {
-            let page = st.log.wait_since(st.cursor, 200, STREAM_WAIT).await;
-            if page.events.is_empty() {
-                continue;
-            }
+            // The log first: chat events that came with a roster change go out with it.
+            let page = tokio::select! {
+                biased;
+                page = st.log.wait_since(st.cursor, 200, STREAM_WAIT) => Some(page),
+                () = changed(&mut st.roster) => None,
+            };
+            let page = match page {
+                Some(page) if !page.events.is_empty() => page,
+                // The helpers changed, or it was quiet (a helper's status may still have
+                // changed by turns in its own chat).
+                _ => {
+                    let html = st.roster_update();
+                    if html.is_empty() {
+                        continue;
+                    }
+                    return Some((Ok(st.event(html)), st));
+                }
+            };
             let mut changes = Vec::new();
             for rec in &page.events {
                 changes.extend(st.feed.apply(rec, &st.ui));
@@ -541,7 +635,7 @@ fn stream(
             let status = changes
                 .contains(&Change::Status)
                 .then(|| st.ui.status_words_of(st.who()));
-            let html = pages::stream_update(
+            let mut html = pages::stream_update(
                 &st.feed,
                 &changes,
                 st.view,
@@ -555,14 +649,11 @@ fn stream(
                     status,
                 },
             );
+            html.push_str(&st.roster_update());
             if html.is_empty() {
                 continue;
             }
-            let event = Event::default()
-                .event("feed")
-                .id(format!("{}-{}", st.log.epoch(), st.cursor))
-                .data(html);
-            return Some((Ok(event), st));
+            return Some((Ok(st.event(html)), st));
         }
     });
     Sse::new(events).keep_alive(KeepAlive::default())
