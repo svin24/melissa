@@ -46,8 +46,12 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   Lead-only). Workspaces it owns are **not** in the registry: they are on the workspaces (label), see
   [workspaces-and-ownership.md](workspaces-and-ownership.md).
 - Agent tools (Lead-only, hidden from agents; each also refuses any scope but `Lead`): `create_agent {name,
-  backend?, tools?}`; `give_agent_job {agent, goal, timeout_secs?}` sends "A job from the lead agent:\n\n<goal>"
-  into the agent's conversation (409-like error if it is busy; at most `max_agents` agents working at once,
+  backend?, tools?, job?, user_request?, research?, timeout_secs?}` (with `job` the new agent starts on it in
+  the same call, as `give_agent_job`; the brief is checked before the agent is created; if the job cannot start,
+  e.g. too many agents working, the agent stays and the result has `job_error`); `give_agent_job {agent, goal,
+  user_request?, research?, timeout_secs?}` sends "A job from the lead agent:\n\n<goal>" (then "The user's
+  request, in their words:\n…" and "What the lead agent already found out:\n…" when given) into the agent's
+  conversation (409-like error if it is busy; at most `max_agents` agents working at once,
   checked under a lock; after `timeout_secs` the turn is cancelled; a watcher publishes `agent_finished`);
   `agent_status {agent, wait_secs≤50}` (status idle/working/stopped, job, activity lines since the job, last
   reply as `result`, `read_untrusted_content`); `list_agents` (with workspaces per agent and unassigned workspaces);
@@ -78,6 +82,19 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
 - The user talks to any agent directly (`/api/agents/{agent}/…`, `chat --agent`): same conversation, same
   one-turn-at-a-time rule (a lead agent job and a user message never overlap). The agent's MCP session stays
   unattended even then (one MCP session per agent session).
+
+## The lead hands app work to helpers (2026-11-20)
+Owner feedback: asked to "set up a Minecraft server", the lead deployed it itself. Now:
+- The lead agent creates **no new app**: `deploy_app` targets `Access::Create`, and `scope::check` refuses
+  `Scope::Lead` + `Create` on a workspace that does not exist (`LEAD_HANDS_OFF`, audited `tool.refused`, before
+  any confirmation; `Deployer::new_owner` refuses the lead too, as a second guard). Every app has a helper owner
+  from the start; a helper's deploy makes it the owner (`melissa.io/owner-agent` = its id).
+- The lead keeps its oversight and overrides on existing apps (status, logs, stop/start, exec, update,
+  uninstall, reassign, and bringing back an app uninstalled with its data kept), with the same confirmations.
+- "Make / install / set up / build X": at most brief read-only research (which image, ports, settings), then
+  hand it off at once: `give_agent_job` to a helper that already looks after related apps, else `create_agent`
+  with `job` (one call). The brief carries the goal, the user's words (`user_request`) and the research. Then
+  the lead tells the user who is on it and relays progress and approvals (`agent_status` with `wait_secs`).
 
 ## Switching backend and model (2026-11-19)
 Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends, check_choice, switch}`,

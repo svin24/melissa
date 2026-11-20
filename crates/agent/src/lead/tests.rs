@@ -1597,6 +1597,85 @@ async fn agent_tool_guards_time_limits_and_concurrency() {
 }
 
 #[tokio::test]
+async fn create_agent_with_a_job_starts_the_helper_at_once_with_the_users_words() {
+    let s = setup_full(
+        scratch("agent-create-job"),
+        Vec::new(),
+        vec![agent_reply(
+            "b-1",
+            "Set up a Minecraft server",
+            "Minecraft is up.",
+        )],
+        AgentLimits::default(),
+        |_| {},
+    );
+    let q = s.lead_token();
+    // The brief is checked before the agent exists: a bad one creates nothing.
+    for (args, needle) in [
+        (
+            json!({"name": "Ada", "research": "itzg/minecraft-server"}),
+            "`research` goes with `job`",
+        ),
+        (
+            json!({"name": "Ada", "job": "x", "timeout_secs": 0}),
+            "timeout_secs",
+        ),
+        (json!({"name": "Ada", "job": " "}), "`job`"),
+    ] {
+        let r = call(&s.server, &q, "create_agent", args.clone()).await;
+        assert!(err_text(&r).contains(needle), "{args}: {r}");
+    }
+    assert!(s.pool().list().is_empty());
+
+    // One call: the helper exists and works on its first job.
+    let r = call(
+        &s.server,
+        &q,
+        "create_agent",
+        json!({
+            "name": "Ada",
+            "job": "Set up a Minecraft server and look after it.",
+            "user_request": "set up a minecraft server for my kids",
+            "research": "Image itzg/minecraft-server:java21, port 25565/tcp, EULA=TRUE.",
+        }),
+    )
+    .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(r["structuredContent"]["agent"], "Ada", "{r}");
+    assert_eq!(r["structuredContent"]["status"], "working", "{r}");
+    assert_eq!(r["structuredContent"]["job"]["status"], "working", "{r}");
+    lead_event(&s, |e| {
+        matches!(e, LeadEvent::AgentFinished { name, status, .. }
+            if name == "Ada" && status == "succeeded")
+    })
+    .await;
+    let job = s
+        .pool()
+        .events_of("Ada")
+        .unwrap()
+        .since(0, 100)
+        .events
+        .into_iter()
+        .find_map(|r| match r.event {
+            LeadEvent::UserMessage { text, .. } => Some(text),
+            _ => None,
+        })
+        .expect("the job message");
+    assert_eq!(
+        job,
+        "A job from the lead agent:\n\nSet up a Minecraft server and look after it.\n\n\
+         The user's request, in their words:\nset up a minecraft server for my kids\n\n\
+         What the lead agent already found out:\n\
+         Image itzg/minecraft-server:java21, port 25565/tcp, EULA=TRUE."
+    );
+    assert_eq!(
+        s.pool().list()[0].job.as_deref(),
+        Some("Set up a Minecraft server and look after it.")
+    );
+    s.close().await;
+}
+
+#[tokio::test]
 async fn agent_a_needs_the_users_yes_on_agent_bs_workspace_and_never_sees_the_leads_tools() {
     let s = setup_full(
         scratch("agent-scope"),

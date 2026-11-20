@@ -54,6 +54,12 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
    kept. A file reaches another agent's box only by a transfer (copy by default): the user's own from the chat's
    details panel, or the lead agent's `transfer_file`, which always asks the user naming the file and both boxes.
    Agents can't transfer and never read another agent's box. Every transfer is audited with both boxes.
+10. **Agents build, the lead agent directs.** A new workspace is always created by an agent, which owns it from the
+   start. A lead agent never creates one itself: asked to make, install or set up something, it may do brief read-only
+   research, then hands the job to an agent at once (one that already looks after related workspaces, else a new
+   one), briefed with the user's words and its findings, and relays progress and approvals to the user. It keeps
+   its oversight of every workspace on its device (status, logs, stop/start, console, update, uninstall, reassign).
+   The user may still create a workspace directly.
 
 ## Naming
 
@@ -67,8 +73,8 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
 |---|---|---|
 | Device | `crates/device` (`melissa-device`, per-device daemon stub); device id `d-<8 hex>` made once in `$XDG_STATE_HOME/melissa/device.json` (`melissa_agent::device`); `melissa-server` runs per device | the device daemon itself; user-chosen device names |
 | Lead agent | the lead agent conversation in `melissa-server` (`melissa_agent::lead`), `Scope::Lead { device }`: any workspace of its device, destructive actions name the owning agent | primary-device lead agent coordination (M3) |
-| Agent | persistent, named agent (`lead::registry`, `lead::agents`): id `<device>.a<n>` (never reused), name (the lead agent chooses, the user renames), backend, tools; its own resumable agent session, sandbox, MCP session (`Scope::Agent`), transcript; lead agent tools `create_agent`, `give_agent_job`, `agent_status`, `list_agents`, `stop_agent` | budgets per agent; agent UI (owner's design) |
-| Workspace | `my_apps` (an agent: its own apps with phase, image, addresses, assignment; the others by name and owner; the lead agent: all by owner; 2026-11-20); an installed app (`app-<name>` namespace) with `melissa.io/workspace`, `melissa.io/device`, `melissa.io/owner-agent` (+ `assigned-by/at`); every install names its agent; old `melissa.io/owner` labels count as unassigned; the pre-rename keys `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` are read as aliases and moved once (2026-11-19) | more workspace kinds (agent-built apps, backups) |
+| Agent | persistent, named agent (`lead::registry`, `lead::agents`): id `<device>.a<n>` (never reused), name (the lead agent chooses, the user renames), backend, tools; its own resumable agent session, sandbox, MCP session (`Scope::Agent`), transcript; lead agent tools `create_agent` (optionally with its first `job`, 2026-11-20), `give_agent_job`, `agent_status`, `list_agents`, `stop_agent` | budgets per agent; agent UI (owner's design) |
+| Workspace | `my_apps` (an agent: its own apps with phase, image, addresses, assignment; the others by name and owner; the lead agent: all by owner; 2026-11-20); an installed app (`app-<name>` namespace) with `melissa.io/workspace`, `melissa.io/device`, `melissa.io/owner-agent` (+ `assigned-by/at`); an agent's install is its own, the lead agent's `deploy_app` of a new app is refused (`Access::Create`, rule 10; 2026-11-20); old `melissa.io/owner` labels count as unassigned; the pre-rename keys `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` are read as aliases and moved once (2026-11-19) | more workspace kinds (agent-built apps, backups) |
 | Service | the app's pods/containers; the owner agent or the lead agent stops/starts them with `stop_app` (scale to 0, always the user's confirmation, nothing deleted) and `start_app` (2026-11-19); reached at `http://<device>:<port>` (the workspace's own NodePort, `melissa.io/port`) | more services per workspace |
 | Reassign | lead agent: `reassign_workspace` (always the user's confirmation); user: `melissa-server workspace reassign <workspace> --to <agent>`; admission lets the owner change only with a new `assigned-at` | cross-device takeover (ids and `WorkspaceStore::assign` already take any agent id) |
 | Force delete | the user only: the app dialog's Force delete, `/api/apps/{app}/force-delete`, `melissa-server app force-delete <app> --yes`; any owner; removes the workspace and its data; the owning agent gets one brokered message, the lead agent a note with its next message (2026-11-19) | |

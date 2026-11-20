@@ -9,6 +9,10 @@ gives it the job (`create_agent`, `give_agent_job`, `agent_status`) instead of `
 and `install_app` from the lead agent names the agent that looks after the new workspace
 ([workspaces-and-ownership.md](workspaces-and-ownership.md)). Not re-run end to end since.
 
+Note (2026-11-20): the lead agent no longer deploys new apps at all: it hands the request to a helper
+(`create_agent` with `job`, or `give_agent_job`), whose `deploy_app` makes it the owner; the lead's own
+`deploy_app` of a new app is refused ([lead-loop.md](lead-loop.md), "The lead hands app work to helpers").
+
 Note (2026-11-19): apps now have `stop_app`/`start_app` ("turn off" must never become an uninstall) and
 links `http://<device>:<port>` instead of `<app>.<domain>`.
 
