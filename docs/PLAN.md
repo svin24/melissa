@@ -377,6 +377,17 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   anything over the native limits, is copied into the agent's working directory and the message names the path.
   Not yet: disk usage, upkeep line, several conversations with
   the lead agent / New chat, chat history after a daemon restart (event logs are in memory; transcripts have it).
+- **Voice input (2026-11-20, owner decision; DECISIONS):** Settings → Voice turns on a mic in the chat composer
+  (off by default; `voice_input` in `ui.toml`). Speech becomes text **on the device**: the browser records and
+  sends a 16 kHz WAV to `POST /ui/voice/transcribe`, the server runs whisper.cpp's `whisper-cli` (separate
+  process; `crates/voice`), and the text lands in the message box to edit, never sent by itself. Clips are never
+  stored. **Third-party network call (documented per AGENTS.md):** turning voice input on downloads the speech
+  model once from Hugging Face, `https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c…/ggml-base.bin`
+  (148 MB, MIT; redirects to Hugging Face's CDN), checked against a pinned SHA-256 and size, stored in
+  `$XDG_DATA_HOME/melissa/models` (`/var/lib/melissa/models` in the service). No other request; nothing about
+  the device or owner is sent (User-Agent `melissa`). The download is audited; Settings shows its progress and
+  can delete the model while voice input is off. whisper.cpp comes from the packaging (container image stage,
+  pinned in `packaging/container/whisper.lock`; Nix `services.melissa.voice.package`).
 
 ## 6b. Clients (later)
 
@@ -759,3 +770,15 @@ Roadmap (rough, phases may overlap):
     who reaches the UI/API can add schedules, the same trust as approving (28, 37, 67d). (h) A broken
     `schedules.json` runs nothing and saves nothing until fixed by hand; show that in the UI? (i) No per-run
     history beyond the last run (the audit log has every run).
+69. Voice input (2026-11-20; DECISIONS): (a) Browsers allow the microphone only in a secure context (HTTPS or
+    localhost). `ssh -L` (localhost) and `tailscale serve` (HTTPS with a ts.net certificate) work; plain
+    `http://<LAN address>` does not: the mic button then says "The microphone needs HTTPS or localhost". LAN
+    use needs the TLS plans (Q22: internal CA for `*.melissa.home.arpa`, or `tailscale serve`) before voice
+    works there. (b) Model: multilingual `base` (148 MB). `small-q5_1` (190 MB) is noticeably better for
+    non-English speech at ~2-3x the time; offer a choice in Settings? (c) Language is auto-detected per clip;
+    a fixed language in Settings would help short clips. (d) Not verified live in a browser yet (recording,
+    `decodeAudioData` of webm/opus and Safari's mp4, permission prompts); the server side and whisper-cli are
+    tested, the latter by hand with a real recording. (e) The model is checked by size at startup, by SHA-256
+    only when downloaded; re-hash it at startup (about 0.3 s)? (f) A restart during the download leaves no
+    model; the page then offers "Download the speech model" (no automatic resume). (g) No JSON API for the
+    toggle yet (`/api/settings/voice`).

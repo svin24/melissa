@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agent", "crates/appspec", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/web"]
+members = ["crates/agent", "crates/appspec", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/voice", "crates/web"]
 
 [workspace.package]
 edition = "2021"
@@ -13,6 +13,7 @@ melissa-web = { path = "crates/web" }
 melissa-cluster = { path = "crates/cluster" }
 melissa-appspec = { path = "crates/appspec" }
 melissa-settings = { path = "crates/settings" }
+melissa-voice = { path = "crates/voice" }
 # ACP (Agent Client Protocol) client: long-lived agent sessions (Grok `agent stdio`). Apache-2.0.
 agent-client-protocol = { version = "5.3", default-features = false }
 anyhow = "1"
@@ -20,6 +21,7 @@ base64 = "0.22"
 # Cron expressions for scheduled jobs (MIT): standard 5-field syntax (Vixie/OCPS semantics,
 # DST-aware) on jiff time zones; maintained, and no chrono needed.
 croner = { version = "4", default-features = false, features = ["jiff"] }
+bytes = "1"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 axum = "0.8"
 http-body-util = "0.1"
@@ -27,6 +29,9 @@ http-body-util = "0.1"
 # build through kube-rs (same versions and features), so no new crates.
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+# HTTPS for the one download Melissa makes herself (the speech model, Settings → Voice). Already in
+# the build through kube-rs (rustls + ring, native roots), so no new crates.
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12", "logging"] }
 # Kubernetes API types; the feature pins the API version to the k3s in image/k3s.lock.
 # Time zones for scheduled jobs (MIT OR Unlicense): the box's local zone from the system tzdb;
 # already in the build.

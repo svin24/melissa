@@ -21,7 +21,7 @@ ConfigurationDirectoryMode=0750
 RuntimeDirectory=melissa
 RuntimeDirectoryMode=0700
 # Maps the XDG paths used by the server to /etc/melissa, /var/lib/melissa and /run/melissa.
-Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib XDG_RUNTIME_DIR=/run
+Environment=XDG_CONFIG_HOME=/etc XDG_STATE_HOME=/var/lib XDG_DATA_HOME=/var/lib XDG_RUNTIME_DIR=/run
 # Where the vendors' installers put the agent CLIs (found on PATH as claude, grok, opencode).
 Environment=HOME=/var/lib/melissa/home
 Environment=PATH=/var/lib/melissa/home/.local/bin:/var/lib/melissa/home/.grok/bin:/var/lib/melissa/home/.opencode/bin:/usr/bin

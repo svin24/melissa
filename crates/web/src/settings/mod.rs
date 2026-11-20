@@ -1,5 +1,5 @@
 //! Settings: pages under `/settings/...`, their forms under `/ui/settings/...` and a JSON API
-//! under `/api/settings/...`. Two sections today (Providers, Updates); a new section is a
+//! under `/api/settings/...`. Sections: Providers, Voice, Updates, Developer; a new section is a
 //! file here, an entry in `pages::SECTIONS` and its routes below.
 //!
 //! UI routes (same-origin checked like every POST; htmx gets the section's region back, a
@@ -19,6 +19,13 @@
 //!   confirmation card; only a post with `confirm=yes` starts them.
 //! - `POST /ui/settings/restart`: restart Melissa now (saved settings also apply by
 //!   themselves once she is idle, see `apply.rs`).
+//! - `GET /settings/voice`; `POST /ui/settings/voice` (`enabled=on` or nothing): voice input
+//!   in the composer (`ui.toml`); turning it on downloads the speech model (progress from
+//!   `GET /ui/settings/voice/poll`), `POST /ui/settings/voice/retry` tries again,
+//!   `POST /ui/settings/voice/delete` removes the model while voice input is off.
+//! - `POST /ui/voice/transcribe` (body: a WAV recording, `Content-Type: audio/wav`, up to
+//!   12 MiB and two minutes) → `{"text"}` or `{"error"}` (409 off, 415 not WAV, 413 too big,
+//!   422 bad audio, 429 busy, 503 model not ready, 504 too slow). Nothing is stored.
 //! - `POST /ui/settings/developer/steps` (`enabled=on` or nothing): show the agents'
 //!   thinking and step timings in the chat (`ui.toml`; applies at once).
 //! - `GET /settings/schedules[?edit=<id>]`: scheduled jobs; `POST /ui/settings/schedules`
@@ -50,7 +57,8 @@
 //!   confirmations it approved; 409 switching on without `confirm`. Rules are made only by
 //!   "Always allow" on a pending request (`POST /api/confirmations/{id}/always`).
 //!
-//! Every change is audited (`settings.provider`, `settings.update`): what changed and the
+//! Every change is audited (`settings.provider`, `settings.update`, `settings.voice` with the
+//! model download's start and outcome): what changed and the
 //! SHA-256 of the new value, never the value. Installs and sign-ins are audited when asked
 //! for and again with their outcome (`settings.provider.install`, `settings.provider.login`);
 //! sign-in codes never reach the audit log.
@@ -62,6 +70,7 @@ mod permissions;
 mod providers;
 mod schedules;
 mod updates;
+mod voice;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -73,6 +82,7 @@ use std::{
 };
 
 use axum::{
+    extract::DefaultBodyLimit,
     response::Redirect,
     routing::{get, post},
     Router,
@@ -109,6 +119,8 @@ pub struct SettingsParts {
     pub home: Option<PathBuf>,
     /// Installs agent CLIs (Settings → Providers → Install), where the packaging allows it.
     pub installer: Installer,
+    /// Voice input: the speech model and the on-device transcriber (Settings → Voice).
+    pub voice: melissa_voice::Voice,
 }
 
 /// The Settings context. Cheap to clone.
@@ -164,12 +176,23 @@ impl Settings {
             updates,
             release: Release::read(&melissa_settings::updates::release_file()),
             home: std::env::var_os("HOME").map(PathBuf::from),
+            voice: melissa_voice::Voice::unavailable(),
         })
     }
 
     /// The owner's display preferences.
     pub(crate) fn prefs(&self) -> Prefs {
         self.inner.parts.prefs.get()
+    }
+
+    /// Where the composer sends a recording, when voice input is on and ready.
+    pub(crate) fn voice_url(&self) -> Option<&'static str> {
+        (self.prefs().voice_input && self.inner.parts.voice.ready())
+            .then_some(voice::TRANSCRIBE_URL)
+    }
+
+    fn voice(&self) -> &melissa_voice::Voice {
+        &self.inner.parts.voice
     }
 
     fn parts(&self) -> &SettingsParts {
@@ -290,6 +313,15 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route(
             "/ui/settings/schedules/{id}/remove",
             post(schedules::remove),
+        )
+        .route(pages::VOICE_URL, get(voice::page))
+        .route("/ui/settings/voice", post(voice::toggle))
+        .route("/ui/settings/voice/poll", get(voice::poll))
+        .route("/ui/settings/voice/retry", post(voice::retry))
+        .route("/ui/settings/voice/delete", post(voice::delete))
+        .route(
+            voice::TRANSCRIBE_URL,
+            post(voice::transcribe).layer(DefaultBodyLimit::max(voice::MAX_UPLOAD)),
         )
         .route("/settings/updates", get(updates::page))
         .route("/ui/settings/updates/{action}", post(updates::action))

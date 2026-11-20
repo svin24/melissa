@@ -724,6 +724,7 @@ mod tests {
 
         struct SettingsFixture {
             dir: std::path::PathBuf,
+            voice: melissa_voice::Voice,
         }
 
         impl SettingsFixture {
@@ -739,7 +740,10 @@ mod tests {
                 std::fs::write(&grok, "#!/bin/sh\necho 'grok 0.9.1'\n").unwrap();
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&grok, std::fs::Permissions::from_mode(0o755)).unwrap();
-                Self { dir }
+                Self {
+                    dir,
+                    voice: melissa_voice::Voice::unavailable(),
+                }
             }
 
             fn settings(&self, kind: HostKind, helper: bool) -> Settings {
@@ -848,6 +852,7 @@ mod tests {
                     },
                     home: Some("/var/lib/melissa/home".into()),
                     installer: self.installer(way),
+                    voice: self.voice.clone(),
                 })
             }
 
@@ -898,6 +903,249 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("0.3.1") && html.contains("From source"));
             assert!(html.contains("git pull"));
+        }
+
+        // --- Voice input ------------------------------------------------------------------
+
+        mod voice_fakes {
+            use axum::body::Bytes;
+            use futures::future::BoxFuture;
+            use melissa_voice::{
+                engine::Engine,
+                fetch::{Body, Fetch},
+                model::{ModelSpec, ModelStore},
+                wav::Clip,
+                Voice, VoiceError,
+            };
+
+            /// Serves the same bytes for any URL (no network).
+            pub struct ServeBytes(pub Vec<u8>);
+            struct Once(Option<Bytes>);
+
+            impl Fetch for ServeBytes {
+                fn get<'a>(
+                    &'a self,
+                    _: &'a str,
+                ) -> BoxFuture<'a, Result<Box<dyn Body>, VoiceError>> {
+                    Box::pin(async move {
+                        Ok(Box::new(Once(Some(Bytes::from(self.0.clone())))) as Box<dyn Body>)
+                    })
+                }
+            }
+
+            impl Body for Once {
+                fn len_hint(&self) -> Option<u64> {
+                    None
+                }
+                fn next(&mut self) -> BoxFuture<'_, Result<Option<Bytes>, VoiceError>> {
+                    let piece = self.0.take();
+                    Box::pin(async move { Ok(piece) })
+                }
+            }
+
+            /// Says how long the clip was.
+            pub struct Parrot;
+
+            impl Engine for Parrot {
+                fn transcribe<'a>(
+                    &'a self,
+                    clip: &'a Clip,
+                ) -> BoxFuture<'a, Result<String, VoiceError>> {
+                    Box::pin(async move { Ok(format!("heard {} ms", clip.millis())) })
+                }
+            }
+
+            /// Voice input with the model pinned to `pinned`, the fake server serving `serve`.
+            pub fn voice(dir: &std::path::Path, serve: &[u8], pinned: &[u8]) -> Voice {
+                let spec = ModelSpec {
+                    file: "model.bin",
+                    url: "https://example.com/model.bin",
+                    size: pinned.len() as u64,
+                    sha256: Box::leak(melissa_settings::sha256_hex(pinned).into_boxed_str()),
+                };
+                Voice::from_parts(
+                    ModelStore::open(dir, spec),
+                    Some(std::sync::Arc::new(ServeBytes(serve.to_vec()))),
+                    Some(std::sync::Arc::new(Parrot)),
+                )
+            }
+
+            pub async fn settled(v: &Voice) -> melissa_voice::model::ModelState {
+                for _ in 0..500 {
+                    let s = v.state();
+                    if !matches!(s, melissa_voice::model::ModelState::Downloading { .. }) {
+                        return s;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                v.state()
+            }
+        }
+
+        fn recording(content_type: &str, body: Vec<u8>) -> axum::http::Request<Body> {
+            axum::http::Request::post("/ui/voice/transcribe")
+                .header(header::CONTENT_TYPE, content_type)
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(Body::from(body))
+                .unwrap()
+        }
+
+        fn seconds_of_silence(s: usize) -> Vec<u8> {
+            melissa_voice::wav::Clip::from_samples(vec![0; 16_000 * s]).to_wav()
+        }
+
+        #[tokio::test]
+        async fn voice_input_downloads_the_model_and_puts_a_mic_in_the_composer() {
+            let mut fx = SettingsFixture::new("voice");
+            let models = fx.dir.join("data/models");
+            fx.voice = voice_fakes::voice(&models, b"model", b"model");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
+            let (status, _, html) = send(&app, get("/settings/voice")).await;
+            assert_eq!(status, StatusCode::OK);
+            for want in [
+                "href=\"/settings/voice\"",
+                "Voice input",
+                "role=\"switch\"",
+                "Turning it on downloads a 1 MB speech model once.",
+            ] {
+                assert!(html.contains(want), "missing {want}: {html}");
+            }
+            let (_, _, home) = send(&app, get("/")).await;
+            assert!(!home.contains("id=\"voice\""));
+
+            let (status, _, _) = send(&app, form("/ui/settings/voice", "enabled=on", true)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                voice_fakes::settled(&fx.voice).await,
+                melissa_voice::model::ModelState::Ready
+            );
+            assert!(models.join("model.bin").is_file());
+            let saved = std::fs::read_to_string(fx.dir.join("config/ui.toml")).unwrap();
+            assert!(saved.contains("voice_input = true"), "{saved}");
+            let audit = fx.audit();
+            for want in [
+                "voice_input: on",
+                "speech model model.bin download started from https://example.com/model.bin",
+                "speech model model.bin downloaded, sha256 verified",
+            ] {
+                assert!(audit.contains(want), "missing {want}: {audit}");
+            }
+            let (_, _, html) = send(&app, get("/ui/settings/voice/poll")).await;
+            assert!(html.contains("Ready."), "{html}");
+            assert!(!html.contains("hx-trigger=\"every"));
+
+            // The composer has the mic now, pointing at the transcribe route.
+            let (_, _, home) = send(&app, get("/")).await;
+            assert!(home.contains("id=\"voice\""), "{home}");
+            assert!(home.contains("data-url=\"/ui/voice/transcribe\""));
+            let (status, v) = send_json(&app, recording("audio/wav", seconds_of_silence(1))).await;
+            assert_eq!(status, StatusCode::OK, "{v}");
+            assert_eq!(v["text"], "heard 1000 ms");
+
+            // Off: no mic, no transcribing, the model can be deleted.
+            let (_, _, html) = send(&app, form("/ui/settings/voice", "", true)).await;
+            assert!(html.contains("Delete it"), "{html}");
+            let (_, _, home) = send(&app, get("/")).await;
+            assert!(!home.contains("id=\"voice\""));
+            let (status, _) = send_json(&app, recording("audio/wav", seconds_of_silence(1))).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            let (_, _, html) = send(&app, form("/ui/settings/voice/delete", "", true)).await;
+            assert!(html.contains("Turning it on downloads"), "{html}");
+            assert!(!models.join("model.bin").exists());
+            let audit = fx.audit();
+            assert!(audit.contains("voice_input: off"));
+            assert!(audit.contains("speech model model.bin deleted"));
+        }
+
+        #[tokio::test]
+        async fn a_model_that_does_not_match_its_checksum_is_refused() {
+            let mut fx = SettingsFixture::new("voice-bad");
+            let models = fx.dir.join("data/models");
+            fx.voice = voice_fakes::voice(&models, b"evil!", b"model");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
+            send(&app, form("/ui/settings/voice", "enabled=on", true)).await;
+            assert!(matches!(
+                voice_fakes::settled(&fx.voice).await,
+                melissa_voice::model::ModelState::Failed(_)
+            ));
+            assert!(!models.join("model.bin").exists());
+            assert!(!models.join("model.bin.part").exists());
+            let (_, _, html) = send(&app, get("/ui/settings/voice/poll")).await;
+            assert!(html.contains("didn"), "{html}");
+            assert!(html.contains("Try again"));
+            assert!(fx.audit().contains("download failed"));
+            let (_, _, home) = send(&app, get("/")).await;
+            assert!(!home.contains("id=\"voice\""));
+            let (status, _) = send_json(&app, recording("audio/wav", seconds_of_silence(1))).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        #[tokio::test]
+        async fn the_transcribe_route_checks_what_it_gets() {
+            let mut fx = SettingsFixture::new("voice-route");
+            let models = fx.dir.join("data/models");
+            std::fs::create_dir_all(&models).unwrap();
+            // Already downloaded: no download starts.
+            std::fs::write(models.join("model.bin"), b"model").unwrap();
+            fx.voice = voice_fakes::voice(&models, b"never fetched", b"model");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
+            send(&app, form("/ui/settings/voice", "enabled=on", true)).await;
+            assert!(fx.voice.ready());
+            assert!(!fx.audit().contains("download started"));
+
+            let (status, v) = send_json(&app, recording("text/plain", b"hi".to_vec())).await;
+            assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            assert_eq!(v["error"], "Send a WAV recording.");
+            let (status, _) = send_json(&app, recording("audio/webm", seconds_of_silence(1))).await;
+            assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            let (status, _, _) =
+                send(&app, recording("audio/wav", vec![0; 13 * 1024 * 1024])).await;
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+            let (status, v) =
+                send_json(&app, recording("audio/wav", b"OggS not a wav".to_vec())).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(v["error"], "That isn't a WAV recording.");
+            let (status, v) =
+                send_json(&app, recording("audio/wav", seconds_of_silence(121))).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(
+                v["error"].as_str().unwrap().contains("up to 120 seconds"),
+                "{v}"
+            );
+            let (status, v) = send_json(
+                &app,
+                recording("audio/wav", Vec::from(&seconds_of_silence(1)[..44])),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(v["error"], "Nothing was recorded.");
+            // Another site can't use the box's microphone route.
+            let mut cross = recording("audio/wav", seconds_of_silence(1));
+            cross
+                .headers_mut()
+                .insert("sec-fetch-site", "cross-site".parse().unwrap());
+            let (status, _, _) = send(&app, cross).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            let (status, v) = send_json(
+                &app,
+                recording("audio/wav; codecs=1", seconds_of_silence(120)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(v["text"], "heard 120000 ms");
+        }
+
+        #[tokio::test]
+        async fn voice_input_is_locked_without_a_speech_engine() {
+            let fx = SettingsFixture::new("voice-none");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
+            let (_, _, html) = send(&app, get("/settings/voice")).await;
+            assert!(html.contains("Not available on this install"), "{html}");
+            assert!(html.contains("disabled"));
+            let (_, _, html) = send(&app, form("/ui/settings/voice", "enabled=on", true)).await;
+            assert!(html.contains("isn"), "{html}");
+            let saved = std::fs::read_to_string(fx.dir.join("config/ui.toml")).unwrap_or_default();
+            assert!(!saved.contains("voice_input = true"));
         }
 
         #[tokio::test]

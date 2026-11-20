@@ -754,3 +754,36 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   cover `schedule_job` (see above), excluding it from the bypass (the bypass would no longer mean "approve
   everything"). Cron crate: croner (maintained, standard Vixie/OCPS semantics, DST-aware, jiff support; jiff is
   already in the build).
+- **2026-11-20 — Voice input: speech to text on the box with whisper.cpp's CLI, model downloaded on demand.**
+  Owner decision: a mic in the chat composer, private and offline on the LAN; not the browser's Web Speech
+  API (it sends audio to Google/Microsoft); a one-time model download of about 150 MB when the owner turns it
+  on is accepted. Settings → Voice has the toggle (`voice_input` in `ui.toml`, off by default).
+  **Engine: whisper.cpp's `whisper-cli` as a separate process per clip, not linked in (whisper-rs).**
+  whisper-rs builds whisper.cpp through cmake and bindgen (libclang) inside our cargo build, in the container
+  build stage and in the Nix package, puts C++ and the model's memory into the long-running server, and a crash
+  there takes the UI with it. A separate program keeps `melissa-server` lean and pure Rust (`forbid(unsafe_code)`
+  untouched, no FFI), frees the model's ~200 MB after each run, isolates crashes, and is killed on timeout.
+  Cost: ~0.2 s model load per clip, negligible next to the run. Packaging: the container image builds the CLI
+  in its own stage from the pinned v1.9.5 tarball (`packaging/container/whisper.lock`, sha256), CPU only with
+  `GGML_CPU_ALL_VARIANTS` (best of SSE4.2 … AVX-512 picked at runtime, so the image runs on any x86-64), no
+  SDL/ffmpeg/curl, 22 MB in `/usr/lib/melissa/whisper/`; Fedora's `whisper-cpp` RPM was rejected (library only,
+  no CLI, and it pulls ROCm). Nix: `services.melissa.voice.package`, default nixpkgs' whisper-cpp without SDL and
+  ffmpeg (231 MiB closure instead of 1.1 GiB; prebuilt in the binary cache), passed as `MELISSA_WHISPER_CLI`.
+  **Model: multilingual `base` (`ggml-base.bin`, 148 MB), pinned by URL revision, size and SHA-256.** Fits the
+  accepted budget; on a 16-core x86 box it transcribes faster than real time with 8 threads (11 s of speech in
+  1.9 s measured on the dev laptop), so a 2-minute clip takes seconds. `small` (488 MB) is more accurate but over
+  budget and ~3x slower; `small-q5_1` (190 MB) is the upgrade candidate (open question 69). Language is
+  auto-detected. Download: hyper + rustls (already in the build through kube-rs, no new crates), https only,
+  redirects followed (Hugging Face → its CDN), streamed to `models/ggml-base.bin.part` under
+  `$XDG_DATA_HOME/melissa` (`/var/lib/melissa` in the service) while hashing; anything but the exact size and
+  hash is deleted. Audited: toggle, download start (URL, sha256) and outcome, deletion.
+  **Audio path:** the browser records (MediaRecorder), decodes its own recording and renders it at 16 kHz mono
+  (`OfflineAudioContext`), and posts a WAV to `POST /ui/voice/transcribe`. No Opus/AAC decoder on the server
+  (no pure-Rust Opus decoder is mature; ffmpeg avoided); the server parses the WAV in safe Rust, downmixes and
+  resamples anything 8-48 kHz, and writes a fresh canonical file for whisper-cli, so the C++ parser never sees
+  bytes from the network. Limits: 12 MiB body, 2 minutes, one clip at a time with 3 waiting (429 beyond), 120 s
+  per run (504). The text goes into the message box for the owner to edit; nothing is sent automatically.
+  Clips are never stored: in memory, plus one 0600 temp file in `/run/melissa/voice` (tmpfs) removed when the
+  run ends; the log records lengths only. Alternatives: Web Speech API (cloud, rejected by the owner);
+  whisper-rs (above); whisper.cpp's HTTP server as a resident service (keeps the model in memory all the time
+  for little gain); candle (pure Rust, but much slower on CPU and a heavy build).

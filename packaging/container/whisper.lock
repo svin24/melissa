@@ -1,0 +1,8 @@
+# whisper.cpp pinned for voice input (Settings → Voice; docs/DECISIONS.md 2026-11-20). Sourced as shell by
+# the image build, which builds only its CLI (CPU, all x86-64 variants loaded at runtime) from this tarball.
+# Update: bump the version, then
+#   curl -fsSL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v<version>.tar.gz | sha256sum
+# and check that the model in crates/voice/src/model.rs (ggml format) still loads (`just container-build`,
+# then the ignored `real_whisper_transcribes_a_recording` test against the image's whisper-cli).
+WHISPER_VERSION=1.9.5
+WHISPER_SHA256=ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720

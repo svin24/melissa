@@ -45,6 +45,13 @@ licenses under `/usr/share/licenses`):
 | k3s-selinux | Apache License 2.0 | <https://github.com/k3s-io/k3s-selinux> |
 | Tailscale | BSD-3-Clause style (RPM metadata: MIT) | <https://tailscale.com> |
 | bubblewrap | LGPL-2.1-or-later | Fedora package |
+| whisper.cpp 1.9.5 (`whisper-cli` and its ggml libraries, voice input) | MIT, Copyright (c) 2023-2026 The ggml authors | <https://github.com/ggml-org/whisper.cpp>, built from the tag's tarball (sha256 in `packaging/container/whisper.lock`); on Nix from nixpkgs |
+
+Downloaded **at runtime, only when the owner turns voice input on** (Settings → Voice), not redistributed:
+
+| Component | License | Source |
+|---|---|---|
+| Whisper `base` speech model, ggml format (`ggml-base.bin`, 147,951,465 bytes, SHA-256 pinned) | MIT (OpenAI's Whisper weights; the ggml conversion by the whisper.cpp project) | <https://huggingface.co/ggerganov/whisper.cpp>, revision `5359861c` |
 
 ## Where the notices live in the images
 
@@ -56,6 +63,7 @@ licenses under `/usr/share/licenses`):
 - `/usr/share/licenses/melissa/LICENSE`: Melissa's own license (MIT, see docs/PLAN.md section 8).
 - `/usr/share/licenses/k3s/LICENSE`: the k3s Apache-2.0 LICENSE from the pinned release tag, verified by sha256
   (`K3S_LICENSE_SHA256` in `packaging/common/usr/lib/melissa/k3s.lock`). k3s has no NOTICE file (checked at v1.37.2+k3s1).
+- `/usr/share/licenses/whisper.cpp/LICENSE`: whisper.cpp's MIT license from the pinned tarball.
 - Fedora packages, k3s-selinux, Tailscale and bubblewrap: their RPMs install their own files under
   `/usr/share/licenses/<package>/`.
 

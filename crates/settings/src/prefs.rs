@@ -20,6 +20,9 @@ pub struct Prefs {
     /// Show the agents' thinking and how long each step took in the chat (Settings →
     /// Developer).
     pub show_steps: bool,
+    /// A microphone button in the chat composer; speech becomes text on this device
+    /// (Settings → Voice). Turning it on downloads the speech model once.
+    pub voice_input: bool,
 }
 
 impl Prefs {
@@ -113,6 +116,13 @@ mod tests {
         assert!(!store.get().show_steps);
         store.update(|p| p.show_steps = true).unwrap();
         assert!(PrefsStore::open(path.clone()).get().show_steps);
+        // Files written before a preference existed still load (serde default).
+        assert!(!PrefsStore::open(path.clone()).get().voice_input);
+        store.update(|p| p.voice_input = true).unwrap();
+        let back = PrefsStore::open(path.clone()).get();
+        assert!(back.voice_input && back.show_steps);
+        store.update(|p| p.voice_input = false).unwrap();
+        assert!(!PrefsStore::open(path.clone()).get().voice_input);
         // Unknown or broken content: the defaults.
         std::fs::write(&path, "nope = 1\n").unwrap();
         assert_eq!(PrefsStore::open(path).get(), Prefs::default());

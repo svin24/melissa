@@ -27,7 +27,8 @@
 //! (`permissions.json`) and scheduled jobs (`schedules.json`): `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
 //! systemd credential, else `kubeconfig` in the config, else `/run/melissa-kube/server.kubeconfig`
 //! (written by root once k3s is up). They are looked up on every cluster call, so the lead agent
-//! never waits for k3s and attaches to it without a restart.
+//! never waits for k3s and attaches to it without a restart. Downloaded data (the speech model
+//! for voice input): `$XDG_DATA_HOME/melissa/`.
 
 mod client;
 mod config;
@@ -631,6 +632,12 @@ async fn serve(
     let prefs = melissa_settings::prefs::PrefsStore::open(
         path.with_file_name(melissa_settings::prefs::FILE_NAME),
     );
+    // Voice input: whisper.cpp from the packaging (if any); the model under the data dir.
+    let voice = melissa_voice::Voice::new(melissa_voice::VoiceConfig {
+        data: dirs.data.clone(),
+        scratch: dirs.scratch.clone(),
+        program: melissa_voice::find_program(),
+    });
     let settings = melissa_web::Settings::new(melissa_web::SettingsParts {
         store: ProviderStore::new(path, file),
         prefs,
@@ -645,6 +652,7 @@ async fn serve(
         updates,
         release: Release::read(&melissa_settings::updates::release_file()),
         home: std::env::var_os("HOME").map(PathBuf::from),
+        voice,
     });
     melissa_web::serve(
         listener,

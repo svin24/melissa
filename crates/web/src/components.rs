@@ -916,6 +916,15 @@ fn file_icon() -> Markup {
     }
 }
 
+fn mic_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 20 20" aria-hidden="true" focusable="false" {
+            rect x="7" y="2.5" width="6" height="10" rx="3" {}
+            path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" {}
+        }
+    }
+}
+
 fn paperclip_icon() -> Markup {
     html! {
         svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
@@ -1116,6 +1125,8 @@ pub struct ComposerTarget<'a> {
     /// POST URL that stops the running turn.
     pub cancel: &'a str,
     pub placeholder: &'a str,
+    /// POST URL that turns a recording into text (voice input on and ready), if any.
+    pub voice: Option<&'a str>,
 }
 
 /// The message box at the bottom of the chat. `draft` pre-fills it, `error` explains why
@@ -1155,6 +1166,18 @@ pub fn composer(
                 label.attach for="attach" title="Attach files" {
                     (paperclip_icon())
                     span.visually-hidden { "Attach files" }
+                }
+                @if let Some(url) = to.voice {
+                    // Voice input: melissa.js shows it (recording needs script), records, sends
+                    // the clip to `url` and puts the text in the box to edit; nothing is sent
+                    // by itself. Where the browser can't record (plain http on the LAN) a
+                    // click says why.
+                    button.voice #voice type="button" hidden data-url=(url) aria-pressed="false"
+                        title="Speak instead of typing" {
+                        (mic_icon())
+                        span.voice-time aria-hidden="true" {}
+                        span.visually-hidden.voice-label { "Speak instead of typing" }
+                    }
                 }
                 button.send type="submit" {
                     svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M2.5 8h10M8.5 3.5L13 8l-4.5 4.5" {} }
@@ -1755,6 +1778,17 @@ pub fn confirm_card(c: &ConfirmCard<'_>) -> Markup {
                 }
                 a.button-like href=(c.cancel_href) { "Keep as is" }
             }
+        }
+    }
+}
+
+/// A long step with a known size (a download): what it is, how far ("45 of 141 MB") and a
+/// native progress bar.
+pub fn progress_bar(label: &str, text: &str, done: u64, total: u64) -> Markup {
+    html! {
+        div.meter {
+            div.meter-head { span { (label) } span.meter-text { (text) } }
+            progress max=(total.max(1)) value=(done.min(total)) aria-label=(label) { (text) }
         }
     }
 }

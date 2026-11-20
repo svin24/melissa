@@ -573,12 +573,19 @@ impl ServerConfig {
     }
 }
 
-/// XDG base directories for Melissa (`~/.config/melissa`, `~/.local/state/melissa`).
+/// XDG base directories for Melissa (`~/.config/melissa`, `~/.local/state/melissa`,
+/// `~/.local/share/melissa`).
 pub struct Dirs {
     pub config: PathBuf,
     pub state: PathBuf,
+    /// Downloaded data that can be fetched again (the speech model):
+    /// `$XDG_DATA_HOME/melissa` (`/var/lib/melissa` in the service).
+    pub data: PathBuf,
     /// Per-sandbox egress sockets: `$XDG_RUNTIME_DIR/melissa/egress`, else under `state`.
     pub egress: PathBuf,
+    /// Short-lived private files (a voice clip while it is transcribed):
+    /// `$XDG_RUNTIME_DIR/melissa` (tmpfs), else `state/tmp`.
+    pub scratch: PathBuf,
 }
 
 impl Dirs {
@@ -594,14 +601,21 @@ impl Dirs {
             }
         };
         let state = base("XDG_STATE_HOME", ".local/state")?.join("melissa");
-        let egress = match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
-            Some(p) if p.is_absolute() => p.join("melissa").join("egress"),
-            _ => state.join("egress"),
+        let runtime = match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+            Some(p) if p.is_absolute() => Some(p.join("melissa")),
+            _ => None,
         };
+        let egress = match &runtime {
+            Some(r) => r.join("egress"),
+            None => state.join("egress"),
+        };
+        let scratch = runtime.unwrap_or_else(|| state.join("tmp"));
         Ok(Self {
             config: base("XDG_CONFIG_HOME", ".config")?.join("melissa"),
+            data: base("XDG_DATA_HOME", ".local/share")?.join("melissa"),
             state,
             egress,
+            scratch,
         })
     }
 }
