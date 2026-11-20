@@ -900,17 +900,255 @@ pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
     }
 }
 
-// --- File panel (2026-11-20, owner decision) ---------------------------------------------
+// --- Details panel (2026-11-20, owner decision) ------------------------------------------
 //
-// A conversation's file box, beside its chat: what the owner sent and what the agent saved.
-// Collapsed by default (`details`; melissa.js remembers open/closed per browser); on narrow
-// screens it sits above the chat as a section. Live: the stream swaps its body and count.
+// The right-hand panel of a chat page, about the agent whose chat it is (Melissa on home, a
+// helper on its page): who it is and what it runs on, its apps, its schedules and its file
+// box. Wide screens: a column beside the chat (melissa.js can hide it, remembered per
+// browser). Narrow screens with script: a sheet over the chat, opened with the Details
+// button (Esc or Close shut it; focus moves in and back). Without script it is always shown:
+// beside the chat, or below it on narrow screens. Live: the stream swaps the file list and
+// count, and the agent's status; the apps poll like the app strip.
 
-/// DOM id of the file panel's body (delete and retention swap it; the stream replaces its
-/// content).
+/// DOM id of the details panel.
+pub const DETAILS_ID: &str = "details-panel";
+/// DOM id of the agent section (rename and delete swap it).
+pub const DETAILS_AGENT_ID: &str = "details-agent";
+/// DOM id of the agent's status badge (the stream replaces its content).
+pub const DETAILS_STATUS_ID: &str = "details-status";
+/// DOM id of the apps section (it polls).
+pub const DETAILS_APPS_ID: &str = "details-apps";
+/// DOM id of the schedules section (on/off swaps it).
+pub const DETAILS_SCHEDULES_ID: &str = "details-schedules";
+/// DOM id of the file panel's body (delete, upload, send and retention swap it; the stream
+/// replaces its content).
 pub const FILE_BODY_ID: &str = "file-box-body";
-/// DOM id of the file count in the panel's summary.
+/// DOM id of the file count in the Files heading.
 pub const FILE_COUNT_ID: &str = "file-count";
+
+/// The agent section of the details panel.
+pub struct AgentCard<'a> {
+    /// The rename form's action (None: Melissa, whose name is fixed).
+    pub rename: Option<&'a str>,
+    pub name: &'a str,
+    /// `Lead agent` or `Helper`.
+    pub role: &'a str,
+    /// "Claude · Opus 5.5 · High".
+    pub runs_on: &'a str,
+    /// The chat has the model picker: a Change button opens it.
+    pub picker: bool,
+    pub status: (&'a str, Tone),
+    /// "By Melissa · 20 Nov", when known.
+    pub created: Option<&'a str>,
+    /// Delete's action (helpers only), unless `kept` says why it can't be deleted now.
+    pub delete: Option<&'a str>,
+    /// Why Delete isn't offered ("Looks after Nextcloud. …").
+    pub kept: Option<&'a str>,
+    pub error: Option<&'a str>,
+}
+
+/// One app in the details panel.
+pub struct DetailApp {
+    pub name: String,
+    /// Its details ([`app_details`] into the page's [`app_dialog`]).
+    pub details: String,
+    pub health: Health,
+    /// "Running".
+    pub status: String,
+    /// Who looks after it (Melissa's panel lists every app).
+    pub keeper: Option<String>,
+}
+
+/// The apps section.
+pub struct DetailApps<'a> {
+    /// Where the section reloads itself from.
+    pub url: &'a str,
+    pub apps: &'a [DetailApp],
+    pub empty: &'a str,
+}
+
+/// One schedule in the details panel.
+pub struct DetailSchedule {
+    pub name: String,
+    /// "Every day at 03:00".
+    pub when: String,
+    /// "Next: 21 Nov 03:00" or "Off".
+    pub next: String,
+    pub enabled: bool,
+    /// POST here with `enabled=on|off`.
+    pub toggle: String,
+}
+
+/// The schedules section.
+pub struct DetailSchedules<'a> {
+    pub schedules: &'a [DetailSchedule],
+    /// None: schedules don't run on this device.
+    pub available: bool,
+    pub flash: Option<(&'a str, Tone)>,
+}
+
+/// Everything the details panel shows.
+pub struct DetailsPanel<'a> {
+    pub agent: AgentCard<'a>,
+    pub apps: DetailApps<'a>,
+    pub schedules: DetailSchedules<'a>,
+    pub files: &'a FilePanel<'a>,
+}
+
+/// The Details button of a chat page (shown by melissa.js; without script the panel is
+/// always visible, so the button stays hidden).
+pub fn details_toggle() -> Markup {
+    html! {
+        button.details-toggle type="button" aria-controls=(DETAILS_ID) aria-expanded="false"
+            data-details-toggle hidden {
+            (panel_icon())
+            span.label { "Details" }
+        }
+    }
+}
+
+/// The details panel beside a chat.
+pub fn details_panel(p: &DetailsPanel<'_>) -> Markup {
+    html! {
+        div.details-backdrop data-details-close hidden {}
+        aside.details id=(DETAILS_ID) aria-labelledby="details-h" tabindex="-1" {
+            div.details-head {
+                h2 #details-h { "Details" }
+                button.icon-button.details-close type="button" data-details-close
+                    aria-label="Close details" hidden { (close_icon()) }
+            }
+            (agent_card(&p.agent))
+            section.details-section aria-labelledby="details-apps-h" {
+                h3 #details-apps-h { "Apps" }
+                (detail_apps(&p.apps))
+            }
+            section.details-section aria-labelledby="details-schedules-h" {
+                h3 #details-schedules-h { "Schedules" }
+                (detail_schedules(&p.schedules))
+            }
+            section.details-section aria-labelledby="details-files-h" {
+                h3 #details-files-h { "Files " (file_count(p.files.files.len(), false)) }
+                (file_panel_body(p.files))
+            }
+        }
+    }
+}
+
+/// The agent section (the response to rename and to a refused delete).
+pub fn agent_card(a: &AgentCard<'_>) -> Markup {
+    let target = format!("#{DETAILS_AGENT_ID}");
+    html! {
+        section.details-section.agent-card id=(DETAILS_AGENT_ID) aria-label="Agent" {
+            div.agent-title {
+                p.agent-name { (a.name) }
+                span id=(DETAILS_STATUS_ID) { (badge(a.status.0, a.status.1)) }
+            }
+            @if let Some(e) = a.error { (notice(e, Tone::Error)) }
+            dl.agent-facts {
+                div { dt { "Role" } dd { (a.role) } }
+                div {
+                    dt { "Runs on" }
+                    dd {
+                        span { (a.runs_on) }
+                        @if a.picker {
+                            " "
+                            button.link type="button" popovertarget=(MODEL_PICKER_ID)
+                                aria-haspopup="dialog" { "Change" }
+                        }
+                    }
+                }
+                @if let Some(c) = a.created { div { dt { "Made" } dd { (c) } } }
+            }
+            @if let Some(action) = a.rename {
+                details.disclosure.agent-rename {
+                    summary { "Rename" }
+                    form.one-field method="post" action=(action) hx-post=(action)
+                        hx-target=(target) hx-swap="outerHTML" {
+                        label.field {
+                            span.visually-hidden { "New name" }
+                            input type="text" name="name" value=(a.name) required maxlength="40"
+                                autocomplete="off" spellcheck="false";
+                        }
+                        button.secondary type="submit" { "Save" }
+                    }
+                }
+            }
+            @if let Some(kept) = a.kept {
+                p.quiet { (kept) }
+            } @else if let Some(action) = a.delete {
+                (action_button(
+                    action,
+                    DETAILS_AGENT_ID,
+                    "Delete",
+                    &format!("Delete {}? Its chat, file box and schedules go with it. This can't be undone.", a.name),
+                ))
+            }
+        }
+    }
+}
+
+/// The apps section's content, polling for changes like the app strip.
+pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
+    html! {
+        div id=(DETAILS_APPS_ID) hx-get=(s.url) hx-trigger="every 15s" hx-swap="outerHTML" {
+            @if s.apps.is_empty() {
+                p.quiet { (s.empty) }
+            } @else {
+                ul.detail-list {
+                    @for a in s.apps {
+                        li {
+                            span class={ "dot " (a.health.class()) } aria-hidden="true" {}
+                            // Without script: the apps page, where each app has its details.
+                            a.detail-main href="/cluster" hx-get=(a.details) hx-target="#app-dialog"
+                                hx-swap="innerHTML" aria-haspopup="dialog" {
+                                span.name { (a.name) }
+                                span.meta {
+                                    (a.status)
+                                    @if let Some(k) = &a.keeper { " · " (k) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            a.detail-more href="/cluster" { "Apps and devices" }
+        }
+    }
+}
+
+/// The schedules section's content (the response to on/off).
+pub fn detail_schedules(s: &DetailSchedules<'_>) -> Markup {
+    let target = format!("#{DETAILS_SCHEDULES_ID}");
+    html! {
+        div id=(DETAILS_SCHEDULES_ID) {
+            @if let Some((text, tone)) = s.flash { (notice(text, tone)) }
+            @if !s.available {
+                p.quiet { "Schedules aren't running on this device." }
+            } @else if s.schedules.is_empty() {
+                p.quiet { "No schedules." }
+            } @else {
+                ul.detail-list {
+                    @for sc in s.schedules {
+                        li {
+                            div.detail-main {
+                                span.name { (sc.name) }
+                                span.meta { (sc.when) " · " (sc.next) }
+                            }
+                            form method="post" action=(sc.toggle) hx-post=(sc.toggle)
+                                hx-target=(target) hx-swap="outerHTML" {
+                                input type="hidden" name="enabled" value=(if sc.enabled { "off" } else { "on" });
+                                button.secondary type="submit" aria-label={
+                                    (if sc.enabled { "Turn off " } else { "Turn on " }) (sc.name)
+                                } { (if sc.enabled { "Turn off" } else { "Turn on" }) }
+                            }
+                        }
+                    }
+                }
+            }
+            a.detail-more href="/settings/schedules" { "All schedules" }
+        }
+    }
+}
 
 /// One file in a chat's file panel.
 pub struct PanelFile {
@@ -921,13 +1159,19 @@ pub struct PanelFile {
     pub size: String,
     /// When it was added, for people (`20 Nov 14:03`).
     pub added: String,
-    /// Who added it: `You` or the agent's name.
+    /// Who added it: `You`, the agent's name, or `From Ada`.
     pub by: String,
     /// POST here to delete it.
     pub delete: String,
+    /// POST here (`to`, `mode=move`) to send it to another box.
+    pub send: String,
+    /// What "Reference in chat" puts in the message box: `[file box: report.pdf]`.
+    pub reference: String,
+    /// The chat with that text in the box (without script).
+    pub reference_href: String,
 }
 
-/// A chat's file panel.
+/// A chat's file panel (the Files section of the details panel).
 pub struct FilePanel<'a> {
     pub files: &'a [PanelFile],
     /// `3 files, 12 MiB`.
@@ -941,32 +1185,24 @@ pub struct FilePanel<'a> {
     pub keep_selected: &'a str,
     /// Whose box, for the empty text ("Melissa", "Ada").
     pub whose: &'a str,
+    /// POST files here (multipart, field `files`) to add them to the box.
+    pub upload: &'a str,
+    /// The other boxes a file can be sent to: (key, name).
+    pub send_to: &'a [(String, String)],
+    /// What the last action did.
+    pub flash: Option<(&'a str, Tone)>,
 }
 
-/// The file panel beside a chat.
-pub fn file_panel(p: &FilePanel<'_>) -> Markup {
+/// The file count in the Files heading (`oob`: as an out-of-band swap).
+pub fn file_count(n: usize, oob: bool) -> Markup {
     html! {
-        aside.file-panel aria-label="Files" {
-            details.file-box data-remember="file-panel" {
-                summary {
-                    (file_icon())
-                    span.label { "Files" }
-                    (file_count(p.files.len(), false))
-                }
-                (file_panel_body(p))
-            }
+        span.count id=(FILE_COUNT_ID) hx-swap-oob=[oob.then_some("true")] {
+            (n) span.visually-hidden { (if n == 1 { " file" } else { " files" }) }
         }
     }
 }
 
-/// The count in the file panel's summary (`oob`: as an out-of-band swap).
-pub fn file_count(n: usize, oob: bool) -> Markup {
-    html! {
-        span.count id=(FILE_COUNT_ID) hx-swap-oob=[oob.then_some("true")] { (n) }
-    }
-}
-
-/// The file panel's body with its id (the response to delete and retention changes).
+/// The file panel's body with its id (the response to its actions).
 pub fn file_panel_body(p: &FilePanel<'_>) -> Markup {
     html! { div.file-box-body id=(FILE_BODY_ID) { (file_panel_inner(p)) } }
 }
@@ -975,23 +1211,60 @@ pub fn file_panel_body(p: &FilePanel<'_>) -> Markup {
 pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
     let target = format!("#{FILE_BODY_ID}");
     html! {
+        @if let Some((text, tone)) = p.flash { (notice(text, tone)) }
         p.file-usage { (p.usage) " · " (p.keep) }
+        form.file-upload method="post" action=(p.upload) enctype="multipart/form-data"
+            hx-post=(p.upload) hx-target=(target) hx-swap="outerHTML" {
+            label.field {
+                span { "Add files" }
+                input type="file" name="files" multiple required;
+            }
+            button.secondary type="submit" { "Upload" }
+        }
         @if p.files.is_empty() {
-            p.quiet { "Nothing here yet. Files you send " (p.whose) ", and files it saves, show up here." }
+            p.quiet { "Nothing here yet. Files you add or send " (p.whose) ", and files it saves, show up here." }
         } @else {
             ul.box-files {
                 @for f in p.files {
                     li {
-                        a.box-file href=(f.href) download=(f.name) title=(f.name) {
-                            span.name { (f.name) }
-                            span.meta { (f.size) " · " (f.added) " · " (f.by) }
-                        }
-                        form.inline method="post" action=(f.delete) hx-post=(f.delete)
-                            hx-target=(target) hx-swap="outerHTML"
-                            hx-confirm={ "Delete " (f.name) "? It can't be brought back." } {
-                            button.icon-button type="submit" title={ "Delete " (f.name) } {
-                                span.visually-hidden { "Delete " (f.name) }
-                                (trash_icon())
+                        div.box-file-row {
+                            a.box-file href=(f.href) download=(f.name) title={ "Download " (f.name) } {
+                                span.name { (f.name) }
+                                span.meta { (f.size) " · " (f.added) " · " (f.by) }
+                            }
+                            details.file-more {
+                                summary.icon-button title={ "More for " (f.name) } {
+                                    span.visually-hidden { "More for " (f.name) }
+                                    (more_icon())
+                                }
+                                div.file-more-body {
+                                    a.button-like href=(f.reference_href)
+                                        data-insert=(f.reference) { "Reference in chat" }
+                                    @if !p.send_to.is_empty() {
+                                        form.file-send method="post" action=(f.send) hx-post=(f.send)
+                                            hx-target=(target) hx-swap="outerHTML" {
+                                            label.field {
+                                                span { "Send to" }
+                                                select name="to" {
+                                                    @for (key, name) in p.send_to {
+                                                        option value=(key) { (name) }
+                                                    }
+                                                }
+                                            }
+                                            label.check {
+                                                input type="checkbox" name="mode" value="move";
+                                                span { "Move (remove it here)" }
+                                            }
+                                            button.secondary type="submit" { "Send" }
+                                        }
+                                    }
+                                    (action_button(
+                                        &f.delete,
+                                        FILE_BODY_ID,
+                                        "Delete",
+                                        &format!("Delete {}? It can't be brought back.", f.name),
+                                    ))
+                                }
                             }
                         }
                     }
@@ -1016,10 +1289,29 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
     }
 }
 
-fn trash_icon() -> Markup {
+fn panel_icon() -> Markup {
     html! {
         svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
-            path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 6.5v5M9.5 6.5v5" {}
+            rect x="1.5" y="2.5" width="13" height="11" rx="1.5" {}
+            path d="M10 2.5v11" {}
+        }
+    }
+}
+
+fn close_icon() -> Markup {
+    html! {
+        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M3.5 3.5l9 9M12.5 3.5l-9 9" {}
+        }
+    }
+}
+
+fn more_icon() -> Markup {
+    html! {
+        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            circle cx="3.5" cy="8" r="1.1" {}
+            circle cx="8" cy="8" r="1.1" {}
+            circle cx="12.5" cy="8" r="1.1" {}
         }
     }
 }

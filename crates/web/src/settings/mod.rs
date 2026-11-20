@@ -69,7 +69,7 @@
 //! for and again with their outcome (`settings.provider.install`, `settings.provider.login`);
 //! sign-in codes never reach the audit log.
 
-mod agents;
+pub(crate) mod agents;
 mod apply;
 mod developer;
 mod files;
@@ -381,6 +381,7 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
         )
         .route("/api/settings/updates", get(updates::api_status))
         .merge(crate::files::api_routes())
+        .merge(crate::details::api_routes())
         .route("/api/settings/updates/{action}", post(updates::api_action))
         .with_state(ui)
 }

@@ -133,7 +133,7 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 ## Files and the Schedules wait (2026-11-20)
 - `settings/files.rs`, view in `pages::files_region`: the default "Keep files for" (`FileBoxes::set_default`,
   saved in `<state>/files/retention.json`, audited `files.retention`) and a read-only list of boxes with their own
-  setting (changed in the chat's file panel, `crate::files`). API `GET|POST /api/settings/files`.
+  setting (changed in the chat's details panel, `crate::files`). API `GET|POST /api/settings/files`.
 - Schedules: the card "When a run needs your OK" (`POST /ui/settings/schedules/wait`, `minutes` 1–1440, default
   10; `Schedules::set_approval_wait`, audited `schedule.settings`). API `GET|POST /api/settings/schedules`.
 
@@ -146,6 +146,9 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 - The rules live in the agent layer (`AgentPool::delete`, shared with the lead agent's `delete_agent` tool):
   refused while the helper looks after any app or when its apps can't be checked; otherwise its turn stops, its
   schedules, file box, transcript/session store and working directory are removed, audited `agent.delete`.
+- The same Delete, plus Rename, is in each helper's chat, in the details panel (`crate::details`:
+  `POST /ui/agents/{agent}/rename|delete`; the panel also turns that agent's schedules on and off,
+  `POST /ui/details/{key}/schedules/{id}/enabled`). See htmx-component.md (`details_panel`).
 
 ## Gotchas
 - serde/toml error messages quote the offending value: never show them for `providers.toml` (line number only).

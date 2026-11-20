@@ -17,9 +17,9 @@ use crate::{
         APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
-        feed_archive, file_count, file_panel, file_panel_inner, model_chip, model_picker,
-        ComposerTarget, FilePanel, ModelPicker, RailHelper, RailPastChat, SentFile, FILE_BODY_ID,
-        MODEL_CHIP_ID,
+        details_panel, details_toggle, feed_archive, file_count, file_panel_inner, model_chip,
+        model_picker, ComposerTarget, DetailsPanel, FilePanel, ModelPicker, RailHelper,
+        RailPastChat, SentFile, DETAILS_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
     },
     feed::{Approval, Change, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
@@ -348,6 +348,8 @@ pub struct StreamExtras<'a> {
     pub links: &'a FileLinks,
     /// The file panel, when the box changed (chat view).
     pub files: Option<&'a FilePanel<'a>>,
+    /// The agent's status for the details panel, when it changed (chat view).
+    pub status: Option<(&'static str, Tone)>,
 }
 
 /// The HTML for one live update: new entries (appended by the client) and out-of-band
@@ -395,6 +397,9 @@ pub fn stream_update(
             }) {
                 (oob_inner(&entry_id(&list[i].key), entry_content(e, links)))
             }
+        }
+        @if let (true, View::Chat, Some((words, tone))) = (status, view, x.status) {
+            (oob_inner(DETAILS_STATUS_ID, badge(words, tone)))
         }
         @if status && view == View::Chat {
             (oob_inner(COMPOSER_STATUS_ID, composer_status(&who.cancel_url(), feed.busy(), backend.filter(|_| picker.is_none()))))
@@ -479,8 +484,8 @@ pub struct ChatView<'a> {
     pub voice: Option<&'static str>,
     /// Which sent files are still in the box.
     pub links: &'a FileLinks,
-    /// The conversation's file panel (None: only the composer is rendered).
-    pub files: Option<&'a FilePanel<'a>>,
+    /// The conversation's details panel (None: only the composer is rendered).
+    pub details: Option<&'a DetailsPanel<'a>>,
 }
 
 /// The chat with Melissa (the lead agent): home.
@@ -492,6 +497,7 @@ pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
         html! {
             div.chat-layout {
                 div.chat {
+                    div.chat-bar { (details_toggle()) }
                     (strip(f.snap))
                     (feed(
                         FEED_ID,
@@ -506,8 +512,9 @@ pub fn home(f: &Frame<'_>, v: &ChatView<'_>) -> Markup {
                     (composer_box(v))
                     @if let Some(p) = v.picker { (model_picker(p)) }
                 }
-                @if let Some(p) = v.files { (file_panel(p)) }
+                @if let Some(p) = v.details { (details_panel(p)) }
             }
+            (app_dialog())
         },
     )
 }
@@ -536,7 +543,10 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
         html! {
             div.chat-layout {
                 div.chat {
-                    (page_header(&agent.name, Some(&lead)))
+                    div.chat-bar {
+                        (page_header(&agent.name, Some(&lead)))
+                        (details_toggle())
+                    }
                     (feed(
                         FEED_ID,
                         &format!("Conversation with {}", agent.name),
@@ -550,8 +560,9 @@ pub fn agent_chat(f: &Frame<'_>, agent: &AgentView, v: &ChatView<'_>) -> Markup 
                     (composer_box(v))
                     @if let Some(p) = v.picker { (model_picker(p)) }
                 }
-                @if let Some(p) = v.files { (file_panel(p)) }
+                @if let Some(p) = v.details { (details_panel(p)) }
             }
+            (app_dialog())
         },
     )
 }

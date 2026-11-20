@@ -15,7 +15,7 @@ use super::pages::{self, AgentRow, Flash, AGENTS_URL};
 use crate::{agents::picker, components::Tone, feed::backend_label, is_htmx, ui::Ui};
 
 /// "Claude · Opus 5.5 · High": the backend, and the model and level when chosen.
-fn runs_on(views: &[BackendView], fallback: &str) -> String {
+pub(crate) fn runs_on(views: &[BackendView], fallback: &str) -> String {
     let Some(current) = views.iter().find(|v| v.current) else {
         return backend_label(fallback).to_string();
     };
@@ -28,7 +28,7 @@ fn runs_on(views: &[BackendView], fallback: &str) -> String {
     }
 }
 
-fn status_words(status: &str) -> (&'static str, Tone) {
+pub(crate) fn status_words(status: &str) -> (&'static str, Tone) {
     match status {
         "working" => ("Working", Tone::Info),
         "stopped" => ("Stopped", Tone::Muted),

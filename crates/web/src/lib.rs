@@ -8,6 +8,7 @@ mod agents;
 mod api;
 mod apps;
 pub mod components;
+mod details;
 mod feed;
 mod files;
 mod markdown;
@@ -532,6 +533,8 @@ mod tests {
         use serde_json::Value;
 
         use super::*;
+
+        mod details;
 
         /// A Lead agent backend whose session never finishes opening.
         /// Melissa's first backend (provider claude in the Settings fixture); `signed_out`:
@@ -3151,8 +3154,11 @@ mod tests {
             );
             assert!(page.contains(&format!("href=\"{txt}\" download=\"my_notes.txt\"")));
             // The file panel lists both, newest first, sent by "You".
-            assert!(page.contains("<aside class=\"file-panel\""), "{page}");
-            assert!(page.contains("data-remember=\"file-panel\""));
+            assert!(
+                page.contains("<aside class=\"details\" id=\"details-panel\""),
+                "{page}"
+            );
+            assert!(page.contains("data-details-toggle"));
             assert!(page.contains("2 files, "), "{page}");
             assert!(page.contains("Kept for 5 days (default)"), "{page}");
             assert!(page.contains(" · You<"), "{page}");

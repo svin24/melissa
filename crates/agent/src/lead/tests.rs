@@ -1627,11 +1627,30 @@ async fn agent_a_needs_the_users_yes_on_agent_bs_workspace_and_never_sees_the_le
         "message_agent",
         "reassign_workspace",
         "delete_agent",
+        "transfer_file",
     ] {
         assert!(!names.iter().any(|n| n == hidden), "{hidden}: {names:?}");
     }
     let r = call(&s.server, &ada, "delete_agent", json!({"agent": "Bo"})).await;
     assert!(err_text(&r).contains("unknown tool"), "{r}");
+    // Nor another agent's file box.
+    s.lead
+        .files()
+        .save_named(&Principal::Agent(BO.into()), "secret.txt", b"his")
+        .unwrap();
+    let r = call(
+        &s.server,
+        &ada,
+        "transfer_file",
+        json!({"from_agent": "Bo", "file": "secret.txt", "to_agent": "Ada"}),
+    )
+    .await;
+    assert!(err_text(&r).contains("unknown tool"), "{r}");
+    assert!(s
+        .lead
+        .files()
+        .list(&Principal::Agent(ADA.into()))
+        .is_empty());
     assert!(s.pool().get("Bo").is_some());
     assert!(names.iter().any(|n| n == "uninstall_app"), "{names:?}");
     // Not even by name.
@@ -1874,6 +1893,81 @@ async fn reassigning_by_the_lead_needs_the_users_confirmation() {
     s.lead.confirmations().resolve(c.id, Verdict::Denied);
     r.await.unwrap();
     s.close().await;
+}
+
+#[tokio::test]
+async fn the_lead_transfers_files_between_boxes_only_with_the_users_yes() {
+    let s = setup("lead-transfer", Vec::new());
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada", "Bo"]).await;
+    let files = s.lead.files().clone();
+    let (ada, bo) = (Principal::Agent(ADA.into()), Principal::Agent(BO.into()));
+    files.save_named(&ada, "notes.txt", b"hello").unwrap();
+    let send = |args: Value| {
+        let (server, q) = (s.server.clone(), q.clone());
+        tokio::spawn(async move { call(&server, &q, "transfer_file", args).await })
+    };
+    // A file that isn't there, or the same box: at once, nobody is asked.
+    for (args, says) in [
+        (
+            json!({"from_agent": "Ada", "file": "nope.txt", "to_agent": "Bo"}),
+            "no file `nope.txt` in Ada's file box",
+        ),
+        (
+            json!({"from_agent": "Ada", "file": "notes.txt", "to_agent": "ada"}),
+            "same file box",
+        ),
+        (
+            json!({"from_agent": "Nobody", "file": "notes.txt", "to_agent": "Bo"}),
+            "no agent `Nobody`",
+        ),
+    ] {
+        let r = call(&s.server, &q, "transfer_file", args).await;
+        assert!(err_text(&r).contains(says), "{r}");
+    }
+    assert!(s.lead.confirmations().pending().is_empty());
+
+    // Asked, naming the file and both boxes; no "Always allow". Denied: nothing moves.
+    let r = send(json!({"from_agent": "Ada", "file": "notes.txt", "to_agent": "Bo"}));
+    let c = pending(&s).await;
+    assert_eq!(c.tool, "transfer_file");
+    assert!(
+        c.reason.contains(
+            "the lead agent wants to copy `notes.txt` (5 B) from the file box of agent Ada \
+             (d-0a1b2c3d.a1) to the file box of agent Bo (d-0a1b2c3d.a2)"
+        ),
+        "{}",
+        c.reason
+    );
+    assert!(c.reason.contains("only you decide who sees which files"));
+    assert!(c.rule.is_none());
+    s.lead.confirmations().resolve(c.id, Verdict::Denied);
+    assert!(err_text(&r.await.unwrap()).contains("denied"));
+    assert!(files.list(&bo).is_empty());
+
+    // Approved: a move into Melissa's own box.
+    let r = send(
+        json!({"from_agent": "Ada", "file": "notes.txt", "to_agent": "Melissa", "move": true}),
+    );
+    let c = pending(&s).await;
+    assert!(
+        c.reason.contains("wants to move `notes.txt`"),
+        "{}",
+        c.reason
+    );
+    assert!(c
+        .reason
+        .contains("to the file box of Melissa (the lead agent)"));
+    s.lead.confirmations().resolve(c.id, Verdict::Approved);
+    let r = r.await.unwrap();
+    assert_eq!(r["structuredContent"]["moved"], true, "{r}");
+    assert_eq!(r["structuredContent"]["to"], "Melissa");
+    assert!(files.list(&ada).is_empty());
+    let lead_files = files.list(&Principal::Lead);
+    assert_eq!(lead_files[0].name, "notes.txt");
+    assert_eq!(lead_files[0].by, crate::files::AddedBy::Sent);
+    s.close().await;
+    assert!(s.audit().contains("transfer_file"));
 }
 
 #[tokio::test]

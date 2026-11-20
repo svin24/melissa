@@ -3131,81 +3131,239 @@ dialog.sheet::backdrop {
   gap: 0.6rem;
 }
 
-/* --- File panel (a chat's file box; 2026-11-20) ---------------------------------------- */
+/* --- Details panel (the agent of a chat: who, apps, schedules, files; 2026-11-20) ------ */
+/* Wide: a column beside the chat (script may hide it). Narrow with script: a sheet over the
+   chat. Narrow without script: a section below the chat. */
 
 .chat-layout {
   display: flex;
-  justify-content: center;
   align-items: flex-start;
-  gap: 1rem;
-}
-
-.chat-layout > .chat {
-  flex: 1 1 760px;
-  margin: 0;
   min-width: 0;
 }
 
-.file-panel {
+.chat-layout > .chat {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.chat-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.chat-bar > .page-header {
+  flex: 1;
+  min-width: 0;
+}
+
+.details-toggle:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   flex: none;
-  position: sticky;
-  top: 1rem;
-  margin-top: 1.25rem;
-  padding-right: 1rem;
-}
-
-.file-box {
+  margin: 0 0 0.6rem;
+  padding: 0.4rem 0.9rem;
   background: var(--surface);
+  color: var(--ink);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 10px;
 }
 
-.file-box[open] {
-  width: 18rem;
+.details-toggle:focus-visible,
+.details-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
-.file-box > summary {
+.details-toggle[aria-expanded="true"] {
+  background: var(--ground);
+}
+
+.details {
+  background: var(--surface);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.details:focus {
+  outline: none;
+}
+
+.details-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
-  min-height: 44px;
-  padding: 0 0.9rem;
-  cursor: pointer;
-  font-weight: 600;
-  list-style: none;
+  padding: 0.5rem 0.5rem 0 1rem;
 }
 
-.file-box > summary::-webkit-details-marker {
+.details-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.details-close[hidden] {
   display: none;
 }
 
-.file-box > summary:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: var(--radius);
+.details-section {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.file-box > summary .count {
+.details-section:last-child {
+  border-bottom: 0;
+}
+
+.details-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.details-section h3 .count {
   min-width: 1.6em;
   padding: 0 0.45em;
   border-radius: 999px;
   background: var(--ground);
   color: var(--muted);
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.8rem;
   text-align: center;
+  letter-spacing: 0;
 }
 
-.file-box-body {
-  padding: 0 0.9rem 0.6rem;
-  max-height: calc(100vh - 7rem);
-  overflow-y: auto;
+.agent-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.agent-name {
+  margin: 0;
+  font-family: var(--font-head);
+  font-size: 1.2rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.agent-facts {
+  margin: 0.5rem 0;
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.9rem;
+}
+
+.agent-facts > div {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.agent-facts dt {
+  color: var(--muted);
+}
+
+.agent-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-facts button.link {
+  min-height: 32px;
+}
+
+.agent-card .disclosure,
+.agent-card .confirm-inline {
+  margin-top: 0.4rem;
+}
+
+.detail-list {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.detail-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.detail-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem 0.4rem;
+  border-radius: 8px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.detail-main .name,
+.box-file .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.detail-main .meta,
+.box-file .meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.detail-list .dot {
+  flex: none;
+}
+
+.detail-more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.9rem;
 }
 
 .file-usage {
   margin: 0 0 0.5rem;
   color: var(--muted);
   font-size: 0.875rem;
+}
+
+.file-upload {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.file-upload .field {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.file-upload input[type="file"] {
+  width: 100%;
+  min-height: 44px;
+  font: inherit;
+  font-size: 0.85rem;
 }
 
 .box-files {
@@ -3217,14 +3375,17 @@ dialog.sheet::backdrop {
   gap: 0.15rem;
 }
 
-.box-files li {
+/* The ⋯ button sits at the row's top right; its menu opens below the file. */
+.box-file-row {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 0.25rem;
+  flex-wrap: wrap;
+  padding-right: 48px;
 }
 
 .box-file {
-  flex: 1;
+  /* Its own width first, so the open menu (100%) wraps below it. */
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -3234,16 +3395,61 @@ dialog.sheet::backdrop {
   text-decoration: none;
 }
 
-.box-file .name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
+.file-more {
+  flex: 0 0 100%;
+  margin-right: -48px;
 }
 
-.box-file .meta {
-  color: var(--muted);
-  font-size: 0.8rem;
+.file-more > summary {
+  position: absolute;
+  top: 0;
+  right: 0;
+  list-style: none;
+}
+
+.file-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.file-more[open] > summary {
+  background: var(--ground);
+}
+
+.file-more-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.5rem 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: var(--ground);
+}
+
+.file-send {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.file-send .field {
+  flex: 1 1 9rem;
+  margin: 0;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  font-size: 0.9rem;
+}
+
+.check input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--action);
 }
 
 .icon-button {
@@ -3253,6 +3459,7 @@ dialog.sheet::backdrop {
   flex: none;
   width: 44px;
   height: 44px;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -3264,14 +3471,16 @@ dialog.sheet::backdrop {
   outline: 2px solid var(--focus);
 }
 
-@media (hover: hover) {
-  .box-file:hover {
-    background: var(--ground);
-  }
+.file-more .file-icon circle {
+  fill: currentColor;
+  stroke: none;
+}
 
+@media (hover: hover) {
+  .box-file:hover,
+  a.detail-main:hover,
   .icon-button:hover {
-    background: var(--caution-soft);
-    color: var(--caution);
+    background: var(--ground);
   }
 }
 
@@ -3288,41 +3497,102 @@ dialog.sheet::backdrop {
   font-style: italic;
 }
 
-/* Not enough room beside the chat: the panel becomes a section above it. */
-@media (max-width: 1279px) {
+.details-backdrop {
+  display: none;
+}
+
+/* Wide: the chat and its details side by side. */
+@media (min-width: 1200px) {
+  .details {
+    flex: 0 0 20rem;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: calc(100vh - 2rem);
+    border-left: 1px solid var(--border);
+  }
+
+  .details[data-closed] {
+    display: none;
+  }
+}
+
+/* Narrow, without script: the panel is a section after the chat. */
+@media (max-width: 1199px) {
   .chat-layout {
     flex-direction: column;
     align-items: stretch;
-    gap: 0;
   }
 
-  .chat-layout > .chat {
-    flex: none;
-    width: 100%;
-    margin: 0 auto;
-  }
-
-  .file-panel {
-    order: -1;
-    position: static;
+  .details {
     width: 100%;
     max-width: 760px;
-    margin: 1rem auto 0;
-    padding: 0 1.5rem;
+    margin: 1.5rem auto 0;
+    border-top: 1px solid var(--border);
   }
 
-  .file-box[open] {
-    width: auto;
+  /* With script: a sheet over the chat, opened with Details. */
+  .js .details {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(26rem, 100%);
+    max-width: none;
+    margin: 0;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.18);
+    transform: translateX(100%);
+    visibility: hidden;
   }
 
-  .file-box-body {
-    max-height: 50vh;
+  .js .details[data-open] {
+    transform: none;
+    visibility: visible;
+  }
+
+  /* Slides only once the page is set up (not while it loads). */
+  .js .details[data-ready] {
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0.2s;
+  }
+
+  .js .details[data-ready][data-open] {
+    transition: transform 0.2s ease;
+  }
+
+  .js .details-backdrop:not([hidden]) {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 39;
+    background: rgb(10 14 20 / 0.45);
   }
 }
 
 @media (max-width: 760px) {
-  .file-panel {
-    padding: 0 1rem;
-    margin-top: 0.75rem;
+  .details-toggle .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .details-toggle:not([hidden]) {
+    width: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .js .details[data-ready],
+  .js .details[data-ready][data-open] {
+    transition: none;
   }
 }

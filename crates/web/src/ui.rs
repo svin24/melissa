@@ -20,8 +20,9 @@
 //!   `<backend> <model>`, posted with the composer like Stop): switch the agent from the
 //!   next turn. htmx gets the composer status (with the menu, or why it was refused);
 //!   a plain form post gets a redirect.
-//! - Files: each chat has a file panel (its agent's file box); `/ui/files/...` serves and
-//!   deletes them (see `crate::files`).
+//! - Each chat has a details panel about its agent (`crate::details`): who it is, its apps,
+//!   schedules and file box; `/ui/files/...` serves, adds, sends and deletes files (see
+//!   `crate::files`). `GET /agents/{agent}?draft=` pre-fills the message box like home.
 //! - `POST /ui/new-chat`: a new chat with Melissa (plain form, redirects to `/`);
 //!   `GET /chats/{id}`: an archived chat, read-only.
 //! - Stream cursors carry the log's epoch (`?epoch=`, SSE ids `<epoch>-<seq>`): a page from
@@ -133,6 +134,7 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/chats/{id}", get(past_chat_page))
         .merge(crate::settings::ui_routes())
         .merge(crate::files::routes())
+        .merge(crate::details::routes())
         .with_state(ui)
 }
 
@@ -196,6 +198,21 @@ impl Ui {
             Who::Lead => Some(self.lead.backends()),
             Who::Agent(id) => self.lead.agents().backends_of(id).ok(),
         }
+    }
+
+    /// The agent's status for its details panel: `Working`, `Idle` or `Stopped`.
+    fn status_words_of(&self, who: Who<'_>) -> (&'static str, crate::components::Tone) {
+        let status = match who {
+            Who::Lead => {
+                if self.lead.status().turn.is_some() {
+                    "working"
+                } else {
+                    "idle"
+                }
+            }
+            Who::Agent(id) => self.lead.agents().get(id).map_or("idle", |a| a.status),
+        };
+        crate::settings::agents::status_words(status)
     }
 
     /// The model picker of a conversation (None if it cannot be read).
@@ -265,14 +282,9 @@ impl Ui {
         self.lead.refresh_models_soon();
         let picker = self.picker(who, None);
         let links = self.file_links(who);
-        let panel = {
-            let ui = self.clone();
-            let owner = crate::files::owner_of(who);
-            tokio::task::spawn_blocking(move || ui.panel_of_owner(&owner))
-                .await
-                .map_err(|e| LeadError::Failed(e.to_string()))?
-        };
-        let files = panel.view();
+        let details = self.details_of(&crate::files::owner_of(who), agent).await?;
+        let files = details.files.view();
+        let panel = details.view(&files);
         let view = ChatView {
             who,
             epoch: log.epoch(),
@@ -285,7 +297,7 @@ impl Ui {
             error,
             voice: self.settings.voice_url(),
             links: &links,
-            files: Some(&files),
+            details: Some(&panel),
         };
         Ok(self
             .framed(|f| match agent {
@@ -304,19 +316,25 @@ struct HomeQuery {
 
 async fn home(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
     // A draft is only a suggestion for the box; it is never sent by itself.
-    let draft: String = q.draft.chars().take(200).collect();
+    let draft: String = q.draft.chars().take(300).collect();
     match ui.chat_page(Who::Lead, None, &draft, None).await {
         Ok(page) => page.into_response(),
         Err(e) => error_page(e),
     }
 }
 
-async fn agent_page(State(ui): State<Ui>, Path(agent): Path<String>) -> Response {
+async fn agent_page(
+    State(ui): State<Ui>,
+    Path(agent): Path<String>,
+    Query(q): Query<HomeQuery>,
+) -> Response {
     let Some(agent) = ui.agent(&agent) else {
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
+    // A draft is only a suggestion for the box ("Reference in chat" without script).
+    let draft: String = q.draft.chars().take(300).collect();
     match ui
-        .chat_page(Who::Agent(&agent.id), Some(&agent), "", None)
+        .chat_page(Who::Agent(&agent.id), Some(&agent), &draft, None)
         .await
     {
         Ok(page) => page.into_response(),
@@ -520,6 +538,9 @@ fn stream(
                 None
             };
             let files = panel.as_ref().map(|p| p.view());
+            let status = changes
+                .contains(&Change::Status)
+                .then(|| st.ui.status_words_of(st.who()));
             let html = pages::stream_update(
                 &st.feed,
                 &changes,
@@ -531,6 +552,7 @@ fn stream(
                     waiting: st.ui.waiting(),
                     links: &links,
                     files: files.as_ref(),
+                    status,
                 },
             );
             if html.is_empty() {
@@ -548,7 +570,7 @@ fn stream(
 
 /// Largest message request body: the files' limit plus room for the text and the form's
 /// framing. Bigger bodies are cut off while they stream in.
-const MESSAGE_BODY_LIMIT: usize = MAX_MESSAGE_BYTES + 1024 * 1024;
+pub(crate) const MESSAGE_BODY_LIMIT: usize = MAX_MESSAGE_BYTES + 1024 * 1024;
 
 #[derive(Deserialize)]
 struct TextOnly {
@@ -557,11 +579,11 @@ struct TextOnly {
 
 /// A message from the composer: its text and files. The composer posts
 /// `multipart/form-data` (fields `text` and `files`); a urlencoded form has text only.
-struct NewMessage {
-    text: String,
-    files: Vec<Upload>,
+pub(crate) struct NewMessage {
+    pub(crate) text: String,
+    pub(crate) files: Vec<Upload>,
     /// Why the files were refused while reading them (too large, too many, cut off).
-    refused: Option<LeadError>,
+    pub(crate) refused: Option<LeadError>,
 }
 
 impl NewMessage {
@@ -785,7 +807,7 @@ async fn message_reply(
             error: error.as_deref(),
             voice: ui.settings.voice_url(),
             links: &links,
-            files: None,
+            details: None,
         })
         .into_response();
     }
