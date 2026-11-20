@@ -1975,6 +1975,7 @@ mod tests {
                 task: 1,
                 tool: "install_app".into(),
                 reason: c.reason.clone(),
+                agent: None,
             });
             let (_, _, body) = get_html(&app, "/?draft=Install%20jellyfin").await;
             assert!(body.contains("Install &lt;b&gt;Immich&lt;/b&gt;"));
@@ -2223,6 +2224,119 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
         }
 
+        /// The SSE frames of `body` until one contains `needle` (returns it).
+        async fn frame_with(body: &mut Body, needle: &str) -> String {
+            loop {
+                let frame = next_frame(body).await;
+                if frame.contains(needle) {
+                    return frame;
+                }
+            }
+        }
+
+        /// A helper's confirmation shows in her own chat (no label) and in Melissa's and
+        /// Waiting for you (labelled with her name); deciding it in one updates the others.
+        #[tokio::test]
+        async fn a_helpers_approval_shows_in_her_chat_and_melissas() {
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
+                .unwrap();
+            let page = format!("/agents/{}", ada.id);
+            // Opening her chat sets up her conversation (and its task).
+            assert_eq!(get_html(&app, &page).await.0, StatusCode::OK);
+            let task = (1..1000)
+                .find(|t| lead.agents().agent_of_task(*t).as_deref() == Some(ada.id.as_str()))
+                .expect("her conversation has a task");
+            let open = |uri: String| {
+                let app = app.clone();
+                async move { app.oneshot(get(&uri)).await.unwrap().into_body() }
+            };
+            let mut hers = open(format!("/ui/agents/{}/stream?since=0", ada.id)).await;
+            let mut main = open("/ui/stream?since=0".into()).await;
+
+            let (c, rx) = lead.confirmations().request(
+                task,
+                "uninstall_app",
+                &serde_json::json!({"app": "blog"}),
+                "destructive action",
+            );
+            let approve = format!("hx-post=\"/ui/confirmations/{}/approve\"", c.id);
+            let frame = frame_with(&mut hers, "Remove Blog?").await;
+            assert!(
+                frame.contains(&approve) && !frame.contains("Ada asks"),
+                "{frame}"
+            );
+            let frame = frame_with(&mut main, "Ada asks: Remove Blog?").await;
+            assert!(frame.contains(&approve), "{frame}");
+            // The same on a fresh page load.
+            let (_, _, body) = get_html(&app, &page).await;
+            assert!(body.contains("Remove Blog?") && body.contains(&approve));
+            assert!(!body.contains("Ada asks"));
+            for uri in ["/", "/approvals"] {
+                let (_, _, body) = get_html(&app, uri).await;
+                assert!(body.contains("Ada asks: Remove Blog?"), "{uri}");
+                assert!(body.contains(&approve), "{uri}");
+            }
+
+            // Approved from her chat: the card keeps her chat's words.
+            let req = post(&format!("/ui/confirmations/{}/approve", c.id))
+                .header("hx-request", "true")
+                .header("hx-current-url", format!("http://203.0.113.5:8080{page}"))
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::empty())
+                .unwrap();
+            let (status, _, html) = send(&app, req).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("You allowed this.") && !html.contains("Ada asks"));
+            assert_eq!(rx.await.unwrap(), melissa_agent::tools::Verdict::Approved);
+            // Both chats update live and after a reload.
+            frame_with(&mut hers, "You allowed this.").await;
+            let frame = frame_with(&mut main, "You allowed this.").await;
+            assert!(frame.contains("Ada asks: Remove Blog?"), "{frame}");
+            for uri in [page.as_str(), "/"] {
+                let (_, _, body) = get_html(&app, uri).await;
+                assert!(body.contains("You allowed this."), "{uri}");
+                assert!(!body.contains(&approve), "{uri}");
+            }
+            let (_, _, body) = get_html(&app, "/approvals").await;
+            assert!(body.contains("Nothing waiting."));
+
+            // From Melissa's chat, the card stays labelled; a withdrawn one shows in both.
+            let (c, _rx) = lead.confirmations().request(
+                task,
+                "uninstall_app",
+                &serde_json::json!({"app": "blog"}),
+                "destructive action",
+            );
+            frame_with(&mut main, &format!("/ui/confirmations/{}/deny", c.id)).await;
+            let (c2, _rx2) = lead.confirmations().request(
+                task,
+                "stop_app",
+                &serde_json::json!({"app": "blog"}),
+                "destructive action",
+            );
+            let uri = format!("/ui/confirmations/{}/deny", c.id);
+            let req = post(&uri)
+                .header("hx-request", "true")
+                .header("hx-current-url", "http://203.0.113.5:8080/")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::empty())
+                .unwrap();
+            let (_, _, html) = send(&app, req).await;
+            assert!(html.contains("Ada asks: Remove Blog?"), "{html}");
+            frame_with(&mut hers, "Stop Blog?").await;
+            lead.confirmations().withdraw(c2.id);
+            frame_with(&mut hers, "No longer needed").await;
+            frame_with(&mut main, "No longer needed").await;
+            let (_, _, body) = get_html(&app, &page).await;
+            assert!(!body.contains(&format!("/ui/confirmations/{}/deny", c2.id)));
+            // (Decided cards lose the app's name on reload: arguments live only while pending.)
+            assert!(body.contains("No longer needed"));
+        }
+
         #[tokio::test]
         async fn sending_a_message_from_the_composer() {
             let (app, lead) = app();
@@ -2453,7 +2567,10 @@ mod tests {
 
             let (_, _, home) = get_html(&app, "/").await;
             assert!(home.contains("Hi, I'm Melissa."));
-            assert!(!home.contains("<li class=\"entry\""), "{home}");
+            // Only the agent's confirmation, still waiting, carries over into the new chat.
+            assert_eq!(home.matches("<li class=\"entry\"").count(), 1, "{home}");
+            assert!(home.contains(&format!("/ui/confirmations/{}/approve", other.id)));
+            assert!(!home.contains(&format!("/ui/confirmations/{}/approve", c.id)));
             assert!(home.contains("Past chats"));
             assert!(home.contains("Hi &lt;there&gt;"));
             let chats = lead.past_chats();
@@ -2608,6 +2725,7 @@ mod tests {
                 task: 1,
                 tool: "install_app".into(),
                 reason: "because".into(),
+                agent: None,
             });
             let frame = next_frame(&mut body).await;
             assert!(!frame.contains("Hi"), "{frame}");

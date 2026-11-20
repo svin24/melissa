@@ -47,7 +47,7 @@ use serde_json::Value;
 use crate::{
     agents,
     components::{composer_status, AgentMenu, ApprovalState},
-    feed::{approval_words, backend_label, Change, Feed, Lookup},
+    feed::{approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, Frame, View, Who},
     state::ClusterCache,
@@ -172,6 +172,14 @@ impl Ui {
         };
         let host = self.settings.host();
         (!views.is_empty()).then(|| agents::menu(&views, action, error, host))
+    }
+
+    /// Name the helper that asked for confirmation `task` in its card (views that show every
+    /// helper's: Melissa's chat, Waiting for you).
+    fn label_asker(&self, a: &mut Approval, task: melissa_agent::TaskId) {
+        if let Some(agent) = self.lead.agents().agent_of_task(task) {
+            asked_by(a, &agent, self);
+        }
     }
 
     fn waiting(&self) -> usize {
@@ -300,7 +308,11 @@ async fn approvals_page(State(ui): State<Ui>) -> Markup {
         .confirmations()
         .pending()
         .into_iter()
-        .map(|c| approval_words(c.id, &c.tool, &c.reason, Some(&c.args), &ui))
+        .map(|c| {
+            let mut a = approval_words(c.id, &c.tool, &c.reason, Some(&c.args), &ui);
+            ui.label_asker(&mut a, c.task);
+            a
+        })
         .collect();
     let epoch = ui.lead.events().epoch();
     ui.framed(|f| pages::approvals(f, &list, since, epoch))
@@ -688,6 +700,10 @@ async fn resolve(
     match resolved {
         Some(c) => {
             let mut a = approval_words(c.id, &c.tool, &c.reason, Some(&c.args), &ui);
+            // The card keeps the words of the page it is on (a helper's chat has no label).
+            if !from_helper_chat(&headers) {
+                ui.label_asker(&mut a, c.task);
+            }
             a.state = match verdict {
                 Verdict::Approved => ApprovalState::Approved,
                 Verdict::Denied => ApprovalState::Denied,
@@ -697,6 +713,17 @@ async fn resolve(
         }
         None => pages::approval_gone().into_response(),
     }
+}
+
+/// The request came from a helper's chat page (htmx sends the page's URL).
+fn from_helper_chat(headers: &HeaderMap) -> bool {
+    let Some(url) = headers.get("hx-current-url").and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let path = rest.find('/').map_or("", |i| &rest[i..]);
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    path.starts_with("/agents/")
 }
 
 async fn new_chat(State(ui): State<Ui>) -> Response {

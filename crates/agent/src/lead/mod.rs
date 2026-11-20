@@ -201,7 +201,7 @@ impl Lead {
             lead_task: task,
             workroot,
         });
-        forward_confirmations(registry.confirmations(), events);
+        forward_confirmations(registry.confirmations(), events, pool.clone());
         Ok(Self {
             inner: Arc::new(Inner {
                 conv,
@@ -349,6 +349,7 @@ impl Lead {
     /// its pending confirmations (audited `confirmation.withdrawn`), stop a running turn,
     /// close its agent session for good (the next message starts a new one, no resume),
     /// archive the transcript (readable under [`Lead::past_chats`]) and clear the taint.
+    /// Agents' confirmations that still wait are announced again in the new chat.
     /// Audited `lead.new_chat`. Agents keep their sessions and memory. Returns the old chat's
     /// archive id, if it had anything in it.
     pub async fn new_chat(&self) -> Result<Option<u64>, LeadError> {
@@ -373,7 +374,18 @@ impl Lead {
                 }
             }
         }
-        self.inner.conv.new_chat("ui").await
+        let archived = self.inner.conv.new_chat("ui").await?;
+        // Agents' confirmations still wait: they stay in the new chat too.
+        for c in self.confirmations().pending() {
+            self.events().push(LeadEvent::ConfirmationNeeded {
+                id: c.id,
+                task: c.task,
+                tool: c.tool,
+                reason: c.reason,
+                agent: self.inner.pool.agent_of_task(c.task),
+            });
+        }
+        Ok(archived)
     }
 
     /// Chats archived by [`Lead::new_chat`], newest first.
@@ -396,28 +408,46 @@ impl Lead {
     }
 }
 
-/// Publishes confirmation inbox changes as lead agent events.
-fn forward_confirmations(store: &ConfirmationStore, events: EventLog) {
+/// Publishes confirmation inbox changes as events: every one in the lead agent's log (the
+/// main chat, labelled with the agent that asked), and an agent's own in its log too, so the
+/// approval shows in the chat where that agent works.
+fn forward_confirmations(store: &ConfirmationStore, events: EventLog, pool: AgentPool) {
     let mut rx = store.subscribe();
+    let store = store.clone();
     tokio::spawn(async move {
+        // Pending confirmations of agents → that agent's log (for the outcome).
+        let mut agent_logs: std::collections::HashMap<ConfirmationId, EventLog> =
+            std::collections::HashMap::new();
         loop {
             match rx.recv().await {
                 Ok(ConfirmationEvent::Requested(c)) => {
-                    events.push(LeadEvent::ConfirmationNeeded {
+                    let asker = pool.conversation_of_task(c.task);
+                    let event = LeadEvent::ConfirmationNeeded {
                         id: c.id,
                         task: c.task,
                         tool: c.tool,
                         reason: c.reason,
-                    });
+                        agent: asker.as_ref().map(|(id, _)| id.clone()),
+                    };
+                    if let Some((_, log)) = asker {
+                        log.push(event.clone());
+                        agent_logs.insert(c.id, log);
+                    }
+                    events.push(event);
                 }
                 Ok(ConfirmationEvent::Resolved { id, verdict }) => {
-                    events.push(LeadEvent::ConfirmationResolved {
+                    let event = LeadEvent::ConfirmationResolved {
                         id,
                         outcome: verdict.map_or("withdrawn", |v| v.as_str()).into(),
-                    });
+                    };
+                    if let Some(log) = agent_logs.remove(&id) {
+                        log.push(event.clone());
+                    }
+                    events.push(event);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!("Lead missed {n} confirmation events");
+                    agent_logs.retain(|id, _| store.get(*id).is_some());
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

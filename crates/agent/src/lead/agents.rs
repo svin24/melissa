@@ -415,6 +415,20 @@ impl AgentPool {
             .clone())
     }
 
+    /// The agent whose conversation runs as `task` (its id), e.g. the one that asked for a
+    /// confirmation. None for the lead agent, the user's own calls and other tasks.
+    pub fn agent_of_task(&self, task: TaskId) -> Option<String> {
+        self.conversation_of_task(task).map(|(id, _)| id)
+    }
+
+    /// The agent id and event log of the conversation that runs as `task`.
+    pub(crate) fn conversation_of_task(&self, task: TaskId) -> Option<(String, EventLog)> {
+        lock(&self.inner.convs)
+            .iter()
+            .find(|(_, c)| c.task_id() == task)
+            .map(|(id, c)| (id.clone(), c.events().clone()))
+    }
+
     /// The user sends an agent a message directly (wakes a stopped agent).
     pub fn user_send(&self, name_or_id: &str, text: &str) -> Result<(TurnId, u64), LeadError> {
         let agent = self.user_agent(name_or_id)?;

@@ -1529,6 +1529,95 @@ async fn agent_a_is_refused_on_agent_bs_workspace_and_never_sees_the_leads_tools
     s.close().await;
 }
 
+/// Wait until `log` has an event matching `f`.
+async fn log_event(log: &EventLog, f: impl Fn(&LeadEvent) -> bool) -> LeadEvent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(r) = log
+            .since(0, usize::MAX)
+            .events
+            .into_iter()
+            .find(|r| f(&r.event))
+        {
+            return r.event;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no such event");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn an_agents_confirmation_shows_in_its_own_chat_and_the_leads() {
+    let s = setup_full(
+        scratch("agent-confirm-chat"),
+        Vec::new(),
+        vec![agent_reply("b-1", "Hello", "Hi.")],
+        AgentLimits::default(),
+        |_| {},
+    );
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada"]).await;
+    s.workspaces.set("blog", Owner::Agent(ADA.into()));
+    let (turn, since) = s.pool().user_send("Ada", "Hello").unwrap();
+    let ada_log = s.pool().events_of("Ada").unwrap();
+    turn_events_in(&ada_log, since, turn).await;
+    let ada = s
+        .pool()
+        .session_token("Ada")
+        .expect("Ada's session is open");
+
+    let ask = |s: &Setup| {
+        let (server, ada) = (s.server.clone(), ada.clone());
+        tokio::spawn(
+            async move { call(&server, &ada, "uninstall_app", json!({"app": "blog"})).await },
+        )
+    };
+    let call_own = ask(&s);
+    let c = pending(&s).await;
+    assert_eq!(s.pool().agent_of_task(c.task).as_deref(), Some(ADA));
+    let asked = |e: &LeadEvent| matches!(e, LeadEvent::ConfirmationNeeded { id, agent: Some(a), .. } if *id == c.id && a == ADA);
+    // In Ada's own chat, where she asked, and in the lead agent's, labelled with her.
+    log_event(&ada_log, asked).await;
+    lead_event(&s, asked).await;
+    s.lead.resolve_confirmation(c.id, Verdict::Approved);
+    let approved = |e: &LeadEvent| matches!(e, LeadEvent::ConfirmationResolved { id, outcome } if *id == c.id && outcome == "approved");
+    log_event(&ada_log, approved).await;
+    lead_event(&s, approved).await;
+    assert_eq!(call_own.await.unwrap()["isError"], false);
+
+    // A new chat with the lead agent keeps an agent's pending confirmation in view.
+    let call_again = ask(&s);
+    let c2 = pending(&s).await;
+    lead_event(
+        &s,
+        |e| matches!(e, LeadEvent::ConfirmationNeeded { id, .. } if *id == c2.id),
+    )
+    .await;
+    s.lead.new_chat().await.unwrap();
+    let after_new_chat: Vec<LeadEvent> = s
+        .lead
+        .events()
+        .since(0, usize::MAX)
+        .events
+        .into_iter()
+        .map(|r| r.event)
+        .skip_while(|e| *e != LeadEvent::NewChat)
+        .collect();
+    assert!(
+        after_new_chat.iter().any(|e| matches!(e,
+            LeadEvent::ConfirmationNeeded { id, agent: Some(a), .. } if *id == c2.id && a == ADA)),
+        "{after_new_chat:?}"
+    );
+    assert_eq!(s.lead.confirmations().pending().len(), 1, "not withdrawn");
+    // Withdrawn (e.g. timed out) shows in both chats too.
+    s.lead.confirmations().withdraw(c2.id);
+    let withdrawn = |e: &LeadEvent| matches!(e, LeadEvent::ConfirmationResolved { id, outcome } if *id == c2.id && outcome == "withdrawn");
+    log_event(&ada_log, withdrawn).await;
+    lead_event(&s, withdrawn).await;
+    let _ = call_again.await;
+    s.close().await;
+}
+
 #[tokio::test]
 async fn the_leads_destructive_action_on_a_agents_workspace_names_the_agent() {
     let s = setup("lead-destructive", Vec::new());
