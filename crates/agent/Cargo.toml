@@ -10,12 +10,15 @@ description = "Melissa agent layer: pluggable backends, task dispatch, audit log
 agent-client-protocol = { workspace = true }
 # Files sent to the model as base64 content blocks (already in the build via kube-rs).
 base64 = { workspace = true }
+# Scheduled jobs: cron expressions evaluated in the box's local time zone.
+croner = { workspace = true }
 futures = { workspace = true }
 # Egress: MCP served on each sandbox's Unix socket (hyper's HTTP/1 server, already in the
 # build through axum and kube-rs; no new crates).
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true }
+jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rustix = { workspace = true }
@@ -23,6 +26,10 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Paused time for the scheduler's tests (no real sleeping).
+tokio = { workspace = true, features = ["test-util"] }
 
 # Runs inside each agent sandbox: forwards loopback ports to the lead agent's egress sockets.
 [[bin]]

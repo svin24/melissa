@@ -23,7 +23,8 @@
 //! The client commands talk to the running daemon on its configured `listen` address.
 //!
 //! Config: `$XDG_CONFIG_HOME/melissa/server.toml` (optional). Audit log, agent working
-//! directory, device id (`device.json`) and agent registry (`agents/`): `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
+//! directory, device id (`device.json`), agent registry (`agents/`), "Always allow" rules
+//! (`permissions.json`) and scheduled jobs (`schedules.json`): `$XDG_STATE_HOME/melissa/`. Cluster credentials: the `melissa.kubeconfig`
 //! systemd credential, else `kubeconfig` in the config, else `/run/melissa-kube/server.kubeconfig`
 //! (written by root once k3s is up). They are looked up on every cluster call, so the lead agent
 //! never waits for k3s and attaches to it without a restart.
@@ -42,6 +43,7 @@ use melissa_agent::{
         agents::{AgentLimits, AgentPool},
         events::EventLog,
         registry::AgentRegistry,
+        schedules::{ScheduleJobTool, Schedules, TimeZone},
         transcript::Transcript,
         Lead, LeadSettings,
     },
@@ -485,6 +487,19 @@ async fn serve(
         Some(wiring.workspaces),
     );
     tools.extend(pool.tools());
+    // Scheduled jobs, kept in the state directory and evaluated in the box's time zone. A
+    // broken file runs nothing and saves nothing (it is left for the owner to look at).
+    let schedules_path = dirs.state.join("schedules.json");
+    let schedules = Schedules::open(&schedules_path, TimeZone::system())
+        .unwrap_or_else(|e| {
+            tracing::error!("{e}; no schedules run (changes are not saved)");
+            Schedules::in_memory(TimeZone::system())
+        })
+        .with_audit(Some(audit.clone()));
+    tools.push(Arc::new(ScheduleJobTool::new(
+        schedules.clone(),
+        Some(wiring.names.clone()),
+    )));
     // The owner's "Always allow" rules and No permission prompts, kept in the state directory
     // (outside every agent's sandbox). A broken file grants nothing: every request asks again.
     let permissions_path = dirs.state.join("permissions.json");
@@ -571,6 +586,7 @@ async fn serve(
     };
     let lead = Lead::new(settings, sessions, board.clone(), events, &pool)
         .context("setting up the lead agent")?;
+    lead.start_schedules(schedules);
     tracing::info!(backends = ?q.backends, "lead agent ready (opens on the first message)");
 
     let listener = tokio::net::TcpListener::bind(config.listen)

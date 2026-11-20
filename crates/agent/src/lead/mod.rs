@@ -13,12 +13,16 @@ pub mod backends;
 pub(crate) mod conversation;
 pub mod events;
 pub mod registry;
+pub mod schedules;
 pub mod transcript;
 
 #[cfg(test)]
 mod tests;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
 use crate::{
     attachments::{AttachmentError, AttachmentStore, Upload},
@@ -102,6 +106,8 @@ struct Inner {
     /// Model probes run in `<probe_dir>/<backend>` (empty directories).
     probe_dir: PathBuf,
     attachments: AttachmentStore,
+    /// Runs the scheduled jobs, once [`Lead::start_schedules`] was called.
+    scheduler: OnceLock<schedules::Scheduler>,
 }
 
 /// Handle to the lead agent. Cheap to clone.
@@ -222,6 +228,7 @@ impl Lead {
                 models,
                 probe_dir,
                 attachments,
+                scheduler: OnceLock::new(),
             }),
         })
     }
@@ -422,8 +429,42 @@ impl Lead {
         self.events().transcript()?.past_chat(id)
     }
 
+    /// Start running `schedules` in this lead agent's conversations (its own chat and its
+    /// agents'). Once: later calls return the scheduler already running. Must be called inside
+    /// a Tokio runtime.
+    pub fn start_schedules(&self, schedules: schedules::Schedules) -> schedules::Scheduler {
+        self.start_schedules_with(schedules, schedules::DEFAULT_GRACE)
+    }
+
+    /// [`Lead::start_schedules`] with a grace window for runs missed while Melissa was down.
+    pub fn start_schedules_with(
+        &self,
+        schedules: schedules::Schedules,
+        grace: std::time::Duration,
+    ) -> schedules::Scheduler {
+        self.inner
+            .scheduler
+            .get_or_init(|| {
+                let runner = Arc::new(schedules::LeadRunner {
+                    lead: Arc::downgrade(&self.inner),
+                });
+                let scheduler = schedules::Scheduler::new(schedules, runner, grace);
+                scheduler.start();
+                scheduler
+            })
+            .clone()
+    }
+
+    /// The scheduler, if schedules run on this device.
+    pub fn scheduler(&self) -> Option<&schedules::Scheduler> {
+        self.inner.scheduler.get()
+    }
+
     /// Close the agent sessions of the lead agent and every agent (daemon shutdown).
     pub async fn close(&self) {
+        if let Some(s) = self.scheduler() {
+            s.stop();
+        }
         self.inner.pool.close_all().await;
         self.inner.conv.close().await;
     }

@@ -909,6 +909,7 @@ mod tests {
                     turn: 1,
                     text: "Hi".into(),
                     attachments: vec![],
+                    scheduled: None,
                 },
                 LeadEvent::Thought {
                     turn: 1,
@@ -2046,6 +2047,7 @@ mod tests {
                 turn: 1,
                 text: "Install <b>Immich</b>".into(),
                 attachments: vec![],
+                scheduled: None,
             });
             lead.events().push(LeadEvent::ToolCall {
                 turn: Some(1),
@@ -2380,6 +2382,139 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert!(html.contains("Nothing yet."));
             assert!(lead.server().registry().permissions().rules().is_empty());
+        }
+
+        /// Settings → Schedules: add (presets), edit, switch off, run now (labelled in the
+        /// chat), remove; bad input keeps what was typed.
+        #[tokio::test]
+        async fn schedules_page_adds_edits_runs_and_removes() {
+            use melissa_agent::lead::schedules::{Creator, Schedules, TimeZone};
+            let (app, lead) = app();
+            let (_, _, body) = get_html(&app, "/settings/schedules").await;
+            assert!(body.contains("Schedules don't run on this device."));
+            let sched = lead.start_schedules(Schedules::in_memory(TimeZone::UTC));
+            let (status, _, body) = get_html(&app, "/settings/schedules").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("Nothing scheduled yet."));
+            assert!(body.contains("href=\"/settings/schedules\""));
+            assert!(body.contains("action=\"/ui/settings/schedules\""));
+
+            let form = "name=Nightly+updates&agent=lead&instruction=Update+all+apps.\
+                        &repeat=daily&day=1&time=03%3A00&cron=&max_minutes=60";
+            let (status, _, html) = send(&app, htmx_post("/ui/settings/schedules", form)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("Added."), "{html}");
+            assert!(html.contains("Every day at 03:00"));
+            let made = sched.schedules().list().remove(0);
+            assert_eq!(made.cron, "0 3 * * *");
+            assert_eq!(made.created_by, Creator::Owner);
+
+            // A bad cron expression: an error, and the form keeps what was typed.
+            let bad = "name=Odd+one&agent=lead&instruction=x&repeat=custom&cron=at+three";
+            let (_, _, html) = send(&app, htmx_post("/ui/settings/schedules", bad)).await;
+            assert!(
+                html.contains("Couldn&#39;t save that") || html.contains("Couldn't save that"),
+                "{html}"
+            );
+            assert!(html.contains("value=\"Odd one\""));
+            assert_eq!(sched.schedules().list().len(), 1);
+
+            let (_, _, body) =
+                get_html(&app, &format!("/settings/schedules?edit={}", made.id)).await;
+            assert!(body.contains("value=\"Nightly updates\""));
+            assert!(body.contains("<option value=\"daily\" selected"));
+            let edit = format!("/ui/settings/schedules/{}", made.id);
+            let weekly = "name=Nightly+updates&agent=lead&instruction=Update+all+apps.\
+                          &repeat=weekly&day=1&time=04%3A30&max_minutes=90";
+            let (_, _, html) = send(&app, htmx_post(&edit, weekly)).await;
+            assert!(html.contains("Every Monday at 04:30"), "{html}");
+            let s = sched.schedules().get(made.id).unwrap();
+            assert_eq!((s.cron.as_str(), s.max_minutes), ("30 4 * * 1", 90));
+
+            let (_, _, html) = send(&app, htmx_post(&format!("{edit}/enabled"), "")).await;
+            assert!(html.contains(">Off<"), "{html}");
+            assert!(!sched.schedules().get(made.id).unwrap().enabled);
+
+            // Run now works while off; the chat shows the instruction with its label.
+            let (_, _, html) = send(&app, htmx_post(&format!("{edit}/run"), "")).await;
+            assert!(html.contains("Started."), "{html}");
+            let (_, _, chat) = get_html(&app, "/").await;
+            assert!(chat.contains("Scheduled: Nightly updates"), "{chat}");
+            assert!(chat.contains("Update all apps."));
+            let (_, _, html) = send(&app, htmx_post(&format!("{edit}/run"), "")).await;
+            assert!(
+                html.contains("Not started: the previous run was still going."),
+                "{html}"
+            );
+
+            let (_, _, html) = send(&app, htmx_post(&format!("{edit}/remove"), "")).await;
+            assert!(html.contains("Removed."));
+            assert!(sched.schedules().list().is_empty());
+            lead.cancel().await;
+        }
+
+        #[tokio::test]
+        async fn schedules_api() {
+            use melissa_agent::lead::schedules::{Schedules, TimeZone};
+            let (app, lead) = app();
+            let (status, _) = send_json(&app, get("/api/schedules")).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            lead.start_schedules(Schedules::in_memory(TimeZone::UTC));
+            let body = r#"{"name": "Nightly", "instruction": "Update all apps.", "schedule": "0 3 * * *"}"#;
+            let (status, made) = send_json(&app, json_post("/api/schedules", body)).await;
+            assert_eq!(status, StatusCode::CREATED, "{made}");
+            assert_eq!(made["agent"], "lead");
+            assert_eq!(made["when"], "Every day at 03:00");
+            assert_eq!(made["created_by"], "owner");
+            assert!(made["next_run"].is_i64());
+            for bad in [
+                r#"{"name": "x", "instruction": "y", "schedule": "nope"}"#,
+                r#"{"name": "x", "instruction": "y", "schedule": "0 3 * * *", "agent": "Nobody"}"#,
+                r#"{"name": "", "instruction": "y", "schedule": "0 3 * * *"}"#,
+            ] {
+                let (status, _) = send_json(&app, json_post("/api/schedules", bad)).await;
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+            }
+            let id = made["id"].as_u64().unwrap();
+            let (status, changed) = send_json(
+                &app,
+                json_post(
+                    &format!("/api/schedules/{id}"),
+                    r#"{"schedule": "0 4 * * *"}"#,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                (changed["name"].as_str(), changed["schedule"].as_str()),
+                (Some("Nightly"), Some("0 4 * * *"))
+            );
+            let (_, off) = send_json(
+                &app,
+                json_post(&format!("/api/schedules/{id}/enabled"), r#"{"on": false}"#),
+            )
+            .await;
+            assert_eq!(off["enabled"], false);
+            assert_eq!(off["next_run"], Value::Null);
+            let (status, list) = send_json(&app, get("/api/schedules")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(list["schedules"].as_array().unwrap().len(), 1);
+            assert_eq!(list["time_zone"], "UTC");
+            let (status, run) =
+                send_json(&app, json_post(&format!("/api/schedules/{id}/run"), "{}")).await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            assert_eq!(run["run"]["outcome"], "running");
+            assert_eq!(run["run"]["manual"], true);
+            let (status, _) = send_json(&app, json_post("/api/schedules/99/remove", "{}")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let (status, gone) = send_json(
+                &app,
+                json_post(&format!("/api/schedules/{id}/remove"), "{}"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(gone["id"], id);
+            lead.cancel().await;
         }
 
         /// No permission prompts: off by default, on only after the confirmation card, then
@@ -2872,6 +3007,7 @@ mod tests {
                 turn: 1,
                 text: "Hi <there>".into(),
                 attachments: vec![],
+                scheduled: None,
             });
             lead.events().push(LeadEvent::TurnFinished {
                 turn: 1,
@@ -2951,6 +3087,7 @@ mod tests {
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
+                scheduled: None,
             });
             let mut body = app
                 .clone()
@@ -2997,6 +3134,7 @@ mod tests {
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
+                scheduled: None,
             });
             lead.events().push(LeadEvent::Text {
                 turn: 1,
@@ -3069,6 +3207,7 @@ mod tests {
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
+                scheduled: None,
             });
             let (c, _rx) = lead.confirmations().request(
                 1,

@@ -39,6 +39,10 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
    saves a rule for one agent (by id) or the lead agent, one tool and one workspace; developer mode's "No
    permission prompts" approves every request. Both only answer confirmations, never turn a refusal into a yes,
    and only the user creates or removes them (no agent tool can). Every auto-approval is audited.
+8. **Schedules are the user's too.** A scheduled job is a standing order to act later while nobody watches. The user
+   makes and changes schedules directly; an agent may only propose one for itself (a lead agent for any agent on its
+   device), and each create or remove needs the user's yes, which no "Always allow" rule can give. A scheduled run
+   acts on its own only within the user's standing permissions; everything else waits for the user.
 
 ## Naming
 

@@ -32,6 +32,7 @@ use crate::{
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
 };
 
+mod schedules;
 mod switching;
 
 const DEVICE: &str = "d-0a1b2c3d";
@@ -574,6 +575,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
             turn,
             text: "What kernel does this device run?".into(),
             attachments: vec![],
+            scheduled: None,
         },
         LeadEvent::BackendFailed {
             backend: "broken-acp".into(),
@@ -956,7 +958,8 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert!(kinds.contains(&&LeadEvent::UserMessage {
         turn: 1,
         text: "Check the logs.".into(),
-        attachments: vec![]
+        attachments: vec![],
+        scheduled: None,
     }));
     assert!(kinds.contains(&&LeadEvent::AgentMessage {
         turn: 1,
@@ -1275,7 +1278,8 @@ async fn the_lead_creates_a_named_agent_and_gives_it_a_job() {
     assert!(agent_events.contains(&LeadEvent::UserMessage {
         turn: 1,
         text: "A job from the lead agent:\n\nReport the kernel version.".into(),
-        attachments: vec![]
+        attachments: vec![],
+        scheduled: None,
     }));
     assert!(agent_events.contains(&LeadEvent::AgentMessage {
         turn: 1,

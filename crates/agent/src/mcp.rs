@@ -128,6 +128,19 @@ impl McpServer {
         }
     }
 
+    /// Mark whether someone watches a session's work (a scheduled turn of the lead agent runs
+    /// unattended; its other turns answer the user in the chat). Returns false for an unknown
+    /// session.
+    pub fn set_attended(&self, token: &str, attended: bool) -> bool {
+        match lock(&self.sessions).get_mut(token) {
+            Some(s) => {
+                s.ctx.attended = attended;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// What first tainted a session (None: not tainted by a tool call, or unknown session).
     pub fn taint_source(&self, token: &str) -> Option<TaintSource> {
         lock(&self.sessions)

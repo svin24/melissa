@@ -205,6 +205,27 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `$XDG_STATE_HOME/melissa/permissions.json` (0600, outside every sandbox); a broken file grants nothing.
   Agents have no tool for either: only the owner's UI and API (`/api/confirmations/{id}/always`,
   `/api/settings/permissions*`) change them, audited `permissions.rule_added|rule_removed|bypass`.
+- **Scheduled jobs (owner, 2026-11-20):** "Ada: update all apps and the system, nightly at 3:00". A schedule gives
+  one agent (by id, or the lead agent) a recurring instruction on a 5-field cron expression evaluated in the box's
+  local time zone (croner on jiff; DST: a time in the skipped hour runs right after the gap, a repeated hour runs
+  once). Saved in `$XDG_STATE_HOME/melissa/schedules.json` (0600); every change and run audited `schedule.*`.
+  A Tokio task in the agent layer (`lead::schedules::Scheduler`) sleeps until the next due time (at most a
+  minute) and sends the instruction as a turn of that agent's conversation (the lead agent's main chat, or the
+  agent's own, waking a stopped agent), shown as the user message with a "Scheduled: <name>" label. Rules:
+  **skip, not queue**, when the previous run is still going or the agent is busy (recorded "skipped": a queued run
+  would start at a time nobody chose and pile up behind a stuck one; "Run now" is one click); a run missed while
+  Melissa was down runs once on start if it was due less than an hour ago, else it is recorded "missed"; a
+  confirmation no rule covers waits in "Waiting for you" as usual (no auto-deny), and a run still going after its
+  time limit (default 60 min) is cancelled and recorded "timed out". The turn runs **unattended**: the lead
+  agent's MCP session is marked unattended for its length, so what it may do alone is what the owner's "Always
+  allow" rules cover. Agents propose schedules with the `schedule_job` tool (create/list/remove; an agent only for
+  itself, the lead agent for any agent; another agent's schedules are refused "not yours"). Every create and
+  remove through the tool needs the owner's yes, which **no "Always allow" rule can give** (the confirmation
+  offers none, `Tool::owner_approval`): one approval must never become a standing licence to make more standing
+  orders. The developer's No permission prompts **does** cover it, because it is the owner's explicit "approve
+  everything" switch and already covers riskier calls; excluding schedules would make it lie. The owner manages
+  schedules in Settings → Schedules (list with next and last run, on/off, Run now, remove, add/edit with presets)
+  and `/api/schedules` without confirmations.
 - **ACP sessions (2026-11-18):** long-lived agent sessions behind a protocol-neutral API (`crates/agent/src/session`:
   open, prompt, cancel, close, typed events, permission handler) implemented over ACP with the official Rust crate
   (`crates/agent/src/acp`). Built-in backend `grok-acp` (`grok --permission-mode default agent --no-leader stdio`,
@@ -483,8 +504,12 @@ Roadmap (rough, phases may overlap):
     DECISIONS.md); resume via a Melissa-owned `~/.claude/projects` verified, like Grok's `~/.grok/sessions` and
     OpenCode's `~/.local/share/opencode`. Open: Claude's control protocol is its own and may change with CLI
     updates (replay fixture + live check on every update).
-27. The lead agent's MCP session counts as attended because it acts only on a user's message. Once the lead agent acts on
-    its own (schedules, alerts, events), those turns must run unattended; how is that marked and shown?
+27. ~~The lead agent's MCP session counts as attended because it acts only on a user's message. Once the lead agent acts on
+    its own (schedules, alerts, events), those turns must run unattended; how is that marked and shown?~~ Decided
+    2026-11-20 with scheduled jobs (§5): a turn Melissa starts on its own marks the conversation's MCP session
+    unattended for that turn (attended again on the next user message) and is shown as a user message labelled
+    "Scheduled: <name>". Alerts and events should start their turns the same way (`Conversation::send_scheduled`
+    is the model); open: their label and who is told.
 28. Who may approve a confirmation, and where (any client of the API today)? Should a worker's confirmation be
     routed to the chat that started it? Needs accounts (and ties into question 17).
 29. Agents' MCP tool-call timeouts (Grok, OpenCode) are unknown; tool calls that wait (confirmations up to
@@ -723,3 +748,14 @@ Roadmap (rough, phases may overlap):
     the bypass, the same trust as approving (28, 37). (e) The bypass banner is on pages with the rail; bare error
     pages don't show it. (f) A request answered by a rule leaves no card in the chat (audit log only); show a
     quiet "allowed by your rule" line? (g) The operator CLI's one-shot `tool` calls ignore rules and the bypass.
+68. Scheduled jobs (2026-11-20, see §5): (a) skip vs queue: a run due while the user chats with the lead agent is
+    skipped; would "queue once, up to N minutes" be friendlier for the main chat? (b) Nobody is told when a run
+    fails, is skipped, missed or waits for a confirmation (needs notifications); "Waiting for you" and Settings →
+    Schedules show it. (c) A confirmation a run waits for still times out after the confirmation timeout
+    (15 min) and the tool call fails; the owner may want runs to wait longer, or to approve a schedule's
+    expected calls up front (today: "Always allow" rules). (d) The time zone is read when Melissa starts; a
+    change needs a restart. (e) A removed agent's schedules stay and fail ("no agent"); remove them with the
+    agent? (f) Runs share the agent's conversation, so taint carries over between runs and chats. (g) Anyone
+    who reaches the UI/API can add schedules, the same trust as approving (28, 37, 67d). (h) A broken
+    `schedules.json` runs nothing and saves nothing until fixed by hand; show that in the UI? (i) No per-run
+    history beyond the last run (the audit log has every run).
