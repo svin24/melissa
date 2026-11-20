@@ -485,4 +485,10 @@ pub trait SessionBackend: Send + Sync {
     fn tool_call_limit(&self) -> Option<std::time::Duration> {
         None
     }
+
+    /// The agent condenses its own context when it fills up (Claude Code's auto-compact), so
+    /// Melissa leaves its sessions alone (see `lead::conversation::CompactPolicy`). Default: no.
+    fn compacts_itself(&self) -> bool {
+        false
+    }
 }

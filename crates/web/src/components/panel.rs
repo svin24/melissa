@@ -36,6 +36,23 @@ pub enum Glyph {
     File,
     Mic,
     Code,
+    // The agent workspace (2026-11-20).
+    More,
+    Pencil,
+    Shapes,
+    Pin,
+    Restart,
+    History,
+    Trash,
+    Plus,
+    Sidebar,
+    Chevron,
+    Warn,
+    Check,
+    Server,
+    Expand,
+    Upload,
+    Image,
 }
 
 pub fn glyph(g: Glyph) -> Markup {
@@ -77,6 +94,44 @@ pub fn glyph(g: Glyph) -> Markup {
                     path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.25" {}
                 }
                 Glyph::Code => { path d="M5.5 4.5 2 8l3.5 3.5M10.5 4.5 14 8l-3.5 3.5" {} }
+                Glyph::More => {
+                    path.dots d="M3.5 8h.01M8 8h.01M12.5 8h.01" {}
+                }
+                Glyph::Pencil => { path d="M10.5 2.75 13.25 5.5 5.5 13.25H2.75V10.5ZM9 4.25 11.75 7" {} }
+                Glyph::Shapes => {
+                    circle cx="5" cy="5" r="2.75" {}
+                    rect x="8.75" y="8.75" width="5" height="5" rx="1" {}
+                    path d="M11.25 1.75 14 6.25H8.5Z" {}
+                }
+                Glyph::Pin => { path d="M6 1.75h4M7 1.75v4L4.5 9h7L9 5.75v-4M8 9v5.25" {} }
+                Glyph::Restart => { path d="M2.75 8a5.25 5.25 0 1 0 1.6-3.8M2.5 1.75v2.75h2.75" {} }
+                Glyph::History => {
+                    path d="M2.75 8a5.25 5.25 0 1 0 1.6-3.8M2.5 1.75v2.75h2.75M8 5v3l2 1.25" {}
+                }
+                Glyph::Trash => { path d="M2.75 4.25h10.5M6.25 4.25V2.5h3.5v1.75M4 4.25l.75 9.25h6.5l.75-9.25" {} }
+                Glyph::Plus => { path d="M8 3v10M3 8h10" {} }
+                Glyph::Sidebar => {
+                    rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" {}
+                    path d="M6 2.75v10.5" {}
+                }
+                Glyph::Chevron => { path.chev d="m4.5 6.25 3.5 3.5 3.5-3.5" {} }
+                Glyph::Warn => {
+                    path d="M8 1.75 13.25 3.75v4c0 3.25-2.25 5.5-5.25 6.5-3-1-5.25-3.25-5.25-6.5v-4Z" {}
+                    path d="M8 5.25v3.25M8 10.75v.01" {}
+                }
+                Glyph::Check => { path d="M3.25 8.5 6.5 11.75l6.25-7.5" {} }
+                Glyph::Server => {
+                    rect x="2.5" y="2.5" width="11" height="4.5" rx="1.25" {}
+                    rect x="2.5" y="9" width="11" height="4.5" rx="1.25" {}
+                    path d="M5 4.75h.01M5 11.25h.01" {}
+                }
+                Glyph::Expand => { path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9.25 6.75M2.5 13.5l4.25-4.25" {} }
+                Glyph::Upload => { path d="M8 10.5V2.5M4.8 5.7 8 2.5l3.2 3.2M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" {} }
+                Glyph::Image => {
+                    rect x="2" y="2.5" width="12" height="11" rx="1.5" {}
+                    circle cx="5.75" cy="6.25" r="1.25" {}
+                    path d="m2.5 12 3.75-3.75 2.5 2.5 1.75-1.75L13.5 12" {}
+                }
             }
         }
     }

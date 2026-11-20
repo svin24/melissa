@@ -30,27 +30,31 @@ pub enum Item {
         text: String,
         files: Vec<Attachment>,
         scheduled: Option<String>,
+        /// When it was sent (Unix seconds).
+        at: u64,
     },
     /// Something passed into a helper's conversation by Melissa (a job, or a message from
     /// Melissa or another helper). `text` is untrusted.
     Relayed { from: String, text: String },
     /// A piece of the lead agent's reply (untrusted text). A reply is split into several items
-    /// when tool activity happens in between.
-    Reply { text: String },
-    /// Something the lead agent or a helper did: a tool call or a helper's job.
+    /// when tool activity happens in between. `head`: the turn's first item from the agent
+    /// (shown with its picture, name and `at`).
+    Reply { text: String, at: u64, head: bool },
+    /// The tool calls (and, with steps shown, the thoughts) between two pieces of a reply:
+    /// one card with a line per step.
+    Steps {
+        steps: Vec<Step>,
+        at: u64,
+        head: bool,
+    },
+    /// Something the lead agent did about a helper (a helper's job, a new helper), or a tool
+    /// call the agent was not allowed to make.
     Activity {
         label: String,
         detail: Option<String>,
         state: ActivityState,
         /// The helper (agent id) this is about, for a link to its conversation.
         agent: Option<String>,
-    },
-    /// The agent's thinking (only with [`Feed::with_steps`]). `text` is untrusted; empty
-    /// while the agent still thinks.
-    Thought {
-        label: String,
-        text: String,
-        state: ActivityState,
     },
     /// A confirmation the user decides on.
     Approval(Approval),
@@ -62,6 +66,20 @@ pub enum Item {
     },
     /// A divider in the chat (e.g. where the restored earlier conversation ends).
     Divider { text: String },
+    /// The date and time above a part of the chat ("Today, 10:42").
+    Date { text: String },
+}
+
+/// One line of a [`Item::Steps`] card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub label: String,
+    /// A short plain text (an unknown tool's own title).
+    pub detail: Option<String>,
+    pub state: ActivityState,
+    /// The agent's thinking (only with [`Feed::with_steps`]); untrusted, empty while the
+    /// agent still thinks. None: a tool call.
+    pub thought: Option<String>,
 }
 
 /// The plain-language view of a confirmation.
@@ -82,6 +100,10 @@ pub struct Approval {
     /// What "Always allow" would save, as a question ("Always let Ada update Minecraft?").
     /// None: no such button (the user's own requests, archived chats).
     pub always: Option<String>,
+    /// What kind of request it is, for the card's tag line ("Network access").
+    pub kind: &'static str,
+    /// The tag line's detail ("TCP 25565", the app's name).
+    pub detail: Option<String>,
 }
 
 /// A feed item with its stable key (used as the DOM id suffix).
@@ -102,7 +124,8 @@ pub enum Change {
     Status,
     /// The set of pending confirmations changed.
     Waiting,
-    /// The user started a new chat: everything before is gone (clients reload).
+    /// The user started a new chat (transcripts from before 2026-11-20): everything before
+    /// is gone (clients reload).
     Reset,
     /// The conversation's file box changed (the file panel, and sent files that expired).
     Files,
@@ -117,8 +140,20 @@ pub struct Feed {
     open_reply: Option<(TurnId, usize)>,
     turns_with_reply: HashSet<TurnId>,
     errored_turns: HashSet<TurnId>,
-    /// Agent tool-call ids → our own keys (agent ids never reach DOM ids or selectors).
-    tool_keys: HashMap<String, String>,
+    /// Agent tool-call ids → (steps card, line) (agent ids never reach DOM ids or selectors).
+    tool_steps: HashMap<String, (usize, usize)>,
+    /// The steps card the current turn adds to (while it is the newest entry).
+    open_steps: Option<usize>,
+    /// Turns whose first agent item (reply or steps) was shown with the agent's head.
+    headed: HashSet<TurnId>,
+    /// When the last dated item was (for date marks).
+    last_at: Option<u64>,
+    /// The time of the event being folded.
+    now_ts: u64,
+    /// Date marks added while folding the current event (they come first).
+    pending: Vec<Change>,
+    /// Words for times and dates (time zone and today).
+    clock: Clock,
     /// Agent tool-call ids not shown.
     hidden_tools: HashSet<String>,
     /// Agent id → key of its running job's row.
@@ -135,9 +170,84 @@ pub struct Feed {
     helper: bool,
     /// Show the agent's thinking and how long each step took (Settings → Developer).
     steps: bool,
-    /// The thought item the agent is still thinking in.
-    open_thought: Option<usize>,
+    /// The steps card line the agent is still thinking in.
+    open_thought: Option<(usize, usize)>,
 }
+
+/// How the feed words times: the device's time zone and today's date there.
+#[derive(Debug, Clone)]
+pub struct Clock {
+    tz: jiff::tz::TimeZone,
+    today: jiff::civil::Date,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        let tz = jiff::tz::TimeZone::system();
+        let today = jiff::Timestamp::now().to_zoned(tz.clone()).date();
+        Self { tz, today }
+    }
+}
+
+impl Clock {
+    /// A clock in `tz` where today is `today` (tests).
+    #[cfg(test)]
+    pub fn fixed(tz: jiff::tz::TimeZone, today: jiff::civil::Date) -> Self {
+        Self { tz, today }
+    }
+
+    fn zoned(&self, secs: u64) -> Option<jiff::Zoned> {
+        let t = jiff::Timestamp::from_second(i64::try_from(secs).ok()?).ok()?;
+        Some(t.to_zoned(self.tz.clone()))
+    }
+
+    /// `14:03`.
+    pub fn time(&self, secs: u64) -> String {
+        self.zoned(secs)
+            .map(|z| z.strftime("%H:%M").to_string())
+            .unwrap_or_default()
+    }
+
+    /// `Today, 14:03`, `Yesterday, 09:12`, `18 Nov, 10:42` (`18 Nov 2025, …` another year).
+    pub fn date_time(&self, secs: u64) -> String {
+        let Some(z) = self.zoned(secs) else {
+            return String::new();
+        };
+        let date = z.date();
+        let day = if date == self.today {
+            "Today".to_string()
+        } else if self.today.yesterday().ok() == Some(date) {
+            "Yesterday".to_string()
+        } else if date.year() == self.today.year() {
+            z.strftime("%-d %b").to_string()
+        } else {
+            z.strftime("%-d %b %Y").to_string()
+        };
+        format!("{day}, {}", z.strftime("%H:%M"))
+    }
+
+    /// `14:03` today, `18 Nov` before.
+    pub fn short_when(&self, secs: u64) -> String {
+        let Some(z) = self.zoned(secs) else {
+            return String::new();
+        };
+        if z.date() == self.today {
+            z.strftime("%H:%M").to_string()
+        } else {
+            z.strftime("%-d %b").to_string()
+        }
+    }
+
+    fn same_day(&self, a: u64, b: u64) -> bool {
+        match (self.zoned(a), self.zoned(b)) {
+            (Some(a), Some(b)) => a.date() == b.date(),
+            _ => true,
+        }
+    }
+}
+
+/// A gap after which the chat shows the date and time again.
+const DATE_GAP_SECS: u64 = 30 * 60;
 
 impl Feed {
     pub fn new() -> Self {
@@ -156,6 +266,18 @@ impl Feed {
     pub fn with_steps(mut self, on: bool) -> Self {
         self.steps = on;
         self
+    }
+
+    /// Word times with `clock` (tests; the default is the device's zone and today).
+    #[cfg(test)]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The feed's clock (the page words message times with it too).
+    pub fn clock(&self) -> &Clock {
+        &self.clock
     }
 
     /// An empty feed for an archived chat (read-only): confirmation ids in it may now
@@ -204,6 +326,14 @@ impl Feed {
             return Vec::new();
         }
         self.last_seq = rec.seq;
+        self.now_ts = rec.ts;
+        let out = self.apply_event(rec, look);
+        let mut all = std::mem::take(&mut self.pending);
+        all.extend(out);
+        all
+    }
+
+    fn apply_event(&mut self, rec: &EventRecord, look: &dyn Lookup) -> Vec<Change> {
         match &rec.event {
             LeadEvent::UserMessage {
                 turn,
@@ -212,6 +342,7 @@ impl Feed {
                 scheduled,
             } => {
                 self.busy = Some(*turn);
+                self.open_steps = None;
                 let item = match scheduled {
                     Some(_) => None,
                     None => relayed(text),
@@ -220,42 +351,56 @@ impl Feed {
                     text: text.clone(),
                     files: attachments.clone(),
                     scheduled: scheduled.clone(),
+                    at: rec.ts,
                 });
-                let added = self.add(format!("u{}", rec.seq), item);
-                vec![added, Change::Status]
+                let mut out = Vec::new();
+                out.push(self.add(format!("u{}", rec.seq), item));
+                out.push(Change::Status);
+                out
             }
-            LeadEvent::Text { turn, text } => self.reply_text(rec.seq, *turn, text),
+            LeadEvent::Text { turn, text } => self.reply_text(rec.seq, rec.ts, *turn, text),
             LeadEvent::AgentMessage { turn, text } => {
                 if self.turns_with_reply.contains(turn) || text.trim().is_empty() {
                     return Vec::new();
                 }
                 self.turns_with_reply.insert(*turn);
-                vec![self.add(format!("r{}", rec.seq), Item::Reply { text: text.clone() })]
+                let mut out = Vec::new();
+                let head = self.head(Some(*turn));
+                out.push(self.add(
+                    format!("r{}", rec.seq),
+                    Item::Reply {
+                        text: text.clone(),
+                        at: rec.ts,
+                        head,
+                    },
+                ));
+                out
             }
             LeadEvent::ToolCall {
                 id,
                 title,
                 status,
                 ms,
-                ..
-            } => self.tool_call(id, title, status, *ms),
-            LeadEvent::Thought { text, ms, .. } => self.thought(rec.seq, text, *ms),
+                turn,
+            } => self.tool_call(rec, turn.or(self.busy), id, title, status, *ms),
+            LeadEvent::Thought { turn, text, ms } => self.thought(rec, *turn, text, *ms),
             LeadEvent::Permission {
-                title, decision, ..
+                title,
+                decision,
+                turn,
             } => {
                 if decision != "reject_once" {
                     return Vec::new();
                 }
                 let tool = tool_words(title);
-                vec![self.add(
-                    format!("p{}", rec.seq),
-                    Item::Activity {
-                        label: format!("Not allowed: {}", lower_first(tool.doing)),
-                        detail: None,
-                        state: ActivityState::Failed,
-                        agent: None,
-                    },
-                )]
+                let step = Step {
+                    label: format!("Not allowed: {}", lower_first(tool.doing)),
+                    detail: None,
+                    state: ActivityState::Failed,
+                    thought: None,
+                };
+                let (changes, _) = self.add_step(rec, turn.or(self.busy), step);
+                changes
             }
             LeadEvent::ConfirmationNeeded {
                 id,
@@ -464,6 +609,7 @@ impl Feed {
                     self.busy = None;
                 }
                 self.open_reply = None;
+                self.open_steps = None;
                 // Steps the agent never finished (a stopped turn) are not running any more.
                 let mut out = self.close_steps();
                 out.push(Change::Status);
@@ -512,10 +658,25 @@ impl Feed {
                     last_seq: self.last_seq,
                     helper: self.helper,
                     steps: self.steps,
+                    clock: self.clock.clone(),
                     ..Self::default()
                 };
                 vec![Change::Reset, Change::Status, Change::Waiting]
             }
+            LeadEvent::FreshStart => {
+                self.open_reply = None;
+                self.open_steps = None;
+                let mut out = self.close_steps();
+                out.push(self.add(
+                    format!("n{}", rec.seq),
+                    Item::Divider {
+                        text: "Fresh start".into(),
+                    },
+                ));
+                out.push(Change::Status);
+                out
+            }
+            LeadEvent::ContextCompacted { .. } => Vec::new(),
             LeadEvent::EarlierStart => {
                 self.prefix = "e";
                 vec![self.add(
@@ -549,6 +710,9 @@ impl Feed {
     }
 
     fn add(&mut self, key: String, item: Item) -> Change {
+        if !matches!(item, Item::Divider { .. } | Item::Date { .. }) {
+            self.date_mark(&key);
+        }
         let key = self.full(&key);
         let i = self.entries.len();
         self.by_key.insert(key.clone(), i);
@@ -583,7 +747,8 @@ impl Feed {
         self.reply_break = false;
         self.turns_with_reply.clear();
         self.errored_turns.clear();
-        self.tool_keys.clear();
+        self.tool_steps.clear();
+        self.open_steps = None;
         self.hidden_tools.clear();
         self.open_jobs.clear();
         let divider = self.add(
@@ -602,10 +767,15 @@ impl Feed {
         self.busy = None;
         for e in &mut self.entries {
             match &mut e.item {
-                Item::Activity { state, .. } | Item::Thought { state, .. }
-                    if *state == ActivityState::Working =>
-                {
+                Item::Activity { state, .. } if *state == ActivityState::Working => {
                     *state = ActivityState::Stopped;
+                }
+                Item::Steps { steps, .. } => {
+                    for st in steps.iter_mut() {
+                        if st.state == ActivityState::Working {
+                            st.state = ActivityState::Stopped;
+                        }
+                    }
                 }
                 Item::Approval(a) if a.state == ApprovalState::Pending => {
                     a.state = ApprovalState::Withdrawn;
@@ -647,15 +817,51 @@ impl Feed {
         if self.helper {
             format!("{what} Its changes now need your OK.")
         } else {
-            format!("{what} Changes now need your OK until you start a new chat.")
+            format!("{what} Changes now need your OK until a fresh start.")
         }
     }
 
-    fn reply_text(&mut self, seq: u64, turn: TurnId, text: &str) -> Vec<Change> {
+    /// A date mark before the item about to be added (key `item_key`) at the current event's
+    /// time: the first in the chat, on a new day, or after a quiet half hour.
+    fn date_mark(&mut self, item_key: &str) {
+        let ts = self.now_ts;
+        if ts == 0 {
+            return;
+        }
+        let show = match self.last_at {
+            None => true,
+            Some(last) => {
+                ts.saturating_sub(last) >= DATE_GAP_SECS || !self.clock.same_day(last, ts)
+            }
+        };
+        self.last_at = Some(ts.max(self.last_at.unwrap_or(0)));
+        if !show {
+            return;
+        }
+        let text = self.clock.date_time(ts);
+        let key = self.full(&format!("d{item_key}"));
+        let i = self.entries.len();
+        self.by_key.insert(key.clone(), i);
+        self.entries.push(Entry {
+            key,
+            item: Item::Date { text },
+        });
+        self.pending.push(Change::Added(i));
+    }
+
+    /// Whether the next agent item of `turn` is its first (shown with the agent's head).
+    fn head(&mut self, turn: Option<TurnId>) -> bool {
+        match turn {
+            Some(t) => self.headed.insert(t),
+            None => false,
+        }
+    }
+
+    fn reply_text(&mut self, seq: u64, ts: u64, turn: TurnId, text: &str) -> Vec<Change> {
         self.turns_with_reply.insert(turn);
         if let Some((t, i)) = self.open_reply {
             if t == turn && i + 1 == self.entries.len() {
-                if let Item::Reply { text: so_far } = &mut self.entries[i].item {
+                if let Item::Reply { text: so_far, .. } = &mut self.entries[i].item {
                     if std::mem::take(&mut self.reply_break)
                         && !text.starts_with(char::is_whitespace)
                     {
@@ -671,74 +877,133 @@ impl Feed {
             return Vec::new();
         }
         self.reply_break = false;
-        let change = self.add(
+        self.open_steps = None;
+        let mut out = Vec::new();
+        let head = self.head(Some(turn));
+        out.push(self.add(
             format!("r{seq}"),
             Item::Reply {
                 text: text.trim_start().to_string(),
+                at: ts,
+                head,
             },
-        );
+        ));
         self.open_reply = Some((turn, self.entries.len() - 1));
-        vec![change]
+        out
+    }
+
+    /// Add a line to the turn's open steps card (a new card if the newest entry is something
+    /// else). Returns the changes and where the line is.
+    fn add_step(
+        &mut self,
+        rec: &EventRecord,
+        turn: Option<TurnId>,
+        step: Step,
+    ) -> (Vec<Change>, (usize, usize)) {
+        if let Some(i) = self.open_steps.filter(|i| i + 1 == self.entries.len()) {
+            if let Item::Steps { steps, .. } = &mut self.entries[i].item {
+                steps.push(step);
+                let at = (i, steps.len() - 1);
+                return (vec![Change::Updated(i)], at);
+            }
+        }
+        // A reply after this starts a new piece.
+        self.open_reply = None;
+        let mut out = Vec::new();
+        let head = self.head(turn);
+        out.push(self.add(
+            format!("s{}", rec.seq),
+            Item::Steps {
+                steps: vec![step],
+                at: rec.ts,
+                head,
+            },
+        ));
+        let i = self.entries.len() - 1;
+        self.open_steps = Some(i);
+        (out, (i, 0))
+    }
+
+    fn step_mut(&mut self, (i, j): (usize, usize)) -> Option<&mut Step> {
+        match &mut self.entries.get_mut(i)?.item {
+            Item::Steps { steps, .. } => steps.get_mut(j),
+            _ => None,
+        }
     }
 
     /// The turn ended: its tool calls and thought that are still shown as running stop (the
     /// agent sends no end for a call cut off by a cancel). Helpers' jobs run on.
     fn close_steps(&mut self) -> Vec<Change> {
         let thought = self.open_thought.take();
-        let mut open: Vec<usize> = self
-            .tool_keys
-            .values()
-            .filter_map(|k| self.by_key.get(&self.full(k)).copied())
-            .chain(thought)
-            .collect();
-        open.sort_unstable();
-        open.dedup();
+        let open: Vec<(usize, usize)> = self.tool_steps.values().copied().chain(thought).collect();
         let mut out = Vec::new();
-        for i in open {
-            if let Item::Activity { state, .. } | Item::Thought { state, .. } =
-                &mut self.entries[i].item
-            {
-                if *state == ActivityState::Working {
-                    *state = ActivityState::Stopped;
-                    out.push(Change::Updated(i));
+        for at in open {
+            let stopped = match self.step_mut(at) {
+                Some(st) if st.state == ActivityState::Working => {
+                    st.state = ActivityState::Stopped;
+                    true
                 }
+                _ => false,
+            };
+            if stopped && !out.contains(&Change::Updated(at.0)) {
+                out.push(Change::Updated(at.0));
             }
         }
+        out.sort_unstable_by_key(|c| match c {
+            Change::Updated(i) => *i,
+            _ => 0,
+        });
         out
     }
 
     /// A thought starts (`ms` None) or ends. Not shown unless steps are.
-    fn thought(&mut self, seq: u64, text: &str, ms: Option<u64>) -> Vec<Change> {
+    fn thought(
+        &mut self,
+        rec: &EventRecord,
+        turn: TurnId,
+        text: &str,
+        ms: Option<u64>,
+    ) -> Vec<Change> {
         if !self.steps {
             return Vec::new();
         }
         let Some(ms) = ms else {
-            let change = self.add(
-                format!("k{seq}"),
-                Item::Thought {
-                    label: "Thinking".into(),
-                    text: String::new(),
-                    state: ActivityState::Working,
-                },
-            );
-            self.open_thought = Some(self.entries.len() - 1);
-            return vec![change];
+            let step = Step {
+                label: "Thinking".into(),
+                detail: None,
+                state: ActivityState::Working,
+                thought: Some(String::new()),
+            };
+            let (out, at) = self.add_step(rec, Some(turn), step);
+            self.open_thought = Some(at);
+            return out;
         };
-        let item = Item::Thought {
+        let step = Step {
             label: format!("Thought for {}", duration_words(ms)),
-            text: text.to_string(),
+            detail: None,
             state: ActivityState::Done,
+            thought: Some(text.to_string()),
         };
         match self.open_thought.take() {
-            Some(i) => {
-                self.entries[i].item = item;
-                vec![Change::Updated(i)]
+            Some(at) => {
+                if let Some(st) = self.step_mut(at) {
+                    *st = step;
+                }
+                vec![Change::Updated(at.0)]
             }
-            None => vec![self.add(format!("k{seq}"), item)],
+            None => self.add_step(rec, Some(turn), step).0,
         }
     }
 
-    fn tool_call(&mut self, id: &str, title: &str, status: &str, ms: Option<u64>) -> Vec<Change> {
+    fn tool_call(
+        &mut self,
+        rec: &EventRecord,
+        turn: Option<TurnId>,
+        id: &str,
+        title: &str,
+        status: &str,
+        ms: Option<u64>,
+    ) -> Vec<Change> {
         let words = tool_words(title);
         // A call first reported under a hidden title stays hidden when its title changes
         // (Grok: `search_tool`, then `Search tools: "..."`).
@@ -748,7 +1013,7 @@ impl Feed {
             if self.open_reply.is_some() {
                 self.reply_break = true;
             }
-            if !self.tool_keys.contains_key(id) {
+            if !self.tool_steps.contains_key(id) {
                 self.hidden_tools.insert(id.to_string());
             }
             return Vec::new();
@@ -771,21 +1036,21 @@ impl Feed {
         // tool when it finishes).
         let detail =
             (words.unknown && !WRAPPER_TOOLS.contains(&title.trim())).then(|| shorten(title, 80));
-        let next = self.tool_keys.len() + 1;
-        let key = self
-            .tool_keys
-            .entry(id.to_string())
-            .or_insert_with(|| format!("t{next}"))
-            .clone();
-        vec![self.upsert(
-            key,
-            Item::Activity {
-                label,
-                detail,
-                state,
-                agent: None,
-            },
-        )]
+        let step = Step {
+            label,
+            detail,
+            state,
+            thought: None,
+        };
+        if let Some(&at) = self.tool_steps.get(id) {
+            if let Some(st) = self.step_mut(at) {
+                *st = step;
+                return vec![Change::Updated(at.0)];
+            }
+        }
+        let (out, at) = self.add_step(rec, turn, step);
+        self.tool_steps.insert(id.to_string(), at);
+        out
     }
 }
 
@@ -1039,9 +1304,12 @@ pub fn approval_words(
         destructive: destructive_reason,
         permanent: false,
         yes: "Allow",
-        no: "Don't allow",
+        // One word for saying no on every card (owner design, 2026-11-20).
+        no: "Decline",
         state: ApprovalState::Pending,
         always: None,
+        kind: "Request",
+        detail: None,
     };
     match tool_name(tool) {
         "deploy_app" | "update_app" => {
@@ -1059,7 +1327,18 @@ pub fn approval_words(
                 .unwrap_or_else(|| "Starts it again with its data.".into());
             a.reason = "it runs software on this device".into();
             a.yes = if update { "Change" } else { "Set up" };
-            a.no = "Not now";
+            let ports = args
+                .and_then(|a| a.get("spec"))
+                .map(public_ports)
+                .unwrap_or_default();
+            if ports.is_empty() {
+                a.kind = "Runs software";
+                a.detail = app.clone();
+            } else {
+                // It opens ports to the network: say which (owner design).
+                a.kind = "Network access";
+                a.detail = Some(ports.join(", "));
+            }
         }
         "install_app" => {
             a.title = match &app {
@@ -1068,7 +1347,8 @@ pub fn approval_words(
             };
             a.consequence = "Downloads the app and starts it on this device.".into();
             a.yes = "Install";
-            a.no = "Not now";
+            a.kind = "Runs software";
+            a.detail = app.clone();
         }
         "stop_app" => {
             a.title = match &app {
@@ -1079,7 +1359,8 @@ pub fn approval_words(
             // Takes it offline, but nothing is lost: never shown as dangerous.
             a.destructive = false;
             a.yes = "Stop";
-            a.no = "Keep it running";
+            a.kind = "App";
+            a.detail = app.clone();
         }
         "start_app" => {
             a.title = match &app {
@@ -1088,7 +1369,8 @@ pub fn approval_words(
             };
             a.consequence = "Starts it with its data and settings, at the same link.".into();
             a.yes = "Start";
-            a.no = "Not now";
+            a.kind = "App";
+            a.detail = app.clone();
         }
         "uninstall_app" => {
             let delete = args
@@ -1111,7 +1393,8 @@ pub fn approval_words(
             } else {
                 "Remove"
             };
-            a.no = "Keep it";
+            a.kind = if delete { "Deletes data" } else { "App" };
+            a.detail = app.clone();
         }
         "create_agent" => {
             a.title = match arg("name") {
@@ -1119,6 +1402,9 @@ pub fn approval_words(
                 None => "Set up a new helper?".into(),
             };
             a.consequence = "A helper is an assistant that works on its own, in its own sandbox, and looks after the apps it is given.".into();
+            a.yes = "Set up helper";
+            a.kind = "Helpers";
+            a.detail = arg("name").map(|n| shorten(n, 40));
         }
         "give_agent_job" => {
             a.title = match agent("agent") {
@@ -1129,6 +1415,9 @@ pub fn approval_words(
                 Some(goal) => format!("The job: {}", shorten(goal, 160)),
                 None => "The helper works on its own, in its own sandbox.".into(),
             };
+            a.yes = "Give the job";
+            a.kind = "Helpers";
+            a.detail = agent("agent");
         }
         "message_agent" => {
             a.title = match agent("agent") {
@@ -1139,6 +1428,9 @@ pub fn approval_words(
                 Some(t) => format!("The message: {}", shorten(t, 160)),
                 None => "The helper reads it as information, not as orders.".into(),
             };
+            a.yes = "Pass it on";
+            a.kind = "Helpers";
+            a.detail = agent("agent");
         }
         "stop_agent" => {
             a.title = match agent("agent") {
@@ -1148,7 +1440,8 @@ pub fn approval_words(
             a.consequence =
                 "Cancels its current job. It starts again with its next job or message.".into();
             a.yes = "Stop";
-            a.no = "Let it work";
+            a.kind = "Helpers";
+            a.detail = agent("agent");
         }
         "delete_agent" => {
             a.title = match agent("agent") {
@@ -1159,7 +1452,8 @@ pub fn approval_words(
                 "Its chat, file box and schedules are removed with it. This can't be undone."
                     .into();
             a.yes = "Delete";
-            a.no = "Keep it";
+            a.kind = "Helpers";
+            a.detail = agent("agent");
         }
         "transfer_file" => {
             // `Melissa` (or `lead`) is Melissa's own box.
@@ -1190,7 +1484,8 @@ pub fn approval_words(
                 (None, _) => "Another agent can read it.".into(),
             };
             a.yes = if moving { "Move it" } else { "Copy it" };
-            a.no = "Don't";
+            a.kind = "Files";
+            a.detail = arg("file").map(|f| shorten(f, 40));
         }
         "reassign_workspace" => {
             let to = agent("to");
@@ -1205,7 +1500,8 @@ pub fn approval_words(
                 None => "Another helper looks after it from now on.".into(),
             };
             a.yes = "Hand it over";
-            a.no = "Keep as is";
+            a.kind = "Ownership";
+            a.detail = app.clone();
         }
         "agent:execute" => {
             a.title = "Run a command?".into();
@@ -1214,6 +1510,8 @@ pub fn approval_words(
                 None => "The assistant wants to run a command on this device.".into(),
             };
             a.destructive = true;
+            a.yes = "Run it";
+            a.kind = "Command";
         }
         "app_logs" => {
             a.title = match &app {
@@ -1221,6 +1519,9 @@ pub fn approval_words(
                 None => "Read an app's logs?".into(),
             };
             a.consequence = "Lets the assistant read the app's recent output.".into();
+            a.yes = "Read the logs";
+            a.kind = "Outside text";
+            a.detail = app.clone();
         }
         other => {
             let words = tool_words(other);
@@ -1230,9 +1531,29 @@ pub fn approval_words(
                 format!("Allow: {}?", lower_first(words.doing))
             };
             a.consequence = "The assistant waits for your answer.".into();
+            a.kind = if words.unknown { "Tool" } else { "Request" };
+            a.detail = words.unknown.then(|| shorten(other, 40));
         }
     }
     a
+}
+
+/// The ports a deploy opens to the network (`TCP 25565`), from its spec (unvalidated).
+fn public_ports(spec: &Value) -> Vec<String> {
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let web = spec["web"].as_str();
+    list(&spec["containers"])
+        .iter()
+        .flat_map(|c| list(&c["ports"]))
+        .filter(|p| p["public"] == true || (web.is_some() && p["name"].as_str() == web))
+        .filter_map(|p| {
+            Some(format!(
+                "{} {}",
+                p["protocol"].as_str().unwrap_or("tcp").to_uppercase(),
+                p["port"].as_u64()?
+            ))
+        })
+        .collect()
 }
 
 /// What a deploy runs, in a few words, from its spec (unvalidated: only strings are read).
@@ -1458,18 +1779,27 @@ mod tests {
         assert!(!feed.busy());
         assert_eq!(feed.backend(), Some("Grok"));
         let keys: Vec<&str> = feed.entries().iter().map(|e| e.key.as_str()).collect();
-        assert_eq!(keys, ["u1", "n2", "r3", "t1", "r7"]);
+        assert_eq!(keys, ["u1", "n2", "r3", "s5", "r7"]);
         assert_eq!(
             feed.entries()[2].item,
             Item::Reply {
-                text: "Sure, checking.".into()
+                text: "Sure, checking.".into(),
+                at: 0,
+                head: true,
             }
         );
+        // Only the turn's first agent item has the agent's head.
+        assert!(matches!(
+            &feed.entries()[4].item,
+            Item::Reply { head: false, .. }
+        ));
         assert_eq!(changes[3], [Change::Updated(2)]);
         assert_eq!(changes[5], [Change::Updated(3)]);
         assert!(matches!(
             &feed.entries()[3].item,
-            Item::Activity { label, state: ActivityState::Done, .. } if label == "Checked this device"
+            Item::Steps { steps, head: false, .. }
+                if steps.len() == 1 && steps[0].label == "Checked this device"
+                    && steps[0].state == ActivityState::Done
         ));
         // The whole message at the end is not shown twice.
         assert!(changes[7].is_empty());
@@ -1649,25 +1979,25 @@ mod tests {
         );
         assert!(feed.entries().is_empty());
         feed.apply(&call(3, "b", "use_tool", "pending"), &NoLookup);
+        let line = |label: &str, state| Item::Steps {
+            steps: vec![Step {
+                label: label.into(),
+                detail: None,
+                state,
+                thought: None,
+            }],
+            at: 0,
+            head: true,
+        };
         assert_eq!(
             feed.entries()[0].item,
-            Item::Activity {
-                label: "Using a tool".into(),
-                detail: None,
-                state: ActivityState::Working,
-                agent: None,
-            }
+            line("Using a tool", ActivityState::Working)
         );
         let c = feed.apply(&call(4, "b", "melissa__give_agent_job", "done"), &NoLookup);
         assert_eq!(c, [Change::Updated(0)]);
         assert_eq!(
             feed.entries()[0].item,
-            Item::Activity {
-                label: "Gave a helper a job".into(),
-                detail: None,
-                state: ActivityState::Done,
-                agent: None,
-            }
+            line("Gave a helper a job", ActivityState::Done)
         );
     }
 
@@ -1733,7 +2063,9 @@ mod tests {
         assert_eq!(
             feed.entries()[0].item,
             Item::Reply {
-                text: "Looking.\n\nFound it.".into()
+                text: "Looking.\n\nFound it.".into(),
+                at: 0,
+                head: true,
             }
         );
     }
@@ -1821,9 +2153,27 @@ mod tests {
 
     fn state_of(feed: &Feed, i: usize) -> ActivityState {
         match &feed.entries()[i].item {
-            Item::Activity { state, .. } | Item::Thought { state, .. } => *state,
-            other => panic!("not a step: {other:?}"),
+            Item::Activity { state, .. } => *state,
+            other => panic!("not a row: {other:?}"),
         }
+    }
+
+    /// Every line of every steps card: (card index, label, state, thought).
+    fn steps(feed: &Feed) -> Vec<(usize, String, ActivityState, Option<String>)> {
+        feed.entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match &e.item {
+                Item::Steps { steps, .. } => Some(
+                    steps
+                        .iter()
+                        .map(|s| (i, s.label.clone(), s.state, s.thought.clone()))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     #[test]
@@ -1852,29 +2202,27 @@ mod tests {
                 },
             ],
         );
-        let at = |label: &str| {
-            feed.entries()
-                .iter()
-                .position(|e| matches!(&e.item, Item::Activity { label: l, .. } if l == label))
-                .unwrap()
-        };
-        let (job, done, cut) = (
-            at("Ada is looking into it"),
-            at("Checked this device"),
-            at("Checking this device"),
-        );
-        assert_eq!(state_of(&feed, cut), ActivityState::Stopped);
-        assert_eq!(state_of(&feed, done), ActivityState::Done);
-        // A helper's job runs on after Melissa's turn.
-        assert_eq!(state_of(&feed, job), ActivityState::Working);
-        // The live stream replaces the stopped row (no spinner left on the page).
-        assert!(changes[4].contains(&Change::Updated(cut)));
-        assert!(!feed.busy());
-        // Timings are not shown unless asked for.
-        assert!(!feed
+        let job = feed
             .entries()
             .iter()
-            .any(|e| matches!(&e.item, Item::Activity { label, .. } if label.contains('·'))));
+            .position(|e| matches!(&e.item, Item::Activity { label, .. } if label == "Ada is looking into it"))
+            .unwrap();
+        let lines = steps(&feed);
+        assert_eq!(lines.len(), 2, "both calls in one card: {lines:?}");
+        let card = lines[0].0;
+        assert_eq!(lines[1].0, card);
+        assert_eq!(lines[0].2, ActivityState::Done);
+        assert_eq!(
+            (lines[1].1.as_str(), lines[1].2),
+            ("Checking this device", ActivityState::Stopped)
+        );
+        // A helper's job runs on after Melissa's turn.
+        assert_eq!(state_of(&feed, job), ActivityState::Working);
+        // The live stream replaces the card (no spinner left on the page).
+        assert!(changes[4].contains(&Change::Updated(card)));
+        assert!(!feed.busy());
+        // Timings are not shown unless asked for.
+        assert!(!lines.iter().any(|l| l.1.contains('·')));
     }
 
     #[test]
@@ -1910,34 +2258,143 @@ mod tests {
                 },
             ]
         };
-        // Off (the default): exactly what the feed showed before thoughts were recorded.
+        // Off (the default): only the tool call, no thoughts, no timings.
         let mut off = Feed::new();
         fold_all(&mut off, events());
-        assert!(!off
-            .entries()
-            .iter()
-            .any(|e| matches!(e.item, Item::Thought { .. })));
-        assert!(
-            matches!(&off.entries()[1].item, Item::Activity { label, .. } if label == "Checked this device")
-        );
+        let lines = steps(&off);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].1, "Checked this device");
+        assert!(lines[0].3.is_none());
 
+        // On: the thoughts are lines of the same card, opening to their text.
         let mut on = Feed::new().with_steps(true);
         let changes = fold_all(&mut on, events());
-        let e = on.entries();
-        assert!(
-            matches!(&e[1].item, Item::Thought { label, text, state: ActivityState::Done }
-            if label == "Thought for 3.2s" && text == "Which **tool**?")
-        );
-        // The thought's row was added when it started and updated when it ended.
+        let lines = steps(&on);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines.iter().all(|l| l.0 == 1), "one card");
+        assert_eq!(lines[0].1, "Thought for 3.2s");
+        assert_eq!(lines[0].3.as_deref(), Some("Which **tool**?"));
+        // The card was added when the thought started and updated when it ended.
         assert_eq!(changes[1], vec![Change::Added(1)]);
         assert_eq!(changes[2], vec![Change::Updated(1)]);
-        assert!(
-            matches!(&e[2].item, Item::Activity { label, .. } if label == "Checked this device · 0.4s")
-        );
+        assert_eq!(lines[1].1, "Checked this device · 0.4s");
         // A thought cut off by the stop doesn't keep spinning.
-        assert!(
-            matches!(&e[3].item, Item::Thought { label, state: ActivityState::Stopped, .. } if label == "Thinking")
+        assert_eq!(
+            (lines[2].1.as_str(), lines[2].2),
+            ("Thinking", ActivityState::Stopped)
         );
+    }
+
+    #[test]
+    fn a_reply_between_tool_calls_starts_a_new_card() {
+        let mut feed = Feed::new();
+        fold_all(
+            &mut feed,
+            vec![
+                LeadEvent::UserMessage {
+                    turn: 1,
+                    text: "Set it up".into(),
+                    attachments: vec![],
+                    scheduled: None,
+                },
+                tool("a", "done", None),
+                tool("b", "failed", None),
+                LeadEvent::Text {
+                    turn: 1,
+                    text: "Half way.".into(),
+                },
+                tool("c", "running", None),
+                LeadEvent::Permission {
+                    turn: Some(1),
+                    title: "Read".into(),
+                    decision: "reject_once".into(),
+                },
+            ],
+        );
+        let kinds: Vec<&str> = feed
+            .entries()
+            .iter()
+            .map(|e| match &e.item {
+                Item::User { .. } => "user",
+                Item::Steps { head: true, .. } => "steps+head",
+                Item::Steps { .. } => "steps",
+                Item::Reply { .. } => "reply",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["user", "steps+head", "reply", "steps"]);
+        let lines = steps(&feed);
+        assert_eq!(lines[1].2, ActivityState::Failed);
+        assert_eq!(lines[1].1, "Couldn't finish: checking this device");
+        // A refused permission is a failed line of the card it happened in.
+        assert_eq!(lines[3].1, "Not allowed: using a tool");
+        assert_eq!(lines[3].2, ActivityState::Failed);
+        assert_eq!(lines[3].0, lines[2].0);
+    }
+
+    #[test]
+    fn dates_mark_the_chat_and_a_fresh_start_is_a_divider() {
+        let tz = jiff::tz::TimeZone::UTC;
+        let today = jiff::civil::date(2026, 11, 20);
+        // 2026-11-19 09:12 UTC and 2026-11-20 10:42 UTC.
+        let (yesterday, now) = (1_795_079_520, 1_795_171_320);
+        let mut feed = Feed::new().with_clock(Clock::fixed(tz, today));
+        let user = |turn, text: &str| LeadEvent::UserMessage {
+            turn,
+            text: text.into(),
+            attachments: vec![],
+            scheduled: None,
+        };
+        let at = |seq, ts, event| EventRecord { seq, ts, event };
+        for r in [
+            at(1, yesterday, user(1, "one")),
+            at(
+                2,
+                yesterday + 60,
+                LeadEvent::AgentMessage {
+                    turn: 1,
+                    text: "ok".into(),
+                },
+            ),
+            // Ten minutes later: no new mark.
+            at(3, yesterday + 600, user(2, "two")),
+            at(4, now, user(3, "three")),
+            at(5, now + 5, LeadEvent::FreshStart),
+            at(
+                6,
+                now + 6,
+                LeadEvent::ContextCompacted {
+                    summary: "s".into(),
+                },
+            ),
+        ] {
+            feed.apply(&r, &NoLookup);
+        }
+        let shown: Vec<String> = feed
+            .entries()
+            .iter()
+            .map(|e| match &e.item {
+                Item::Date { text } => format!("date {text}"),
+                Item::Divider { text } => format!("divider {text}"),
+                Item::User { text, .. } => text.clone(),
+                Item::Reply { text, .. } => text.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "date Yesterday, 09:12",
+                "one",
+                "ok",
+                "two",
+                "date Today, 10:42",
+                "three",
+                "divider Fresh start",
+            ]
+        );
+        assert_eq!(feed.clock().time(now), "10:42");
+        assert_eq!(feed.clock().short_when(yesterday), "19 Nov");
     }
 
     #[test]
@@ -2021,7 +2478,7 @@ mod tests {
             "It can be started again; nothing is deleted."
         );
         assert!(!a.destructive && !a.permanent);
-        assert_eq!((a.yes, a.no), ("Stop", "Keep it running"));
+        assert_eq!((a.yes, a.no), ("Stop", "Decline"));
         let a = approval_words(
             4,
             "start_app",
@@ -2047,7 +2504,7 @@ mod tests {
         );
         assert_eq!(a.title, "Copy plan.txt from Ada's files to Melissa's?");
         assert_eq!(a.consequence, "Melissa can read it; both keep a copy.");
-        assert_eq!((a.yes, a.no), ("Copy it", "Don't"));
+        assert_eq!((a.yes, a.no), ("Copy it", "Decline"));
         assert!(!a.destructive);
         let args =
             json!({"from_agent": "lead", "file": "plan.txt", "to_agent": "Bo", "move": true});

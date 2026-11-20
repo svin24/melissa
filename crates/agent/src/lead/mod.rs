@@ -12,6 +12,7 @@ pub mod agents;
 pub mod backends;
 pub(crate) mod conversation;
 pub mod events;
+pub mod icon;
 pub mod registry;
 pub mod schedules;
 pub mod transcript;
@@ -43,8 +44,8 @@ use crate::{
 
 use agents::AgentPool;
 use backends::{BackendChoice, BackendView, ModelCache, ProbeOutcome, Switched};
+pub use conversation::{CompactPolicy, LeadStatus, TurnOutcome};
 use conversation::{Conversation, ConversationSpec};
-pub use conversation::{LeadStatus, TurnOutcome};
 use events::{EventLog, LeadEvent, TurnId};
 
 /// How the lead agent is set up (`[lead]` in the lead agent config, plus the shipped prompts).
@@ -206,6 +207,7 @@ impl Lead {
             allow: allow.clone(),
             files: files.clone(),
             owner: Principal::Lead,
+            compact: pool.limits().compact,
         };
         let conv = Conversation::new(
             spec,
@@ -361,6 +363,16 @@ impl Lead {
         Some(c)
     }
 
+    /// Melissa's last turn ended in an error (this daemon run, until the next turn or a fresh
+    /// start): the sidebar lists her under "Needs attention".
+    pub fn failed(&self) -> bool {
+        let conv = &self.inner.conv;
+        conv.busy().is_none()
+            && conv
+                .last_outcome()
+                .is_some_and(|o| o.stop_reason == "error" || o.error.is_some())
+    }
+
     pub fn status(&self) -> LeadStatus {
         self.inner.conv.status()
     }
@@ -460,14 +472,13 @@ impl Lead {
         self.inner.conv.cancel(None, "ui").await
     }
 
-    /// Start a new chat with the lead agent (the owner-approved way to clear its taint): withdraw
-    /// its pending confirmations (audited `confirmation.withdrawn`), stop a running turn,
-    /// close its agent session for good (the next message starts a new one, no resume),
-    /// archive the transcript (readable under [`Lead::past_chats`]) and clear the taint.
-    /// Agents' confirmations that still wait are announced again in the new chat.
-    /// Audited `lead.new_chat`. Agents keep their sessions and memory. Returns the old chat's
-    /// archive id, if it had anything in it.
-    pub async fn new_chat(&self) -> Result<Option<u64>, LeadError> {
+    /// "Fresh start" for Melissa (the owner-approved way to clear its taint; one chat per
+    /// agent since 2026-11-20, so the chat is not archived): withdraw its pending
+    /// confirmations (audited `confirmation.withdrawn`), stop a running turn, close its agent
+    /// session for good (the next message starts a new one without the earlier conversation)
+    /// and clear the taint. The chat goes on, with a "Fresh start" divider. Audited
+    /// `lead.fresh_start`. Agents keep their sessions and memory.
+    pub async fn fresh_start(&self) -> Result<(), LeadError> {
         let task = self.task_id();
         for c in self.confirmations().pending() {
             if c.task != task {
@@ -479,7 +490,7 @@ impl Lead {
                     "confirmation.withdrawn",
                     c.task,
                     "",
-                    format!("confirmation {}: the user started a new chat", c.id),
+                    format!("confirmation {}: the user cleared Melissa's memory", c.id),
                 )
                 .by("ui");
                 if let Err(e) =
@@ -489,21 +500,16 @@ impl Lead {
                 }
             }
         }
-        let archived = self.inner.conv.new_chat("ui").await?;
-        // Agents' confirmations still wait: they stay in the new chat too.
-        for c in self.confirmations().pending() {
-            self.events().push(LeadEvent::ConfirmationNeeded {
-                id: c.id,
-                task: c.task,
-                tool: c.tool,
-                reason: c.reason,
-                agent: self.inner.pool.agent_of_task(c.task),
-            });
-        }
-        Ok(archived)
+        self.inner.conv.fresh_start("ui").await
     }
 
-    /// Chats archived by [`Lead::new_chat`], newest first.
+    /// Condense Melissa's context now, as when it fills up (see
+    /// [`conversation::CompactPolicy`]). False if there was nothing to condense.
+    pub fn compact(&self) -> bool {
+        self.inner.conv.compact("ui")
+    }
+
+    /// Chats archived by "New chat" before 2026-11-20 (read-only), newest first.
     pub fn past_chats(&self) -> Vec<transcript::PastChat> {
         self.events()
             .transcript()

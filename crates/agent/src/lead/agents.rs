@@ -59,6 +59,8 @@ pub struct AgentLimits {
     pub max_timeout: Duration,
     /// Size at which an agent's transcript is rotated.
     pub transcript_max_bytes: u64,
+    /// When a conversation's context is condensed (the lead agent's and every agent's).
+    pub compact: super::conversation::CompactPolicy,
 }
 
 impl Default for AgentLimits {
@@ -68,6 +70,7 @@ impl Default for AgentLimits {
             default_timeout: Duration::from_secs(300),
             max_timeout: Duration::from_secs(900),
             transcript_max_bytes: 4 << 20,
+            compact: super::conversation::CompactPolicy::default(),
         }
     }
 }
@@ -156,6 +159,14 @@ pub struct AgentView {
     pub created_at: u64,
     /// The current or last job the lead agent gave it (this daemon run).
     pub job: Option<String>,
+    /// Its picture in the UI.
+    pub icon: super::icon::AgentIcon,
+    /// The user pinned it in the sidebar.
+    pub pinned: bool,
+    /// Its last turn (a job or a message) ended in an error (this daemon run, until its next
+    /// turn or a fresh start).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
 }
 
 /// How long a message for a busy agent waits for its turn to end.
@@ -494,6 +505,7 @@ impl AgentPool {
                 ..TaskContext::default()
             },
             allow: Some(allow),
+            compact: self.inner.limits.compact,
         };
         let conv = Conversation::new(
             spec,
@@ -523,6 +535,12 @@ impl AgentPool {
     }
 
     fn view(&self, agent: &AgentRecord) -> AgentView {
+        let conv = lock(&self.inner.convs).get(&agent.id).cloned();
+        let failed = conv.is_some_and(|c| {
+            c.busy().is_none()
+                && c.last_outcome()
+                    .is_some_and(|o| o.stop_reason == "error" || o.error.is_some())
+        });
         AgentView {
             id: agent.id.clone(),
             name: agent.name.clone(),
@@ -536,7 +554,91 @@ impl AgentPool {
             job: lock(&self.inner.jobs)
                 .get(&agent.id)
                 .map(|j| j.goal.clone()),
+            icon: agent.icon(),
+            pinned: agent.pinned,
+            failed,
         }
+    }
+
+    /// The user makes an agent (the sidebar's "+"): a name and an icon, on the backend new
+    /// agents get (see `create_agent`), with the default tools. Audited `agent.create`
+    /// (actor `ui`); the lead agent's chat shows it like one it made.
+    pub fn user_create(
+        &self,
+        name: &str,
+        icon: Option<super::icon::AgentIcon>,
+    ) -> Result<AgentView, LeadError> {
+        let a = self
+            .attached()
+            .map_err(|e| LeadError::Failed(e.to_string()))?;
+        let backend = lock(&a.lead_choice)
+            .clone()
+            .unwrap_or_else(|| a.default_backend.clone());
+        let agent = self
+            .inner
+            .registry
+            .create_with(name, &backend, None, "the user", icon)
+            .map_err(registry_error)?;
+        self.audit(
+            "agent.create",
+            "ui",
+            &format!("{} `{}` on {}", agent.id, agent.name, agent.backend),
+        );
+        self.inner.events.push(LeadEvent::AgentCreated {
+            agent: agent.id.clone(),
+            name: agent.name.clone(),
+            backend: agent.backend.clone(),
+        });
+        Ok(self.view(&agent))
+    }
+
+    /// The user gives an agent another icon (audited `agent.icon`).
+    pub fn set_icon(
+        &self,
+        name_or_id: &str,
+        icon: super::icon::AgentIcon,
+    ) -> Result<AgentView, LeadError> {
+        let agent = self.user_agent(name_or_id)?;
+        let words = format!("{}: {} {}", agent.id, icon.color, icon.shape);
+        let agent = self
+            .inner
+            .registry
+            .set_icon(&agent.id, icon)
+            .map_err(registry_error)?;
+        self.audit("agent.icon", "ui", &words);
+        Ok(self.view(&agent))
+    }
+
+    /// The user pins an agent in the sidebar or unpins it (audited `agent.pin`).
+    pub fn set_pinned(&self, name_or_id: &str, pinned: bool) -> Result<AgentView, LeadError> {
+        let agent = self.user_agent(name_or_id)?;
+        let agent = self
+            .inner
+            .registry
+            .set_pinned(&agent.id, pinned)
+            .map_err(registry_error)?;
+        self.audit(
+            "agent.pin",
+            "ui",
+            &format!(
+                "{}: {}",
+                agent.id,
+                if pinned { "pinned" } else { "unpinned" }
+            ),
+        );
+        Ok(self.view(&agent))
+    }
+
+    /// "Fresh start" for an agent: its memory is cleared (a new model session with its next
+    /// message, untainted), its chat goes on. Stops a running turn first.
+    pub async fn fresh_start(&self, name_or_id: &str) -> Result<AgentView, LeadError> {
+        let agent = self.user_agent(name_or_id)?;
+        let conv = self
+            .conversation(&agent)
+            .map_err(|e| LeadError::Failed(e.to_string()))?;
+        conv.fresh_start("ui").await?;
+        self.inner.registry.touch();
+        Ok(self.view(&agent))
     }
 
     /// The MCP token of an agent's open session (tests act as the agent's agent with it).
@@ -592,6 +694,13 @@ impl AgentPool {
             .map_err(|e| LeadError::Failed(e.to_string()))?
             .events()
             .clone())
+    }
+
+    /// The task an agent's conversation runs as (its confirmations carry it); its
+    /// conversation is made if it doesn't exist yet.
+    pub fn conversation_task_of(&self, name_or_id: &str) -> Option<TaskId> {
+        let agent = self.user_agent(name_or_id).ok()?;
+        self.conversation(&agent).ok().map(|c| c.task_id())
     }
 
     /// The agent whose conversation runs as `task` (its id), e.g. the one that asked for a

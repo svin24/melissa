@@ -1,31 +1,32 @@
-//! The details panel of a chat page (2026-11-20, owner decision): the agent whose chat it is
-//! (Melissa on home, a helper on its page), its apps, its schedules and its file box (the
-//! file box's own routes are in `crate::files`).
+//! The details panel of a chat page, "Agent details" (2026-11-20, owner design): the agent's
+//! on-device services (its apps and this device; Melissa: every app, grouped by who looks
+//! after it), its uploaded files (`crate::files` has their routes), its permissions (approvals
+//! waiting and its "Always allow" rules), its recent activity and its schedules.
 //!
 //! `{key}` is `lead` (Melissa) or a helper's id (a name works too).
 //!
 //! UI (same-origin checked like every POST; htmx gets the changed section, a plain form post
 //! a redirect back to the chat):
-//! - `GET /ui/details/{key}/apps`: the apps section (it polls, like the app strip).
+//! - `GET /ui/details/{key}/apps`: the services section (it polls, like the app strip did).
 //! - `POST /ui/details/{key}/schedules/{id}/enabled` (`enabled` = `on`|`off`): the schedules
 //!   section; only a schedule that runs this agent.
-//! - `POST /ui/agents/{agent}/rename` (`name`): htmx gets `HX-Refresh` (the name shows in the
-//!   rail, the title and the chat), or the agent section saying why not.
-//! - `POST /ui/agents/{agent}/delete`: [`melissa_agent::lead::agents::AgentPool::delete`],
-//!   like Settings → Agents; htmx gets `HX-Redirect: /`, or the agent section saying why not
-//!   (it still looks after apps).
+//! - `POST /ui/details/{key}/rules/{id}/remove`: remove one of this agent's "Always allow"
+//!   rules (the owner's own change, audited by the registry); the permissions section.
+//!
+//! Rename, Change icon, Pin, Fresh start and Delete are in the agent's menu and on its page in
+//! Settings → Agents (`crate::settings::agents`).
 //!
 //! API:
 //! - `GET /api/details/{key}` → `{"agent": {key, name, role, backend, model, effort, status,
-//!   created_by, created_at, can_delete, kept}, "apps": [{app, name, phase, agent,
-//!   agent_name}], "schedules": [{id, name, when, enabled, next}], "files": <as
+//!   created_by, created_at, can_delete, runs_on, icon?, pinned}, "apps": [{app, name, phase,
+//!   agent, agent_name}], "schedules": [{id, name, when, enabled, next}], "files": <as
 //!   GET /api/files/{key}>}`; 404 unknown. The rest of what the panel does has its own API:
-//!   `/api/agents/{agent}/rename`, `DELETE /api/agents/{agent}`, `/api/schedules/{id}/enabled`
-//!   and `/api/files/{key}/...` (upload, transfer, delete, retention).
+//!   `/api/agents/{agent}/rename|icon|pin|fresh-start`, `DELETE /api/agents/{agent}`,
+//!   `/api/schedules/{id}/enabled`, `/api/settings/permissions/...` and `/api/files/{key}/...`.
 
 use axum::{
     extract::{Form, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
@@ -40,59 +41,28 @@ use serde_json::{json, Value};
 
 use crate::{
     components::{
-        agent_card, detail_apps, detail_schedules, AgentCard, DetailApp, DetailApps,
-        DetailSchedule, DetailSchedules, DetailsPanel, FilePanel, Tone,
+        detail_apps, detail_permissions, detail_schedules, ActivityLine, DetailApp, DetailApps,
+        DetailDevice, DetailPermissions, DetailRule, DetailSchedule, DetailSchedules,
+        DetailWaiting, DetailsPanel, FilePanel, Health, Tone,
     },
+    feed::{approval_words, rule_words, Clock},
     files::PanelData,
     is_htmx,
-    pages::{agent_href, short_date},
-    settings::agents::{runs_on, status_words},
+    pages::{agent_href, disk_warning, entry_id},
+    settings::agents::runs_on,
     state::{phase_words, Apps, ClusterSnapshot, Keeper},
     ui::Ui,
 };
 
-/// The agent section's data (owned).
-pub(crate) struct AgentData {
-    key: String,
-    name: String,
-    lead: bool,
-    runs_on: String,
-    picker: bool,
-    status: (&'static str, Tone),
-    created: Option<String>,
-    /// Apps it looks after (a helper with any can't be deleted).
-    keeps: Vec<String>,
-    error: Option<String>,
-}
-
-impl AgentData {
-    fn rename_url(&self) -> Option<String> {
-        (!self.lead).then(|| format!("/ui/agents/{}/rename", self.key))
-    }
-
-    fn delete_url(&self) -> Option<String> {
-        (!self.lead).then(|| format!("/ui/agents/{}/delete", self.key))
-    }
-
-    fn kept(&self) -> Option<String> {
-        (!self.lead && !self.keeps.is_empty()).then(|| {
-            format!(
-                "Looks after {}. Reassign or remove its apps before deleting it.",
-                self.keeps.join(", ")
-            )
-        })
-    }
-}
-
 /// Everything the details panel shows (owned; borrow with [`DetailsData::view`]).
 pub(crate) struct DetailsData {
-    agent: AgentData,
-    rename: Option<String>,
-    delete: Option<String>,
-    kept: Option<String>,
     apps_url: String,
     apps: Vec<DetailApp>,
     apps_empty: String,
+    device: Option<DetailDevice>,
+    waiting: Vec<DetailWaiting>,
+    rules: Vec<DetailRule>,
+    activity: Vec<ActivityLine>,
     schedules: Vec<DetailSchedule>,
     schedules_on: bool,
     pub(crate) files: PanelData,
@@ -102,50 +72,34 @@ impl DetailsData {
     /// The panel, with `files` (from `self.files.view()`).
     pub(crate) fn view<'a>(&'a self, files: &'a FilePanel<'a>) -> DetailsPanel<'a> {
         DetailsPanel {
-            agent: card(&self.agent, &self.rename, &self.delete, &self.kept),
             apps: DetailApps {
                 url: &self.apps_url,
                 apps: &self.apps,
                 empty: &self.apps_empty,
+                device: self.device.as_ref(),
             },
+            files,
+            permissions: DetailPermissions {
+                waiting: &self.waiting,
+                rules: &self.rules,
+                flash: None,
+            },
+            activity: &self.activity,
             schedules: DetailSchedules {
                 schedules: &self.schedules,
                 available: self.schedules_on,
                 flash: None,
             },
-            files,
         }
     }
 }
 
-fn card<'a>(
-    a: &'a AgentData,
-    rename: &'a Option<String>,
-    delete: &'a Option<String>,
-    kept: &'a Option<String>,
-) -> AgentCard<'a> {
-    AgentCard {
-        rename: rename.as_deref(),
-        name: &a.name,
-        role: if a.lead { "Lead agent" } else { "Helper" },
-        runs_on: &a.runs_on,
-        picker: a.picker,
-        status: a.status,
-        created: a.created.as_deref(),
-        delete: delete.as_deref(),
-        kept: kept.as_deref(),
-        error: a.error.as_deref(),
-    }
-}
-
-/// `the lead agent (task 3)` → `Melissa`, `the user` → `You`.
-fn creator_words(created_by: &str) -> String {
-    if created_by.starts_with("the lead agent") {
-        "Melissa".into()
-    } else if created_by == "the user" || created_by == "ui" {
-        "You".into()
-    } else {
-        created_by.to_string()
+/// An app's key facts: the port people use ("TCP 25565") or its web port.
+fn app_facts(a: &crate::state::App) -> Option<String> {
+    match (a.other_port, a.port) {
+        (Some((port, proto)), _) => Some(format!("{proto} {port}")),
+        (None, Some(port)) => Some(format!("Web · port {port}")),
+        _ => None,
     }
 }
 
@@ -169,6 +123,7 @@ fn apps_of(snap: &ClusterSnapshot, owner: &Principal) -> Vec<DetailApp> {
                 details: format!("/ui/apps/{}", a.name),
                 health,
                 status: words.to_string(),
+                facts: app_facts(a),
                 keeper: match (owner, &a.keeper) {
                     (Principal::Lead, Some(Keeper::Agent { name, .. })) => Some(name.clone()),
                     (Principal::Lead, Some(Keeper::Owner)) => Some("You".into()),
@@ -188,57 +143,43 @@ fn apps_empty(snap: &ClusterSnapshot, owner: &Principal) -> String {
         (Apps::Unknown, _) => "Checking your apps…".into(),
         (Apps::Unreachable, _) => "Can't reach the app platform right now.".into(),
         (_, Principal::Lead) => "No apps yet.".into(),
-        (_, Principal::Agent(_)) => "None yet.".into(),
+        (_, Principal::Agent(_)) => "No apps yet.".into(),
+    }
+}
+
+/// This device as the services section shows it.
+fn device_of(snap: &ClusterSnapshot) -> DetailDevice {
+    match snap.devices.first() {
+        Some(d) => {
+            let (health, status) = match d.ready {
+                Some(true) => (Health::Ok, "Online"),
+                Some(false) => (Health::Problem, "Not ready"),
+                None => (Health::Idle, "Status unknown"),
+            };
+            let os =
+                d.os.as_deref()
+                    .map(|o| o.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+                    .filter(|o| !o.is_empty())
+                    .unwrap_or_else(|| "Linux".into());
+            DetailDevice {
+                name: d.name.clone(),
+                sub: format!("{os} · This device"),
+                health,
+                status: status.into(),
+                warning: disk_warning(snap),
+            }
+        }
+        None => DetailDevice {
+            name: "This device".into(),
+            sub: "Checking…".into(),
+            health: Health::Idle,
+            status: "Checking".into(),
+            warning: None,
+        },
     }
 }
 
 impl Ui {
-    fn agent_data(
-        &self,
-        owner: &Principal,
-        view: Option<&AgentView>,
-        snap: &ClusterSnapshot,
-    ) -> AgentData {
-        match (owner, view) {
-            (Principal::Agent(id), Some(a)) => {
-                let views = self.lead.agents().backends_of(id).unwrap_or_default();
-                AgentData {
-                    key: a.id.clone(),
-                    name: a.name.clone(),
-                    lead: false,
-                    picker: !views.is_empty(),
-                    runs_on: runs_on(&views, &a.backend),
-                    status: status_words(a.status),
-                    created: Some(format!(
-                        "By {}, {}",
-                        creator_words(&a.created_by),
-                        short_date(a.created_at)
-                    )),
-                    keeps: apps_of(snap, owner).into_iter().map(|a| a.name).collect(),
-                    error: None,
-                }
-            }
-            _ => {
-                let views = self.lead.backends();
-                AgentData {
-                    key: "lead".into(),
-                    name: "Melissa".into(),
-                    lead: true,
-                    picker: !views.is_empty(),
-                    runs_on: runs_on(&views, ""),
-                    status: status_words(if self.lead.status().turn.is_some() {
-                        "working"
-                    } else {
-                        "idle"
-                    }),
-                    created: None,
-                    keeps: Vec::new(),
-                    error: None,
-                }
-            }
-        }
-    }
-
     fn schedules_of(&self, owner: &Principal) -> (bool, Vec<DetailSchedule>) {
         let Some(sched) = self.lead.scheduler() else {
             return (false, Vec::new());
@@ -266,12 +207,66 @@ impl Ui {
         (true, list)
     }
 
+    /// The approvals `owner` waits for, and its "Always allow" rules.
+    fn permissions_of(&self, owner: &Principal) -> (Vec<DetailWaiting>, Vec<DetailRule>) {
+        let lead_task = self.lead.task_id();
+        let agents = self.lead.agents();
+        let key = box_key(owner).unwrap_or_default();
+        let chat = match owner {
+            Principal::Lead => "/".to_string(),
+            Principal::Agent(id) => agent_href(id),
+        };
+        let waiting = self
+            .lead
+            .confirmations()
+            .pending()
+            .into_iter()
+            .filter(|c| match owner {
+                Principal::Lead => c.task == lead_task,
+                Principal::Agent(id) => agents.agent_of_task(c.task).as_deref() == Some(id),
+            })
+            .map(|c| {
+                let a = approval_words(c.id, &c.tool, &c.reason, Some(&c.args), self);
+                let sub = match &a.detail {
+                    Some(d) => format!("{d} · waiting for you"),
+                    None => "Waiting for you".into(),
+                };
+                DetailWaiting {
+                    kind: a.kind.to_string(),
+                    sub,
+                    href: format!("{chat}#{}", entry_id(&format!("c{}", c.id))),
+                }
+            })
+            .collect();
+        let rules = self
+            .registry()
+            .permissions()
+            .rules()
+            .into_iter()
+            .filter(|r| r.key.principal == *owner)
+            .map(|r| {
+                let (_, what) =
+                    rule_words(&r.key.principal, &r.verb, r.key.target.as_deref(), self);
+                let mut c = what.chars();
+                let what = match c.next() {
+                    Some(f) => f.to_uppercase().chain(c).collect(),
+                    None => what,
+                };
+                DetailRule {
+                    what,
+                    remove: format!("/ui/details/{key}/rules/{}/remove", r.id),
+                }
+            })
+            .collect();
+        (waiting, rules)
+    }
+
     /// The details panel of `owner`'s chat (`view`: the helper, None for Melissa). Reads
     /// the file box on the blocking pool.
     pub(crate) async fn details_of(
         &self,
         owner: &Principal,
-        view: Option<&AgentView>,
+        _view: Option<&AgentView>,
     ) -> Result<DetailsData, LeadError> {
         let snap = self.cluster.get().await;
         let files = {
@@ -281,18 +276,26 @@ impl Ui {
                 .await
                 .map_err(|e| LeadError::Failed(e.to_string()))?
         };
-        let agent = self.agent_data(owner, view, &snap);
         let (schedules_on, schedules) = self.schedules_of(owner);
+        let (waiting, rules) = self.permissions_of(owner);
+        let activity = match owner {
+            Principal::Lead => self.recent_activity(owner, self.lead.events(), &Clock::default()),
+            Principal::Agent(id) => match self.lead.agents().events_of(id) {
+                Ok(log) => self.recent_activity(owner, &log, &Clock::default()),
+                Err(_) => Vec::new(),
+            },
+        };
+        let key = box_key(owner).unwrap_or_default();
         Ok(DetailsData {
-            rename: agent.rename_url(),
-            delete: agent.delete_url(),
-            kept: agent.kept(),
-            apps_url: format!("/ui/details/{}/apps", agent.key),
+            apps_url: format!("/ui/details/{key}/apps"),
             apps: apps_of(&snap, owner),
             apps_empty: apps_empty(&snap, owner),
+            device: Some(device_of(&snap)),
+            waiting,
+            rules,
+            activity,
             schedules,
             schedules_on,
-            agent,
             files,
         })
     }
@@ -316,8 +319,7 @@ pub(crate) fn routes() -> Router<Ui> {
             "/ui/details/{key}/schedules/{id}/enabled",
             post(schedule_enabled),
         )
-        .route("/ui/agents/{agent}/rename", post(rename))
-        .route("/ui/agents/{agent}/delete", post(delete))
+        .route("/ui/details/{key}/rules/{id}/remove", post(rule_remove))
 }
 
 pub(crate) fn api_routes() -> Router<Ui> {
@@ -342,10 +344,12 @@ async fn apps(State(ui): State<Ui>, Path(key): Path<String>) -> Response {
     let snap = ui.cluster.get().await;
     let list = apps_of(&snap, &owner);
     let url = format!("/ui/details/{}/apps", box_key(&owner).unwrap_or_default());
+    let device = device_of(&snap);
     detail_apps(&DetailApps {
         url: &url,
         apps: &list,
         empty: &apps_empty(&snap, &owner),
+        device: Some(&device),
     })
     .into_response()
 }
@@ -398,75 +402,46 @@ async fn schedule_enabled(
     .into_response()
 }
 
-/// The agent section after a refused action, saying why.
-async fn agent_section(
-    ui: &Ui,
-    owner: &Principal,
-    view: Option<&AgentView>,
-    error: String,
-) -> Response {
-    let snap = ui.cluster.get().await;
-    let mut data = ui.agent_data(owner, view, &snap);
-    data.error = Some(error);
-    let (rename, delete, kept) = (data.rename_url(), data.delete_url(), data.kept());
-    agent_card(&card(&data, &rename, &delete, &kept)).into_response()
-}
-
-fn hx(header: &'static str, value: &str) -> Response {
-    let mut res = StatusCode::OK.into_response();
-    if let Ok(v) = HeaderValue::from_str(value) {
-        res.headers_mut().insert(header, v);
-    }
-    res
-}
-
-#[derive(Deserialize)]
-struct RenameForm {
-    name: String,
-}
-
-async fn rename(
+/// Remove one of this agent's "Always allow" rules (only its own from its panel).
+async fn rule_remove(
     State(ui): State<Ui>,
-    Path(agent): Path<String>,
+    Path((key, id)): Path<(String, u64)>,
     headers: HeaderMap,
-    Form(form): Form<RenameForm>,
 ) -> Response {
-    let Some(view) = ui.lead.agents().get(&agent) else {
+    let Some((owner, _)) = ui.details_target(&key) else {
         return not_found();
     };
-    let owner = Principal::Agent(view.id.clone());
-    match ui.lead.agents().rename(&view.id, &form.name) {
-        Ok(_) if is_htmx(&headers) => hx("hx-refresh", "true"),
-        Ok(_) => Redirect::to(&agent_href(&view.id)).into_response(),
-        Err(e) if is_htmx(&headers) => {
-            agent_section(&ui, &owner, Some(&view), format!("Couldn't rename it: {e}")).await
+    let mine = ui
+        .registry()
+        .permissions()
+        .rules()
+        .into_iter()
+        .any(|r| r.id == id && r.key.principal == owner);
+    let flash = if !mine {
+        ("That rule is already gone.".to_string(), Tone::Muted)
+    } else {
+        match ui.registry().remove_rule(id) {
+            Ok(Some(_)) => (
+                "Removed. It asks you again next time.".to_string(),
+                Tone::Ok,
+            ),
+            Ok(None) => ("That rule is already gone.".to_string(), Tone::Muted),
+            Err(e) => {
+                tracing::warn!("cannot remove rule {id}: {e}");
+                ("Couldn't remove it.".to_string(), Tone::Error)
+            }
         }
-        Err(_) => Redirect::to(&agent_href(&view.id)).into_response(),
-    }
-}
-
-async fn delete(State(ui): State<Ui>, Path(agent): Path<String>, headers: HeaderMap) -> Response {
-    let Some(view) = ui.lead.agents().get(&agent) else {
-        // Already gone: back to Melissa.
-        return if is_htmx(&headers) {
-            hx("hx-redirect", "/")
-        } else {
-            Redirect::to("/").into_response()
-        };
     };
-    let owner = Principal::Agent(view.id.clone());
-    match ui.lead.agents().delete(&view.id, "ui").await {
-        Ok(_) | Err(LeadError::NoSuchAgent(_)) if is_htmx(&headers) => hx("hx-redirect", "/"),
-        Ok(_) | Err(LeadError::NoSuchAgent(_)) => Redirect::to("/").into_response(),
-        Err(e) if is_htmx(&headers) => {
-            let text = match e {
-                LeadError::InUse(_) | LeadError::Invalid(_) => e.to_string(),
-                other => format!("Couldn't delete it: {other}"),
-            };
-            agent_section(&ui, &owner, Some(&view), text).await
-        }
-        Err(_) => Redirect::to(&agent_href(&view.id)).into_response(),
+    if !is_htmx(&headers) {
+        return Redirect::to(&chat_of(&owner)).into_response();
     }
+    let (waiting, rules) = ui.permissions_of(&owner);
+    detail_permissions(&DetailPermissions {
+        waiting: &waiting,
+        rules: &rules,
+        flash: Some((&flash.0, flash.1)),
+    })
+    .into_response()
 }
 
 fn api_error(status: StatusCode, message: &str) -> Response {
@@ -478,28 +453,33 @@ async fn api_details(State(ui): State<Ui>, Path(key): Path<String>) -> Response 
         return api_error(StatusCode::NOT_FOUND, "no such agent");
     };
     let snap = ui.cluster.get().await;
-    let data = ui.agent_data(&owner, view.as_ref(), &snap);
     let agent = match &view {
-        Some(a) => json!({
-            "key": a.id,
-            "name": a.name,
-            "role": "helper",
-            "backend": a.backend,
-            "model": a.model,
-            "effort": a.effort,
-            "status": a.status,
-            "created_by": a.created_by,
-            "created_at": a.created_at,
-            "can_delete": data.keeps.is_empty(),
-            "runs_on": data.runs_on,
-        }),
+        Some(a) => {
+            let views = ui.lead.agents().backends_of(&a.id).unwrap_or_default();
+            json!({
+                "key": a.id,
+                "name": a.name,
+                "role": "helper",
+                "backend": a.backend,
+                "model": a.model,
+                "effort": a.effort,
+                "status": a.status,
+                "created_by": a.created_by,
+                "created_at": a.created_at,
+                "can_delete": apps_of(&snap, &owner).is_empty(),
+                "runs_on": runs_on(&views, &a.backend),
+                "icon": a.icon,
+                "pinned": a.pinned,
+            })
+        }
         None => json!({
             "key": "lead",
             "name": "Melissa",
             "role": "lead",
             "status": if ui.lead.status().turn.is_some() { "working" } else { "idle" },
             "can_delete": false,
-            "runs_on": data.runs_on,
+            "runs_on": runs_on(&ui.lead.backends(), ""),
+            "pinned": true,
         }),
     };
     let apps: Vec<Value> = match &snap.apps {

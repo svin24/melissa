@@ -167,6 +167,12 @@ pub struct LeadSection {
     pub agent_timeout_max_secs: u64,
     /// Size at which the transcript is rotated (one old file is kept), in KiB.
     pub transcript_max_kib: u64,
+    /// Context use (percent of the model's window) from which Melissa condenses a
+    /// conversation's older messages once it is idle (0: never). Backends that compact on
+    /// their own (Claude Code) are left alone.
+    pub compact_at_percent: u8,
+    /// How long a conversation must be idle before its context is condensed, in seconds.
+    pub compact_idle_secs: u64,
 }
 
 impl Default for LeadSection {
@@ -186,6 +192,8 @@ impl Default for LeadSection {
             agent_timeout_secs: 300,
             agent_timeout_max_secs: 900,
             transcript_max_kib: 4096,
+            compact_at_percent: 70,
+            compact_idle_secs: 120,
         }
     }
 }

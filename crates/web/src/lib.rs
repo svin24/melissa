@@ -19,6 +19,7 @@ mod settings;
 mod state;
 mod ui;
 mod usage;
+mod workspace;
 
 use axum::{
     extract::{Form, FromRef, Path, Request, State},
@@ -2289,7 +2290,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn home_is_the_chat_with_the_app_strip() {
+        async fn home_is_the_chat_with_its_services() {
             let (app, lead) = app();
             let (status, headers, body) = get_html(&app, "/").await;
             assert_eq!(status, StatusCode::OK);
@@ -2304,13 +2305,17 @@ mod tests {
                 lead.events().epoch()
             )));
             assert!(body.contains("/assets/htmx-ext-sse.min.js"));
-            assert!(body.contains("Nextcloud running, Immich starting"));
+            // The apps are the details panel's on-device services (no strip above the chat).
+            assert!(body.contains("On-device services"));
+            assert!(body.contains("<p class=\"service-name\">Nextcloud</p>"));
+            assert!(body.contains("<p class=\"service-name\">Immich</p>"));
+            assert!(!body.contains("class=\"strip\""));
             assert!(body.contains("device-1"));
             // Before the first message: the agent it will start on, as the model chip that
             // opens the picker (a popover, no script needed to open it).
             assert!(body.contains("popovertarget=\"model-picker\""), "{body}");
             assert!(body.contains("id=\"model-picker\" popover=\"auto\""));
-            assert!(body.contains("placeholder=\"Message Melissa\""));
+            assert!(body.contains("placeholder=\"Message Melissa…\""));
             assert!(!body.contains("style="), "no inline styles");
             assert!(!body.contains("<script>"), "no inline scripts");
 
@@ -2345,16 +2350,17 @@ mod tests {
             assert!(body.contains("Install &lt;b&gt;Immich&lt;/b&gt;"));
             assert!(body.contains("Listed your apps"));
             assert!(
-                body.contains("id=\"f-t1\""),
-                "agent ids never reach the DOM"
+                body.contains("id=\"f-s2\""),
+                "agent ids never reach the DOM: the steps card has our own key"
             );
             assert!(!body.contains("onclick"));
             assert!(body.contains("Install Immich?"));
             assert!(body.contains(&format!("hx-post=\"/ui/confirmations/{}/approve\"", c.id)));
             assert!(body.contains(">Install jellyfin</textarea>"));
             assert!(body.contains("sse-connect=\"/ui/stream?since=3&amp;epoch="));
-            // One waiting in the rail.
-            assert!(body.contains("<span class=\"count\">1"));
+            // Melissa waits for the user: the sidebar's first group, and the header says so.
+            assert!(body.contains("Needs attention"), "{body}");
+            assert!(body.contains("<span class=\"pill attention\">Needs permission</span>"));
         }
 
         #[tokio::test]
@@ -2406,7 +2412,7 @@ mod tests {
                 let (status, headers, page) = get_html(&app, uri).await;
                 assert_eq!(status, StatusCode::OK, "{uri}");
                 assert!(page.starts_with("<!DOCTYPE html>"), "{uri}");
-                assert!(page.contains("<nav class=\"rail\""), "{uri}");
+                assert!(page.contains("<nav class=\"sidebar\""), "{uri}");
                 assert!(page.contains("<main id=\"main\" tabindex=\"-1\">"), "{uri}");
                 assert!(page.contains(root), "{uri}");
                 assert!(page.contains("<dialog class=\"overlay\" id=\"overlay\""), "{uri}");
@@ -2415,7 +2421,7 @@ mod tests {
                 let (status, _, alone) = send(&app, panel_get(uri)).await;
                 assert_eq!(status, StatusCode::OK, "{uri}");
                 assert!(alone.starts_with(root), "{uri}: {}", &alone[..alone.len().min(120)]);
-                assert!(!alone.contains("<nav class=\"rail\""), "{uri}");
+                assert!(!alone.contains("<nav class=\"sidebar\""), "{uri}");
                 assert!(!alone.contains("<html"), "{uri}");
                 assert!(alone.contains("data-panel-close"), "{uri}");
             }
@@ -2455,13 +2461,26 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_rail_has_a_bottom_bar_and_no_settings_or_apps_items() {
+        async fn the_sidebar_has_search_new_helper_groups_and_a_bottom_bar() {
             let (app, _) = app();
             let (_, _, body) = get_html(&app, "/").await;
-            let nav_start = body.find("<ul class=\"nav\">").unwrap();
-            let nav = &body[nav_start..nav_start + body[nav_start..].find("</ul>").unwrap()];
-            assert!(nav.contains(">Chat<") && nav.contains(">Waiting for you<"));
-            assert!(!nav.contains("Settings") && !nav.contains("Apps"));
+            let side = &body[body.find("<nav class=\"sidebar\"").unwrap()..];
+            let side = &side[..side.find("</nav>").unwrap()];
+            // The device menu, the search (filtered by script) and "+".
+            assert!(side.contains("popovertarget=\"device-menu\""));
+            assert!(
+                side.contains("id=\"agent-search\" type=\"search\" placeholder=\"Search agents\"")
+            );
+            assert!(side.contains("data-agent-search"));
+            assert!(side.contains("href=\"/settings/agents/new\" title=\"New helper\""));
+            // Melissa is pinned, with her star and "Lead agent", and is the open chat.
+            let pinned = &side[side.find("group-pinned").unwrap()..];
+            assert!(pinned.contains("<span class=\"name\">Melissa</span><svg class=\"star-mark\""));
+            assert!(pinned.contains("<span class=\"agent-sub\">Lead agent</span>"));
+            assert!(pinned.contains("class=\"agent-link\" href=\"/\" aria-current=\"page\""));
+            // No "New chat", no past chats list: one chat per agent.
+            assert!(!body.contains("New chat"));
+            assert!(!body.contains("/ui/new-chat"));
             let foot = &body[body.find("<div class=\"rail-foot\">").unwrap()..];
             for want in [
                 "href=\"/settings\" title=\"Settings\"",
@@ -3290,7 +3309,13 @@ mod tests {
                 "{page}"
             );
             assert!(page.contains("Kept for 5 days (default)"), "{page}");
-            assert!(page.contains(" · You<"), "{page}");
+            assert!(page.contains("Uploaded in this conversation · "), "{page}");
+            // An image has a preview that opens it full size; each card says its kind.
+            assert!(page.contains(&format!("<a class=\"file-preview\" href=\"{png}\"")));
+            assert!(
+                page.contains("<span class=\"meta\">PNG · 16 B</span>"),
+                "{page}"
+            );
 
             // Served: images inline, the rest as downloads; never script, never embedded
             // by another site.
@@ -3363,7 +3388,7 @@ mod tests {
             let (status, _, page) = get_html(&app, &format!("/agents/{}", ada.id)).await;
             assert_eq!(status, StatusCode::OK);
             assert!(page.contains("report.md"), "{page}");
-            assert!(page.contains(" · Ada<"), "{page}");
+            assert!(page.contains("Saved by Ada · "), "{page}");
             // Melissa's panel doesn't show it.
             let (_, _, home) = get_html(&app, "/").await;
             assert!(!home.contains("report.md"));
@@ -3547,7 +3572,7 @@ mod tests {
             for uri in ["/settings/developer", task.as_str()] {
                 let (status, _, body) = get_html(&app, uri).await;
                 assert_eq!(status, StatusCode::OK, "{uri}");
-                assert!(body.contains("<nav class=\"rail\""), "{uri}");
+                assert!(body.contains("<nav class=\"sidebar\""), "{uri}");
                 assert!(!body.contains("href=\"/tasks\""), "{uri}");
                 assert!(
                     body.contains("href=\"/settings\" title=\"Settings\" aria-current=\"page\""),
@@ -3614,12 +3639,12 @@ mod tests {
             assert!(home.contains("class=\"note guard\""), "{home}");
             assert!(home.contains(
                 "Melissa read text from outside (Nextcloud's logs). Changes now need your OK \
-                 until you start a new chat."
+                 until a fresh start."
             ));
         }
 
         #[tokio::test]
-        async fn a_new_chat_archives_the_old_one_and_reloads_pages() {
+        async fn a_fresh_start_keeps_the_one_chat_and_old_archives_stay_readable() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
                 turn: 1,
@@ -3651,7 +3676,17 @@ mod tests {
                 .unwrap();
             let mut stream = res.into_body();
 
+            // No "New chat" any more: one chat per agent.
             let req = post("/ui/new-chat")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(send(&app, req).await.0, StatusCode::NOT_FOUND);
+            let (status, _) = send_json(&app, json_post("/api/lead/new-chat", "{}")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            // Fresh start (the menu's plain form): back to the chat, which goes on.
+            let req = post("/ui/fresh-start")
                 .header("sec-fetch-site", "same-origin")
                 .body(Body::empty())
                 .unwrap();
@@ -3666,36 +3701,64 @@ mod tests {
                 .map(|p| p.id)
                 .collect();
             assert_eq!(pending, [other.id]);
-            assert!(next_frame(&mut stream).await.starts_with("event: reload"));
+            let mut frames = String::new();
+            while !frames.contains("Fresh start") {
+                frames.push_str(&next_frame(&mut stream).await);
+            }
+            assert!(
+                !frames.contains("event: reload"),
+                "the page is not reloaded"
+            );
 
             let (_, _, home) = get_html(&app, "/").await;
-            assert!(home.contains("Hi, I'm Melissa."));
-            // Only the agent's confirmation, still waiting, carries over into the new chat.
-            assert_eq!(home.matches("<li class=\"entry\"").count(), 1, "{home}");
-            assert!(home.contains(&format!("/ui/confirmations/{}/approve", other.id)));
-            assert!(!home.contains(&format!("/ui/confirmations/{}/approve", c.id)));
-            assert!(home.contains("Past chats"));
-            assert!(home.contains("Hi &lt;there&gt;"));
-            let chats = lead.past_chats();
-            assert_eq!(chats.len(), 1);
-            let (status, _, past) = get_html(&app, &format!("/chats/{}", chats[0].id)).await;
+            assert!(home.contains("Hi &lt;there&gt;"), "the chat is kept");
+            assert!(home.contains("<span>Fresh start</span>"), "{home}");
+            assert!(!home.contains("Past chats") && !home.contains("New chat"));
+            assert!(!home.contains("Earlier chats"), "none archived");
+            assert!(lead.past_chats().is_empty());
+            let _ = c;
+
+            // Chats archived before one chat per agent stay readable from Melissa's menu.
+            let dir = lead
+                .events()
+                .transcript()
+                .unwrap()
+                .path()
+                .parent()
+                .unwrap()
+                .join("chats");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("1795000000.jsonl"),
+                "{\"seq\":1,\"ts\":1794990000,\"type\":\"user_message\",\"turn\":1,\"text\":\"An old <question>\"}\n",
+            )
+            .unwrap();
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(
+                home.contains("href=\"/chats\""),
+                "Earlier chats in the menu"
+            );
+            let (status, _, list) = get_html(&app, "/chats").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(past.contains("Hi &lt;there&gt;"));
+            assert!(list.contains("An old &lt;question&gt;"), "{list}");
+            assert!(list.contains("href=\"/chats/1795000000\""));
+            let (status, _, past) = get_html(&app, "/chats/1795000000").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(past.contains("An old &lt;question&gt;"));
             assert!(!past.contains("sse-connect"), "read-only");
             assert!(!past.contains("name=\"text\""), "no composer");
             assert_eq!(get_html(&app, "/chats/1").await.0, StatusCode::NOT_FOUND);
-            let _ = c;
 
             // Cross-site posts are refused.
-            let req = post("/ui/new-chat")
+            let req = post("/ui/fresh-start")
                 .header("sec-fetch-site", "cross-site")
                 .body(Body::empty())
                 .unwrap();
             assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
             // The JSON API does the same.
-            let (status, body) = send_json(&app, json_post("/api/lead/new-chat", "{}")).await;
+            let (status, body) = send_json(&app, json_post("/api/lead/fresh-start", "{}")).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body["archived"], Value::Null, "nothing said since");
+            assert_eq!(body["fresh_start"], true);
         }
 
         #[tokio::test]
@@ -3790,7 +3853,12 @@ mod tests {
                 ms: None,
             });
             let frame = next_frame(&mut body).await;
-            assert!(frame.contains("<li class=\"entry\" id=\"f-t1\">"));
+            // Tool calls are lines of one steps card (its key is ours, never the agent's id).
+            assert!(
+                frame.contains("<li class=\"entry\" id=\"f-s4\">"),
+                "{frame}"
+            );
+            assert!(frame.contains("<ul class=\"steps-card\""));
             assert!(frame.contains("Checking this device"));
             lead.events().push(LeadEvent::TurnFinished {
                 turn: 1,
@@ -3800,7 +3868,11 @@ mod tests {
             assert!(frame.contains("innerHTML:#composer-status"));
             assert!(!frame.contains("Working on it"), "{frame}");
             // The tool call the agent never finished stops spinning with the turn.
-            assert!(frame.contains("innerHTML:#f-t1"), "{frame}");
+            assert!(frame.contains("innerHTML:#f-s4"), "{frame}");
+            assert!(
+                frame.contains("<span class=\"step-state\">Stopped</span>"),
+                "{frame}"
+            );
             assert!(!frame.contains("icon spin"), "{frame}");
 
             // A reconnect (Last-Event-ID) from the future asks the page to reload.
@@ -3843,7 +3915,11 @@ mod tests {
             let frame = next_frame(&mut body).await;
             assert!(!frame.contains("Hi"), "{frame}");
             assert!(frame.contains("Install Immich?"));
-            assert!(frame.contains("hx-swap-oob=\"true\""), "waiting count");
+            // The sidebar's groups follow (Melissa needs the user now).
+            assert!(
+                frame.contains("id=\"agent-groups\" hx-swap-oob=\"true\""),
+                "{frame}"
+            );
         }
 
         #[tokio::test]
@@ -4105,7 +4181,7 @@ mod tests {
                 .id;
             let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
             assert!(page.contains(&format!("action=\"/ui/agents/{ada}/backend\"")));
-            assert!(page.contains("placeholder=\"Message Ada\""));
+            assert!(page.contains("placeholder=\"Message Ada…\""));
             let url = format!("/ui/agents/{ada}/backend");
             let (_, _, body) = send(&app, htmx_post(&url, "current=stuck&choice=echo-b+m1")).await;
             assert!(body.contains(&chip("Model One")), "{body}");
@@ -4403,10 +4479,11 @@ mod tests {
             }
         }
 
-        /// Open pages' rails follow helpers as they come, are renamed and go; a deleted
-        /// helper's open chat says so instead of erroring, and its address says it's gone.
+        /// Open pages' sidebars follow helpers as they come, are renamed, pinned, move between
+        /// groups and go; a deleted helper's open chat says so instead of erroring, and its
+        /// address says it's gone.
         #[tokio::test]
-        async fn the_rail_follows_helpers_live_and_deleted_ones_say_so() {
+        async fn the_sidebar_follows_helpers_live_and_deleted_ones_say_so() {
             let (app, lead) = app_full(None, Some(Arc::new(OwnedBy::default())), false);
             let reg = lead.agents().registry().clone();
             let ada = reg.create("Ada", "stuck", None, "the user").unwrap().id;
@@ -4414,7 +4491,14 @@ mod tests {
             for page in [format!("/agents/{ada}"), format!("/agents/{pip}")] {
                 let (status, _, body) = get_html(&app, &page).await;
                 assert_eq!(status, StatusCode::OK);
-                assert!(body.contains("id=\"rail-conversations\""), "{body}");
+                assert!(body.contains("id=\"agent-groups\""), "{body}");
+                // Settled helpers are listed under Settled, closed until opened.
+                assert!(
+                    body.contains(
+                        "<details class=\"agent-group group-settled\" data-group=\"settled\">"
+                    ),
+                    "{body}"
+                );
             }
             let open = |uri: String| {
                 let app = app.clone();
@@ -4425,15 +4509,14 @@ mod tests {
             let mut hers = open(format!("/ui/agents/{ada}/stream?since=0")).await;
             let mut his = open(format!("/ui/agents/{pip}/stream?since=0")).await;
             let name = |n: &str| format!("<span class=\"name\">{n}</span>");
-            let rail =
-                "<ul class=\"conversations\" id=\"rail-conversations\" hx-swap-oob=\"true\">";
+            let groups = "<div class=\"agent-groups\" id=\"agent-groups\" hx-swap-oob=\"true\">";
 
             // A new helper shows on every open page.
             let cy = reg.create("Cy", "stuck", None, "the user").unwrap().id;
-            let has_cy = |f: &str| f.contains(rail) && f.contains(&name("Cy"));
+            let has_cy = |f: &str| f.contains(groups) && f.contains(&name("Cy"));
             let frame = frame_where(&mut main, has_cy).await;
             assert!(
-                frame.contains("<a href=\"/\" aria-current=\"page\">Melissa</a>"),
+                frame.contains("<a class=\"agent-link\" href=\"/\" aria-current=\"page\">"),
                 "{frame}"
             );
             assert!(frame.contains(&format!("href=\"/agents/{cy}\"")), "{frame}");
@@ -4441,21 +4524,37 @@ mod tests {
             assert!(!frame.contains("aria-current"), "{frame}");
             let frame = frame_where(&mut hers, has_cy).await;
             assert!(
-                frame.contains(&format!("<a href=\"/agents/{ada}\" aria-current=\"page\">")),
+                frame.contains(&format!("href=\"/agents/{ada}\" aria-current=\"page\"")),
                 "{frame}"
             );
             frame_where(&mut his, has_cy).await;
 
             // Renamed: the new name.
             lead.agents().rename("Cy", "Cyd").unwrap();
-            let has_cyd = |f: &str| f.contains(rail) && f.contains(&name("Cyd"));
+            let has_cyd = |f: &str| f.contains(groups) && f.contains(&name("Cyd"));
             frame_where(&mut main, has_cyd).await;
             frame_where(&mut hers, has_cyd).await;
             frame_where(&mut his, has_cyd).await;
 
-            // Deleted: gone from every rail; his own chat says so in place of the composer.
+            // Pinned: it moves to Pinned, under Melissa.
+            lead.agents().set_pinned("Cyd", true).unwrap();
+            let frame = frame_where(&mut main, |f| {
+                f.contains(groups) && {
+                    let p = f.find("group-pinned").unwrap_or(usize::MAX);
+                    let st = f.find("group-settled").unwrap_or(0);
+                    f.find(&name("Cyd")).is_some_and(|c| c > p && c < st)
+                }
+            })
+            .await;
+            assert!(
+                frame.contains(&format!("action=\"/ui/agents/{cy}/pin\"")),
+                "{frame}"
+            );
+            assert!(frame.contains("<span>Unpin</span>"), "{frame}");
+
+            // Deleted: gone from every sidebar; his own chat says so in place of the composer.
             lead.agents().delete(&pip, "ui").await.unwrap();
-            let no_pip = |f: &str| f.contains(rail) && !f.contains(&name("Pip"));
+            let no_pip = |f: &str| f.contains(groups) && !f.contains(&name("Pip"));
             frame_where(&mut main, no_pip).await;
             // Her chat goes on.
             let frame = frame_where(&mut hers, no_pip).await;
@@ -4473,13 +4572,30 @@ mod tests {
                 assert_eq!(status, StatusCode::NOT_FOUND, "{page}");
                 assert!(body.contains("Conversation not found"), "{body}");
                 assert!(body.contains("Back to Melissa"), "{body}");
-                assert!(body.contains("id=\"rail-conversations\""), "{body}");
+                assert!(body.contains("id=\"agent-groups\""), "{body}");
                 assert!(!body.contains(&name("Pip")), "{body}");
             }
-            // Her status shows live elsewhere: working on a message.
+            // Working on a message: she moves to Working, with a status and a progress bar,
+            // and her own header says so.
             lead.agents().user_send("Ada", "hi").unwrap();
-            let frame = frame_where(&mut main, |f| f.contains(rail)).await;
-            assert!(frame.contains("dot h-busy"), "{frame}");
+            let frame = frame_where(&mut main, |f| {
+                f.contains(groups) && f.contains("group-working")
+            })
+            .await;
+            let working = &frame[frame.find("group-working").unwrap()..];
+            assert!(working.contains(&name("Ada")), "{frame}");
+            assert!(
+                working.contains("<span class=\"agent-status working\">"),
+                "{frame}"
+            );
+            assert!(
+                working.contains("<progress class=\"agent-progress\">"),
+                "{frame}"
+            );
+            frame_where(&mut hers, |f| {
+                f.contains("hx-swap-oob=\"innerHTML:#chat-status\"") && f.contains("Working")
+            })
+            .await;
             // A reconnecting stream of his chat makes the page reload (and say so).
             let mut again = open(format!("/ui/agents/{pip}/stream?since=0")).await;
             let frame = next_frame(&mut again).await;

@@ -1,0 +1,480 @@
+//! The agent workspace's data (2026-11-20, owner design): which group each agent is in and
+//! what its sidebar row says, its menu's links, the chat header's status and the details
+//! panel's recent activity. Words only; the markup is in `components::agent`.
+//!
+//! Groups (an agent is in exactly one, the first that applies):
+//! - **Needs attention**: an approval it asked for waits, its last turn failed, or an app it
+//!   looks after has a problem.
+//! - **Pinned**: Melissa (always) and the helpers the user pinned.
+//! - **Working**: a turn runs (a job or a message).
+//! - **Settled**: everything else.
+
+use maud::Markup;
+use melissa_agent::{
+    lead::{
+        agents::AgentView,
+        events::{EventLog, EventRecord, LeadEvent},
+        icon::AgentIcon,
+    },
+    tools::Principal,
+};
+
+use crate::{
+    components::{
+        agent_groups, sidebar, ActivityLine, AgentMenu, Avatar, GroupKind, HeadStatus, Health, Nav,
+        SideAgent, SideDevice, SideGroup, Sidebar, UpdateHint,
+    },
+    feed::{approval_words, tool_words, Clock, Lookup},
+    pages::agent_href,
+    state::{phase_words, Apps, ClusterSnapshot, Keeper},
+    ui::Ui,
+};
+
+/// Where an agent's menu items lead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuUrls {
+    pub settings: String,
+    pub rename: Option<String>,
+    pub icon: Option<String>,
+    pub pin: Option<(String, bool)>,
+    pub fresh: String,
+    pub earlier: Option<String>,
+    pub delete: Option<String>,
+}
+
+impl MenuUrls {
+    /// The links of `key`'s menu (`lead` or a helper's id).
+    pub fn of(key: &str, pinned: bool, earlier: bool) -> Self {
+        if key == "lead" {
+            return Self {
+                settings: "/settings/agents".into(),
+                rename: None,
+                icon: None,
+                pin: None,
+                fresh: "/ui/fresh-start".into(),
+                earlier: earlier.then(|| "/chats".into()),
+                delete: None,
+            };
+        }
+        let page = agent_settings_href(key);
+        Self {
+            rename: Some(format!("{page}#agent-name")),
+            icon: Some(format!("{page}#agent-icon")),
+            pin: Some((format!("/ui/agents/{key}/pin"), pinned)),
+            fresh: format!("/ui/agents/{key}/fresh-start"),
+            earlier: None,
+            delete: Some(format!("{page}#agent-delete")),
+            settings: page,
+        }
+    }
+
+    pub fn menu<'a>(&'a self, name: &'a str) -> AgentMenu<'a> {
+        AgentMenu {
+            name,
+            settings: &self.settings,
+            rename: self.rename.as_deref(),
+            icon: self.icon.as_deref(),
+            pin: self.pin.as_ref().map(|(a, p)| (a.as_str(), *p)),
+            fresh: &self.fresh,
+            earlier: self.earlier.as_deref(),
+            delete: self.delete.as_deref(),
+        }
+    }
+}
+
+/// A helper's page in Settings → Agents.
+pub fn agent_settings_href(id: &str) -> String {
+    format!("/settings/agents/{id}")
+}
+
+/// One agent as the sidebar shows it (owned; compared to notice changes for live updates).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideEntry {
+    /// `lead` or the helper's id.
+    pub key: String,
+    pub href: String,
+    pub name: String,
+    /// None: Melissa.
+    pub icon: Option<AgentIcon>,
+    pub group: GroupKind,
+    pub status: Option<String>,
+    pub sub: Option<String>,
+    pub working: bool,
+    pub head: Option<HeadStatus>,
+    pub urls: MenuUrls,
+}
+
+impl SideEntry {
+    pub fn avatar(&self) -> Avatar<'_> {
+        match &self.icon {
+            None => Avatar::Melissa,
+            Some(i) => Avatar::Agent {
+                shape: &i.shape,
+                color: &i.color,
+            },
+        }
+    }
+}
+
+/// The sidebar's data.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SideData {
+    pub entries: Vec<SideEntry>,
+    /// (name, health, status) of each device; the first is this one.
+    pub devices: Vec<(String, Health, &'static str)>,
+    /// Pending approvals in all.
+    pub waiting: usize,
+}
+
+impl SideData {
+    /// This device's name ("melissa"), or "This device" when it isn't known yet.
+    pub fn device(&self) -> &str {
+        self.devices
+            .first()
+            .map_or("This device", |(n, _, _)| n.as_str())
+    }
+
+    pub fn entry(&self, key: &str) -> Option<&SideEntry> {
+        self.entries.iter().find(|e| e.key == key)
+    }
+}
+
+/// The sidebar for a page (`current`: the agent whose chat it is, `lead` or an id).
+pub fn sidebar_markup(
+    nav: Nav,
+    side: &SideData,
+    current: Option<&str>,
+    update: &UpdateHint,
+) -> Markup {
+    let devices: Vec<SideDevice<'_>> = side
+        .devices
+        .iter()
+        .enumerate()
+        .map(|(i, (name, health, status))| SideDevice {
+            name,
+            health: *health,
+            status,
+            current: i == 0,
+        })
+        .collect();
+    let groups = side_groups(side, current);
+    sidebar(&Sidebar {
+        devices: &devices,
+        groups: &groups,
+        current: nav,
+        update,
+        new_agent: NEW_AGENT_URL,
+        waiting: side.waiting,
+    })
+}
+
+/// Where the sidebar's "+" leads.
+pub const NEW_AGENT_URL: &str = "/settings/agents/new";
+
+/// The agent groups alone, as a live update.
+pub fn groups_update(side: &SideData, current: Option<&str>) -> Markup {
+    agent_groups(&side_groups(side, current), side.waiting, true)
+}
+
+fn side_groups<'a>(side: &'a SideData, current: Option<&str>) -> Vec<SideGroup<'a>> {
+    [
+        GroupKind::Attention,
+        GroupKind::Pinned,
+        GroupKind::Working,
+        GroupKind::Settled,
+    ]
+    .into_iter()
+    .map(|kind| SideGroup {
+        kind,
+        agents: side
+            .entries
+            .iter()
+            .filter(|e| e.group == kind)
+            .map(|e| SideAgent {
+                key: &e.key,
+                href: &e.href,
+                name: &e.name,
+                avatar: e.avatar(),
+                star: e.icon.is_none(),
+                status: e.status.as_deref(),
+                sub: e.sub.as_deref(),
+                progress: e.working.then_some(None),
+                current: current == Some(e.key.as_str()),
+                menu: e.urls.menu(&e.name),
+            })
+            .collect(),
+    })
+    .collect()
+}
+
+/// What the agent is doing now, from its log: the running tool call's words, or None.
+fn activity_of(log: &EventLog) -> Option<String> {
+    let from = log.last_seq().saturating_sub(200);
+    let page = log.since(from, 200);
+    let mut done: Vec<&str> = Vec::new();
+    for r in page.events.iter().rev() {
+        match &r.event {
+            LeadEvent::UserMessage { .. } => break,
+            LeadEvent::ToolCall {
+                id, title, status, ..
+            } => {
+                if status == "done" || status == "failed" {
+                    done.push(id);
+                    continue;
+                }
+                if done.contains(&id.as_str()) {
+                    continue;
+                }
+                let w = tool_words(title);
+                if !w.hidden && !w.unknown {
+                    return Some(w.doing.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+impl Ui {
+    /// The sidebar's data now (from the agents, the approvals waiting and the apps).
+    pub(crate) fn side_data(&self, snap: &ClusterSnapshot) -> SideData {
+        self.side_data_with(snap, !self.lead.past_chats().is_empty())
+    }
+
+    /// [`Ui::side_data`] when it is known whether Melissa has earlier chats (`earlier`).
+    pub(crate) fn side_data_with(&self, snap: &ClusterSnapshot, earlier: bool) -> SideData {
+        let devices: Vec<(String, Health, &'static str)> = snap
+            .devices
+            .iter()
+            .map(|d| {
+                let (h, w) = match d.ready {
+                    Some(true) => (Health::Ok, "Online"),
+                    Some(false) => (Health::Problem, "Not ready"),
+                    None => (Health::Idle, "Status unknown"),
+                };
+                (d.name.clone(), h, w)
+            })
+            .collect();
+        let device = devices
+            .first()
+            .map_or_else(|| "This device".to_string(), |d| d.0.clone());
+        let pending = self.lead.confirmations().pending();
+        let lead_task = self.lead.task_id();
+        let agents = self.lead.agents();
+        let asking: Vec<Option<String>> = pending
+            .iter()
+            .map(|c| {
+                if c.task == lead_task {
+                    Some("lead".to_string())
+                } else {
+                    agents.agent_of_task(c.task)
+                }
+            })
+            .collect();
+        let apps: &[crate::state::App] = match &snap.apps {
+            Apps::Known { installed } => installed,
+            _ => &[],
+        };
+        let mut entries = Vec::new();
+
+        // Melissa: always pinned (unless she needs attention).
+        let lead_busy = self.lead.status().turn.is_some();
+        let lead_asks = asking.iter().any(|a| a.as_deref() == Some("lead"));
+        let lead_failed = self.lead.failed();
+        let (group, status, head) = if lead_asks {
+            (
+                GroupKind::Attention,
+                Some("Permission needed".to_string()),
+                Some(HeadStatus::NeedsPermission),
+            )
+        } else if lead_failed {
+            (
+                GroupKind::Attention,
+                Some("Couldn't finish".to_string()),
+                Some(HeadStatus::Failed),
+            )
+        } else if lead_busy {
+            (
+                GroupKind::Pinned,
+                Some(activity_of(self.lead.events()).unwrap_or_else(|| "Working on it".into())),
+                Some(HeadStatus::Working),
+            )
+        } else {
+            (GroupKind::Pinned, None, None)
+        };
+        entries.push(SideEntry {
+            key: "lead".into(),
+            href: "/".into(),
+            name: "Melissa".into(),
+            icon: None,
+            group,
+            status,
+            sub: Some("Lead agent".into()),
+            working: lead_busy,
+            head,
+            urls: MenuUrls::of("lead", true, earlier),
+        });
+
+        for a in agents.list() {
+            entries.push(self.helper_entry(&a, &asking, apps, &device));
+        }
+        SideData {
+            entries,
+            devices,
+            waiting: pending.len(),
+        }
+    }
+
+    fn helper_entry(
+        &self,
+        a: &AgentView,
+        asking: &[Option<String>],
+        apps: &[crate::state::App],
+        device: &str,
+    ) -> SideEntry {
+        let mine: Vec<&crate::state::App> = apps
+            .iter()
+            .filter(|app| matches!(&app.keeper, Some(Keeper::Agent { id, .. }) if *id == a.id))
+            .collect();
+        let problem = mine
+            .iter()
+            .find(|app| phase_words(&app.phase).0 == Health::Problem);
+        let asks = asking.iter().any(|x| x.as_deref() == Some(a.id.as_str()));
+        let working = a.status == "working";
+        let (group, status, head) = if asks {
+            (
+                GroupKind::Attention,
+                Some("Permission needed".to_string()),
+                Some(HeadStatus::NeedsPermission),
+            )
+        } else if a.failed {
+            (
+                GroupKind::Attention,
+                Some("Couldn't finish".to_string()),
+                Some(HeadStatus::Failed),
+            )
+        } else if let Some(app) = problem {
+            (
+                GroupKind::Attention,
+                Some(format!("{} needs a look", app.display_name())),
+                Some(HeadStatus::Failed),
+            )
+        } else if working {
+            let doing = self
+                .lead
+                .agents()
+                .events_of(&a.id)
+                .ok()
+                .and_then(|log| activity_of(&log))
+                .or_else(|| a.job.as_deref().map(|j| shorten(j, 60)))
+                .unwrap_or_else(|| "Working on it".into());
+            let group = if a.pinned {
+                GroupKind::Pinned
+            } else {
+                GroupKind::Working
+            };
+            (group, Some(doing), Some(HeadStatus::Working))
+        } else if a.pinned {
+            (GroupKind::Pinned, None, None)
+        } else {
+            (GroupKind::Settled, None, None)
+        };
+        let sub = match mine.first() {
+            Some(app) => format!("{device} · {}", app.display_name()),
+            None if a.status == "stopped" => "Stopped".into(),
+            None => "Helper".into(),
+        };
+        SideEntry {
+            key: a.id.clone(),
+            href: agent_href(&a.id),
+            name: a.name.clone(),
+            icon: Some(a.icon.clone()),
+            group,
+            status,
+            sub: Some(sub),
+            working,
+            head,
+            urls: MenuUrls::of(&a.id, a.pinned, false),
+        }
+    }
+
+    /// The last notable things in `owner`'s conversation and file box, newest first: what it
+    /// did (tool calls that finished), what it asked for, what the owner decided, files
+    /// added, helpers and jobs (Melissa's).
+    pub(crate) fn recent_activity(
+        &self,
+        owner: &Principal,
+        log: &EventLog,
+        clock: &Clock,
+    ) -> Vec<ActivityLine> {
+        let page = log.since(0, EventLog::CAPACITY);
+        let mut lines: Vec<(u64, String, bool)> = activity_from(&page.events, self);
+        for f in self.lead.files().list(owner) {
+            lines.push((f.added, format!("Added {}", shorten(&f.name, 40)), false));
+        }
+        lines.sort_by_key(|l| std::cmp::Reverse(l.0));
+        lines.dedup_by(|a, b| a.1 == b.1 && a.0 / 60 == b.0 / 60);
+        lines.truncate(RECENT_LINES);
+        lines
+            .into_iter()
+            .map(|(ts, text, attention)| ActivityLine {
+                when: clock.short_when(ts),
+                text,
+                attention,
+            })
+            .collect()
+    }
+}
+
+/// Lines in the recent activity section.
+const RECENT_LINES: usize = 6;
+
+/// The notable events of a conversation as (time, words, attention).
+pub(crate) fn activity_from(events: &[EventRecord], look: &dyn Lookup) -> Vec<(u64, String, bool)> {
+    let mut out = Vec::new();
+    for r in events {
+        let line = match &r.event {
+            LeadEvent::ToolCall { title, status, .. } if status == "done" => {
+                let w = tool_words(title);
+                (!w.hidden && !w.unknown).then(|| (w.done.to_string(), false))
+            }
+            LeadEvent::ConfirmationNeeded {
+                id, tool, reason, ..
+            } => {
+                let a = approval_words(*id, tool, reason, None, look);
+                Some((format!("Asked: {}", a.title.trim_end_matches('?')), true))
+            }
+            LeadEvent::ConfirmationResolved { outcome, .. } => match outcome.as_str() {
+                "approved" => Some(("You allowed a request".to_string(), false)),
+                "denied" => Some(("You declined a request".to_string(), false)),
+                _ => None,
+            },
+            LeadEvent::AgentCreated { name, .. } => Some((format!("New helper: {name}"), false)),
+            LeadEvent::AgentFinished { name, status, .. } => Some(match status.as_str() {
+                "succeeded" => (format!("{name} finished a job"), false),
+                "cancelled" => (format!("{name} was stopped"), false),
+                _ => (format!("{name} couldn't finish a job"), true),
+            }),
+            LeadEvent::FreshStart => Some(("Fresh start".to_string(), false)),
+            LeadEvent::TurnFinished { stop_reason, .. } if stop_reason == "error" => {
+                Some(("A turn failed".to_string(), true))
+            }
+            _ => None,
+        };
+        if let Some((text, attention)) = line {
+            out.push((r.ts, text, attention));
+        }
+    }
+    out
+}
+
+fn shorten(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
+}

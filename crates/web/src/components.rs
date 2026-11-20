@@ -105,8 +105,6 @@ pub enum Nav {
     Usage,
 }
 
-/// DOM id of the pending-confirmations count in the rail (updated live).
-pub const WAITING_COUNT_ID: &str = "waiting-count";
 /// DOM id of the composer's status line (updated live).
 pub const COMPOSER_STATUS_ID: &str = "composer-status";
 /// DOM id of the composer form.
@@ -195,132 +193,6 @@ pub fn mark(class: &str) -> Markup {
     }
 }
 
-/// One device in the rail.
-pub struct RailDevice<'a> {
-    pub name: &'a str,
-    pub health: Health,
-    pub status: &'a str,
-}
-
-/// A conversation with a helper in the rail.
-pub struct RailHelper<'a> {
-    pub href: &'a str,
-    pub name: &'a str,
-    pub health: Health,
-    pub status: &'a str,
-    pub current: bool,
-}
-
-/// An archived chat with Melissa in the rail (read-only).
-pub struct RailPastChat<'a> {
-    pub href: &'a str,
-    /// The first message, shortened (escaped text).
-    pub title: &'a str,
-    /// When, e.g. "18 Nov".
-    pub when: &'a str,
-    pub current: bool,
-}
-
-/// URL the "New chat" button posts to.
-pub const NEW_CHAT_URL: &str = "/ui/new-chat";
-
-/// The side rail: brand, navigation, conversations (Melissa, each helper, past chats with
-/// Melissa), devices, and the bottom bar ([`rail_foot`]: Settings, Apps, Usage and resources,
-/// updates). On phones it collapses to a top bar with the brand, the bar's icons and the
-/// navigation.
-pub fn rail(
-    current: Nav,
-    waiting: usize,
-    devices: &[RailDevice<'_>],
-    helpers: &[RailHelper<'_>],
-    past: &[RailPastChat<'_>],
-    update: &UpdateHint,
-) -> Markup {
-    let item = |nav: Nav, href: &str, label: &str, extra: Markup| {
-        html! {
-            li {
-                a href=(href) aria-current=[(nav == current).then_some("page")] {
-                    span { (label) } (extra)
-                }
-            }
-        }
-    };
-    html! {
-        nav.rail aria-label="Main" {
-            div.rail-main {
-                a.brand href="/" { (mark("mark")) span { "Melissa" } }
-                ul.nav {
-                    (item(Nav::Chat, "/", "Chat", html! {}))
-                    (item(Nav::Waiting, "/approvals", "Waiting for you", waiting_count(waiting, false)))
-                }
-                section.rail-section aria-labelledby="conv-h" {
-                    h2 #conv-h { "Conversations" }
-                    (rail_conversations(current == Nav::Chat, helpers, false))
-                    // A plain form: works without JS; the server redirects to the empty chat.
-                    form method="post" action=(NEW_CHAT_URL) {
-                        button.ghost type="submit" title="Start over with Melissa. This chat is kept under Past chats." { "New chat" }
-                    }
-                    @if !past.is_empty() {
-                        h3.rail-sub #past-h { "Past chats" }
-                        ul.conversations.past aria-labelledby="past-h" {
-                            @for p in past {
-                                li {
-                                    a href=(p.href) aria-current=[p.current.then_some("page")] {
-                                        span.name { (p.title) }
-                                        span.when { (p.when) }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                section.rail-section aria-labelledby="dev-h" {
-                    h2 #dev-h { "Devices" }
-                    @if devices.is_empty() {
-                        p.quiet { "Checking…" }
-                    } @else {
-                        ul.devices {
-                            @for d in devices {
-                                li {
-                                    span class={ "dot " (d.health.class()) } aria-hidden="true" {}
-                                    span.name { (d.name) }
-                                    span.visually-hidden { ": " (d.status) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            (rail_foot(current, update))
-        }
-    }
-}
-
-/// DOM id of the rail's list of conversations (Melissa and each helper).
-pub const RAIL_CONVERSATIONS_ID: &str = "rail-conversations";
-
-/// The rail's conversations: Melissa (`melissa_current`: her chat is open), then each helper.
-/// Has a stable id so the live stream can replace it when helpers come, go or change
-/// (`oob`: as an out-of-band replacement).
-pub fn rail_conversations(melissa_current: bool, helpers: &[RailHelper<'_>], oob: bool) -> Markup {
-    html! {
-        ul.conversations id=(RAIL_CONVERSATIONS_ID) hx-swap-oob=[oob.then_some("true")] {
-            li { a href="/" aria-current=[melissa_current.then_some("page")] { "Melissa" } }
-            @for h in helpers {
-                li {
-                    a href=(h.href) aria-current=[h.current.then_some("page")] {
-                        span.with-dot {
-                            span class={ "dot " (h.health.class()) } aria-hidden="true" {}
-                            span.name { (h.name) }
-                        }
-                        span.visually-hidden { ", helper: " (h.status) }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Shown in place of the composer when the conversation cannot go on (its helper was
 /// deleted): a short notice and a way back. `oob`: replaces the composer out of band.
 pub fn composer_closed(text: &str, back: &str, back_label: &str, oob: bool) -> Markup {
@@ -329,16 +201,6 @@ pub fn composer_closed(text: &str, back: &str, back_label: &str, oob: bool) -> M
         div.composer.composer-closed hx-swap-oob=[swap] {
             (notice(text, Tone::Warn))
             (link(back, back_label))
-        }
-    }
-}
-
-/// The count of pending confirmations (a badge; empty when zero). Has a stable id so the
-/// live stream can replace it (`oob`: as an out-of-band replacement).
-pub fn waiting_count(n: usize, oob: bool) -> Markup {
-    html! {
-        span id=(WAITING_COUNT_ID) hx-swap-oob=[oob.then_some("true")] {
-            @if n > 0 { span.count { (n) span.visually-hidden { " waiting" } } }
         }
     }
 }
@@ -695,6 +557,44 @@ pub fn feed_archive(id: &str, label: &str, entries: Markup, empty: Markup) -> Ma
     }
 }
 
+/// The top of a chat page's feed when older entries are not loaded yet: melissa.js loads them
+/// from `fetch` when it scrolls into view (or is clicked) and puts them in its place, with a new
+/// marker if there are more. Without script the link opens the chat with every entry (`page`).
+pub fn older_marker(fetch: &str, page: &str) -> Markup {
+    html! {
+        li.feed-older data-older=(fetch) {
+            a href=(page) { "Load earlier messages" }
+        }
+    }
+}
+
+/// One of Melissa's earlier (archived) chats.
+pub struct PastChatRow {
+    pub href: String,
+    pub title: String,
+    pub when: String,
+    pub turns: usize,
+}
+
+/// The list of earlier chats.
+pub fn past_chat_list(rows: &[PastChatRow]) -> Markup {
+    html! {
+        ul.detail-list.past-chats {
+            @for r in rows {
+                li {
+                    a.detail-main href=(r.href) {
+                        span.name { (r.title) }
+                        span.meta {
+                            (r.when) " · " (r.turns)
+                            (if r.turns == 1 { " message" } else { " messages" })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One item of the feed (or of the approvals list) with a stable id, so updates can
 /// replace its content.
 pub fn feed_entry(id: &str, content: Markup) -> Markup {
@@ -901,7 +801,7 @@ pub struct SentFile {
 pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
     html! {
         div.msg.msg-user {
-            h3.visually-hidden { "You" }
+            h3.msg-who { "You" }
             div.bubble {
                 @if !files.is_empty() {
                     ul.sent-files {
@@ -938,52 +838,32 @@ pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
     }
 }
 
-// --- Details panel (2026-11-20, owner decision) ------------------------------------------
+// --- Details panel (2026-11-20, owner decision; restructured to the owner's design the same day)
 //
-// The right-hand panel of a chat page, about the agent whose chat it is (Melissa on home, a
-// helper on its page): who it is and what it runs on, its apps, its schedules and its file
-// box. Wide screens: a column beside the chat (melissa.js can hide it, remembered per
-// browser). Narrow screens with script: a sheet over the chat, opened with the Details
-// button (Esc or Close shut it; focus moves in and back). Without script it is always shown:
-// beside the chat, or below it on narrow screens. Live: the stream swaps the file list and
-// count, and the agent's status; the apps poll like the app strip.
+// The right-hand panel of a chat page, "Agent details": the agent's on-device services (its
+// apps and this device), its uploaded files, its permissions (approvals waiting and its
+// "Always allow" rules), its recent activity, and its schedules when it has any. Wide screens:
+// a column beside the chat (its collapse button hides it, remembered per browser). Narrow
+// screens with script: a sheet over the chat, opened with the Details button (Esc or the
+// collapse button shut it; focus moves in and back). Without script it is always shown: beside
+// the chat, or below it on narrow screens. Live: the stream swaps the file list and count; the
+// services poll like the app strip did.
 
 /// DOM id of the details panel.
 pub const DETAILS_ID: &str = "details-panel";
-/// DOM id of the agent section (rename and delete swap it).
-pub const DETAILS_AGENT_ID: &str = "details-agent";
-/// DOM id of the agent's status badge (the stream replaces its content).
-pub const DETAILS_STATUS_ID: &str = "details-status";
-/// DOM id of the apps section (it polls).
+/// DOM id of the services section (it polls).
 pub const DETAILS_APPS_ID: &str = "details-apps";
 /// DOM id of the schedules section (on/off swaps it).
 pub const DETAILS_SCHEDULES_ID: &str = "details-schedules";
+/// DOM id of the permissions section (removing a rule swaps it; the stream replaces it).
+pub const DETAILS_PERMISSIONS_ID: &str = "details-permissions";
+/// DOM id of the recent activity section (the stream replaces it).
+pub const DETAILS_ACTIVITY_ID: &str = "details-activity";
 /// DOM id of the file panel's body (delete, upload, send and retention swap it; the stream
 /// replaces its content).
 pub const FILE_BODY_ID: &str = "file-box-body";
 /// DOM id of the file count in the Files heading.
 pub const FILE_COUNT_ID: &str = "file-count";
-
-/// The agent section of the details panel.
-pub struct AgentCard<'a> {
-    /// The rename form's action (None: Melissa, whose name is fixed).
-    pub rename: Option<&'a str>,
-    pub name: &'a str,
-    /// `Lead agent` or `Helper`.
-    pub role: &'a str,
-    /// "Claude · Opus 5.5 · High".
-    pub runs_on: &'a str,
-    /// The chat has the model picker: a Change button opens it.
-    pub picker: bool,
-    pub status: (&'a str, Tone),
-    /// "By Melissa · 20 Nov", when known.
-    pub created: Option<&'a str>,
-    /// Delete's action (helpers only), unless `kept` says why it can't be deleted now.
-    pub delete: Option<&'a str>,
-    /// Why Delete isn't offered ("Looks after Nextcloud. …").
-    pub kept: Option<&'a str>,
-    pub error: Option<&'a str>,
-}
 
 /// One app in the details panel.
 pub struct DetailApp {
@@ -993,16 +873,31 @@ pub struct DetailApp {
     pub health: Health,
     /// "Running".
     pub status: String,
-    /// Who looks after it (Melissa's panel lists every app).
+    /// Key facts ("TCP 25565", "Port 8080").
+    pub facts: Option<String>,
+    /// Who looks after it (Melissa's panel lists every app, grouped by this).
     pub keeper: Option<String>,
 }
 
-/// The apps section.
+/// This device in the services section.
+pub struct DetailDevice {
+    pub name: String,
+    /// "Linux · This device".
+    pub sub: String,
+    pub health: Health,
+    /// "Online".
+    pub status: String,
+    /// Storage almost full, ...
+    pub warning: Option<String>,
+}
+
+/// The services section.
 pub struct DetailApps<'a> {
     /// Where the section reloads itself from.
     pub url: &'a str,
     pub apps: &'a [DetailApp],
     pub empty: &'a str,
+    pub device: Option<&'a DetailDevice>,
 }
 
 /// One schedule in the details panel.
@@ -1025,22 +920,57 @@ pub struct DetailSchedules<'a> {
     pub flash: Option<(&'a str, Tone)>,
 }
 
+/// An approval this agent waits for, in the Permissions section.
+pub struct DetailWaiting {
+    /// "Network access".
+    pub kind: String,
+    /// "TCP 25565 · waiting for you".
+    pub sub: String,
+    /// The card in the chat.
+    pub href: String,
+}
+
+/// An "Always allow" rule of this agent.
+pub struct DetailRule {
+    /// "Update Minecraft".
+    pub what: String,
+    /// POST here to remove it.
+    pub remove: String,
+}
+
+/// The permissions section.
+pub struct DetailPermissions<'a> {
+    pub waiting: &'a [DetailWaiting],
+    pub rules: &'a [DetailRule],
+    pub flash: Option<(&'a str, Tone)>,
+}
+
+/// One line of recent activity.
+pub struct ActivityLine {
+    pub text: String,
+    /// "10:42" (today) or "18 Nov".
+    pub when: String,
+    /// Attention (honey dot) rather than done (green).
+    pub attention: bool,
+}
+
 /// Everything the details panel shows.
 pub struct DetailsPanel<'a> {
-    pub agent: AgentCard<'a>,
     pub apps: DetailApps<'a>,
-    pub schedules: DetailSchedules<'a>,
     pub files: &'a FilePanel<'a>,
+    pub permissions: DetailPermissions<'a>,
+    pub activity: &'a [ActivityLine],
+    pub schedules: DetailSchedules<'a>,
 }
 
 /// The Details button of a chat page (shown by melissa.js; without script the panel is
 /// always visible, so the button stays hidden).
 pub fn details_toggle() -> Markup {
     html! {
-        button.details-toggle type="button" aria-controls=(DETAILS_ID) aria-expanded="false"
-            data-details-toggle hidden {
-            (panel_icon())
-            span.label { "Details" }
+        button.icon-button.details-toggle type="button" aria-controls=(DETAILS_ID) aria-expanded="false"
+            data-details-toggle hidden title="Agent details" {
+            (glyph(Glyph::Sidebar))
+            span.visually-hidden { "Agent details" }
         }
     }
 }
@@ -1051,105 +981,163 @@ pub fn details_panel(p: &DetailsPanel<'_>) -> Markup {
         div.details-backdrop data-details-close hidden {}
         aside.details id=(DETAILS_ID) aria-labelledby="details-h" tabindex="-1" {
             div.details-head {
-                h2 #details-h { "Details" }
+                h2 #details-h { "Agent details" }
                 button.icon-button.details-close type="button" data-details-close
-                    aria-label="Close details" hidden { (close_icon()) }
+                    hidden title="Hide details" {
+                    (glyph(Glyph::Sidebar))
+                    span.visually-hidden { "Hide details" }
+                }
             }
-            (agent_card(&p.agent))
             section.details-section aria-labelledby="details-apps-h" {
-                h3 #details-apps-h { "Apps" }
                 (detail_apps(&p.apps))
             }
-            section.details-section aria-labelledby="details-schedules-h" {
-                h3 #details-schedules-h { "Schedules" }
-                (detail_schedules(&p.schedules))
-            }
             section.details-section aria-labelledby="details-files-h" {
-                h3 #details-files-h { "Files " (file_count(p.files.files.len(), false)) }
+                h3.details-label #details-files-h { "Uploaded files " (file_count(p.files.files.len(), false)) }
                 (file_panel_body(p.files))
             }
-        }
-    }
-}
-
-/// The agent section (the response to rename and to a refused delete).
-pub fn agent_card(a: &AgentCard<'_>) -> Markup {
-    let target = format!("#{DETAILS_AGENT_ID}");
-    html! {
-        section.details-section.agent-card id=(DETAILS_AGENT_ID) aria-label="Agent" {
-            div.agent-title {
-                p.agent-name { (a.name) }
-                span id=(DETAILS_STATUS_ID) { (badge(a.status.0, a.status.1)) }
+            section.details-section aria-labelledby="details-permissions-h" {
+                h3.details-label #details-permissions-h { "Permissions" }
+                (detail_permissions(&p.permissions))
             }
-            @if let Some(e) = a.error { (notice(e, Tone::Error)) }
-            dl.agent-facts {
-                div { dt { "Role" } dd { (a.role) } }
-                div {
-                    dt { "Runs on" }
-                    dd {
-                        span { (a.runs_on) }
-                        @if a.picker {
-                            " "
-                            button.link type="button" popovertarget=(MODEL_PICKER_ID)
-                                aria-haspopup="dialog" { "Change" }
-                        }
-                    }
+            section.details-section aria-labelledby="details-activity-h" {
+                h3.details-label #details-activity-h { "Recent activity" }
+                (detail_activity(p.activity))
+            }
+            @if !p.schedules.schedules.is_empty() || p.schedules.flash.is_some() {
+                section.details-section aria-labelledby="details-schedules-h" {
+                    h3.details-label #details-schedules-h { "Schedules" }
+                    (detail_schedules(&p.schedules))
                 }
-                @if let Some(c) = a.created { div { dt { "Made" } dd { (c) } } }
-            }
-            @if let Some(action) = a.rename {
-                details.disclosure.agent-rename {
-                    summary { "Rename" }
-                    form.one-field method="post" action=(action) hx-post=(action)
-                        hx-target=(target) hx-swap="outerHTML" {
-                        label.field {
-                            span.visually-hidden { "New name" }
-                            input type="text" name="name" value=(a.name) required maxlength="40"
-                                autocomplete="off" spellcheck="false";
-                        }
-                        button.secondary type="submit" { "Save" }
-                    }
-                }
-            }
-            @if let Some(kept) = a.kept {
-                p.quiet { (kept) }
-            } @else if let Some(action) = a.delete {
-                (action_button(
-                    action,
-                    DETAILS_AGENT_ID,
-                    "Delete",
-                    &format!("Delete {}? Its chat, file box and schedules go with it. This can't be undone.", a.name),
-                ))
             }
         }
     }
 }
 
-/// The apps section's content, polling for changes like the app strip.
+/// The services section's content (one card: the apps, then this device), polling for
+/// changes like the app strip.
 pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
+    let mut groups: Vec<Option<&str>> = Vec::new();
+    for a in s.apps {
+        if !groups.contains(&a.keeper.as_deref()) {
+            groups.push(a.keeper.as_deref());
+        }
+    }
     html! {
         div id=(DETAILS_APPS_ID) hx-get=(s.url) hx-trigger="every 15s" hx-swap="outerHTML" {
-            @if s.apps.is_empty() {
-                p.quiet { (s.empty) }
-            } @else {
-                ul.detail-list {
-                    @for a in s.apps {
-                        li {
-                            span class={ "dot " (a.health.class()) } aria-hidden="true" {}
-                            // Without script: the apps page, where each app has its details.
-                            a.detail-main href="/cluster" hx-get=(a.details) hx-target="#app-dialog"
-                                hx-swap="innerHTML" aria-haspopup="dialog" {
-                                span.name { (a.name) }
-                                span.meta {
-                                    (a.status)
-                                    @if let Some(k) = &a.keeper { " · " (k) }
+            div.services-card {
+                h3.services-head #details-apps-h {
+                    span { "On-device services" }
+                    span.count { (s.apps.len() + usize::from(s.device.is_some())) }
+                }
+                @if s.apps.is_empty() {
+                    p.service-empty { (s.empty) }
+                }
+                @for g in &groups {
+                    @if let Some(keeper) = g { p.service-group { (keeper) } }
+                    ul.service-list {
+                        @for a in s.apps.iter().filter(|a| a.keeper.as_deref() == *g) {
+                            li.service {
+                                (glyph(Glyph::Hexagon))
+                                div.service-text {
+                                    p.service-name { (a.name) }
+                                    p.service-status {
+                                        span class={ "dot " (a.health.class()) } aria-hidden="true" {}
+                                        (a.status)
+                                    }
+                                    @if let Some(f) = &a.facts { p.service-facts { (f) } }
+                                }
+                                // Without script: the apps page, where each app has its details.
+                                a.icon-button.more-button href="/cluster" hx-get=(a.details)
+                                    hx-target="#app-dialog" hx-swap="innerHTML" aria-haspopup="dialog"
+                                    title={ "More for " (a.name) } {
+                                    (glyph(Glyph::More))
+                                    span.visually-hidden { "More for " (a.name) }
                                 }
                             }
                         }
                     }
                 }
+                @if let Some(d) = s.device {
+                    div.service.device-service {
+                        (glyph(Glyph::Server))
+                        div.service-text {
+                            p.service-name { (d.name) }
+                            p.service-facts { (d.sub) }
+                            @if let Some(w) = &d.warning { p.device-warn { (w) } }
+                        }
+                        span.service-state {
+                            span class={ "dot " (d.health.class()) } aria-hidden="true" {}
+                            (d.status)
+                        }
+                    }
+                }
             }
-            a.detail-more href="/cluster" { "All apps" }
+        }
+    }
+}
+
+/// The permissions section's content (the response to removing a rule).
+pub fn detail_permissions(p: &DetailPermissions<'_>) -> Markup {
+    let target = format!("#{DETAILS_PERMISSIONS_ID}");
+    html! {
+        div id=(DETAILS_PERMISSIONS_ID) {
+            @if let Some((text, tone)) = p.flash { (notice(text, tone)) }
+            @if p.waiting.is_empty() && p.rules.is_empty() {
+                p.quiet { "Nothing asked or allowed ahead." }
+            }
+            @if !p.waiting.is_empty() {
+                ul.detail-list.permission-list {
+                    @for w in p.waiting {
+                        li.permission.waiting {
+                            (glyph(Glyph::Warn))
+                            div.detail-main {
+                                span.name { (w.kind) }
+                                span.meta { (w.sub) }
+                            }
+                            // To the permission card in the chat.
+                            a.review href=(w.href) data-review { "Review" }
+                        }
+                    }
+                }
+            }
+            @if !p.rules.is_empty() {
+                ul.detail-list.permission-list {
+                    @for r in p.rules {
+                        li.permission {
+                            (glyph(Glyph::Check))
+                            div.detail-main {
+                                span.name { (r.what) }
+                                span.meta { "Always allowed" }
+                            }
+                            form method="post" action=(r.remove) hx-post=(r.remove)
+                                hx-target=(target) hx-swap="outerHTML" {
+                                button.link type="submit" aria-label={ "Stop always allowing: " (r.what) } { "Remove" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The recent activity section's content.
+pub fn detail_activity(lines: &[ActivityLine]) -> Markup {
+    html! {
+        div id=(DETAILS_ACTIVITY_ID) {
+            @if lines.is_empty() {
+                p.quiet { "Nothing yet." }
+            } @else {
+                ul.activity-list {
+                    @for l in lines {
+                        li class={ "activity-line" @if l.attention { " attention" } } {
+                            span.dot aria-hidden="true" {}
+                            span.text { (l.text) }
+                            span.when { (l.when) }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1195,6 +1183,10 @@ pub struct PanelFile {
     pub name: String,
     /// `1.2 MiB`.
     pub size: String,
+    /// `PNG`, `PDF`, or empty.
+    pub kind: String,
+    /// Shown as a preview (PNG, JPEG, GIF, WebP).
+    pub image: bool,
     /// When it was added, for people (`20 Nov 14:03`).
     pub added: String,
     /// Who added it: `You`, the agent's name, or `From Ada`.
@@ -1245,7 +1237,19 @@ pub fn file_panel_body(p: &FilePanel<'_>) -> Markup {
     html! { div.file-box-body id=(FILE_BODY_ID) { (file_panel_inner(p)) } }
 }
 
-/// The file panel's body content (the stream replaces it).
+/// Who added a file, as the card's note.
+fn added_words(by: &str, whose: &str) -> String {
+    if by == "You" {
+        "Uploaded in this conversation".to_string()
+    } else if by == whose {
+        format!("Saved by {by}")
+    } else {
+        by.to_string()
+    }
+}
+
+/// The file panel's body content (the stream replaces it): the upload button and how long
+/// files are kept, then a card per file (a preview for images).
 pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
     let target = format!("#{FILE_BODY_ID}");
     html! {
@@ -1276,19 +1280,33 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                 noscript { button.secondary type="submit" { "Save" } }
             }
         }
-        @if !p.files.is_empty() {
+        @if p.files.is_empty() {
+            p.quiet { "No files yet. Files you send or " (p.whose) " saves show here." }
+        } @else {
             ul.box-files {
                 @for f in p.files {
-                    li {
+                    li.file-card {
+                        @if f.image {
+                            a.file-preview href=(f.href) target="_blank" rel="noopener"
+                                title={ "Open " (f.name) } {
+                                img src=(f.href) alt="" loading="lazy" decoding="async";
+                                span.file-expand aria-hidden="true" { (glyph(Glyph::Expand)) }
+                                span.visually-hidden { "Open " (f.name) " full size" }
+                            }
+                        }
                         div.box-file-row {
+                            (glyph(if f.image { Glyph::Image } else { Glyph::File }))
                             a.box-file href=(f.href) download=(f.name) title={ "Download " (f.name) } {
                                 span.name { (f.name) }
-                                span.meta { (f.size) " · " (f.added) " · " (f.by) }
+                                span.meta {
+                                    @if !f.kind.is_empty() { (f.kind) " · " }
+                                    (f.size)
+                                }
                             }
                             details.file-more {
                                 summary.icon-button title={ "More for " (f.name) } {
                                     span.visually-hidden { "More for " (f.name) }
-                                    (more_icon())
+                                    (glyph(Glyph::More))
                                 }
                                 div.file-more-body {
                                     a.button-like href=(f.reference_href)
@@ -1320,36 +1338,10 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                                 }
                             }
                         }
+                        p.file-note { (added_words(&f.by, p.whose)) " · " (f.added) }
                     }
                 }
             }
-        }
-    }
-}
-
-fn panel_icon() -> Markup {
-    html! {
-        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
-            rect x="1.5" y="2.5" width="13" height="11" rx="1.5" {}
-            path d="M10 2.5v11" {}
-        }
-    }
-}
-
-fn close_icon() -> Markup {
-    html! {
-        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
-            path d="M3.5 3.5l9 9M12.5 3.5l-9 9" {}
-        }
-    }
-}
-
-fn more_icon() -> Markup {
-    html! {
-        svg.file-icon viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
-            circle cx="3.5" cy="8" r="1.1" {}
-            circle cx="8" cy="8" r="1.1" {}
-            circle cx="12.5" cy="8" r="1.1" {}
         }
     }
 }
@@ -1410,18 +1402,7 @@ pub fn relayed_message(from: &str, text: &str) -> Markup {
     }
 }
 
-/// A message from the lead agent (left, honey hexagon avatar, no bubble).
-pub fn lead_message(text: &str) -> Markup {
-    html! {
-        div.msg.msg-lead {
-            (mark("avatar"))
-            h3.visually-hidden { "Melissa" }
-            div.body { (markdown(text)) }
-        }
-    }
-}
-
-fn activity_icon(state: ActivityState) -> Markup {
+pub(crate) fn activity_icon(state: ActivityState) -> Markup {
     match state {
         ActivityState::Working => html! {
             span.icon.spin aria-hidden="true" {}
@@ -1474,24 +1455,6 @@ pub fn activity_row(
     }
 }
 
-/// The agent's thinking in the chat (Settings → Developer): a row like [`activity_row`]
-/// that opens to the thought (agent prose, rendered as [`markdown`]). Without text yet (the
-/// agent still thinks) it is a plain row.
-pub fn thought_row(label: &str, text: &str, state: ActivityState) -> Markup {
-    if text.is_empty() {
-        return activity_row(label, None, false, state, None);
-    }
-    html! {
-        details.thought {
-            summary.activity {
-                (activity_icon(state))
-                span.label { (label) }
-            }
-            div.detail { (markdown(text)) }
-        }
-    }
-}
-
 /// A system line in the chat.
 pub fn note(text: &str, detail: Option<&str>, tone: NoteTone) -> Markup {
     let class = match tone {
@@ -1507,6 +1470,11 @@ pub fn note(text: &str, detail: Option<&str>, tone: NoteTone) -> Markup {
     }
 }
 
+/// The date and time above a part of the chat ("Today, 10:42"): a quiet line, no rule.
+pub fn chat_date(text: &str) -> Markup {
+    html! { p.chat-date { (text) } }
+}
+
 /// A quiet divider across the chat with a short label (e.g. "Earlier").
 pub fn chat_divider(text: &str) -> Markup {
     html! {
@@ -1514,60 +1482,14 @@ pub fn chat_divider(text: &str) -> Markup {
     }
 }
 
-/// An approval card: what is asked, what happens, and two buttons.
-pub struct ApprovalCard<'a> {
-    pub id: u64,
-    /// DOM id of the element whose content the buttons replace.
-    pub target: &'a str,
-    pub title: &'a str,
-    pub consequence: &'a str,
-    pub reason: &'a str,
-    pub destructive: bool,
-    pub permanent: bool,
-    pub yes: &'a str,
-    pub no: &'a str,
-    pub state: ApprovalState,
-    /// The "Always allow" question (the rule it saves); None: no such button.
-    pub always: Option<&'a str>,
-}
-
-pub fn approval_card(c: &ApprovalCard<'_>) -> Markup {
-    let class = match (c.state, c.destructive) {
-        (ApprovalState::Pending, true) => "approval destructive",
-        (ApprovalState::Pending, false) => "approval",
-        _ => "approval decided",
-    };
-    let action = |verdict: &str| format!("/ui/confirmations/{}/{verdict}", c.id);
-    let target = format!("#{}", c.target);
+/// What a decided permission card says instead of its buttons.
+pub(crate) fn approval_state_outcome(state: ApprovalState) -> Markup {
     html! {
-        article class=(class) aria-labelledby={ "ap-" (c.id) } {
-            h3 #{ "ap-" (c.id) } { (c.title) }
-            p.consequence { (c.consequence) }
-            @if c.permanent && c.state == ApprovalState::Pending {
-                p.permanent { "Can't be undone." }
-            }
-            p.reason { "Asked because: " (c.reason) }
-            @match c.state {
-                ApprovalState::Pending => div.actions {
-                    form method="post" action=(action("approve")) hx-post=(action("approve"))
-                        hx-target=(target) hx-swap="innerHTML" {
-                        button.primary.danger[c.destructive] type="submit" { (c.yes) }
-                    }
-                    form method="post" action=(action("deny")) hx-post=(action("deny"))
-                        hx-target=(target) hx-swap="innerHTML" {
-                        button.secondary type="submit" { (c.no) }
-                    }
-                    @if let Some(question) = c.always {
-                        form method="post" action=(action("always")) hx-post=(action("always"))
-                            hx-target=(target) hx-swap="innerHTML" {
-                            button.secondary type="submit" title=(question) { "Always allow" }
-                        }
-                    }
-                },
-                ApprovalState::Approved => p.outcome.ok { "You allowed this." },
-                ApprovalState::Denied => p.outcome { "You said no." },
-                ApprovalState::Withdrawn => p.outcome { "No longer needed (it timed out or the job ended)." },
-            }
+        @match state {
+            ApprovalState::Pending => {},
+            ApprovalState::Approved => p.outcome.ok { "You allowed this." },
+            ApprovalState::Denied => p.outcome { "You declined." },
+            ApprovalState::Withdrawn => p.outcome { "No longer needed (it timed out or the job ended)." },
         }
     }
 }
@@ -2154,6 +2076,13 @@ pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup
     }
 }
 
+mod agent;
+pub use agent::{
+    agent_groups, agent_menu, agent_message, avatar, chat_head, icon_picker, permission_card,
+    shape, sidebar, status_pill, steps_card, AgentMenu, Avatar, ChatHead, GroupKind, HeadStatus,
+    MessageHead, PermissionCard, SideAgent, SideDevice, SideGroup, Sidebar, StepLine,
+    AGENT_GROUPS_ID, CHAT_STATUS_ID, SIDEBAR_ID,
+};
 mod panel;
 mod provider_add;
 pub use provider_add::{
@@ -2497,7 +2426,7 @@ mod tests {
     #[test]
     fn agent_text_is_markdown_with_html_escaped() {
         let evil = "Hi <img src=x onerror=alert(1)>\n\n**bold** [link](http://example.com)\n- one\n- <b>two</b>";
-        let out = lead_message(evil).into_string();
+        let out = agent_message(None, "Melissa", evil).into_string();
         assert!(!out.contains("<img"));
         assert!(!out.contains("<b>"));
         assert!(out.contains("&lt;img src=x onerror=alert(1)&gt;"), "{out}");
@@ -2512,7 +2441,7 @@ mod tests {
         let out = relayed_message("A job from Melissa", "<b>x</b>").into_string();
         assert!(out.contains("&lt;b&gt;x&lt;/b&gt;"));
         assert!(out.contains("A job from Melissa"));
-        let out = lead_message("run `<ls>` and `x").into_string();
+        let out = agent_message(None, "Melissa", "run `<ls>` and `x").into_string();
         assert!(out.contains("run <code>&lt;ls&gt;</code> and `x"), "{out}");
     }
 
@@ -2734,18 +2663,20 @@ mod tests {
     }
 
     fn card_for(state: ApprovalState, destructive: bool, permanent: bool) -> String {
-        approval_card(&ApprovalCard {
+        permission_card(&PermissionCard {
             id: 7,
             target: "c-7",
             title: "Remove <Nextcloud>?",
             consequence: "Stops it.",
             reason: "destructive action",
+            kind: "Network access",
+            detail: Some("TCP 25565"),
             destructive,
             permanent,
             yes: "Remove",
-            no: "Keep it",
+            no: "Decline",
             state,
-            always: None,
+            always: Some("Always let Ada update Minecraft?"),
         })
         .into_string()
     }
@@ -2760,6 +2691,12 @@ mod tests {
         assert!(pending.contains("Remove &lt;Nextcloud&gt;?"));
         assert!(!pending.contains("Can't be undone"));
         assert!(!pending.contains("danger"));
+        // The tag line, the quiet third action and the waiting note (owner design).
+        assert!(pending.contains("<span class=\"tag-kind\">Network access</span>"));
+        assert!(pending.contains("<span class=\"tag-detail\">TCP 25565</span>"));
+        assert!(pending.contains("button class=\"ghost\""));
+        assert!(pending.contains("Waiting for your decision"));
+        assert!(pending.contains(">Decline<"));
 
         let destructive = card_for(ApprovalState::Pending, true, true);
         assert!(destructive.contains("approval destructive"));
@@ -2768,13 +2705,14 @@ mod tests {
 
         for (state, text) in [
             (ApprovalState::Approved, "You allowed this."),
-            (ApprovalState::Denied, "You said no."),
+            (ApprovalState::Denied, "You declined."),
             (ApprovalState::Withdrawn, "No longer needed"),
         ] {
             let out = card_for(state, true, true);
             assert!(out.contains(text));
             assert!(!out.contains("<button"), "{state:?}");
             assert!(!out.contains("Can't be undone"));
+            assert!(!out.contains("Waiting for your decision"));
         }
     }
 

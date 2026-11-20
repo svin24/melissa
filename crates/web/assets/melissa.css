@@ -42,6 +42,15 @@
   /* Behind a modal or a sheet, and the shadow of things that float over the page. */
   --backdrop: rgb(10 14 20 / 0.45);
   --shadow-float: rgb(0 0 0 / 0.18);
+  /* Helpers' icon colours (2026-11-20; names in melissa_agent::lead::icon). */
+  --icon-green: #2f7d4a;
+  --icon-teal: #0f7676;
+  --icon-blue: #2a5bd7;
+  --icon-violet: #6b4bc4;
+  --icon-rose: #b8395f;
+  --icon-orange: #b4540f;
+  --icon-lime: #5a7a0c;
+  --icon-slate: #5b6b80;
   --radius: 12px;
   --font: "Atkinson Hyperlegible Next", system-ui, sans-serif;
   --font-head: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
@@ -70,6 +79,14 @@
     --focus: #8db0f5;
     --backdrop: rgb(10 14 20 / 0.6);
     --shadow-float: rgb(0 0 0 / 0.45);
+    --icon-green: #6cc893;
+    --icon-teal: #4fc6c0;
+    --icon-blue: #8db0f5;
+    --icon-violet: #b49cf2;
+    --icon-rose: #f08aab;
+    --icon-orange: #f2a25c;
+    --icon-lime: #b5d55a;
+    --icon-slate: #a3adbb;
   }
 }
 
@@ -264,7 +281,41 @@ button.link {
 
 .shell {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
+}
+
+/* The sidebar's backdrop on phones (melissa.js shows it with the sheet). */
+.side-backdrop {
+  display: none;
+}
+
+/* Wide, collapsed by its button (melissa.js, remembered per browser): the chat takes the room;
+   the header's button shows the sidebar again. */
+@media (min-width: 761px) {
+  html[data-sidebar="collapsed"] .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-sidebar="collapsed"] .sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .js .side-backdrop:not([hidden]) {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 39;
+    background: var(--backdrop);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .js .sidebar[data-ready],
+  .js .sidebar[data-ready][data-open] {
+    transition: none;
+  }
 }
 
 main {
@@ -328,9 +379,9 @@ main:focus {
   fill: var(--honey);
 }
 
-/* --- Rail ------------------------------------------------------------------------------- */
+/* --- Sidebar (2026-11-20, owner design: agents grouped by state) ------------------------- */
 
-.rail {
+.sidebar {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -338,15 +389,545 @@ main:focus {
   border-right: 1px solid var(--border);
 }
 
-/* Everything but the bottom bar; scrolls when the conversations run long. */
-.rail-main {
+.side-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 56px;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.device-button {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0 0.5rem;
+  background: none;
+  color: var(--ink);
+  border-radius: 10px;
+}
+
+.device-button .mark {
+  width: 20px;
+  height: 20px;
+}
+
+.brand-word {
+  font-family: var(--font-head);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.device-button .glyph {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.side-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.5rem 0.25rem 1rem;
+  color: var(--muted);
+}
+
+.side-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 0.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.side-search input:focus-visible {
+  outline-offset: 0;
+}
+
+.side-main {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  padding: 0.25rem 0.5rem 0.75rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
-  padding: 1rem 0.9rem;
+}
+
+.agent-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  flex: 1 0 auto;
+}
+
+/* Working and Settled sit at the bottom of the sidebar, as in the design. */
+.agent-groups > .group-working {
+  margin-top: auto;
+}
+
+.agent-groups > .group-pinned + .group-settled {
+  margin-top: auto;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 32px;
+  padding: 0 0.5rem;
+  font-family: var(--font);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.group-head > :first-child {
+  flex: 1;
+}
+
+.group-head a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.group-attention .group-head {
+  color: var(--honey-text);
+}
+
+.group-head .count {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+details.agent-group > summary {
+  list-style: none;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+details.agent-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.agent-group:not([open]) > summary .chev {
+  transform: rotate(-90deg);
+  transform-origin: 8px 8px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  details.agent-group > summary .chev {
+    transition: transform 0.15s ease-out;
+  }
+}
+
+.agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.agent-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  border-radius: 10px;
+}
+
+.agent-row.attention {
+  background: var(--honey-soft);
+  box-shadow: inset 3px 0 0 var(--honey);
+}
+
+.agent-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  min-height: 44px;
+  padding: 0.5rem 0 0.5rem 0.6rem;
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.agent-row:has(.agent-link[aria-current="page"]) {
+  background: var(--ground);
+}
+
+.agent-row.attention:has(.agent-link[aria-current="page"]) {
+  background: var(--honey-soft);
+}
+
+.agent-link .avatar {
+  margin-top: 0.15rem;
+}
+
+.agent-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.agent-name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.agent-name .name,
+.agent-sub,
+.agent-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-link[aria-current="page"] .agent-name {
+  font-weight: 650;
+}
+
+.star-mark {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: var(--honey);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.agent-status {
+  font-size: 0.8rem;
+  color: var(--honey-text);
+}
+
+.agent-status.working {
+  color: var(--muted);
+}
+
+.agent-status.working::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: var(--ok);
+  vertical-align: 0.1em;
+}
+
+.agent-sub {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* A thin bar under a working agent; without a known share it is a still, partly filled line
+   (no animation: it would loop forever). */
+progress.agent-progress {
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  margin-top: 0.3rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--ok);
+  overflow: hidden;
+}
+
+progress.agent-progress::-webkit-progress-bar {
+  background: var(--border);
+}
+
+progress.agent-progress::-webkit-progress-value {
+  background: var(--ok);
+}
+
+progress.agent-progress::-moz-progress-bar {
+  background: var(--ok);
+}
+
+progress.agent-progress:indeterminate {
+  background: linear-gradient(to right, var(--ok) 0 40%, var(--border) 40%);
+}
+
+progress.agent-progress:indeterminate::-moz-progress-bar {
+  background: transparent;
+}
+
+.agent-row > .more-button {
+  width: 36px;
+  height: 44px;
+  opacity: 0.85;
+}
+
+.side-none {
+  padding: 0.5rem;
+  font-size: 0.9rem;
+}
+
+@media (hover: hover) {
+  .agent-row:hover {
+    background: var(--ground);
+  }
+
+  .agent-row.attention:hover {
+    background: var(--honey-soft);
+  }
+
+  .device-button:hover {
+    background: var(--ground);
+  }
+}
+
+/* --- Icons of agents --------------------------------------------------------------------- */
+
+svg.avatar {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+svg.avatar.av-sm {
+  width: 18px;
+  height: 18px;
+}
+
+svg.avatar.av {
+  width: 22px;
+  height: 22px;
+}
+
+.ic-honey {
+  color: var(--honey);
+}
+
+.ic-green {
+  color: var(--icon-green);
+}
+
+.ic-teal {
+  color: var(--icon-teal);
+}
+
+.ic-blue {
+  color: var(--icon-blue);
+}
+
+.ic-violet {
+  color: var(--icon-violet);
+}
+
+.ic-rose {
+  color: var(--icon-rose);
+}
+
+.ic-orange {
+  color: var(--icon-orange);
+}
+
+.ic-lime {
+  color: var(--icon-lime);
+}
+
+.ic-slate {
+  color: var(--icon-slate);
+}
+
+/* The icon picker: radio buttons drawn as the shapes and colour swatches; the shapes take the
+   chosen colour. */
+.icon-picker {
+  display: grid;
+  gap: 1rem;
+}
+
+.icon-picker fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.icon-picker legend {
+  padding: 0;
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+}
+
+.icon-option,
+.color-option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.icon-option input,
+.color-option input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.icon-option:has(input:checked),
+.color-option:has(input:checked) {
+  border-color: var(--action);
+  box-shadow: 0 0 0 1px var(--action);
+}
+
+.icon-option:has(input:focus-visible),
+.color-option:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.icon-picker:has(input[value="green"]:checked) .icon-option svg { color: var(--icon-green); }
+.icon-picker:has(input[value="teal"]:checked) .icon-option svg { color: var(--icon-teal); }
+.icon-picker:has(input[value="blue"]:checked) .icon-option svg { color: var(--icon-blue); }
+.icon-picker:has(input[value="violet"]:checked) .icon-option svg { color: var(--icon-violet); }
+.icon-picker:has(input[value="rose"]:checked) .icon-option svg { color: var(--icon-rose); }
+.icon-picker:has(input[value="orange"]:checked) .icon-option svg { color: var(--icon-orange); }
+.icon-picker:has(input[value="lime"]:checked) .icon-option svg { color: var(--icon-lime); }
+.icon-picker:has(input[value="slate"]:checked) .icon-option svg { color: var(--icon-slate); }
+
+/* --- Menus (the agent's "⋯", the device menu): native popovers ----------------------------- */
+
+.menu[popover] {
+  min-width: 13rem;
+  max-width: min(20rem, calc(100vw - 2rem));
+  padding: 0.35rem;
+  margin: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 12px 32px var(--shadow-float);
+}
+
+/* With script the menu opens next to its button (melissa.js sets top and left). */
+.js .menu[popover]:popover-open {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+}
+
+.menu form {
+  margin: 0;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 0.6rem;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menu-item .glyph {
+  color: var(--muted);
+}
+
+.menu-item.danger,
+.menu-item.danger .glyph {
+  color: var(--caution);
+}
+
+.menu-label {
+  padding: 0.35rem 0.6rem 0.2rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.device-row {
+  cursor: default;
+}
+
+.device-row .name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.device-row .meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+details.menu-confirm > summary {
+  list-style: none;
+}
+
+details.menu-confirm > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-confirm-body {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.25rem 0.6rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+@media (hover: hover) {
+  .menu-item:hover {
+    background: var(--ground);
+  }
+}
+
+.more-button .dots {
+  stroke-width: 2.2;
 }
 
 /* The bottom bar (2026-11-20, owner's reference): small muted icons on the left, updates alone
@@ -422,38 +1003,6 @@ svg.glyph {
   stroke-linejoin: round;
 }
 
-.rail ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.nav a,
-.conversations a {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  min-height: 44px;
-  padding: 0 0.7rem;
-  border-radius: 10px;
-  color: var(--ink);
-  text-decoration: none;
-}
-
-.nav a[aria-current="page"],
-.conversations a[aria-current="page"] {
-  background: var(--ground);
-  font-weight: 650;
-}
-
-@media (hover: hover) {
-  .nav a:hover,
-  .conversations a:hover {
-    background: var(--ground);
-  }
-}
-
 .count {
   min-width: 1.6rem;
   padding: 0 0.45rem;
@@ -466,45 +1015,10 @@ svg.glyph {
   line-height: 1.6rem;
 }
 
-.rail-section h2 {
-  font-family: var(--font);
-  font-size: 0.8rem;
-  font-weight: 650;
-  color: var(--muted);
-  padding: 0 0.7rem 0.3rem;
-}
-
-.with-dot {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  min-width: 0;
-}
-
-.with-dot .name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .activity .label a {
   color: inherit;
   text-decoration-color: var(--honey);
   text-decoration-thickness: 2px;
-}
-
-.devices li {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  min-height: 36px;
-  padding: 0 0.7rem;
-}
-
-.devices .name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .dot {
@@ -525,38 +1039,6 @@ svg.glyph {
 
 .dot.h-problem {
   background: var(--caution);
-}
-
-.rail .quiet {
-  padding: 0 0.7rem;
-  font-size: 0.9rem;
-}
-
-.rail-sub {
-  margin: 1rem 0 0.25rem;
-  padding: 0 0.7rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-.conversations.past a {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  font-size: 0.875rem;
-  color: var(--muted);
-}
-
-.conversations.past .name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conversations.past .when {
-  flex: none;
-  font-size: 0.8rem;
 }
 
 /* --- Page header and blocks ------------------------------------------------------------- */
@@ -586,13 +1068,33 @@ svg.glyph {
 
 /* --- Chat ------------------------------------------------------------------------------- */
 
+/* The chat column (2026-11-20): a header across it, then the feed and the composer at the
+   chat's reading width. */
 .chat {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 1.25rem 1.5rem 0;
   min-height: calc(100vh - 2rem);
   display: flex;
   flex-direction: column;
+}
+
+.chat > .feed-wrap,
+.chat > .composer {
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+
+/* Pages in the main column without the chat's header (Earlier chats, not found). */
+.page-pad {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem 2rem;
+}
+
+.chat.page-pad > .feed-wrap {
+  padding: 0;
 }
 
 /* Wider than a phone the main column is the scroller (see the shell): fill it exactly. */
@@ -613,6 +1115,79 @@ svg.glyph {
 
 .chat > .page-header {
   margin-top: 0.75rem;
+}
+
+/* The chat's header: the agent's icon, "device / name", its status and menu, Details. */
+.chat-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 56px;
+  padding: 0 0.5rem 0 1rem;
+  background: var(--ground);
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.chat-title h1 {
+  font-family: var(--font);
+  font-size: 0.95rem;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-device,
+.chat-sep {
+  color: var(--muted);
+  flex: none;
+}
+
+.chat-status:empty {
+  display: none;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 28px;
+  padding: 0 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pill.attention {
+  color: var(--honey-text);
+  background: var(--honey-soft);
+}
+
+.pill.working {
+  color: var(--muted);
+}
+
+.pill .spin {
+  width: 12px;
+  height: 12px;
+}
+
+.side-expand:not([hidden]),
+.details-toggle:not([hidden]) {
+  display: inline-flex;
 }
 
 .strip {
@@ -697,6 +1272,18 @@ svg.glyph {
 
 .feed-empty:not(:only-child) {
   display: none;
+}
+
+.feed-older {
+  display: flex;
+  justify-content: center;
+  font-size: 0.85rem;
+}
+
+.feed-older a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 .reload-hook {
@@ -909,17 +1496,28 @@ svg.glyph {
   font-size: 0.85rem;
 }
 
+/* What the user wrote: "You", then a bubble on the right (owner design: a quiet surface). */
 .msg-user {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+}
+
+.msg-who {
+  font-family: var(--font);
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .msg-user .bubble {
   max-width: min(85%, 34rem);
-  background: var(--bubble);
-  color: var(--bubble-ink);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
   padding: 0.6rem 0.95rem;
-  border-radius: 16px 16px 4px 16px;
+  border-radius: var(--radius);
   overflow-wrap: anywhere;
 }
 
@@ -936,7 +1534,7 @@ svg.glyph {
 }
 
 .msg-relayed {
-  margin-left: 40px;
+  margin-left: 28px;
   padding: 0.6rem 0.9rem;
   border-left: 3px solid var(--honey);
   background: var(--surface);
@@ -952,21 +1550,86 @@ svg.glyph {
   margin-bottom: 0.25rem;
 }
 
-.msg-lead {
+/* An agent's message: its icon, name and time on the turn's first item, then the text, the
+   steps card and permission cards indented under the name. */
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.msg-name {
+  font-family: var(--font);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.msg-time {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-agent > .body,
+.msg-steps > .steps-card {
+  margin-left: 28px;
+  overflow-wrap: anywhere;
+}
+
+/* The steps of a turn: one card, a line per step with its mark and its state on the right. */
+.steps-card {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.875rem;
+}
+
+.step-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 0.75rem;
-  align-items: start;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.6rem;
+  min-height: 32px;
 }
 
-.avatar {
-  width: 28px;
-  height: 28px;
-  fill: var(--honey);
-  margin-top: 0.1rem;
+.step-label {
+  overflow-wrap: anywhere;
 }
 
-.msg-lead .body {
+.step-detail {
+  color: var(--muted);
+}
+
+.step-state {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.state-done .step-state {
+  color: var(--ok);
+}
+
+.state-failed .step-state {
+  color: var(--caution);
+}
+
+.step-thought > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.step-thought > summary::-webkit-details-marker {
+  display: none;
+}
+
+.step-thought > .detail {
+  margin: 0 0 0.5rem calc(16px + 0.6rem);
+  font-size: 0.85rem;
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 
@@ -985,7 +1648,7 @@ svg.glyph {
 
 .activity,
 .note {
-  margin-left: 40px;
+  margin-left: 28px;
   font-size: 0.9rem;
 }
 
@@ -1004,42 +1667,6 @@ svg.glyph {
 
 .activity .detail,
 .note .detail {
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-/* The agent's thinking (Settings → Developer): an activity row that opens to the thought. */
-.thought > summary {
-  cursor: pointer;
-  list-style: none;
-}
-
-.thought > summary::-webkit-details-marker {
-  display: none;
-}
-
-.thought > summary .label::after {
-  content: "\203A";
-  display: inline-block;
-  margin-left: 0.4em;
-  color: var(--muted);
-  font-weight: 700;
-  transition: transform 0.15s ease;
-}
-
-.thought[open] > summary .label::after {
-  transform: rotate(90deg);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .thought > summary .label::after {
-    transition: none;
-  }
-}
-
-.thought > .detail {
-  margin: 0.25rem 0 0.5rem calc(40px + 16px + 0.55rem);
-  font-size: 0.85rem;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -1110,6 +1737,18 @@ svg.icon.stopped {
   padding: 0.45rem 0.75rem;
 }
 
+.chat-date {
+  margin: 0.5rem 0 0 28px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.icon-button[hidden],
+.menu-item[hidden] {
+  display: none;
+}
+
 .divider {
   display: flex;
   align-items: center;
@@ -1130,25 +1769,50 @@ svg.icon.stopped {
 /* --- Approval cards --------------------------------------------------------------------- */
 
 .approval {
-  margin-left: 40px;
-  background: var(--surface);
-  border: 2px solid var(--honey);
-  border-radius: var(--radius);
-  padding: 0.9rem 1rem;
+  margin-left: 28px;
+  background: var(--honey-soft);
+  border: 1px solid var(--honey);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
   display: grid;
   gap: 0.35rem;
 }
 
 .approval.destructive {
+  background: var(--caution-soft);
   border-color: var(--caution);
 }
 
 .approval.decided {
-  border: 1px solid var(--border);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--honey-text);
+}
+
+.approval.destructive .approval-head {
+  color: var(--caution);
+}
+
+.approval.decided .approval-head {
+  color: var(--muted);
+}
+
+.approval-head h3 {
+  font-family: var(--font);
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--ink);
 }
 
 .approval .consequence {
   color: var(--ink);
+  font-size: 0.9rem;
 }
 
 .approval .permanent {
@@ -1158,14 +1822,64 @@ svg.icon.stopped {
 
 .approval .reason {
   color: var(--muted);
-  font-size: 0.875rem;
+  font-size: 0.85rem;
+}
+
+/* "NETWORK ACCESS · TCP 25565": the owner's design asks for the small capitals here. */
+.approval-tag {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--honey-text);
+}
+
+.approval.destructive .approval-tag {
+  color: var(--caution);
+}
+
+.approval.decided .approval-tag {
+  color: var(--muted);
+}
+
+.tag-detail {
+  font-variant-numeric: tabular-nums;
 }
 
 .approval .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  align-items: center;
+  gap: 0.5rem;
   margin-top: 0.4rem;
+}
+
+.approval .actions form {
+  margin: 0;
+}
+
+.approval .actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.approval .actions button.ghost {
+  width: auto;
+  margin: 0;
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.approval .waiting {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .approval .outcome {
@@ -3490,70 +4204,56 @@ ol.steps > li::marker {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* The rail is a top bar: the brand and the bottom bar's icons on one line, the nav below. */
-  .rail {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.25rem 0.75rem;
-    padding: 0.4rem 0.75rem;
+  /* Without script the sidebar is a block above the chat. With script it is a sheet over the
+     page, opened with the header's "Show agents" button (melissa.js). */
+  .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
 
-  .rail-main {
-    display: contents;
+  .js .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: min(20rem, 88vw);
+    border-right: 1px solid var(--border);
+    box-shadow: 12px 0 32px var(--shadow-float);
+    transform: translateX(-100%);
+    visibility: hidden;
   }
 
-  .rail .brand {
-    order: 1;
-    font-size: 1.1rem;
+  .js .sidebar[data-open] {
+    transform: none;
+    visibility: visible;
   }
 
-  .rail-foot {
-    order: 2;
-    margin-left: auto;
-    padding: 0;
-    border-top: 0;
-    gap: 0;
+  .js .sidebar[data-ready] {
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0.2s;
   }
 
-  .rail-update {
-    margin-left: 0;
+  .js .sidebar[data-ready][data-open] {
+    transition: transform 0.2s ease;
   }
 
-  .rail .nav {
-    order: 3;
-  }
-
-  /* Sideways-scrolling rows: a thin scrollbar in the theme's colours (the default track is
-     light even in dark mode, a white strip under the nav). */
-  .rail .nav {
-    display: flex;
-    flex: 1 1 100%;
-    overflow-x: auto;
-    gap: 0.25rem;
-    scrollbar-width: thin;
-    scrollbar-color: var(--idle) transparent;
-  }
-
-  .nav a {
-    white-space: nowrap;
-    padding: 0 0.6rem;
-  }
-
-  .rail-section {
-    display: none;
-  }
-
-  .chat,
+  .chat > .feed-wrap,
+  .chat > .composer,
+  .page-pad,
   .wide {
     padding-left: 1rem;
     padding-right: 1rem;
   }
 
-  .chat {
-    padding-top: 0.75rem;
+  .chat-head {
+    padding-left: 0.5rem;
+  }
+
+  .chat-device,
+  .chat-sep {
+    display: none;
   }
 
   .strip {
@@ -3568,12 +4268,15 @@ ol.steps > li::marker {
   .activity,
   .note,
   .approval,
-  .msg-relayed {
+  .msg-relayed,
+  .msg-agent > .body,
+  .msg-steps > .steps-card {
     margin-left: 0;
   }
 
-  .thought > .detail {
-    margin-left: calc(16px + 0.55rem);
+  .approval .waiting {
+    flex-basis: 100%;
+    margin-left: 0;
   }
 
   .app_grid {
@@ -3773,31 +4476,6 @@ dialog.sheet::backdrop {
   width: 100%;
 }
 
-.chat-bar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 0.75rem;
-}
-
-.chat-bar > .page-header {
-  flex: 1;
-  min-width: 0;
-}
-
-.details-toggle:not([hidden]) {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  flex: none;
-  margin: 0 0 0.6rem;
-  padding: 0.4rem 0.9rem;
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
 .details-toggle:focus-visible,
 .details-close:focus-visible {
   outline: 2px solid var(--focus);
@@ -3805,7 +4483,7 @@ dialog.sheet::backdrop {
 }
 
 .details-toggle[aria-expanded="true"] {
-  background: var(--ground);
+  color: var(--ink);
 }
 
 .details {
@@ -3819,16 +4497,23 @@ dialog.sheet::backdrop {
 }
 
 .details-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.5rem 0.5rem 0 1rem;
+  min-height: 56px;
+  padding: 0 0.5rem 0 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
 }
 
 .details-head h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-family: var(--font);
+  font-size: 0.95rem;
 }
 
 .details-close[hidden] {
@@ -3837,81 +4522,190 @@ dialog.sheet::backdrop {
 
 .details-section {
   padding: 0.85rem 1rem;
-  border-bottom: 1px solid var(--border);
 }
 
-.details-section:last-child {
-  border-bottom: 0;
+.details-section + .details-section {
+  padding-top: 0.25rem;
 }
 
-.details-section h3 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.5rem;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.details-section h3 .count {
-  min-width: 1.6em;
-  padding: 0 0.45em;
-  border-radius: 999px;
-  background: var(--ground);
-  color: var(--muted);
-  font-size: 0.8rem;
-  text-align: center;
-  letter-spacing: 0;
-}
-
-.agent-title {
+.details-label {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
 }
 
-.agent-name {
+.details-label .count {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  color: var(--muted);
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* On-device services: one card, the apps then this device, divided by hairlines. */
+.services-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--ground);
+}
+
+.services-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
   margin: 0;
-  font-family: var(--font-head);
-  font-size: 1.2rem;
-  font-weight: 700;
-  overflow-wrap: anywhere;
+  padding: 0 0.85rem;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
 }
 
-.agent-facts {
-  margin: 0.5rem 0;
-  display: grid;
-  gap: 0.2rem;
-  font-size: 0.9rem;
+.services-head .count {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  color: var(--muted);
+  line-height: 1;
 }
 
-.agent-facts > div {
-  display: grid;
-  grid-template-columns: 5rem minmax(0, 1fr);
-  gap: 0.5rem;
-  align-items: baseline;
+.service-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
-.agent-facts dt {
+.service {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.6rem 0.35rem 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.service:last-child,
+.service-list:last-child .service:last-child {
+  border-bottom: 0;
+}
+
+.service > .glyph {
+  margin-top: 0.15rem;
   color: var(--muted);
 }
 
-.agent-facts dd {
-  margin: 0;
+.service-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.service-name {
+  font-size: 0.9rem;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-.agent-facts button.link {
-  min-height: 32px;
+.service-status,
+.service-state {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
-.agent-card .disclosure,
-.agent-card .confirm-inline {
-  margin-top: 0.4rem;
+.service-status .dot,
+.service-state .dot,
+.activity-line .dot {
+  width: 6px;
+  height: 6px;
+}
+
+.service-state {
+  flex: none;
+  padding-right: 0.5rem;
+  min-height: 1.4rem;
+}
+
+.service-facts {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.service .more-button {
+  width: 36px;
+  height: 36px;
+}
+
+.service-group {
+  padding: 0.5rem 0.85rem 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.service-empty {
+  padding: 0.6rem 0.85rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.device-service {
+  border-top: 1px solid var(--border);
+}
+
+/* Permissions and recent activity: plain rows. */
+.permission-list .glyph {
+  flex: none;
+  color: var(--muted);
+}
+
+.permission.waiting .glyph {
+  color: var(--honey);
+}
+
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0 0;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.activity-line {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+}
+
+.activity-line .dot {
+  background: var(--ok);
+}
+
+.activity-line.attention .dot {
+  background: var(--honey);
+}
+
+.activity-line .text {
+  overflow-wrap: anywhere;
+}
+
+.activity-line .when {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-list {
@@ -4003,7 +4797,48 @@ label.attach.upload {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.5rem;
+}
+
+/* A file: a preview for images (opens full size), its name, kind and size, ⋯, who added it. */
+.file-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--ground);
+  overflow: hidden;
+}
+
+.file-preview {
+  position: relative;
+  display: block;
+  margin: 0.5rem 0.5rem 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.file-preview img {
+  display: block;
+  width: 100%;
+  height: 7.5rem;
+  object-fit: cover;
+}
+
+.file-expand {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  display: inline-flex;
+  padding: 0.3rem;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.file-note {
+  padding: 0 0.85rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 /* The ⋯ button sits at the row's top right; its menu opens below the file. */
@@ -4011,12 +4846,18 @@ label.attach.upload {
   position: relative;
   display: flex;
   flex-wrap: wrap;
-  padding-right: 48px;
+  align-items: flex-start;
+  padding: 0.35rem 44px 0 0.85rem;
+}
+
+.box-file-row > .glyph {
+  margin-top: 0.75rem;
+  color: var(--muted);
 }
 
 .box-file {
   /* Its own width first, so the open menu (100%) wraps below it. */
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -4028,7 +4869,6 @@ label.attach.upload {
 
 .file-more {
   flex: 0 0 100%;
-  margin-right: -48px;
 }
 
 .file-more > summary {
@@ -4146,15 +4986,9 @@ label.attach.upload {
     overscroll-behavior: contain;
   }
 
-  .chat-layout > .chat > :not([popover]) {
-    width: 100%;
-    max-width: calc(760px - 3rem);
-    margin-left: auto;
-    margin-right: auto;
-  }
 
   .details {
-    flex: 0 0 20rem;
+    flex: 0 0 18.5rem;
     align-self: stretch;
     height: 100%;
     border-left: 1px solid var(--border);
@@ -4217,7 +5051,7 @@ label.attach.upload {
     position: fixed;
     inset: 0;
     z-index: 39;
-    background: rgb(10 14 20 / 0.45);
+    background: var(--backdrop);
   }
 }
 
@@ -4540,4 +5374,9 @@ label.attach.upload {
 /* A disclosure at the end of a setting card ("Details" under Updates). */
 .setting-more {
   padding: 0.25rem 1rem;
+}
+
+/* A setting card that holds a form instead of rows (a helper's name and icon). */
+.setting-card.card-pad {
+  padding: 1rem;
 }

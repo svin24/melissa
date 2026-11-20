@@ -20,6 +20,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use super::icon::AgentIcon;
 use crate::device::{agent_id, valid_agent_id, valid_device_id, write_private};
 use crate::tools::AgentNames;
 
@@ -54,6 +55,23 @@ pub struct AgentRecord {
     /// Stopped by the lead agent or the user: no session runs until its next job or message.
     #[serde(default)]
     pub stopped: bool,
+    /// Its picture in the UI (2026-11-20; registries from before get the default for the id
+    /// when they are opened).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<AgentIcon>,
+    /// The user pinned it in the sidebar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
+impl AgentRecord {
+    /// Its icon (the default for its id until one is set).
+    pub fn icon(&self) -> AgentIcon {
+        self.icon.clone().map_or_else(
+            || AgentIcon::default_for(&self.id),
+            |i| i.or_default(&self.id),
+        )
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -145,13 +163,27 @@ impl AgentRegistry {
             .max()
             .unwrap_or(0);
         file.next = file.next.max(highest + 1).max(1);
-        Ok(Self {
+        // Agents from before icons get the default for their id, saved once.
+        let mut migrated = false;
+        for a in &mut file.agents {
+            let icon = a.icon();
+            if a.icon.as_ref() != Some(&icon) {
+                a.icon = Some(icon);
+                migrated = true;
+            }
+        }
+        let registry = Self {
             inner: Arc::new(Inner {
                 path,
                 file: Mutex::new(file),
                 changed: tokio::sync::watch::Sender::new(0),
             }),
-        })
+        };
+        if migrated {
+            let file = lock(&registry.inner.file);
+            registry.save(&file)?;
+        }
+        Ok(registry)
     }
 
     /// The device these agents live on.
@@ -203,6 +235,18 @@ impl AgentRegistry {
         tools: Option<Vec<String>>,
         created_by: &str,
     ) -> Result<AgentRecord, RegistryError> {
+        self.create_with(name, backend, tools, created_by, None)
+    }
+
+    /// [`Self::create`] with the icon the user picked (None: the default for its id).
+    pub fn create_with(
+        &self,
+        name: &str,
+        backend: &str,
+        tools: Option<Vec<String>>,
+        created_by: &str,
+        icon: Option<AgentIcon>,
+    ) -> Result<AgentRecord, RegistryError> {
         let name = check_name(name)?;
         let mut file = lock(&self.inner.file);
         if file
@@ -212,8 +256,10 @@ impl AgentRegistry {
         {
             return Err(RegistryError::NameTaken(name));
         }
+        let id = agent_id(&file.device, file.next);
+        let icon = icon.unwrap_or_else(|| AgentIcon::default_for(&id));
         let record = AgentRecord {
-            id: agent_id(&file.device, file.next),
+            id,
             name,
             backend: backend.into(),
             model: None,
@@ -223,6 +269,8 @@ impl AgentRegistry {
             created_by: created_by.into(),
             created_at: now(),
             stopped: false,
+            icon: Some(icon),
+            pinned: false,
         };
         file.next += 1;
         file.agents.push(record.clone());
@@ -294,6 +342,33 @@ impl AgentRegistry {
         self.save(&next)?;
         *file = next;
         Ok(gone)
+    }
+
+    /// The user gives an agent another icon.
+    pub fn set_icon(&self, id: &str, icon: AgentIcon) -> Result<AgentRecord, RegistryError> {
+        self.update(id, |a| a.icon = Some(icon))
+    }
+
+    /// The user pins an agent in the sidebar (or unpins it).
+    pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<AgentRecord, RegistryError> {
+        self.update(id, |a| a.pinned = pinned)
+    }
+
+    fn update(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut AgentRecord),
+    ) -> Result<AgentRecord, RegistryError> {
+        let mut file = lock(&self.inner.file);
+        let agent = file
+            .agents
+            .iter_mut()
+            .find(|b| b.id == id)
+            .ok_or_else(|| RegistryError::NoSuchAgent(id.into()))?;
+        change(agent);
+        let out = agent.clone();
+        self.save(&file)?;
+        Ok(out)
     }
 
     /// Mark an agent stopped (or awake again).

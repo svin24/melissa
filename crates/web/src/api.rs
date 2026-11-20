@@ -28,6 +28,13 @@
 //!   `GET /api/agents/{agent}/status` (409 while the agent works on a job or another message).
 //! - `POST /api/agents/{agent}/rename` `{"name": "..."}` → the agent (the user renames; 422 for a
 //!   bad or taken name).
+//! - `POST /api/agents` `{"name", "icon"?: {"shape", "color"}}` → 201 the new agent (the user's
+//!   own; 422 bad or taken name, unknown icon). `POST /api/agents/{agent}/icon` `{"shape",
+//!   "color"}` and `POST /api/agents/{agent}/pin` `{"pinned": bool}` → the agent.
+//! - `POST /api/lead/fresh-start`, `POST /api/agents/{agent}/fresh-start` → "Fresh start": the
+//!   agent's memory is cleared (its next message opens a new session), the chat goes on; 409
+//!   if a running turn does not stop. `POST /api/lead/compact` condenses Melissa's context now
+//!   (`{"compacted": bool}`). There is no "new chat": one chat per agent (2026-11-20).
 //! - `GET /api/workspaces` → `{"workspaces": [...]}`: every workspace and its owning agent (502 if k3s is
 //!   unreachable).
 //! - `POST /api/workspaces/{workspace}/reassign` `{"to": "<agent>"}` → the workspace: the user's own
@@ -72,7 +79,11 @@ use axum::{
     Json, Router,
 };
 use melissa_agent::{
-    lead::{backends::BackendView, Lead, LeadError},
+    lead::{
+        backends::BackendView,
+        icon::{AgentIcon, COLORS, SHAPES},
+        Lead, LeadError,
+    },
     mcp::McpServer,
     tools::{AlwaysAllowError, Scope, TaskContext, ToolError, Verdict},
     AuditRecord,
@@ -91,12 +102,16 @@ pub(crate) fn routes(lead: Lead) -> Router {
         .route("/api/lead/events", get(events))
         .route("/api/lead/cancel", post(cancel))
         .route("/api/lead/status", get(status))
-        .route("/api/lead/new-chat", post(new_chat))
+        .route("/api/lead/fresh-start", post(fresh_start))
+        .route("/api/lead/compact", post(compact))
         .route("/api/lead/chats", get(past_chats))
         .route("/api/lead/backends", get(backends))
         .route("/api/lead/backends/refresh", post(refresh_models))
         .route("/api/lead/backend", post(use_backend))
-        .route("/api/agents", get(agents))
+        .route("/api/agents", get(agents).post(agent_create))
+        .route("/api/agents/{agent}/icon", post(agent_icon))
+        .route("/api/agents/{agent}/pin", post(agent_pin))
+        .route("/api/agents/{agent}/fresh-start", post(agent_fresh_start))
         .route("/api/agents/{agent}", get(agent).delete(agent_delete))
         .route("/api/agents/{agent}/messages", post(agent_message))
         .route("/api/agents/{agent}/events", get(agent_events))
@@ -191,12 +206,17 @@ async fn cancel(State(lead): State<Lead>) -> Response {
     Json(json!({"cancelled": lead.cancel().await})).into_response()
 }
 
-/// A new chat with the lead agent: `{"archived": <id or null>}`.
-async fn new_chat(State(lead): State<Lead>) -> Response {
-    match lead.new_chat().await {
-        Ok(archived) => Json(json!({ "archived": archived })).into_response(),
+/// "Fresh start" for the lead agent: `{"fresh_start": true}`.
+async fn fresh_start(State(lead): State<Lead>) -> Response {
+    match lead.fresh_start().await {
+        Ok(()) => Json(json!({ "fresh_start": true })).into_response(),
         Err(e) => lead_error(e),
     }
+}
+
+/// Condense the lead agent's context now: `{"compacted": bool}` (false: nothing to condense).
+async fn compact(State(lead): State<Lead>) -> Response {
+    Json(json!({ "compacted": lead.compact() })).into_response()
 }
 
 /// Archived chats, newest first.
@@ -364,6 +384,80 @@ async fn agent_rename(
 ) -> Response {
     match lead.agents().rename(&agent, &body.name) {
         Ok(b) => Json(b).into_response(),
+        Err(e) => lead_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct IconBody {
+    shape: String,
+    color: String,
+}
+
+impl IconBody {
+    fn icon(&self) -> Result<AgentIcon, Box<Response>> {
+        AgentIcon::new(&self.shape, &self.color).ok_or_else(|| {
+            Box::new(lead_error(LeadError::Invalid(format!(
+                "unknown icon; shapes: {}; colors: {}",
+                SHAPES.join(", "),
+                COLORS.join(", ")
+            ))))
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct NewAgent {
+    name: String,
+    #[serde(default)]
+    icon: Option<IconBody>,
+}
+
+async fn agent_create(State(lead): State<Lead>, Json(body): Json<NewAgent>) -> Response {
+    let icon = match body.icon.as_ref().map(IconBody::icon).transpose() {
+        Ok(i) => i,
+        Err(r) => return *r,
+    };
+    match lead.agents().user_create(&body.name, icon) {
+        Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Err(e) => lead_error(e),
+    }
+}
+
+async fn agent_icon(
+    State(lead): State<Lead>,
+    Path(agent): Path<String>,
+    Json(body): Json<IconBody>,
+) -> Response {
+    let icon = match body.icon() {
+        Ok(i) => i,
+        Err(r) => return *r,
+    };
+    match lead.agents().set_icon(&agent, icon) {
+        Ok(a) => Json(a).into_response(),
+        Err(e) => lead_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Pin {
+    pinned: bool,
+}
+
+async fn agent_pin(
+    State(lead): State<Lead>,
+    Path(agent): Path<String>,
+    Json(body): Json<Pin>,
+) -> Response {
+    match lead.agents().set_pinned(&agent, body.pinned) {
+        Ok(a) => Json(a).into_response(),
+        Err(e) => lead_error(e),
+    }
+}
+
+async fn agent_fresh_start(State(lead): State<Lead>, Path(agent): Path<String>) -> Response {
+    match lead.agents().fresh_start(&agent).await {
+        Ok(a) => Json(a).into_response(),
         Err(e) => lead_error(e),
     }
 }

@@ -1,5 +1,7 @@
-//! The details panel beside each chat (2026-11-20): the agent, its apps, schedules and
-//! files; renaming and deleting a helper from it; adding, referencing and sending files.
+//! The details panel beside each chat (2026-11-20, owner design): services, files,
+//! permissions, recent activity and schedules; the chat header and the agent menu; a helper's
+//! page in Settings → Agents (make, rename, icon, pin, fresh start, delete); adding,
+//! referencing and sending files.
 
 use melissa_agent::{
     files::AddedBy,
@@ -59,43 +61,40 @@ async fn each_chat_shows_its_own_agents_details() {
         .save_named(&Principal::Lead, "melissa-notes.txt", b"mine")
         .unwrap();
 
-    // Melissa's chat: the lead agent, every app with who looks after it, her schedule, her
-    // files. No rename, no delete.
+    // Melissa's chat: "Agent details" with every app grouped by who looks after it, this
+    // device, her files, permissions, recent activity and her schedule.
     let (status, _, page) = get_html(&app, "/").await;
     assert_eq!(status, StatusCode::OK);
     let p = panel_of(&page);
-    assert!(p.contains("<p class=\"agent-name\">Melissa</p>"), "{p}");
-    assert!(p.contains("Lead agent"));
-    assert!(!p.contains("/rename"), "{p}");
-    assert!(!p.contains("/delete\" hx-post=\"/ui/agents"), "{p}");
+    assert!(p.contains("<h2 id=\"details-h\">Agent details</h2>"), "{p}");
+    assert!(p.contains("On-device services"));
     assert!(p.contains("hx-get=\"/ui/apps/nextcloud\""), "{p}");
     assert!(
-        p.contains(" · Ada"),
-        "every app names who looks after it: {p}"
+        p.contains("<p class=\"service-group\">Ada</p>"),
+        "every app grouped by who looks after it: {p}"
     );
+    assert!(p.contains("<p class=\"service-name\">device-1</p>"), "{p}");
     assert!(
         p.contains("Morning summary") && !p.contains("Nightly check"),
         "{p}"
     );
     assert!(p.contains("melissa-notes.txt") && !p.contains("ada-notes.txt"));
-    // The model picker opens from the panel; the app dialog is on the page.
-    assert!(p.contains("popovertarget=\"model-picker\""), "{p}");
+    assert!(p.contains("Permissions") && p.contains("Nothing asked or allowed ahead."));
+    assert!(p.contains("Recent activity"));
+    // The header of the chat: the agent's icon, "device / name", the menu; no rename for her.
+    assert!(page.contains("<h1>Melissa</h1>"), "{page}");
+    assert!(page.contains("<span class=\"chat-device\">device-1</span>"));
+    assert!(page.contains("popovertarget=\"menu-head\""));
+    assert!(page.contains("action=\"/ui/fresh-start\""));
+    assert!(!page
+        .contains("Rename agent</span></a><a class=\"menu-item\" href=\"/settings/agents/lead"));
     assert!(page.contains("id=\"app-dialog\""));
 
-    // Ada's chat: hers only. Made by Melissa; she looks after an app, so no Delete yet.
+    // Ada's chat: hers only; her app with its key facts, her menu (rename, icon, pin, delete).
     let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
     let p = panel_of(&page);
-    assert!(p.contains("<p class=\"agent-name\">Ada</p>"), "{p}");
-    assert!(p.contains("Helper") && p.contains("By Melissa, "), "{p}");
-    assert!(
-        p.contains(&format!("action=\"/ui/agents/{ada}/rename\"")),
-        "{p}"
-    );
-    assert!(
-        p.contains("Looks after Nextcloud. Reassign or remove its apps"),
-        "{p}"
-    );
-    assert!(!p.contains(&format!("/ui/agents/{ada}/delete")), "{p}");
+    assert!(p.contains("<p class=\"service-name\">Nextcloud</p>"), "{p}");
+    assert!(!p.contains("service-group"), "only her own apps: {p}");
     assert!(
         p.contains("Nightly check") && !p.contains("Morning summary"),
         "{p}"
@@ -105,21 +104,42 @@ async fn each_chat_shows_its_own_agents_details() {
     assert!(p.contains("<option value=\"lead\">Melissa</option>"), "{p}");
     assert!(p.contains(&format!("<option value=\"{bo}\">Bo</option>")));
     assert!(!p.contains(&format!("<option value=\"{ada}\">")));
-
-    // Bo's chat: made by the user, no apps, deletable (in-page confirmation, no dialog).
-    let (_, _, page) = get_html(&app, &format!("/agents/{bo}")).await;
-    let p = panel_of(&page);
-    assert!(p.contains("By You, "), "{p}");
-    assert!(p.contains("None yet."), "{p}");
-    assert!(
-        p.contains(&format!("action=\"/ui/agents/{bo}/delete\"")),
-        "{p}"
-    );
-    assert!(p.contains("Delete Bo? Its chat, file box and schedules go with it."));
-    assert!(p.contains("No schedules."));
+    let head = &page[page.find("<header class=\"chat-head\">").unwrap()..];
+    let head = &head[..head.find("</header>").unwrap()];
+    assert!(head.contains("<h1>Ada</h1>"), "{head}");
+    for item in [
+        format!("href=\"/settings/agents/{ada}#agent-name\""),
+        format!("href=\"/settings/agents/{ada}#agent-icon\""),
+        format!("href=\"/settings/agents/{ada}\""),
+        format!("action=\"/ui/agents/{ada}/pin\""),
+        format!("action=\"/ui/agents/{ada}/fresh-start\""),
+        format!("href=\"/settings/agents/{ada}#agent-delete\""),
+    ] {
+        assert!(head.contains(&item), "{item}: {head}");
+    }
+    assert!(head.contains("<span>Pin</span>"));
     assert!(!page.contains("hx-confirm"), "no browser dialogs");
 
-    // The apps section polls; the JSON API says the same.
+    // Her page in Settings → Agents: made by Melissa; she looks after an app, so no Delete.
+    let (status, _, page) = get_html(&app, &format!("/settings/agents/{ada}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("By Melissa, "), "{page}");
+    assert!(page.contains(&format!("action=\"/ui/settings/agents/{ada}/rename\"")));
+    assert!(page.contains("id=\"agent-icon\""));
+    assert!(
+        page.contains("Looks after Nextcloud. Reassign or remove its apps"),
+        "{page}"
+    );
+    assert!(!page.contains(&format!("/ui/settings/agents/{ada}/delete")));
+    // Bo's: made by the user, no apps, deletable (in-page confirmation).
+    let (_, _, page) = get_html(&app, &format!("/settings/agents/{bo}")).await;
+    assert!(page.contains("By You, "), "{page}");
+    assert!(page.contains(&format!("action=\"/ui/settings/agents/{bo}/delete\"")));
+    assert!(page.contains("Delete Bo? Its chat, file box and schedules go with it."));
+    let (_, _, page) = get_html(&app, &format!("/agents/{bo}")).await;
+    assert!(panel_of(&page).contains("No apps yet."));
+
+    // The services section polls; the JSON API says the same.
     let (status, _, html) = get_html(&app, &format!("/ui/details/{ada}/apps")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -130,6 +150,8 @@ async fn each_chat_shows_its_own_agents_details() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["agent"]["name"], "Ada");
     assert_eq!(body["agent"]["can_delete"], false);
+    assert_eq!(body["agent"]["pinned"], false);
+    assert!(body["agent"]["icon"]["shape"].is_string());
     assert_eq!(body["apps"][0]["app"], "nextcloud");
     assert_eq!(body["schedules"][0]["name"], "Nightly check");
     assert_eq!(body["files"]["files"][0]["name"], "ada-notes.txt");
@@ -183,65 +205,258 @@ async fn each_chat_shows_its_own_agents_details() {
     );
 }
 
+/// The Permissions section: what an agent waits for (with a link to the card) and its
+/// "Always allow" rules, removable in place; Recent activity says what happened.
 #[tokio::test]
-async fn helpers_are_renamed_and_deleted_from_the_panel() {
+async fn permissions_and_recent_activity_of_an_agent() {
+    use melissa_agent::tools::{ActionKey, RuleOffer};
+    let (app, lead) = app();
+    let ada = lead
+        .agents()
+        .registry()
+        .create("Ada", "stuck", None, "the user")
+        .unwrap()
+        .id;
+    // Her conversation exists (as when she works); a request from her task waits.
+    let log = lead.agents().events_of(&ada).unwrap();
+    let task = lead.agents().conversation_task_of(&ada).unwrap();
+    let offer = RuleOffer {
+        key: ActionKey {
+            principal: Principal::Agent(ada.clone()),
+            tool: "update_app".into(),
+            target: Some("minecraft".into()),
+        },
+        verb: "update".into(),
+    };
+    let spec = serde_json::json!({
+        "app": "minecraft",
+        "spec": {"containers": [{"image": "x", "ports": [{"name": "game", "port": 25565, "protocol": "tcp", "public": true}]}]},
+    });
+    let (c, _rx) =
+        lead.confirmations()
+            .request_with(task, "deploy_app", &spec, "runs software", Some(offer));
+    log.push(LeadEvent::ToolCall {
+        turn: None,
+        id: "x".into(),
+        title: "mcp__melissa__my_apps".into(),
+        status: "done".into(),
+        ms: None,
+    });
+    let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
+    let p = panel_of(&page);
+    assert!(
+        p.contains("<span class=\"name\">Network access</span>"),
+        "{p}"
+    );
+    assert!(p.contains("TCP 25565 · waiting for you"), "{p}");
+    assert!(
+        p.contains(&format!("href=\"/agents/{ada}#f-c{}\"", c.id)),
+        "{p}"
+    );
+    assert!(p.contains(">Review<"), "{p}");
+    assert!(p.contains("Checked whose apps are whose"), "{p}");
+    // She needs the user: first group of the sidebar, and her header says so.
+    assert!(page.contains("<span class=\"pill attention\">Needs permission</span>"));
+    let side = &page[page.find("group-attention").expect("Needs attention")..];
+    assert!(side.contains("<span class=\"name\">Ada</span>"));
+    assert!(side.contains("Permission needed"));
+
+    // Always allow saves a rule; it shows in her panel and goes from there.
+    send(
+        &app,
+        htmx_post(&format!("/ui/confirmations/{}/always", c.id), ""),
+    )
+    .await;
+    let rules = lead.server().registry().permissions().rules();
+    assert_eq!(rules.len(), 1);
+    let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
+    let p = panel_of(&page);
+    assert!(
+        p.contains("<span class=\"name\">Update Minecraft</span>"),
+        "{p}"
+    );
+    assert!(p.contains("You allowed a request"), "{p}");
+    // Melissa's panel doesn't list her rule; another agent's key can't remove it.
+    let (_, _, home) = get_html(&app, "/").await;
+    assert!(!panel_of(&home).contains("Update Minecraft"));
+    let (_, _, html) = send(
+        &app,
+        htmx_post(
+            &format!("/ui/details/lead/rules/{}/remove", rules[0].id),
+            "",
+        ),
+    )
+    .await;
+    assert!(html.contains("That rule is already gone."), "{html}");
+    assert_eq!(lead.server().registry().permissions().rules().len(), 1);
+    let (status, _, html) = send(
+        &app,
+        htmx_post(
+            &format!("/ui/details/{ada}/rules/{}/remove", rules[0].id),
+            "",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("id=\"details-permissions\""), "{html}");
+    assert!(
+        html.contains("Removed. It asks you again next time."),
+        "{html}"
+    );
+    assert!(lead.server().registry().permissions().rules().is_empty());
+}
+
+#[tokio::test]
+async fn helpers_are_made_renamed_pinned_and_deleted_in_their_settings() {
     let store = Arc::new(OwnedBy::default());
     let (app, lead) = app_full(None, Some(store.clone()), false);
     let reg = lead.agents().registry().clone();
-    let ada = reg.create("Ada", "stuck", None, "the user").unwrap().id;
     reg.create("Bo", "stuck", None, "the user").unwrap();
 
-    // Rename: the page reloads to show the name everywhere.
+    // "+": a name and an icon from our own shapes and colours; then its chat opens.
+    let (status, _, page) = get_html(&app, "/settings/agents/new").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("name=\"shape\" value=\"cube\""), "{page}");
+    assert!(page.contains("name=\"color\" value=\"teal\""), "{page}");
     let (status, headers, _) = send(
         &app,
-        htmx_post(&format!("/ui/agents/{ada}/rename"), "name=Ada+Lovelace"),
+        htmx_post("/ui/settings/agents/new", "name=Ada&shape=bolt&color=rose"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let ada = lead.agents().get("Ada").expect("made");
+    assert_eq!(
+        headers["hx-redirect"],
+        format!("/agents/{}", ada.id).as_str()
+    );
+    assert_eq!(
+        (ada.icon.shape.as_str(), ada.icon.color.as_str()),
+        ("bolt", "rose")
+    );
+    let ada = ada.id;
+    // Its chat draws its icon.
+    let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
+    assert!(page.contains("<svg class=\"avatar ic-rose av\""), "{page}");
+    // A taken name, or an icon we don't have: the form again, with what was typed.
+    let (_, _, html) = send(
+        &app,
+        htmx_post("/ui/settings/agents/new", "name=bo&shape=bolt&color=rose"),
+    )
+    .await;
+    assert!(
+        html.contains("id=\"new-agent\"") && html.contains("value=\"bo\""),
+        "{html}"
+    );
+    let (_, _, html) = send(
+        &app,
+        htmx_post(
+            "/ui/settings/agents/new",
+            "name=Cy&shape=hexagon&color=honey",
+        ),
+    )
+    .await;
+    assert!(html.contains("Pick a shape and a colour."), "{html}");
+    assert!(lead.agents().get("Cy").is_none());
+
+    // Rename: the page reloads to show the name everywhere.
+    let base = format!("/ui/settings/agents/{ada}");
+    let (status, headers, _) = send(
+        &app,
+        htmx_post(&format!("{base}/rename"), "name=Ada+Lovelace"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["hx-refresh"], "true");
     assert_eq!(lead.agents().get(&ada).unwrap().name, "Ada Lovelace");
-    // A taken name: the agent section says why.
-    let (_, _, html) = send(
-        &app,
-        htmx_post(&format!("/ui/agents/{ada}/rename"), "name=bo"),
-    )
-    .await;
-    assert!(html.contains("id=\"details-agent\""), "{html}");
+    // A taken name: the section says why.
+    let (_, _, html) = send(&app, htmx_post(&format!("{base}/rename"), "name=bo")).await;
+    assert!(html.contains("id=\"agent-settings\""), "{html}");
     assert!(
         html.contains("Couldn&#39;t rename it") || html.contains("Couldn't rename it"),
         "{html}"
     );
-    // Without script: back to the chat.
-    let req = post(&format!("/ui/agents/{ada}/rename"))
+    // Without script: back to its page.
+    let req = post(&format!("{base}/rename"))
         .body(Body::from("name=Ada"))
         .unwrap();
     let (status, headers, _) = send(&app, req).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(headers[header::LOCATION], format!("/agents/{ada}"));
-    assert_eq!(lead.agents().get(&ada).unwrap().name, "Ada");
+    assert_eq!(headers[header::LOCATION], format!("/settings/agents/{ada}"));
+    // Change icon.
+    let (_, headers, _) = send(
+        &app,
+        htmx_post(&format!("{base}/icon"), "shape=leaf&color=green"),
+    )
+    .await;
+    assert_eq!(headers["hx-refresh"], "true");
+    assert_eq!(lead.agents().get(&ada).unwrap().icon.shape, "leaf");
 
-    // Delete while she looks after an app: refused in the panel, nothing removed.
+    // Pin from its page or its menu (a plain form that goes back where it came from).
+    let (_, _, html) = send(&app, htmx_post(&format!("{base}/pin"), "pinned=on")).await;
+    assert!(html.contains("Pinned."), "{html}");
+    assert!(lead.agents().get(&ada).unwrap().pinned);
+    let req = post(&format!("/ui/agents/{ada}/pin"))
+        .header(header::REFERER, "http://127.0.0.1:8080/settings/agents")
+        .header(header::HOST, "127.0.0.1:8080")
+        .body(Body::from("pinned=off"))
+        .unwrap();
+    let (status, headers, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/settings/agents");
+    assert!(!lead.agents().get(&ada).unwrap().pinned);
+    // Another site's page is not where it goes back to.
+    let req = post(&format!("/ui/agents/{ada}/pin"))
+        .header(header::REFERER, "http://example.com/x")
+        .header(header::HOST, "127.0.0.1:8080")
+        .body(Body::from("pinned=on"))
+        .unwrap();
+    let (_, headers, _) = send(&app, req).await;
+    assert_eq!(headers[header::LOCATION], format!("/agents/{ada}"));
+    // The JSON API.
+    let (status, body) = post_json(
+        &app,
+        &format!("/api/agents/{ada}/pin"),
+        serde_json::json!({"pinned": false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["pinned"], false);
+    let (status, _) = post_json(
+        &app,
+        &format!("/api/agents/{ada}/icon"),
+        serde_json::json!({"shape": "nope", "color": "teal"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Fresh start: the chat goes on with a divider; its memory is gone.
+    let (_, _, html) = send(&app, htmx_post(&format!("{base}/fresh-start"), "")).await;
+    assert!(html.contains("memory is cleared"), "{html}");
+    let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
+    assert!(page.contains("<span>Fresh start</span>"), "{page}");
+
+    // Delete while it looks after an app: refused on its page, nothing removed.
     *store.0.lock().unwrap() = Some(ada.clone());
-    let del = format!("/ui/agents/{ada}/delete");
-    let (_, headers, html) = send(&app, htmx_post(&del, "")).await;
+    let del = format!("{base}/delete");
+    let mut req = htmx_post(&del, "");
+    req.headers_mut()
+        .insert("hx-target", "agent-settings".parse().unwrap());
+    let (_, headers, html) = send(&app, req).await;
     assert!(headers.get("hx-redirect").is_none());
     assert!(
-        html.contains("Ada still looks after nextcloud. Reassign or remove its apps first."),
+        html.contains("Reassign or remove its apps first."),
         "{html}"
     );
     assert!(lead.agents().get(&ada).is_some());
     // Free of apps: gone, and the page goes to Melissa's chat.
     *store.0.lock().unwrap() = None;
-    let (status, headers, _) = send(&app, htmx_post(&del, "")).await;
+    let mut req = htmx_post(&del, "");
+    req.headers_mut()
+        .insert("hx-target", "agent-settings".parse().unwrap());
+    let (status, headers, _) = send(&app, req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["hx-redirect"], "/");
     assert!(lead.agents().get(&ada).is_none());
-    // Without script: a redirect too.
-    let req = post("/ui/agents/Bo/delete").body(Body::empty()).unwrap();
-    let (status, headers, _) = send(&app, req).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(headers[header::LOCATION], "/");
-    assert!(lead.agents().get("Bo").is_none());
 }
 
 #[tokio::test]
@@ -264,7 +479,7 @@ async fn files_are_added_referenced_and_sent_from_the_panel() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("Added plan.txt."), "{html}");
     assert!(
-        html.contains("plan.txt") && html.contains(" · You<"),
+        html.contains("plan.txt") && html.contains("Uploaded in this conversation · "),
         "{html}"
     );
     assert!(html.contains("hx-swap-oob=\"true\">1<"), "{html}");
@@ -296,7 +511,7 @@ async fn files_are_added_referenced_and_sent_from_the_panel() {
     let bos = lead.files().list(&bo_box);
     assert_eq!(bos[0].by, AddedBy::Sent);
     let (_, _, page) = get_html(&app, &format!("/agents/{bo}")).await;
-    assert!(panel_of(&page).contains(" · From Ada<"), "{page}");
+    assert!(panel_of(&page).contains("From Ada · "), "{page}");
     // Move to Melissa: Ada's is gone.
     let (_, _, html) = send(&app, htmx_post(&send_url, "to=lead&mode=move")).await;
     assert!(html.contains("Moved plan.txt to Melissa."), "{html}");
@@ -429,15 +644,13 @@ async fn sent_files_and_status_update_the_open_panel() {
     .await;
     let frame = next_frame(&mut body).await;
     assert!(frame.contains("innerHTML:#file-box-body"), "{frame}");
-    assert!(frame.contains(" · From Ada<"), "{frame}");
+    assert!(frame.contains("From Ada · "), "{frame}");
 
-    // A turn starts: the panel's status is swapped too.
-    lead.events().push(LeadEvent::UserMessage {
-        turn: 1,
-        text: "hello".into(),
-        attachments: Vec::new(),
-        scheduled: None,
-    });
-    let frame = next_frame(&mut body).await;
-    assert!(frame.contains("innerHTML:#details-status"), "{frame}");
+    // A turn starts: the header's status is swapped too.
+    lead.send("hello").unwrap();
+    let mut frames = String::new();
+    while !frames.contains("innerHTML:#chat-status") {
+        frames.push_str(&next_frame(&mut body).await);
+    }
+    assert!(frames.contains("<span class=\"pill working\">"), "{frames}");
 }
