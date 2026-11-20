@@ -45,6 +45,9 @@ pub const CLAUDE_SESSION_STORE: &str = ".claude/projects";
 /// the request open), which is why the lead agent's `confirm_timeout_secs` stays below that.
 const MCP_TOOL_TIMEOUT_MS: &str = "960000";
 
+/// How long Claude Code actually waits for one MCP call (see [`MCP_TOOL_TIMEOUT_MS`]).
+pub const CLAUDE_TOOL_CALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Extra arguments a config may add (each followed by one value). Everything else is set by
 /// Melissa: permission mode, tools, MCP config and session flags must not be overridable.
 const ALLOWED_ARGS: &[&str] = &["--model", "--fallback-model", "--effort"];
@@ -565,6 +568,10 @@ impl SessionBackend for ClaudeBackend {
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {
         Box::pin(self.open_session(req))
+    }
+
+    fn tool_call_limit(&self) -> Option<std::time::Duration> {
+        Some(CLAUDE_TOOL_CALL_LIMIT)
     }
 }
 

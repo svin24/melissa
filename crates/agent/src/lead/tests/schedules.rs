@@ -191,3 +191,74 @@ async fn a_scheduled_job_wakes_its_agent_in_the_agents_own_chat() {
     assert!(run.detail.unwrap().contains("no agent"));
     s.close().await;
 }
+
+#[tokio::test]
+async fn a_scheduled_run_on_a_claude_like_backend_waits_less_and_its_time_limit_withdraws_requests()
+{
+    let mut script = handshake("s-1");
+    script.extend([
+        prompt(2, "s-1", "<contains:Nightly updates>"),
+        text("s-1", "Working on it"),
+        Step::send(
+            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s-1"}}),
+        ),
+        done(2, "cancelled"),
+    ]);
+    let s = setup("sched-limit", vec![script]);
+    assert_eq!(s.lead.scheduled_wait_cap(), None, "no backend with a limit");
+    // Its agent gives up on a tool call after 300 s, like Claude Code.
+    s.replay.set_limit(Some(Duration::from_secs(300)));
+    assert_eq!(s.lead.scheduled_wait_cap(), Some(Duration::from_secs(240)));
+    let schedules = Schedules::in_memory(TimeZone::UTC)
+        .with_audit(Some(AuditLog::new(s.dir.join("audit.jsonl"))));
+    let a = schedules
+        .create(
+            &input("Nightly updates", Principal::Lead, "Update all apps."),
+            &Creator::Owner,
+        )
+        .unwrap();
+    schedules.set_approval_wait(30, &Creator::Owner).unwrap();
+    let scheduler = s.lead.start_schedules(schedules.clone());
+    let turn = scheduler
+        .run_now(a.id, &Creator::Owner)
+        .unwrap()
+        .turn
+        .unwrap();
+    lead_event(&s, |e| matches!(e, LeadEvent::Text { .. })).await;
+    // The owner allowed 30 minutes, but the agent stops waiting after 300 s: 240 s it is.
+    let token = s.lead.inner.conv.token().unwrap();
+    assert_eq!(
+        s.server.session_context(&token).unwrap().confirm_wait,
+        Some(Duration::from_secs(240))
+    );
+    // A request of the run still waits; another chat's too.
+    let (_mine, rx) =
+        s.lead
+            .confirmations()
+            .request(s.lead.task_id(), "uninstall_app", &json!({}), "test");
+    let (other, _other_rx) =
+        s.lead
+            .confirmations()
+            .request(999, "uninstall_app", &json!({}), "test");
+    // What the run's time limit does when it runs out: cancel the turn through its runner.
+    let runner = crate::lead::schedules::LeadRunner {
+        lead: Arc::downgrade(&s.lead.inner),
+    };
+    crate::lead::schedules::Runner::cancel(&runner, &Principal::Lead, turn).await;
+    outcome(&schedules, a.id, Outcome::Cancelled).await;
+    assert!(rx.await.is_err(), "withdrawn when the run ended");
+    let pending: Vec<u64> = s
+        .lead
+        .confirmations()
+        .pending()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(pending, [other.id]);
+    s.close().await;
+    assert!(s
+        .audit_lines()
+        .iter()
+        .any(|l| l["action"] == "confirmation.withdrawn"
+            && l["detail"].as_str().unwrap().ends_with("the run ended")));
+}

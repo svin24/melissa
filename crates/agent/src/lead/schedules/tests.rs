@@ -866,3 +866,22 @@ async fn bad_arguments_fail_before_anyone_is_asked() {
     assert!(matches!(out, Err(ToolError::BadArgs(_))), "{out:?}");
     assert!(reg.confirmations().pending().is_empty());
 }
+
+#[test]
+fn a_scheduled_runs_wait_stops_before_its_backends_tool_call_limit() {
+    let min = |m: u64| std::time::Duration::from_secs(m * 60);
+    let claude = Some(crate::claude::CLAUDE_TOOL_CALL_LIMIT);
+    // Backends without a known limit (ACP agents, the echo backend): the owner's setting.
+    assert_eq!(super::effective_wait(min(10), None), min(10));
+    assert_eq!(super::effective_wait(min(1440), None), min(1440));
+    // Claude Code stops waiting after 300 s: at most a minute before that.
+    assert_eq!(super::effective_wait(min(10), claude), min(4));
+    assert_eq!(super::effective_wait(min(1440), claude), min(4));
+    // A shorter setting stays as it is.
+    assert_eq!(super::effective_wait(min(1), claude), min(1));
+    // A limit shorter than the margin still waits a moment.
+    assert_eq!(
+        super::effective_wait(min(10), Some(std::time::Duration::from_secs(30))),
+        std::time::Duration::from_secs(1)
+    );
+}

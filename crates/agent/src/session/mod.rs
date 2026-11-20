@@ -407,4 +407,11 @@ pub trait SessionBackend: Send + Sync {
     }
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>>;
+
+    /// How long the agent itself waits for one of Melissa's tool calls before it gives up,
+    /// when that is known to be shorter than Melissa's waits (Claude Code: about 300 s). A
+    /// confirmation must not outwait it. Default: none known.
+    fn tool_call_limit(&self) -> Option<std::time::Duration> {
+        None
+    }
 }

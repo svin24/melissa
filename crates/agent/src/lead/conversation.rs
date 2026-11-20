@@ -701,11 +701,16 @@ impl Conversation {
             }
         };
         // A scheduled turn runs unattended, and its confirmations wait as long as the owner
-        // set for scheduled runs; the others are as the conversation was set up.
+        // set for scheduled runs, but not past the backend's own tool-call limit (the agent
+        // would stop waiting first); the others are as the conversation was set up.
         let (unattended, wait) = {
             let t = lock(&self.inner.turn);
             (t.scheduled, t.confirm_wait)
         };
+        let limit = self
+            .backend(&live.backend)
+            .and_then(|b| b.tool_call_limit());
+        let wait = wait.map(|w| super::schedules::effective_wait(w, limit));
         self.inner
             .server
             .set_attended(&live.token, self.inner.spec.ctx.attended && !unattended);
@@ -1089,6 +1094,7 @@ impl Conversation {
         });
         // Released last, so the next turn's events come after this turn's end.
         drop(t);
+        self.withdraw_confirmations();
         // Files the agent saved in its box during the turn show up for the owner.
         let (files, owner) = (self.inner.spec.files.clone(), self.inner.spec.owner.clone());
         match tokio::runtime::Handle::try_current() {
@@ -1097,6 +1103,35 @@ impl Conversation {
             }
             Err(_) => {
                 files.sync(&owner);
+            }
+        }
+    }
+
+    /// The turn ended (finished, cancelled, timed out, failed): withdraw the conversation's
+    /// confirmations that still wait (audited `confirmation.withdrawn`, actor `melissa`).
+    /// Its agent is no longer waiting for them (Claude Code, for one, gives up on a tool call
+    /// after about 300 s and leaves it open), so an approval now would run an action for a
+    /// turn that moved on. Every confirmation of this conversation's task comes from its
+    /// agent's session, which asks only during a turn.
+    fn withdraw_confirmations(&self) {
+        let withdrawn = self
+            .inner
+            .server
+            .registry()
+            .confirmations()
+            .withdraw_task(self.inner.spec.task);
+        let Some(log) = &self.inner.audit else { return };
+        for c in withdrawn {
+            let record = AuditRecord::now(
+                "confirmation.withdrawn",
+                c.task,
+                "",
+                format!("confirmation {}: the run ended", c.id),
+            )
+            .by("melissa")
+            .with_tool(&c.tool, &crate::tools::args_hash(&c.args));
+            if let Err(e) = log.append(&record) {
+                tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
             }
         }
     }

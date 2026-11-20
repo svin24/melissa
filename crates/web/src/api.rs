@@ -143,7 +143,9 @@ async fn call_tool(
         Err(e @ ToolError::UnknownTool(_)) => error(StatusCode::NOT_FOUND, e),
         Err(e @ ToolError::BadArgs(_)) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
         Err(e @ (ToolError::Denied | ToolError::Refused(_))) => error(StatusCode::FORBIDDEN, e),
-        Err(e @ ToolError::ConfirmationTimeout) => error(StatusCode::REQUEST_TIMEOUT, e),
+        Err(e @ (ToolError::ConfirmationTimeout | ToolError::Withdrawn)) => {
+            error(StatusCode::REQUEST_TIMEOUT, e)
+        }
         Err(e @ ToolError::Failed(_)) => error(StatusCode::BAD_GATEWAY, e),
     }
 }

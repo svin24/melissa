@@ -485,6 +485,19 @@ impl Lead {
         self.events().transcript()?.past_chat(id)
     }
 
+    /// The longest a scheduled run's confirmation can wait on some usable backend that gives
+    /// up on tool calls sooner than Melissa would (today only Claude Code; see
+    /// [`schedules::effective_wait`]). None: no such backend, the owner's setting applies.
+    pub fn scheduled_wait_cap(&self) -> Option<std::time::Duration> {
+        self.inner
+            .backends
+            .iter()
+            .filter(|b| b.not_ready().is_none())
+            .filter_map(|b| b.tool_call_limit())
+            .map(|limit| schedules::effective_wait(std::time::Duration::MAX, Some(limit)))
+            .min()
+    }
+
     /// Start running `schedules` in this lead agent's conversations (its own chat and its
     /// agents'). Once: later calls return the scheduler already running. Must be called inside
     /// a Tokio runtime.

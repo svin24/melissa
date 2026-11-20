@@ -57,6 +57,9 @@ pub enum ToolError {
     Refused(String),
     #[error("confirmation timed out: nobody answered in time, so the request was withdrawn")]
     ConfirmationTimeout,
+    /// The request was taken back before anyone answered (its run ended, a new chat).
+    #[error("confirmation withdrawn: the run ended before anyone answered")]
+    Withdrawn,
     #[error("tool failed: {0}")]
     Failed(String),
 }
@@ -472,8 +475,12 @@ impl ToolRegistry {
         }
         let verdict = match tokio::time::timeout(wait.unwrap_or(self.confirm_timeout), rx).await {
             Ok(Ok(v)) => v,
-            // Store dropped the sender (shouldn't happen): treat as no.
-            Ok(Err(_)) => Verdict::Denied,
+            // Withdrawn without an answer (the run ended, a new chat; audited where it was
+            // withdrawn): the call does not run.
+            Ok(Err(_)) => {
+                self.audit(task, "tool.withdrawn", name, &hash, "");
+                return Err(ToolError::Withdrawn);
+            }
             Err(_) => {
                 self.audit(task, "tool.confirm_timeout", name, &hash, "");
                 return Err(ToolError::ConfirmationTimeout);

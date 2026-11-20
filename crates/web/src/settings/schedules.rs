@@ -139,6 +139,7 @@ fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesV
             available: true,
             zone: zone(s),
             wait: s.schedules().approval_wait_minutes().to_string(),
+            wait_note: wait_note(s.schedules().approval_wait(), ui.lead.scheduled_wait_cap()),
         },
         None => SchedulesView {
             rows: Vec::new(),
@@ -147,8 +148,20 @@ fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesV
             available: false,
             zone: String::new(),
             wait: DEFAULT_APPROVAL_WAIT_MINUTES.to_string(),
+            wait_note: None,
         },
     }
+}
+
+/// The wait card's note when a usable backend stops waiting before the owner's `setting`
+/// (`cap`: [`melissa_agent::lead::Lead::scheduled_wait_cap`]; only Claude Code has one).
+fn wait_note(setting: std::time::Duration, cap: Option<std::time::Duration>) -> Option<String> {
+    let cap = cap.filter(|c| *c < setting)?;
+    let minutes = ((cap.as_secs() + 30) / 60).max(1);
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    Some(format!(
+        "Claude-backed agents stop waiting after about {minutes} {unit}."
+    ))
 }
 
 #[derive(Deserialize, Default)]
@@ -701,5 +714,29 @@ pub(super) async fn api_remove(State(ui): State<Ui>, Path(id): Path<u64>) -> Res
         Ok(Some(s)) => Json(schedule_json(&ui, sched, &s)).into_response(),
         Ok(None) => schedule_error(&ScheduleError::NotFound(id)),
         Err(e) => schedule_error(&e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::wait_note;
+
+    #[test]
+    fn the_wait_note_shows_only_when_some_agents_stop_waiting_sooner() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(wait_note(min(10), None), None);
+        assert_eq!(
+            wait_note(min(10), Some(Duration::from_secs(240))).as_deref(),
+            Some("Claude-backed agents stop waiting after about 4 minutes.")
+        );
+        // The owner's wait is shorter anyway: nothing to say.
+        assert_eq!(wait_note(min(3), Some(Duration::from_secs(240))), None);
+        assert_eq!(wait_note(min(4), Some(Duration::from_secs(240))), None);
+        assert_eq!(
+            wait_note(min(10), Some(Duration::from_secs(50))).as_deref(),
+            Some("Claude-backed agents stop waiting after about 1 minute.")
+        );
     }
 }

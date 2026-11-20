@@ -747,6 +747,8 @@ pub struct SchedulesView {
     pub zone: String,
     /// Minutes a scheduled run's request waits for the owner.
     pub wait: String,
+    /// When some agents stop waiting sooner (their backend's own limit), saying so.
+    pub wait_note: Option<String>,
 }
 
 pub fn schedules_page(f: &Frame<'_>, v: &SchedulesView) -> Markup {
@@ -808,6 +810,7 @@ pub fn schedules_region(v: &SchedulesView) -> Markup {
                     (settings_form("/ui/settings/schedules/wait", SCHEDULES_ID, "Save", html! {
                         (text_field("minutes", "Wait for your answer (minutes)", &v.wait, "10", "number", Some("Then the request is turned down and the run goes on without it. 1 to 1440 minutes (a day).")))
                     }))
+                    @if let Some(n) = &v.wait_note { (notice(n, Tone::Muted)) }
                 }))
             } @else {
                 (notice("Schedules don't run on this device.", Tone::Muted))
