@@ -880,3 +880,53 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   Alternatives: keep the hard refusal and make the agent ask the user in chat (no way to authorize a single
   call); a `cross_owner: true` argument on every tool (the agent decides when to ask, more surface); allow reads
   of others' status (an agent would keep using them to guess which app is its own).
+- **2026-11-20 — Agents read the open web, read-only, through Melissa's egress proxy (owner decision).** Any public
+  page may be fetched, every fetch is audited, and reading taints the task (the existing untrusted-content rule:
+  afterwards its changes need the owner's OK; further reads do not, see below). Server config `[egress]
+  web_read = true` (default); `false` restores allowlist-only egress. Design: a "web read" class in the proxy
+  next to each backend's API allowlist (which keeps its own limits). HTTPS: `CONNECT` to any host on port 443
+  whose addresses, resolved by the proxy, are public; the proxy connects only to the addresses it checked (no
+  second lookup, so DNS rebinding cannot reach the LAN); loopback, RFC 1918 (incl. k3s 10.42/16 and 10.43/16),
+  link-local/metadata, CGNAT/tailnet, ULA, IPv4 hidden in IPv6, and local names (`localhost`, single labels,
+  `.local`, `.lan`, `.internal`, `.home.arpa`, `.ts.net`) are refused. HTTP: plain forward requests to port
+  80, `GET`/`HEAD` only, no body (`Content-Length` > 0, `Transfer-Encoding`, `Expect` refused), rewritten to
+  origin form with `Connection: close`; nothing the client sends after the head is relayed. Inside a TLS tunnel
+  methods are invisible, so read-only is approximated by caps per web tunnel: 64 KiB upload (a TLS handshake
+  plus request headers is ~2 KiB; HTTP/2 window updates for a 32 MiB download stay well under 16 KiB), 32 MiB
+  download, 120 s lifetime, 30 s idle; the tunnel closes at a cap and the audit says which. Each CLI's known
+  background hosts (Mixpanel, grok.com, Datadog intake, the npm registry; `egress::default_deny`) stay denied:
+  they would otherwise pass as web reads and taint every task at start. Audit: `egress.allow host:443 -> addr
+  (web read)` at open, `egress.web CONNECT host:443: N B up, M B down, T s[; closed: why]` (plain HTTP: `GET
+  http://host/path`) at close; refusals as `egress.deny` with the reason, and the 403 body says `blocked by
+  Melissa's network policy: host:port: reason`. Taint: the proxy taints the sandbox's MCP sessions when a web
+  tunnel opens (source `web`, the host); the permission layer also taints on every allowed fetch (covers
+  server-side search tools whose content never passes the proxy). Fetch permissions: the backend tells the
+  handler how its agent reaches the web (`WebAccess`); a fetch to a private address, a local name, another
+  port, with web reading off or with no network is refused with that reason (audited) instead of failing later
+  inside the CLI; behind the proxy a fetch is labelled untrusted but not egress, so reading on in a tainted
+  task needs no OK (the proxy, not the policy, keeps it read-only); with the host network the old labels apply.
+  Grok: its `web_fetch` ignores `HTTPS_PROXY` (verified, grok 1.0.89), so the sandbox sets
+  `GROK_WEB_FETCH_PROXY`; it also resolves the name itself first (an SSRF check in a static musl binary:
+  `/etc/resolv.conf` and UDP 53, no NSS) and failed with "DNS resolution failed". Fix: a DNS sinkhole per
+  sandbox that answers every A query with one placeholder, 192.88.99.53, and every other query with no
+  records; nothing is forwarded, so DNS is not a channel out. The placeholder must look public (Grok refused
+  203.0.113.53 as "private/internal"); 192.88.99.0/24 is the deprecated 6to4 relay anycast prefix (RFC 7526):
+  no legitimate destination, no route from the sandbox, and the proxy treats it as non-public. Port 53 cannot
+  be bound inside: bwrap's `--dev` puts the sandbox in a nested user namespace where no capability counts for
+  its network namespace (verified: `--cap-add CAP_NET_BIND_SERVICE` binds without `--dev`, not with it). The
+  lead agent owns the outer namespace, so `melissa-netbridge` creates an unbound UDP socket inside, hands it to
+  the lead agent over `dns.sock` (`SCM_RIGHTS`, safe rustix), and the lead agent binds it to 127.0.0.1:53 and
+  answers on it; the lease's `resolv.conf` (`nameserver 127.0.0.1`) is bound over the host's (or over its link
+  target under `/run`). One hand-over per sandbox. Verified live: grok-acp in the container fetches
+  https://example.com, github.com (redirects) and http pages; opencode-acp on the laptop (Bun honours
+  `HTTPS_PROXY`) fetches https and plain http; a name resolving to 10.0.0.1 and private literals are refused.
+  Residual risk: a hijacked agent can still carry data out in URLs, query strings and request headers (up to the
+  upload cap per tunnel, any number of tunnels) to any public host it chooses; the proxy cannot see inside TLS.
+  Mitigations: taint (its changes need the owner), the audit of every host and byte count, no request bodies
+  over plain HTTP, the upload cap, no private destinations, no DNS channel; per-task budgets or a
+  destination list for tainted tasks are open (PLAN open question 73). Web reads are also open to any process
+  in the sandbox (e.g. an approved shell command's `curl`), not only to fetch tools. Alternatives: an allowlist
+  of sites (rejected by the owner: open web wanted), TLS interception to see methods and bodies (CA per CLI,
+  sees secrets), a permission-time `/etc/hosts` entry for the fetched host instead of DNS (breaks cross-host
+  redirects), a fake systemd-resolved varlink socket (works for glibc NSS only; Grok is musl), dropping
+  `--dev` so the bridge can bind port 53 (Grok uses ptys: `portable-pty`).

@@ -278,6 +278,18 @@ pub(crate) fn network_label(sandbox: &SandboxSpec) -> String {
     }
 }
 
+/// How an agent in `sandbox` reaches the web, for its permission handler.
+pub(crate) fn web_access(
+    sandbox: &SandboxSpec,
+    egress: Option<&EgressProxy>,
+) -> crate::session::WebAccess {
+    crate::session::WebAccess::for_network(
+        sandbox.enabled,
+        sandbox.network,
+        egress.map(EgressProxy::web_read),
+    )
+}
+
 /// Open the egress sockets for one sandboxed run. `None`: no bridge needed (host network,
 /// no sandbox, or `network = "none"` without MCP). Fails closed: a mode that needs the
 /// proxy and has none is an error, never a fallback to the host network.
@@ -314,6 +326,7 @@ pub(crate) fn open_egress(
             task,
             mode: sandbox.network,
             allow,
+            deny: crate::egress::default_deny(command),
             mcp_tokens,
         })
         .map_err(|e| AgentError::Unavailable(e.to_string()))?;

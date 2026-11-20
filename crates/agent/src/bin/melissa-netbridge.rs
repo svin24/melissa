@@ -4,32 +4,45 @@
 //! to a Unix socket that the lead agent serves (the egress proxy, Melissa's MCP endpoint), then
 //! runs the agent CLI as its child with the same stdio and exits with the child's status.
 //!
-//! Usage: `melissa-netbridge [--tcp <addr>=<unix socket>]... -- <program> [args...]`
+//! Usage: `melissa-netbridge [--tcp <addr>=<unix socket>]... [--dns <unix socket>] -- <program> [args...]`
+//!
+//! `--dns`: before the CLI starts, create an unbound UDP socket in the sandbox and hand it
+//! to the lead agent over that Unix socket; the lead agent binds it to `127.0.0.1:53` (it
+//! owns the sandbox's network namespace, the sandbox cannot bind port 53) and answers every
+//! name with a placeholder (`melissa_agent::egress::dns`). Failure only costs DNS.
 //!
 //! It enforces nothing itself: the policy lives lead-side, behind the sockets. It never
 //! writes to stdout (an ACP agent speaks JSON-RPC there).
 
-use std::{ffi::OsString, net::SocketAddr, path::PathBuf, process::ExitCode};
+use std::{
+    ffi::OsString,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use tokio::{
     net::{TcpListener, UnixStream},
     signal::unix::{signal, SignalKind},
 };
 
-const USAGE: &str =
-    "usage: melissa-netbridge [--tcp <addr>=<unix socket>]... -- <program> [args...]";
+const USAGE: &str = "usage: melissa-netbridge [--tcp <addr>=<unix socket>]... \
+                     [--dns <unix socket>] -- <program> [args...]";
 /// Exit code for the bridge's own setup failures (like `env`/`timeout`).
 const SETUP_FAILED: u8 = 125;
 
 #[derive(Debug, PartialEq)]
 struct Args {
     ports: Vec<(SocketAddr, PathBuf)>,
+    /// Where to hand the sandbox's DNS socket to the lead agent.
+    dns: Option<PathBuf>,
     program: OsString,
     args: Vec<OsString>,
 }
 
 fn parse(argv: Vec<OsString>) -> Result<Args, String> {
     let mut ports = Vec::new();
+    let mut dns = None;
     let mut it = argv.into_iter();
     loop {
         let Some(arg) = it.next() else {
@@ -53,12 +66,16 @@ fn parse(argv: Vec<OsString>) -> Result<Args, String> {
                 }
                 ports.push((addr, PathBuf::from(path)));
             }
+            Some("--dns") => {
+                dns = Some(PathBuf::from(it.next().ok_or("--dns needs <unix socket>")?));
+            }
             _ => return Err(format!("unexpected argument {arg:?}")),
         }
     }
     let program = it.next().ok_or("missing program after `--`")?;
     Ok(Args {
         ports,
+        dns,
         program,
         args: it.collect(),
     })
@@ -72,6 +89,11 @@ fn main() -> ExitCode {
             return ExitCode::from(SETUP_FAILED);
         }
     };
+    if let Some(path) = &args.dns {
+        if let Err(e) = lend_dns_socket(path) {
+            eprintln!("melissa-netbridge: no DNS inside the sandbox: {e}");
+        }
+    }
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -83,6 +105,40 @@ fn main() -> ExitCode {
         }
     };
     rt.block_on(run(args))
+}
+
+/// Create an unbound UDP socket here (in the sandbox's network namespace) and pass it to the
+/// lead agent over `path`, which binds it to port 53 and answers on it.
+fn lend_dns_socket(path: &Path) -> std::io::Result<()> {
+    use std::{
+        io::{IoSlice, Read},
+        mem::MaybeUninit,
+        os::fd::AsFd,
+    };
+
+    use rustix::net::{AddressFamily, SendAncillaryBuffer, SendAncillaryMessage, SocketType};
+
+    let udp = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)?;
+    let mut unix = std::os::unix::net::UnixStream::connect(path)?;
+    unix.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = SendAncillaryBuffer::new(&mut space);
+    let fds = [udp.as_fd()];
+    if !control.push(SendAncillaryMessage::ScmRights(&fds)) {
+        return Err(std::io::Error::other("control buffer too small"));
+    }
+    rustix::net::sendmsg(
+        &unix,
+        &[IoSlice::new(b"dns")],
+        &mut control,
+        rustix::net::SendFlags::empty(),
+    )?;
+    let mut ack = [0u8; 1];
+    unix.read_exact(&mut ack)?;
+    match ack[0] {
+        melissa_agent::egress::dns::HANDOFF_OK => Ok(()),
+        _ => Err(std::io::Error::other("the lead agent could not bind it")),
+    }
 }
 
 async fn run(args: Args) -> ExitCode {
@@ -207,6 +263,9 @@ mod tests {
         assert_eq!(a.args, os(&["-p", "--tcp"]));
         let none = parse(os(&["--", "x"])).unwrap();
         assert!(none.ports.is_empty());
+        assert_eq!(none.dns, None);
+        let dns = parse(os(&["--dns", "/run/melissa-net/dns.sock", "--", "x"])).unwrap();
+        assert_eq!(dns.dns, Some(PathBuf::from("/run/melissa-net/dns.sock")));
     }
 
     #[test]
@@ -220,6 +279,7 @@ mod tests {
             &["--tcp", "0.0.0.0:1=/s", "--", "x"],
             &["--tcp", "10.0.0.1:1=/s", "--", "x"],
             &["--tcp", "nope=/s", "--", "x"],
+            &["--dns"],
         ] {
             assert!(parse(os(bad)).is_err(), "{bad:?}");
         }

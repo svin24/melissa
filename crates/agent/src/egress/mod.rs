@@ -5,11 +5,15 @@
 //! connection over a Unix socket that is bound into the sandbox; the lead agent side of each
 //! socket is served here:
 //!
-//! - `egress.sock`: an HTTP `CONNECT` proxy (no TLS interception). A tunnel is opened only
-//!   to hosts on the backend's allowlist (default port 443), resolved by the lead agent, and only
-//!   to public addresses (no loopback, LAN, link-local, CGNAT/tailnet, multicast; checked
-//!   after resolution, so DNS rebinding cannot reach the LAN). Every decision is audited
-//!   (`egress.allow` / `egress.deny` / `egress.error`, host and port, never payload).
+//! - `egress.sock`: an HTTP proxy (no TLS interception). A `CONNECT` tunnel is opened to
+//!   hosts on the backend's allowlist (default port 443) with the backend's limits, and, if
+//!   web reading is on ([`WebRead`]), to any other public host on port 443 with read-only
+//!   caps; plain `GET`/`HEAD` forward requests reach public hosts on port 80. Names are
+//!   resolved by the lead agent and only public addresses are connected to (no loopback, LAN,
+//!   link-local, CGNAT/tailnet, multicast; checked after resolution, so DNS rebinding cannot
+//!   reach the LAN). Every decision is audited (`egress.allow` / `egress.deny` /
+//!   `egress.error`, host and port, never payload; `egress.web` with the bytes of each web
+//!   read), and a web read taints the sandbox's task.
 //! - `mcp.sock`: Melissa's MCP endpoint, and nothing else: only `POST /mcp/<token>` for the
 //!   session tokens given to this sandbox.
 //!
@@ -18,9 +22,11 @@
 //! sockets and every open tunnel.
 
 mod addr;
+pub mod dns;
 mod mcp;
 mod relay;
 mod rules;
+mod web;
 
 use std::{
     collections::HashMap,
@@ -43,12 +49,22 @@ pub use rules::{
     allowed, head_end, normalize_host, parse_request, BadRequest, BadRule, HostRule, ProxyRequest,
     DEFAULT_PORT,
 };
+pub use web::{local_name, url_target, WebRead};
 
-use crate::{mcp::McpServer, sandbox::Bridge, AuditLog, AuditRecord, TaskId};
+use crate::{
+    mcp::{McpServer, TaintSource},
+    sandbox::Bridge,
+    AuditLog, AuditRecord, TaskId,
+};
+use relay::RelayLimits;
 
 /// Socket file names inside a lease directory (and inside the sandbox).
 pub const EGRESS_SOCKET: &str = "egress.sock";
 pub const MCP_SOCKET: &str = "mcp.sock";
+/// Where the bridge hands over the sandbox's DNS socket ([`dns`]).
+pub const DNS_SOCKET: &str = "dns.sock";
+/// The sandbox's `/etc/resolv.conf` (names the sinkhole), in each lease directory.
+pub const RESOLV_CONF: &str = "resolv.conf";
 /// Name of the bridge binary, installed next to `melissa-server`.
 pub const NETBRIDGE: &str = "melissa-netbridge";
 /// Loopback port of the proxy inside the sandbox (the MCP port is the lead agent's own).
@@ -104,6 +120,30 @@ pub fn default_allow(command: &str) -> Vec<String> {
     hosts.iter().map(|h| (*h).to_string()).collect()
 }
 
+/// Hosts an agent CLI contacts on its own (analytics, telemetry, update checks), denied even
+/// when web reading is on: they are not pages the agent reads, they would taint every task
+/// at start, and they were denied before web reading existed. From the same learn-mode runs
+/// as [`default_allow`] ("seen and denied" in docs/agent-skills/agent-egress.md).
+pub fn default_deny(command: &str) -> Vec<HostRule> {
+    let name = Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let hosts: &[&str] = match name {
+        // Datadog log intake.
+        "claude" => &["*.datadoghq.com"],
+        // ~40 retries each per prompt; Grok works without them.
+        "grok" => &["grok.com", "api.mixpanel.com"],
+        // Update check of the npm-installed OpenCode.
+        "opencode" => &["registry.npmjs.org"],
+        _ => &[],
+    };
+    hosts
+        .iter()
+        .filter_map(|h| HostRule::parse(h).ok())
+        .collect()
+}
+
 /// Limits per sandbox and per connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressLimits {
@@ -148,6 +188,22 @@ struct ProxyInner {
     limits: EgressLimits,
     /// Fixed name → address mappings that bypass DNS and the public-address check.
     overrides: HashMap<String, Vec<IpAddr>>,
+    /// Fixed name → address answers in place of DNS; the public-address check still
+    /// applies (tests: a name that resolves to the LAN).
+    answers: HashMap<String, Vec<IpAddr>>,
+    web: WebRead,
+}
+
+impl ProxyInner {
+    fn web_relay_limits(&self) -> RelayLimits {
+        RelayLimits {
+            idle: self.web.idle_timeout,
+            max_bytes: self.limits.max_bytes,
+            max_up: self.web.max_upload,
+            max_down: self.web.max_download,
+            lifetime: Some(self.web.max_duration),
+        }
+    }
 }
 
 /// The lead agent side of every sandbox's network. Cheap to clone.
@@ -164,6 +220,9 @@ pub struct EgressRequest {
     /// `Proxy`, `Learn` or `None` (`Host` needs no lease).
     pub mode: NetworkMode,
     pub allow: Vec<HostRule>,
+    /// Hosts never reached by web reading (the CLI's own background traffic,
+    /// [`default_deny`]); the allowlist still wins.
+    pub deny: Vec<HostRule>,
     /// MCP session tokens this sandbox may use (empty: no MCP socket).
     pub mcp_tokens: Vec<String>,
 }
@@ -229,6 +288,8 @@ impl EgressProxy {
                 netbridge: find_netbridge(),
                 limits: EgressLimits::default(),
                 overrides: HashMap::new(),
+                answers: HashMap::new(),
+                web: WebRead::default(),
             }),
         })
     }
@@ -265,6 +326,27 @@ impl EgressProxy {
         self
     }
 
+    /// Answer DNS lookups of `host` with `addrs`; unlike [`Self::with_resolver_override`],
+    /// the public-address check still applies.
+    #[cfg(test)]
+    pub(crate) fn with_resolver_answer(mut self, host: &str, addrs: Vec<IpAddr>) -> Self {
+        if let Some(host) = normalize_host(host) {
+            self.inner_mut().answers.insert(host, addrs);
+        }
+        self
+    }
+
+    /// Let sandboxes read the open web (see [`WebRead`]); off unless set.
+    pub fn with_web_read(mut self, web: WebRead) -> Self {
+        self.inner_mut().web = web;
+        self
+    }
+
+    /// The web read settings.
+    pub fn web_read(&self) -> &WebRead {
+        &self.inner.web
+    }
+
     pub fn netbridge(&self) -> Option<&Path> {
         self.inner.netbridge.as_deref()
     }
@@ -280,6 +362,7 @@ impl EgressProxy {
         };
         let mut ports = Vec::new();
         let mut proxy = None;
+        let mut dns = None;
         let ctx = Arc::new(LeaseCtx::new(self.inner.clone(), req));
 
         let mcp = match (&self.inner.mcp, ctx.req.mcp_tokens.is_empty()) {
@@ -298,6 +381,14 @@ impl EgressProxy {
             lease._tasks.spawn(serve_proxy(listener, ctx.clone()));
             ports.push((addr, EGRESS_SOCKET.to_string()));
             proxy = Some(addr);
+            // Names resolve inside the sandbox (to a placeholder) for CLIs that look a name up
+            // before they use the proxy; the proxy does the real lookup.
+            let listener = UnixListener::bind(dir.join(DNS_SOCKET))?;
+            lease
+                ._tasks
+                .spawn(dns::serve_handoff(listener, dns::DNS_ADDR));
+            std::fs::write(dir.join(RESOLV_CONF), dns::RESOLV_CONF_TEXT)?;
+            dns = Some(DNS_SOCKET.to_string());
         }
         if let Some((server, addr)) = mcp {
             let listener = UnixListener::bind(dir.join(MCP_SOCKET))?;
@@ -318,6 +409,7 @@ impl EgressProxy {
                 socket_dir: dir,
                 ports,
                 proxy,
+                dns,
                 runtime,
             });
         }
@@ -471,8 +563,25 @@ impl LeaseCtx {
         self.audit("egress.deny", detail);
     }
 
+    /// The sandbox's agent is reading `host` (web read): taint every MCP session it holds,
+    /// so its later actions and changes need the owner's OK.
+    fn taint(&self, host: &str) {
+        let Some((server, _)) = &self.proxy.mcp else {
+            return;
+        };
+        for token in &self.req.mcp_tokens {
+            server.taint_session_with(
+                token,
+                TaintSource {
+                    tool: Some("web".into()),
+                    subject: Some(host.to_string()),
+                },
+            );
+        }
+    }
+
     fn audit(&self, action: &str, detail: String) {
-        let level_deny = action != "egress.allow";
+        let level_deny = !matches!(action, "egress.allow" | "egress.web");
         if level_deny {
             tracing::info!(backend = %self.req.backend, task = self.req.task, "{action} {detail}");
         } else {
@@ -522,7 +631,7 @@ async fn serve_proxy(listener: UnixListener, ctx: Arc<LeaseCtx>) {
 
 /// Outcome of a request, before any bytes are relayed.
 enum Decision {
-    Tunnel(TcpStream, String),
+    Tunnel(TcpStream, String, Class),
     Refuse(&'static str, String),
 }
 
@@ -536,77 +645,182 @@ async fn handle_proxy(mut stream: UnixStream, ctx: Arc<LeaseCtx>) {
             return;
         }
     };
-    let (host, port) = match parse_request(&head) {
-        Ok(ProxyRequest::Connect { host, port }) => (host, port),
+    let (host, port, forward) = match parse_request(&head) {
+        Ok(ProxyRequest::Connect { host, port }) => (host, port, None),
         Ok(ProxyRequest::Other { method, target }) => {
-            let target: String = target.chars().take(200).collect();
-            ctx.deny(format!(
-                "{method} {target}: only CONNECT (HTTPS) is proxied"
-            ));
-            let _ = respond(&mut stream, "403 Forbidden", "only CONNECT is allowed").await;
-            return;
+            let shown: String = target.chars().take(200).collect();
+            if !ctx.proxy.web.enabled {
+                ctx.deny(format!("{method} {shown}: only CONNECT (HTTPS) is proxied"));
+                let reason = "only HTTPS (CONNECT) to allowlisted hosts; web reading is off";
+                let _ = refuse(&mut stream, "403 Forbidden", &shown, reason).await;
+                return;
+            }
+            match web::forward_request(&method, &target, &head) {
+                Ok(f) => (f.host.clone(), f.port, Some(f)),
+                Err(e) => {
+                    ctx.deny(format!("{method} {shown}: {e}"));
+                    let _ = refuse(&mut stream, "403 Forbidden", &shown, &e.to_string()).await;
+                    return;
+                }
+            }
         }
         Err(_) => {
             let _ = respond(&mut stream, "400 Bad Request", "bad request").await;
             return;
         }
     };
+    let target = format!("{host}:{port}");
     let Ok(_slot) = ctx.slots.clone().try_acquire_owned() else {
         let max = limits.max_connections;
-        ctx.deny(format!(
-            "{host}:{port}: too many open connections (max {max})"
-        ));
-        let _ = respond(&mut stream, "429 Too Many Requests", "too many connections").await;
+        ctx.deny(format!("{target}: too many open connections (max {max})"));
+        let reason = format!("too many open connections (max {max})");
+        let _ = refuse(&mut stream, "429 Too Many Requests", &target, &reason).await;
         return;
     };
-    match decide(&ctx, &host, port).await {
+    match decide(&ctx, &host, port, forward.is_some()).await {
         Decision::Refuse(status, reason) => {
-            ctx.deny(format!("{host}:{port}: {reason}"));
-            let _ = respond(&mut stream, status, &reason).await;
+            ctx.deny(format!("{target}: {reason}"));
+            let _ = refuse(&mut stream, status, &target, &reason).await;
         }
-        Decision::Tunnel(mut upstream, detail) => {
-            ctx.audit("egress.allow", format!("{host}:{port} -> {detail}"));
-            if stream
-                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                .await
-                .is_err()
-            {
-                return;
+        Decision::Tunnel(mut upstream, detail, class) => {
+            if class == Class::Web {
+                // The agent is about to read a page anyone can write: from now on its task
+                // counts as having read untrusted content.
+                ctx.taint(&host);
             }
-            if !rest.is_empty() && upstream.write_all(&rest).await.is_err() {
-                return;
+            ctx.audit("egress.allow", format!("{target} -> {detail}"));
+            let relay_limits = match class {
+                Class::Web => ctx.proxy.web_relay_limits(),
+                Class::Api | Class::Learn => RelayLimits {
+                    idle: limits.idle_timeout,
+                    max_bytes: limits.max_bytes,
+                    max_up: u64::MAX,
+                    max_down: u64::MAX,
+                    lifetime: None,
+                },
+            };
+            let started = std::time::Instant::now();
+            let (what, stats) = match forward {
+                Some(f) => {
+                    // One request, no body: the head goes up, then only the answer comes back.
+                    // Whatever the client sends after the head is never read.
+                    if upstream.write_all(&f.head).await.is_err() {
+                        return;
+                    }
+                    let mut stats = relay::relay_down(upstream, stream, relay_limits).await;
+                    stats.up = f.head.len() as u64;
+                    (format!("{} {}", f.method, f.url), stats)
+                }
+                None => {
+                    if stream
+                        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    if !rest.is_empty() && upstream.write_all(&rest).await.is_err() {
+                        return;
+                    }
+                    let mut stats = relay::relay_with(stream, upstream, relay_limits).await;
+                    stats.up += rest.len() as u64;
+                    (format!("CONNECT {target}"), stats)
+                }
+            };
+            let secs = started.elapsed().as_secs_f32();
+            let (up, down) = (stats.up, stats.down);
+            tracing::debug!(backend = %ctx.req.backend, "egress {what} closed: {up} B up, {down} B down");
+            if class == Class::Web {
+                let mut detail = format!("{what}: {up} B up, {down} B down, {secs:.1} s");
+                if let Some(why) = stats.end.reason(&relay_limits) {
+                    detail.push_str(&format!("; closed: {why}"));
+                }
+                ctx.audit("egress.web", detail);
             }
-            let (up, down) =
-                relay::relay(stream, upstream, limits.idle_timeout, limits.max_bytes).await;
-            tracing::debug!(backend = %ctx.req.backend, "egress {host}:{port} closed: {up} B up, {down} B down");
         }
     }
 }
 
-async fn decide(ctx: &LeaseCtx, host: &str, port: u16) -> Decision {
-    let in_list = allowed(&ctx.req.allow, host, port);
+/// Which rules a tunnel falls under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    /// On the backend's allowlist (its model API, login): the backend's own limits.
+    Api,
+    /// `network = "learn"`: any public host, logged, no extra limits.
+    Learn,
+    /// Web reading: any public host on the web ports, read-only caps, taints the task.
+    Web,
+}
+
+async fn decide(ctx: &LeaseCtx, host: &str, port: u16, http: bool) -> Decision {
+    let web = &ctx.proxy.web;
+    let in_list = !http && allowed(&ctx.req.allow, host, port);
     let learn = ctx.req.mode == NetworkMode::Learn;
-    if !in_list && !learn {
+    let web_ports = if http {
+        &web.http_ports
+    } else {
+        &web.https_ports
+    };
+    let class = if in_list {
+        Class::Api
+    } else if learn && !http {
+        Class::Learn
+    } else if allowed(&ctx.req.deny, host, DEFAULT_PORT) {
+        return Decision::Refuse(
+            "403 Forbidden",
+            "not in the allowlist (background traffic of the agent program)".into(),
+        );
+    } else if web.enabled && web_ports.contains(&port) {
+        Class::Web
+    } else if web.enabled {
+        let open = |ports: &[u16]| {
+            ports
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Decision::Refuse(
+            "403 Forbidden",
+            format!(
+                "port {port} is not open for web reading (HTTPS: {}, HTTP: {})",
+                open(&web.https_ports),
+                open(&web.http_ports)
+            ),
+        );
+    } else {
         return Decision::Refuse("403 Forbidden", "not in the allowlist".into());
+    };
+    if class == Class::Web && web::local_name(host) {
+        return Decision::Refuse(
+            "403 Forbidden",
+            "a local name; web reading reaches public hosts only".into(),
+        );
     }
-    let note = match (learn, in_list) {
-        (true, true) => " (learn: in the allowlist)",
-        (true, false) => " (learn: NOT in the allowlist)",
+    let note = match (class, learn, in_list) {
+        (Class::Web, _, _) => " (web read)",
+        (_, true, true) => " (learn: in the allowlist)",
+        (_, true, false) => " (learn: NOT in the allowlist)",
         _ => "",
     };
     let addrs: Vec<SocketAddr> = match ctx.proxy.overrides.get(host) {
         Some(ips) => ips.iter().map(|ip| SocketAddr::new(*ip, port)).collect(),
         None => {
-            let resolved = match tokio::time::timeout(
-                ctx.proxy.limits.connect_timeout,
-                tokio::net::lookup_host((host, port)),
-            )
-            .await
-            {
-                Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
-                Ok(Err(e)) => return Decision::Refuse("502 Bad Gateway", format!("dns: {e}")),
-                Err(_) => return Decision::Refuse("504 Gateway Timeout", "dns timeout".into()),
+            let resolved = match ctx.proxy.answers.get(host) {
+                Some(ips) => ips.iter().map(|ip| SocketAddr::new(*ip, port)).collect(),
+                None => match tokio::time::timeout(
+                    ctx.proxy.limits.connect_timeout,
+                    tokio::net::lookup_host((host, port)),
+                )
+                .await
+                {
+                    Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
+                    Ok(Err(e)) => return Decision::Refuse("502 Bad Gateway", format!("dns: {e}")),
+                    Err(_) => return Decision::Refuse("504 Gateway Timeout", "dns timeout".into()),
+                },
             };
+            // Only the addresses checked here are ever connected to (no second lookup), so
+            // a name that rebinds to the LAN between check and connect cannot get there.
             let public: Vec<SocketAddr> = resolved
                 .iter()
                 .copied()
@@ -617,7 +831,7 @@ async fn decide(ctx: &LeaseCtx, host: &str, port: u16) -> Decision {
                 return Decision::Refuse(
                     "403 Forbidden",
                     format!(
-                        "resolves only to non-public addresses ({})",
+                        "resolves only to non-public addresses ({}); only public hosts are reachable",
                         shown.join(", ")
                     ),
                 );
@@ -638,7 +852,7 @@ async fn decide(ctx: &LeaseCtx, host: &str, port: u16) -> Decision {
     match tokio::time::timeout(ctx.proxy.limits.connect_timeout, connect).await {
         Ok(Ok((stream, addr))) => {
             let _ = stream.set_nodelay(true);
-            Decision::Tunnel(stream, format!("{addr}{note}"))
+            Decision::Tunnel(stream, format!("{addr}{note}"), class)
         }
         Ok(Err(e)) => {
             ctx.audit(
@@ -676,8 +890,24 @@ async fn read_head(stream: &mut UnixStream) -> std::io::Result<(Vec<u8>, Vec<u8>
     }
 }
 
-async fn respond(stream: &mut UnixStream, status: &str, reason: &str) -> std::io::Result<()> {
-    let body = format!("melissa egress: {reason}\n");
+/// Refuse a request with a plain-text reason the agent (and its user) can act on. A 403 is
+/// always the policy's answer and says so.
+async fn refuse(
+    stream: &mut UnixStream,
+    status: &str,
+    target: &str,
+    reason: &str,
+) -> std::io::Result<()> {
+    let text = if status.starts_with("403") {
+        format!("blocked by Melissa's network policy: {target}: {reason}")
+    } else {
+        format!("Melissa's egress proxy: {target}: {reason}")
+    };
+    respond(stream, status, &text).await
+}
+
+async fn respond(stream: &mut UnixStream, status: &str, text: &str) -> std::io::Result<()> {
+    let body = format!("{text}\n");
     let msg = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()

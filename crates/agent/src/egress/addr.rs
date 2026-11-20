@@ -27,6 +27,9 @@ fn v4_public(ip: Ipv4Addr) -> bool {
         || (a == 100 && (b & 0xc0) == 64) // CGNAT 100.64.0.0/10 (Tailscale, carrier NAT)
         || (a == 192 && b == 0 && c == 0) // IETF protocol assignments 192.0.0.0/24
         || (a == 198 && (b & 0xfe) == 18) // benchmarking 198.18.0.0/15
+        // 6to4 relay anycast 192.88.99.0/24 (deprecated, RFC 7526); also the sandbox's DNS
+        // placeholder (`egress::dns::PLACEHOLDER`), which must never be connected to.
+        || (a == 192 && b == 88 && c == 99)
         || a >= 240; // reserved 240.0.0.0/4
     !special
 }
@@ -80,6 +83,7 @@ mod tests {
             "192.0.0.8",
             "192.0.2.1",
             "198.18.0.1",
+            "192.88.99.53",
             "198.51.100.7",
             "203.0.113.9",
             "224.0.0.1",

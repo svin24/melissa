@@ -8,16 +8,27 @@
 //!   [`Labels`] by their ACP kind and decided with [`policy::decide`]. Anything that needs a
 //!   human becomes a confirmation in the inbox ([`ToolRegistry::confirm`]).
 //!
+//! Fetches ([`ToolKind::Fetch`]) depend on how the agent reaches the web ([`WebAccess`], set
+//! by the backend when the agent starts): through Melissa's proxy, web reading is read-only
+//! and public-only, so a fetch is not an outbound channel the policy has to stop (the proxy
+//! is), but it does read untrusted content: every allowed fetch taints the task. A fetch the
+//! proxy would refuse (a private address, a local name, another port, web reading off, no
+//! network) is refused here with the reason, instead of failing later with a misleading
+//! error inside the CLI.
+//!
 //! Every answer is audited as `agent.permission` (actor `agent`, input hashed). Answers are
 //! always one-off; "always" grants are never given to the CLI (see [`PermissionDecision`]):
 //! the owner's "Always allow" rules live in Melissa and are checked on every request
 //! ([`ToolRegistry::confirm`]).
 
+use std::sync::{Arc, Mutex};
+
 use serde_json::Value;
 
 use super::{PermissionDecision, PermissionHandler, PermissionRequest, ToolKind};
 use crate::{
-    mcp::McpServer,
+    egress,
+    mcp::{McpServer, TaintSource},
     tools::{
         policy::{self, Decision, Effect, Labels, TaskContext},
         RuleOffer, ToolError, ToolRegistry,
@@ -36,16 +47,86 @@ pub struct PermissionContext {
     pub mcp: Option<(McpServer, String)>,
 }
 
+/// How an agent reaches the web, for its fetch requests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WebAccess {
+    /// Not told (a backend that never fetches): only the URL checks, fetches labelled as
+    /// outbound calls.
+    #[default]
+    Unknown,
+    /// Through Melissa's egress proxy with web reading on: public hosts on these ports,
+    /// read-only, audited.
+    ReadOnly {
+        https_ports: Vec<u16>,
+        http_ports: Vec<u16>,
+    },
+    /// Through the egress proxy with web reading off: only the backend's own service hosts.
+    Off,
+    /// No network at all (`network = "none"`).
+    NoNetwork,
+    /// The host's network, unfiltered (`network = "host"`, or no sandbox).
+    Unfiltered,
+}
+
+impl WebAccess {
+    /// What a sandbox with `network` and the proxy's `web` settings gets.
+    pub fn for_network(
+        sandboxed: bool,
+        network: egress::NetworkMode,
+        web: Option<&egress::WebRead>,
+    ) -> Self {
+        use egress::NetworkMode;
+        match (sandboxed, network) {
+            (false, _) | (true, NetworkMode::Host) => Self::Unfiltered,
+            (true, NetworkMode::None) => Self::NoNetwork,
+            // Learn mode lets every public host through (a diagnostic mode): no port rule.
+            (true, NetworkMode::Learn) => Self::Unknown,
+            (true, NetworkMode::Proxy) => match web {
+                Some(w) if w.enabled => Self::ReadOnly {
+                    https_ports: w.https_ports.clone(),
+                    http_ports: w.http_ports.clone(),
+                },
+                _ => Self::Off,
+            },
+        }
+    }
+}
+
 /// [`PermissionHandler`] backed by Melissa's policy, confirmation inbox and audit log.
 #[derive(Clone)]
 pub struct PolicyPermissions {
     registry: ToolRegistry,
     ctx: PermissionContext,
+    web: Arc<Mutex<WebAccess>>,
 }
 
 impl PolicyPermissions {
     pub fn new(registry: ToolRegistry, ctx: PermissionContext) -> Self {
-        Self { registry, ctx }
+        Self {
+            registry,
+            ctx,
+            web: Arc::new(Mutex::new(WebAccess::default())),
+        }
+    }
+
+    fn web_access(&self) -> WebAccess {
+        self.web.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// The task read (or is about to read) untrusted content from the web.
+    fn taint(&self, req: &PermissionRequest) {
+        if let Some((server, token)) = &self.ctx.mcp {
+            let host = fetch_url(req)
+                .and_then(|u| egress::url_target(&u))
+                .map(|t| t.1);
+            server.taint_session_with(
+                token,
+                TaintSource {
+                    tool: Some("web".into()),
+                    subject: host,
+                },
+            );
+        }
     }
 
     /// Current policy context of the task. Without an MCP session: unattended, untainted.
@@ -86,16 +167,36 @@ impl PolicyPermissions {
                 "melissa tool: policy applies to the MCP call".into(),
             );
         }
-        let Some(labels) = labels_for(req.kind) else {
+        let Some(mut labels) = labels_for(req.kind) else {
             return (
                 PermissionDecision::RejectOnce,
                 "agents may not change their own permission mode".into(),
             );
         };
+        if req.kind == ToolKind::Fetch {
+            let web = self.web_access();
+            if let Some(reason) = fetch_blocked(&web, fetch_url(req).as_deref()) {
+                return (
+                    PermissionDecision::RejectOnce,
+                    format!("blocked by Melissa's network policy: {reason}"),
+                );
+            }
+            if matches!(web, WebAccess::ReadOnly { .. }) {
+                // The proxy keeps it read-only (GET/HEAD, upload-capped tunnels, public
+                // hosts): reading on in a tainted task needs no OK; its changes still do.
+                labels.egress = false;
+            }
+        }
         let ctx = self.task_context();
         let name = format!("agent:{}", req.kind.as_str());
+        let fetch = req.kind == ToolKind::Fetch;
         match policy::decide(&name, &labels, &ctx) {
-            Decision::Allow => (PermissionDecision::AllowOnce, "policy: allowed".into()),
+            Decision::Allow => {
+                if fetch {
+                    self.taint(req);
+                }
+                (PermissionDecision::AllowOnce, "policy: allowed".into())
+            }
             Decision::Confirm(reason) => {
                 let args = serde_json::json!({"title": req.title, "input": req.raw_input});
                 // "Always allow" for an agent's own tool covers that kind for that agent
@@ -106,7 +207,12 @@ impl PolicyPermissions {
                     .confirm_within(self.ctx.task, rule, &name, &args, &reason, ctx.confirm_wait)
                     .await
                 {
-                    Ok(()) => (PermissionDecision::AllowOnce, format!("approved: {reason}")),
+                    Ok(()) => {
+                        if fetch {
+                            self.taint(req);
+                        }
+                        (PermissionDecision::AllowOnce, format!("approved: {reason}"))
+                    }
                     Err(ToolError::Denied) => {
                         (PermissionDecision::RejectOnce, format!("denied: {reason}"))
                     }
@@ -130,6 +236,94 @@ impl PermissionHandler for PolicyPermissions {
             decision
         })
     }
+
+    fn set_web_access(&self, web: WebAccess) {
+        *self.web.lock().unwrap_or_else(|p| p.into_inner()) = web;
+    }
+}
+
+/// The URL a fetch request is for: the `url` (or `uri`, `href`) argument, else any
+/// argument or title word that looks like an http(s) URL. `None` for e.g. a web search.
+fn fetch_url(req: &PermissionRequest) -> Option<String> {
+    let looks = |s: &str| {
+        let l = s.trim().to_ascii_lowercase();
+        l.starts_with("http://") || l.starts_with("https://")
+    };
+    if let Value::Object(args) = &req.raw_input {
+        for key in ["url", "uri", "href"] {
+            if let Some(u) = args.get(key).and_then(Value::as_str) {
+                return Some(u.trim().to_string());
+            }
+        }
+        if let Some(u) = args.values().filter_map(Value::as_str).find(|s| looks(s)) {
+            return Some(u.trim().to_string());
+        }
+    }
+    req.title
+        .split_whitespace()
+        .find(|w| looks(w))
+        .map(str::to_string)
+}
+
+/// Why a fetch of `url` cannot succeed with this web access, if it cannot.
+fn fetch_blocked(web: &WebAccess, url: Option<&str>) -> Option<String> {
+    match web {
+        WebAccess::Unfiltered => return None,
+        WebAccess::NoNetwork => {
+            return Some("this agent has no network access (network = \"none\")".into())
+        }
+        WebAccess::Off => {
+            return Some(
+                "web reading is off (server.toml: [egress] web_read = false); only the \
+                 agent's own service is reachable"
+                    .into(),
+            )
+        }
+        WebAccess::Unknown | WebAccess::ReadOnly { .. } => {}
+    }
+    let url = url?;
+    let Some((scheme, host, port)) = egress::url_target(url) else {
+        // Not an absolute URL: let the CLI say what it makes of it.
+        return None;
+    };
+    if scheme != "http" && scheme != "https" {
+        return Some(format!(
+            "{url}: only http:// and https:// pages can be read"
+        ));
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !egress::is_public(ip) {
+            return Some(format!(
+                "{host} is a private or local address; web reading reaches public hosts only"
+            ));
+        }
+    } else if egress::local_name(&host) {
+        return Some(format!(
+            "{host} is a local name; web reading reaches public hosts only"
+        ));
+    }
+    if let WebAccess::ReadOnly {
+        https_ports,
+        http_ports,
+    } = web
+    {
+        let ports = if scheme == "https" {
+            https_ports
+        } else {
+            http_ports
+        };
+        if !ports.contains(&port) {
+            return Some(format!(
+                "{host}:{port}: port {port} is not open for web reading ({scheme} uses {})",
+                ports
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    None
 }
 
 /// Audits the answer; if the decision future is dropped first (turn cancelled), audits that.
@@ -361,5 +555,182 @@ mod tests {
         assert!(perms.iter().all(|l| l["actor"] == "agent"));
         assert!(lines.iter().any(|l| l["action"] == "tool.denied"));
         std::fs::remove_file(&path).unwrap();
+    }
+    fn fetch(url: &str) -> PermissionRequest {
+        PermissionRequest {
+            tool_call_id: "f1".into(),
+            title: format!("Fetch: {url}"),
+            kind: ToolKind::Fetch,
+            tool_name: Some("web_fetch".into()),
+            raw_input: serde_json::json!({"url": url}),
+        }
+    }
+
+    fn read_only() -> WebAccess {
+        WebAccess::ReadOnly {
+            https_ports: vec![443],
+            http_ports: vec![80],
+        }
+    }
+
+    #[test]
+    fn web_access_follows_the_sandbox_network() {
+        use egress::{NetworkMode, WebRead};
+        let on = WebRead::on();
+        let off = WebRead::default();
+        assert_eq!(
+            WebAccess::for_network(true, NetworkMode::Proxy, Some(&on)),
+            read_only()
+        );
+        assert_eq!(
+            WebAccess::for_network(true, NetworkMode::Proxy, Some(&off)),
+            WebAccess::Off
+        );
+        assert_eq!(
+            WebAccess::for_network(true, NetworkMode::Proxy, None),
+            WebAccess::Off
+        );
+        assert_eq!(
+            WebAccess::for_network(true, NetworkMode::None, Some(&on)),
+            WebAccess::NoNetwork
+        );
+        assert_eq!(
+            WebAccess::for_network(true, NetworkMode::Host, Some(&on)),
+            WebAccess::Unfiltered
+        );
+        assert_eq!(
+            WebAccess::for_network(false, NetworkMode::Proxy, Some(&on)),
+            WebAccess::Unfiltered
+        );
+    }
+
+    #[test]
+    fn fetches_that_cannot_succeed_are_named() {
+        let ro = read_only();
+        let blocked = |web: &WebAccess, url: &str| fetch_blocked(web, Some(url));
+        assert_eq!(blocked(&ro, "https://example.com/a"), None);
+        assert_eq!(blocked(&ro, "http://example.com/"), None);
+        for (url, want) in [
+            ("http://10.0.0.1/", "10.0.0.1 is a private or local address"),
+            ("https://[::1]/", "::1 is a private or local address"),
+            (
+                "https://[::ffff:192.168.1.1]/",
+                "is a private or local address",
+            ),
+            (
+                "https://169.254.169.254/latest",
+                "is a private or local address",
+            ),
+            ("https://100.100.100.100/", "is a private or local address"),
+            ("https://localhost/", "localhost is a local name"),
+            ("https://nas.local/", "nas.local is a local name"),
+            (
+                "https://example.com:8443/",
+                "port 8443 is not open for web reading",
+            ),
+            (
+                "http://example.com:8080/",
+                "port 8080 is not open for web reading",
+            ),
+            ("ftp://example.com/", "only http:// and https://"),
+        ] {
+            let why = blocked(&ro, url).unwrap_or_default();
+            assert!(why.contains(want), "{url}: {why}");
+        }
+        // Unknown access: same address rules, no port rule.
+        assert_eq!(
+            blocked(&WebAccess::Unknown, "https://example.com:8443/"),
+            None
+        );
+        assert!(blocked(&WebAccess::Unknown, "https://10.1.2.3/").is_some());
+        // The host's network: Melissa does not filter.
+        assert_eq!(blocked(&WebAccess::Unfiltered, "http://10.0.0.1/"), None);
+        assert!(fetch_blocked(&WebAccess::Off, None)
+            .unwrap()
+            .contains("web reading is off"));
+        assert!(fetch_blocked(&WebAccess::NoNetwork, None)
+            .unwrap()
+            .contains("no network access"));
+        // No URL (a web search): nothing to check.
+        assert_eq!(fetch_blocked(&ro, None), None);
+    }
+
+    #[test]
+    fn the_fetch_url_is_found_in_arguments_or_title() {
+        let mut r = fetch("https://a.example/x");
+        assert_eq!(fetch_url(&r).as_deref(), Some("https://a.example/x"));
+        r.raw_input = serde_json::json!({"format": "markdown", "target": "http://b.example/"});
+        assert_eq!(fetch_url(&r).as_deref(), Some("http://b.example/"));
+        r.raw_input = serde_json::json!({"query": "rust async"});
+        r.title = "Search: rust async".into();
+        assert_eq!(fetch_url(&r), None);
+        r.title = "Fetch: https://c.example/".into();
+        assert_eq!(fetch_url(&r).as_deref(), Some("https://c.example/"));
+    }
+
+    #[tokio::test]
+    async fn read_only_fetches_taint_and_stay_allowed_after() {
+        let path =
+            std::env::temp_dir().join(format!("melissa-perm-web-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let p = perms(Some(crate::AuditLog::new(&path)), Duration::from_millis(20));
+        p.set_web_access(read_only());
+        let (server, token) = p.ctx.mcp.clone().unwrap();
+        assert!(!server.session_context(&token).unwrap().tainted);
+
+        assert_eq!(
+            p.decide(&fetch("https://example.com/")).await,
+            PermissionDecision::AllowOnce
+        );
+        assert!(server.session_context(&token).unwrap().tainted);
+        assert_eq!(
+            server.taint_source(&token),
+            Some(TaintSource {
+                tool: Some("web".into()),
+                subject: Some("example.com".into()),
+            })
+        );
+        // Reading on is fine; changing things now needs a human (times out here).
+        assert_eq!(
+            p.decide(&fetch("https://docs.example.org/")).await,
+            PermissionDecision::AllowOnce
+        );
+        let edit = request(ToolKind::Edit, "Edit notes.txt", None);
+        assert_eq!(p.decide(&edit).await, PermissionDecision::Cancelled);
+        // The first source is kept.
+        assert_eq!(
+            server.taint_source(&token).unwrap().subject.as_deref(),
+            Some("example.com")
+        );
+
+        // Refused with the reason, audited.
+        assert_eq!(
+            p.decide(&fetch("http://192.168.1.1/admin")).await,
+            PermissionDecision::RejectOnce
+        );
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert!(log.contains(
+            "reject_once (fetch): blocked by Melissa's network policy: 192.168.1.1 is a private or local address"
+        ));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn without_proxied_web_reading_a_tainted_fetch_still_needs_a_human() {
+        let p = perms(None, Duration::from_millis(20));
+        // Not told (Unknown): the old labels; the first fetch taints.
+        assert_eq!(
+            p.decide(&fetch("https://example.com/")).await,
+            PermissionDecision::AllowOnce
+        );
+        assert_eq!(
+            p.decide(&fetch("https://example.com/2")).await,
+            PermissionDecision::Cancelled
+        );
+        p.set_web_access(WebAccess::Off);
+        assert_eq!(
+            p.decide(&fetch("https://example.com/")).await,
+            PermissionDecision::RejectOnce
+        );
     }
 }

@@ -67,6 +67,7 @@ fn request(mode: NetworkMode, allow: &[&str], tokens: Vec<String>) -> EgressRequ
         task: 7,
         mode,
         allow: allow.iter().map(|r| HostRule::parse(r).unwrap()).collect(),
+        deny: Vec::new(),
         mcp_tokens: tokens,
     }
 }
@@ -510,5 +511,372 @@ async fn mcp_call_abandoned_by_the_client_withdraws_its_confirmation() {
             "half_close={half_close}: confirmation still pending after the client left"
         );
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Send a request head; return the whole response (the proxy closes after a refusal).
+async fn refusal(dir: &Path, head: &str) -> String {
+    let (status, mut s) = connect(dir, head).await;
+    let mut body = String::new();
+    s.read_to_string(&mut body).await.unwrap();
+    format!("{status}\n{body}")
+}
+
+/// A proxy with web reading on and a lease for `tokens`.
+fn web_proxy(root: &Path, audit: &AuditLog, web: WebRead) -> EgressProxy {
+    EgressProxy::new(root.join("sockets"), Some(audit.clone()))
+        .unwrap()
+        .with_netbridge("/usr/bin/true".into())
+        .with_web_read(web)
+}
+
+#[tokio::test]
+async fn web_reads_reach_any_public_host_audited_capped_and_tainting() {
+    let root = scratch("web");
+    let audit = AuditLog::new(root.join("audit.jsonl"));
+    let server = echo_server().await;
+    let port = server.port();
+    let mcp = McpServer::new(ToolRegistry::new(Vec::new(), None));
+    let token = mcp.open_session(7, TaskContext::default(), None).unwrap();
+    let web = WebRead {
+        https_ports: vec![port],
+        max_upload: 100,
+        ..WebRead::on()
+    };
+    // The override stands in for a public address (the echo server is on loopback).
+    let proxy = web_proxy(&root, &audit, web)
+        .with_mcp(mcp.clone(), "127.0.0.1:8080".parse().unwrap())
+        .with_resolver_override("docs.test.example", vec![server.ip()]);
+    let lease = proxy
+        .open(request(NetworkMode::Proxy, &[], vec![token.clone()]))
+        .unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+    assert!(!mcp.session_context(&token).unwrap().tainted);
+
+    let (status, mut s) = connect(
+        &dir,
+        &format!("CONNECT docs.test.example:{port} HTTP/1.1\r\n\r\n"),
+    )
+    .await;
+    assert_eq!(status, "HTTP/1.1 200 Connection established");
+    let mut hello = [0u8; 5];
+    s.read_exact(&mut hello).await.unwrap();
+    // Reading taints the task at once, naming the host.
+    assert!(mcp.session_context(&token).unwrap().tainted);
+    assert_eq!(
+        mcp.taint_source(&token),
+        Some(crate::mcp::TaintSource {
+            tool: Some("web".into()),
+            subject: Some("docs.test.example".into()),
+        })
+    );
+    // An upload beyond the cap closes the tunnel; nothing of it is echoed.
+    s.write_all(&[b'x'; 300]).await.unwrap();
+    let mut rest = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut rest)).await;
+    assert!(rest.is_empty(), "{rest:?}");
+
+    // Wait for the close record.
+    let mut lines = Vec::new();
+    for _ in 0..100 {
+        lines = audit_lines(&audit);
+        if lines.iter().any(|l| l["action"] == "egress.web") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let find = |action: &str| {
+        lines
+            .iter()
+            .find(|l| l["action"] == action)
+            .map(|l| l["detail"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        find("egress.allow"),
+        format!("docs.test.example:{port} -> 127.0.0.1:{port} (web read)")
+    );
+    let closed = find("egress.web");
+    assert!(
+        closed.starts_with(&format!(
+            "CONNECT docs.test.example:{port}: 0 B up, 5 B down"
+        )),
+        "{closed}"
+    );
+    assert!(
+        closed.ends_with("closed: upload limit of 100 bytes reached (web reading is read-only)"),
+        "{closed}"
+    );
+    drop(lease);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn web_reads_refuse_private_addresses_local_names_and_other_ports() {
+    let root = scratch("ssrf");
+    let audit = AuditLog::new(root.join("audit.jsonl"));
+    let mut proxy = web_proxy(&root, &audit, WebRead::on());
+    // Names whose DNS answers point inside: LAN, loopback (also hidden in IPv6), cloud
+    // metadata, the tailnet, k3s pods and services, the sandbox's own DNS placeholder.
+    let inside: &[(&str, &str)] = &[
+        ("lan.test.example", "10.0.0.1"),
+        ("loop.test.example", "127.0.0.1"),
+        ("mapped.test.example", "::ffff:127.0.0.1"),
+        ("nat64.test.example", "64:ff9b::a00:1"),
+        ("meta.test.example", "169.254.169.254"),
+        ("tail.test.example", "100.100.100.100"),
+        ("tailv6.test.example", "fd7a:115c:a1e0::1"),
+        ("pod.test.example", "10.42.0.5"),
+        ("svc.test.example", "10.43.0.1"),
+        ("hole.test.example", "192.88.99.53"),
+    ];
+    for (name, ip) in inside {
+        proxy = proxy.with_resolver_answer(name, vec![ip.parse().unwrap()]);
+    }
+    // Rebinding: every answer is private, and only checked answers are ever connected to.
+    proxy = proxy.with_resolver_answer(
+        "rebind.test.example",
+        vec!["192.168.1.1".parse().unwrap(), "::1".parse().unwrap()],
+    );
+    let lease = proxy
+        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+
+    for (name, ip) in inside
+        .iter()
+        .chain(&[("rebind.test.example", "192.168.1.1")])
+    {
+        let r = refusal(&dir, &format!("CONNECT {name}:443 HTTP/1.1\r\n\r\n")).await;
+        assert!(r.starts_with("HTTP/1.1 403"), "{name}: {r}");
+        assert!(
+            r.contains(&format!(
+                "blocked by Melissa's network policy: {name}:443: resolves only to non-public addresses ({ip}"
+            )),
+            "{name}: {r}"
+        );
+    }
+    // Address literals are judged the same way.
+    for target in [
+        "127.0.0.1:443",
+        "[::1]:443",
+        "[::ffff:10.0.0.1]:443",
+        "169.254.169.254:443",
+    ] {
+        let r = refusal(&dir, &format!("CONNECT {target} HTTP/1.1\r\n\r\n")).await;
+        assert!(
+            r.starts_with("HTTP/1.1 403") && r.contains("non-public addresses"),
+            "{target}: {r}"
+        );
+    }
+    // Local names: refused before any lookup.
+    for name in ["localhost", "printer", "nas.local", "router.lan"] {
+        let r = refusal(&dir, &format!("CONNECT {name}:443 HTTP/1.1\r\n\r\n")).await;
+        assert!(
+            r.contains(&format!(
+                "blocked by Melissa's network policy: {name}:443: a local name; web reading reaches public hosts only"
+            )),
+            "{name}: {r}"
+        );
+    }
+    // Other ports (SMTP, SSH, ...) are not web reading.
+    for port in [25, 22, 8443] {
+        let r = refusal(
+            &dir,
+            &format!("CONNECT example.com:{port} HTTP/1.1\r\n\r\n"),
+        )
+        .await;
+        assert!(
+            r.contains(&format!(
+                "example.com:{port}: port {port} is not open for web reading (HTTPS: 443, HTTP: 80)"
+            )),
+            "{port}: {r}"
+        );
+    }
+    drop(lease);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An HTTP server on loopback that records the request head and answers with `body`.
+async fn http_origin(body: &'static str) -> (SocketAddr, tokio::sync::mpsc::Receiver<String>) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while head_end(&buf).is_none() {
+                    let n = s.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let _ = tx.send(String::from_utf8_lossy(&buf).into_owned()).await;
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    (addr, rx)
+}
+
+#[tokio::test]
+async fn plain_http_is_forwarded_read_only() {
+    let root = scratch("http");
+    let audit = AuditLog::new(root.join("audit.jsonl"));
+    let (origin, mut heads) = http_origin("<title>Hi</title>").await;
+    let port = origin.port();
+    let web = WebRead {
+        http_ports: vec![port],
+        ..WebRead::on()
+    };
+    let proxy = web_proxy(&root, &audit, web)
+        .with_resolver_override("site.test.example", vec![origin.ip()]);
+    let lease = proxy
+        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+
+    let r = refusal(
+        &dir,
+        &format!(
+            "GET http://site.test.example:{port}/page?q=1 HTTP/1.1\r\nHost: site.test.example\r\nProxy-Connection: keep-alive\r\nAccept: */*\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(r.starts_with("HTTP/1.1 200 OK"), "{r}");
+    assert!(r.ends_with("<title>Hi</title>"), "{r}");
+    let head = heads.recv().await.unwrap();
+    assert_eq!(
+        head,
+        format!(
+            "GET /page?q=1 HTTP/1.1\r\nHost: site.test.example:{port}\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+        )
+    );
+
+    for (req, want) in [
+        (
+            format!("POST http://site.test.example:{port}/ HTTP/1.1\r\nContent-Length: 2\r\n\r\nhi"),
+            "only GET and HEAD are allowed (web reading is read-only), not POST",
+        ),
+        (
+            format!("GET http://site.test.example:{port}/ HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"),
+            "requests with a body are not allowed",
+        ),
+        (
+            "GET http://site.test.example:8080/ HTTP/1.1\r\n\r\n".to_string(),
+            "port 8080 is not open for web reading",
+        ),
+        (
+            format!("GET http://10.1.2.3:{port}/ HTTP/1.1\r\n\r\n"),
+            "resolves only to non-public addresses (10.1.2.3)",
+        ),
+    ] {
+        let r = refusal(&dir, &req).await;
+        assert!(r.starts_with("HTTP/1.1 403"), "{req:?}: {r}");
+        assert!(r.contains("blocked by Melissa's network policy: "), "{r}");
+        assert!(r.contains(want), "{req:?}: {r}");
+    }
+
+    let mut web = String::new();
+    for _ in 0..100 {
+        if let Some(l) = audit_lines(&audit)
+            .into_iter()
+            .find(|l| l["action"] == "egress.web")
+        {
+            web = l["detail"].as_str().unwrap().to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        web.starts_with(&format!("GET http://site.test.example:{port}/page?q=1: ")),
+        "{web}"
+    );
+    drop(lease);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn background_hosts_and_web_reading_off() {
+    let root = scratch("weboff");
+    let audit = AuditLog::new(root.join("audit.jsonl"));
+    // On: the CLI's own background hosts stay denied (no lookup, no taint).
+    let proxy = web_proxy(&root, &audit, WebRead::on());
+    let mut req = request(NetworkMode::Proxy, &[], vec![]);
+    req.deny = default_deny("/usr/bin/grok");
+    let lease = proxy.open(req).unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+    let r = refusal(&dir, "CONNECT api.mixpanel.com:443 HTTP/1.1\r\n\r\n").await;
+    assert!(
+        r.contains(
+            "api.mixpanel.com:443: not in the allowlist (background traffic of the agent program)"
+        ),
+        "{r}"
+    );
+    drop(lease);
+
+    // Off: only the allowlist, and plain HTTP is refused with a hint.
+    let proxy = web_proxy(&root, &audit, WebRead::default());
+    let lease = proxy
+        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .unwrap();
+    let dir = lease.bridge().unwrap().socket_dir.clone();
+    let r = refusal(&dir, "CONNECT example.com:443 HTTP/1.1\r\n\r\n").await;
+    assert!(
+        r.contains("blocked by Melissa's network policy: example.com:443: not in the allowlist"),
+        "{r}"
+    );
+    let r = refusal(&dir, "GET http://example.com/ HTTP/1.1\r\n\r\n").await;
+    assert!(r.contains("web reading is off"), "{r}");
+    drop(lease);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn default_denylists_parse_and_lease_dirs_hold_the_dns_files() {
+    assert_eq!(default_deny("/opt/x/grok").len(), 2);
+    assert!(allowed(
+        &default_deny("claude"),
+        "http-intake.logs.us5.datadoghq.com",
+        443
+    ));
+    assert!(default_deny("custom-cli").is_empty());
+}
+
+#[tokio::test]
+async fn proxied_sandboxes_get_a_dns_handoff_and_resolv_conf() {
+    let root = scratch("dnsfiles");
+    let proxy = EgressProxy::new(root.join("sockets"), None)
+        .unwrap()
+        .with_netbridge("/usr/bin/true".into());
+    let lease = proxy
+        .open(request(NetworkMode::Proxy, &[], vec![]))
+        .unwrap();
+    let bridge = lease.bridge().unwrap().clone();
+    assert_eq!(bridge.dns.as_deref(), Some(DNS_SOCKET));
+    assert!(bridge.socket_dir.join(DNS_SOCKET).exists());
+    assert_eq!(
+        std::fs::read_to_string(bridge.socket_dir.join(RESOLV_CONF)).unwrap(),
+        "nameserver 127.0.0.1\noptions attempts:2 timeout:2\n"
+    );
+    drop(lease);
+    // `none`: no proxy, no DNS.
+    let mcp = McpServer::new(ToolRegistry::new(Vec::new(), None));
+    let token = mcp.open_session(7, TaskContext::default(), None).unwrap();
+    let proxy = proxy.with_mcp(mcp, "127.0.0.1:8080".parse().unwrap());
+    let lease = proxy
+        .open(request(NetworkMode::None, &[], vec![token]))
+        .unwrap();
+    assert_eq!(lease.bridge().unwrap().dns, None);
+    drop(lease);
     let _ = std::fs::remove_dir_all(&root);
 }
