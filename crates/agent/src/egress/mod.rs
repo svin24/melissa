@@ -115,6 +115,20 @@ pub fn default_allow(command: &str) -> Vec<String> {
         "grok" => &["cli-chat-proxy.grok.com", "api.x.ai", "auth.x.ai"],
         // OpenCode: its hosted gateway (the free default models) and model catalogue.
         "opencode" => &["opencode.ai", "models.opencode.ai"],
+        // Gemini CLI: the Gemini API (API keys); Code Assist and Google's token endpoint
+        // (a Google sign-in). Denied: Clearcut usage statistics, npm update check.
+        "gemini" => &[
+            "generativelanguage.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+            "oauth2.googleapis.com",
+        ],
+        // Codex: the OpenAI API (API keys); ChatGPT's Codex backend (a ChatGPT sign-in: model
+        // list and requests; its analytics events use the same host) and the token issuer.
+        // Denied: Statsig metrics, the GitHub update check, `files.openai.com`.
+        "codex-acp" => &["api.openai.com", "chatgpt.com", "auth.openai.com"],
+        // Muse Code: Meta's model API (its telemetry uses the same host and is turned off
+        // with `-c telemetry.enabled=false`) and the sign-in issuer. Denied: its download host.
+        "muse" => &["api.meta.ai", "auth.meta.com"],
         _ => &[],
     };
     hosts.iter().map(|h| (*h).to_string()).collect()
@@ -136,6 +150,16 @@ pub fn default_deny(command: &str) -> Vec<HostRule> {
         "grok" => &["grok.com", "api.mixpanel.com"],
         // Update check of the npm-installed OpenCode.
         "opencode" => &["registry.npmjs.org"],
+        "gemini" => &["play.googleapis.com", "registry.npmjs.org"],
+        // Statsig metrics, the GitHub update check, a file host seen at start (not needed for
+        // a turn), npm.
+        "codex-acp" => &[
+            "ab.chatgpt.com",
+            "api.github.com",
+            "files.openai.com",
+            "registry.npmjs.org",
+        ],
+        "muse" => &["lookaside.facebook.com"],
         _ => &[],
     };
     hosts

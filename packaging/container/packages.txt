@@ -11,6 +11,8 @@ polkit              # lets the server restart itself (Settings → Restart; 50-m
 ca-certificates     # HTTPS for agent installers and the speech model download (Settings → Voice)
 libstdc++           # whisper.cpp's CLI (voice input, /usr/lib/melissa/whisper)
 curl                # agent installers (melissa-setup)
+nodejs24            # Node.js runtime for npm-only agent CLIs (Gemini CLI, Pi); ~73 MiB with npm
+nodejs24-npm        # melissa-setup installs those packages (pinned version + integrity) into the agents' home
 tar
 gzip
 unzip

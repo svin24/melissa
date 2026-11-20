@@ -54,6 +54,7 @@ const RESERVED_ENV: &[&str] = &[
     "NO_PROXY",
     "no_proxy",
     "GROK_WEB_FETCH_PROXY",
+    "NODE_USE_ENV_PROXY",
 ];
 
 /// Where the bridge's socket directory appears inside the sandbox.
@@ -170,6 +171,37 @@ impl SandboxSpec {
                     ".config/opencode/opencode.jsonc",
                 ]),
                 rw: strings(&[".local/share/opencode/auth.json"]),
+                ..Self::default()
+            },
+            // Gemini CLI (npm, installed by melissa-setup into its own folder): that folder
+            // read-only (the wrapper runs `node` on the package there), its state fresh per run
+            // (`~/.gemini`: sessions, history, the user's settings, which could auto-approve),
+            // and a Google sign-in, if any.
+            "gemini" => Self {
+                tmpfs: strings(&[".gemini"]),
+                ro: strings(&[".local/share/melissa-npm/gemini"]),
+                rw: strings(&[".gemini/oauth_creds.json"]),
+                ..Self::default()
+            },
+            // Codex's ACP adapter (npm, with Codex itself): the package folder read-only,
+            // `~/.codex` fresh per run (config, sessions, databases), the ChatGPT sign-in
+            // (refreshed in place).
+            "codex-acp" => Self {
+                tmpfs: strings(&[".codex"]),
+                ro: strings(&[".local/share/melissa-npm/codex-acp"]),
+                rw: strings(&[".codex/auth.json"]),
+                ..Self::default()
+            },
+            // Muse Code (one static binary): its settings, data, state and cache fresh per run;
+            // the account sign-in (`muse login`) read-write.
+            "muse" => Self {
+                tmpfs: strings(&[
+                    ".config/muse",
+                    ".local/share/muse",
+                    ".local/state/muse",
+                    ".cache/muse",
+                ]),
+                rw: strings(&[".config/muse/auth.json"]),
                 ..Self::default()
             },
             _ => Self::default(),
@@ -640,6 +672,9 @@ pub fn command(
         // Grok's `web_fetch` ignores HTTPS_PROXY and has its own setting (verified with grok
         // 1.0.89). Other CLIs ignore the variable.
         push(&[&"--setenv", &"GROK_WEB_FETCH_PROXY", &url]);
+        // Node.js (>= 24.5, 22.21) ignores the proxy variables for `fetch` and `http` unless
+        // this is set; the npm-installed CLIs (Gemini CLI, Pi) run on it. Others ignore it.
+        push(&[&"--setenv", &"NODE_USE_ENV_PROXY", &"1"]);
     }
 
     // System: read-only /usr and /etc (Fedora is usr-merged; NixOS adds its store and system
@@ -925,6 +960,8 @@ mod tests {
             &a,
             &["--setenv", "GROK_WEB_FETCH_PROXY", "http://127.0.0.1:3128"]
         ));
+        // Node's own proxy support is opt-in.
+        assert!(has(&a, &["--setenv", "NODE_USE_ENV_PROXY", "1"]));
         // The DNS sinkhole: the lease's resolv.conf over the host's.
         assert!(has(
             &a,
@@ -1197,9 +1234,24 @@ mod tests {
         assert_eq!(managed.rw, opencode.rw);
         managed.validate().unwrap();
         assert_eq!(SandboxSpec::preset("other"), SandboxSpec::default());
-        for name in ["claude", "grok", "opencode"] {
+        for name in ["claude", "grok", "opencode", "gemini", "codex-acp", "muse"] {
             SandboxSpec::preset(name).validate().unwrap();
         }
+        // npm installs: the package folder read-only (the wrapper runs node on it there),
+        // the agent's state fresh, its sign-in read-write.
+        let gemini = SandboxSpec::preset("/var/lib/melissa/home/.local/bin/gemini");
+        assert_eq!(gemini.ro, [".local/share/melissa-npm/gemini"]);
+        assert_eq!(gemini.tmpfs, [".gemini"]);
+        assert_eq!(gemini.rw, [".gemini/oauth_creds.json"]);
+        let codex = SandboxSpec::preset("codex-acp");
+        assert_eq!(codex.ro, [".local/share/melissa-npm/codex-acp"]);
+        assert_eq!(codex.rw, [".codex/auth.json"]);
+        let muse = SandboxSpec::preset("muse");
+        assert!(muse.ro.is_empty());
+        assert!(muse.tmpfs.contains(&".config/muse".to_string()));
+        assert_eq!(muse.rw, [".config/muse/auth.json"]);
+        // `codex` (the plain CLI) is not the adapter: no preset.
+        assert_eq!(SandboxSpec::preset("codex"), SandboxSpec::default());
     }
 
     #[test]

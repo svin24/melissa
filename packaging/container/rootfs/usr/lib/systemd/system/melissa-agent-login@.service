@@ -1,7 +1,8 @@
 # Sign one agent CLI in from Settings → Providers → Sign in. The polkit rule
 # 51-melissa-agent-install.rules (container image only) lets the server (user `melissa`) start only
-# the instances `claude` and `grok`; melissa-setup checks the name again.
-# - grok: a device code; the vendor's URL and code go to the log, nothing comes back.
+# the instances `claude`, `grok`, `codex-acp` and `muse`; melissa-setup checks the name again.
+# - grok, codex-acp, muse: a device code; the vendor's URL and code go to the log, nothing
+#   comes back.
 # - claude: the vendor's URL goes to the log; the code the person pastes on the page comes back
 #   through the FIFO /run/melissa-agent-install/claude-login.code (tmpfiles, root:melissa 0620),
 #   never as an argument or log line. Exit status: 0 signed in, 3 code not accepted,

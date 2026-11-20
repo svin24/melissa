@@ -1,7 +1,8 @@
 //! Settings → Providers → Add provider (2026-11-20, owner-requested): a panel with three
 //! steps, 1 Provider → 2 Identity → 3 Config.
 //!
-//! 1. Provider: the agents Melissa runs itself (Claude Code, Grok, OpenCode; one removed
+//! 1. Provider: the agents Melissa runs itself (Claude Code, Grok, OpenCode, Gemini CLI, Codex,
+//!    Muse Code; one removed
 //!    earlier comes back and continues to its usual Install and Sign in on the Providers page),
 //!    or an agent from the public ACP registry, or a local ACP command entered by hand.
 //!    - The registry is fetched only when the owner presses "Load the list" / "Refresh"
@@ -72,10 +73,13 @@ const REGISTRY_ID: &str = "acp-registry";
 const REGISTRY_URL: &str = "/ui/settings/providers/registry";
 const STEPS: [&str; 3] = ["Provider", "Identity", "Config"];
 /// The built-in providers offered in the grid, with their makers.
-const KNOWN: [(&str, &str); 3] = [
+const KNOWN: [(&str, &str); 6] = [
     ("claude", "Anthropic"),
     ("grok", "xAI"),
     ("opencode", "OpenCode"),
+    ("gemini", "Google"),
+    ("codex-acp", "OpenAI"),
+    ("muse", "Meta"),
 ];
 
 /// Checks a program for ACP (`initialize`), for the manual and registry adds. Replaced in tests.
@@ -1205,6 +1209,29 @@ pub(super) async fn api_add(State(ui): State<Ui>, Json(b): Json<AddBody>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_built_in_provider_has_a_tile_with_its_maker() {
+        let tiles: Vec<&str> = KNOWN.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            tiles,
+            ["claude", "grok", "opencode", "gemini", "codex-acp", "muse"]
+        );
+        // Every built-in except Melissa's test partner, each with a name of its own.
+        for id in BUILT_IN.iter().filter(|id| **id != "echo") {
+            assert!(tiles.contains(id), "{id}");
+            assert_ne!(default_label(id), *id, "{id}");
+        }
+        let makers: Vec<&str> = KNOWN.iter().map(|(_, m)| *m).collect();
+        assert_eq!(
+            makers,
+            ["Anthropic", "xAI", "OpenCode", "Google", "OpenAI", "Meta"]
+        );
+        // Letter marks (their brands' rules), from the shown names.
+        assert_eq!(letter(default_label("gemini")), "G");
+        assert_eq!(letter(default_label("codex-acp")), "C");
+        assert_eq!(letter(default_label("muse")), "M");
+    }
 
     #[test]
     fn command_lines_split_like_a_simple_shell() {

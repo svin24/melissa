@@ -1290,6 +1290,9 @@ pub fn backend_label(backend: &str) -> &str {
         "grok-acp" => "Grok",
         "claude-session" | "claude" => "Claude",
         "opencode-acp" => "OpenCode",
+        "gemini-acp" => "Gemini",
+        "codex-acp" => "Codex",
+        "muse-acp" => "Muse",
         other => other,
     }
 }

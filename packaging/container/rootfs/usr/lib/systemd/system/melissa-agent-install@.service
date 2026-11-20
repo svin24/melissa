@@ -1,6 +1,7 @@
 # Install one agent CLI for the server's user (Settings → Providers → Install).
-# The server (user `melissa`) may start only the instances claude, grok and opencode of this
-# template (polkit rule 51-melissa-agent-install.rules); melissa-setup checks the name again. Output goes to
+# The server (user `melissa`) may start only the built-in agents' instances of this template
+# (claude, grok, opencode, gemini, codex-acp, muse; polkit rule 51-melissa-agent-install.rules);
+# melissa-setup checks the name again. Output goes to
 # /run/melissa-agent-install/<name>.log (root:melissa 0640), which the Providers page tails.
 # Container image only (packaging/container/rootfs): on Nix installs the agent CLIs come from the Nix configuration.
 [Unit]

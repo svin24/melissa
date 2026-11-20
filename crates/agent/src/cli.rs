@@ -258,6 +258,9 @@ pub(crate) fn not_ready(
     {
         Some("claude") => Some(".claude/.credentials.json"),
         Some("grok") => Some(".grok/auth.json"),
+        Some("gemini") => Some(".gemini/oauth_creds.json"),
+        Some("codex-acp") => Some(".codex/auth.json"),
+        Some("muse") => Some(".config/muse/auth.json"),
         _ => None,
     };
     let checkable = sandbox.enabled && sandbox.env.is_empty() && sandbox.vars.is_empty();
@@ -608,6 +611,26 @@ mod tests {
             not_ready("opencode", true, &oc, true, None, Some(&home)),
             None
         );
+        // Gemini CLI, Codex and Muse: signed in by their file, or an API key variable.
+        for (cli, file, key) in [
+            ("gemini", ".gemini/oauth_creds.json", "GEMINI_API_KEY"),
+            ("codex-acp", ".codex/auth.json", "OPENAI_API_KEY"),
+            ("muse", ".config/muse/auth.json", "META_API_KEY"),
+        ] {
+            let mut sb = SandboxSpec::preset(cli);
+            sb.network = NetworkMode::None;
+            assert_eq!(
+                not_ready(cli, true, &sb, true, None, Some(&home)),
+                Some(NotReady::NotLoggedIn),
+                "{cli}"
+            );
+            let mut keyed = sb.clone();
+            keyed.vars = vec![(key.into(), "k".into())];
+            assert_eq!(not_ready(cli, true, &keyed, true, None, Some(&home)), None);
+            std::fs::create_dir_all(home.join(file).parent().unwrap()).unwrap();
+            std::fs::write(home.join(file), "{}").unwrap();
+            assert_eq!(not_ready(cli, true, &sb, true, None, Some(&home)), None);
+        }
         let _ = std::fs::remove_dir_all(home);
     }
     use crate::OutputLine;

@@ -1077,3 +1077,46 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   `100vh - 2rem` tall, which left a 2rem gap at the bottom once the banner was dismissed or the page scrolled
   (owner: "a weird gap with the bottom left and right panels"). Phones keep the page scrolling (the browser's bars
   collapse as usual).
+- **2026-11-20 — Gemini CLI, Codex and Muse Code are built-in providers; the image ships Node.js 24; Pi is not
+  built** (owner request: the popular agents as first-class providers). Researched from the vendors' repos,
+  npm, the ACP registry and T3 Code (MIT; it drives Codex through `codex app-server`, Pi through `pi --mode
+  rpc` and Muse through its own MSP protocol, none over ACP; Melissa keeps one protocol, ACP, for all of them).
+  **Gemini CLI** (Google, Apache-2.0): native `gemini --acp`; npm only (`@google/gemini-cli`, a bundle). **Codex**
+  (OpenAI, Apache-2.0): through the ACP project's adapter `@agentclientprotocol/codex-acp` (Apache-2.0; Zed's
+  Rust `codex-acp` is deprecated in its favour), which runs `codex app-server` from `@openai/codex`; npm only for
+  the adapter. **Muse Code** (Meta, proprietary): native `muse acp` behind `MUSE_EXPERIMENTAL_ACP=on`; one static
+  binary per platform with a published SHA-256 (also in the ACP registry). All three take Melissa's MCP server
+  over HTTP. **Install:** Node.js 24 from Fedora in the image (`nodejs24`, `nodejs24-npm`, ~73 MiB; Node 22
+  would pull a compat OpenSSL, ~98 MiB) and in the Nix package's `melissa-setup` PATH; `melissa-setup agent
+  <id>` (the existing root unit, polkit start-only, three more instances) installs as `melissa`: npm packages
+  pinned by version and SHA-512 integrity (the top-level packages and Codex's platform binary package, checked
+  against the lockfile npm verified the downloads with; nothing installed globally, `--ignore-scripts`,
+  Gemini's optional pty/keyring packages left out) into `~/.local/share/melissa-npm/<id>`, swapped in whole,
+  run through a two-line wrapper with the system's `node` (linked from `~/.local/bin`); Muse's binary checked
+  against its pinned SHA-256 into `~/.local/bin/muse`. Release binaries were preferred where they exist with
+  checksums (Muse); Gemini has none for Linux, and Codex's release binaries lack the adapter. **Run:** session
+  backends `gemini-acp`, `codex-acp`, `muse-acp`, each in its own sandbox preset (package folder read-only, the
+  agent's state fresh per run, only its sign-in file read-write) and egress allowlist (learn mode, 2026-11-20:
+  Gemini `generativelanguage.googleapis.com` + `cloudcode-pa.googleapis.com`, `oauth2.googleapis.com` for a
+  Google sign-in; Codex `api.openai.com`, `chatgpt.com`, `auth.openai.com`; Muse `api.meta.ai`, `auth.meta.com`;
+  denied: Gemini's Clearcut `play.googleapis.com`, Codex's `api.github.com` update check, `files.openai.com`
+  and Statsig `ab.chatgpt.com`, npm, Meta's download host). Node honours the proxy only with
+  `NODE_USE_ENV_PROXY=1`, which every proxied sandbox now gets. Melissa switches every session to the agent's
+  strictest mode that still asks (new backend key `mode`; Gemini `default`, Codex `read-only` — its default
+  "Auto review" runs what it deems safe unasked — Muse `promptUnmatched`), failing closed if the agent lacks
+  it; Muse runs with `-c telemetry.enabled=false -c approval_judge="off"` (no LLM approving on Melissa's
+  behalf); owner arguments may not add `-y`, `--approval-mode`, `-c`/`--config` or sandbox switches. Codex
+  wants ACP `authenticate` even with its key set, so Melissa calls `authenticate api-key` when
+  `OPENAI_API_KEY`/`CODEX_API_KEY` is set (keeping the ChatGPT sign-in file out of that sandbox, since the
+  call rewrites it). Gemini reports models only in ACP's older `models` field: the client now reads it and
+  switches with `session/set_model`. **Sign-in:** Codex (`codex login --device-auth`) and Muse (`muse login`) by
+  device code through the login unit, shown like Grok's (URL only on the vendor's host); API keys
+  `GEMINI_API_KEY`, `OPENAI_API_KEY`, `META_API_KEY`. Google's own sign-in for Gemini is not offered yet.
+  **Logos:** letter marks (Google and OpenAI, see the logo decision above; Meta's brand resources restrict use
+  of its marks, not re-read in detail, so no logo). An `[added.<id>]` entry whose id is built in now (e.g. Muse
+  added from the registry earlier) is dropped at load with a warning instead of failing the whole file.
+  **Pi** (Mario Zechner's agent, MIT) is not built: its only ACP path, the third-party `pi-acp`, takes no MCP
+  servers and runs Pi's tools without asking (PLAN 76h). Alternatives: Zed's Rust `codex-acp` (one static
+  binary with a checksum, but deprecated and pinned to an old Codex), `npx` at run time (downloads on every
+  start, unpinned), bundling Node per agent (bigger, more to update), Node 22 (larger here), installing npm
+  packages into the image (the image ships no vendor agent software; `melissa-setup` installs it on request).

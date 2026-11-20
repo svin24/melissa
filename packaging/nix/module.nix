@@ -202,12 +202,13 @@ in
         default = [ ];
         example = lib.literalExpression "[ pkgs.claude-code pkgs.opencode ]";
         description = ''
-          The agent CLIs (Claude Code, Grok, OpenCode), from Nix: the documented way to add a
-          provider on NixOS (Settings → Providers does not install agents on Nix installs). They are
-          put on the server's PATH (after any that `melissa-setup` installed by hand). The binary's
-          file name decides its sandbox preset and egress allowlist, so it must be called `claude`,
-          `grok` or `opencode`. Logins live in /var/lib/melissa/home
-          (`sudo melissa-setup login <name>`).
+          The agent CLIs (Claude Code, Grok, OpenCode, Gemini CLI, Codex's ACP adapter, Muse Code),
+          from Nix: the documented way to add a provider on NixOS (Settings → Providers does not
+          install agents on Nix installs). They are put on the server's PATH (after any that
+          `melissa-setup` installed by hand: it also installs `gemini` and `codex-acp` from npm with
+          its own Node.js). The binary's file name decides its sandbox preset and egress allowlist,
+          so it must be called `claude`, `grok`, `opencode`, `gemini`, `codex-acp` or `muse`. Logins
+          live in /var/lib/melissa/home (`sudo melissa-setup login <name>`).
         '';
       };
     };

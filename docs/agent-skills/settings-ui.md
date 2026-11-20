@@ -31,7 +31,8 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 - Packaging: `packaging/common/usr/share/polkit-1/rules.d/50-melissa.rules` (restart the lead agent; shared with
   Nix), `tmpfiles.d/melissa-config.conf` (`/etc/melissa` owned by `melissa`); container only
   (`packaging/container/rootfs`): `polkit-1/rules.d/51-melissa-agent-install.rules` (start
-  `melissa-agent-install@{claude,grok,opencode}.service` and `melissa-agent-login@{claude,grok}.service`),
+  `melissa-agent-install@{claude,grok,opencode,gemini,codex-acp,muse}.service` and
+  `melissa-agent-login@{claude,grok,codex-acp,muse}.service`),
   `melissa-agent-install@.service`, `melissa-agent-login@.service`,
   `tmpfiles.d/melissa-agent-install.conf` (`/run/melissa-agent-install`, root:melissa 0750, and the FIFO
   `claude-login.code`, root:melissa 0620). The Install
@@ -80,8 +81,8 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   file) sits behind one "Details" disclosure. No host commands in the container UI (or the chat's hints);
   commands only for a run from source (`HostKind::Other`). Nix keeps one note: "This requires you add
   <Provider> via your Nix configuration."
-- A provider = an agent program by file name (`claude`, `grok`, `opencode`, any other `[[backend]]`
-  command's file name). Overrides apply to all its backends. **Echo is never listed** (UI, API → 404, Agent
+- A provider = an agent program by file name (`claude`, `grok`, `opencode`, `gemini`, `codex-acp`, `muse`, any
+  other `[[backend]]` command's file name). Overrides apply to all its backends. **Echo is never listed** (UI, API → 404, Agent
   tasks page): it stays for tests; its backends still count as "another agent" for the disable lock.
 - Precedence: defaults < `server.toml` < `providers.toml` (`$XDG_CONFIG_HOME/melissa`, `/etc/melissa` on the
   image; 0600). Merged once at startup; `ProviderStore::restart_needed` says a saved change waits.
@@ -126,6 +127,12 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   - Grok: `melissa-agent-login@grok` runs `grok login --device-auth`; `device_prompt` takes the URL (only
     `https://accounts.x.ai/…`) and the `XXXX-XXXX` code; the page shows the code and "Open the sign-in page"
     and polls.
+  - Codex (`melissa-agent-login@codex-acp`: `codex login --device-auth`, URL `https://auth.openai.com/codex/device`,
+    code `XXXX-XXXXX`) and Muse Code (`melissa-agent-login@muse`: `muse login`, URL
+    `https://auth.meta.com/oauth/device…`, code `XXXX-XXXX`): the same device-code step as Grok
+    (`device_prompt(id, log)` takes the URL only on that provider's host). "Use an API key instead":
+    `OPENAI_API_KEY`, `META_API_KEY`.
+  - Gemini CLI: no sign-in unit; "Sign in needed" offers its API key (`GEMINI_API_KEY`) directly.
   - OpenCode: no sign-in; one line "Free models work without an account." Provider keys: Details → variables.
   - Login readiness is checked live (credential file), so no restart is needed. Melissa never sees passwords.
 - **Audit**: requests and refusals (`settings.provider.install|login`, codes never), and the outcome once the
@@ -169,6 +176,12 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   with `InstallWay::Button` (Melissa's own installs): fixed paths per built-in inside the agents' home, or the
   registry folder; never follows symlinks, never outside home. From source / Nix the files stay (the confirm text
   says so). Built-ins become `removed = true` (hidden; Add brings them back), added ones are deleted.
+- Built-in tiles (2026-11-20): Claude Code (Anthropic), Grok (xAI), OpenCode, Gemini CLI (Google), Codex
+  (OpenAI), Muse Code (Meta), in that order (`KNOWN` in `add_provider.rs`; also the Providers page's order). Gemini,
+  Codex and Muse use letter marks (brand rules, DECISIONS). Their registry entries (`gemini`, `codex-acp`,
+  `muse-code`) are refused as built in ("add it from the list above"); an older `[added.<id>]` for them is
+  dropped at load. Remove deletes `~/.local/share/melissa-npm/<id>` and the `~/.local/bin` link (npm installs),
+  `~/.local/bin/muse`, and their state and sign-in folders.
 - Tests: `settings/provider_flow_tests.rs` (included into `lib.rs`'s settings tests: fixture
   `with_fake_net`/`with_catalog`, a shell-script ACP agent), `logos.rs`, `registry.rs`, `acp/probe.rs`,
   server `config.rs` (added/removed backends).

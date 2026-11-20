@@ -54,7 +54,10 @@ fn grouped(s: &Settings) -> Vec<(String, Vec<&BackendFacts>)> {
         "claude" => 0,
         "grok" => 1,
         "opencode" => 2,
-        _ => 5,
+        "gemini" => 3,
+        "codex-acp" => 4,
+        "muse" => 5,
+        _ => 9,
     };
     let mut list: Vec<_> = map.into_iter().collect();
     list.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0)));
@@ -75,6 +78,9 @@ fn vendor(id: &str) -> &'static str {
     match id {
         "claude" => "Anthropic",
         "grok" => "xAI",
+        "gemini" => "Google",
+        "codex-acp" => "OpenAI",
+        "muse" => "Meta",
         _ => "OpenCode",
     }
 }
@@ -84,6 +90,9 @@ pub(super) fn key_var(id: &str) -> Option<&'static str> {
     match id {
         "claude" => Some("ANTHROPIC_API_KEY"),
         "grok" => Some("XAI_API_KEY"),
+        "gemini" => Some("GEMINI_API_KEY"),
+        "codex-acp" => Some("OPENAI_API_KEY"),
+        "muse" => Some("META_API_KEY"),
         _ => None,
     }
 }
@@ -145,7 +154,7 @@ fn login_running(id: &str, st: &InstallStatus, code_sent: bool) -> Step {
             None => Step::Starting,
         };
     }
-    match device_prompt(&st.log) {
+    match device_prompt(id, &st.log) {
         Some((url, code)) => Step::DeviceCode { url, code },
         None => Step::Starting,
     }
@@ -174,6 +183,14 @@ fn sign_in_step(id: &str, host: HostKind, login: Option<&InstallStatus>) -> Step
             "grok" => Step::Command {
                 text: "Or sign in from a terminal:".into(),
                 command: "grok login --device-auth".into(),
+            },
+            "codex-acp" => Step::Command {
+                text: "Or sign in from a terminal:".into(),
+                command: "codex login --device-auth".into(),
+            },
+            "muse" => Step::Command {
+                text: "Or sign in from a terminal:".into(),
+                command: "muse login".into(),
             },
             _ => Step::Nothing,
         },
@@ -850,7 +867,7 @@ async fn login_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
         let shown = st.state == InstallState::Running
             && match id {
                 "claude" => claude_login_url(&st.log).is_some(),
-                _ => device_prompt(&st.log).is_some(),
+                _ => device_prompt(id, &st.log).is_some(),
             };
         let ended = st.state == InstallState::Failed && st.ended != current.ended;
         if shown || ended {

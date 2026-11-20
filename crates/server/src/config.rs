@@ -176,6 +176,9 @@ impl Default for LeadSection {
                 "grok-acp".into(),
                 "claude-session".into(),
                 "opencode-acp".into(),
+                "gemini-acp".into(),
+                "codex-acp".into(),
+                "muse-acp".into(),
             ],
             tools: None,
             agent_backend: None,
@@ -371,6 +374,42 @@ pub fn default_backends() -> Vec<BackendSpec> {
         AcpSpec::new("opencode-acp", "opencode", &["acp"])
             .with_flavor(melissa_agent::acp::AcpFlavor::Opencode)
             .with_session_store(".local/share/opencode"),
+        // Gemini CLI over ACP (`--acp`). `--approval-mode default` and the `default` session
+        // mode: every tool asks (a user setting can't pick YOLO; its settings stay hidden).
+        // No session store: Gemini loads sessions but doesn't resume them over ACP.
+        AcpSpec::new(
+            "gemini-acp",
+            "gemini",
+            &["--acp", "--approval-mode", "default"],
+        )
+        .with_flavor(melissa_agent::acp::AcpFlavor::Gemini)
+        .with_mode("default"),
+        // Codex through its ACP adapter (`@agentclientprotocol/codex-acp`, which runs `codex
+        // app-server`). Its default mode ("Auto review") runs what it deems safe without
+        // asking; every session is switched to `read-only` (asks before edits and network).
+        // Sessions live in `~/.codex/sessions`.
+        AcpSpec::new("codex-acp", "codex-acp", &[])
+            .with_flavor(melissa_agent::acp::AcpFlavor::Codex)
+            .with_mode("read-only")
+            .with_session_store(".codex/sessions"),
+        // Muse Code over ACP (`muse acp`, behind `MUSE_EXPERIMENTAL_ACP=on`): telemetry off,
+        // no LLM approval judge (it could approve on Melissa's behalf), and the session mode
+        // that asks for every action no permission rule covers (its default asks only "when
+        // the action requires it"). Sessions live in `~/.local/share/muse`.
+        AcpSpec::new(
+            "muse-acp",
+            "muse",
+            &[
+                "acp",
+                "-c",
+                "telemetry.enabled=false",
+                "-c",
+                "approval_judge=\"off\"",
+            ],
+        )
+        .with_flavor(melissa_agent::acp::AcpFlavor::Muse)
+        .with_mode("promptUnmatched")
+        .with_session_store(".local/share/muse"),
     ];
     // Claude Code as a session: stream-json in and out, no built-in tools, every permission
     // prompt answered by Melissa (`--permission-prompt-tool stdio`); sessions in
@@ -1001,7 +1040,14 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(
             config.lead.backends,
-            ["grok-acp", "claude-session", "opencode-acp"]
+            [
+                "grok-acp",
+                "claude-session",
+                "opencode-acp",
+                "gemini-acp",
+                "codex-acp",
+                "muse-acp"
+            ]
         );
         // Every default lead agent backend is a built-in session backend.
         for name in &config.lead.backends {
@@ -1118,21 +1164,93 @@ mod tests {
     }
 
     #[test]
+    fn gemini_codex_and_muse_session_backends_are_built_in() {
+        use melissa_agent::acp::AcpFlavor;
+        let backends = default_backends();
+        let acp = |name: &str| {
+            backends
+                .iter()
+                .find_map(|b| match b {
+                    BackendSpec::Acp(s) if s.name == name => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let gemini = acp("gemini-acp");
+        assert_eq!(gemini.command, "gemini");
+        assert_eq!(gemini.args, ["--acp", "--approval-mode", "default"]);
+        assert_eq!(gemini.flavor, AcpFlavor::Gemini);
+        assert_eq!(gemini.mode.as_deref(), Some("default"));
+        let codex = acp("codex-acp");
+        assert_eq!(codex.command, "codex-acp");
+        assert_eq!(codex.flavor, AcpFlavor::Codex);
+        // Its own default ("Auto review") runs tools without asking.
+        assert_eq!(codex.mode.as_deref(), Some("read-only"));
+        assert_eq!(codex.session_store.as_deref(), Some(".codex/sessions"));
+        let muse = acp("muse-acp");
+        assert_eq!(muse.command, "muse");
+        assert_eq!(
+            muse.args,
+            [
+                "acp",
+                "-c",
+                "telemetry.enabled=false",
+                "-c",
+                "approval_judge=\"off\""
+            ]
+        );
+        assert_eq!(muse.flavor, AcpFlavor::Muse);
+        assert_eq!(muse.mode.as_deref(), Some("promptUnmatched"));
+        // Each runs in its own preset with its own egress list (by the program's name).
+        for (spec, host) in [
+            (&gemini, "generativelanguage.googleapis.com"),
+            (&codex, "api.openai.com"),
+            (&muse, "api.meta.ai"),
+        ] {
+            spec.validate().unwrap();
+            let sandbox = spec.effective_sandbox();
+            assert!(sandbox.enabled && !sandbox.rw.is_empty(), "{}", spec.name);
+            let allow = sandbox.egress_allow(&spec.command).unwrap();
+            assert!(
+                allow.iter().any(|r| r.matches(host, 443)),
+                "{}: {host}",
+                spec.name
+            );
+        }
+        // They are providers of their own (the program's file name).
+        let providers: Vec<String> = ["gemini-acp", "codex-acp", "muse-acp"]
+            .iter()
+            .map(|n| backends.iter().find(|b| b.name() == *n).unwrap().provider())
+            .collect();
+        assert_eq!(providers, ["gemini", "codex-acp", "muse"]);
+    }
+
+    #[test]
     fn disabled_providers_are_left_out_but_never_all_lead_backends() {
         let mut config = ServerConfig::default();
         let facts = config.apply_providers(&providers("[provider.grok]\nenabled = false\n"));
         config.validate().unwrap();
         assert!(config.backends.iter().all(|b| b.provider() != "grok"));
-        assert_eq!(config.lead.backends, ["claude-session", "opencode-acp"]);
+        assert_eq!(
+            config.lead.backends,
+            [
+                "claude-session",
+                "opencode-acp",
+                "gemini-acp",
+                "codex-acp",
+                "muse-acp"
+            ]
+        );
         let grok: Vec<_> = facts.iter().filter(|f| f.provider == "grok").collect();
         assert_eq!(grok.len(), 2);
         assert!(grok.iter().all(|f| !f.enabled));
         // Disabling every lead agent backend is ignored.
         let mut config = ServerConfig::default();
         config.apply_providers(&providers(
-            "[provider.grok]\nenabled = false\n[provider.claude]\nenabled = false\n[provider.opencode]\nenabled = false\n",
+            "[provider.grok]\nenabled = false\n[provider.claude]\nenabled = false\n[provider.opencode]\nenabled = false\n\
+             [provider.gemini]\nenabled = false\n[provider.codex-acp]\nenabled = false\n[provider.muse]\nenabled = false\n",
         ));
-        assert_eq!(config.lead.backends.len(), 3);
+        assert_eq!(config.lead.backends.len(), 6);
         assert_eq!(config.backends.len(), default_backends().len());
         // A disabled agent default falls back to the lead agent's first backend.
         let mut config: ServerConfig =

@@ -52,7 +52,22 @@ pub enum AcpFlavor {
     /// server is configured there with Code Mode off (else OpenCode hides MCP tools behind
     /// its JavaScript `execute` tool), project config and auto-update are off.
     Opencode,
+    /// Gemini CLI (`gemini --acp`): credentials in files (no keyring), and with no API key
+    /// set, the Google sign-in in `~/.gemini/oauth_creds.json` (`GOOGLE_GENAI_USE_GCA`).
+    Gemini,
+    /// Codex through its ACP adapter (`codex-acp`): it wants `authenticate` even with its API
+    /// key set, so Melissa signs in with `api-key` when `CODEX_API_KEY` or `OPENAI_API_KEY`
+    /// is set (and then keeps the ChatGPT sign-in file out of the sandbox: `authenticate`
+    /// would overwrite it with the key); else the ChatGPT sign-in in `~/.codex/auth.json`.
+    Codex,
+    /// Muse Code (`muse acp`): ACP is behind `MUSE_EXPERIMENTAL_ACP=on`.
+    Muse,
 }
+
+/// API key variables Codex reads (`CODEX_API_KEY` wins).
+const CODEX_KEYS: [&str; 2] = ["CODEX_API_KEY", "OPENAI_API_KEY"];
+/// API key variables Gemini CLI reads.
+const GEMINI_KEYS: [&str; 2] = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 
 /// The ACP flavor for a command (chosen by its file name), used by the built-in backends.
 pub fn flavor_for(command: &str) -> AcpFlavor {
@@ -61,8 +76,46 @@ pub fn flavor_for(command: &str) -> AcpFlavor {
         .and_then(|n| n.to_str())
     {
         Some("opencode") => AcpFlavor::Opencode,
+        Some("gemini") => AcpFlavor::Gemini,
+        Some("codex-acp") => AcpFlavor::Codex,
+        Some("muse") => AcpFlavor::Muse,
         _ => AcpFlavor::Generic,
     }
+}
+
+/// Whether the sandbox sets one of `names` (a provider setting or a passed-through variable).
+fn sets_any(sandbox: &SandboxSpec, names: &[&str]) -> bool {
+    sandbox
+        .vars
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .chain(sandbox.env.iter().map(String::as_str))
+        .any(|n| names.contains(&n))
+}
+
+/// Fixed variables a flavor sets inside the sandbox (OpenCode's are [`opencode_env`]).
+pub fn flavor_env(flavor: AcpFlavor, sandbox: &SandboxSpec) -> Vec<(String, String)> {
+    let vars: &[(&str, &str)] = match flavor {
+        AcpFlavor::Gemini if sets_any(sandbox, &GEMINI_KEYS) => {
+            &[("GEMINI_FORCE_FILE_STORAGE", "true")]
+        }
+        AcpFlavor::Gemini => &[
+            ("GEMINI_FORCE_FILE_STORAGE", "true"),
+            ("GOOGLE_GENAI_USE_GCA", "true"),
+        ],
+        // No browser to open in the sandbox (hides the ChatGPT browser sign-in).
+        AcpFlavor::Codex => &[("NO_BROWSER", "1")],
+        AcpFlavor::Muse => &[("MUSE_EXPERIMENTAL_ACP", "on")],
+        AcpFlavor::Generic | AcpFlavor::Opencode => &[],
+    };
+    vars.iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+/// The ACP sign-in method Melissa calls `authenticate` with for a flavor (None: none).
+pub fn sign_in_method(flavor: AcpFlavor, sandbox: &SandboxSpec) -> Option<&'static str> {
+    (flavor == AcpFlavor::Codex && sets_any(sandbox, &CODEX_KEYS)).then_some("api-key")
 }
 
 /// Configuration of one ACP backend (`kind = "acp"` in the lead agent config).
@@ -108,6 +161,11 @@ pub struct AcpSpec {
     /// Model to use, where the flavor sets the agent's config (`opencode`: `provider/model`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// ACP session mode every session is switched to when it opens: the agent's strictest mode
+    /// that still asks (Codex `read-only`, Muse `promptUnmatched`), so its own default (which
+    /// may run tools without asking) never applies. A session fails if the agent lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 impl AcpSpec {
@@ -124,7 +182,14 @@ impl AcpSpec {
             session_store: None,
             flavor: AcpFlavor::Generic,
             model: None,
+            mode: None,
         }
+    }
+
+    /// Switch every session to this ACP mode ([`AcpSpec::mode`]).
+    pub fn with_mode(mut self, mode: &str) -> Self {
+        self.mode = Some(mode.into());
+        self
     }
 
     pub fn with_flavor(mut self, flavor: AcpFlavor) -> Self {
@@ -163,7 +228,7 @@ impl AcpSpec {
             // Melissa writes OpenCode's whole config; the user's own (which may allow
             // tools without asking) stays hidden.
             AcpFlavor::Opencode => SandboxSpec::preset_opencode_managed(),
-            AcpFlavor::Generic => SandboxSpec::preset(&self.command),
+            _ => SandboxSpec::preset(&self.command),
         });
         spec.network = self.network;
         spec.allow = self.allow.clone();
@@ -215,7 +280,12 @@ impl AcpBackend {
     /// `workdir` is the default working directory (per-task dirs come from the board).
     pub fn new(spec: AcpSpec, workdir: PathBuf) -> Self {
         let program = ProgramPath::new(&spec.command);
-        let sandbox = spec.effective_sandbox();
+        let mut sandbox = spec.effective_sandbox();
+        if sign_in_method(spec.flavor, &sandbox).is_some() {
+            // `authenticate` with the key writes it into `~/.codex/auth.json`: keep that file
+            // in the sandbox's throw-away home, not the ChatGPT sign-in on the host.
+            sandbox.rw.retain(|p| p != ".codex/auth.json");
+        }
         let bwrap = if sandbox.enabled {
             sandbox::find_bwrap()
         } else {
@@ -295,7 +365,6 @@ impl AcpBackend {
         let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
         // OpenCode gets Melissa's MCP server through its config, not `session/new`.
         let (env, session_servers) = match self.spec.flavor {
-            AcpFlavor::Generic => (Vec::new(), open.mcp_servers.clone()),
             AcpFlavor::Opencode => (
                 opencode_env(
                     &open.mcp_servers,
@@ -303,6 +372,7 @@ impl AcpBackend {
                 ),
                 Vec::new(),
             ),
+            other => (flavor_env(other, &self.sandbox), open.mcp_servers.clone()),
         };
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
         let (program_path, argv) = sandboxed_command(
@@ -393,6 +463,10 @@ impl AcpBackend {
         let open = OpenSession {
             cwd,
             mcp_servers: session_servers,
+            authenticate: sign_in_method(self.spec.flavor, &self.sandbox)
+                .map(str::to_string)
+                .or(open.authenticate),
+            mode: self.spec.mode.clone().or(open.mode),
             ..open
         };
         let stop = client::process_shutdown(child);

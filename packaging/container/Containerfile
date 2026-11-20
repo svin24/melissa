@@ -147,6 +147,9 @@ RUN set -eu; \
         /usr/lib/melissa/whisper/whisper-cli; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
     /usr/lib/melissa/whisper/whisper-cli --help >/dev/null 2>&1 || { echo "lint: whisper-cli doesn't run"; exit 1; }; \
+    # npm-only agent CLIs (Gemini CLI, Pi) run on the image's Node; their packages need >= 20.6.
+    node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || { echo "lint: node >= 22 missing"; exit 1; }; \
+    npm --version >/dev/null || { echo "lint: npm missing"; exit 1; }; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket; \

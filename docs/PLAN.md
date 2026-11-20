@@ -265,6 +265,17 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   permissions (OpenCode shell → inbox → denied), cancel, second prompt, resume after a daemon restart. Replay
   tests from recorded, scrubbed transcripts. Lead agent default order: `grok-acp`, `claude-session`, `opencode-acp`.
   Details: `docs/agent-skills/acp-sessions.md`.
+- **Gemini CLI, Codex, Muse Code built in (2026-11-20, owner request; DECISIONS):** session backends `gemini-acp`
+  (`gemini --acp`), `codex-acp` (Codex through `@agentclientprotocol/codex-acp`, which runs `codex app-server`)
+  and `muse-acp` (`muse acp`), appended to the lead agent's backends. Melissa switches each session to the
+  agent's strictest asking mode (new `mode` key: Gemini `default`, Codex `read-only`, Muse `promptUnmatched`;
+  fails closed), calls `authenticate api-key` for Codex when its key is set, and reads Gemini's models from ACP's
+  older `models` field (`session/set_model`). Installed by `melissa-setup`: Gemini CLI and Codex from npm (pinned
+  version + SHA-512 integrity, no install scripts, own folder, run by the image's Node.js 24), Muse as Meta's
+  release binary (SHA-256 pinned). Sign-in: Codex and Muse by device code (like Grok), or an API key
+  (`OPENAI_API_KEY`, `META_API_KEY`); Gemini by `GEMINI_API_KEY`. Verified 2026-11-20 in a scratch container
+  from the image (installs, sandbox, egress proxy, model lists; each vendor's API reached and refused the fake
+  key); a real turn needs the owner's accounts. Pi was not built (open question 76h).
 - **Lead agent loop (2026-11-18):** the lead agent runs in `melissa-server` (`melissa_agent::lead`): one lazily opened,
   long-lived session from an ordered backend list (`[lead] backends`, default `grok-acp`), one turn at a time,
   cancel, `session_lost` + new session when the agent dies, the shipped system prompt
@@ -438,7 +449,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   pinned in `packaging/container/whisper.lock`; Nix `services.melissa.voice.package`).
 - **Add and remove providers (2026-11-20, owner request; DECISIONS):** Settings → Providers has "Add provider", an
   in-page panel with three steps (1 Provider → 2 Identity → 3 Config): the agents Melissa runs itself (Claude Code,
-  Grok, OpenCode; choosing one continues to its usual Install and Sign in), an agent from the public **ACP
+  Grok, OpenCode, Gemini CLI, Codex, Muse Code; choosing one continues to its usual Install and Sign in), an
+  agent from the public **ACP
   registry**, or a local ACP command entered by hand (saved only after it answers ACP `initialize`). Identity is an
   API key (stored like the other provider secrets), Config the hosts it may reach (deny by default). Added agents
   live in `providers.toml` `[added.<id>]` and run as session backends `<id>-acp` after the next (idle) restart; then
@@ -566,7 +578,7 @@ Roadmap (rough, phases may overlap):
 13. ~~Image base~~ Decided 2026-11-18: two variants, desktop (Kinoite/KDE) and headless (fedora-bootc). Superseded
     2026-11-19: one container image on `fedora:45` (bootc variants archived).
 14. Desktop and Android app stack (Tauri? native? a thin wrapper around the web UI?) and how they authenticate.
-15. Agent CLI terms: may Melissa drive Claude Code, Grok and OpenCode headlessly on a user's behalf? Check each.
+15. Agent CLI terms: may Melissa drive Claude Code, Grok, OpenCode, Gemini CLI, Codex and Muse Code headlessly on a user's behalf? Check each.
 16. Prompt injection is unsolved; Melissa can only limit the blast radius (tool labels, confirmations, egress
     allowlist). Say this plainly in the UI so "sandboxed" isn't read as "safe". The egress allowlist is
     host-level: an injected agent can still send data to an allowed host (e.g. the model API itself, or another
@@ -941,9 +953,11 @@ Roadmap (rough, phases may overlap):
     ("Couldn't save that: {e}") or no next step ("Couldn't save."). (d) Small CSS drift: a raw `#1b2533` on
     `.count`, untokened overlay shadows and backdrops, `margin-right: -48px` on `.file-more`, `tabular-nums` only
     on the voice timer.
-76. Add and remove providers (2026-11-20; DECISIONS): (a) Registry agents distributed only through `npx`/`uvx`
-    (Codex, Gemini CLI, GitHub Copilot, Qwen Code, ...) need Node.js or uv, which the image doesn't have; they show
-    "Enter manually". Ship a Node runtime, or install npm packages into the agents' home? (b) An added agent gets
+76. Add and remove providers (2026-11-20; DECISIONS): (a) Decided 2026-11-20: the image ships Node.js 24 (~73 MiB
+    with npm) and `melissa-setup` installs npm-only agents into the agents' home with pinned versions and
+    integrity (Gemini CLI, Codex are built in now). Still open: registry agents distributed only through
+    `npx`/`uvx` (GitHub Copilot, Qwen Code, ...) keep showing "Enter manually": install registry `npx` entries the
+    same way (the registry pins a version but no integrity), and ship uv too? (b) An added agent gets
     an empty sandbox home and only the hosts the owner lists; Melissa doesn't know which hosts each agent's service
     uses. Offer `network = "learn"` for a first run and propose the list from what it saw? (c) Its own sign-in
     flows (ACP `authenticate`, terminal logins) are not offered; only an API key. (d) The ACP check runs the program
@@ -951,7 +965,25 @@ Roadmap (rough, phases may overlap):
     releases are trusted by their published SHA-256 only (same source as the URL); no signatures. (f) Brand
     guidelines were read on 2026-11-20; recheck before adding logos, and if a brand objects, drop its logo (letter
     mark). (g) Removing a provider while its chat sessions exist leaves their transcripts; switching a chat to a
-    removed provider is refused once it is gone after the restart.
+    removed provider is refused once it is gone after the restart. (h) **Pi** (Mario Zechner's coding agent, now
+    `@earendil-works/pi-coding-agent`) has no ACP of its own; its adapter `pi-acp` (third party, 0.0.34) takes no
+    MCP servers (`mcpCapabilities.http: false`, so no Melissa tools) and never asks permission for Pi's tools
+    (read, write, edit, bash run unasked; only extension prompts ask). Not built: offer it without Melissa's
+    tools and with the sandbox as the only limit, wait for MCP and permission support upstream, or drive Pi's
+    own RPC mode (`pi --mode rpc`, as T3 Code does) with a backend of Melissa's? Owner decision. (i) New
+    built-ins, not verified with real accounts (no keys here): a full turn and tool calls for each; Codex's and
+    Muse's own command sandboxes inside bwrap (they may fail there; Muse has `--disable-sandbox`); Gemini's
+    `web_fetch` with the DNS placeholder; resume after a restart (Codex `~/.codex/sessions`, Muse
+    `~/.local/share/muse`); Muse's model list (it lists none until the key is accepted); the device-code
+    sign-ins end to end (Codex may need "device code sign-in" enabled in the ChatGPT account's security
+    settings). (j) Google sign-in for Gemini CLI is not offered (paste-the-code flow like Claude's would work
+    with `NO_BROWSER=true`); a hand-made `~/.gemini/oauth_creds.json` is used when no key is set
+    (`GOOGLE_GENAI_USE_GCA`, unverified). (k) Telemetry that shares a host with the API can't be denied by host:
+    Codex's analytics events (`chatgpt.com`, ChatGPT sign-in only) and Muse's (`api.meta.ai`, turned off with
+    `-c telemetry.enabled=false`). Codex: also set `analytics`/`otel` off through a config Melissa writes?
+    (l) npm installs pin the top-level packages and Codex's platform binary; their other dependencies
+    (codex-acp: ~20 small packages) are checked by npm against the registry only. Ship lockfiles? (m) Disk: Codex
+    ~425 MiB, Muse ~450 MiB, Gemini ~96 MiB in the agents' home.
 77. Panels and usage (2026-11-20; DECISIONS): (a) Provider CLI updates: Providers only probe the installed
     version, so the rail's update dot covers Melissa only. A "newer version" check per provider would be a new
     third-party call (npm registry, GitHub releases); worth it, and on request only like the ACP registry?
