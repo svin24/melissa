@@ -40,6 +40,24 @@ pub struct ServerConfig {
     pub lead: LeadSection,
     /// App deploys.
     pub apps: AppsSection,
+    /// Sandboxed agents' network beyond their backends' allowlists.
+    pub egress: EgressSection,
+}
+
+/// `[egress]`: what sandboxed agents may reach besides their backend's own service.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct EgressSection {
+    /// Agents may read any public web page through Melissa's proxy: HTTPS (port 443) and
+    /// plain HTTP GET/HEAD (port 80), read-only, every fetch audited, and a task that read
+    /// the web needs the owner's OK for its changes. Off: only the backends' allowlists.
+    pub web_read: bool,
+}
+
+impl Default for EgressSection {
+    fn default() -> Self {
+        Self { web_read: true }
+    }
 }
 
 /// `[apps]`: which domain apps get, how app links are built, the write identity's kubeconfig.
@@ -114,6 +132,7 @@ impl Default for ServerConfig {
             kubeconfig: None,
             lead: LeadSection::default(),
             apps: AppsSection::default(),
+            egress: EgressSection::default(),
         }
     }
 }

@@ -373,6 +373,8 @@ impl ClaudeBackend {
             open.task.unwrap_or_default(),
             tokens,
         )?;
+        open.permissions
+            .set_web_access(crate::cli::web_access(&self.sandbox, self.egress.as_ref()));
         let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
         let env = claude_env();
         let extra = with_model(&self.spec.args, open.model.as_deref())?;

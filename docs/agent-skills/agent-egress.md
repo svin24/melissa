@@ -6,12 +6,14 @@ sandbox's network setup (`crates/agent/src/sandbox.rs`).
 
 ## Design (verified 2026-11-18 on the dev laptop, Kinoite 45, SELinux enforcing, bwrap 0.13.1)
 ```
- sandbox (bwrap --unshare-all: own netns, loopback only, no resolver)        lead agent (melissa-server)
+ sandbox (bwrap --unshare-all: own netns, loopback only)                    lead agent (melissa-server)
  ┌──────────────────────────────────────────────────────────────┐
  │ melissa-netbridge (starts first, runs the CLI as its child)  │
- │   127.0.0.1:3128 ──► /run/melissa-net/egress.sock ───────────┼──► CONNECT proxy: allowlist, own DNS,
+ │   127.0.0.1:3128 ──► /run/melissa-net/egress.sock ───────────┼──► proxy: allowlist + web read, own DNS,
  │   <lead listen addr> ─► /run/melissa-net/mcp.sock ──────────┼──► public IPs only, audit ──► internet
- │ agent CLI: HTTPS_PROXY=http://127.0.0.1:3128, NO_PROXY=lo    │    MCP only: POST /mcp/<own token>
+ │   127.0.0.1:53/udp: socket handed over dns.sock ─────────────┼──► lead binds it, answers 192.88.99.53
+ │ agent CLI: HTTPS_PROXY=http://127.0.0.1:3128, NO_PROXY=lo,   │    MCP only: POST /mcp/<own token>
+ │   GROK_WEB_FETCH_PROXY=same; /etc/resolv.conf → 127.0.0.1    │
  └──────────────────────────────────────────────────────────────┘
 ```
 - No root, no iptables/nftables, no pasta/slirp4netns: an unprivileged network namespace (bwrap brings up `lo`
@@ -25,16 +27,35 @@ sandbox's network setup (`crates/agent/src/sandbox.rs`).
   are identical inside and outside. `mcp.sock` serves only `POST /mcp/<token>` for the tokens of that sandbox
   (404 for anything else, e.g. `/api/lead/messages` or `/api/confirmations/*/approve`, which a host-network
   agent could reach before).
-- The proxy: `CONNECT host:port` only (plain `GET http://...` is refused), no TLS interception. Allowlist match
-  on the normalized name (lowercase, no trailing dot) → DNS by the lead agent → drop non-public addresses (loopback,
-  RFC 1918, link-local incl. 169.254.169.254, CGNAT 100.64/10 = tailnet, ULA incl. `fd7a:115c:a1e0::/48`,
-  multicast, reserved, documentation, and IPv4 hidden in mapped/NAT64/6to4/compat IPv6) → connect. A name
-  that resolves only to such addresses is denied, so DNS rebinding cannot reach the LAN.
+- The proxy, no TLS interception. Allowlist match on the normalized name (lowercase, no trailing dot) → DNS by
+  the lead agent → drop non-public addresses (loopback, RFC 1918 incl. k3s pods/services 10.42/16 and 10.43/16,
+  link-local incl. 169.254.169.254, CGNAT 100.64/10 = tailnet, ULA incl. `fd7a:115c:a1e0::/48`, multicast,
+  reserved, documentation, 6to4 anycast 192.88.99/24 = the DNS placeholder, and IPv4 hidden in
+  mapped/NAT64/6to4/compat IPv6) → connect to a checked address (never a second lookup). A name that resolves
+  only to such addresses is denied, so DNS rebinding cannot reach the LAN.
+- **Web reading** (`[egress] web_read = true` in `server.toml`, the default; owner decision 2026-11-20): a host
+  that is not on the backend's allowlist is still reachable as a *web read*: `CONNECT` on port 443, or a plain
+  forward request (`GET http://host/path`, port 80; only `GET`/`HEAD`, no body; rewritten to origin form with
+  `Connection: close`; nothing after the head is relayed). Same address rules, plus local names (`localhost`,
+  single labels, `.local`, `.lan`, `.internal`, `.home.arpa`, `.ts.net`) refused before any lookup. Caps per
+  web tunnel (`egress::WebRead`): 64 KiB up (read-only, approximately: TLS hides methods), 32 MiB down, 120 s,
+  30 s idle. Opening one taints the sandbox's MCP sessions (source `web`, the host): the task's later changes
+  need the owner's OK. Each CLI's known background hosts (`egress::default_deny`: Mixpanel, grok.com, Datadog
+  intake, npm registry) stay denied even then. `web_read = false`: only the allowlists, as before.
+- **DNS inside:** a sinkhole on 127.0.0.1:53 answers every A query with 192.88.99.53 and everything else with no
+  records; nothing is forwarded (no DNS channel out). For CLIs that resolve before using the proxy (Grok's
+  `web_fetch`). The sandbox cannot bind port 53 (bwrap's `--dev` = nested user namespace); the bridge creates
+  an unbound UDP socket and hands it over `dns.sock` (SCM_RIGHTS); the lead agent, owner of the sandbox's
+  network namespace, binds and serves it. The lease's `resolv.conf` is bound over `/etc/resolv.conf` (or its
+  link target under `/run`, Fedora: `/run/systemd/resolve/stub-resolv.conf`).
 - Limits per sandbox/tunnel (`EgressLimits`): 64 open tunnels, 10 s for the request head, 10 s DNS+connect,
   10 min idle, 256 MiB per tunnel, 2 s after one side closes (some servers never answer a half-close).
 - Audit (actor `agent`, task, backend; host:port and decision only, never payload):
-  `egress.allow` `api.anthropic.com:443 -> 160.79.104.10:443`, `egress.deny` `example.com:443: not in the
-  allowlist`, `egress.error` (connect failed). Identical denials within 60 s are counted and written with the
+  `egress.allow` `api.anthropic.com:443 -> 160.79.104.10:443` (web reads: `... (web read)`), `egress.web` at the
+  close of a web read `CONNECT example.com:443: 1950 B up, 6568 B down, 27.4 s[; closed: upload limit ...]`
+  (plain HTTP: `GET http://neverssl.com/: ...`), `egress.deny` `10.0.0.1.nip.io:443: resolves only to
+  non-public addresses (10.0.0.1); ...`, `egress.error` (connect failed). A refusal's 403 body reads
+  `blocked by Melissa's network policy: <host>:<port>: <reason>`. Identical denials within 60 s are counted and written with the
   next record or when the sandbox ends: `grok.com:443: not in the allowlist (+40 repeats)`. Attempts that go
   around the proxy (direct connect, DNS) never leave the namespace and are not audited.
 
@@ -46,9 +67,11 @@ command = "claude"
 network = "proxy"          # default. "learn" | "none" | "host"
 allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # replaces the built-in list
 ```
-- `proxy`: only `allow` (absent: built-in list for the command's file name, `egress::default_allow`) + MCP.
-- `learn`: every public host allowed and audited with `(learn: in the allowlist)` / `(learn: NOT in the
-  allowlist)`; private addresses still refused. For finding out what a CLI needs; never leave it on.
+- `proxy`: `allow` (absent: built-in list for the command's file name, `egress::default_allow`) + MCP, plus
+  web reading unless `[egress] web_read = false` (server-wide, not per backend).
+- `learn`: every public host allowed (any port, no web caps, no taint) and audited with `(learn: in the
+  allowlist)` / `(learn: NOT in the allowlist)`; private addresses still refused. For finding out what a CLI
+  needs; never leave it on.
 - `none`: own namespace, no egress; MCP only (no bridge at all without tools).
 - `host`: the old behaviour (shares the host's network and resolver); logs a warning at startup.
 - Rules: `host` or `*.domain` (subdomains only, not the apex), optional `:port` (default 443). No IP literals,
@@ -67,7 +90,9 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
    gets clearly slower without it. Record the result (dated) in the table below and in
    [agent-cli-backends.md](agent-cli-backends.md); change `egress::default_allow` for a built-in CLI.
 4. Check the CLI honours `HTTPS_PROXY`: if it does not, it gets no network at all (fails closed) and the audit
-   shows nothing for it. Report that; do not switch it to `host`.
+   shows nothing for it. Report that; do not switch it to `host`. Check its fetch tool separately (below):
+   a CLI can use the proxy for its API and not for fetching. Hosts it contacts on its own that are not needed
+   go into `egress::default_deny`, or web reading lets them through (and taints every task).
 
 ## What each CLI contacts (dev laptop, 2026-11-18, learn mode then proxy mode; per mode of the CLI)
 | CLI (version) | Allowed (built-in) | Seen and denied | Breaks when denied? |
@@ -79,16 +104,34 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
 | opencode 2.3.2 (`opencode acp`, flavor opencode) | `opencode.ai`, `models.opencode.ai` (same as `run`) | none | No: learn mode then proxy, lead agent + worker in 23.6 s |
 | opencode 1.19.6 (`opencode acp`, official installer's release on 2026-11-18, in the headless VM's system service) | `opencode.ai`, `models.opencode.ai` | `registry.npmjs.org` | No: lead agent + agent_info in 13 s |
 
-All three honour `HTTPS_PROXY` (no CLI needed DNS inside the sandbox). Proxy env also set: `HTTP_PROXY`,
-`ALL_PROXY` and lowercase forms; `NO_PROXY=localhost,127.0.0.1,::1` keeps MCP off the proxy.
+All three use `HTTPS_PROXY` for their own API traffic. Proxy env also set: `HTTP_PROXY`, `ALL_PROXY` and
+lowercase forms; `NO_PROXY=localhost,127.0.0.1,::1` keeps MCP off the proxy; `GROK_WEB_FETCH_PROXY` (below).
+
+## Fetch tools (2026-11-20, web reading)
+| CLI | Fetch tool | Routing | Live result |
+|---|---|---|---|
+| grok 1.0.89 (`agent stdio`, container) | `web_fetch` (permission kind fetch) | Ignores `HTTPS_PROXY`; uses `GROK_WEB_FETCH_PROXY` (or `[toolset.web_fetch] proxy_endpoint`), but first resolves the name itself (SSRF check; static musl binary: `/etc/resolv.conf` + UDP 53) and refuses documentation/private answers ("SSRF blocked: ... 203.0.113.53") | Works with the DNS sinkhole: https://example.com, https://github.com/rust-lang (redirects), http://example.com |
+| opencode 2.3.2 (`acp`, laptop) | `webfetch` | Bun honours `HTTPS_PROXY`/`HTTP_PROXY` | https://example.com via `CONNECT`, http://neverssl.com as a forwarded `GET` |
+| claude (`claude-session`) | none (`--tools ""`) | n/a | `WebFetch` would use the proxy; `WebSearch` runs server-side (PLAN open question 71) |
+
+Before the change, Grok failed with `DNS resolution failed for example.com: failed to lookup address
+information: Try again` although Melissa approved the fetch. Fetch permissions (`session/permissions.rs`) now
+refuse what cannot succeed, with the reason in the audit: `reject_once (fetch): blocked by Melissa's network
+policy: 10.0.0.1 is a private or local address; web reading reaches public hosts only`.
 
 ## Tests
-- Unit: `egress::{addr,rules,relay,tests}` (address ranges, rule matching, CONNECT parsing, relay limits, proxy
-  and MCP socket behaviour, deny collapsing, stale leases), `sandbox::tests` (argv: `--unshare-all` without
-  `--share-net`, no resolver bind, bridge before the CLI, proxy env), bridge argument parsing.
+- Unit: `egress::{addr,rules,relay,web,dns,tests}` (address ranges, rule matching, CONNECT parsing, relay limits
+  incl. upload/download caps and lifetime, forward-request rewriting and refusals, DNS sinkhole replies and the
+  socket hand-over, proxy and MCP socket behaviour, web reads: public host allowed, audited, tainting, upload
+  cap; SSRF answers v4/v6/mapped/NAT64/metadata/tailnet/k3s/placeholder and literals refused; local names and
+  other ports refused; background hosts denied; web reading off), `session::permissions::tests` (fetch
+  refusals with reasons, taint on fetch, reads allowed after taint, changes not), `sandbox::tests` (argv:
+  `--unshare-all` without `--share-net`, proxy env incl. `GROK_WEB_FETCH_PROXY`, `resolv.conf` bind incl.
+  link targets, `--dns`, bridge before the CLI), bridge argument parsing.
 - Integration `crates/agent/tests/egress.rs` (skips without bwrap/curl): a sandboxed `sh` reaches an allowlisted
   name (a local server mapped with `with_resolver_override`), is denied another name and `example.com`, cannot
-  reach the host's loopback, a LAN address or DNS directly, uses MCP through the bridge, gets 404 for `/api/*`;
+  reach the host's loopback, a LAN address or the placeholder directly, resolves every name to the placeholder
+  (the hand-over worked), uses MCP through the bridge, gets 404 for `/api/*`;
   the audit has exactly the three proxy decisions. Proxy mode without the proxy fails closed.
 - Live check: a backend `command = "/usr/bin/sh"` with `args = ["-c", "curl -sS https://example.com/; ...",
   "melissa", "{prompt}"]` → `curl: (7) CONNECT tunnel failed, response 403`; with `--noproxy '*'` →
@@ -106,3 +149,14 @@ All three honour `HTTPS_PROXY` (no CLI needed DNS inside the sandbox). Proxy env
 - Killing the lead agent (SIGTERM) leaves its lease directories; the next start removes those whose sockets no
   longer accept connections (a second lead agent sharing the directory keeps its own).
 - The pre-commit hook's clippy does not lint test targets; run `just check` (it caught an unused variable).
+- Port 53 and bwrap: with `--dev` bwrap creates a second, nested user namespace (devpts needs it), so even
+  `--cap-add CAP_NET_BIND_SERVICE` cannot bind port 53 in the sandbox's network namespace (`Permission denied`);
+  without `--dev` it can. Hence the hand-over to the lead agent. Dropping `--dev` is no option: Grok uses ptys.
+- `getent ahosts` / `AI_ADDRCONFIG` lookups find nothing inside (only loopback addresses are configured); use
+  `getent hosts`. Rust's std, musl and Python's `getaddrinfo` do not set it.
+- Grok ends the whole turn when a fetch permission is refused, and its `web_fetch` shows a proxy refusal only
+  as `error sending request` (the 403 body is not surfaced): read the reason in the audit.
+- Live testing without touching the running Melissa: a scratch server in the container as `melissa`
+  (`systemd-run --unit=... -p User=melissa` with its own `XDG_*_HOME`, a short `XDG_RUNTIME_DIR`, another
+  `listen` port, `melissa-server --config <scratch.toml> ask "..."`). Dev-shell binaries run there after
+  `patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 --remove-rpath` (same glibc).

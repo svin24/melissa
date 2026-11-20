@@ -289,6 +289,8 @@ impl AcpBackend {
             open.task.unwrap_or_default(),
             tokens,
         )?;
+        open.permissions
+            .set_web_access(crate::cli::web_access(&self.sandbox, self.egress.as_ref()));
         let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
         // OpenCode gets Melissa's MCP server through its config, not `session/new`.
         let (env, session_servers) = match self.spec.flavor {

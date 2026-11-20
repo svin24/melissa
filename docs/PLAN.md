@@ -179,6 +179,17 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   the laptop: claude + device_info, grok-acp + device_info, opencode, and the lead agent with a worker, all under
   `proxy`, with telemetry (Datadog, Mixpanel, grok.com) denied; `curl https://example.com` from a sandbox gets
   403. In both images (`/usr/bin/melissa-netbridge`). Details: `docs/agent-skills/agent-egress.md`.
+- **Web reading (2026-11-20, owner decision):** agents may read the open web, read-only, through the same proxy
+  (`[egress] web_read = true`, the default): `CONNECT` to any public host on 443 with read-only caps (64 KiB up,
+  32 MiB down, 120 s, 30 s idle per tunnel) and plain `GET`/`HEAD` (no body, one request, `Connection: close`) to
+  port 80; private/loopback/link-local/CGNAT/tailnet/k3s addresses and local names refused after the proxy's own
+  lookup; each CLI's known background hosts stay denied. Every tunnel is audited (`egress.allow … (web read)`
+  at open, `egress.web` with method, bytes and duration at close) and taints the task (the existing
+  untrusted-content rule: its changes then need the owner's OK; further reads do not). Fetch permissions are
+  checked against the same rules first and refused with the reason. A DNS sinkhole in each sandbox (every name
+  → the placeholder 192.88.99.53, nothing forwarded) satisfies CLIs that resolve before using the proxy;
+  `GROK_WEB_FETCH_PROXY` routes Grok's `web_fetch`. Verified live: grok-acp (container) and opencode-acp
+  (laptop) fetch https and http pages. Claude sessions have no fetch tool (`--tools ""`).
 - **App tools (2026-11-18, deploy tools 2026-11-19):** `app_status`, `list_apps` (read-only), `app_logs`
   (untrusted), `deploy_app`/`update_app` (always confirmed), `uninstall_app` (Destructive) in `crates/cluster`, over separate `AppRead`/`AppDeployer`
   traits. Generated secrets are never returned to agents; the owner reads them with
@@ -814,3 +825,12 @@ Roadmap (rough, phases may overlap):
     box don't taint the conversation (like files sent inline). (h) Box files reach the model only by path (the
     agent opens them) except images and PDFs sent with a message. (i) Not verified live: sandbox bind with real
     bwrap, the panel's look at all widths, the hourly prune on a real box.
+71. Web reading (2026-11-20; DECISIONS): (a) A hijacked agent can still send data out in URLs and request
+    headers (up to 64 KiB per tunnel, any number of tunnels); per-task budgets or an owner-approved
+    destination list for tainted tasks? (b) Grok ends the whole turn when a fetch permission is refused, and the
+    chat only says "Not allowed: …"; show the policy reason in the feed (needs a reason on the permission event).
+    (c) Grok's `web_fetch` shows a proxy refusal as "error sending request" (the 403 body with the reason is not
+    surfaced). (d) Web reads open while any fetch-capable agent runs, not only during an approved fetch; tie the
+    window to fetch tool calls? (e) Programs that resolve with `AI_ADDRCONFIG` (e.g. `getent ahosts`) get no
+    answer in the sandbox (only loopback is configured). (f) Should Claude sessions get `WebFetch` (goes through
+    the proxy) and `WebSearch` (server-side: content never passes the proxy, taint comes from the permission)?

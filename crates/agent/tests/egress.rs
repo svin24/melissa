@@ -1,6 +1,7 @@
 //! Deny-by-default egress, end to end: a sandboxed shell script (bwrap, own network
 //! namespace, `melissa-netbridge` inside) tries to reach an allowlisted test host, a
-//! denied host, the host's loopback and the LAN directly, DNS, and Melissa's MCP endpoint.
+//! denied host, the host's loopback and the LAN directly, DNS (only a placeholder answer),
+//! and Melissa's MCP endpoint.
 //! The "allowlisted host" is a local test server under a made-up name, mapped through the
 //! proxy's resolver override, so the test needs no internet. Skips if bwrap or curl is
 //! missing or bwrap cannot create namespaces.
@@ -146,7 +147,12 @@ async fn sandboxed_agent_reaches_only_allowlisted_hosts_and_mcp() {
         # Around the proxy: the host's loopback, a LAN address, DNS.
         {curl} --noproxy '*' http://127.0.0.1:{port}/ >/dev/null 2>&1 && echo LEAK-host-loopback
         {curl} --noproxy '*' --connect-timeout 2 http://192.0.2.1/ >/dev/null 2>&1 && echo LEAK-lan
-        getent hosts example.com >/dev/null 2>&1 && echo LEAK-dns
+        # DNS answers only the placeholder (nothing is forwarded), and it leads nowhere.
+        # (`getent hosts`, not `ahosts`: AI_ADDRCONFIG finds no address but loopback here.)
+        dns=$(getent hosts example.com 2>/dev/null | head -n1 | cut -d' ' -f1)
+        [ -n "$dns" ] && [ "$dns" != "192.88.99.53" ] && echo LEAK-dns
+        echo "dns=$dns"
+        {curl} --noproxy '*' --connect-timeout 2 http://example.com/ >/dev/null 2>&1 && echo LEAK-placeholder
         # Melissa's tools through the bridge.
         echo "mcp=$({curl} -X POST -H 'Content-Type: application/json' \
             -d '{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}' \
@@ -188,6 +194,8 @@ async fn sandboxed_agent_reaches_only_allowlisted_hosts_and_mcp() {
         lines.contains(&"proxy=http://127.0.0.1:3128".to_string()),
         "{lines:?}"
     );
+    // The bridge handed its DNS socket over and the lead agent answers on port 53.
+    assert!(lines.contains(&"dns=192.88.99.53".to_string()), "{lines:?}");
     assert!(
         lines.contains(&"allowed=allowed-body".to_string()),
         "{lines:?}"

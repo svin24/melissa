@@ -128,6 +128,22 @@ impl McpServer {
         }
     }
 
+    /// Mark a session tainted by `source` (e.g. a web page its agent read through the egress
+    /// proxy, or an approved fetch). The first source is kept for the note to the user.
+    /// Returns false for an unknown session.
+    pub fn taint_session_with(&self, token: &str, source: TaintSource) -> bool {
+        match lock(&self.sessions).get_mut(token) {
+            Some(s) => {
+                if !s.ctx.tainted && s.taint_source.is_none() {
+                    s.taint_source = Some(source);
+                }
+                s.ctx.tainted = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Mark whether someone watches a session's work (a scheduled turn of the lead agent runs
     /// unattended; its other turns answer the user in the chat). Returns false for an unknown
     /// session.

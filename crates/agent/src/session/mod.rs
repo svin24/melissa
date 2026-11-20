@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::{AgentError, BackendInfo, BoxFuture};
 
-pub use permissions::{PermissionContext, PolicyPermissions};
+pub use permissions::{PermissionContext, PolicyPermissions, WebAccess};
 
 /// What a session backend and the agent behind it support (from the protocol handshake).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -362,6 +362,12 @@ impl PermissionDecision {
 /// dropped and the request is answered `cancelled`.
 pub trait PermissionHandler: Send + Sync {
     fn decide<'a>(&'a self, req: &'a PermissionRequest) -> BoxFuture<'a, PermissionDecision>;
+
+    /// The backend tells the handler how its agent reaches the web (called when the agent
+    /// process starts), so fetches that cannot succeed are refused with the reason.
+    fn set_web_access(&self, web: WebAccess) {
+        let _ = web;
+    }
 }
 
 /// An open session with an agent.

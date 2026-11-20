@@ -546,11 +546,18 @@ async fn serve(
             .with_permissions(permissions)
             .with_confirm_timeout(config.confirm_timeout()),
     );
-    // Sandboxed agents reach the network only through this (allowlist, audited) and
-    // Melissa's MCP endpoint at the same address as outside (config.listen).
+    // Sandboxed agents reach the network only through this (allowlist, audited; public web
+    // pages read-only unless `[egress] web_read = false`) and Melissa's MCP endpoint at the
+    // same address as outside (config.listen).
+    let web_read = if config.egress.web_read {
+        melissa_agent::egress::WebRead::on()
+    } else {
+        melissa_agent::egress::WebRead::default()
+    };
     let egress = EgressProxy::new(dirs.egress.clone(), Some(audit.clone()))
         .with_context(|| format!("setting up egress sockets in {}", dirs.egress.display()))?
-        .with_mcp(mcp.clone(), config.listen);
+        .with_mcp(mcp.clone(), config.listen)
+        .with_web_read(web_read);
     match egress.netbridge() {
         Some(path) => {
             tracing::info!(netbridge = %path.display(), sockets = %dirs.egress.display(), "egress proxy ready")

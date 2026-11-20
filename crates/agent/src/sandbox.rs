@@ -11,8 +11,10 @@
 //! Network ([`NetworkMode`]): by default the sandbox has only loopback. A [`Bridge`]
 //! (`melissa-netbridge`, started first inside the sandbox) forwards loopback ports to Unix
 //! sockets served by the lead agent's egress proxy ([`crate::egress`]): an allowlisting HTTPS
-//! proxy (`HTTPS_PROXY` etc. point at it) and Melissa's MCP endpoint. No resolver is
-//! reachable inside; the proxy resolves names itself.
+//! proxy (`HTTPS_PROXY` etc. point at it) and Melissa's MCP endpoint. No real resolver is
+//! reachable inside; the proxy resolves names itself. For CLIs that look a name up before
+//! using the proxy, a DNS sinkhole on `127.0.0.1:53` ([`crate::egress::dns`]) answers every
+//! name with one fixed placeholder address; nothing is forwarded.
 //!
 //! The command line is built by the pure [`command`] function from a [`SandboxPlan`];
 //! [`SandboxPlan::resolve`] does the host lookups (HOME, binary path, which files exist).
@@ -51,6 +53,7 @@ const RESERVED_ENV: &[&str] = &[
     "all_proxy",
     "NO_PROXY",
     "no_proxy",
+    "GROK_WEB_FETCH_PROXY",
 ];
 
 /// Where the bridge's socket directory appears inside the sandbox.
@@ -286,6 +289,9 @@ pub struct Bridge {
     pub ports: Vec<(std::net::SocketAddr, String)>,
     /// The egress proxy's in-sandbox address; sets `HTTPS_PROXY` and friends.
     pub proxy: Option<std::net::SocketAddr>,
+    /// Socket file in `socket_dir` where the bridge hands its DNS socket to the lead agent
+    /// ([`crate::egress::dns`]); `socket_dir` then also holds the sandbox's `resolv.conf`.
+    pub dns: Option<String>,
     /// Host directories the bridge binary needs to run (its dynamic loader outside `/usr`,
     /// e.g. `/nix/store` for a dev-shell build), bound read-only.
     pub runtime: Vec<PathBuf>,
@@ -343,6 +349,10 @@ pub struct SystemRoot {
     pub ro: Vec<PathBuf>,
     /// `PATH` entries after the CLI's own directory and `/usr/bin`.
     pub path: Vec<PathBuf>,
+    /// The file `/etc/resolv.conf` leads to, as a path inside the sandbox: covered with the
+    /// lease's own `resolv.conf` when the bridge serves DNS. `None`: there is none (the C
+    /// libraries then ask 127.0.0.1 anyway).
+    pub resolv_conf: Option<PathBuf>,
 }
 
 const TOP_DIRS: [&str; 4] = ["bin", "sbin", "lib", "lib64"];
@@ -355,6 +365,7 @@ impl Default for SystemRoot {
             top: TOP_DIRS.iter().map(|d| TopDir::UsrLink(d)).collect(),
             ro: Vec::new(),
             path: Vec::new(),
+            resolv_conf: Some(PathBuf::from(RESOLV_CONF)),
         }
     }
 }
@@ -379,7 +390,10 @@ impl SystemRoot {
             .collect();
         let nixos = Path::new(NIXOS_SYSTEM).is_dir();
         let store_program = crate::egress::needs_nix_store(program);
-        Self::from_facts(top, nixos, store_program)
+        Self {
+            resolv_conf: resolv_conf_target(Path::new(RESOLV_CONF)),
+            ..Self::from_facts(top, nixos, store_program)
+        }
     }
 
     /// [`SystemRoot::detect`] without the host lookups.
@@ -393,8 +407,43 @@ impl SystemRoot {
             ro.push(PathBuf::from(NIXOS_SYSTEM));
             path.push(Path::new(NIXOS_SYSTEM).join("sw/bin"));
         }
-        Self { top, ro, path }
+        Self {
+            top,
+            ro,
+            path,
+            resolv_conf: Some(PathBuf::from(RESOLV_CONF)),
+        }
     }
+}
+
+const RESOLV_CONF: &str = "/etc/resolv.conf";
+
+/// Where `etc_resolv` (normally `/etc/resolv.conf`) leads, as a path bwrap can cover with a
+/// file inside the sandbox: the file itself, an existing target under `/etc`, or a target
+/// under `/run` (Fedora: `/run/systemd/resolve/stub-resolv.conf`; `/run` is not bound, so
+/// bwrap creates it in the sandbox's own root). `None` if there is no such file.
+fn resolv_conf_target(etc_resolv: &Path) -> Option<PathBuf> {
+    let meta = std::fs::symlink_metadata(etc_resolv).ok()?;
+    if !meta.file_type().is_symlink() {
+        return Some(etc_resolv.to_path_buf());
+    }
+    if let Ok(target) = etc_resolv.canonicalize() {
+        return (target.starts_with("/etc") || target.starts_with("/run")).then_some(target);
+    }
+    // A dangling link (e.g. the resolver service is not running): only `/run` targets.
+    let link = std::fs::read_link(etc_resolv).ok()?;
+    let joined = etc_resolv.parent().unwrap_or(Path::new("/")).join(link);
+    let mut target = PathBuf::from("/");
+    for c in joined.components() {
+        match c {
+            Component::ParentDir => {
+                target.pop();
+            }
+            Component::Normal(n) => target.push(n),
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+        }
+    }
+    target.starts_with("/run").then_some(target)
 }
 
 impl SandboxPlan {
@@ -588,6 +637,9 @@ pub fn command(
         for name in ["NO_PROXY", "no_proxy"] {
             push(&[&"--setenv", &name, &"localhost,127.0.0.1,::1"]);
         }
+        // Grok's `web_fetch` ignores HTTPS_PROXY and has its own setting (verified with grok
+        // 1.0.89). Other CLIs ignore the variable.
+        push(&[&"--setenv", &"GROK_WEB_FETCH_PROXY", &url]);
     }
 
     // System: read-only /usr and /etc (Fedora is usr-merged; NixOS adds its store and system
@@ -650,6 +702,10 @@ pub fn command(
         }
         // Read-only is enough: connecting to a socket needs no write access to its mount.
         push(&[&"--ro-bind", &b.socket_dir, &BRIDGE_DIR]);
+        if let (Some(_), Some(target)) = (&b.dns, &plan.system.resolv_conf) {
+            let ours = b.socket_dir.join(crate::egress::RESOLV_CONF);
+            push(&[&"--ro-bind", &ours, target]);
+        }
     }
 
     // The task's working directory: the only writable host path. Then freeze the rest.
@@ -669,6 +725,9 @@ pub fn command(
         push(&[&b.netbridge]);
         for (addr, socket) in &b.ports {
             push(&[&"--tcp", &format!("{addr}={BRIDGE_DIR}/{socket}")]);
+        }
+        if let Some(socket) = &b.dns {
+            push(&[&"--dns", &format!("{BRIDGE_DIR}/{socket}")]);
         }
         push(&[&"--"]);
     }
@@ -716,6 +775,7 @@ mod tests {
                 ("127.0.0.1:8080".parse().unwrap(), "mcp.sock".into()),
             ],
             proxy: Some("127.0.0.1:3128".parse().unwrap()),
+            dns: Some("dns.sock".into()),
             runtime: vec!["/nix/store".into()],
         }
     }
@@ -860,6 +920,20 @@ mod tests {
             &a,
             &["--setenv", "NO_PROXY", "localhost,127.0.0.1,::1"]
         ));
+        // Grok's web_fetch has its own proxy setting.
+        assert!(has(
+            &a,
+            &["--setenv", "GROK_WEB_FETCH_PROXY", "http://127.0.0.1:3128"]
+        ));
+        // The DNS sinkhole: the lease's resolv.conf over the host's.
+        assert!(has(
+            &a,
+            &[
+                "--ro-bind",
+                "/run/user/1/melissa/egress/abcd/resolv.conf",
+                "/etc/resolv.conf"
+            ]
+        ));
         // bwrap runs the bridge, which runs the CLI with its untouched arguments.
         let dashdash = a.iter().position(|x| *x == "--").unwrap();
         assert_eq!(
@@ -871,12 +945,54 @@ mod tests {
                 "127.0.0.1:3128=/run/melissa-net/egress.sock",
                 "--tcp",
                 "127.0.0.1:8080=/run/melissa-net/mcp.sock",
+                "--dns",
+                "/run/melissa-net/dns.sock",
                 "--",
                 "/home/u/bin/cli",
                 "-p",
                 "hi"
             ]
         );
+        // Fedora's resolv.conf is a link into /run; with none, nothing is bound.
+        let mut p2 = p.clone();
+        p2.system.resolv_conf = Some("/run/systemd/resolve/stub-resolv.conf".into());
+        let (_, argv) = command(&p2, Path::new("/w"), &[], &[]);
+        assert!(has(
+            &strs(&argv),
+            &[
+                "--ro-bind",
+                "/run/user/1/melissa/egress/abcd/resolv.conf",
+                "/run/systemd/resolve/stub-resolv.conf"
+            ]
+        ));
+        p2.system.resolv_conf = None;
+        let (_, argv) = command(&p2, Path::new("/w"), &[], &[]);
+        assert!(!strs(&argv).iter().any(|x| x.ends_with("resolv.conf")));
+    }
+
+    #[test]
+    fn resolv_conf_is_found_through_links() {
+        let dir = std::env::temp_dir().join(format!("melissa-resolv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("resolv.conf");
+        std::fs::write(&file, "nameserver 192.0.2.1\n").unwrap();
+        assert_eq!(resolv_conf_target(&file), Some(file.clone()));
+        // A dangling link into /run (resolved not running): its target.
+        let link = dir.join("link.conf");
+        std::os::unix::fs::symlink("../../run/x-melissa-test/stub.conf", &link).unwrap();
+        let want = PathBuf::from("/run/x-melissa-test/stub.conf");
+        let got = resolv_conf_target(&link).unwrap();
+        assert!(
+            got.ends_with("run/x-melissa-test/stub.conf"),
+            "{got:?} {want:?}"
+        );
+        // A link to an existing file outside /etc and /run: cannot be covered.
+        let other = dir.join("other.conf");
+        std::os::unix::fs::symlink(&file, &other).unwrap();
+        assert_eq!(resolv_conf_target(&other), None);
+        assert_eq!(resolv_conf_target(&dir.join("missing")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1098,6 +1214,7 @@ mod tests {
         }
         assert!(check_env_name("OPENCODE_CONFIG_CONTENT").is_ok());
         assert!(check_env_name("HTTPS_PROXY").is_err());
+        assert!(check_env_name("GROK_WEB_FETCH_PROXY").is_err());
         for name in ["HOME", "PATH", "", "1X", "A-B", "A B"] {
             let spec = SandboxSpec {
                 env: vec![name.into()],
