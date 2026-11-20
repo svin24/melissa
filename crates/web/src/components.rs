@@ -1238,7 +1238,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
             }
             form.file-keep method="post" action=(p.keep_action) hx-post=(p.keep_action)
                 hx-target=(target) hx-swap="outerHTML" title=(p.keep) {
-                label {
+                label.select-wrap {
                     span.visually-hidden { "Keep files for" }
                     select name="keep" data-autosubmit {
                         @for (value, label) in p.keep_choices {
@@ -1249,9 +1249,8 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                 noscript { button.secondary type="submit" { "Save" } }
             }
         }
-        @if p.files.is_empty() {
-            p.quiet { "No files yet. Files you send or " (p.whose) " saves show here." }
-        } @else {
+        // No empty-state prose (owner, 2026-11-20): the count in the heading says it.
+        @if !p.files.is_empty() {
             ul.box-files {
                 @for f in p.files {
                     li.file-card {

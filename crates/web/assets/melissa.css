@@ -4660,10 +4660,49 @@ main,
   margin: 0;
 }
 
+/* "Keep for": a compact select that matches the upload button (same height, border and
+   radius) with its own chevron, drawn in CSS (no image URLs under the CSP). */
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 0.8rem;
+  top: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
 .file-keep select {
+  appearance: none;
+  -webkit-appearance: none;
   min-height: 40px;
+  padding: 0 2.1rem 0 0.75rem;
   font: inherit;
   font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .file-keep select:hover {
+    border-color: var(--muted);
+  }
+}
+
+.file-keep select:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
 /* The upload icon reuses the composer's paperclip look (label.attach). */
