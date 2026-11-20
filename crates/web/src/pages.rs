@@ -7,14 +7,14 @@ use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BY
 
 use crate::{
     components::{
-        action_button, activity_row, add_app_tile, app_dialog, app_grid, app_page_warned,
-        app_strip, app_tile, approval_card, badge, bypass_banner, card, chat_divider, composer,
-        composer_status, crumbs, device_card, empty_state, facts, feed, feed_entry, lead_message,
-        link, live_region, live_region_on, log_view, markdown, note, oob_inner, page, page_header,
-        plain_text, post_form, rail, relayed_message, scheduled_message, section, select_field,
-        table, textarea_field, thought_row, truncated, user_message_with, waiting_count,
-        AppWorkspace, ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice,
-        StripTile, Tone, APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
+        action_button, activity_row, add_app_tile, app_dialog, app_grid, app_page, app_strip,
+        app_tile, approval_card, badge, card, chat_divider, composer, composer_status, crumbs,
+        device_card, empty_state, facts, feed, feed_entry, lead_message, link, live_region,
+        live_region_on, log_view, markdown, note, oob_inner, page, page_header, plain_text,
+        post_form, rail, relayed_message, scheduled_message, section, select_field, table,
+        textarea_field, thought_row, truncated, user_message_with, waiting_count, AppWorkspace,
+        ApprovalCard, Choice, DeviceCard, Health, LogLine, Meter, Nav, RailDevice, StripTile, Tone,
+        APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{feed_archive, AgentMenu, ComposerTarget, RailHelper, RailPastChat, SentFile},
     feed::{Approval, Change, Entry, Feed, Item},
@@ -43,7 +43,7 @@ fn device_health(d: &Device) -> (Health, &'static str) {
 
 /// What every page with the rail needs.
 pub struct Frame<'a> {
-    /// No permission prompts is on (developer mode): every page warns.
+    /// No permission prompts is on (developer mode).
     pub bypass: bool,
     pub waiting: usize,
     pub snap: &'a ClusterSnapshot,
@@ -54,12 +54,10 @@ pub struct Frame<'a> {
     pub host: Option<&'a str>,
 }
 
-/// A page with the rail, warned while No permission prompts is on.
-pub fn shell(f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
-    let warning = f
-        .bypass
-        .then(|| bypass_banner(crate::settings::pages::DEVELOPER_URL));
-    app_page_warned(title, warning, rail, main)
+/// A page with the rail. (No permission prompts shows no banner: the owner turned it on
+/// knowingly; Settings → Developer shows it.)
+pub fn shell(_f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
+    app_page(title, rail, main)
 }
 
 /// An archived chat's page.

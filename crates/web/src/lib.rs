@@ -2766,9 +2766,9 @@ mod tests {
         }
 
         /// No permission prompts: off by default, on only after the confirmation card, then
-        /// a warning on every page and waiting requests allowed; off again at once.
+        /// waiting requests allowed (no banner on the pages: owner's call); off again at once.
         #[tokio::test]
-        async fn no_permission_prompts_needs_a_yes_and_warns_everywhere() {
+        async fn no_permission_prompts_needs_a_yes() {
             let (app, lead) = app();
             const WARNING: &str = "No permission prompts is on.";
             let (_, _, body) = get_html(&app, "/settings/developer").await;
@@ -2803,7 +2803,7 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(headers["hx-refresh"], "true");
+            assert!(!headers.contains_key("hx-refresh"));
             assert!(lead.server().registry().permissions().bypass());
             assert_eq!(rx.await.unwrap(), melissa_agent::tools::Verdict::Approved);
             for page in [
@@ -2814,11 +2814,7 @@ mod tests {
                 "/settings/developer",
             ] {
                 let (_, _, body) = get_html(&app, page).await;
-                assert!(body.contains(WARNING), "{page}");
-                assert!(
-                    body.contains("href=\"/settings/developer\">Turn it off"),
-                    "{page}"
-                );
+                assert!(!body.contains(WARNING), "{page}");
             }
 
             // Off: no confirmation needed.

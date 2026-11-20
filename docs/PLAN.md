@@ -201,7 +201,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `rule <id>`); pending ones the new rule matches are approved at once (`confirmation.auto_approved`). Rules are
   listed and removed in Settings → Permissions. (2) **No permission prompts** (Settings → Developer, off by
   default, confirm card to switch on): every confirmation is approved (actor `bypass`), all pending ones too;
-  a warning banner with "Turn it off" shows on every page with the rail. Both live in
+  no banner on the pages (owner, 2026-11-20: it was switched on knowingly; Settings → Developer shows it). Both live in
   `$XDG_STATE_HOME/melissa/permissions.json` (0600, outside every sandbox); a broken file grants nothing.
   Agents have no tool for either: only the owner's UI and API (`/api/confirmations/{id}/always`,
   `/api/settings/permissions*`) change them, audited `permissions.rule_added|rule_removed|bypass`.
@@ -756,8 +756,8 @@ Roadmap (rough, phases may overlap):
     allowlists) or forbidding rules for `Deploy`/`Destructive`/`Ownership` effects? (b) Rules also skip the
     taint check ("read untrusted content"): a prompt-injected agent can use its rules. Should a tainted task
     ignore rules? (c) Rules have no expiry or use count. (d) Anyone who reaches the UI/API can add rules or switch
-    the bypass, the same trust as approving (28, 37). (e) The bypass banner is on pages with the rail; bare error
-    pages don't show it. (f) A request answered by a rule leaves no card in the chat (audit log only); show a
+    the bypass, the same trust as approving (28, 37). (e) Resolved: no bypass banner (owner's call).
+    (f) A request answered by a rule leaves no card in the chat (audit log only); show a
     quiet "allowed by your rule" line? (g) The operator CLI's one-shot `tool` calls ignore rules and the bypass.
 68. Scheduled jobs (2026-11-20, see §5): (a) skip vs queue: a run due while the user chats with the lead agent is
     skipped; would "queue once, up to N minutes" be friendlier for the main chat? (b) Nobody is told when a run

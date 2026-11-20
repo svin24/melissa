@@ -229,17 +229,6 @@ button.link {
   border-bottom: 1px solid var(--border);
 }
 
-.banner.alarm {
-  background: var(--caution);
-  color: var(--caution-ink);
-  border-bottom-color: var(--caution);
-}
-
-.banner.alarm a {
-  color: inherit;
-  font-weight: 600;
-}
-
 .shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);

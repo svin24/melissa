@@ -124,14 +124,8 @@ fn bypass_reply(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> Response 
     if !is_htmx(headers) {
         return Redirect::to(DEVELOPER_URL).into_response();
     }
-    // The banner on every page follows the switch: reload so this page shows (or drops) it.
-    let mut res = pages::bypass_region(ui.registry().permissions().bypass(), false, flash.as_ref())
-        .into_response();
-    if flash.as_ref().is_none_or(|f| f.tone != Tone::Error) {
-        res.headers_mut()
-            .insert("hx-refresh", axum::http::HeaderValue::from_static("true"));
-    }
-    res
+    pages::bypass_region(ui.registry().permissions().bypass(), false, flash.as_ref())
+        .into_response()
 }
 
 // --- API ---------------------------------------------------------------------------------------
