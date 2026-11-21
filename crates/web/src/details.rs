@@ -474,7 +474,7 @@ async fn api_details(State(ui): State<Ui>, Path(key): Path<String>) -> Response 
         }
         None => json!({
             "key": "lead",
-            "name": "Melissa",
+            "name": ui.lead.agents().lead_name(),
             "role": "lead",
             "status": if ui.lead.status().turn.is_some() { "working" } else { "idle" },
             "can_delete": false,

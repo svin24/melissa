@@ -62,6 +62,13 @@ pub struct Frame<'a> {
     pub update: UpdateHint,
 }
 
+impl Frame<'_> {
+    /// The lead agent's display name ("Melissa" until the user renames it).
+    pub fn lead_name(&self) -> &str {
+        self.side.lead_name()
+    }
+}
+
 /// A page with the sidebar. (No permission prompts shows no banner: the owner turned it on
 /// knowingly; Settings → Developer shows it.)
 pub fn shell(_f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
@@ -147,12 +154,12 @@ pub fn sidebar_update(side: &SideData, current: Option<&str>) -> Markup {
 }
 
 /// A live update for the open chat of a helper that was just deleted: the composer gives
-/// way to a notice and a link back to Melissa.
-pub fn helper_deleted(name: &str) -> Markup {
+/// way to a notice and a link back to the lead agent (called `lead`).
+pub fn helper_deleted(name: &str, lead: &str) -> Markup {
     composer_closed(
         &format!("{name} was deleted."),
         MELISSA_CHAT_URL,
-        "Back to Melissa's chat",
+        &format!("Back to {lead}'s chat"),
         true,
     )
 }
@@ -167,7 +174,7 @@ pub fn helper_gone(f: &Frame<'_>) -> Markup {
             div.page-pad {
                 (page_header("Conversation not found", None))
                 (crate::components::notice("This helper isn't on this device any more.", Tone::Warn))
-                (link(MELISSA_CHAT_URL, "Back to Melissa's chat"))
+                (link(MELISSA_CHAT_URL, &format!("Back to {}'s chat", f.lead_name())))
             }
         },
     )
@@ -287,11 +294,14 @@ pub struct Speaker<'a> {
     pub avatar: Avatar<'a>,
 }
 
-impl Speaker<'_> {
-    pub const MELISSA: Speaker<'static> = Speaker {
-        name: "Melissa",
-        avatar: Avatar::Melissa,
-    };
+impl<'a> Speaker<'a> {
+    /// The lead agent, called `name`.
+    pub const fn lead(name: &'a str) -> Self {
+        Speaker {
+            name,
+            avatar: Avatar::Melissa,
+        }
+    }
 }
 
 /// What rendering an entry needs besides the entry.
@@ -586,12 +596,12 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
     };
     let empty = match v.who {
         Who::Lead => empty_state(
-            "Hi, I'm Melissa.",
+            &format!("Hi, I'm {}.", f.lead_name()),
             "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
         ),
         Who::Agent(_) => empty_state(
             &format!("Nothing here yet with {}.", v.speaker.name),
-            "Its jobs from Melissa and your messages show up here.",
+            &format!("Its jobs from {} and your messages show up here.", f.lead_name()),
         ),
     };
     // The details sheet's line on phones: "Minecraft agent · melissa".
@@ -652,14 +662,15 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
 
 /// An archived chat with Melissa: read-only, no composer.
 pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks) -> Markup {
+    let name = f.lead_name();
     let lead = format!(
-        "An earlier chat with Melissa, kept read-only. Started {}, closed {}.",
+        "An earlier chat with {name}, kept read-only. Started {}, closed {}.",
         short_date(chat.started),
         short_date(chat.ended)
     );
     let x = EntryCtx {
         links,
-        speaker: Speaker::MELISSA,
+        speaker: Speaker::lead(name),
         clock: feed.clock(),
     };
     shell(
@@ -668,7 +679,7 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks)
         rail_for(Nav::PastChat, f, None),
         html! {
             div.chat.page-pad {
-                (crumbs(&[("/", "Melissa"), ("/chats", "Earlier chats")], &short_date(chat.ended)))
+                (crumbs(&[("/", name), ("/chats", "Earlier chats")], &short_date(chat.ended)))
                 (page_header("Earlier chat", Some(&lead)))
                 (feed_archive(
                     FEED_ID,
@@ -676,7 +687,7 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks)
                     entries(feed.entries(), &x),
                     empty_state("Nothing in this chat.", "It was closed before anything was said."),
                 ))
-                p.quiet { (link(MELISSA_CHAT_URL, "Back to Melissa's chat")) }
+                p.quiet { (link(MELISSA_CHAT_URL, &format!("Back to {name}'s chat"))) }
             }
         },
     )
@@ -690,10 +701,10 @@ pub fn past_chats(f: &Frame<'_>) -> Markup {
         rail_for(Nav::PastChat, f, None),
         html! {
             div.page-pad {
-                (crumbs(&[("/", "Melissa")], "Earlier chats"))
-                (page_header("Earlier chats", Some("Chats with Melissa from before she kept one chat. Read-only.")))
+                (crumbs(&[("/", f.lead_name())], "Earlier chats"))
+                (page_header("Earlier chats", Some(&format!("Chats with {} from before one chat per agent. Read-only.", f.lead_name()))))
                 @if f.past.is_empty() {
-                    (empty_state("No earlier chats.", "Melissa keeps one chat; there were none before it."))
+                    (empty_state("No earlier chats.", &format!("{} keeps one chat; there were none before it.", f.lead_name())))
                 } @else {
                     (crate::components::past_chat_list(&f.past.iter().map(|p| crate::components::PastChatRow {
                         href: past_chat_href(p.id),

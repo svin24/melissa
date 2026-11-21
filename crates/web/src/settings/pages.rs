@@ -1070,7 +1070,9 @@ pub const AGENT_ID: &str = "agent-settings";
 /// A helper's page in Settings → Agents (its menu's Rename, Change icon, Agent settings and
 /// Delete lead here).
 pub struct AgentPage<'a> {
+    /// The helper's id, or `lead` for the lead agent (its page has its name only).
     pub id: &'a str,
+    pub lead: bool,
     pub name: &'a str,
     pub shape: &'a str,
     pub color: &'a str,
@@ -1091,21 +1093,32 @@ pub fn agent_settings_page(f: &Frame<'_>, a: &AgentPage<'_>) -> Markup {
     frame_at(f, "Agents", Some(a.name), agent_settings_region(a))
 }
 
-/// A helper's settings (swapped whole by its forms).
+/// A helper's settings (swapped whole by its forms); the lead agent's has its name only.
 pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
     let base = format!("/ui/settings/agents/{}", a.id);
-    let chat = crate::pages::agent_href(a.id);
+    let (chat, face) = if a.lead {
+        (crate::pages::MELISSA_CHAT_URL.to_string(), Avatar::Melissa)
+    } else {
+        (
+            crate::pages::agent_href(a.id),
+            Avatar::Agent {
+                shape: a.shape,
+                color: a.color,
+            },
+        )
+    };
     region(
         AGENT_ID,
         html! {
             @if let Some(f) = a.flash { (notice(&f.text, f.tone)) }
             (setting_card(None, html! {
                 (setting_row_with(
-                    html! { (avatar(&Avatar::Agent { shape: a.shape, color: a.color }, "av")) " " (a.name) },
+                    html! { (avatar(&face, "av")) " " (a.name) },
                     Some(html! { (a.runs_on) }),
                     html! { (badge(a.status.0, a.status.1)) " " (link(&chat, "Open chat")) },
                     None,
                 ))
+                @if !a.lead {
                 (setting_row("Made", None, html! { span { (a.made) } }))
                 (setting_row(
                     "Pinned",
@@ -1128,6 +1141,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                         &format!("Clear {}'s memory? It can't be brought back.", a.name),
                     ),
                 ))
+                }
             }))
             section.setting-group #agent-name {
                 div.setting-card.card-pad {
@@ -1135,6 +1149,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                         text_field("name", "Name", a.name, "", "text", None)))
                 }
             }
+            @if !a.lead {
             section.setting-group {
                 h2.setting-heading { "Icon" }
                 div.setting-card.card-pad {
@@ -1155,6 +1170,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                         )),
                     }
                 }
+            }
             }
         },
     )

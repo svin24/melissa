@@ -29,7 +29,7 @@ const KNOWN: &[&str] = &["from_agent", "file", "to_agent", "move"];
 /// A resolved box: its owner and how to name it to the owner.
 struct BoxRef {
     owner: Principal,
-    /// `Melissa` or the agent's name.
+    /// The lead agent's name (`Melissa` until renamed) or the agent's.
     name: String,
     /// For the confirmation: `Melissa (the lead agent)` or `agent Bo (<id>)`.
     described: String,
@@ -38,14 +38,13 @@ struct BoxRef {
 impl TransferFile {
     fn box_of(&self, who: &str) -> Result<BoxRef, ToolError> {
         let key = who.trim();
-        if ["lead", "melissa", "me", "you"]
-            .iter()
-            .any(|k| key.eq_ignore_ascii_case(k))
-        {
+        let registry = &self.0.inner.registry;
+        if registry.is_lead(key) || ["me", "you"].iter().any(|k| key.eq_ignore_ascii_case(k)) {
+            let name = registry.lead_name();
             return Ok(BoxRef {
                 owner: Principal::Lead,
-                name: "Melissa".into(),
-                described: "Melissa (the lead agent)".into(),
+                described: format!("{name} (the lead agent)"),
+                name,
             });
         }
         let agent = self.0.resolve(key)?;
@@ -88,7 +87,7 @@ impl Tool for TransferFile {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "transfer_file",
-            description: "Send a file from one file box to another: yours (`Melissa`) or an \
+            description: "Send a file from one file box to another: yours (`lead`) or an \
                           agent's. Copies by default (both keep it); `move: true` removes it from \
                           the sender. Use it when the user asks you to pass a file between \
                           agents; agents can't reach each other's boxes. Always asks the user \
@@ -100,9 +99,9 @@ impl Tool for TransferFile {
             params: json!({
                 "type": "object",
                 "properties": {
-                    "from_agent": agent_param("Whose box the file is in (`Melissa` for yours)"),
+                    "from_agent": agent_param("Whose box the file is in (`lead` for yours)"),
                     "file": {"type": "string", "description": "The file's name in that box, e.g. `report.pdf`."},
-                    "to_agent": agent_param("Whose box gets it (`Melissa` for yours)"),
+                    "to_agent": agent_param("Whose box gets it (`lead` for yours)"),
                     "move": {"type": "boolean", "description": "Remove it from the sender (default false: copy)."},
                 },
                 "required": ["from_agent", "file", "to_agent"],

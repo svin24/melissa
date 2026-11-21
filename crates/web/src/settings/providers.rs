@@ -222,9 +222,10 @@ fn lock_reason(ui: &Ui, id: &str, views: &[BackendView]) -> Option<String> {
         .iter()
         .any(|v| v.current && of(&v.name).as_deref() == Some(id))
     {
-        return Some(
-            "Melissa runs on it now. Switch her to another agent in the chat first.".into(),
-        );
+        let lead = ui.lead.agents().lead_name();
+        return Some(format!(
+            "{lead} runs on it now. Switch {lead} to another agent in the chat first."
+        ));
     }
     let helpers: Vec<String> = ui
         .lead
@@ -369,7 +370,7 @@ async fn info(
     let mine = |name: &str| facts.iter().any(|f| f.name == name);
     let mut used_by = Vec::new();
     if views.iter().any(|v| v.current && mine(&v.name)) {
-        used_by.push("Melissa (now)".to_string());
+        used_by.push(format!("{} (now)", ui.lead.agents().lead_name()));
     }
     if s.parts().agent_default.as_deref().is_some_and(mine) {
         used_by.push("New helpers".to_string());

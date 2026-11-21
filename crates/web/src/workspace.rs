@@ -48,7 +48,7 @@ impl MenuUrls {
         if key == "lead" {
             return Self {
                 settings: "/settings/agents".into(),
-                rename: None,
+                rename: Some(format!("{}#agent-name", agent_settings_href("lead"))),
                 icon: None,
                 pin: None,
                 fresh: "/ui/fresh-start".into(),
@@ -83,7 +83,7 @@ impl MenuUrls {
     }
 }
 
-/// A helper's page in Settings → Agents.
+/// A helper's page in Settings → Agents (`lead`: the lead agent's, its name only).
 pub fn agent_settings_href(id: &str) -> String {
     format!("/settings/agents/{id}")
 }
@@ -133,6 +133,14 @@ impl SideData {
         self.devices
             .first()
             .map_or("This device", |(n, _, _)| n.as_str())
+    }
+
+    /// The lead agent's display name ("Melissa" until the user renames it).
+    pub fn lead_name(&self) -> &str {
+        self.entry("lead")
+            .map_or(melissa_agent::lead::registry::LEAD_DEFAULT_NAME, |e| {
+                e.name.as_str()
+            })
     }
 
     pub fn entry(&self, key: &str) -> Option<&SideEntry> {
@@ -315,7 +323,7 @@ impl Ui {
             key: "lead".into(),
             // Not `/`: on phones `/` is the agent list (components::mobile).
             href: MELISSA_CHAT_URL.into(),
-            name: "Melissa".into(),
+            name: agents.lead_name(),
             icon: None,
             group,
             status,

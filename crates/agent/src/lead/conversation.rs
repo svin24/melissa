@@ -121,7 +121,8 @@ pub(crate) struct ConversationSpec {
     pub failover: bool,
     /// Models each backend reported (shared, filled when sessions open).
     pub models: ModelCache,
-    pub system_prompt: String,
+    /// Read each time a new session is primed (see [`super::prompt`]).
+    pub system_prompt: super::prompt::SystemPrompt,
     /// `session.json`, the agent's session store, the transcript live here.
     pub state_dir: PathBuf,
     /// The agent's working directory.
@@ -1025,7 +1026,7 @@ impl Conversation {
     fn preamble(&self, text: &str, body: String) -> String {
         let mut p = format!(
             "<melissa-system-prompt>\n{}\n</melissa-system-prompt>\n\n",
-            self.inner.spec.system_prompt.trim()
+            self.inner.spec.system_prompt.text().trim()
         );
         if let Some(t) = self.inner.events.transcript() {
             let recap = t.recap(SUMMARY_CHARS);

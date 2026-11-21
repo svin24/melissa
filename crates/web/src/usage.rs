@@ -99,7 +99,12 @@ fn cost(by_unit: &BTreeMap<String, u64>) -> String {
 pub(crate) async fn page(State(ui): State<Ui>) -> Markup {
     let lead = ui.lead.usage();
     let mut all = vec![(
-        words("Melissa".into(), "/".into(), "Lead agent", &lead),
+        words(
+            ui.lead.agents().lead_name(),
+            "/".into(),
+            "Lead agent",
+            &lead,
+        ),
         lead.since,
     )];
     for a in ui.lead.agents().list() {

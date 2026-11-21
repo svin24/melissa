@@ -166,6 +166,10 @@ impl Lookup for Ui {
         self.lead.agents().get(agent).map(|b| b.name)
     }
 
+    fn lead_name(&self) -> String {
+        self.lead.agents().lead_name()
+    }
+
     fn rule_offer(&self, id: u64) -> Option<RuleOffer> {
         self.lead
             .confirmations()
@@ -288,6 +292,7 @@ impl Ui {
         self.lead.refresh_models_soon();
         let picker = self.picker(who, None);
         let links = self.file_links(who);
+        let lead_name = self.lead.agents().lead_name();
         let details = self.details_of(&crate::files::owner_of(who), agent).await?;
         let files = details.files.view();
         let panel = details.view(&files);
@@ -295,7 +300,7 @@ impl Ui {
             who,
             epoch: log.epoch(),
             feed: &feed,
-            speaker: speaker_of(agent),
+            speaker: speaker_of(agent, &lead_name),
             backend: backend.as_deref(),
             picker: picker.as_ref(),
             busy: self.status(who).is_some_and(|s| s.turn.is_some()),
@@ -340,10 +345,10 @@ impl Ui {
     }
 }
 
-/// Who a chat is with, for its messages' heads.
-pub(crate) fn speaker_of(agent: Option<&AgentView>) -> Speaker<'_> {
+/// Who a chat is with, for its messages' heads (`lead`: the lead agent's name).
+pub(crate) fn speaker_of<'a>(agent: Option<&'a AgentView>, lead: &'a str) -> Speaker<'a> {
     match agent {
-        None => Speaker::MELISSA,
+        None => Speaker::lead(lead),
         Some(a) => Speaker {
             name: &a.name,
             avatar: Avatar::Agent {
@@ -537,7 +542,9 @@ impl StreamState {
                 }
                 None => {
                     if let Some(name) = self.name.take() {
-                        out.push_str(&pages::helper_deleted(&name).into_string());
+                        out.push_str(
+                            &pages::helper_deleted(&name, self.side.lead_name()).into_string(),
+                        );
                     }
                 }
             }
@@ -761,9 +768,10 @@ fn stream(
             };
             let files = panel.as_ref().map(|p| p.view());
             let agent_view = st.agent.as_ref().and_then(|id| st.ui.agent(id));
+            let lead_name = st.ui.lead.agents().lead_name();
             let x = EntryCtx {
                 links: &links,
-                speaker: speaker_of(agent_view.as_ref()),
+                speaker: speaker_of(agent_view.as_ref(), &lead_name),
                 clock: st.feed.clock(),
             };
             let mut html = pages::stream_update(
@@ -1016,11 +1024,12 @@ async fn message_reply(
         let feed = Feed::new();
         let picker = ui.picker(who, None);
         let links = pages::FileLinks::none();
+        let lead_name = ui.lead.agents().lead_name();
         return pages::composer_box(&ChatView {
             who,
             epoch: 0,
             feed: &feed,
-            speaker: speaker_of(agent),
+            speaker: speaker_of(agent, &lead_name),
             backend,
             picker: picker.as_ref(),
             busy,
@@ -1362,7 +1371,10 @@ async fn lead_fresh_start(State(ui): State<Ui>, headers: HeaderMap) -> Response 
         Ok(()) => Redirect::to(&back_to(&headers, "/")).into_response(),
         Err(e) => (
             StatusCode::CONFLICT,
-            pages::error_page("Couldn't clear Melissa's memory", &e.to_string()),
+            pages::error_page(
+                &format!("Couldn't clear {}'s memory", ui.lead.agents().lead_name()),
+                &e.to_string(),
+            ),
         )
             .into_response(),
     }
@@ -1444,9 +1456,10 @@ fn older(ui: &Ui, who: Who<'_>, agent: Option<&AgentView>, q: &OlderQuery) -> Re
     }
     let feed = ui.feed(who, &log);
     let links = ui.file_links(who);
+    let lead_name = ui.lead.agents().lead_name();
     let x = EntryCtx {
         links: &links,
-        speaker: speaker_of(agent),
+        speaker: speaker_of(agent, &lead_name),
         clock: feed.clock(),
     };
     pages::feed_page(&feed, q.before, who, log.epoch(), false, &x).into_response()

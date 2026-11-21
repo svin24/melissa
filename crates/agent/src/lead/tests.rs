@@ -2548,3 +2548,105 @@ async fn files_reach_the_agent_as_images_and_land_in_its_file_box() {
     assert!(json.contains("\"attachments\""), "{json}");
     s.close().await;
 }
+
+#[tokio::test]
+async fn the_user_renames_the_lead_agent_and_its_prompts_follow() {
+    let mut lead = handshake("s-1");
+    lead.extend([
+        // A new session's system prompt carries the name it has now.
+        prompt(2, "s-1", "<contains:Your name is Athena.>"),
+        text("s-1", "Hi."),
+        done(2, "end_turn"),
+        // Renamed while its session is open: told with its next message.
+        prompt(
+            3,
+            "s-1",
+            "<contains:The user renamed you: you are now called Iris.>",
+        ),
+        text("s-1", "Noted."),
+        done(3, "end_turn"),
+    ]);
+    // A helper's prompt names the lead agent by its name too.
+    let ada = agent_reply("b-1", "whom the user calls Iris", "Hi.");
+    let dir = scratch("lead-rename");
+    let s = setup_full(
+        dir.clone(),
+        vec![lead],
+        vec![ada],
+        AgentLimits::default(),
+        |q| q.system_prompt = "You are the lead agent (test). Your name is {lead_name}.".into(),
+    );
+    assert_eq!(s.pool().lead_name(), "Melissa");
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada"]).await;
+
+    // The same rules as a helper's name, unique among the lead agent and every helper.
+    for bad in ["ada", "Lead", "  ", "-x"] {
+        assert!(
+            matches!(s.pool().rename_lead(bad), Err(LeadError::Invalid(_))),
+            "{bad}"
+        );
+    }
+    assert_eq!(s.pool().rename_lead(" Athena ").unwrap(), "Athena");
+    assert!(matches!(
+        s.pool().rename("Ada", "athena"),
+        Err(LeadError::Invalid(_))
+    ));
+    assert!(matches!(
+        s.pool().user_create("ATHENA", None),
+        Err(LeadError::Invalid(_))
+    ));
+
+    let (turn, since) = s.lead.send("hello").unwrap();
+    assert_eq!(
+        finished(&turn_events(&s.lead, since, turn).await),
+        "end_turn"
+    );
+    assert_eq!(s.pool().rename_lead("Iris").unwrap(), "Iris");
+    let (turn, since) = s.lead.send("hello again").unwrap();
+    assert_eq!(
+        finished(&turn_events(&s.lead, since, turn).await),
+        "end_turn"
+    );
+    let (turn, since) = s.pool().user_send("Ada", "Hi").unwrap();
+    let log = s.pool().events_of(ADA).unwrap();
+    assert_eq!(
+        finished(&turn_events_in(&log, since, turn).await),
+        "end_turn"
+    );
+
+    // `lead`, its name and its default name all mean the lead agent; it can't be deleted.
+    let reg = s.pool().registry();
+    assert!(reg.is_lead("iris") && reg.is_lead("lead") && reg.is_lead("Melissa"));
+    assert!(!reg.is_lead("Ada"));
+    assert!(matches!(
+        s.pool().delete("Iris", "ui").await,
+        Err(LeadError::Invalid(m)) if m == "Iris (the lead agent) can't be deleted"
+    ));
+    // Audited like a helper's rename.
+    let renames: Vec<(String, String)> = s
+        .audit_lines()
+        .into_iter()
+        .filter(|l| l["action"] == "agent.rename")
+        .map(|l| {
+            (
+                l["actor"].as_str().unwrap().to_string(),
+                l["detail"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        renames,
+        [
+            ("ui".to_string(), "lead: Melissa → Athena".to_string()),
+            ("ui".to_string(), "lead: Athena → Iris".to_string()),
+        ]
+    );
+    s.close().await;
+
+    // Kept across a restart.
+    let s = setup_full(dir, Vec::new(), Vec::new(), AgentLimits::default(), |_| {});
+    assert_eq!(s.pool().lead_name(), "Iris");
+    assert_eq!(s.pool().get("Ada").unwrap().name, "Ada");
+    s.close().await;
+}

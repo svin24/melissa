@@ -33,6 +33,7 @@ use super::{
     backends::{BackendChoice, BackendView, Switched},
     conversation::{lock, Conversation, ConversationSpec},
     events::{EventLog, LeadEvent, TurnId},
+    prompt::SystemPrompt,
     registry::{AgentRecord, AgentRegistry, RegistryError},
     transcript::{shorten, Transcript},
     LeadError,
@@ -102,6 +103,8 @@ pub(crate) struct Attached {
     /// The lead agent's own tool allowlist (None = every tool).
     pub lead_allow: Option<Vec<&'static str>>,
     pub lead_task: TaskId,
+    /// The lead agent's conversation (told when the user renames it).
+    pub lead_conv: Conversation,
     /// Agents work in `<workroot>/<id>`.
     pub workroot: std::path::PathBuf,
     /// Every agent's file box (each conversation uses its own).
@@ -281,9 +284,11 @@ impl AgentPool {
     /// `agent.delete`. The lead agent is not in the registry and cannot be deleted.
     pub async fn delete(&self, name_or_id: &str, actor: &str) -> Result<AgentDeleted, LeadError> {
         let agent = self.inner.registry.resolve(name_or_id).ok_or_else(|| {
-            let key = name_or_id.trim();
-            if key.eq_ignore_ascii_case("lead") || key.eq_ignore_ascii_case("melissa") {
-                LeadError::Invalid("Melissa (the lead agent) can't be deleted".into())
+            if self.inner.registry.is_lead(name_or_id) {
+                LeadError::Invalid(format!(
+                    "{} (the lead agent) can't be deleted",
+                    self.inner.registry.lead_name()
+                ))
             } else {
                 LeadError::NoSuchAgent(name_or_id.into())
             }
@@ -465,16 +470,26 @@ impl AgentPool {
         ));
         let device = self.inner.registry.device();
         let owner = Principal::Agent(agent.id.clone());
-        let system_prompt = format!(
-            "{}\n\nYou are agent {} (id {}) on device {device}. Your scope: the workspaces you look \
-             after (my_apps lists them) and new workspaces you create (they become yours). \
-             Messages come from the lead agent (\"A job from the lead agent\") or from the user \
-             directly.\n\n{}",
-            a.agent_prompt.trim_end(),
-            agent.name,
-            agent.id,
-            super::file_box_words(&a.files, &owner),
-        );
+        // With its own and the lead agent's current names, read when a session starts (a
+        // rename applies from the next session; the open one gets a note, see `rename`).
+        let system_prompt = {
+            let base = a.agent_prompt.trim_end().to_string();
+            let files = super::file_box_words(&a.files, &owner);
+            let registry = self.inner.registry.clone();
+            let (id, fallback) = (agent.id.clone(), agent.name.clone());
+            SystemPrompt::new(move || {
+                let name = registry
+                    .get(&id)
+                    .map_or_else(|| fallback.clone(), |r| r.name);
+                let lead = registry.lead_name();
+                format!(
+                    "{base}\n\nYou are agent {name} (id {id}) on device {device}. Your scope: the \
+                     workspaces you look after (my_apps lists them) and new workspaces you create \
+                     (they become yours). Messages come from the lead agent, whom the user calls \
+                     {lead} (\"A job from the lead agent\"), or from the user directly.\n\n{files}"
+                )
+            })
+        };
         let spec = ConversationSpec {
             who: format!("agent {}", agent.name),
             audit_kind: "agent",
@@ -683,7 +698,47 @@ impl AgentPool {
             "ui",
             &format!("{}: {} → {}", agent.id, old.name, agent.name),
         );
+        // Its prompt has the new name from its next session; an open one is told now.
+        if old.name != agent.name {
+            if let Some(c) = lock(&self.inner.convs).get(&agent.id) {
+                c.note(&format!(
+                    "The user renamed you: you are now called {}.",
+                    agent.name
+                ));
+            }
+        }
         Ok(self.view(&agent))
+    }
+
+    /// The lead agent's display name ([`super::registry::LEAD_DEFAULT_NAME`] until the user
+    /// renames it). The product stays "Melissa" whatever the lead agent is called.
+    pub fn lead_name(&self) -> String {
+        self.inner.registry.lead_name()
+    }
+
+    /// The user renames the lead agent (unique among the lead agent and every helper; audited
+    /// `agent.rename`, actor `ui`, like a helper). Every system prompt that names the lead agent
+    /// is built when a session starts, so new sessions have the new name; the open sessions
+    /// (the lead agent's and its helpers') are told with their next turn. Returns the new name.
+    pub fn rename_lead(&self, new_name: &str) -> Result<String, LeadError> {
+        let (old, new) = self
+            .inner
+            .registry
+            .rename_lead(new_name)
+            .map_err(registry_error)?;
+        self.audit("agent.rename", "ui", &format!("lead: {old} → {new}"));
+        if old != new {
+            if let Some(a) = self.inner.attached.get() {
+                a.lead_conv
+                    .note(&format!("The user renamed you: you are now called {new}."));
+            }
+            for c in lock(&self.inner.convs).values() {
+                c.note(&format!(
+                    "The user renamed the lead agent: the user now calls it {new}."
+                ));
+            }
+        }
+        Ok(new)
     }
 
     /// The user's conversation with an agent: its event log.
