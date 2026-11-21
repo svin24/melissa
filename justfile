@@ -45,6 +45,7 @@ container-build version="dev":
 # Install it rootful with the Quadlet (sudo): copies localhost/melissa:dev into root's storage as
 # localhost/melissa:latest. Extra settings as env, e.g. `UI_PORT=8090 just container-install`.
 container-install:
+    rm -f target/melissa-image.tar
     podman save -o target/melissa-image.tar localhost/melissa:dev
     sudo --preserve-env=UI_PORT,UI_BIND,APP_PORT_BASE,BIND,APP_ADDRESSES,AUTO_UPDATE,SET_SYSCTLS \
         IMAGE_ARCHIVE=target/melissa-image.tar packaging/container/install.sh
