@@ -6,6 +6,9 @@
 //!   `$XDG_CONFIG_HOME/melissa/providers.toml`, merged over `server.toml` at startup.
 //! - [`app_access`]: who may open the apps on this device (`app-access.toml`), the nftables
 //!   filter that enforces it in the container, and the agents' `set_app_access` tool.
+//! - [`tailscale`]: Melissa's own Tailscale in the container (off by default, `tailscale.toml`),
+//!   its state, enable/disable and sign-in, and the agents' `tailscale_status` and
+//!   `enable_tailscale` tools.
 //! - [`prefs`]: the owner's display preferences for the web UI (`ui.toml`), applied at once.
 //! - [`registry`]: the public ACP agent registry (parse, search, cache, install a release).
 //! - [`version`]: the installed CLIs' `--version`, cached and timed out.
@@ -17,6 +20,7 @@ pub mod install;
 pub mod prefs;
 pub mod providers;
 pub mod registry;
+pub mod tailscale;
 pub mod updates;
 pub mod version;
 

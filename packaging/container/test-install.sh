@@ -139,5 +139,29 @@ eq "no [apps]: appended" 'listen = "127.0.0.1:8080"
 [apps]
 addresses = ["127.0.0.1"]' "$(printf 'listen = "127.0.0.1:8080"\n' | toml_set_addresses 127.0.0.1)"
 
+# --- Tailscale on the host (Settings → Tailscale: detect first) -----------------------------
+tsdir=$(mktemp -d)
+SYS_NET="$tsdir"
+systemctl() { [ "${FAKE_TAILSCALED:-no}" = yes ]; }  # `systemctl is-active -q tailscaled.service`
+HOST_TAILSCALE=auto
+eq "no interface, no service: no host Tailscale" no "$(host_tailscale)"
+mkdir "$tsdir/tailscale0"
+eq "tailscale0 on the host: the host's" yes "$(host_tailscale)"
+rmdir "$tsdir/tailscale0"
+eq "tailscaled.service active: the host's" yes "$(FAKE_TAILSCALED=yes host_tailscale)"
+HOST_TAILSCALE=no
+eq "HOST_TAILSCALE=no wins over the check" no "$(FAKE_TAILSCALED=yes host_tailscale)"
+HOST_TAILSCALE=yes
+eq "HOST_TAILSCALE=yes" yes "$(host_tailscale)"
+HOST_TAILSCALE=maybe
+eq "a bad HOST_TAILSCALE fails" no "$(yes_no host_tailscale)"
+HOST_TAILSCALE=auto
+unset -f systemctl
+rm -rf "$tsdir"
+eq "node name from the host name" melissa-box "$(tailscale_name box.example.com)"
+eq "node name is a DNS label" melissa-my-box "$(tailscale_name My_Box)"
+eq "TAILSCALE_NAME overrides it" home-server "$(TAILSCALE_NAME=Home-Server tailscale_name box)"
+eq "an empty host name still gives a name" melissa "$(tailscale_name '')"
+
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"

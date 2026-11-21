@@ -30,9 +30,11 @@ Re-running `just container-install` replaces the image and keeps the volume. Set
 environment (`UI_PORT=8090 BIND=0.0.0.0 just container-install`).
 
 ## Image lint (last steps of the Containerfile)
-Must exist: the three Melissa binaries, k3s, bwrap, nft, iptables, systemd-socket-proxyd, melissa-setup. Must not be
-installed: kernel-core, bootc, openssh-server, NetworkManager, tailscale, chrony, firewalld. Enabled: lead agent, k3s,
-UI forward socket. Masked: systemd-logind and the sleep targets. `systemd-analyze verify` on our units.
+Must exist: the three Melissa binaries, k3s, bwrap, nft, iptables, systemd-socket-proxyd, melissa-setup, the pinned
+Tailscale binaries (`tailscale version` = `tailscale.lock`) and their license. Must not be installed: kernel-core,
+bootc, openssh-server, NetworkManager, the tailscale package (or its `tailscaled.service`), chrony, firewalld. Enabled:
+lead agent, k3s, UI forward socket, app access filter, `melissa-tailscaled.service` (it runs only while Settings →
+Tailscale has it on: `ExecCondition=melissa-server tailscale enabled`). Masked: systemd-logind and the sleep targets. `systemd-analyze verify` on our units.
 
 ## Why each piece
 - `--privileged` (PodmanArgs): k3s mounts, netfilter, pod netns; bwrap nested namespaces. Rootful = host root.

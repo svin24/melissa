@@ -32,6 +32,9 @@
 #   PASTA_DIR=                directory with a working `pasta` (on SELinux hosts where the distro
 #                             one is denied; e.g. "$(nix build --no-link --print-out-paths nixpkgs#passt)/bin")
 #                             Rootless only; rootful uses the bridge network.
+#   HOST_TAILSCALE=           yes (the host runs Tailscale: Settings → Tailscale says it isn't
+#                             Melissa's) or no (Melissa's own may be enabled, rootful only).
+#                             Unset: not checked, so Melissa doesn't offer its own.
 set -euo pipefail
 
 NAME=${NAME:-melissa}
@@ -300,6 +303,8 @@ up)
         else net=(--network=pasta:--host-lo-to-ns-lo -p "127.0.0.1:$UI_PORT:8080"); fi
         podman run -d --name "$NAME" --hostname "$NAME" \
             --privileged --systemd=always --tmpfs /dev/input -e XDG_CONFIG_HOME=/etc \
+            ${HOST_TAILSCALE:+-e "MELISSA_HOST_TAILSCALE=$HOST_TAILSCALE"} \
+            -e "MELISSA_TAILSCALE_NAME=melissa-$NAME" \
             "${net[@]}" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079" \
             -p "$BIND:$APP_PORT_BASE-$last:30000-30079/udp" \

@@ -1,0 +1,36 @@
+# Melissa's own Tailscale (Settings → Tailscale; off by default; owner decision 2026-11-21, DECISIONS.md).
+# Runs only while the owner has it enabled (/etc/melissa/tailscale.toml, checked at every start by
+# `melissa-server tailscale enabled`) and never when the host runs Tailscale itself (install.sh's
+# MELISSA_HOST_TAILSCALE=yes): then Melissa keeps using the host's. tailscaled runs in kernel mode in
+# this privileged container (/dev/net/tun, interface tailscale0, its own node name), its state on the
+# /var volume. The server (user melissa) is its operator: it runs `tailscale up` for the sign-in and
+# `tailscale logout` on Disable, and starts/stops this unit (polkit: 53-melissa-tailscale.rules).
+# Tailnet traffic reaches only the app ports, and only when Settings → Apps allows the tailnet: the
+# app access filter's table must be in place before tailscale0 exists. Network: while running, it
+# talks to Tailscale's coordination server and DERP relays; no logs are sent (--no-logs-no-support).
+# Code: melissa_settings::tailscale.
+[Unit]
+Description=Melissa: Tailscale (Settings → Tailscale)
+Wants=network-online.target melissa-app-access.service
+After=network-online.target melissa-app-access.service
+# /etc/melissa (the setting) is a symlink onto the /var volume, like the state directory.
+RequiresMountsFor=/var/lib/melissa-container
+
+[Service]
+Type=notify
+PassEnvironment=MELISSA_HOST_TAILSCALE
+ExecCondition=/usr/bin/melissa-server tailscale enabled /etc/melissa/tailscale.toml
+# Fail closed: no app access table (which drops tailnet traffic to the container itself), no tailnet.
+ExecStartPre=/bin/sh -c 'exec /usr/sbin/nft list table inet melissa_app_access >/dev/null'
+ExecStart=/usr/sbin/tailscaled --state=/var/lib/melissa-tailscale/tailscaled.state \
+    --statedir=/var/lib/melissa-tailscale --socket=/run/tailscale/tailscaled.sock --port=41641 \
+    --no-logs-no-support
+ExecStartPost=/usr/bin/tailscale --socket=/run/tailscale/tailscaled.sock set --operator=melissa
+ExecStopPost=/usr/sbin/tailscaled --cleanup
+Restart=on-failure
+RestartSec=5
+StateDirectory=melissa-tailscale
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

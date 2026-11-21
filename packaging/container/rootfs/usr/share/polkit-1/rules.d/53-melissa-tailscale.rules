@@ -1,0 +1,14 @@
+// Melissa, container image only: the server (user `melissa`) may start and stop its own Tailscale,
+// melissa-tailscaled.service (Settings → Tailscale: Enable, Disable). Nothing else: no other unit or
+// verb. The unit checks the setting itself before it starts (and never runs when the host runs
+// Tailscale). See docs/DECISIONS.md (2026-11-21).
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "melissa") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var verb = action.lookup("verb");
+    if ((verb === "start" || verb === "stop") && action.lookup("unit") === "melissa-tailscaled.service") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

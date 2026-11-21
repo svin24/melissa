@@ -30,7 +30,7 @@ pub struct Section {
 }
 
 /// The Settings sections, in order and grouped. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [Section; 9] = [
+pub const SECTIONS: [Section; 10] = [
     Section {
         href: "/settings/providers",
         label: "Providers",
@@ -81,6 +81,13 @@ pub const SECTIONS: [Section; 9] = [
         keywords: "Apps open to This device Tailnet Home network",
     },
     Section {
+        href: TAILSCALE_URL,
+        label: "Tailscale",
+        group: "System",
+        icon: Glyph::Server,
+        keywords: "Tailscale tailnet enable sign in disable connected",
+    },
+    Section {
         href: "/settings/updates",
         label: "Updates",
         group: "System",
@@ -110,6 +117,11 @@ pub const SCHEDULES_ID: &str = "schedules";
 pub const APPS_URL: &str = "/settings/apps";
 /// DOM id of the Apps region.
 pub const APPS_ID: &str = "apps-settings";
+
+/// The Tailscale section: Melissa's own Tailscale (off by default).
+pub const TAILSCALE_URL: &str = "/settings/tailscale";
+/// DOM id of the Tailscale region.
+pub const TAILSCALE_ID: &str = "tailscale-settings";
 
 /// The Files section: how long file boxes keep files.
 pub const FILES_URL: &str = "/settings/files";
@@ -1317,6 +1329,53 @@ pub fn apps_region(v: &AppsView) -> Markup {
                     (setting_card(None, setting_row("Apps open to", Some("Set by this device's firewall."), html! {})))
                 }
             }
+        },
+    )
+}
+
+/// What the Tailscale page shows.
+pub struct TailscaleView {
+    /// The state in words (an error is one line).
+    pub sentence: String,
+    pub enable: Option<&'static str>,
+    pub sign_in: bool,
+    pub disable: bool,
+    /// The sign-in page to open (only in the answer to Sign in; never in the page's HTML).
+    pub login_url: Option<String>,
+    /// Refresh the region from this URL every few seconds (starting, waiting for a sign-in).
+    pub poll: Option<&'static str>,
+    pub flash: Option<Flash>,
+}
+
+pub fn tailscale_page(f: &Frame<'_>, v: &TailscaleView) -> Markup {
+    frame(f, "Tailscale", tailscale_region(v))
+}
+
+pub fn tailscale_region(v: &TailscaleView) -> Markup {
+    const DISABLE_ASK: &str =
+        "Disable Tailscale? This device leaves your tailnet, and tailnet devices can't open its apps.";
+    let controls = html! {
+        @if let Some(url) = &v.login_url {
+            (external_button(url, "Open Tailscale sign-in"))
+        } @else if v.sign_in {
+            (plain_action("/ui/settings/tailscale/sign-in", TAILSCALE_ID, "Sign in", true))
+        }
+        @if let Some(label) = v.enable {
+            (plain_action("/ui/settings/tailscale/enable", TAILSCALE_ID, label, true))
+        }
+        @if v.disable {
+            (action_button("/ui/settings/tailscale/disable", TAILSCALE_ID, "Disable", DISABLE_ASK))
+        }
+    };
+    live_region(
+        TAILSCALE_ID,
+        v.poll.unwrap_or(""),
+        3,
+        v.poll.is_some(),
+        html! {
+            (page_header("Tailscale", Some("Puts this device on your tailnet. Off until you enable it.")))
+            @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
+            (setting_card(None, setting_row("Tailscale", Some(&v.sentence), actions(controls))))
         },
     )
 }

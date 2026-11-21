@@ -5,6 +5,12 @@ table inet melissa_app_access {
 		iifname != { "lo", "cni0" } udp dport 30000-30079 jump app_ports
 	}
 
+	chain input {
+		type filter hook input priority mangle; policy accept;
+		iifname "tailscale0" ct state established,related accept comment "melissa:tailnet_replies"
+		iifname "tailscale0" counter packets 0 bytes 0 drop comment "melissa:tailnet_input"
+	}
+
 	chain app_ports {
 		counter packets 0 bytes 0 drop comment "melissa:drop"
 	}

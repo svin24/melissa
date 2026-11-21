@@ -102,7 +102,7 @@ pub(crate) fn card(app: &str, login: Option<&str>, state: SetupPasswordState<'_>
 }
 
 /// A response nothing may keep (the browser, a proxy).
-fn no_store(status: StatusCode, body: impl IntoResponse) -> Response {
+pub(crate) fn no_store(status: StatusCode, body: impl IntoResponse) -> Response {
     let mut res = (status, body).into_response();
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -111,7 +111,7 @@ fn no_store(status: StatusCode, body: impl IntoResponse) -> Response {
 
 /// Positive evidence that a browser sent this from Melissa's own page. Unlike the router's
 /// check, a request with neither header is refused.
-fn from_this_page(headers: &HeaderMap) -> bool {
+pub(crate) fn from_this_page(headers: &HeaderMap) -> bool {
     if let Some(site) = headers.get("sec-fetch-site") {
         return site == "same-origin";
     }

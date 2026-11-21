@@ -139,7 +139,13 @@ fn ruleset_per_level() {
         assert!(r.contains("type filter hook prerouting priority -150; policy accept;"));
         assert!(r.contains("iifname != { \"lo\", \"cni0\" } tcp dport 30000-30079 jump app_ports"));
         assert!(r.contains("iifname != { \"lo\", \"cni0\" } udp dport 30000-30079 jump app_ports"));
-        assert!(r.contains("ip saddr 10.88.0.1 accept comment \"melissa:this_device\""));
+        assert!(r.contains(
+            "iifname != \"tailscale0\" ip saddr 10.88.0.1 accept comment \"melissa:this_device\""
+        ));
+        // Tailnet traffic never reaches the container itself, at any level.
+        assert!(r.contains("type filter hook input priority -150; policy accept;"));
+        assert!(r.contains("iifname \"tailscale0\" ct state established,related accept"));
+        assert!(r.contains("iifname \"tailscale0\" counter drop comment \"melissa:tailnet_input\""));
         assert!(
             r.trim_end()
                 .ends_with("counter drop comment \"melissa:drop\"\n\t}\n}"),
@@ -147,6 +153,9 @@ fn ruleset_per_level() {
         );
     }
     assert!(!this.contains("100.64.0.0/10"));
+    assert!(!this.contains("iifname \"tailscale0\" accept"), "{this}");
+    assert!(tail.contains("iifname \"tailscale0\" accept comment \"melissa:tailnet\""));
+    assert!(home.contains("iifname \"tailscale0\" accept comment \"melissa:tailnet\""));
     assert!(!this.contains("192.168.0.0/16"));
     assert!(tail.contains("ip saddr 100.64.0.0/10 accept comment \"melissa:tailnet\""));
     assert!(tail.contains("ip6 saddr fd7a:115c:a1e0::/48 accept comment \"melissa:tailnet\""));
@@ -161,9 +170,12 @@ fn ruleset_per_level() {
 #[test]
 fn closed_ruleset_lets_nothing_in() {
     let closed = ruleset(None);
-    assert!(!closed.contains("accept comment"), "{closed}");
+    // The only accept: replies to the container's own connections over the tailnet.
+    assert_eq!(closed.matches("accept comment").count(), 1, "{closed}");
+    assert!(closed.contains("established,related accept comment \"melissa:tailnet_replies\""));
     assert!(closed.contains("counter drop comment \"melissa:drop\""));
     assert!(closed.contains("tcp dport 30000-30079 jump app_ports"));
+    assert!(closed.contains("drop comment \"melissa:tailnet_input\""));
 }
 
 /// What `nft list table` prints back for a script (close enough: our lines, re-indented).
@@ -506,4 +518,47 @@ fn verify_reads_real_nft_listings() {
     let closed = include_str!("fixtures/closed.nft-list");
     assert_eq!(verify(closed, None), Ok(()));
     assert!(verify(closed, Some((AppAccess::ThisDevice, GW))).is_err());
+    let this = include_str!("fixtures/this_device.nft-list");
+    assert_eq!(verify(this, Some((AppAccess::ThisDevice, GW))), Ok(()));
+    assert!(verify(this, None).is_err());
+    let tail = include_str!("fixtures/tailnet.nft-list");
+    assert_eq!(verify(tail, Some((AppAccess::Tailnet, GW))), Ok(()));
+    assert!(verify(tail, Some((AppAccess::ThisDevice, GW))).is_err());
+}
+
+/// Melissa's own Tailscale: "This device" never lets `tailscale0` in, "Tailnet" does, and a
+/// table without the tailnet input drop (an older one) is not accepted.
+#[test]
+fn verify_checks_the_tailnet_interface() {
+    let this = include_str!("fixtures/this_device.nft-list");
+    // The interface accept smuggled into "This device": refused.
+    let sneaky = this.replace(
+        "\t\tcounter packets 0 bytes 0 drop comment \"melissa:drop\"",
+        "\t\tiifname \"tailscale0\" accept comment \"melissa:x\"\n\t\tcounter packets 0 bytes 0 drop comment \"melissa:drop\"",
+    );
+    assert!(verify(&sneaky, Some((AppAccess::ThisDevice, GW)))
+        .unwrap_err()
+        .contains("tailscale0"));
+    let closed = include_str!("fixtures/closed.nft-list");
+    let sneaky_closed = closed.replace(
+        "\t\tcounter packets 0 bytes 0 drop comment \"melissa:drop\"",
+        "\t\tiifname \"tailscale0\" accept comment \"melissa:x\"\n\t\tcounter packets 0 bytes 0 drop comment \"melissa:drop\"",
+    );
+    assert!(verify(&sneaky_closed, None).is_err());
+    // "Tailnet" without the interface rule (only source ranges): incomplete.
+    let tail = include_str!("fixtures/tailnet.nft-list");
+    let no_if = tail.replace(
+        "\t\tiifname \"tailscale0\" accept comment \"melissa:tailnet\"\n",
+        "",
+    );
+    assert_ne!(no_if, tail);
+    assert!(verify(&no_if, Some((AppAccess::Tailnet, GW))).is_err());
+    // A gateway rule that would match tailscale0 too (the old form): incomplete.
+    let old_gw = this.replace("iifname != \"tailscale0\" ip saddr", "ip saddr");
+    assert!(verify(&old_gw, Some((AppAccess::ThisDevice, GW))).is_err());
+    // No input drop for the tailnet interface: incomplete, at every level.
+    for (listing, open) in [(this, Some((AppAccess::ThisDevice, GW))), (closed, None)] {
+        let no_input = listing.replace("drop comment \"melissa:tailnet_input\"", "accept");
+        assert!(verify(&no_input, open).is_err(), "{no_input}");
+    }
 }

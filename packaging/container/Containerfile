@@ -47,6 +47,23 @@ RUN set -eu; . /k3s.lock; mkdir -p /out; cd /out; \
     printf '%s  k3s\n%s  airgap.tar.zst\n%s  LICENSE\n' \
         "$K3S_SHA256" "$K3S_AIRGAP_SHA256" "$K3S_LICENSE_SHA256" | sha256sum -c -
 
+# ---- stage 2b: fetch and verify Tailscale (version and hashes in tailscale.lock) ---------
+# Melissa's own Tailscale (Settings → Tailscale, off by default): the official static binaries, so
+# enabling it needs no download at run time and the image is the same on every install.
+FROM ${BUILDER} AS tailscale
+COPY packaging/container/tailscale.lock /tailscale.lock
+RUN set -eu; . /tailscale.lock; mkdir -p /out /src; cd /src; \
+    tgz="tailscale_${TAILSCALE_VERSION}_amd64.tgz"; \
+    raw="https://raw.githubusercontent.com/tailscale/tailscale/v${TAILSCALE_VERSION}"; \
+    curl -fsSL --retry 3 -o "$tgz" "https://pkgs.tailscale.com/stable/$tgz"; \
+    curl -fsSL --retry 3 -o LICENSE "$raw/LICENSE"; \
+    curl -fsSL --retry 3 -o THIRD-PARTY.md "$raw/licenses/tailscale.md"; \
+    printf '%s  %s\n%s  LICENSE\n%s  THIRD-PARTY.md\n' "$TAILSCALE_SHA256" "$tgz" \
+        "$TAILSCALE_LICENSE_SHA256" "$TAILSCALE_DEPS_LICENSES_SHA256" | sha256sum -c -; \
+    tar xzf "$tgz" --strip-components=1; \
+    install -m 0755 tailscale tailscaled /out/; \
+    install -m 0644 LICENSE THIRD-PARTY.md /out/
+
 # ---- stage 3: build whisper.cpp's CLI for voice input (version and hash in whisper.lock) ----
 # A separate program, not linked into melissa-server: the server stays lean and C++-free, and a
 # crash or the model's memory ends with each run. CPU only; GGML_CPU_ALL_VARIANTS builds the x86-64
@@ -75,7 +92,8 @@ RUN set -eu; . /whisper.lock; mkdir -p /src /out; cd /src; \
 # ---- stage 4: the runtime image -------------------------------------------------------
 FROM ${BASE}
 # Only what Melissa needs inside (packaging/container/packages.txt). No kernel, bootloader, sshd,
-# NetworkManager, chrony, firewalld or tailscale: the host provides networking, time and access.
+# NetworkManager, chrony or firewalld: the host provides networking, time and access. Tailscale is
+# the host's too, unless the owner enables Melissa's own (static binaries below, off by default).
 COPY packaging/container/packages.txt /tmp/packages.txt
 RUN pkgs=$(sed 's/#.*//' /tmp/packages.txt | xargs) \
  && dnf -y install --setopt=install_weak_deps=False $pkgs \
@@ -92,6 +110,12 @@ RUN set -eu; . /usr/lib/melissa/k3s.lock; \
         "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst"; \
     rm -rf /tmp/k3s
 
+# Tailscale (rarely changes): Melissa's own, run by melissa-tailscaled.service only when enabled.
+COPY --from=tailscale /out/tailscale /usr/bin/tailscale
+COPY --from=tailscale /out/tailscaled /usr/sbin/tailscaled
+COPY --from=tailscale /out/LICENSE /out/THIRD-PARTY.md /usr/share/licenses/tailscale/
+COPY packaging/container/tailscale.lock /usr/lib/melissa/tailscale.lock
+
 # whisper.cpp's CLI for voice input (rarely changes): found by melissa-server at this path.
 COPY --from=whisper /out/ /usr/lib/melissa/whisper/
 COPY --from=whisper /licenses/LICENSE /usr/share/licenses/whisper.cpp/LICENSE
@@ -105,7 +129,7 @@ RUN rm -f /README.md
 # an app is deployed.
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
-        melissa-ui-forward.socket melissa-app-access.service; \
+        melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
         systemd-networkd-wait-online.service 2>/dev/null || true; \
@@ -144,21 +168,29 @@ RUN printf 'MELISSA_VERSION=%s\nMELISSA_REVISION=%s\nMELISSA_RUNTIME=container\n
 RUN set -eu; \
     for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
         /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
-        /usr/lib/melissa/whisper/whisper-cli; do \
+        /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
+    . /usr/lib/melissa/tailscale.lock; \
+    [ "$(/usr/bin/tailscale version | head -1)" = "$TAILSCALE_VERSION" ] \
+        || { echo "lint: tailscale is not $TAILSCALE_VERSION"; exit 1; }; \
+    test -s /usr/share/licenses/tailscale/LICENSE || { echo "lint: tailscale's license missing"; exit 1; }; \
     /usr/lib/melissa/whisper/whisper-cli --help >/dev/null 2>&1 || { echo "lint: whisper-cli doesn't run"; exit 1; }; \
     # npm-only agent CLIs (Gemini CLI, Pi) run on the image's Node; their packages need >= 20.6.
     node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || { echo "lint: node >= 22 missing"; exit 1; }; \
     npm --version >/dev/null || { echo "lint: npm missing"; exit 1; }; \
+    # The tailscale package (its own tailscaled.service, enabled) must not come in: only the
+    # pinned binaries, run by melissa-tailscaled.service while the owner has it on.
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket \
-        melissa-app-access.service; \
+        melissa-app-access.service melissa-tailscaled.service; \
+    test ! -e /usr/lib/systemd/system/tailscaled.service || { echo "lint: tailscaled.service must not exist"; exit 1; }; \
     for u in systemd-logind.service sleep.target suspend.target hibernate.target; do \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket \
-        /usr/lib/systemd/system/melissa-app-access.service; \
+        /usr/lib/systemd/system/melissa-app-access.service \
+        /usr/lib/systemd/system/melissa-tailscaled.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }

@@ -26,6 +26,11 @@
 #   AUTO_UPDATE=                    registry (default for registry images), local (default for
 #                                   localhost/ images) or off. Not off: enables podman-auto-update.timer.
 #   SET_SYSCTLS=yes                 write the kubelet's host sysctls to /etc/sysctl.d (see below)
+#   HOST_TAILSCALE=auto             does the host run Tailscale? auto: yes when tailscale0 exists or
+#                                   tailscaled.service is active. yes: Melissa uses the host's and
+#                                   Settings → Tailscale says so; no: the owner may enable Melissa's
+#                                   own (off by default).
+#   TAILSCALE_NAME=melissa-<host>   the node name of Melissa's own Tailscale on the tailnet
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -36,6 +41,8 @@ APP_PORT_BASE=${APP_PORT_BASE:-30000}
 BIND=${BIND:-0.0.0.0}
 SET_SYSCTLS=${SET_SYSCTLS:-yes}
 ALLOW_ADDRESS_MISMATCH=${ALLOW_ADDRESS_MISMATCH:-no}
+HOST_TAILSCALE=${HOST_TAILSCALE:-auto}
+SYS_NET=${SYS_NET:-/sys/class/net}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
 
@@ -97,6 +104,30 @@ bind_covers() {
 publish_bind() {
     [ "$ALLOW_ADDRESS_MISMATCH" = yes ] && { echo; return 0; }
     case "$BIND" in ''|0.0.0.0) echo 0.0.0.0 ;; localhost) echo 127.0.0.1 ;; *) echo "$BIND" ;; esac
+}
+
+# host_tailscale: yes when the host runs Tailscale (HOST_TAILSCALE=auto: its interface exists or
+# tailscaled.service is active), else no. Melissa then never starts its own (Settings → Tailscale).
+host_tailscale() {
+    case "$HOST_TAILSCALE" in
+    yes|no) echo "$HOST_TAILSCALE"; return 0 ;;
+    auto) ;;
+    *) echo "melissa-install: HOST_TAILSCALE must be auto, yes or no" >&2; return 1 ;;
+    esac
+    if [ -e "$SYS_NET/tailscale0" ] || systemctl is-active -q tailscaled.service 2>/dev/null; then
+        echo yes
+    else
+        echo no
+    fi
+}
+
+# tailscale_name HOSTNAME: the node name of Melissa's own Tailscale: melissa-<short host name>,
+# lower case letters, digits and dashes, at most 63 (TAILSCALE_NAME overrides it).
+tailscale_name() {
+    local raw=${TAILSCALE_NAME:-melissa-${1%%.*}} name
+    name=$(printf '%s' "$raw" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-' | tr -s '-' | cut -c1-63)
+    name=${name#-}; name=${name%-}
+    echo "${name:-melissa}"
 }
 
 # uncovered LIST: the entries of the comma-separated LIST that BIND does not cover.
@@ -197,6 +228,11 @@ preflight() {
         done
     done
     check_addresses "$(app_addresses)" || ok=1
+    case "$(host_tailscale)" in
+    yes) echo "ok: Tailscale runs on this host; Melissa uses it (Settings → Tailscale says so)" ;;
+    no) echo "ok: no Tailscale on this host; Settings → Tailscale can turn on Melissa's own (off by default)" ;;
+    *) ok=1 ;;
+    esac
     if systemctl is-active -q k3s.service 2>/dev/null; then
         echo "note: a k3s runs on this host too; Melissa's k3s has its own network namespace (works, tested)."
     fi
@@ -249,6 +285,7 @@ install_files() {
     sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
         -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
+        -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
         "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
@@ -377,7 +414,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,28p' "$0"; exit 2 ;;
+*) sed -n '2,33p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
@@ -400,6 +437,7 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Chat:       sudo podman exec -it melissa melissa-server chat
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
               (automatic: $AUTO_UPDATE)
+  Tailscale:  $(case "$(host_tailscale)" in yes) echo "the host's (Melissa uses it)" ;; *) echo "Settings → Tailscale (Melissa's own, off until you enable it)" ;; esac)
   From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
   (the UI has no login yet: only people you trust may reach it). See $SHARE/README.md.
   --privileged rootful container: it has root on this host.

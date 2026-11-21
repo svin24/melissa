@@ -1,0 +1,57 @@
+{
+  "Version": "1.104.7-tfb3b9b296-g0651cc45e",
+  "TUN": true,
+  "BackendState": "Running",
+  "AuthURL": "",
+  "TailscaleIPs": [
+    "100.64.0.7",
+    "fd7a:115c:a1e0::7"
+  ],
+  "Self": {
+    "ID": "n0000000000001",
+    "NodeID": 0,
+    "PublicKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000000",
+    "HostName": "melissa-box",
+    "DNSName": "melissa-box.tail0000.ts.net.",
+    "OS": "linux",
+    "UserID": 0,
+    "TailscaleIPs": [
+      "100.64.0.7",
+      "fd7a:115c:a1e0::7"
+    ],
+    "Addrs": [],
+    "CurAddr": "",
+    "Relay": "",
+    "PeerRelay": "",
+    "RxBytes": 0,
+    "TxBytes": 0,
+    "Created": "2026-11-21T10:00:00Z",
+    "LastWrite": "0001-01-01T00:00:00Z",
+    "LastSeen": "0001-01-01T00:00:00Z",
+    "LastHandshake": "0001-01-01T00:00:00Z",
+    "Online": true,
+    "ExitNode": false,
+    "ExitNodeOption": false,
+    "Active": false,
+    "PeerAPIURL": null,
+    "TaildropTarget": 0,
+    "NoFileSharingReason": "",
+    "InNetworkMap": true,
+    "InMagicSock": true,
+    "InEngine": true
+  },
+  "Health": [],
+  "MagicDNSSuffix": "tail0000.ts.net",
+  "CurrentTailnet": {
+    "Name": "example.com",
+    "MagicDNSSuffix": "tail0000.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": [
+    "melissa-box.tail0000.ts.net"
+  ],
+  "ExtraRecords": null,
+  "Peer": {},
+  "User": null,
+  "ClientVersion": null
+}
