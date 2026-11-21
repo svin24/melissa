@@ -38,6 +38,30 @@ pub enum LeadEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scheduled: Option<String>,
     },
+    /// A helper's job ended and its report starts a turn of the lead agent (instead of a
+    /// user message; the report itself goes to the agent as data, not into the chat).
+    /// `status`: `succeeded`, `failed` or `cancelled`, like [`LeadEvent::AgentFinished`].
+    HelperReport {
+        turn: TurnId,
+        agent: String,
+        name: String,
+        status: String,
+    },
+    /// Only in memory (a daemon restart drops the queue): a message waits for the running
+    /// turn to end. `from`: `user`, `lead` (a message the lead agent passed on) or `helper`
+    /// (a helper's report for the lead agent).
+    MessageQueued {
+        id: u64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
+        from: String,
+    },
+    /// Only in memory: a queued message left the queue. `reason`: `started` (its turn
+    /// began), `steered` (sent into the running turn, or next once it stops), `removed`,
+    /// `edited` (taken back into the composer) or `noted` (a helper's report passed on with
+    /// the next message instead of a turn of its own).
+    MessageUnqueued { id: u64, reason: String },
     /// A piece of the lead agent's reply (not line-buffered).
     Text { turn: TurnId, text: String },
     /// The agent's whole reply for a turn (sent at the end of the turn; the transcript keeps
@@ -184,6 +208,7 @@ impl LeadEvent {
     pub fn turn(&self) -> Option<TurnId> {
         match self {
             Self::UserMessage { turn, .. }
+            | Self::HelperReport { turn, .. }
             | Self::Text { turn, .. }
             | Self::AgentMessage { turn, .. }
             | Self::Thought { turn, .. }
@@ -201,6 +226,7 @@ impl LeadEvent {
     pub(crate) fn map_turn(&mut self, f: impl FnOnce(TurnId) -> Option<TurnId>) {
         match self {
             Self::UserMessage { turn, .. }
+            | Self::HelperReport { turn, .. }
             | Self::Text { turn, .. }
             | Self::AgentMessage { turn, .. }
             | Self::Thought { turn, .. }
@@ -329,6 +355,8 @@ impl EventLog {
                     | LeadEvent::EarlierStart
                     | LeadEvent::EarlierEnd
                     | LeadEvent::FilesChanged
+                    | LeadEvent::MessageQueued { .. }
+                    | LeadEvent::MessageUnqueued { .. }
             ),
         ) {
             t.append(&record);

@@ -331,6 +331,9 @@ async fn handshake(
         // PDFs would be embedded resources, which ACP agents handle unevenly: they go to the
         // agent's working directory instead.
         pdfs: false,
+        // ACP v1 has no way to add to a running `session/prompt`: steering cancels the turn
+        // and sends the message as the next one.
+        steer: false,
     };
     if !open.mcp_servers.is_empty() && !caps.mcp_http {
         return Err(agent_client_protocol::Error::invalid_request()

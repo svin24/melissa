@@ -23,7 +23,10 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   the user switched the lead agent, to the lead agent's chosen backend (q55c; `AgentPool::follow_lead`, also after a
   restart; existing agents keep theirs). Its MCP session is attended (`attended = true`: the user is in the chat), may delegate
   (`TaskContext.delegate = true`, so it sees the agent tools) and has `Scope::Lead { device }`.
-- One turn at a time: `send` while a turn runs → `LeadError::Busy` (HTTP 409). The event pump (one task
+- One turn at a time, with a queue (2026-11-21): `Conversation::submit` while a turn runs queues the message
+  (`message_queued`; it starts when the turn ends, also after a cancel) or, with `SendMode::Steer`, puts it
+  into the running turn (`AgentSession::steer`, Claude Code) or stops the turn and runs it next (ACP).
+  `send` (jobs, scheduled runs) still refuses with `LeadError::Busy`. The event pump (one task
   per session, owns the session's event receiver) ends a turn when the agent's `TurnFinished` arrives, so
   every event of a turn is published before its `turn_finished`.
 - Cancel: `session/cancel`; if the turn has not ended after 10 s, Melissa aborts it and kills the session.
@@ -51,9 +54,10 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   e.g. too many agents working, the agent stays and the result has `job_error`); `give_agent_job {agent, goal,
   user_request?, research?, timeout_secs?}` sends "A job from the lead agent:\n\n<goal>" (then "The user's
   request, in their words:\n…" and "What the lead agent already found out:\n…" when given) into the agent's
-  conversation (409-like error if it is busy; at most `max_agents` agents working at once,
-  checked under a lock; after `timeout_secs` the turn is cancelled; a watcher publishes `agent_finished`);
-  `agent_status {agent, wait_secs≤50}` (status idle/working/stopped, job, activity lines since the job, last
+  conversation (error if it is busy; at most `max_agents` agents working at once,
+  checked under a lock; after `timeout_secs` the turn is cancelled; a watcher publishes `agent_finished` and
+  queues the helper's report for the lead agent as a `helper_report` turn; it returns at once and the lead
+  ends her turn); `agent_status {agent}` (no waiting since 2026-11-21; status idle/working/stopped, job, activity lines since the job, last
   reply as `result`, `read_untrusted_content`); `list_agents` (with workspaces per agent and unassigned workspaces);
   `stop_agent` (cancel + close session, `stopped` until the next job or message); `message_agent {agent, text,
   from_agent?}` (agent-to-agent only via the lead agent: text wrapped in `<melissa-data from="…">`, a closing tag
@@ -103,7 +107,8 @@ Owner feedback: asked to "set up a Minecraft server", the lead deployed it itsel
 - "Make / install / set up / build X": at most brief read-only research (which image, ports, settings), then
   hand it off at once: `give_agent_job` to a helper that already looks after related apps, else `create_agent`
   with `job` (one call). The brief carries the goal, the user's words (`user_request`) and the research. Then
-  the lead tells the user who is on it and relays progress and approvals (`agent_status` with `wait_secs`).
+  the lead tells the user who is on it and ends her turn; the helper's report brings her back to relay the
+  outcome (2026-11-21).
 
 ## Switching backend and model (2026-11-19)
 Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends, check_choice, switch}`,
@@ -204,8 +209,9 @@ to, by). Agent text is untrusted: the web UI renders it with the safe `component
   0600), every event except `text`, rotated to `.1` at `transcript_max_kib` (default 4096).
 
 ## API and CLI
-- `POST /api/lead/messages {"text"}` → 202 `{turn, since}` (follow events from `since`), 409 busy, 422
-  empty/too long. `POST /api/lead/cancel`, `GET /api/lead/status`,
+- `POST /api/lead/messages {"text", "steer"?}` → 202 `{status: started|queued|steered|next, turn?, id?,
+  since}` (follow events from `since`; a queued message starts its turn later), 422 empty/too long.
+  `GET /api/lead/queue`, `POST /api/lead/queue/{id}/steer|remove` (same for agents). `POST /api/lead/cancel`, `GET /api/lead/status`,
   `GET /api/confirmations`, `POST /api/confirmations/{id}/approve|deny` (audited `confirmation.*`, actor ui).
 - Agents (`{agent}` = name, any case, or id; 404 unknown): `GET /api/agents`, `GET /api/agents/{agent}`,
   `POST /api/agents/{agent}/messages|cancel`, `GET /api/agents/{agent}/events|status` (same shapes as the lead agent's),

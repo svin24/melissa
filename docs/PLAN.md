@@ -280,7 +280,9 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   from the image (installs, sandbox, egress proxy, model lists; each vendor's API reached and refused the fake
   key); a real turn needs the owner's accounts. Pi was not built (open question 76h).
 - **Lead agent loop (2026-11-18):** the lead agent runs in `melissa-server` (`melissa_agent::lead`): one lazily opened,
-  long-lived session from an ordered backend list (`[lead] backends`, default `grok-acp`), one turn at a time,
+  long-lived session from an ordered backend list (`[lead] backends`, default `grok-acp`), one turn at a time
+  (since 2026-11-21 a message while a turn runs is queued, not refused, and can be steered into the running
+  turn; helpers' job reports give the lead agent turns of their own: see DECISIONS 2026-11-21),
   cancel, `session_lost` + new session when the agent dies, the shipped system prompt
   (`crates/server/prompts/lead.md`) as the first message's preamble. Since the cluster-model change (2026-11-18)
   the lead agent directs persistent, named **agents** (Lead-only tools `create_agent`, `give_agent_job`, `agent_status`,
@@ -1083,3 +1085,14 @@ Roadmap (rough, phases may overlap):
     moves), or match the host's ingress interface with host-side rules? (d) Other meshes (Headscale, NetBird)
     use the same CGNAT range for IPv4 but other IPv6 ranges. (e) The new Settings → Apps section and its copy
     are provisional; the owner reviews them (Figma first for UI).
+82. Message queue and steering (2026-11-21; DECISIONS). (a) The queue lives in memory: a daemon restart drops
+    queued messages (their files stay in the box). Persist it, or say so in the chat after a restart? (b) Claude
+    Code race: a message steered in just as the turn ends may start a turn of its own on Claude's side that
+    Melissa does not follow (its reply is lost); rare, not handled. (c) Only the user's queued messages show in
+    the chat; messages Melissa passes on to a helper and helpers' reports wait unseen. Show them? (d) A queued
+    message with files can be removed but not edited (files can't go back into the composer). (e) Double Enter
+    waits 400 ms after the first Enter while an agent works; is that delay noticeable? (f) After
+    `MAX_AUTO_TURNS` (3) report turns in a row without a user message, further reports wait as notes for the
+    user's next message: is 3 right, and should the chat say a report is waiting? (g) A job's report reads the
+    helper's last outcome; if the helper's own queue starts another turn that fails at once, the report can
+    carry that turn's outcome instead (rare).

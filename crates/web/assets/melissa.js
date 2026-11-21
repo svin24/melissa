@@ -61,15 +61,53 @@
   }
 
   // Enter sends, Shift+Enter starts a new line (not while an input method is composing).
+  // While the agent works (the Stop button shows) Enter queues the message and a quick
+  // second Enter steers it into the running turn instead, or the other way round with
+  // Settings → Developer → "Enter while working: Steers" (the form's `data-enter`). The
+  // first Enter waits briefly for a second one, so the message is sent once either way.
+  var DOUBLE_ENTER_MS = 400;
+  var enterTimer = null;
+
+  function working() {
+    return !!document.querySelector("#composer-status .working");
+  }
+
+  function sendAs(form, mode) {
+    var field = form.querySelector("input[name=mode]");
+    if (field) {
+      field.value = mode;
+    }
+    form.requestSubmit();
+  }
+
   document.addEventListener("keydown", function (e) {
     var box = composer();
     if (e.target !== box || e.key !== "Enter" || e.shiftKey || e.isComposing) {
       return;
     }
     e.preventDefault();
-    if ((box.value.trim() !== "" || kept.length > 0) && box.form) {
-      box.form.requestSubmit();
+    var form = box.form;
+    if (!form) {
+      return;
     }
+    if (enterTimer !== null) {
+      // The second Enter: the other way.
+      clearTimeout(enterTimer);
+      enterTimer = null;
+      sendAs(form, form.dataset.enter === "steer" ? "queue" : "steer");
+      return;
+    }
+    if (box.value.trim() === "" && kept.length === 0) {
+      return;
+    }
+    if (!working()) {
+      sendAs(form, "");
+      return;
+    }
+    enterTimer = setTimeout(function () {
+      enterTimer = null;
+      sendAs(form, form.dataset.enter === "steer" ? "steer" : "queue");
+    }, DOUBLE_ENTER_MS);
   });
 
   // --- The message box grows with its text (CSS `field-sizing` where supported). -----------

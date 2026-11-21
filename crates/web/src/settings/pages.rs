@@ -140,24 +140,39 @@ pub const UPDATES_ID: &str = "updates";
 /// DOM id of the chat display preference on the Developer page.
 pub const CHAT_PREFS_ID: &str = "chat-prefs";
 const STEPS_URL: &str = "/ui/settings/developer/steps";
+const ENTER_URL: &str = "/ui/settings/developer/enter";
 
-/// The Developer page's chat preference: show the agents' thinking and step timings.
-pub fn chat_prefs_region(on: bool, error: Option<&str>) -> Markup {
+/// The Developer page's chat preferences: show the agents' thinking and step timings, and
+/// what Enter does while an agent works.
+pub fn chat_prefs_region(prefs: melissa_settings::prefs::Prefs, error: Option<&str>) -> Markup {
     let label = "Show thinking and timings";
+    let enter: [(String, String); 2] = [
+        ("queue".into(), "Queues".into()),
+        ("steer".into(), "Steers".into()),
+    ];
+    let selected = if prefs.enter_steers { "steer" } else { "queue" };
     region(
         CHAT_PREFS_ID,
-        setting_row_with(
-            html! { (label) },
-            Some(html! { "Each thought opens in the chat, and steps show how long they took." }),
-            toggle(&Toggle {
-                action: STEPS_URL,
-                target: CHAT_PREFS_ID,
-                label,
-                on,
-                locked: None,
-            }),
-            error.map(|e| notice(e, Tone::Error)),
-        ),
+        html! {
+            (setting_row_with(
+                html! { (label) },
+                Some(html! { "Each thought opens in the chat, and steps show how long they took." }),
+                toggle(&Toggle {
+                    action: STEPS_URL,
+                    target: CHAT_PREFS_ID,
+                    label,
+                    on: prefs.show_steps,
+                    locked: None,
+                }),
+                None,
+            ))
+            (setting_row_with(
+                html! { "Enter while working" },
+                Some(html! { "Double Enter does the other." }),
+                inline_form(ENTER_URL, CHAT_PREFS_ID, inline_select("enter", "Enter while working", &enter, selected)),
+                error.map(|e| notice(e, Tone::Error)),
+            ))
+        },
     )
 }
 

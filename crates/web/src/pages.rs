@@ -22,7 +22,7 @@ use crate::{
         ChatHead, ComposerTarget, DetailsPanel, FilePanel, HeadStatus, ModelPicker, SentFile,
         UpdateHint, UsageRow, CHAT_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
     },
-    components::{phone_view, PhoneView, SheetWho},
+    components::{phone_view, queued_messages, PhoneView, QueuedView, SheetWho, QUEUE_ID},
     feed::{Approval, Change, Clock, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
     workspace::{groups_update, sidebar_markup, SideData},
@@ -186,6 +186,14 @@ impl Who<'_> {
         match self {
             Self::Lead => "/ui/messages".into(),
             Self::Agent(id) => format!("/ui/agents/{id}/messages"),
+        }
+    }
+
+    /// `POST`: `steer`, `edit` or `remove` queued message `id`.
+    pub fn queue_url(self, id: u64, action: &str) -> String {
+        match self {
+            Self::Lead => format!("/ui/queue/{id}/{action}"),
+            Self::Agent(agent) => format!("/ui/agents/{agent}/queue/{id}/{action}"),
         }
     }
 
@@ -482,13 +490,14 @@ pub fn stream_update(
     let (backend, picker) = (x.backend, x.picker);
     let mut added = Vec::new();
     let mut updated = Vec::new();
-    let (mut status, mut files) = (false, false);
+    let (mut status, mut files, mut queue_changed) = (false, false, false);
     for c in changes {
         match *c {
             Change::Added(i) if !added.contains(&i) => added.push(i),
             Change::Updated(i) if !updated.contains(&i) => updated.push(i),
             Change::Status => status = true,
             Change::Files => files = true,
+            Change::Queue => queue_changed = true,
             _ => {}
         }
     }
@@ -513,6 +522,9 @@ pub fn stream_update(
             }) {
                 (oob_inner(&entry_id(&list[i].key), entry_content(e, x.entry)))
             }
+        }
+        @if queue_changed && view == View::Chat {
+            (oob_inner(QUEUE_ID, queue(feed, who)))
         }
         @if let (View::Chat, Some(s)) = (view, x.status) {
             (oob_inner(CHAT_STATUS_ID, status_pill(s)))
@@ -571,6 +583,8 @@ pub struct ChatView<'a> {
     /// Say under the composer (phones) that device changes need the user's OK: false when
     /// No permission prompts is on.
     pub caption: bool,
+    /// While the agent works, Enter steers (else it queues; Settings → Developer → Chat).
+    pub enter_steers: bool,
 }
 
 /// A chat page: Melissa's (home) or a helper's. `head`: its header.
@@ -615,6 +629,7 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
                         &v.who.stream_url(v.feed.last_seq(), v.epoch),
                         feed_page(v.feed, v.feed.entries().len(), v.who, v.epoch, v.all, &x),
                         empty,
+                        Some(queue(v.feed, v.who)),
                     ))
                     (composer_box(v))
                     @if let Some(p) = v.picker { (model_picker(p)) }
@@ -628,6 +643,22 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
     )
 }
 
+/// The user's queued messages of a chat ([`queued_messages`]).
+pub fn queue(feed: &Feed, who: Who<'_>) -> Markup {
+    let items: Vec<QueuedView<'_>> = feed
+        .queued()
+        .iter()
+        .map(|q| QueuedView {
+            text: &q.text,
+            files: q.files.iter().map(|f| f.name.as_str()).collect(),
+            steer: who.queue_url(q.id, "steer"),
+            edit: q.files.is_empty().then(|| who.queue_url(q.id, "edit")),
+            remove: who.queue_url(q.id, "remove"),
+        })
+        .collect();
+    queued_messages(&items)
+}
+
 /// The composer (also the response to sending a message).
 pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
@@ -637,6 +668,7 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
         &ComposerTarget {
             send: &send,
             draft_key: &draft_key,
+            enter_steers: v.enter_steers,
             placeholder: &placeholder,
             voice: v.voice,
             caption: v
@@ -920,6 +952,7 @@ pub fn approvals(f: &Frame<'_>, list: &[Approval], since: u64, epoch: u64) -> Ma
                         }
                     },
                     empty_state("Nothing waiting.", "When Melissa needs your yes, it shows up here and in the chat."),
+                    None,
                 ))
             }
         },
@@ -944,12 +977,12 @@ fn tasks_page(f: Option<&Frame<'_>>, title: &str, sub: bool, content: Markup) ->
     }
 }
 
-/// The task page; in Settings → Developer also the chat preference (`show_steps`: on).
+/// The task page; in Settings → Developer also the chat preferences.
 pub fn dashboard(
     f: Option<&Frame<'_>>,
     backends: &[BackendInfo],
     tasks: &[TaskSnapshot],
-    show_steps: bool,
+    prefs: melissa_settings::prefs::Prefs,
 ) -> Markup {
     let offered: Vec<&BackendInfo> = backends.iter().filter(|b| offered(b)).collect();
     let lead = "Try one agent with one prompt, outside the chat.";
@@ -960,7 +993,7 @@ pub fn dashboard(
                 (crate::settings::pages::bypass_region(f.is_some_and(|f| f.bypass), false, None))
                 (crate::settings::pages::full_access_region(f.is_some_and(|f| f.full_access), None))
             }))
-            (setting_card(Some("Chat"), crate::settings::pages::chat_prefs_region(show_steps, None)))
+            (setting_card(Some("Chat"), crate::settings::pages::chat_prefs_region(prefs, None)))
             (card("New agent task", new_task_form(&offered)))
             (card("Agent tasks", tasks_region(tasks, None)))
         }

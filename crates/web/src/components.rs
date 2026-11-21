@@ -498,13 +498,24 @@ pub fn device_card(d: &DeviceCard<'_>) -> Markup {
 
 /// A live list: the chat feed or the approvals list. `entries` are [`feed_entry`] items;
 /// the stream at `stream_url` appends new ones and updates existing ones in place. `empty`
-/// shows while the list has no entries.
-pub fn feed(id: &str, label: &str, stream_url: &str, entries: Markup, empty: Markup) -> Markup {
+/// shows while the list has no entries. `queue`: the chat's queued messages
+/// ([`queued_messages`]), kept after the entries.
+pub fn feed(
+    id: &str,
+    label: &str,
+    stream_url: &str,
+    entries: Markup,
+    empty: Markup,
+    queue: Option<Markup>,
+) -> Markup {
     html! {
         div.feed-wrap hx-ext="sse" sse-connect=(stream_url) {
             ol.feed id=(id) sse-swap="feed" hx-swap="beforeend" aria-live="polite" aria-label=(label) {
                 li.feed-empty { (empty) }
                 (entries)
+            }
+            @if let Some(q) = queue {
+                div.chat-queue id=(QUEUE_ID) aria-live="polite" { (q) }
             }
             // The server asks for a reload when the page is older than the event log
             // (e.g. after a restart); melissa.js does it.
@@ -561,6 +572,80 @@ pub fn past_chat_list(rows: &[PastChatRow]) -> Markup {
                 }
             }
         }
+    }
+}
+
+/// DOM id of the chat's queued messages (the stream replaces its content).
+pub const QUEUE_ID: &str = "chat-queue";
+
+/// A message the user sent while the agent works: it waits for the running turn to end.
+pub struct QueuedView<'a> {
+    pub text: &'a str,
+    /// Names of the files that go with it.
+    pub files: Vec<&'a str>,
+    /// POST: into the running turn now ("Send now").
+    pub steer: String,
+    /// POST: back into the composer to change it (None: it has files, which can't go back).
+    pub edit: Option<String>,
+    /// POST: drop it.
+    pub remove: String,
+}
+
+/// The user's queued messages, after the chat (owner design, 2026-11-21): each is the user's
+/// bubble with a dashed outline and muted text (not sent yet), and under it one quiet row:
+/// "Send now" (into the running turn), Edit (back into the composer) and Remove. Nothing
+/// when none waits. Without script each is a plain form post.
+pub fn queued_messages(items: &[QueuedView<'_>]) -> Markup {
+    html! {
+        @for q in items {
+            div.msg.msg-user.msg-queued {
+                h3.visually-hidden { "Queued message" }
+                div.bubble {
+                    @if !q.files.is_empty() {
+                        ul.sent-files {
+                            @for f in &q.files {
+                                li { span.file-chip { (file_icon()) span.name { (f) } } }
+                            }
+                        }
+                    }
+                    @if !q.text.trim().is_empty() { (plain_text(q.text)) }
+                }
+                div.queue-actions {
+                    form method="post" action=(q.steer) hx-post=(q.steer) hx-swap="none" {
+                        button.queue-send type="submit" { (arrow_up_icon()) "Send now" }
+                    }
+                    @if let Some(edit) = &q.edit {
+                        form method="post" action=(edit) hx-post=(edit)
+                            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
+                            button.queue-icon type="submit" title="Edit" aria-label="Edit" { (pencil_icon()) }
+                        }
+                    }
+                    form method="post" action=(q.remove) hx-post=(q.remove) hx-swap="none" {
+                        button.queue-icon type="submit" title="Remove" aria-label="Remove" { (cross_icon()) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn arrow_up_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" {} }
+    }
+}
+
+fn pencil_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            path d="M10.5 2.5 13.5 5.5 5.5 13.5H2.5V10.5zM9 4l3 3" {}
+        }
+    }
+}
+
+fn cross_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M4 4l8 8M12 4l-8 8" {} }
     }
 }
 
@@ -1468,6 +1553,9 @@ pub struct ComposerTarget<'a> {
     pub send: &'a str,
     /// Names the chat for its unsent text (`data-draft`; melissa.js keeps it per browser).
     pub draft_key: &'a str,
+    /// While the agent works, Enter steers the message into the running turn (double Enter
+    /// queues it); false: Enter queues (double Enter steers). Settings → Developer → Chat.
+    pub enter_steers: bool,
     pub placeholder: &'a str,
     /// POST URL that turns a recording into text (voice input on and ready), if any.
     pub voice: Option<&'a str>,
@@ -1490,7 +1578,11 @@ pub fn composer(
         form.composer id=(COMPOSER_ID) method="post" action=(to.send) hx-post=(to.send)
             data-draft=(to.draft_key)
             enctype="multipart/form-data" hx-encoding="multipart/form-data"
-            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
+            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML"
+            data-enter=(if to.enter_steers { "steer" } else { "queue" }) {
+            // While the agent works: `queue` or `steer` (melissa.js sets it for Enter and
+            // double Enter); empty follows the owner's setting.
+            input type="hidden" name="mode" value="";
             @if let Some(e) = error { p.composer-error role="alert" { (e) } }
             // Files picked, pasted or dropped: melissa.js fills this list from the template
             // (name, size, a thumbnail for images, a remove button) before sending.

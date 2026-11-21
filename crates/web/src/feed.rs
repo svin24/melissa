@@ -70,6 +70,16 @@ pub enum Item {
     Date { text: String },
 }
 
+/// How a helper's ended job reads: "Iris finished", "Iris was stopped", "Iris couldn't
+/// finish".
+fn finished_words(name: &str, status: &str) -> (String, ActivityState) {
+    match status {
+        "succeeded" => (format!("{name} finished"), ActivityState::Done),
+        "cancelled" => (format!("{name} was stopped"), ActivityState::Stopped),
+        _ => (format!("{name} couldn't finish"), ActivityState::Failed),
+    }
+}
+
 /// One line of a [`Item::Steps`] card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
@@ -129,6 +139,17 @@ pub enum Change {
     Reset,
     /// The conversation's file box changed (the file panel, and sent files that expired).
     Files,
+    /// The user's queued messages changed (shown after the chat, before they run).
+    Queue,
+}
+
+/// A message the user sent while the agent worked: it waits for the running turn to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queued {
+    /// Its id in the conversation's queue (for "Send now", edit and remove).
+    pub id: u64,
+    pub text: String,
+    pub files: Vec<Attachment>,
 }
 
 /// The folded chat.
@@ -172,6 +193,9 @@ pub struct Feed {
     steps: bool,
     /// The steps card line the agent is still thinking in.
     open_thought: Option<(usize, usize)>,
+    /// The user's messages waiting for the running turn (only theirs: messages Melissa
+    /// passes on and helpers' reports wait unseen).
+    queued: Vec<Queued>,
 }
 
 /// How the feed words times: the device's time zone and today's date there.
@@ -305,6 +329,11 @@ impl Feed {
         &self.entries
     }
 
+    /// The user's queued messages, oldest first.
+    pub fn queued(&self) -> &[Queued] {
+        &self.queued
+    }
+
     /// The turn running according to the events seen so far.
     pub fn busy(&self) -> bool {
         self.busy.is_some()
@@ -357,6 +386,54 @@ impl Feed {
                 out.push(self.add(format!("u{}", rec.seq), item));
                 out.push(Change::Status);
                 out
+            }
+            LeadEvent::HelperReport {
+                turn,
+                agent,
+                name,
+                status,
+            } => {
+                // Melissa speaks because a helper's job ended: a small line, not a message.
+                self.busy = Some(*turn);
+                self.open_steps = None;
+                let (label, state) = finished_words(name, status);
+                vec![
+                    self.add(
+                        format!("h{}", rec.seq),
+                        Item::Activity {
+                            label,
+                            detail: None,
+                            state,
+                            agent: Some(agent.clone()),
+                        },
+                    ),
+                    Change::Status,
+                ]
+            }
+            LeadEvent::MessageQueued {
+                id,
+                text,
+                attachments,
+                from,
+            } => {
+                if from != "user" || self.queued.iter().any(|q| q.id == *id) {
+                    return Vec::new();
+                }
+                self.queued.push(Queued {
+                    id: *id,
+                    text: text.clone(),
+                    files: attachments.clone(),
+                });
+                vec![Change::Queue]
+            }
+            LeadEvent::MessageUnqueued { id, .. } => {
+                let before = self.queued.len();
+                self.queued.retain(|q| q.id != *id);
+                if self.queued.len() == before {
+                    Vec::new()
+                } else {
+                    vec![Change::Queue]
+                }
             }
             LeadEvent::Text { turn, text } => self.reply_text(rec.seq, rec.ts, *turn, text),
             LeadEvent::AgentMessage { turn, text } => {
@@ -481,11 +558,7 @@ impl Feed {
                 status,
                 error,
             } => {
-                let (label, state) = match status.as_str() {
-                    "succeeded" => (format!("{name} finished"), ActivityState::Done),
-                    "cancelled" => (format!("{name} was stopped"), ActivityState::Stopped),
-                    _ => (format!("{name} couldn't finish"), ActivityState::Failed),
-                };
+                let (label, state) = finished_words(name, status);
                 // The job's row is updated; a finish without a start (e.g. older than the
                 // log) gets its own row.
                 let key = self
@@ -2030,6 +2103,75 @@ mod tests {
         assert_eq!(
             tool_words("mcp__melissa__device_info").doing,
             "Checking this device"
+        );
+    }
+
+    #[test]
+    fn queued_messages_wait_after_the_chat_and_helper_reports_are_a_small_line() {
+        let mut feed = Feed::new();
+        let queued = |seq, id, from: &str| {
+            rec(
+                seq,
+                LeadEvent::MessageQueued {
+                    id,
+                    text: format!("message {id}"),
+                    attachments: vec![],
+                    from: from.into(),
+                },
+            )
+        };
+        assert_eq!(
+            feed.apply(&queued(1, 1, "user"), &NoLookup),
+            [Change::Queue]
+        );
+        // Messages Melissa passes on and helpers' reports wait unseen.
+        assert!(feed.apply(&queued(2, 2, "lead"), &NoLookup).is_empty());
+        assert!(feed.apply(&queued(3, 3, "helper"), &NoLookup).is_empty());
+        assert_eq!(
+            feed.apply(&queued(4, 4, "user"), &NoLookup),
+            [Change::Queue]
+        );
+        let ids: Vec<u64> = feed.queued().iter().map(|q| q.id).collect();
+        assert_eq!(ids, [1, 4]);
+        assert!(feed.entries().is_empty(), "not in the chat itself");
+        let gone = rec(
+            5,
+            LeadEvent::MessageUnqueued {
+                id: 1,
+                reason: "started".into(),
+            },
+        );
+        assert_eq!(feed.apply(&gone, &NoLookup), [Change::Queue]);
+        let other = rec(
+            6,
+            LeadEvent::MessageUnqueued {
+                id: 2,
+                reason: "started".into(),
+            },
+        );
+        assert!(feed.apply(&other, &NoLookup).is_empty());
+        assert_eq!(feed.queued().len(), 1);
+
+        // A report turn: "Ada finished", no message bubble.
+        let report = rec(
+            7,
+            LeadEvent::HelperReport {
+                turn: 1,
+                agent: "d.a1".into(),
+                name: "Ada".into(),
+                status: "succeeded".into(),
+            },
+        );
+        feed.apply(&report, &NoLookup);
+        assert!(feed.busy());
+        assert_eq!(
+            feed.entries().last().map(|e| e.item.clone()),
+            Some(Item::Activity {
+                label: "Ada finished".into(),
+                detail: None,
+                state: ActivityState::Done,
+                agent: Some("d.a1".into()),
+            })
         );
     }
 

@@ -55,6 +55,7 @@ use melissa_agent::{
     attachments::{self, AttachmentError, Upload, MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES},
     lead::{
         agents::AgentView, backends::BackendView, events::EventLog, Lead, LeadError, LeadStatus,
+        SendMode,
     },
     tools::{AlwaysAllowError, PermissionsError, Principal, RuleOffer, ToolRegistry, Verdict},
 };
@@ -140,6 +141,8 @@ pub(crate) fn routes(ui: Ui) -> Router {
             post(agent_message).layer(DefaultBodyLimit::max(MESSAGE_BODY_LIMIT)),
         )
         .route("/ui/cancel", post(lead_cancel))
+        .route("/ui/queue/{id}/{action}", post(lead_queue))
+        .route("/ui/agents/{agent}/queue/{id}/{action}", post(agent_queue))
         .route("/ui/agents/{agent}/cancel", post(agent_cancel))
         .route("/ui/confirmations/{id}/{verdict}", post(resolve))
         .route("/ui/fresh-start", post(lead_fresh_start))
@@ -306,6 +309,7 @@ impl Ui {
             details: Some(&panel),
             all,
             caption: !self.registry().permissions().bypass(),
+            enter_steers: self.settings.prefs().enter_steers,
         };
         Ok(self
             .framed(|f| {
@@ -796,12 +800,17 @@ pub(crate) const MESSAGE_BODY_LIMIT: usize = MAX_MESSAGE_BYTES + 1024 * 1024;
 #[derive(Deserialize)]
 struct TextOnly {
     text: String,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 /// A message from the composer: its text and files. The composer posts
 /// `multipart/form-data` (fields `text` and `files`); a urlencoded form has text only.
 pub(crate) struct NewMessage {
     pub(crate) text: String,
+    /// While a turn runs: `queue` or `steer` (the composer's Enter / double Enter); None
+    /// follows the owner's setting.
+    pub(crate) mode: Option<String>,
     pub(crate) files: Vec<Upload>,
     /// Why the files were refused while reading them (too large, too many, cut off).
     pub(crate) refused: Option<LeadError>,
@@ -828,6 +837,7 @@ impl<S: Send + Sync> FromRequest<S> for NewMessage {
                 .map_err(IntoResponse::into_response)?;
             return Ok(Self {
                 text: form.text,
+                mode: form.mode,
                 files: Vec::new(),
                 refused: None,
             });
@@ -844,6 +854,7 @@ impl<S: Send + Sync> FromRequest<S> for NewMessage {
 async fn read_message(mut parts: Multipart) -> NewMessage {
     let mut msg = NewMessage {
         text: String::new(),
+        mode: None,
         files: Vec::new(),
         refused: None,
     };
@@ -865,6 +876,7 @@ async fn read_message(mut parts: Multipart) -> NewMessage {
                     break;
                 }
             },
+            Some("mode") => msg.mode = field.text().await.ok(),
             Some("files") => {
                 let name = field.file_name().unwrap_or_default().to_string();
                 let mut bytes = Vec::new();
@@ -925,18 +937,23 @@ fn cut_off(e: &axum::extract::multipart::MultipartError) -> LeadError {
     }
 }
 
+/// What the composer's message asks for while a turn runs: its own `mode`, else the owner's
+/// setting (Settings → Developer → Chat).
+fn send_mode(ui: &Ui, mode: Option<&str>) -> SendMode {
+    match mode {
+        Some("steer") => SendMode::Steer,
+        Some("queue") => SendMode::Queue,
+        _ if ui.settings.prefs().enter_steers => SendMode::Steer,
+        _ => SendMode::Queue,
+    }
+}
+
 async fn lead_message(State(ui): State<Ui>, headers: HeaderMap, msg: NewMessage) -> Response {
     let had_files = msg.had_files();
+    let mode = send_mode(&ui, msg.mode.as_deref());
     let result = match msg.refused {
         Some(e) => Err(e),
-        None if msg.files.is_empty() => ui.lead.send(&msg.text).map(|_| ()),
-        None => {
-            // Storing the files writes to disk: off the async workers.
-            let (lead, text, files) = (ui.lead.clone(), msg.text.clone(), msg.files);
-            tokio::task::spawn_blocking(move || lead.send_with(&text, files).map(|_| ()))
-                .await
-                .unwrap_or_else(|e| Err(LeadError::Failed(e.to_string())))
-        }
+        None => ui.lead.submit(&msg.text, msg.files, mode).await.map(|_| ()),
     };
     message_reply(&ui, Who::Lead, None, &headers, &msg.text, had_files, result).await
 }
@@ -951,21 +968,15 @@ async fn agent_message(
         return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
     };
     let had_files = msg.had_files();
+    let mode = send_mode(&ui, msg.mode.as_deref());
     let result = match msg.refused {
         Some(e) => Err(e),
-        None => {
-            let (lead, id, text, files) = (
-                ui.lead.clone(),
-                agent.id.clone(),
-                msg.text.clone(),
-                msg.files,
-            );
-            tokio::task::spawn_blocking(move || {
-                lead.agents().user_send_with(&id, &text, files).map(|_| ())
-            })
+        None => ui
+            .lead
+            .agents()
+            .user_submit(&agent.id, &msg.text, msg.files, mode)
             .await
-            .unwrap_or_else(|e| Err(LeadError::Failed(e.to_string())))
-        }
+            .map(|_| ()),
     };
     message_reply(
         &ui,
@@ -992,9 +1003,6 @@ async fn message_reply(
 ) -> Response {
     let mut error = match &result {
         Ok(()) => None,
-        Err(LeadError::Busy) => {
-            Some("Still working on your last message. Wait for it, or press Stop.".to_string())
-        }
         Err(LeadError::Empty) => Some("Type a message first.".to_string()),
         Err(e) => Some(format!("Couldn't send that: {e}.")),
     };
@@ -1007,32 +1015,7 @@ async fn message_reply(
     // Keep the text on failure so nothing typed is lost.
     let draft = if error.is_some() { text } else { "" };
     if is_htmx(headers) {
-        let status = ui.status(who);
-        let busy = status.as_ref().is_some_and(|s| s.turn.is_some());
-        let backend = status
-            .as_ref()
-            .and_then(|s| s.backend.as_deref())
-            .map(backend_label);
-        let feed = Feed::new();
-        let picker = ui.picker(who, None);
-        let links = pages::FileLinks::none();
-        return pages::composer_box(&ChatView {
-            who,
-            epoch: 0,
-            feed: &feed,
-            speaker: speaker_of(agent),
-            backend,
-            picker: picker.as_ref(),
-            busy,
-            draft,
-            error: error.as_deref(),
-            voice: ui.settings.voice_url(),
-            links: &links,
-            details: None,
-            all: false,
-            caption: !ui.registry().permissions().bypass(),
-        })
-        .into_response();
+        return composer_reply(ui, who, agent, draft, error.as_deref());
     }
     let back = match agent {
         Some(b) => pages::agent_href(&b.id),
@@ -1049,6 +1032,43 @@ async fn message_reply(
             Err(e) => error_page(e),
         },
     }
+}
+
+/// A fresh composer for htmx: `draft` in the box, `error` above it.
+fn composer_reply(
+    ui: &Ui,
+    who: Who<'_>,
+    agent: Option<&AgentView>,
+    draft: &str,
+    error: Option<&str>,
+) -> Response {
+    let status = ui.status(who);
+    let busy = status.as_ref().is_some_and(|s| s.turn.is_some());
+    let backend = status
+        .as_ref()
+        .and_then(|s| s.backend.as_deref())
+        .map(backend_label);
+    let feed = Feed::new();
+    let picker = ui.picker(who, None);
+    let links = pages::FileLinks::none();
+    pages::composer_box(&ChatView {
+        who,
+        epoch: 0,
+        feed: &feed,
+        speaker: speaker_of(agent),
+        backend,
+        picker: picker.as_ref(),
+        busy,
+        draft,
+        error,
+        voice: ui.settings.voice_url(),
+        links: &links,
+        details: None,
+        all: false,
+        caption: !ui.registry().permissions().bypass(),
+        enter_steers: ui.settings.prefs().enter_steers,
+    })
+    .into_response()
 }
 
 /// Who asks for a conversation's confirmations, for its access level.
@@ -1261,6 +1281,83 @@ async fn agent_cancel(
     // Nothing running is fine: the button may be stale.
     let _ = ui.lead.agents().user_cancel(&agent.id).await;
     cancelled(&headers, &pages::agent_href(&agent.id))
+}
+
+/// "Send now", Edit or Remove on one of Melissa's queued messages.
+async fn lead_queue(
+    State(ui): State<Ui>,
+    Path((id, action)): Path<(u64, String)>,
+    headers: HeaderMap,
+) -> Response {
+    queue_action(&ui, Who::Lead, None, id, &action, &headers).await
+}
+
+/// The same for a helper's queued message.
+async fn agent_queue(
+    State(ui): State<Ui>,
+    Path((agent, id, action)): Path<(String, u64, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(agent) = ui.agent(&agent) else {
+        return (StatusCode::NOT_FOUND, pages::not_found()).into_response();
+    };
+    queue_action(
+        &ui,
+        Who::Agent(&agent.id),
+        Some(&agent),
+        id,
+        &action,
+        &headers,
+    )
+    .await
+}
+
+/// `steer` (into the running turn), `remove`, or `edit` (back into the composer: htmx gets
+/// the composer with the text, a plain post the chat page with it). The stream updates the
+/// queue itself. A message that already started is left alone.
+async fn queue_action(
+    ui: &Ui,
+    who: Who<'_>,
+    agent: Option<&AgentView>,
+    id: u64,
+    action: &str,
+    headers: &HeaderMap,
+) -> Response {
+    let agents = ui.lead.agents();
+    let back = who.chat_url();
+    match action {
+        "steer" => {
+            let _ = match who {
+                Who::Lead => ui.lead.steer(id).await,
+                Who::Agent(a) => agents.user_steer(a, id).await.ok().flatten(),
+            };
+            cancelled(headers, &back)
+        }
+        "remove" => {
+            let _ = match who {
+                Who::Lead => ui.lead.unqueue(id, false),
+                Who::Agent(a) => agents.user_unqueue(a, id, false).ok().flatten(),
+            };
+            cancelled(headers, &back)
+        }
+        "edit" => {
+            let taken = match who {
+                Who::Lead => ui.lead.unqueue(id, true),
+                Who::Agent(a) => agents.user_unqueue(a, id, true).ok().flatten(),
+            };
+            let Some(m) = taken else {
+                return cancelled(headers, &back);
+            };
+            if is_htmx(headers) {
+                return composer_reply(ui, who, agent, &m.text, None);
+            }
+            match ui.chat_page(who, agent, &m.text, None, false).await {
+                Ok(page) => page.into_response(),
+                Err(e) => error_page(e),
+            }
+        }
+        _ => (StatusCode::NOT_FOUND, pages::not_found()).into_response(),
+    }
 }
 
 fn cancelled(headers: &HeaderMap, back: &str) -> Response {

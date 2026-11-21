@@ -1,8 +1,16 @@
 //! JSON API for the lead agent chat and the confirmation inbox (no pages: the CLI uses it today,
 //! the web UI later). Mutating requests pass the same same-origin check as the UI.
 //!
-//! - `POST /api/lead/messages` `{"text": "..."}` → 202 `{"turn": n, "since": seq}`; 409 while
-//!   a turn runs; 422 for an empty or too long message.
+//! - `POST /api/lead/messages` `{"text": "...", "steer"?: bool}` → 202 `{"status", "since":
+//!   seq, ...}`: `started` (`turn`: a turn began), `queued` (`id`: a turn runs, the message
+//!   waits in Melissa's queue and starts when the turns before it have ended), with `steer`
+//!   while a turn runs `steered` (`turn`: it went into the running turn) or `next` (the
+//!   agent can't take it mid-turn: the running turn is stopped and it starts next). 422 for
+//!   an empty or too long message. Never 409: messages queue (2026-11-21).
+//! - `GET /api/lead/queue` → `{"queued": [{id, text, attachments?, from ("user", "lead",
+//!   "helper"), at}]}`, oldest first. `POST /api/lead/queue/{id}/steer` → the `status`
+//!   shape above ("Send now"); `POST /api/lead/queue/{id}/remove` → `{"removed": message}`;
+//!   404 when it is not queued (any more: it started).
 //! - `GET /api/lead/events?since=<seq>&wait=<secs>&limit=<n>` → `{"events": [...], "next":
 //!   seq, "missed": bool}`; waits up to `wait` (max 30) seconds for the first new event.
 //! - `POST /api/lead/cancel` → `{"cancelled": bool}`.
@@ -25,7 +33,8 @@
 //! - `GET /api/agents/{agent}` (name or id) → one agent; 404 if there is none.
 //! - The user talks to an agent directly, same shapes as the lead agent's: `POST
 //!   /api/agents/{agent}/messages`, `GET /api/agents/{agent}/events`, `POST /api/agents/{agent}/cancel`,
-//!   `GET /api/agents/{agent}/status` (409 while the agent works on a job or another message).
+//!   `GET /api/agents/{agent}/status`; and its queue: `GET /api/agents/{agent}/queue`,
+//!   `POST /api/agents/{agent}/queue/{id}/steer`, `POST /api/agents/{agent}/queue/{id}/remove`.
 //! - `POST /api/agents/{agent}/rename` `{"name": "..."}` → the agent (the user renames; 422 for a
 //!   bad or taken name).
 //! - `POST /api/agents` `{"name", "icon"?: {"shape", "color"}}` → 201 the new agent (the user's
@@ -82,7 +91,7 @@ use melissa_agent::{
     lead::{
         backends::BackendView,
         icon::{AgentIcon, COLORS, SHAPES},
-        Lead, LeadError,
+        Lead, LeadError, SendMode, Sent,
     },
     mcp::McpServer,
     tools::{AlwaysAllowError, Scope, TaskContext, ToolError, Verdict},
@@ -99,6 +108,9 @@ const MAX_WAIT_SECS: u64 = 30;
 pub(crate) fn routes(lead: Lead) -> Router {
     Router::new()
         .route("/api/lead/messages", post(send_message))
+        .route("/api/lead/queue", get(queue))
+        .route("/api/lead/queue/{id}/steer", post(steer))
+        .route("/api/lead/queue/{id}/remove", post(unqueue))
         .route("/api/lead/events", get(events))
         .route("/api/lead/cancel", post(cancel))
         .route("/api/lead/status", get(status))
@@ -114,6 +126,9 @@ pub(crate) fn routes(lead: Lead) -> Router {
         .route("/api/agents/{agent}/fresh-start", post(agent_fresh_start))
         .route("/api/agents/{agent}", get(agent).delete(agent_delete))
         .route("/api/agents/{agent}/messages", post(agent_message))
+        .route("/api/agents/{agent}/queue", get(agent_queue))
+        .route("/api/agents/{agent}/queue/{id}/steer", post(agent_steer))
+        .route("/api/agents/{agent}/queue/{id}/remove", post(agent_unqueue))
         .route("/api/agents/{agent}/events", get(agent_events))
         .route("/api/agents/{agent}/cancel", post(agent_cancel))
         .route("/api/agents/{agent}/status", get(agent_status))
@@ -172,17 +187,77 @@ fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
 #[derive(Deserialize)]
 struct Message {
     text: String,
+    /// While a turn runs: into it ("steer") instead of the queue.
+    #[serde(default)]
+    steer: bool,
+}
+
+impl Message {
+    fn mode(&self) -> SendMode {
+        if self.steer {
+            SendMode::Steer
+        } else {
+            SendMode::Queue
+        }
+    }
+}
+
+fn sent(s: Sent) -> Response {
+    (StatusCode::ACCEPTED, Json(s)).into_response()
 }
 
 async fn send_message(State(lead): State<Lead>, Json(msg): Json<Message>) -> Response {
-    match lead.send(&msg.text) {
-        Ok((turn, since)) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"turn": turn, "since": since})),
-        )
-            .into_response(),
-        Err(e @ LeadError::Busy) => error(StatusCode::CONFLICT, e),
+    match lead.submit(&msg.text, Vec::new(), msg.mode()).await {
+        Ok(s) => sent(s),
         Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
+    }
+}
+
+fn not_queued() -> Response {
+    error(StatusCode::NOT_FOUND, "no such queued message")
+}
+
+async fn queue(State(lead): State<Lead>) -> Response {
+    Json(json!({"queued": lead.queued()})).into_response()
+}
+
+async fn steer(State(lead): State<Lead>, Path(id): Path<u64>) -> Response {
+    match lead.steer(id).await {
+        Some(s) => sent(s),
+        None => not_queued(),
+    }
+}
+
+async fn unqueue(State(lead): State<Lead>, Path(id): Path<u64>) -> Response {
+    match lead.unqueue(id, false) {
+        Some(m) => Json(json!({"removed": m})).into_response(),
+        None => not_queued(),
+    }
+}
+
+async fn agent_queue(State(lead): State<Lead>, Path(agent): Path<String>) -> Response {
+    match lead.agents().queued_of(&agent) {
+        Ok(q) => Json(json!({"queued": q})).into_response(),
+        Err(e) => lead_error(e),
+    }
+}
+
+async fn agent_steer(State(lead): State<Lead>, Path((agent, id)): Path<(String, u64)>) -> Response {
+    match lead.agents().user_steer(&agent, id).await {
+        Ok(Some(s)) => sent(s),
+        Ok(None) => not_queued(),
+        Err(e) => lead_error(e),
+    }
+}
+
+async fn agent_unqueue(
+    State(lead): State<Lead>,
+    Path((agent, id)): Path<(String, u64)>,
+) -> Response {
+    match lead.agents().user_unqueue(&agent, id, false) {
+        Ok(Some(m)) => Json(json!({"removed": m})).into_response(),
+        Ok(None) => not_queued(),
+        Err(e) => lead_error(e),
     }
 }
 
@@ -334,12 +409,12 @@ async fn agent_message(
     Path(agent): Path<String>,
     Json(msg): Json<Message>,
 ) -> Response {
-    match lead.agents().user_send(&agent, &msg.text) {
-        Ok((turn, since)) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"turn": turn, "since": since})),
-        )
-            .into_response(),
+    match lead
+        .agents()
+        .user_submit(&agent, &msg.text, Vec::new(), msg.mode())
+        .await
+    {
+        Ok(s) => sent(s),
         Err(e) => lead_error(e),
     }
 }
