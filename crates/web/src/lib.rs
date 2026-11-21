@@ -4776,11 +4776,18 @@ mod tests {
                 let (status, _, body) = get_html(&app, &page).await;
                 assert_eq!(status, StatusCode::OK);
                 assert!(body.contains("id=\"agent-groups\""), "{body}");
-                // Settled helpers are listed under Settled, closed until opened.
+                // Idle helpers follow Pinned as a plain list (a heading for screen readers
+                // only); there is no Settled group any more.
                 assert!(
                     body.contains(
-                        "<details class=\"agent-group group-settled\" data-group=\"settled\">"
+                        "<section class=\"agent-group group-idle\" aria-labelledby=\"group-idle\">\
+                         <h2 class=\"visually-hidden\" id=\"group-idle\">Other helpers</h2>"
                     ),
+                    "{body}"
+                );
+                assert!(!body.contains("Settled"), "{body}");
+                assert!(
+                    body.find("group-pinned").unwrap() < body.find("group-idle").unwrap(),
                     "{body}"
                 );
             }
@@ -4825,7 +4832,7 @@ mod tests {
             let frame = frame_where(&mut main, |f| {
                 f.contains(groups) && {
                     let p = f.find("group-pinned").unwrap_or(usize::MAX);
-                    let st = f.find("group-settled").unwrap_or(0);
+                    let st = f.find("group-idle").unwrap_or(f.len());
                     f.find(&name("Cyd")).is_some_and(|c| c > p && c < st)
                 }
             })
@@ -4871,6 +4878,12 @@ mod tests {
             .await;
             let working = &frame[frame.find("group-working").unwrap()..];
             assert!(working.contains(&name("Ada")), "{frame}");
+            // Working is the last group, at the bottom.
+            assert!(
+                frame.find("group-pinned").unwrap() < frame.find("group-working").unwrap(),
+                "{frame}"
+            );
+            assert!(!working.contains("<section class=\"agent-group"), "{frame}");
             assert!(
                 working.contains("<span class=\"agent-status working\">"),
                 "{frame}"

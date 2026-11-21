@@ -1605,6 +1605,11 @@ async fn the_user_talks_to_a_agent_directly() {
         turn,
         text: "Nothing yet.".into()
     }));
+    // When it was last active: its chat's last event (the sidebar orders idle agents by it).
+    let last = log.since(0, 1000).events.last().map(|r| r.ts).unwrap();
+    let made = s.pool().get("Ada").unwrap().created_at;
+    assert_eq!(s.pool().last_active("Ada"), Some(last.max(made)));
+    assert_eq!(s.pool().last_active("Nobody"), None);
     assert!(matches!(
         s.pool().user_send("Nobody", "hi"),
         Err(LeadError::NoSuchAgent(_))

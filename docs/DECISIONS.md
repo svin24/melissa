@@ -1162,6 +1162,20 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   buttons, ui-craft); apps show the facts Melissa knows (a game port, a web port), not "local only" or player
   slots; there is no "System agent" (Melissa keeps updates and device health); the caption "Device changes require
   your permission" is left out (not true for every change). Phone layouts are a separate change.
+- **2026-11-21 — Sidebar order: idle agents above Working; small motion across the UI** (owner request, desktop
+  and phone). Replaces the group order of the 2026-11-20 sidebar entry. Top to bottom: **Needs attention**,
+  **Pinned** (pinned helpers stay there while they work), the **idle** helpers (no heading, count or collapse;
+  most recently active first: the last event of their chat, or when its saved chat last changed), then
+  **Working** at the bottom. The "Settled" group is gone. When an agent finishes it moves back up into the idle
+  list; an agent that changes place glides there (melissa.js measures the rows before and after the live
+  update and slides each from where it was, 200ms), a new one fades in, a removed one fades out. Motion
+  elsewhere, all 160 to 200ms ease-out on transform and opacity, and none of it under
+  `prefers-reduced-motion: reduce`: new chat entries (messages, cards, events), queued messages, a form's answer
+  (a settings section, a dialog's content, a notice) fade in with a slight rise; dialogs, sheets and menus fade
+  in as they open; pages cross-fade with cross-document View Transitions where the browser has them, the sidebar
+  held still on wide screens. Nothing fades on page load, nor for polled regions, results as you type, toggles,
+  the composer or the model picker. Why: the owner asked for small, quick animations, and for working agents to
+  sit apart at the bottom while finished ones come back to the list.
 - **2026-11-21 — People, logins and permissions** (PLAN section 6c). Accounts per person with username +
   password (Argon2id); the first person claims the box with a one-time console code and is the owner, others
   join by single-use invite; passkeys later (need HTTPS). No guest role. Members get granular permissions

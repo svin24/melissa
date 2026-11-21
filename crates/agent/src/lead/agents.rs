@@ -669,6 +669,39 @@ impl AgentPool {
             .collect()
     }
 
+    /// When an agent last did or heard something (unix seconds): its chat's last event when
+    /// the chat is open in this daemon run, else when its saved chat last changed, else when
+    /// it was made. Opens nothing (cheap enough for every sidebar update).
+    pub fn last_active(&self, id: &str) -> Option<u64> {
+        let agent = self.inner.registry.resolve(id)?;
+        let open = lock(&self.inner.convs).get(&agent.id).cloned();
+        let from_log = open.and_then(|c| {
+            let log = c.events();
+            log.since(log.last_seq().saturating_sub(1), 1)
+                .events
+                .last()
+                .map(|r| r.ts)
+        });
+        let from_file = || {
+            std::fs::metadata(
+                self.inner
+                    .registry
+                    .agent_dir(&agent.id)
+                    .join("transcript.jsonl"),
+            )
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+        };
+        Some(
+            from_log
+                .or_else(from_file)
+                .unwrap_or(agent.created_at)
+                .max(agent.created_at),
+        )
+    }
+
     /// One agent by name or id.
     pub fn get(&self, name_or_id: &str) -> Option<AgentView> {
         self.inner

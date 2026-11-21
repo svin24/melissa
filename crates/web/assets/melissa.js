@@ -1153,8 +1153,9 @@
 
   // --- The sidebar (2026-11-20, owner design): agents grouped by state. --------------------
   // Here: the search filters the agents as you type; wide screens collapse it (remembered per
-  // browser) and the chat header's button shows it again. Working/Settled keep the open state
-  // the user gave them across live updates (per tab). On phones it is the agent list (CSS;
+  // browser) and the chat header's button shows it again. Working keeps the open state
+  // the user gave them across live updates (per tab), and agents glide to their new place
+  // (motion section below). On phones it is the agent list (CSS;
   // `components::mobile`), so collapsing doesn't apply there. Without script it is a plain
   // column.
 
@@ -1252,7 +1253,7 @@
     }
   });
 
-  // Working and Settled: what the user opened or closed stays so across live updates.
+  // Working: what the user opened or closed stays so across live updates.
   function groupKey(g) {
     return "melissa.group." + g.getAttribute("data-group");
   }
@@ -1283,8 +1284,194 @@
     if (t && t.id === "agent-groups") {
       restoreGroups();
       filterAgents();
+      moveRows();
     }
   });
+
+  // --- Motion (2026-11-21, owner): what arrives after the page loaded fades in, agents move
+  // to their new place in the sidebar. The looks are in melissa.css ([data-arrive], the
+  // keyframes); here only what CSS can't tell: what is new. Nothing runs with reduced motion,
+  // and nothing waits for an animation (they are on transform and opacity only).
+  var STILL = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+
+  function still() {
+    return !!(STILL && STILL.matches);
+  }
+
+  // Fade `el` in (CSS: [data-arrive]); the mark goes when the animation ends.
+  function arrive(el) {
+    if (still() || !(el instanceof Element)) {
+      return;
+    }
+    el.setAttribute("data-arrive", "");
+  }
+
+  function settled(e) {
+    if (e.target instanceof Element && e.target.hasAttribute("data-arrive")) {
+      e.target.removeAttribute("data-arrive");
+    }
+  }
+
+  document.addEventListener("animationend", settled);
+  document.addEventListener("animationcancel", settled);
+
+  // A form's answer (or a panel loaded into the settings window or a dialog) fades in.
+  // Not: live updates, polled regions and results as you type (they come often), toggles (the switch itself
+  // moves), the composer and the model picker (used all the time). A notice in the answer
+  // (saved, failed) fades in even then.
+  var NOTICES = ".notice, .sheet-msg";
+
+  function swapStyleOf(el) {
+    var s = el && el.closest ? el.closest("[hx-swap]") : null;
+    return s ? (s.getAttribute("hx-swap") || "").split(" ")[0] : "innerHTML";
+  }
+
+  document.addEventListener("htmx:afterSwap", function (e) {
+    var d = e.detail || {};
+    var t = e.target;
+    // Only answers to a request (live updates over the stream have no xhr).
+    var from = d.xhr && d.requestConfig ? d.requestConfig.elt || d.elt : null;
+    if (!(t instanceof Element) || !(from instanceof Element) || still()) {
+      return;
+    }
+    var trigger = from.getAttribute("hx-trigger") || "";
+    if (/every|input|keyup/.test(trigger) || swapStyleOf(from) === "none") {
+      return;
+    }
+    var quiet =
+      from.closest("form.toggle, .composer, .model-picker") ||
+      t.closest(".composer, .model-picker");
+    // innerHTML: the target stays and its children are new; outerHTML: the target is new.
+    var fresh = t === d.target ? t.children : [t];
+    each(fresh, function (el) {
+      if (!quiet) {
+        arrive(el);
+      } else {
+        each(el.matches(NOTICES) ? [el] : el.querySelectorAll(NOTICES), arrive);
+      }
+    });
+  });
+
+  // Live replacements (out of band): note what was there, so only what is new fades in and
+  // the sidebar's rows can move from where they were.
+  var sideBefore = null;
+  var queueBefore = null;
+
+  // A queued message by its Remove form (each has its own).
+  function queueKey(msg) {
+    var forms = msg.querySelectorAll(".queue-actions form[action]");
+    return forms.length ? forms[forms.length - 1].getAttribute("action") : null;
+  }
+
+  function queueKeys(box) {
+    var keys = {};
+    each(box.querySelectorAll(".msg-queued"), function (m) {
+      var k = queueKey(m);
+      if (k) {
+        keys[k] = true;
+      }
+    });
+    return keys;
+  }
+
+  // Where each shown agent row is now (rows in a closed group or hidden by the search have
+  // no place and are left alone).
+  function rowPlaces(groups) {
+    var rows = {};
+    each(groups.querySelectorAll(".agent-row[data-agent]"), function (row) {
+      if (row.getClientRects().length) {
+        rows[row.getAttribute("data-agent")] = { el: row, rect: row.getBoundingClientRect() };
+      }
+    });
+    return rows;
+  }
+
+  document.addEventListener("htmx:oobBeforeSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (!t || still()) {
+      return;
+    }
+    if (t.id === "agent-groups") {
+      sideBefore = rowPlaces(t);
+    } else if (t.id === "chat-queue") {
+      queueBefore = queueKeys(t);
+    }
+  });
+
+  document.addEventListener("htmx:oobAfterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.id === "chat-queue" && queueBefore) {
+      var before = queueBefore;
+      queueBefore = null;
+      var box = document.getElementById("chat-queue");
+      each(box ? box.querySelectorAll(".msg-queued") : [], function (m) {
+        if (!before[queueKey(m)]) {
+          arrive(m);
+        }
+      });
+    }
+  });
+
+  // FLIP: each row that changed place starts where it was and slides to where it is now; a
+  // new agent fades in; one that left fades out where it was (a copy without its menu).
+  function moveRows() {
+    var before = sideBefore;
+    sideBefore = null;
+    var groups = document.getElementById("agent-groups");
+    if (!before || !groups || still()) {
+      return;
+    }
+    var now = rowPlaces(groups);
+    var here = {};
+    each(groups.querySelectorAll(".agent-row[data-agent]"), function (row) {
+      here[row.getAttribute("data-agent")] = true;
+    });
+    Object.keys(now).forEach(function (key) {
+      var row = now[key].el;
+      var was = before[key];
+      if (!was) {
+        arrive(row);
+        return;
+      }
+      var dx = was.rect.left - now[key].rect.left;
+      var dy = was.rect.top - now[key].rect.top;
+      if ((Math.abs(dx) >= 1 || Math.abs(dy) >= 1) && row.animate) {
+        row.animate(
+          [{ transform: "translate(" + dx + "px, " + dy + "px)" }, { transform: "none" }],
+          { duration: 200, easing: "ease-out" }
+        );
+      }
+    });
+    var box = groups.getBoundingClientRect();
+    Object.keys(before).forEach(function (key) {
+      if (!here[key] && before[key].el.animate) {
+        leave(groups, before[key], box);
+      }
+    });
+  }
+
+  function leave(groups, was, box) {
+    var ghost = was.el.cloneNode(true);
+    each(ghost.querySelectorAll("[popover], [popovertarget]"), function (el) {
+      el.remove();
+    });
+    each([ghost].concat(Array.prototype.slice.call(ghost.querySelectorAll("[id]"))), function (el) {
+      el.removeAttribute("id");
+    });
+    ghost.removeAttribute("data-agent");
+    ghost.removeAttribute("data-name");
+    ghost.classList.add("leaving");
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.inert = true;
+    ghost.style.left = was.rect.left - box.left + "px";
+    ghost.style.top = was.rect.top - box.top + "px";
+    ghost.style.width = was.rect.width + "px";
+    groups.appendChild(ghost);
+    var a = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: "ease-out" });
+    a.onfinish = a.oncancel = function () {
+      ghost.remove();
+    };
+  }
 
   function initSidebar() {
     if (!document.getElementById("sidebar")) {

@@ -236,7 +236,13 @@ Melissa moves little: motion shows a state change, nothing else. What exists tod
   reduced-motion rule in the same commit. [M][T][I]
 - **Transitions only after the page is ready** (the details sheet waits for `data-ready`), so nothing slides
   on load. [M]
-- **Never:** load animations or entrances, staggered lists, scroll-triggered reveals, parallax, carousels or
+- **What arrives later fades in** (owner, 2026-11-21): new chat entries, queued messages, a form's answer, a new
+  sidebar row: `arrive` (opacity and a 4px rise, 180ms ease-out); dialogs and menus `open` (opacity, scale 0.98,
+  160ms); sidebar rows that change group slide to their new place (FLIP, 200ms); pages cross-fade (View
+  Transitions, 160ms, sidebar still). Not for things on screen at page load, polled regions, typing, toggles,
+  the composer or the model picker. All of it in one `prefers-reduced-motion: no-preference` block at the end of
+  `melissa.css`; melissa.js checks the same query. [M]
+- **Never:** load animations or entrances (of what is there at page load), staggered lists, scroll-triggered reveals, parallax, carousels or
   auto-advancing content, rotating notices, marquees, blinking or shimmer, typing effects on agent text beyond
   the real stream, confetti. A change on screen always means real data or a real state. [T]
 - **Live regions:** streamed updates swap in place (SSE + oob) without moving the user's focus or scroll

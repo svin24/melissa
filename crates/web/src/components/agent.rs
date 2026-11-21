@@ -1,6 +1,6 @@
 //! The agent workspace (2026-11-20, owner design "Melissa — Agent workspace"): one chat per
-//! agent. The sidebar lists the agents grouped by state (Needs attention, Pinned, Working,
-//! Settled), each with its own icon and a "⋯" menu; the chat has a header with the agent, a
+//! agent. The sidebar lists the agents grouped by state (Needs attention, Pinned, the idle
+//! ones, Working last; 2026-11-21), each with its own icon and a "⋯" menu; the chat has a header with the agent, a
 //! status and the same menu; an agent turn's tool steps are one checklist card; and the
 //! permission card says what kind of access is asked for.
 //!
@@ -197,14 +197,16 @@ pub fn agent_menu_items(m: &AgentMenu<'_>) -> Markup {
 
 // --- The sidebar --------------------------------------------------------------------------------
 
-/// The state groups of the sidebar, in order.
+/// The state groups of the sidebar (shown in this order: Attention, Pinned, Idle, Working).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupKind {
     /// Waiting for the owner: an approval, a failed turn, an app with a problem.
     Attention,
     Pinned,
+    /// Done or resting: a plain list without a heading, most recently active first.
+    Idle,
+    /// A turn runs: at the bottom.
     Working,
-    Settled,
 }
 
 impl GroupKind {
@@ -212,8 +214,8 @@ impl GroupKind {
         match self {
             Self::Attention => "Needs attention",
             Self::Pinned => "Pinned",
+            Self::Idle => "Other helpers",
             Self::Working => "Working",
-            Self::Settled => "Settled",
         }
     }
 
@@ -221,8 +223,8 @@ impl GroupKind {
         match self {
             Self::Attention => "attention",
             Self::Pinned => "pinned",
+            Self::Idle => "idle",
             Self::Working => "working",
-            Self::Settled => "settled",
         }
     }
 }
@@ -346,8 +348,11 @@ fn health_class(h: Health) -> &'static str {
 }
 
 /// The agent groups (`oob`: as an out-of-band replacement in a live update). Needs attention
-/// and Pinned are always open; Working is open and Settled closed until the user toggles them
-/// (melissa.js keeps that across updates). Empty groups are left out, except Pinned.
+/// and Pinned have a heading; the idle agents follow as a plain list (its heading is for
+/// screen readers only); Working, last, is open until the user closes it (melissa.js keeps
+/// that across updates). Empty groups are left out, except Pinned. Each row carries its
+/// agent's key (`data-agent`), so melissa.js can move it to its new place when it changes
+/// group.
 pub fn agent_groups(groups: &[SideGroup<'_>], waiting: usize, oob: bool) -> Markup {
     html! {
         div.agent-groups id=(AGENT_GROUPS_ID) hx-swap-oob=[oob.then_some("true")] {
@@ -367,9 +372,14 @@ pub fn agent_groups(groups: &[SideGroup<'_>], waiting: usize, oob: bool) -> Mark
                             (agent_list(&g.agents, g.kind))
                         }
                     }
-                    GroupKind::Working | GroupKind::Settled => {
-                        details class={ "agent-group group-" (g.kind.key()) } data-group=(g.kind.key())
-                            open[g.kind == GroupKind::Working] {
+                    GroupKind::Idle => {
+                        section class={ "agent-group group-" (g.kind.key()) } aria-labelledby=(head_id) {
+                            h2.visually-hidden id=(head_id) { (g.kind.label()) }
+                            (agent_list(&g.agents, g.kind))
+                        }
+                    }
+                    GroupKind::Working => {
+                        details class={ "agent-group group-" (g.kind.key()) } data-group=(g.kind.key()) open {
                             summary.group-head id=(head_id) {
                                 span { (g.kind.label()) }
                                 span.count { (g.agents.len()) }
@@ -389,7 +399,7 @@ fn agent_list(agents: &[SideAgent<'_>], kind: GroupKind) -> Markup {
         ul.agent-list {
             @for a in agents {
                 li class={ "agent-row" @if kind == GroupKind::Attention { " attention" } }
-                    data-name=(a.name.to_lowercase()) {
+                    data-name=(a.name.to_lowercase()) data-agent=(a.key) {
                     a.agent-link href=(a.href) aria-current=[a.current.then_some("page")] {
                         (avatar(&a.avatar, "av-sm"))
                         span.agent-text {
