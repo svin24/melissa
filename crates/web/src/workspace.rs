@@ -128,14 +128,19 @@ pub struct SideData {
     pub devices: Vec<(String, Health, &'static str)>,
     /// Pending approvals in all.
     pub waiting: usize,
+    /// The name the owner gave this device in setup (display only), if any.
+    pub this_device: Option<String>,
 }
 
 impl SideData {
-    /// This device's name ("melissa"), or "This device" when it isn't known yet.
+    /// This device's name: the one the owner gave it, else the cluster's ("melissa"), else
+    /// "This device" when it isn't known yet.
     pub fn device(&self) -> &str {
-        self.devices
-            .first()
-            .map_or("This device", |(n, _, _)| n.as_str())
+        self.this_device.as_deref().unwrap_or_else(|| {
+            self.devices
+                .first()
+                .map_or("This device", |(n, _, _)| n.as_str())
+        })
     }
 
     /// The lead agent's display name ("Melissa" until the user renames it).
@@ -278,7 +283,7 @@ impl Ui {
 
     /// [`Ui::side_data`] when it is known whether Melissa has earlier chats (`earlier`).
     pub(crate) fn side_data_with(&self, snap: &ClusterSnapshot, earlier: bool) -> SideData {
-        let devices: Vec<(String, Health, &'static str)> = snap
+        let mut devices: Vec<(String, Health, &'static str)> = snap
             .devices
             .iter()
             .map(|d| {
@@ -290,9 +295,17 @@ impl Ui {
                 (d.name.clone(), h, w)
             })
             .collect();
-        let device = devices
-            .first()
-            .map_or_else(|| "This device".to_string(), |d| d.0.clone());
+        // The owner's name for this device (setup) shows wherever the UI names it; the
+        // cluster node keeps its own name.
+        let this_device = self.settings.device_name();
+        if let (Some(name), Some(first)) = (&this_device, devices.first_mut()) {
+            first.0 = name.clone();
+        }
+        let device = this_device.clone().unwrap_or_else(|| {
+            devices
+                .first()
+                .map_or_else(|| "This device".to_string(), |d| d.0.clone())
+        });
         let pending = self.lead.confirmations().pending();
         let lead_task = self.lead.task_id();
         let agents = self.lead.agents();
@@ -359,6 +372,7 @@ impl Ui {
             entries,
             devices,
             waiting: pending.len(),
+            this_device,
         }
     }
 

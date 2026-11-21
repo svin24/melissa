@@ -108,9 +108,13 @@ async fn claim_needs_the_code_and_works_once() {
     let (status, _, page) = send(&app, req("GET", "/claim").body(Body::empty()).unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("Setup code") && page.contains("autocomplete=\"new-password\""));
+    // One password field with "Show password" (2026-11-21: no "Password again").
+    assert!(!page.contains("Password again") && !page.contains("name=\"again\""));
+    assert!(page.contains("data-show-password") && page.contains("Show password"));
+    assert!(page.contains("Printed at the end of the install."));
 
     let (code, _) = auth.setup_code().unwrap().unwrap();
-    let body = "code=WRONG-CODE2&username=ana&password=owner-password&again=owner-password";
+    let body = "code=WRONG-CODE2&username=ana&password=owner-password";
     let (status, headers, page) = send(
         &app,
         form_post("/claim", body).body(Body::from(body)).unwrap(),
@@ -121,7 +125,7 @@ async fn claim_needs_the_code_and_works_once() {
     assert!(headers.get(header::SET_COOKIE).is_none());
     assert!(!auth.has_owner());
 
-    let body = format!("code={code}&username=ana&password=owner-password&again=owner-password");
+    let body = format!("code={code}&username=ana&password=owner-password");
     let (status, headers, _) = send(
         &app,
         form_post("/claim", &body)
@@ -130,7 +134,8 @@ async fn claim_needs_the_code_and_works_once() {
     )
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(headers[header::LOCATION], "/");
+    // First-run setup comes next.
+    assert_eq!(headers[header::LOCATION], "/setup");
     let set = set_cookie_of(&headers);
     assert!(set.starts_with("melissa_session="), "{set}");
     for part in ["HttpOnly", "SameSite=Strict", "Path=/"] {

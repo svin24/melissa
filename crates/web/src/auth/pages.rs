@@ -192,16 +192,15 @@ async fn login(
 fn claim_form(username: &str, error: Option<&str>) -> Markup {
     auth_page(&AuthForm {
         title: "Claim this Melissa",
-        intro: Some("Enter the setup code from the host, then choose your username and password. You become the owner."),
+        intro: Some("You become the owner."),
         error,
         action: "/claim",
         next: None,
         fields: html! {
             (credential_field("code", "Setup code", "text", "one-time-code", "",
-                Some("In Melissa's log when it starts, or run melissa-server setup-code on the host.")))
+                Some("Printed at the end of the install.")))
             (credential_field("username", "Username", "text", "username", username, None))
             (credential_field("password", "Password", "password", "new-password", "", Some("At least 8 characters.")))
-            (credential_field("again", "Password again", "password", "new-password", "", None))
         },
         submit: "Claim",
     })
@@ -222,8 +221,6 @@ pub(crate) struct ClaimIn {
     username: String,
     #[serde(default)]
     password: String,
-    #[serde(default)]
-    again: String,
 }
 
 async fn claim(
@@ -235,17 +232,12 @@ async fn claim(
     if g.auth.has_owner() {
         return Redirect::to("/login").into_response();
     }
-    if form.password != form.again {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            claim_form(&form.username, Some("The passwords don't match.")),
-        )
-            .into_response();
-    }
+    // One password field with "Show password" (no "Password again").
     let (auth, src, label) = (g.auth.clone(), src(&source), browser_label(&headers));
     let (code, username, password) = (form.code, form.username.clone(), form.password);
     match blocking(move || auth.claim(&code, &username, &password, &src, &label)).await {
-        Ok(s) => signed_in_to(&headers, &s, "/"),
+        // First-run setup comes next (`crate::settings::setup`).
+        Ok(s) => signed_in_to(&headers, &s, "/setup"),
         Err(AuthError::AlreadyClaimed) => Redirect::to("/login").into_response(),
         Err(e) => (status_for(&e), claim_form(&form.username, Some(&say(&e)))).into_response(),
     }
@@ -342,8 +334,13 @@ async fn invite(
     }
     let (auth, src, label) = (g.auth.clone(), src(&source), browser_label(&headers));
     let (t, username, password) = (token.clone(), form.username.clone(), form.password);
+    // A new member goes straight to the chat (first-run setup is the owner's).
+    let to = match info.kind {
+        InviteKind::Join => crate::pages::MELISSA_CHAT_URL,
+        InviteKind::Reset { .. } => "/",
+    };
     match blocking(move || auth.accept_invite(&t, &username, &password, &src, &label)).await {
-        Ok(s) => signed_in_to(&headers, &s, "/"),
+        Ok(s) => signed_in_to(&headers, &s, to),
         Err(AuthError::InviteInvalid) => dead_link(),
         Err(e) => (
             status_for(&e),
@@ -451,8 +448,8 @@ async fn host_setup_code(State(g): State<Gate>, Extension(viewer): Extension<Vie
 /// Print the setup code where the host's owner looks (the service's log / console).
 pub fn log_setup_code(code: &str) {
     tracing::warn!(
-        "Claim this Melissa: open the web UI and enter the setup code {code} (valid 1 hour; \
-         a new one: `melissa-server setup-code`)"
+        "Claim this Melissa: open the web UI and enter the setup code {code} (valid until used \
+         or for 1 hour from when it was made; a new one: `melissa-server setup-code`)"
     );
 }
 

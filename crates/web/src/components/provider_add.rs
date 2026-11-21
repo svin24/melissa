@@ -61,6 +61,19 @@ pub struct ProviderTile<'a> {
     pub vendor: &'a str,
     /// Where choosing it posts; None: it is added already.
     pub action: Option<&'a str>,
+    /// First-run setup: the tile is a link to its provider's steps, with its status instead
+    /// of the vendor (`action` is ignored).
+    pub link: Option<TileLink<'a>>,
+}
+
+/// A [`ProviderTile`] that opens its provider (first-run setup).
+pub struct TileLink<'a> {
+    pub href: &'a str,
+    /// "Ready", "Not installed", "Sign in needed".
+    pub status: &'a str,
+    pub tone: Tone,
+    /// The provider shown below the tiles.
+    pub current: bool,
 }
 
 /// The grid of [`ProviderTile`]s. Choosing one posts its form (htmx swaps `#target`).
@@ -69,7 +82,13 @@ pub fn provider_tiles(label: &str, tiles: &[ProviderTile<'_>], target: &str) -> 
         ul.ptiles aria-label=(label) {
             @for t in tiles {
                 li {
-                    @if let Some(action) = t.action {
+                    @if let Some(l) = &t.link {
+                        a.ptile href=(l.href) aria-current=[l.current.then_some("true")] {
+                            (provider_logo(t.id, t.letter, false))
+                            span.ptile-name { (t.label) }
+                            span.ptile-note { (badge(l.status, l.tone)) }
+                        }
+                    } @else if let Some(action) = t.action {
                         form method="post" action=(action) hx-post=(action)
                             hx-target={ "#" (target) } hx-swap="outerHTML" {
                             (crate::components::csrf_field())

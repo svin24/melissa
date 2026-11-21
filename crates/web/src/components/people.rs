@@ -19,6 +19,7 @@ pub fn csrf_field() -> Markup {
 
 /// A username or password field with the browser's autofill hint (`username`,
 /// `current-password`, `new-password`, `one-time-code`); otherwise like `text_field`.
+/// A password field gets a "Show password" switch (melissa.js; hidden without script).
 pub fn credential_field(
     name: &str,
     label: &str,
@@ -27,12 +28,24 @@ pub fn credential_field(
     value: &str,
     hint: Option<&str>,
 ) -> Markup {
-    html! {
+    let field = html! {
         label.field {
             span { (label) }
             input type=(kind) name=(name) value=(value) autocomplete=(autocomplete)
                 autocapitalize="none" spellcheck="false" required maxlength="256";
             @if let Some(h) = hint { small.hint { (h) } }
+        }
+    };
+    if kind != "password" {
+        return field;
+    }
+    html! {
+        div.field-pw {
+            (field)
+            label.show-password {
+                input type="checkbox" data-show-password;
+                span { "Show password" }
+            }
         }
     }
 }

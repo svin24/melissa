@@ -28,7 +28,7 @@ pub(crate) const TRANSCRIBE_URL: &str = "/ui/voice/transcribe";
 pub(super) const MAX_UPLOAD: usize = 12 * 1024 * 1024;
 const AUDIT: &str = "settings.voice";
 
-fn view(s: &Settings, error: Option<String>) -> VoiceView {
+pub(super) fn view(s: &Settings, error: Option<String>) -> VoiceView {
     let voice = s.voice();
     VoiceView {
         on: s.prefs().voice_input,
@@ -60,8 +60,14 @@ pub(super) async fn poll(State(ui): State<Ui>) -> Response {
 /// After a form: htmx gets the region, a plain form post a redirect.
 fn answer(s: &Settings, headers: &HeaderMap, error: Option<String>) -> Response {
     if !is_htmx(headers) {
+        // First-run setup's Extras step posts here too: back to it.
+        let back = if super::setup::from_setup(headers) {
+            super::setup::EXTRAS_URL
+        } else {
+            VOICE_URL
+        };
         return match error {
-            None => Redirect::to(VOICE_URL).into_response(),
+            None => Redirect::to(back).into_response(),
             Some(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         };
     }

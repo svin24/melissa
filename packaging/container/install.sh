@@ -400,6 +400,30 @@ update_addresses() {
     esac
 }
 
+# The end of the install says how to claim Melissa: the setup code itself (kept by Melissa
+# until it is used or expires), or where to get it when the server isn't answering yet.
+claim_line() { # output of `melissa-server setup-code` (may be empty)
+    local code
+    code=$(printf '%s\n' "$1" | sed -n 's/^Setup code: *//p' | head -n 1)
+    if [ -n "$code" ]; then
+        echo "  Setup code: $code   (enter it on the web UI to become the owner)"
+    elif printf '%s' "$1" | grep -q 'already has an owner'; then
+        echo "  Sign in:    Melissa already has an owner; sign in on the web UI."
+    else
+        echo "  Setup code: not ready yet. Get it with: sudo podman exec melissa melissa-server setup-code"
+    fi
+}
+
+setup_code_output() {
+    local out=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        out=$(podman exec melissa melissa-server setup-code 2>/dev/null) && break
+        out=""
+        sleep 2
+    done
+    printf '%s' "$out"
+}
+
 wait_for() { # seconds, description, command...
     local end=$(( $(date +%s) + $1 )) what=$2; shift 2
     until "$@" >/dev/null 2>&1; do
@@ -427,6 +451,7 @@ systemctl restart melissa.service
 wait_for 120 "systemd in the container" podman exec melissa test -d /var/lib/melissa-container/etc-melissa
 configure
 wait_for 120 "the web UI" curl -fsS -o /dev/null "http://127.0.0.1:$UI_PORT/"
+claim=$(claim_line "$(setup_code_output)")
 cat <<EOF
 
 Melissa is running (systemctl status melissa). k3s needs a minute or two on the first start.
@@ -438,9 +463,9 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
               (automatic: $AUTO_UPDATE)
   Tailscale:  $(case "$(host_tailscale)" in yes) echo "the host's (Melissa uses it)" ;; *) echo "Settings → Tailscale (Melissa's own, off until you enable it)" ;; esac)
-  First sign-in: open the web UI and claim it with the setup code from
-              sudo podman exec melissa melissa-server setup-code
   From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
   (HTTPS; sign-in sends passwords, so not plain HTTP across the network). See $SHARE/README.md.
   --privileged rootful container: it has root on this host.
+
+$claim
 EOF

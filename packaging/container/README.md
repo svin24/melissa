@@ -145,9 +145,10 @@ Tailscale (`--no-logs-no-support`). Check it with `sudo podman exec melissa tail
 install.sh again.
 
 ### Signing in
-The first person to open the UI claims it: Melissa asks for a one-time **setup code**, printed in its log
-when it starts (`sudo podman logs melissa`) and shown by `sudo podman exec melissa melissa-server setup-code`
-(valid 1 hour, a new one at every restart). That person becomes the owner and invites others from Settings →
+The first person to open the UI claims it: Melissa asks for a one-time **setup code**, printed at the end
+of `install.sh`, in its log when it starts (`sudo podman logs melissa`) and by `sudo podman exec melissa
+melissa-server setup-code` (valid 1 hour; kept across restarts until it is used or expires). Then a short
+setup in the web UI asks for a device name, a provider and a model. That person becomes the owner and invites others from Settings →
 People (single-use links, 24 hours). Lost the owner password: `sudo podman exec melissa melissa-server
 reset-owner` prints a one-hour link that sets a new one. The CLI (`melissa-server chat`, `ask`, `confirm`)
 needs no password: it uses a local socket only root and Melissa's user can open, and acts as the owner.

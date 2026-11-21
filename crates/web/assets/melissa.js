@@ -840,6 +840,17 @@
     }
   });
 
+  // --- Sign-in pages: "Show password" switches its field between hidden and plain text. ----
+  // Without script the switch stays hidden (CSS `.js .show-password`) and the field hidden.
+
+  document.addEventListener("change", function (e) {
+    var box = e.target;
+    if (!box.matches || !box.matches("input[data-show-password]")) return;
+    var wrap = box.closest(".field-pw");
+    var field = wrap && wrap.querySelector("label.field input");
+    if (field) field.type = box.checked ? "text" : "password";
+  });
+
   // --- The model picker (a popover; the browser opens and closes it, Esc and clicks outside
   // included). Here: the provider rail filters the list, the search filters as you type,
   // favorites (starred, per browser in localStorage), Ctrl+1..9 pick the first models shown,

@@ -307,7 +307,8 @@ fn back_to(req: &Request) -> String {
     safe_next(Some(path))
 }
 
-fn encode(s: &str) -> String {
+/// Percent-encode `s` for a URL's query (keeps `/` and the unreserved characters).
+pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {

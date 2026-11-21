@@ -553,6 +553,22 @@ fn apply(ui: &Ui, id: &str, change: Change, actor: &str) -> Result<(), ChangeErr
     Ok(())
 }
 
+/// The providers region for htmx: Settings → Providers', or first-run setup's Provider step
+/// when the request comes from there (both use these handlers).
+pub(super) async fn region(
+    ui: &Ui,
+    headers: &HeaderMap,
+    selected: Option<&str>,
+    flash: Option<Flash>,
+) -> maud::Markup {
+    let v = view(ui, selected, flash).await;
+    if super::setup::from_setup(headers) {
+        super::setup::provider_region(ui, &v)
+    } else {
+        pages::providers_region(&v)
+    }
+}
+
 /// The answer to a UI form: the region (htmx), else a redirect or the page with the error.
 async fn reply(
     ui: &Ui,
@@ -578,11 +594,18 @@ async fn reply(
             e.status(),
         ),
     };
+    let setup = super::setup::from_setup(headers);
     if is_htmx(headers) {
-        return pages::providers_region(&view(ui, Some(id), flash).await).into_response();
+        return region(ui, headers, Some(id), flash).await.into_response();
     }
     if result.is_ok() {
-        return Redirect::to(&format!("/settings/providers?p={id}")).into_response();
+        // First-run setup's Provider step uses these forms too: back to it.
+        let to = if setup {
+            super::setup::provider_href(id)
+        } else {
+            format!("/settings/providers?p={id}")
+        };
+        return Redirect::to(&to).into_response();
     }
     let v = view(ui, Some(id), flash).await;
     (status, ui.framed(|f| pages::providers_page(f, &v)).await).into_response()
@@ -615,7 +638,9 @@ pub(super) async fn refresh(
             .and_then(|u| u.split("p=").nth(1))
             .map(|p| p.split('&').next().unwrap_or(p).to_string());
         let pick = q.p.or(current);
-        return pages::providers_region(&view(&ui, pick.as_deref(), None).await).into_response();
+        return region(&ui, &headers, pick.as_deref(), None)
+            .await
+            .into_response();
     }
     Redirect::to("/settings/providers").into_response()
 }
@@ -1042,8 +1067,14 @@ pub(super) async fn install(
 }
 
 /// The region again while an install runs (htmx polling).
-pub(super) async fn poll(State(ui): State<Ui>, Query(q): Query<PickQuery>) -> Response {
-    pages::providers_region(&view(&ui, q.p.as_deref(), None).await).into_response()
+pub(super) async fn poll(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Query(q): Query<PickQuery>,
+) -> Response {
+    region(&ui, &headers, q.p.as_deref(), None)
+        .await
+        .into_response()
 }
 
 pub(super) async fn api_install(State(ui): State<Ui>, Path(id): Path<String>) -> Response {

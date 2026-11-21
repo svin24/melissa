@@ -5,8 +5,10 @@
 //!
 //! Everything lives in one file, `<state>/auth/auth.json` (directory 0700, file 0600): the
 //! accounts with their password hashes, pending invites and the signed-in sessions. Tokens
-//! (session cookies, invite links) are stored only as SHA-256 hashes. The setup code and
-//! the failed-try counters stay in memory.
+//! (session cookies, invite links) are stored only as SHA-256 hashes. The setup code of a
+//! box nobody has claimed yet sits next to it in `setup-code.json` (0600) until it is used
+//! or expires, so a restart keeps the code the install printed. The failed sign-in counters
+//! stay in memory.
 //!
 //! Hashing is slow on purpose: call the methods that take a password from a blocking
 //! thread (`tokio::task::spawn_blocking`). The lock is never held while hashing.
@@ -52,6 +54,7 @@ const MAX_PASSWORD: usize = 256;
 const MAX_USERNAME: usize = 32;
 
 const FILE_NAME: &str = "auth.json";
+const SETUP_FILE_NAME: &str = "setup-code.json";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AuthError {
@@ -239,9 +242,11 @@ struct Data {
     sessions: Vec<Session>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct SetupCode {
     code: String,
     expires: u64,
+    #[serde(default)]
     failures: u32,
 }
 
@@ -273,6 +278,23 @@ fn io(e: impl std::fmt::Display) -> AuthError {
     AuthError::Io(e.to_string())
 }
 
+/// Write `bytes` to `path` atomically (a 0600 temporary file renamed over it).
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), AuthError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("json.tmp");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(io)?;
+    f.write_all(bytes).map_err(io)?;
+    f.sync_all().map_err(io)?;
+    std::fs::rename(&tmp, path).map_err(io)?;
+    Ok(())
+}
+
 impl Auth {
     /// Open (or start) the store in `dir` (created 0700; the file is 0600).
     pub fn open(dir: &Path) -> Result<Self, AuthError> {
@@ -294,7 +316,54 @@ impl Auth {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Data::default(),
             Err(e) => return Err(io(e)),
         };
-        Ok(Self::with_data(data, Some(path)))
+        let claimed = data.accounts.iter().any(|a| a.role == Role::Owner);
+        let auth = Self::with_data(data, Some(path));
+        if claimed {
+            auth.forget_setup_code()?;
+        } else {
+            // Kept even when expired: `setup_code` makes a new one then (the clock may be a
+            // test's, set after opening).
+            auth.lock().setup = auth.read_setup_code();
+        }
+        Ok(auth)
+    }
+
+    /// Where the unclaimed box's setup code is kept.
+    fn setup_path(&self) -> Option<PathBuf> {
+        self.path
+            .as_ref()
+            .map(|p| p.with_file_name(SETUP_FILE_NAME))
+    }
+
+    /// The saved setup code, if there is a readable one.
+    fn read_setup_code(&self) -> Option<SetupCode> {
+        let path = self.setup_path()?;
+        let bytes = std::fs::read(&path).ok()?;
+        match serde_json::from_slice(&bytes) {
+            Ok(code) => Some(code),
+            Err(e) => {
+                tracing::warn!("{}: {e}; a new setup code is made", path.display());
+                None
+            }
+        }
+    }
+
+    /// Save the setup code (atomically, 0600), or remove the file for `None`.
+    fn write_setup_code(&self, code: Option<&SetupCode>) -> Result<(), AuthError> {
+        let Some(path) = self.setup_path() else {
+            return Ok(());
+        };
+        let Some(code) = code else {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io(e)),
+                _ => Ok(()),
+            };
+        };
+        write_private(&path, &serde_json::to_vec(code).map_err(io)?)
+    }
+
+    fn forget_setup_code(&self) -> Result<(), AuthError> {
+        self.write_setup_code(None)
     }
 
     /// A store that is never written to disk (tests, previews).
@@ -362,20 +431,8 @@ impl Auth {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        use std::os::unix::fs::OpenOptionsExt;
         let bytes = serde_json::to_vec_pretty(&inner.data).map_err(io)?;
-        let tmp = path.with_extension("json.tmp");
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(io)?;
-        f.write_all(&bytes).map_err(io)?;
-        f.sync_all().map_err(io)?;
-        std::fs::rename(&tmp, path).map_err(io)?;
-        Ok(())
+        write_private(path, &bytes)
     }
 
     fn hash(&self, password: &str) -> Result<String, AuthError> {
@@ -421,6 +478,7 @@ impl Auth {
         let mut inner = self.lock();
         if inner.data.accounts.iter().any(|a| a.role == Role::Owner) {
             inner.setup = None;
+            self.forget_setup_code()?;
             return Ok(None);
         }
         let usable = inner
@@ -428,11 +486,13 @@ impl Auth {
             .as_ref()
             .is_some_and(|s| s.expires > now && s.failures < SETUP_CODE_TRIES);
         if !usable {
-            inner.setup = Some(SetupCode {
+            let fresh = SetupCode {
                 code: secret::setup_code().map_err(io)?,
                 expires: now + SETUP_CODE_SECS,
                 failures: 0,
-            });
+            };
+            self.write_setup_code(Some(&fresh))?;
+            inner.setup = Some(fresh);
         }
         Ok(inner.setup.as_ref().map(|s| (s.code.clone(), s.expires)))
     }
@@ -476,6 +536,10 @@ impl Auth {
             };
             if let Err(e) = outcome {
                 if e == AuthError::WrongSetupCode {
+                    // The count survives a restart too (best effort: the limit in memory holds).
+                    if let Err(w) = self.write_setup_code(inner.setup.as_ref()) {
+                        tracing::warn!("saving the setup code's tries: {w}");
+                    }
                     inner.limits.fail(&key, limits::PER_SOURCE, now);
                     drop(inner);
                     self.emit("auth.claim_failed", &username, source, "wrong setup code");
@@ -507,6 +571,10 @@ impl Auth {
         let session = self.new_session(&mut inner, &account, label, now)?;
         self.save(&mut inner)?;
         drop(inner);
+        // The box is claimed: the code is gone for good (a stale file would be ignored).
+        if let Err(e) = self.forget_setup_code() {
+            tracing::warn!("removing the used setup code: {e}");
+        }
         self.emit("auth.claim", &username, source, "claimed the box as owner");
         Ok(session)
     }

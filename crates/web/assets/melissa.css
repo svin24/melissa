@@ -3064,6 +3064,30 @@ main.plain {
   margin: 2rem auto 0;
 }
 
+/* "Show password" under a password field: melissa.js switches the field; hidden without it. */
+.field-pw {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.show-password {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.js .show-password {
+  display: flex;
+}
+
+.show-password input {
+  width: auto;
+  margin: 0;
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -6004,5 +6028,165 @@ label.attach.upload {
 @keyframes fade {
   from {
     opacity: 0;
+  }
+}
+
+/* --- First-run setup (2026-11-21): the steps after the claim, the checklist and the
+   suggestions in Melissa's empty chat. Built on the Add provider panel's pieces. --------- */
+
+.setup-wrap {
+  max-width: 44rem;
+  margin: 1.5rem auto 0;
+}
+
+.setup-panel h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  text-wrap: balance;
+}
+
+.setup-panel .add-panel-body {
+  display: grid;
+  gap: 1rem;
+}
+
+.setup-panel .card {
+  margin-bottom: 0;
+}
+
+#setup-model {
+  display: grid;
+  gap: 1rem;
+}
+
+#setup-model > p {
+  margin: 0;
+}
+
+.setup-actions {
+  align-items: center;
+}
+
+/* A provider tile that opens its steps: the one shown below is marked. */
+a.ptile {
+  text-decoration: none;
+}
+
+a.ptile[aria-current] {
+  border-color: var(--action);
+}
+
+.setup-provider {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+#providers:has(> .ptiles) {
+  display: grid;
+  gap: 1rem;
+}
+
+.setup-checklist {
+  width: 100%;
+  max-width: 30rem;
+  margin: 1rem auto 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+}
+
+.setup-checklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.setup-checklist-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.setup-checklist-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-checklist-items li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 44px;
+  border-top: 1px solid var(--border);
+}
+
+.setup-checklist-items .quiet {
+  font-size: 0.85rem;
+}
+
+/* The chat without a usable provider says so above the message box (same edges). */
+.chat > .notice {
+  width: calc(100% - 3rem);
+  max-width: calc(760px - 3rem);
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.setup-checklist-head form {
+  margin: 0;
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+a.suggestion {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  a.ptile:hover,
+  a.suggestion:hover {
+    border-color: var(--action);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a.ptile,
+  a.suggestion {
+    transition: border-color 150ms ease;
+  }
+}
+
+@media (max-width: 760px) {
+  .chat > .notice {
+    width: calc(100% - 2rem);
+  }
+}
+
+@media (max-width: 560px) {
+  .setup-wrap {
+    margin-top: 0.5rem;
   }
 }
