@@ -30,7 +30,8 @@ sudo IMAGE_ARCHIVE=melissa.tar packaging/container/install.sh
 sudo IMAGE=registry.example.com/melissa:latest packaging/container/install.sh   # a registry image
 ```
 Settings (environment of install.sh): `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `APP_PORT_BASE`
-(30000), `BIND` (127.0.0.1; `0.0.0.0` makes apps reachable from the LAN), `APP_ADDRESSES`
+(30000), `BIND` (0.0.0.0: every address; who may open apps is Settings → Apps, see "Who may open
+apps"), `APP_ADDRESSES`
 (see "Network"), `ALLOW_ADDRESS_MISMATCH` (no), `AUTO_UPDATE` (`registry` | `local` | `off`),
 `SET_SYSCTLS` (yes). `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
@@ -74,26 +75,56 @@ Apps are reached by their NodePort: container 30000–30079 → host `BIND:APP_P
 writes `[apps] addresses` (and `port_offset` for another base) into the server's config so app links
 name the right address. Traefik's :80/:443 inside are not published.
 
-`APP_ADDRESSES` defaults from `BIND`: 127.0.0.1 for loopback, `BIND` itself for one address, the
-default route's address for `0.0.0.0`. Every address must be one where `BIND` publishes the ports
+`APP_ADDRESSES` defaults from `BIND`: 127.0.0.1 for loopback, `BIND` itself for one address; for
+`0.0.0.0` the default route's address, the host's Tailscale addresses and 127.0.0.1 (links then offer
+those that Settings → Apps lets in). Every address must be one where `BIND` publishes the ports
 (`0.0.0.0` covers all, loopback only loopback, one address only itself), or app links get "connection
 refused": the preflight refuses such a mix (e.g. `BIND=127.0.0.1` with a Tailscale address). On a
 reinstall, an existing server.toml whose `[apps] addresses` differ from an explicit `APP_ADDRESSES`, or
-name addresses `BIND` doesn't cover, gets just that key rewritten (install.sh prints old and new).
-`ALLOW_ADDRESS_MISMATCH=yes` skips both, for addresses something else forwards. Apps on Tailscale:
-`BIND=<the host's Tailscale address>` (or `0.0.0.0`). The server is told `BIND` too
+name addresses `BIND` doesn't cover, or are just `127.0.0.1` (the old loopback default) with a wider
+`BIND`, gets just that key rewritten (install.sh prints old and new). `ALLOW_ADDRESS_MISMATCH=yes` skips
+the coverage check, for addresses something else forwards. The server is told `BIND` too
 (`MELISSA_PUBLISH_BIND` in melissa.container, passed to melissa-server.service) and leaves addresses it
 doesn't cover out of the links it gives agents (`reachability` in `app_status`). It can't test them by
 connecting: from inside the container a connect to the host's published address fails (no hairpin
 through podman's DNAT) even when it works from the host and other machines. An install from before
 this has no `MELISSA_PUBLISH_BIND`; rerun install.sh to add it (until then failed probes are only noted).
 
+### Who may open apps (Settings → Apps)
+App ports are published on every host address by default; Melissa decides who gets through, with the
+setting **Apps open to**: *This device* (default: the same as the old loopback-only install), *Tailnet*
+(also Tailscale's 100.64.0.0/10 and fd7a:115c:a1e0::/48) or *Home network* (also the private ranges:
+10/8, 172.16/12, 192.168/16, 169.254/16, IPv6 ULA and link-local). Each includes the ones before it.
+The owner changes it on the Settings page; an agent can propose it with `set_app_access` when an app
+link is left out (`reachability.access` in `app_status`), and the owner approves every widening in the
+chat. It applies at once: no restart, no sudo.
+
+How: `melissa-app-access.service` (root, inside the container) loads the nftables table
+`melissa_app_access`. It matches traffic to 30000–30079 (TCP and UDP) on its source address in
+`prerouting`, before k3s's NodePort DNAT, except from the container itself (`lo`) and pods (`cni0`).
+"This device" is the bridge gateway: rootful netavark masquerades connections to the host's
+`127.0.0.1:<port>` to it. Everything else is dropped (a drop is final whatever kube-proxy's tables say).
+The unit reads the table back to verify it and writes `/run/melissa-app-access/status.json`, which the
+page and the app links read. **Fail closed**: if the wanted table can't be loaded or verified it falls
+back to "this device", then to letting nothing in; k3s starts only once the table exists; links name
+only addresses the filter in force lets in, and the page says what went wrong. Check it with
+`sudo podman exec melissa nft list table inet melissa_app_access` and
+`sudo podman exec melissa melissa-server app-access status`.
+
+Limits: the container can't see the host's interfaces, so it matches by source range: a host directly on
+a carrier-grade NAT network (100.64.0.0/10 outside Tailscale) or on an untrusted private network (hotel
+Wi-Fi) lets those peers in under Tailnet or Home network. podman's default network has no IPv6, so IPv6
+clients can't reach apps whatever the setting. A host firewall still applies on top (firewalld on Fedora
+accepts podman's forwarded DNAT traffic; others may need 30000–30079 opened). For a restriction at the host as well, set
+`BIND` (e.g. `BIND=127.0.0.1`); the server then leaves out addresses `BIND` doesn't cover, and
+`set_app_access` can't widen past it.
+
 ### From another machine
 The UI has **no login yet**: anyone who reaches it controls Melissa. Keep `UI_BIND=127.0.0.1` and use:
 - SSH: `ssh -L 8080:127.0.0.1:8080 you@host`, then open http://127.0.0.1:8080 on your machine.
 - Tailscale (on the host): `sudo tailscale serve --bg 8080` serves it on your tailnet over HTTPS.
   Only for a tailnet of people you trust (no Funnel).
-- For apps on the LAN: `BIND=0.0.0.0` (the host firewall must allow 30000–30079).
+- For apps on the tailnet or the LAN: Settings → Apps (the host firewall must allow 30000–30079).
 
 ## Data and persistence
 The container is **recreated from the image at every start** (and on updates). Everything kept lives on

@@ -53,6 +53,7 @@ use melissa_agent::{
     BoxFuture, TaskId,
 };
 use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec, Protocol};
+use melissa_settings::app_access::{self, AppAccessControl, View as AccessView};
 use serde_json::{json, Map, Value};
 
 use crate::{
@@ -98,6 +99,9 @@ pub struct AppSettings {
     pub agents: Option<Arc<dyn AgentNames>>,
     /// Check that the addresses in links really reach the app (`reach.rs`); `None`: no check.
     pub reach: Option<ReachCheck>,
+    /// Who may open apps (Settings → Apps; container install): links name only addresses
+    /// that setting lets in. `None`: no filter of Melissa's (the host's firewall decides).
+    pub access: Option<AppAccessControl>,
 }
 
 impl AppSettings {
@@ -281,6 +285,11 @@ fn link_fields(
 /// one: `reach.rs`).
 async fn checked_links(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value {
     let mut addresses = settings.addresses();
+    let access = settings
+        .access
+        .as_ref()
+        .filter(|_| !ports.is_empty())
+        .map(|c| access_check(&c.view(), &mut addresses));
     let mut report = None;
     if let Some(check) = &settings.reach {
         let checked: Vec<CheckedPort> = ports
@@ -302,7 +311,68 @@ async fn checked_links(settings: &AppSettings, app: &str, ports: &[DevicePort]) 
     if let Some(r) = report {
         fields["reachability"] = r;
     }
+    if let Some(a) = access {
+        if !fields["reachability"].is_object() {
+            fields["reachability"] = json!({});
+        }
+        fields["reachability"]["access"] = a;
+    }
     fields
+}
+
+/// Leave out of `addresses` those the app access setting doesn't let in (what is in force:
+/// fail closed), and say so with what would open them: `set_app_access`, which the owner
+/// approves, never a reinstall.
+fn access_check(view: &AccessView, addresses: &mut Vec<String>) -> Value {
+    let open = view.for_links();
+    let (kept, left_out): (Vec<String>, Vec<String>) =
+        addresses.drain(..).partition(|a| open.allows(a));
+    *addresses = kept;
+    let mut out = json!({ "open_to": open.as_str(), "setting": view.setting.as_str() });
+    if let Some(p) = view.problem() {
+        out["problem"] = json!(p);
+    }
+    if !left_out.is_empty() {
+        let needed = left_out
+            .iter()
+            .filter_map(|a| app_access::needed_for(a))
+            .max();
+        let public: Vec<&String> = left_out
+            .iter()
+            .filter(|a| app_access::needed_for(a).is_none())
+            .collect();
+        let mut warning = format!(
+            "not open to: {} (apps on this device are open to {} only; Settings → Apps). Left \
+             out of the links: don't give these addresses out.",
+            left_out.join(", "),
+            open.label().to_lowercase()
+        );
+        match needed {
+            Some(level) if view.problem().is_some() && view.setting >= level => warning.push_str(
+                " The setting already allows them but the filter isn't in force: tell the owner \
+                 what `problem` says.",
+            ),
+            Some(level) => warning.push_str(&format!(
+                " To let people open apps from there, call set_app_access with open_to \
+                 `{level}` (the owner approves it). Don't ask the owner to reinstall or rerun \
+                 install.sh."
+            )),
+            None => {}
+        }
+        if !public.is_empty() {
+            warning.push_str(&format!(
+                " {} public: no setting opens apps to the internet.",
+                public
+                    .iter()
+                    .map(|a| a.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        out["left_out"] = json!(left_out);
+        out["warning"] = json!(warning);
+    }
+    out
 }
 
 /// Copy `fields`' entries into `target` (both JSON objects).

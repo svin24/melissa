@@ -4,12 +4,15 @@
 //!
 //! - [`providers`]: per agent CLI (claude, grok, opencode, echo, ...) overrides in
 //!   `$XDG_CONFIG_HOME/melissa/providers.toml`, merged over `server.toml` at startup.
+//! - [`app_access`]: who may open the apps on this device (`app-access.toml`), the nftables
+//!   filter that enforces it in the container, and the agents' `set_app_access` tool.
 //! - [`prefs`]: the owner's display preferences for the web UI (`ui.toml`), applied at once.
 //! - [`registry`]: the public ACP agent registry (parse, search, cache, install a release).
 //! - [`version`]: the installed CLIs' `--version`, cached and timed out.
 //! - [`updates`]: this device's Melissa release and its container image state, read from what
 //!   the host helper writes; the fixed list of actions the lead agent may ask it for.
 
+pub mod app_access;
 pub mod install;
 pub mod prefs;
 pub mod providers;

@@ -46,6 +46,9 @@
 //! - `GET /settings/files`; `POST /ui/settings/files` (`keep` = days or `forever`): how long
 //!   file boxes keep files by default (each box can override it in its chat's file panel).
 //!   API: `GET|POST /api/settings/files` (see `crate::files`).
+//! - `GET /settings/apps`; `POST /ui/settings/apps` (`open_to` = `this_device`, `tailnet` or
+//!   `home_network`): who may open the apps on this device, applied at once (`apps.rs`;
+//!   container install only, else the page says the host's firewall decides).
 //! - `GET /settings/permissions`: the "Always allow" rules; `POST
 //!   /ui/settings/permissions/{id}/remove` removes one.
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
@@ -89,6 +92,7 @@
 mod add_provider;
 pub(crate) mod agents;
 mod apply;
+mod apps;
 mod developer;
 mod files;
 pub(crate) mod pages;
@@ -116,6 +120,7 @@ use axum::{
 };
 use melissa_agent::{AuditLog, AuditRecord};
 use melissa_settings::{
+    app_access::AppAccessControl,
     install::{InstallState, Installer, Job, INSTALLABLE},
     prefs::{Prefs, PrefsStore},
     providers::{BackendFacts, ProviderOverride, ProviderStore},
@@ -152,6 +157,9 @@ pub struct SettingsParts {
     pub voice: melissa_voice::Voice,
     /// Add provider: the ACP registry (fetched on request), registry installs, the ACP check.
     pub catalog: Catalog,
+    /// Who may open apps (Settings → Apps); `None`: not a container install (the host's
+    /// firewall decides).
+    pub app_access: Option<AppAccessControl>,
 }
 
 /// The Settings context. Cheap to clone.
@@ -204,6 +212,7 @@ impl Settings {
             home: std::env::var_os("HOME").map(PathBuf::from),
             voice: melissa_voice::Voice::unavailable(),
             catalog: Catalog::unavailable(),
+            app_access: None,
         })
     }
 
@@ -389,6 +398,8 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             post(schedules::remove),
         )
         .route("/ui/settings/schedules/wait", post(schedules::wait))
+        .route(pages::APPS_URL, get(apps::page))
+        .route("/ui/settings/apps", post(apps::save))
         .route(pages::FILES_URL, get(files::page))
         .route("/ui/settings/files", post(files::save))
         .route(pages::VOICE_URL, get(voice::page))

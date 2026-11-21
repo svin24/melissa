@@ -318,10 +318,12 @@ async fn by_bind(
     if !dead.is_empty() {
         let usable = addresses.len() - dead.len();
         report["warning"] = json!(format!(
-            "not reachable: {} (the host publishes the app ports on {bind} only). Left out of \
-             the links: don't give these addresses out. Tell the owner: rerun install.sh with \
-             a BIND that covers them (that address, or 0.0.0.0), or set [apps] addresses to \
-             match. Restarting the app won't fix this.{}",
+            "not reachable: {} (the host publishes the app ports on {bind} only: an explicit \
+             BIND the owner chose at install, which set_app_access can't change). Left out of \
+             the links: don't give these addresses out. Tell the owner: install.sh without \
+             BIND publishes app ports on every address and Settings → Apps decides who may \
+             open them; or set [apps] addresses to match. Restarting the app won't fix \
+             this.{}",
             dead.join(", "),
             if usable == 0 {
                 " No working address is left."
@@ -594,7 +596,8 @@ mod tests {
         assert!(warning.contains("203.0.113.5"), "{warning}");
         assert!(
             warning.starts_with(
-                "not reachable: 203.0.113.5 (the host publishes the app ports on 100.64.0.10 only)"
+                "not reachable: 203.0.113.5 (the host publishes the app ports on 100.64.0.10 only: \
+                 an explicit BIND"
             ),
             "{warning}"
         );

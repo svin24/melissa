@@ -62,6 +62,7 @@ use melissa_cluster::{
     app_tools, parse_publish_bind, AppSettings, ClusterHealth, KubeApps, LazyCluster, ReachCheck,
     Workspaces,
 };
+use melissa_settings::app_access::{tool::SetAppAccess, AppAccessControl};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
@@ -113,7 +114,11 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
                               previous)
   update check|apply|rollback|restart [--yes]
                               ask the host's update helper; apply and rollback restart
-                              Melissa and need --yes";
+                              Melissa and need --yes
+  app-access apply [<file>]   (root, container: melissa-app-access.service) put the app port
+                              filter in place for the setting in <file> (default
+                              /etc/melissa/app-access.toml), verify it, write its status
+  app-access status           what the filter lets in now";
 
 #[derive(Debug, PartialEq, Eq)]
 enum AppCommand {
@@ -179,7 +184,12 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (config_path, command) = parse_args(std::env::args().skip(1).collect())?;
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Root's helper for the app port filter: no config, no state, nothing else.
+    if argv.first().is_some_and(|c| c == "app-access") {
+        return app_access_command(&argv[1..]);
+    }
+    let (config_path, command) = parse_args(argv)?;
     // Logs go to stderr so `tool` output on stdout stays clean JSON; client commands only
     // show warnings.
     let default_level = match command {
@@ -318,6 +328,11 @@ async fn main() -> anyhow::Result<()> {
     let apps = Arc::new(KubeApps::new(LazyCluster::for_apps(
         config.apps.kubeconfig.as_deref(),
     )));
+    // Who may open apps: Settings → Apps and `set_app_access` (container install, where the
+    // app ports are published on every host address and Melissa's filter decides; elsewhere
+    // the host's firewall does).
+    let app_access = melissa_settings::app_access::available()
+        .then(|| AppAccessControl::system(&dirs.config, Some(audit.clone())));
     let app_settings = AppSettings {
         domain: config.apps.domain.clone(),
         addresses: config.apps.addresses.clone(),
@@ -327,8 +342,12 @@ async fn main() -> anyhow::Result<()> {
         // Links name only addresses that really reach the app (incident: a container install
         // published app ports on loopback while links named the Tailscale address).
         reach: Some(ReachCheck::tcp(publish_bind())),
+        access: app_access.clone(),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
+    if let Some(control) = &app_access {
+        tools.push(Arc::new(SetAppAccess(control.clone())));
+    }
     // Who owns which workspace, for the scope check before every workspace-changing tool call; also
     // the list of workspaces and the reassign path.
     let workspaces = Arc::new(Workspaces::new(app_settings, Some(apps)));
@@ -348,6 +367,7 @@ async fn main() -> anyhow::Result<()> {
         _ => {
             let start = Startup {
                 config_path,
+                app_access,
                 kubeconfigs,
                 providers: ProviderSetup {
                     path: providers_path,
@@ -364,6 +384,8 @@ async fn main() -> anyhow::Result<()> {
 /// What the startup summary needs beyond the config.
 struct Startup {
     config_path: PathBuf,
+    /// Who may open apps (container install only).
+    app_access: Option<AppAccessControl>,
     /// Where the lead agent looks for cluster credentials (any present = k3s is there).
     kubeconfigs: Vec<PathBuf>,
     providers: ProviderSetup,
@@ -443,6 +465,54 @@ fn load_providers(path: &std::path::Path) -> ProviderFile {
             );
             ProviderFile::default()
         }
+    }
+}
+
+/// `app-access apply [<file>]` and `app-access status` (see USAGE and
+/// `melissa_settings::app_access`). `apply` exits non-zero when the setting is not in force
+/// (the unit then fails; the filter is "this device" or closed, and the status says why).
+fn app_access_command(args: &[String]) -> anyhow::Result<()> {
+    use melissa_settings::app_access::{self as access, NftCommand};
+    let status_path = PathBuf::from(access::STATUS_PATH);
+    match args {
+        [c, rest @ ..] if c == "apply" && rest.len() <= 1 => {
+            let setting = rest.first().map_or_else(
+                || PathBuf::from("/etc/melissa").join(access::FILE_NAME),
+                PathBuf::from,
+            );
+            let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+            let status = access::apply(
+                &NftCommand::default(),
+                access::read_setting(&setting),
+                access::default_gateway(&route),
+            );
+            access::write_status(&status_path, &status)
+                .with_context(|| format!("cannot write {}", status_path.display()))?;
+            for e in &status.errors {
+                eprintln!("melissa-app-access: {e}");
+            }
+            let open = status
+                .open_to
+                .map_or("nothing from outside (closed)", |a| a.label());
+            println!(
+                "melissa-app-access: wanted {}, open to {open}",
+                status.wanted.label()
+            );
+            if status.ok() {
+                Ok(())
+            } else if status.verified {
+                bail!("the setting is not in force; the filter fails closed")
+            } else {
+                bail!("no filter could be put in place or verified")
+            }
+        }
+        [c] if c == "status" => {
+            let text = std::fs::read_to_string(&status_path)
+                .with_context(|| format!("no status yet ({})", status_path.display()))?;
+            println!("{text}");
+            Ok(())
+        }
+        _ => bail!("usage: melissa-server app-access apply [<setting file>] | app-access status"),
     }
 }
 
@@ -700,6 +770,7 @@ async fn serve(
         voice,
         // The ACP registry cache sits with Melissa's state; fetched only on the owner's request.
         catalog: melissa_web::Catalog::new(&dirs.state),
+        app_access: start.app_access,
     });
     melissa_web::serve(
         listener,
@@ -1189,6 +1260,7 @@ mod tests {
             device: "d-0a1b2c3d".into(),
             agents: None,
             reach: None,
+            access: None,
         };
         let workspaces = Arc::new(Workspaces::new::<KubeApps>(settings, None));
         let wiring = Wiring {

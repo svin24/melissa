@@ -733,6 +733,55 @@ mod tests {
             updates::{HostKind, Release, UpdateEnv},
         };
 
+        /// Settings → Apps in tests: the root helper's logic in-process, over an nft that
+        /// prints back what it loaded. A file `nft-fails` in the fixture makes every load fail.
+        struct LocalFilter {
+            dir: std::path::PathBuf,
+        }
+
+        struct EchoNft {
+            fail: bool,
+            last: std::sync::Mutex<String>,
+        }
+
+        impl melissa_settings::app_access::Nft for EchoNft {
+            fn load(&self, script: &str) -> Result<(), String> {
+                if self.fail {
+                    return Err("nft failed: Error: Operation not permitted".into());
+                }
+                *self.last.lock().unwrap() = script.to_string();
+                Ok(())
+            }
+
+            fn list(&self) -> Result<String, String> {
+                Ok(self.last.lock().unwrap().clone())
+            }
+        }
+
+        impl melissa_settings::app_access::Applier for LocalFilter {
+            fn apply(&self) -> melissa_agent::BoxFuture<'_, Result<(), String>> {
+                use melissa_settings::app_access as access;
+                Box::pin(async move {
+                    let nft = EchoNft {
+                        fail: self.dir.join("nft-fails").exists(),
+                        last: Default::default(),
+                    };
+                    let s = access::apply(
+                        &nft,
+                        access::read_setting(&self.dir.join("config").join(access::FILE_NAME)),
+                        Some(std::net::Ipv4Addr::new(10, 88, 0, 1)),
+                    );
+                    access::write_status(&self.dir.join("app-access.json"), &s)
+                        .map_err(|e| e.to_string())?;
+                    if s.ok() {
+                        Ok(())
+                    } else {
+                        Err("melissa-app-access.service failed".into())
+                    }
+                })
+            }
+        }
+
         struct SettingsFixture {
             dir: std::path::PathBuf,
             voice: melissa_voice::Voice,
@@ -867,6 +916,16 @@ mod tests {
                     installer: self.installer(way),
                     voice: self.voice.clone(),
                     catalog: self.catalog.clone(),
+                    app_access: Some(melissa_settings::app_access::AppAccessControl::new(
+                        self.dir
+                            .join("config")
+                            .join(melissa_settings::app_access::FILE_NAME),
+                        self.dir.join("app-access.json"),
+                        Arc::new(LocalFilter {
+                            dir: self.dir.clone(),
+                        }),
+                        Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
+                    )),
                 })
             }
 
@@ -1165,6 +1224,54 @@ mod tests {
             assert!(html.contains("isn"), "{html}");
             let saved = std::fs::read_to_string(fx.dir.join("config/ui.toml")).unwrap_or_default();
             assert!(!saved.contains("voice_input = true"));
+        }
+
+        #[tokio::test]
+        async fn settings_apps_sets_who_may_open_apps_and_fails_closed() {
+            let fx = SettingsFixture::new("apps");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            let (_, _, html) = send(&app, get("/settings/apps")).await;
+            assert!(
+                html.contains("<p class=\"setting-title\">Apps open to</p>"),
+                "{html}"
+            );
+            assert!(html.contains("<option value=\"this_device\" selected>This device</option>"));
+            assert!(html.contains("<option value=\"tailnet\">Tailnet</option>"));
+            assert!(html.contains("<option value=\"home_network\">Home network</option>"));
+            // The filter hasn't run yet in this fixture: said so.
+            assert!(html.contains("hasn&#39;t run yet") || html.contains("hasn't run yet"));
+
+            let (status, _, region) =
+                send(&app, htmx_post("/ui/settings/apps", "open_to=tailnet")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(region.contains("id=\"apps-settings\""), "{region}");
+            assert!(region.contains("Saved."), "{region}");
+            assert!(region.contains("<option value=\"tailnet\" selected>"));
+            assert!(region.contains("devices on your tailnet can open apps"));
+            assert!(fx
+                .audit()
+                .contains("apps open to: tailnet (was this_device); applied"));
+            assert!(fx.audit().contains("\"actor\":\"ui\""));
+
+            // The filter can't be loaded: the setting is kept, the page says what is in force.
+            std::fs::write(fx.dir.join("nft-fails"), "").unwrap();
+            let (_, _, region) =
+                send(&app, htmx_post("/ui/settings/apps", "open_to=home_network")).await;
+            assert!(region.contains("Couldn"), "{region}");
+            assert!(region.contains("filter for app ports isn"), "{region}");
+            assert!(fx.audit().contains("not applied"));
+
+            let (status, _, _) =
+                send(&app, htmx_post("/ui/settings/apps", "open_to=everyone")).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn settings_apps_without_the_filter_says_the_firewall_decides() {
+            let (app, _) = app();
+            let (_, _, html) = send(&app, get("/settings/apps")).await;
+            assert!(html.contains("Set by this device"), "{html}");
+            assert!(!html.contains("/ui/settings/apps"));
         }
 
         #[tokio::test]

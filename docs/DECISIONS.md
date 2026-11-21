@@ -1162,3 +1162,30 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   buttons, ui-craft); apps show the facts Melissa knows (a game port, a web port), not "local only" or player
   slots; there is no "System agent" (Melissa keeps updates and device health); the caption "Device changes require
   your permission" is left out (not true for every change). Phone layouts are a separate change.
+- **2026-11-21 — Melissa decides who may open apps; the host publishes app ports on every address.** Owner
+  decision. Container install: install.sh's `BIND` defaults to `0.0.0.0` (was `127.0.0.1`), and a setting,
+  **Apps open to** (Settings → Apps), chooses *This device* (default, the old exposure), *Tailnet* or *Home
+  network*, each including the ones before. Enforced inside the privileged container by the nftables table
+  `melissa_app_access` (root oneshot `melissa-app-access.service` running `melissa-server app-access apply`):
+  traffic to the NodePorts 30000-30079, TCP and UDP, is matched on its source address in `prerouting` at
+  priority -150, before kube-proxy's DNAT, except from `lo` and the pod bridge `cni0`. This device = the bridge
+  gateway (rootful netavark masquerades host-loopback connections to it); Tailnet = 100.64.0.0/10 and
+  fd7a:115c:a1e0::/48; Home network = RFC 1918, 169.254.0.0/16, fc00::/7, fe80::/10; everything else dropped.
+  Private ranges rather than the host's current subnet: the container can't see the host's interfaces, a
+  laptop's network changes, and a fixed list is verifiable (limits in PLAN.md open questions). **Fail closed:**
+  the unit reads the table back and checks it; on failure it loads "this device", then a table that lets
+  nothing in; loads are atomic; k3s starts only once the table exists (drop-in `ExecStartPre=nft list table`);
+  app links (`app_status` `url`/`urls`/`ports`) name only addresses the verified filter lets in, and the page
+  and tools show the problem. The server (user `melissa`) writes `app-access.toml` and starts the unit
+  (polkit rule `52-melissa-app-access.rules`: that unit, verb start, nothing else); it reads
+  `/run/melissa-app-access/status.json`. Agents use `set_app_access`: widening asks the owner every time
+  (`Tool::owner_approval`, no "Always allow"), narrowing runs under the usual policy. Changes are audited
+  `settings.app_access` (actor `ui` or `agent`). Applies live: no restart, no sudo. An explicit `BIND` still
+  restricts at the host (the server keeps leaving out addresses it doesn't cover, and tells the owner that only
+  a reinstall changes it); `MELISSA_PUBLISH_BIND` stays. Nix/host installs: no filter of Melissa's, the page
+  says the host's firewall decides. Why: the owner wants agents to fix "this app isn't reachable from my
+  tailnet" themselves, without sudo or terminal steps, while keeping today's default exposure. Alternatives: a
+  host-side helper that rewrites the Quadlet's `PublishPort` and restarts the container (needs root on the host
+  for every change, restarts everything), nftables on the host (Melissa would need to manage the host's
+  firewall and its firewalld), filtering in k3s with NetworkPolicies (NodePort traffic is SNATed by kube-proxy,
+  so the source address is gone by then).

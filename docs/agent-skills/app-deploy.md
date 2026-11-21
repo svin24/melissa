@@ -94,6 +94,10 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
     Tailscale address in `[apps] addresses`) is `unreachable`: dropped from
     `url`/`urls`/`ports[].address` with a `warning` for the owner. Covered: kept. Host names:
     kept, `unverified`.
+  - Container install, app access (Settings → Apps, `melissa_settings::app_access`): before the
+    bind check, addresses the filter in force doesn't let in are left out, under
+    `reachability.access` (`open_to`, `setting`, `left_out`, `warning`, `problem`). The warning
+    names the `set_app_access` level that would open them; the owner approves each widening.
   - No bind known (Nix/host install): a TCP connect to every `address:port` (800 ms; open and
     timed-out results cached 15 s). A failure while the app answers is `unverified` with a
     `note`; the link is kept (a connect from the device isn't proof either way). Loopback and
@@ -101,8 +105,10 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
 
 ### Connection problems (agent guidance)
 - Verify reachability (`app_status`: `reachability`, pods ready) before blaming the app. Never
-  restart an app to fix a connection problem without evidence it is down; a dead address is a
-  host/install setting (`BIND`, `[apps] addresses`), so tell the owner the `warning`.
+  restart an app to fix a connection problem without evidence it is down. An address left out
+  under `reachability.access` needs a wider app access: propose `set_app_access`. One left out as
+  `unreachable` is an install setting (an explicit `BIND`, `[apps] addresses`): tell the owner
+  the `warning`.
 - An app's own normal log lines are not failures: vanilla Minecraft logs "Server empty for 60
   seconds, pausing" and idles until a player joins (pause-when-empty, `pause-when-empty-seconds`
   in server.properties); it still accepts connections. Don't restart for it.

@@ -116,9 +116,9 @@ just container-uninstall       # keeps your data; `just container-uninstall --pu
   `/etc/sysctl.d/90-melissa-kubelet.conf`, tells you, and uninstall restores the old values.
 - **Updates:** Settings → Updates (check, apply, roll back) and a daily automatic update (`AUTO_UPDATE=off` to
   skip). Apps, chats and agent logins live on the `melissa-var` volume and survive updates and reinstalls.
-- **Apps** (web UIs and other ports such as a game server's, TCP or UDP) answer on `BIND` (default
-  127.0.0.1) ports 30000-30079; `BIND=0.0.0.0` (LAN) or your Tailscale address
-  (`BIND=$(tailscale ip -4)`) to open them from other devices; app links use that address.
+- **Apps** (web UIs and other ports such as a game server's, TCP or UDP) answer on ports 30000-30079.
+  Who may open them is a setting, Settings → Apps: this device (default), your tailnet, or your home
+  network. Agents ask you before they open apps to more devices. App links follow the setting.
 - Rootless podman is not supported.
 
 ### Use it from another machine

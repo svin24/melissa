@@ -1,0 +1,31 @@
+# Who may open the apps on this device (Settings → Apps: this device, tailnet, home network).
+# The host publishes the app NodePorts 30000-30079 on every address; this puts the nftables
+# table melissa_app_access in place, matching the forwarded traffic's source address, reads it
+# back to verify it and writes /run/melissa-app-access/status.json for the server. Fails closed:
+# on any error it falls back to "this device", then to letting nothing in; k3s (which serves the
+# app ports) starts only once the table exists (k3s.service.d/20-app-access.conf).
+# Runs at every start, and when the server starts it after a change (polkit:
+# 52-melissa-app-access.rules allows the server's user to start this unit and nothing else).
+# Container image only. Code: melissa_settings::app_access; docs: DECISIONS.md 2026-11-21.
+[Unit]
+Description=Melissa: who may open apps (app port filter)
+Before=k3s.service
+# /etc/melissa (the setting) is a symlink onto the /var volume.
+RequiresMountsFor=/var/lib/melissa-container
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/melissa-server app-access apply /etc/melissa/app-access.toml
+RuntimeDirectory=melissa-app-access
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# nft needs CAP_NET_ADMIN; reading the server's 0600 setting file needs CAP_DAC_READ_SEARCH.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
