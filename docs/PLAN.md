@@ -64,10 +64,13 @@ AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `
   from the image at every start. `uninstall.sh` keeps the volume unless `--purge`.
 - **Network:** podman's default bridge. UI: host `127.0.0.1:8080` → container `:8081` → lead agent on its own
   loopback, nftables-filtered so pods can't reach it. Apps: NodePorts 30000–30079 published on `BIND`
-  (127.0.0.1 by default; e.g. the host's Tailscale address). Remote use: `ssh -L` or `tailscale serve` (the UI has
-  no login yet). `[apps] addresses` must be covered by `BIND`: install.sh refuses a mismatch and rewrites a stale
-  key on reinstall; at run time the app tools leave addresses the publish bind (`MELISSA_PUBLISH_BIND`) doesn't
-  cover out of links, and only note failed probes where no bind is known (DECISIONS 2026-11-20).
+  (0.0.0.0 by default since 2026-11-21); **who may open apps is Melissa's setting** (Settings → Apps, "Apps open
+  to": This device by default, Tailnet, Home network), enforced by an nftables table inside the container that
+  fails closed; agents propose widening with `set_app_access` and the owner approves it (DECISIONS 2026-11-21).
+  Remote use of the UI: `ssh -L` or `tailscale serve` (the UI has no login yet). `[apps] addresses` must be
+  covered by `BIND`: install.sh refuses a mismatch and rewrites a stale key on reinstall; at run time the app
+  tools leave out of links addresses the publish bind (`MELISSA_PUBLISH_BIND`) doesn't cover or the access
+  setting in force doesn't let in, and only note failed probes where no bind is known (DECISIONS 2026-11-20).
 - **Updates:** Quadlet `AutoUpdate=` with `podman-auto-update.timer` (daily), plus Settings → Updates
   Check/Apply/Roll back through a host helper (`melissa-host-update`) that the lead agent triggers with fixed-name
   request files in a bind-mounted directory; the previous image is kept for a rollback (DECISIONS 2026-11-19).
@@ -1068,3 +1071,15 @@ Roadmap (rough, phases may overlap):
     agent's provider, or theirs?). (d) Exact preset contents ("Admin", "Adult", "Kid"). (e) What a member sees
     of device health and other people's apps. (f) Whether Tailscale identity (`tailscale whois`) may sign people
     in on the tailnet.
+81. App access (2026-11-21, DECISIONS). (a) A host firewall still applies on top. firewalld on Fedora accepts
+    podman's forwarded DNAT traffic (container-image.md), but other hosts' firewalls may block 30000–30079: should
+    install.sh check it, or Settings → Apps say when a widened setting is likely blocked by the host? Verify
+    from a LAN device and a tailnet device on a real install. (b) IPv6: podman's default network is IPv4 only, so IPv6 clients
+    (Tailscale's fd7a:… addresses, LAN IPv6) can't reach apps although the filter has IPv6 rules; enable IPv6 on
+    the container network, or publish `[::]` too? (c) Matching is by source range only: the container can't see
+    the host's interfaces, so a host directly on a carrier-grade NAT network (100.64.0.0/10 that isn't Tailscale)
+    or on an untrusted private network lets those peers in under Tailnet or Home network. Narrow Home network to
+    the host's current subnet (install.sh or the host helper would pass it in, and it changes when a laptop
+    moves), or match the host's ingress interface with host-side rules? (d) Other meshes (Headscale, NetBird)
+    use the same CGNAT range for IPv4 but other IPv6 ranges. (e) The new Settings → Apps section and its copy
+    are provisional; the owner reviews them (Figma first for UI).

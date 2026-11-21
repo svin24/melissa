@@ -105,7 +105,7 @@ RUN rm -f /README.md
 # an app is deployed.
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
-        melissa-ui-forward.socket; \
+        melissa-ui-forward.socket melissa-app-access.service; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
         systemd-networkd-wait-online.service 2>/dev/null || true; \
@@ -152,11 +152,13 @@ RUN set -eu; \
     npm --version >/dev/null || { echo "lint: npm missing"; exit 1; }; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
-    systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket; \
+    systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket \
+        melissa-app-access.service; \
     for u in systemd-logind.service sleep.target suspend.target hibernate.target; do \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
-        /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket; \
+        /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket \
+        /usr/lib/systemd/system/melissa-app-access.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }

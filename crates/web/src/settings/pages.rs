@@ -30,7 +30,7 @@ pub struct Section {
 }
 
 /// The Settings sections, in order and grouped. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [Section; 8] = [
+pub const SECTIONS: [Section; 9] = [
     Section {
         href: "/settings/providers",
         label: "Providers",
@@ -74,6 +74,13 @@ pub const SECTIONS: [Section; 8] = [
         keywords: "Keep files for file boxes expired",
     },
     Section {
+        href: APPS_URL,
+        label: "Apps",
+        group: "System",
+        icon: Glyph::Hexagon,
+        keywords: "Apps open to This device Tailnet Home network",
+    },
+    Section {
         href: "/settings/updates",
         label: "Updates",
         group: "System",
@@ -98,6 +105,11 @@ pub const AGENTS_ID: &str = "agents";
 pub const SCHEDULES_URL: &str = "/settings/schedules";
 /// DOM id of the Schedules section (every action swaps it).
 pub const SCHEDULES_ID: &str = "schedules";
+
+/// The Apps section: who may open the apps on this device.
+pub const APPS_URL: &str = "/settings/apps";
+/// DOM id of the Apps region.
+pub const APPS_ID: &str = "apps-settings";
 
 /// The Files section: how long file boxes keep files.
 pub const FILES_URL: &str = "/settings/files";
@@ -1229,6 +1241,51 @@ pub fn files_region(v: &FilesView) -> Markup {
                 }
             }))
             @if !v.overrides.is_empty() { p.quiet { "Change it in the Files panel next to a chat." } }
+        },
+    )
+}
+
+/// What the Apps page shows.
+pub struct AppsView {
+    /// (value, label) choices for "Apps open to".
+    pub choices: Vec<(String, String)>,
+    /// `None`: Melissa doesn't filter app ports on this install.
+    pub state: Option<AppsState>,
+    pub flash: Option<Flash>,
+}
+
+/// The setting and whether it is in force.
+pub struct AppsState {
+    pub selected: String,
+    /// Who can open apps, as a sentence.
+    pub sentence: &'static str,
+    /// Why the setting isn't what is in force.
+    pub problem: Option<String>,
+}
+
+pub fn apps_page(f: &Frame<'_>, v: &AppsView) -> Markup {
+    frame(f, "Apps", apps_region(v))
+}
+
+pub fn apps_region(v: &AppsView) -> Markup {
+    region(
+        APPS_ID,
+        html! {
+            (page_header("Apps", Some("Who can open the apps on this device. Helpers ask you before they open apps to more devices.")))
+            @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
+            @match &v.state {
+                Some(s) => {
+                    @if let (Some(p), None) = (&s.problem, &v.flash) { (notice(p, Tone::Error)) }
+                    (setting_card(None, setting_row(
+                        "Apps open to",
+                        Some(s.sentence),
+                        inline_form("/ui/settings/apps", APPS_ID, inline_select("open_to", "Apps open to", &v.choices, &s.selected)),
+                    )))
+                }
+                None => {
+                    (setting_card(None, setting_row("Apps open to", Some("Set by this device's firewall."), html! {})))
+                }
+            }
         },
     )
 }

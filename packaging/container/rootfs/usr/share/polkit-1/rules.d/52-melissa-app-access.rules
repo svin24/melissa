@@ -1,0 +1,13 @@
+// Melissa, container image only: the server (user `melissa`) may start the app port filter,
+// melissa-app-access.service, which re-reads Settings → Apps ("Apps open to") and applies it.
+// Nothing else: no other unit or verb. The unit reads only the setting file and the default
+// route; it takes no arguments from the server. See docs/DECISIONS.md (2026-11-21).
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "melissa") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.lookup("verb") === "start" && action.lookup("unit") === "melissa-app-access.service") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

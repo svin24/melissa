@@ -1,0 +1,16 @@
+table inet melissa_app_access {
+	chain prerouting {
+		type filter hook prerouting priority mangle; policy accept;
+		iifname != { "lo", "cni0" } tcp dport 30000-30079 jump app_ports
+		iifname != { "lo", "cni0" } udp dport 30000-30079 jump app_ports
+	}
+
+	chain app_ports {
+		ip saddr 10.88.0.1 accept comment "melissa:this_device"
+		ip saddr 100.64.0.0/10 accept comment "melissa:tailnet"
+		ip6 saddr fd7a:115c:a1e0::/48 accept comment "melissa:tailnet"
+		ip saddr { 10.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } accept comment "melissa:home_network"
+		ip6 saddr { fc00::/7, fe80::/10 } accept comment "melissa:home_network"
+		counter packets 0 bytes 0 drop comment "melissa:drop"
+	}
+}

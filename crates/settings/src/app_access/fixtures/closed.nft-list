@@ -1,0 +1,11 @@
+table inet melissa_app_access {
+	chain prerouting {
+		type filter hook prerouting priority mangle; policy accept;
+		iifname != { "lo", "cni0" } tcp dport 30000-30079 jump app_ports
+		iifname != { "lo", "cni0" } udp dport 30000-30079 jump app_ports
+	}
+
+	chain app_ports {
+		counter packets 0 bytes 0 drop comment "melissa:drop"
+	}
+}

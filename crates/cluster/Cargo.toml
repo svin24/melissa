@@ -9,6 +9,7 @@ description = "Melissa cluster layer: the server's client for the local k3s API 
 [dependencies]
 melissa-agent = { workspace = true }
 melissa-appspec = { workspace = true }
+melissa-settings = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["ws"] }
 serde_json = { workspace = true }

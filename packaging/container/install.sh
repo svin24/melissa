@@ -12,12 +12,16 @@
 #   UI_PORT=8080                    host port of the web UI (on UI_BIND)
 #   UI_BIND=127.0.0.1               keep it on loopback: the UI has no login yet (README, "Remote")
 #   APP_PORT_BASE=30000             host port of app NodePort 30000 (80 ports: base..base+79)
-#   BIND=127.0.0.1                  host address for the app ports (0.0.0.0: reachable from the LAN)
+#   BIND=0.0.0.0                    host address for the app ports. Default: every address, and
+#                                   Melissa decides who may open apps (Settings → Apps: this device,
+#                                   tailnet or home network; this device until changed). A loopback
+#                                   or single address restricts them at the host as well.
 #   APP_ADDRESSES=                  [apps] addresses for app links (comma separated). Default from
-#                                   BIND: 127.0.0.1 for loopback, BIND itself for one address, the
-#                                   default route's address for 0.0.0.0. Each one must be covered
-#                                   by BIND (else links are dead: install refuses, and an existing
-#                                   server.toml's addresses are rewritten to match).
+#                                   BIND: 127.0.0.1 for loopback, BIND itself for one address; for
+#                                   0.0.0.0 the default route's address, the Tailscale addresses and
+#                                   127.0.0.1 (links offer those the setting lets in). Each one must
+#                                   be covered by BIND (else links are dead: install refuses, and an
+#                                   existing server.toml's addresses are rewritten to match).
 #   ALLOW_ADDRESS_MISMATCH=no       yes: skip that check (something else forwards those addresses)
 #   AUTO_UPDATE=                    registry (default for registry images), local (default for
 #                                   localhost/ images) or off. Not off: enables podman-auto-update.timer.
@@ -29,7 +33,7 @@ IMAGE=${IMAGE:-localhost/melissa:latest}
 UI_PORT=${UI_PORT:-8080}
 UI_BIND=${UI_BIND:-127.0.0.1}
 APP_PORT_BASE=${APP_PORT_BASE:-30000}
-BIND=${BIND:-127.0.0.1}
+BIND=${BIND:-0.0.0.0}
 SET_SYSCTLS=${SET_SYSCTLS:-yes}
 ALLOW_ADDRESS_MISMATCH=${ALLOW_ADDRESS_MISMATCH:-no}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
@@ -61,6 +65,14 @@ overlaps() {
 }
 
 is_loopback() { case "$1" in 127.*|::1|'[::1]'|localhost) return 0 ;; *) return 1 ;; esac; }
+
+# is_tailscale IPV4: in Tailscale's (CGNAT) range 100.64.0.0/10?
+is_tailscale() {
+    local second
+    case "$1" in 100.*.*.*) ;; *) return 1 ;; esac
+    second=${1#100.}; second=${second%%.*}
+    [ "$second" -ge 64 ] 2>/dev/null && [ "$second" -le 127 ]
+}
 
 # bind_covers ADDRESS: are app ports published on BIND reachable at ADDRESS (an IP or a name)?
 # 0.0.0.0 covers everything; loopback covers loopback only; one address covers itself.
@@ -264,15 +276,42 @@ EOF
     systemctl enable -q --now melissa-update.path
 }
 
-# The app addresses for the server's config: what people type before :port.
+# The app addresses for the server's config: what people type before :port. For every address
+# (0.0.0.0): all the useful ones, most useful first; the server offers those that Settings → Apps
+# lets in (this device only by default, so 127.0.0.1 last).
 app_addresses() {
     if [ -n "${APP_ADDRESSES:-}" ]; then echo "$APP_ADDRESSES"; return; fi
+    local out='' lan a
     case "$BIND" in
     127.*|::1|localhost) echo 127.0.0.1 ;;
-    # The host's own address (route source towards a documentation address; nothing is sent).
-    0.0.0.0|::|'') ip -4 route get 203.0.113.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' ;;
+    0.0.0.0|::|'')
+        # The host's LAN address (route source towards a documentation address; nothing is
+        # sent), its Tailscale addresses, then loopback.
+        lan=$(ip -4 route get 203.0.113.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+        for a in $lan $(ip -4 -o addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }'); do
+            case ",$out," in *",$a,"*) continue ;; esac
+            if [ "$a" = "$lan" ] || is_tailscale "$a"; then out+="${out:+,}$a"; fi
+        done
+        echo "${out:+$out,}127.0.0.1" ;;
     *) echo "$BIND" ;;
     esac
+}
+
+# rewrite_reason HAVE: why an existing server.toml's [apps] addresses HAVE should become
+# app_addresses (nothing printed: keep them).
+rewrite_reason() {
+    local have=$1
+    if [ -n "${APP_ADDRESSES:-}" ]; then echo "APP_ADDRESSES=$APP_ADDRESSES"; return 0; fi
+    [ -n "$have" ] || return 0
+    if [ -n "$(uncovered "$have")" ] && [ "$ALLOW_ADDRESS_MISMATCH" != yes ]; then
+        echo "the old ones ($(uncovered "$have")) are not covered by BIND=$BIND: their links were refused"
+        return 0
+    fi
+    # Before 2026-11-21 BIND defaulted to loopback and the addresses to 127.0.0.1 alone: with app
+    # ports on every address, offer the others too (Settings → Apps decides which work).
+    if [ "$have" = 127.0.0.1 ] && ! is_loopback "$BIND"; then
+        echo "127.0.0.1 alone was the old loopback default; Settings → Apps now decides who may open apps"
+    fi
 }
 
 # Write [apps] addresses and port_offset into the server's config unless one exists already.
@@ -302,19 +341,16 @@ configure() {
 # APP_ADDRESSES asks for others, or when they name addresses BIND does not cover (links that
 # would be refused). The rest of the file stays as it is.
 update_addresses() {
-    local want=$1 have toml why=''
+    local want=$1 have toml why
     toml=$(podman exec melissa cat /etc/melissa/server.toml) || return 0
     have=$(printf '%s\n' "$toml" | toml_addresses)
     [ "$have" = "$want" ] && return 0
-    if [ -n "${APP_ADDRESSES:-}" ]; then
-        why="APP_ADDRESSES=$APP_ADDRESSES"
-    elif [ -n "$have" ] && [ -n "$(uncovered "$have")" ]; then
-        if [ "$ALLOW_ADDRESS_MISMATCH" = yes ]; then
-            say "WARNING: server.toml [apps] addresses $(uncovered "$have") are not covered by BIND=$BIND (ALLOW_ADDRESS_MISMATCH=yes: kept)"
-            return 0
-        fi
-        why="the old ones ($(uncovered "$have")) are not covered by BIND=$BIND: their links were refused"
+    if [ -z "${APP_ADDRESSES:-}" ] && [ -n "$have" ] && [ -n "$(uncovered "$have")" ] \
+        && [ "$ALLOW_ADDRESS_MISMATCH" = yes ]; then
+        say "WARNING: server.toml [apps] addresses $(uncovered "$have") are not covered by BIND=$BIND (ALLOW_ADDRESS_MISMATCH=yes: kept)"
+        return 0
     fi
+    why=$(rewrite_reason "$have")
     [ -n "$why" ] || return 0
     [ -n "$want" ] || { say "WARNING: no app address to write; server.toml [apps] addresses kept ($have)"; return 0; }
     printf '%s\n' "$toml" | toml_set_addresses "$want" \
@@ -322,7 +358,8 @@ update_addresses() {
     podman exec melissa systemctl try-restart melissa-server
     say "NOTICE: server.toml [apps] addresses: ${have:-none} -> $want ($why)"
     case "$BIND" in 127.*|::1|localhost)
-        say "  Apps are on loopback only. To reach them from other machines: BIND=<that address> or 0.0.0.0" ;;
+        say "  Apps are on loopback only (BIND=$BIND). Without BIND they are published on every address" \
+            "and Settings → Apps decides who may open them." ;;
     esac
 }
 
@@ -340,7 +377,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,24p' "$0"; exit 2 ;;
+*) sed -n '2,28p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
@@ -357,7 +394,8 @@ cat <<EOF
 
 Melissa is running (systemctl status melissa). k3s needs a minute or two on the first start.
   Web UI:     http://$UI_BIND:$UI_PORT/
-  Apps:       ports $APP_PORT_BASE-$APP_PORT_LAST on $BIND
+  Apps:       ports $APP_PORT_BASE-$APP_PORT_LAST on $BIND; who may open them: Settings → Apps
+              (this device only until you change it; agents ask you first)
   Agents:     sudo podman exec -it melissa melissa-setup            (e.g. agent opencode)
   Chat:       sudo podman exec -it melissa melissa-server chat
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback

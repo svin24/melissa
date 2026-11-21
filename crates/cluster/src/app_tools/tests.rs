@@ -338,6 +338,7 @@ fn settings() -> AppSettings {
         device: DEVICE.into(),
         agents: Some(Arc::new(Names)),
         reach: None,
+        access: None,
     }
 }
 
@@ -3270,4 +3271,118 @@ async fn with_two_minecraft_servers_an_agent_acts_on_its_own_without_asking_abou
     reg.confirmations().resolve(c.id, Verdict::Denied);
     assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
     assert_eq!(fake.state().exec_requests.len(), 1);
+}
+
+/// The root helper's work already done: `status` written next to the setting.
+struct Done;
+
+impl melissa_settings::app_access::Applier for Done {
+    fn apply(&self) -> melissa_agent::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Container install published on every address, Melissa's filter at `setting` with
+/// `in_force` verified (`None`: it failed closed).
+fn access_tools(
+    tag: &str,
+    setting: melissa_settings::app_access::AppAccess,
+    in_force: Option<melissa_settings::app_access::AppAccess>,
+) -> BTreeMap<&'static str, Arc<dyn Tool>> {
+    use melissa_settings::app_access::{self as access, AppAccessControl, Status};
+    let dir = std::env::temp_dir().join(format!("melissa-access-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let setting_file = dir.join(access::FILE_NAME);
+    std::fs::write(&setting_file, format!("apps = \"{setting}\"\n")).unwrap();
+    let status = Status {
+        wanted: setting,
+        open_to: in_force,
+        verified: true,
+        errors: if in_force == Some(setting) {
+            vec![]
+        } else {
+            vec!["nft failed".into()]
+        },
+        at: 1,
+    };
+    access::write_status(&dir.join("status.json"), &status).unwrap();
+    let control =
+        AppAccessControl::new(setting_file, dir.join("status.json"), Arc::new(Done), None);
+    let settings = AppSettings {
+        addresses: Some(vec![
+            "192.168.1.20".into(),
+            "100.64.0.10".into(),
+            "127.0.0.1".into(),
+        ]),
+        reach: Some(crate::reach::ReachCheck {
+            probe: Arc::new(NoHairpin),
+            control: Some("10.88.0.2".into()),
+            publish_bind: crate::reach::parse_publish_bind("0.0.0.0"),
+        }),
+        access: Some(control),
+        ..settings()
+    };
+    app_tools(settings, Some(Arc::new(Fake::default())))
+        .into_iter()
+        .map(|t| (t.spec().name, t))
+        .collect()
+}
+
+/// Apps open to the tailnet: links name the Tailscale and loopback addresses, not the LAN
+/// one, and the agent is told to propose set_app_access (not a reinstall).
+#[tokio::test]
+async fn links_follow_the_app_access_setting() {
+    use melissa_settings::app_access::AppAccess;
+    let t = access_tools("tailnet", AppAccess::Tailnet, Some(AppAccess::Tailnet));
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    let s = call(&t, "app_status", json!({"app": "minecraft"}))
+        .await
+        .unwrap();
+    for r in [&out, &s] {
+        assert_eq!(r["ports"][0]["address"], "100.64.0.10:30000", "{r}");
+        let access = &r["reachability"]["access"];
+        assert_eq!(access["open_to"], "tailnet");
+        assert_eq!(access["left_out"], json!(["192.168.1.20"]));
+        let warning = access["warning"].as_str().unwrap();
+        assert!(warning.contains("set_app_access"), "{warning}");
+        assert!(warning.contains("`home_network`"), "{warning}");
+        assert!(!warning.contains("BIND"), "{warning}");
+        assert_eq!(access["problem"], Value::Null);
+    }
+}
+
+/// The filter failed closed: links keep only this device, and the problem is passed on.
+#[tokio::test]
+async fn links_fail_closed_when_the_filter_is_not_in_force() {
+    use melissa_settings::app_access::AppAccess;
+    let t = access_tools(
+        "closed",
+        AppAccess::HomeNetwork,
+        Some(AppAccess::ThisDevice),
+    );
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["ports"][0]["address"], "127.0.0.1:30000", "{out}");
+    let access = &out["reachability"]["access"];
+    assert_eq!(access["open_to"], "this_device");
+    assert_eq!(access["setting"], "home_network");
+    assert!(access["problem"]
+        .as_str()
+        .unwrap()
+        .starts_with("Couldn't apply this."));
+    let warning = access["warning"].as_str().unwrap();
+    assert!(warning.contains("isn't in force"), "{warning}");
+    assert!(!warning.contains("call set_app_access"), "{warning}");
 }

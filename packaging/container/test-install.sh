@@ -54,6 +54,51 @@ BIND=203.0.113.5; eq "one address: that address" 203.0.113.5 "$(app_addresses)"
 APP_ADDRESSES=box.example.com; eq "APP_ADDRESSES wins" box.example.com "$(app_addresses)"
 unset APP_ADDRESSES
 
+# --- every address (the default since 2026-11-21): Melissa's filter decides ----------------
+eq "BIND defaults to every address" 0.0.0.0 "$(unset BIND; . "$here/install.sh"; echo "$BIND")"
+eq "Tailscale range: 100.64.0.10" yes "$(yes_no is_tailscale 100.64.0.10)"
+eq "Tailscale range: 100.127.255.254" yes "$(yes_no is_tailscale 100.127.255.254)"
+eq "not Tailscale: 100.128.0.1" no "$(yes_no is_tailscale 100.128.0.1)"
+eq "not Tailscale: 100.63.0.1" no "$(yes_no is_tailscale 100.63.0.1)"
+eq "not Tailscale: 192.168.1.20" no "$(yes_no is_tailscale 192.168.1.20)"
+# A host with a LAN address, a Tailscale address and a container bridge.
+ip() {
+    case "$*" in
+    "-4 route get 203.0.113.1") echo "203.0.113.1 via 192.168.1.1 dev eth0 src 192.168.1.20 uid 0" ;;
+    "-4 -o addr show") printf '%s\n' \
+        "1: lo    inet 127.0.0.1/8 scope host lo" \
+        "2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global eth0" \
+        "3: podman0    inet 10.88.0.1/16 brd 10.88.255.255 scope global podman0" \
+        "4: tailscale0    inet 100.64.0.10/32 scope global tailscale0" ;;
+    esac
+}
+BIND=0.0.0.0; eq "every address: LAN, Tailscale, loopback (no bridge)" \
+    192.168.1.20,100.64.0.10,127.0.0.1 "$(app_addresses)"
+unset -f ip
+
+ALLOW_ADDRESS_MISMATCH=no
+BIND=0.0.0.0; eq "old loopback default is rewritten" yes "$(yes_no test -n "$(rewrite_reason 127.0.0.1)")"
+BIND=0.0.0.0; eq "the owner's own addresses are kept" "" "$(rewrite_reason 192.168.1.20,127.0.0.1)"
+BIND=0.0.0.0; eq "no addresses: nothing to rewrite" "" "$(rewrite_reason '')"
+BIND=127.0.0.1; eq "explicit loopback BIND keeps 127.0.0.1" "" "$(rewrite_reason 127.0.0.1)"
+BIND=127.0.0.1; eq "uncovered ones are rewritten" yes "$(yes_no test -n "$(rewrite_reason 100.64.0.10)")"
+ALLOW_ADDRESS_MISMATCH=yes
+BIND=127.0.0.1; eq "...unless something else forwards them" "" "$(rewrite_reason 100.64.0.10)"
+ALLOW_ADDRESS_MISMATCH=no
+APP_ADDRESSES=box.example.com; eq "APP_ADDRESSES always rewrites" "APP_ADDRESSES=box.example.com" "$(rewrite_reason 127.0.0.1)"
+unset APP_ADDRESSES
+
+units="$here/rootfs/usr/lib/systemd/system"
+eq "the filter runs before k3s" yes "$(yes_no grep -qx 'Before=k3s.service' "$units/melissa-app-access.service")"
+eq "the filter's unit applies the setting" yes \
+    "$(yes_no grep -qx 'ExecStart=/usr/bin/melissa-server app-access apply /etc/melissa/app-access.toml' "$units/melissa-app-access.service")"
+eq "k3s waits for the filter" yes "$(yes_no grep -qx 'After=melissa-app-access.service' "$units/k3s.service.d/20-app-access.conf")"
+eq "k3s doesn't start without the table (fail closed)" yes \
+    "$(yes_no grep -q 'nft list table inet melissa_app_access' "$units/k3s.service.d/20-app-access.conf")"
+eq "the server may start the filter" yes \
+    "$(yes_no grep -q '"melissa-app-access.service"' "$here/rootfs/usr/share/polkit-1/rules.d/52-melissa-app-access.rules")"
+eq "the image enables the filter" yes "$(yes_no grep -q 'melissa-ui-forward.socket melissa-app-access.service' "$here/Containerfile")"
+
 # --- server.toml: read and rewrite [apps] addresses, nothing else ---------------------------
 toml='listen = "127.0.0.1:8080"
 

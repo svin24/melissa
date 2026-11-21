@@ -45,8 +45,10 @@ UI forward socket. Masked: systemd-logind and the sleep targets. `systemd-analyz
   `table inet melissa_ui_forward`: TCP 8081 accepted only on the default-route interface from the default gateway
   (the host); pods (cni0) and other containers are dropped. A drop in any nftables table is final. Host processes
   that connect to the container's bridge address directly get in (same trust as host loopback).
-- Apps: `PublishPort=BIND:APP_PORT_BASE-+79:30000-30079` (netavark DNAT). install.sh writes `[apps] addresses`
-  (127.0.0.1 for a loopback BIND, BIND itself, or the host's route-source address for 0.0.0.0) and `port_offset`.
+- Apps: `PublishPort=BIND:APP_PORT_BASE-+79:30000-30079` (netavark DNAT; BIND 0.0.0.0 by default). install.sh
+  writes `[apps] addresses` (127.0.0.1 for a loopback BIND, BIND itself, or for 0.0.0.0 the host's route-source
+  address, its Tailscale addresses and 127.0.0.1) and `port_offset`. Who gets through: the `melissa_app_access`
+  nftables table (`melissa-app-access.service`, Settings → Apps; packaging/container/README.md "Who may open apps").
   Through firewalld: forwarded DNAT traffic is accepted by `ct status dnat accept` in `filter_FORWARD`; Tailscale's
   `ts-forward` accepts from tailscale0. No zone change needed for BIND = the Tailscale address.
 - `/var` is the `melissa-var` volume. The container is **recreated at every start** (Quadlet), so `/etc` resets:
