@@ -1109,3 +1109,10 @@ Roadmap (rough, phases may overlap):
     option next to Copy/Dismiss, and saved app passwords are listed in Settings (reveal/copy/delete, same
     audit and re-auth rules). Until then a password is shown once in chat and forgotten on Dismiss. Which store
     (per-user key derived from the login password, OS keyring on the host, age/sops file)?
+85. Tailscale from Settings (owner, 2026-11-21; investigate later). A Settings → Tailscale section: if the host
+    already runs Tailscale, it only says "Tailscale is not managed by Melissa on this system". Otherwise
+    Melissa can install and enable it (e.g. the official `tailscale/tailscale` container image, or tailscaled
+    inside the Melissa container) and the lead agent helps with sign-in (login URL button, no terminal). To
+    check: host-network vs in-container tailscaled, how app ports and the app access filter (section 4) see
+    tailnet traffic then, auth-key vs interactive login, and whether `tailscale serve` can give the UI HTTPS
+    (Q22, passkeys, notifications Q83).
