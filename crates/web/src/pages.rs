@@ -377,6 +377,11 @@ pub fn entry_content(entry: &Entry, x: &EntryCtx<'_>) -> Markup {
             agent.as_deref().map(agent_href).as_deref(),
         ),
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
+        Item::SetupPassword { app, login } => crate::setup_password::card(
+            app,
+            login.as_deref(),
+            crate::components::SetupPasswordState::Loading,
+        ),
         Item::Note { text, detail, tone } => note(text, detail.as_deref(), *tone),
         Item::Divider { text } => chat_divider(text),
         Item::Date { text } => crate::components::chat_date(text),

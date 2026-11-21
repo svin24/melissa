@@ -80,6 +80,9 @@ pub struct AppsSection {
     /// Kubeconfig of the write identity (`melissa-apps`); default
     /// `/run/melissa-kube/apps.kubeconfig`. Re-read on every call.
     pub kubeconfig: Option<PathBuf>,
+    /// Kubeconfig of the setup password reader (`melissa-credentials`, the owner's reveal in
+    /// the web UI only); default `/run/melissa-kube/credentials.kubeconfig`.
+    pub credentials_kubeconfig: Option<PathBuf>,
 }
 
 impl Default for AppsSection {
@@ -90,6 +93,7 @@ impl Default for AppsSection {
             addresses: None,
             port_offset: 0,
             kubeconfig: None,
+            credentials_kubeconfig: None,
         }
     }
 }

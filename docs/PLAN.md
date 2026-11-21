@@ -198,7 +198,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 - **App tools (2026-11-18, deploy tools 2026-11-19):** `app_status`, `list_apps` (read-only), `app_logs`
   (untrusted), `deploy_app`/`update_app` (always confirmed), `uninstall_app` (Destructive) in `crates/cluster`, over separate `AppRead`/`AppDeployer`
   traits. Generated secrets are never returned to agents; the owner reads them with
-  `sudo melissa-server app-credentials <app>`. `melissa-server tool --wait <tool> [json]` runs a tool in the
+  `sudo melissa-server app-credentials <app>` (a dismissed setup password is left out; the web UI's setup
+  password card is the usual way, see DECISIONS 2026-11-21). `melissa-server tool --wait <tool> [json]` runs a tool in the
   daemon and waits for its confirmation (`POST /api/tools/{name}`).
 - **`app_exec` (2026-11-20):** one command (argv, no implicit shell) in an app's running container over the
   Kubernetes exec API (kube-rs `ws`), e.g. a Minecraft console command (`rcon-cli op <player>`) without a
@@ -517,7 +518,9 @@ Minecraft server and lets them make their own agents.
   passwords; a host-side command resets the owner's (access to the box is the last authority).
 - **Sessions:** `__Host-` cookies (`HttpOnly`, `Secure` where HTTPS, `SameSite=Strict`), CSRF tokens, one
   session per browser, listed and revocable. **Sensitive actions ask for the password again** (approvals that
-  widen access, viewing app credentials, deleting data, security and provider settings).
+  widen access, viewing app credentials, deleting data, security and provider settings). The setup password
+  card's Show and Copy (2026-11-21, DECISIONS) are such a step: once logins exist, the owner re-enters their
+  password before the reveal endpoint answers, and only the owner (or a member with that permission) sees it.
 - **No guest role.** The owner plus members.
 - **Granular permissions with presets.** Each member has a list of permissions; presets ("Admin", "Adult",
   "Kid") only fill the list, and every line stays editable per person. Permissions (first cut):
@@ -1104,3 +1107,11 @@ Roadmap (rough, phases may overlap):
     hidden or on another agent's chat; one per event across tabs; click opens that chat. Permission through a
     Settings row (needs a user gesture). Needs a secure context (HTTPS or localhost), so it waits on TLS (Q22);
     notifications with every tab closed need a service worker + Web Push (later still).
+84. Setup passwords (2026-11-21; DECISIONS). (a) Show and Copy need the owner's password again once logins
+    exist (6c); until then anyone who can open the web UI on the LAN can reveal an undismissed one, like
+    every other owner action. (b) Copy works only in a secure context (HTTPS or localhost); on plain HTTP the
+    owner selects the shown value (TLS, Q22). (c) `app_exec` (confirmed by the user, audited) can still read an
+    app's environment, which holds the password for apps that take it as an env value; tightening that is
+    separate. (d) An old card of an app force-deleted and installed again shows the new app's password (it
+    goes by app name); a new card comes with the new install. (e) Unsandboxed agent backends (an explicit
+    owner setting) run as the server's user with its groups, like for the other kubeconfigs.

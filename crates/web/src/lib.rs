@@ -16,6 +16,7 @@ mod markdown;
 mod pages;
 mod panel;
 mod settings;
+mod setup_password;
 mod state;
 mod ui;
 mod usage;
@@ -39,6 +40,7 @@ use serde::Deserialize;
 
 pub use axum::Router;
 pub use settings::{Catalog, CheckFn, ProbeFn, ProbeRequest, Settings, SettingsParts};
+pub use setup_password::{RevealedPassword, SetupError, SetupPasswords, SetupState};
 
 use components::Tone;
 
@@ -94,6 +96,7 @@ pub fn router_with_settings(
     ui_routes(board, Some(ui.clone()))
         .merge(ui::routes(ui.clone()))
         .merge(apps::routes(ui.clone()))
+        .merge(setup_password::routes(ui.clone()))
         .merge(settings::api_routes(ui))
         .merge(api::tool_routes(mcp.clone()))
         .merge(
@@ -786,6 +789,7 @@ mod tests {
             dir: std::path::PathBuf,
             voice: melissa_voice::Voice,
             catalog: Catalog,
+            setup: Option<Arc<dyn SetupPasswords>>,
         }
 
         impl SettingsFixture {
@@ -805,6 +809,7 @@ mod tests {
                     dir,
                     voice: melissa_voice::Voice::unavailable(),
                     catalog: Catalog::unavailable(),
+                    setup: None,
                 }
             }
 
@@ -926,6 +931,7 @@ mod tests {
                         }),
                         Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
                     )),
+                    setup_passwords: self.setup.clone(),
                 })
             }
 
@@ -1264,6 +1270,178 @@ mod tests {
             let (status, _, _) =
                 send(&app, htmx_post("/ui/settings/apps", "open_to=everyone")).await;
             assert_eq!(status, StatusCode::OK);
+        }
+
+        /// A setup password service in memory: one app, `nextcloud`, until dismissed.
+        struct FakeSetup {
+            dismissed: std::sync::Mutex<bool>,
+        }
+
+        const SETUP_SECRET: &str = "Zq7-very-secret-value";
+
+        impl SetupPasswords for FakeSetup {
+            fn state<'a>(
+                &'a self,
+                app: &'a str,
+            ) -> melissa_agent::BoxFuture<'a, Result<SetupState, SetupError>> {
+                Box::pin(async move {
+                    Ok(match (app, *self.dismissed.lock().unwrap()) {
+                        ("nextcloud", false) => SetupState::Available {
+                            login: Some("admin".into()),
+                        },
+                        ("nextcloud", true) => SetupState::Dismissed,
+                        _ => SetupState::None,
+                    })
+                })
+            }
+            fn reveal<'a>(
+                &'a self,
+                app: &'a str,
+            ) -> melissa_agent::BoxFuture<'a, Result<RevealedPassword, SetupError>> {
+                Box::pin(async move {
+                    match (app, *self.dismissed.lock().unwrap()) {
+                        ("nextcloud", false) => Ok(RevealedPassword::new(SETUP_SECRET.into())),
+                        ("nextcloud", true) => Err(SetupError::Dismissed),
+                        _ => Err(SetupError::NotFound),
+                    }
+                })
+            }
+            fn dismiss<'a>(
+                &'a self,
+                app: &'a str,
+            ) -> melissa_agent::BoxFuture<'a, Result<(), SetupError>> {
+                Box::pin(async move {
+                    if app != "nextcloud" {
+                        return Err(SetupError::NotFound);
+                    }
+                    *self.dismissed.lock().unwrap() = true;
+                    Ok(())
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn setup_password_card_reveals_only_on_request_and_dismiss_is_for_good() {
+            let mut fx = SettingsFixture::new("setup-password");
+            fx.setup = Some(Arc::new(FakeSetup {
+                dismissed: std::sync::Mutex::new(false),
+            }));
+            let (app, lead) = app_with(Some(fx.settings(HostKind::Container, false)));
+            let no_store = |h: &HeaderMap| {
+                assert_eq!(h.get(header::CACHE_CONTROL).unwrap(), "no-store");
+            };
+
+            // The install's card in the chat: app and login only, masked, loading its state.
+            lead.events().push(LeadEvent::SetupPassword {
+                app: "nextcloud".into(),
+                login: Some("admin".into()),
+            });
+            let (_, _, page) = send(&app, get("/")).await;
+            assert!(page.contains("Nextcloud setup password"), "{page}");
+            assert!(page.contains("hx-get=\"/ui/apps/nextcloud/setup-password\""));
+            assert!(page.contains("hx-trigger=\"load, setup-refresh\""));
+            assert!(page.contains("Change this password after you first sign in."));
+            assert!(!page.contains(SETUP_SECRET), "never in the page's HTML");
+
+            // Its state: masked, no password.
+            let (status, h, card) = send(&app, get("/ui/apps/nextcloud/setup-password")).await;
+            assert_eq!(status, StatusCode::OK);
+            no_store(&h);
+            assert!(card.contains("<dd>admin</dd>"), "{card}");
+            assert!(card.contains("••••••••"));
+            assert!(card.contains("hx-post=\"/ui/apps/nextcloud/setup-password/reveal\""));
+            assert!(!card.contains(SETUP_SECRET));
+            assert!(
+                !fx.audit().contains("credentials_viewed"),
+                "a look is not a reveal"
+            );
+
+            // Cross-site, or with no browser evidence at all: refused, nothing audited.
+            let evil = post("/ui/apps/nextcloud/setup-password/reveal")
+                .header("origin", "http://evil.example.com")
+                .body(Body::empty())
+                .unwrap();
+            let (status, _, body) = send(&app, evil).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(!body.contains(SETUP_SECRET));
+            let bare = post("/ui/apps/nextcloud/setup-password/reveal")
+                .body(Body::empty())
+                .unwrap();
+            let (status, _, body) = send(&app, bare).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(!body.contains(SETUP_SECRET));
+            assert!(!fx.audit().contains("credentials_viewed"));
+
+            // Show: the password in place, no-store, audited without the value.
+            let (status, h, shown) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/setup-password/reveal", ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            no_store(&h);
+            assert!(shown.contains(&format!(
+                "<code class=\"secret-value\">{SETUP_SECRET}</code>"
+            )));
+            assert!(shown.contains(">Hide</button>"));
+            let audit = fx.audit();
+            assert!(
+                audit.contains("\"action\":\"app.credentials_viewed\""),
+                "{audit}"
+            );
+            assert!(audit.contains("nextcloud: setup password shown"));
+            assert!(audit.contains("\"actor\":\"ui\""));
+            assert!(
+                !audit.contains(SETUP_SECRET),
+                "never the value in the audit"
+            );
+
+            // Copy: the bare value as text, same origin by `Origin`.
+            let copy = post("/ui/apps/nextcloud/setup-password/reveal")
+                .header("origin", "http://127.0.0.1:8080")
+                .header(header::ACCEPT, "text/plain")
+                .body(Body::from("purpose=copy"))
+                .unwrap();
+            let (status, h, text) = send(&app, copy).await;
+            assert_eq!(status, StatusCode::OK);
+            no_store(&h);
+            assert_eq!(text, SETUP_SECRET);
+            assert!(fx.audit().contains("nextcloud: setup password copied"));
+
+            // Dismiss asks first, then forgets for good.
+            let (_, _, ask) = send(&app, get("/ui/apps/nextcloud/setup-password?confirm=1")).await;
+            assert!(ask.contains("Forget it?"), "{ask}");
+            assert!(ask.contains("hx-post=\"/ui/apps/nextcloud/setup-password/dismiss\""));
+            let (status, h, gone) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/setup-password/dismiss", ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            no_store(&h);
+            assert!(
+                gone.contains("Nextcloud setup password dismissed"),
+                "{gone}"
+            );
+            let audit = fx.audit();
+            assert!(audit.contains("\"action\":\"app.credentials_dismissed\""));
+            assert!(!audit.contains(SETUP_SECRET));
+            let (status, h, body) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/setup-password/reveal", ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::GONE);
+            no_store(&h);
+            assert!(body.contains("dismissed"));
+            assert!(!body.contains(SETUP_SECRET));
+            let (_, _, card) = send(&app, get("/ui/apps/nextcloud/setup-password")).await;
+            assert!(card.contains("Nextcloud setup password dismissed"));
+
+            // No such app: nothing to show.
+            let (status, _, _) =
+                send(&app, htmx_post("/ui/apps/other/setup-password/reveal", "")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
         }
 
         #[tokio::test]

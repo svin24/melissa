@@ -11,6 +11,11 @@
 #   pin all of that to namespaces named app-<name> labelled melissa.io/app=<name> with Pod
 #   Security "baseline" (or "restricted") enforced, and to RoleBindings that grant exactly
 #   melissa-app-workload to exactly this ServiceAccount.
+# - Setup passwords (credentials-rbac.yaml, docs/DECISIONS.md 2026-11-21): it may also bind
+#   melissa-app-credentials (get Secrets) to exactly melissa/melissa-credentials, as the
+#   RoleBinding melissa-app-credentials in an app namespace, and delete that one binding. Once
+#   the owner dismissed the setup password (namespace annotation
+#   melissa.io/credentials-dismissed, never removed or changed), that binding is refused.
 # - Workspaces (docs/AGENT-MODEL.md): every new app namespace carries melissa.io/workspace=<name> and
 #   melissa.io/device=<device id>; melissa.io/owner-agent=<agent id> names the agent that owns it
 #   (absent: unassigned). The device is fixed once set. The owner agent can only change together
@@ -178,6 +183,20 @@ spec:
         (has(object.metadata.annotations) && 'melissa.io/port' in object.metadata.annotations &&
          object.metadata.annotations['melissa.io/port'] == oldObject.metadata.annotations['melissa.io/port'])
       message: "an app's port never changes while its namespace exists"
+    # A dismissed setup password stays dismissed (credentials-rbac.yaml).
+    - expression: >-
+        request.operation == 'DELETE' || !has(object.metadata.annotations) ||
+        !('melissa.io/credentials-dismissed' in object.metadata.annotations) ||
+        object.metadata.annotations['melissa.io/credentials-dismissed'].matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$')
+      message: "melissa.io/credentials-dismissed must be a UTC time"
+    - expression: >-
+        request.operation != 'UPDATE' || !has(oldObject.metadata.annotations) ||
+        !('melissa.io/credentials-dismissed' in oldObject.metadata.annotations) ||
+        (has(object.metadata.annotations) &&
+         'melissa.io/credentials-dismissed' in object.metadata.annotations &&
+         object.metadata.annotations['melissa.io/credentials-dismissed'] ==
+           oldObject.metadata.annotations['melissa.io/credentials-dismissed'])
+      message: "a dismissed setup password stays dismissed"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -202,6 +221,24 @@ spec:
   matchConditions:
     - name: melissa-apps-only
       expression: "request.userInfo.username == 'system:serviceaccount:melissa:melissa-apps'"
+  variables:
+    # The workload role, bound to melissa-apps itself.
+    - name: workload
+      expression: >-
+        request.operation != 'DELETE' &&
+        object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'melissa-app-workload' &&
+        has(object.subjects) && object.subjects.size() == 1 &&
+        object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'melissa-apps' &&
+                               has(s.namespace) && s.namespace == 'melissa')
+    # The setup password reader (credentials-rbac.yaml): exactly this binding, role and subject.
+    - name: credentials
+      expression: >-
+        request.operation != 'DELETE' &&
+        object.metadata.name == 'melissa-app-credentials' &&
+        object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'melissa-app-credentials' &&
+        has(object.subjects) && object.subjects.size() == 1 &&
+        object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'melissa-credentials' &&
+                               has(s.namespace) && s.namespace == 'melissa')
   validations:
     - expression: >-
         request.namespace.startsWith('app-') &&
@@ -209,16 +246,14 @@ spec:
         'melissa.io/app' in namespaceObject.metadata.labels &&
         namespaceObject.metadata.labels['melissa.io/app'] == request.namespace.substring(4)
       message: "melissa-apps may only bind roles in app-<name> namespaces"
+    - expression: "request.operation == 'DELETE' || variables.workload || variables.credentials"
+      message: "melissa-apps may only bind melissa-app-workload to itself, or melissa-app-credentials to melissa-credentials"
+    - expression: "request.operation != 'DELETE' || oldObject.metadata.name == 'melissa-app-credentials'"
+      message: "melissa-apps may only delete the melissa-app-credentials binding"
     - expression: >-
-        request.operation == 'DELETE' ||
-        (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'melissa-app-workload')
-      message: "melissa-apps may only bind the melissa-app-workload ClusterRole"
-    - expression: >-
-        request.operation == 'DELETE' ||
-        (has(object.subjects) && object.subjects.size() == 1 &&
-         object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'melissa-apps' &&
-                                has(s.namespace) && s.namespace == 'melissa'))
-      message: "melissa-apps may only bind the role to itself"
+        !variables.credentials || !has(namespaceObject.metadata.annotations) ||
+        !('melissa.io/credentials-dismissed' in namespaceObject.metadata.annotations)
+      message: "the setup password was dismissed; Melissa may not read it again"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -424,7 +459,13 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["bind"]
-    resourceNames: ["melissa-app-workload"]
+    resourceNames: ["melissa-app-workload", "melissa-app-credentials"]
+  # The owner dismissed an app's setup password: its reader binding goes (the policy above
+  # never lets it back).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["delete"]
+    resourceNames: ["melissa-app-credentials"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -454,8 +495,8 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Generated credentials: written once, never read back by Melissa (the owner reads them
-  # with root's admin kubeconfig: `sudo melissa-server app-credentials <app>`).
+  # Generated credentials: written once, never read back by this identity. The owner's
+  # reveal reads the setup password through melissa-credentials (credentials-rbac.yaml).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "delete"]

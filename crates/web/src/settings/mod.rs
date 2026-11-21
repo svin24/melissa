@@ -160,6 +160,8 @@ pub struct SettingsParts {
     /// Who may open apps (Settings → Apps); `None`: not a container install (the host's
     /// firewall decides).
     pub app_access: Option<AppAccessControl>,
+    /// The setup password card's server side (reveal, dismiss); `None`: no cluster here.
+    pub setup_passwords: Option<std::sync::Arc<dyn crate::setup_password::SetupPasswords>>,
 }
 
 /// The Settings context. Cheap to clone.
@@ -213,7 +215,15 @@ impl Settings {
             voice: melissa_voice::Voice::unavailable(),
             catalog: Catalog::unavailable(),
             app_access: None,
+            setup_passwords: None,
         })
+    }
+
+    /// The setup password card's server side, if this device has a cluster.
+    pub(crate) fn setup_passwords(
+        &self,
+    ) -> Option<&std::sync::Arc<dyn crate::setup_password::SetupPasswords>> {
+        self.inner.parts.setup_passwords.as_ref()
     }
 
     /// The owner's display preferences.
@@ -287,7 +297,7 @@ impl Settings {
     }
 
     /// Append an audit record: `detail` says what changed, `sha256` hashes the new value.
-    fn audit(&self, action: &str, actor: &str, detail: &str, sha256: Option<String>) {
+    pub(crate) fn audit(&self, action: &str, actor: &str, detail: &str, sha256: Option<String>) {
         let Some(log) = &self.parts().audit else {
             return;
         };

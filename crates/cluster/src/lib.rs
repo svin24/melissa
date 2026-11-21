@@ -11,6 +11,7 @@
 mod app_tools;
 pub mod apps;
 pub mod cluster;
+pub mod credentials;
 mod device;
 mod health;
 mod reach;
@@ -21,6 +22,10 @@ pub use apps::{AppDeployer, AppExec, AppRead, ExecOutput, ExecRequest, KubeApps}
 pub use cluster::{
     ClusterError, ClusterRead, KubeCluster, LazyCluster, APPS_RUNTIME_FILE, CREDENTIAL_NAME,
     RUNTIME_DIR, RUNTIME_FILE,
+};
+pub use credentials::{
+    AppCredentials, CredentialsError, KubeSecretReader, SetupLogin, SetupPassword,
+    CREDENTIALS_RUNTIME_FILE,
 };
 pub use health::ClusterHealth;
 pub use reach::{parse_publish_bind, PortProbe, Probe, ReachCheck, TcpProbe};

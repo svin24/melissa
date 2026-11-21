@@ -75,6 +75,8 @@ pub enum NamedKind {
     Ingress,
     Service,
     ConfigMap,
+    /// Only the setup password reader's binding (`render::CREDENTIALS_BINDING`).
+    RoleBinding,
 }
 
 impl NamedKind {
@@ -83,6 +85,7 @@ impl NamedKind {
             Self::Ingress => "Ingress",
             Self::Service => "Service",
             Self::ConfigMap => "ConfigMap",
+            Self::RoleBinding => "RoleBinding",
         }
     }
 }
@@ -232,7 +235,7 @@ fn is_status(e: &kube::Error, code: u16) -> bool {
 }
 
 /// `Ok(None)` for 404.
-fn optional<T>(r: Result<T, kube::Error>) -> Result<Option<T>, ClusterError> {
+pub(crate) fn optional<T>(r: Result<T, kube::Error>) -> Result<Option<T>, ClusterError> {
     match r {
         Ok(v) => Ok(Some(v)),
         Err(e) if is_status(&e, 404) => Ok(None),
@@ -242,7 +245,7 @@ fn optional<T>(r: Result<T, kube::Error>) -> Result<Option<T>, ClusterError> {
 
 /// Retry `f` while it is forbidden: a fresh RoleBinding takes a moment to reach the API
 /// server's authorizer cache.
-async fn retry_forbidden<T, F, Fut>(mut f: F) -> Result<T, ClusterError>
+pub(crate) async fn retry_forbidden<T, F, Fut>(mut f: F) -> Result<T, ClusterError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, ClusterError>>,
@@ -466,6 +469,13 @@ impl AppDeployer for KubeApps {
                     optional(self.ns_api::<ConfigMap>(app).await?.delete(name, &dp).await)?
                         .is_some()
                 }
+                NamedKind::RoleBinding => optional(
+                    self.ns_api::<RoleBinding>(app)
+                        .await?
+                        .delete(name, &dp)
+                        .await,
+                )?
+                .is_some(),
             })
         })
     }

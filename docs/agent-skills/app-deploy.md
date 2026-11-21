@@ -18,7 +18,9 @@ produces locked-down objects) and the admission policies, never the prompt.
   (every deploy and update: `Effect::Deploy`, always confirmed, with a summary of images, ports
   and storage), renders and applies with the `melissa-apps` identity, stores the spec on the
   namespace (`melissa.io/spec`). containerd pulls the images when the pod starts.
-- The owner reads generated credentials with `sudo melissa-server app-credentials <app>`.
+- The owner gets a new app's setup password as a card in the chat where it was installed (reveal, copy,
+  dismiss; server to browser only, DECISIONS 2026-11-21). `sudo melissa-server app-credentials <app>` shows every
+  generated value on the device (a dismissed setup password is left out).
 
 ## Spec (JSON, every object `deny_unknown_fields`)
 ```json

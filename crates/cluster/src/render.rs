@@ -59,6 +59,15 @@ pub const APPS_SERVICE_ACCOUNT: &str = "melissa-apps";
 pub const MELISSA_NAMESPACE: &str = "melissa";
 /// ClusterRole bound per app namespace for [`APPS_SERVICE_ACCOUNT`].
 pub const WORKLOAD_ROLE: &str = "melissa-app-workload";
+/// The setup password reader (`credentials-rbac.yaml`): only `get` on Secrets, bound per app
+/// namespace by [`APPS_SERVICE_ACCOUNT`] as [`CREDENTIALS_BINDING`] ([`credentials_binding`]).
+pub const CREDENTIALS_SERVICE_ACCOUNT: &str = "melissa-credentials";
+pub const CREDENTIALS_ROLE: &str = "melissa-app-credentials";
+pub const CREDENTIALS_BINDING: &str = "melissa-app-credentials";
+/// Annotation on the namespace: when the owner dismissed the app's setup password (RFC 3339,
+/// UTC). Never removed or changed, and while it is there the admission policy refuses
+/// [`CREDENTIALS_BINDING`], so Melissa can't read that password again.
+pub const CREDENTIALS_DISMISSED_ANNOTATION: &str = "melissa.io/credentials-dismissed";
 /// Workspace labels on the app's namespace (docs/AGENT-MODEL.md): the workspace's name, the device it is
 /// on and the agent that owns it. `melissa.io/workspace` and `melissa.io/device` are set at the first
 /// install; `melissa.io/owner-agent` is set at the first install (absent: unassigned) and
@@ -263,6 +272,34 @@ fn meta(app: &str, spec: &AppSpec, name: &str) -> ObjectMeta {
         namespace: Some(namespace_of(app)),
         labels: Some(labels(app, spec)),
         ..ObjectMeta::default()
+    }
+}
+
+/// The RoleBinding that lets the setup password reader ([`CREDENTIALS_SERVICE_ACCOUNT`]) get
+/// app `app`'s Secrets. Applied by the write identity right before a reveal, deleted when the
+/// owner dismisses the password; never part of a deploy.
+pub fn credentials_binding(app: &str) -> RoleBinding {
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(CREDENTIALS_BINDING.into()),
+            namespace: Some(namespace_of(app)),
+            labels: Some(BTreeMap::from([
+                (APP_LABEL.into(), app.to_string()),
+                ("app.kubernetes.io/managed-by".into(), "melissa".into()),
+            ])),
+            ..ObjectMeta::default()
+        },
+        role_ref: RoleRef {
+            api_group: Some("rbac.authorization.k8s.io".into()),
+            kind: "ClusterRole".into(),
+            name: CREDENTIALS_ROLE.into(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".into(),
+            name: CREDENTIALS_SERVICE_ACCOUNT.into(),
+            namespace: Some(MELISSA_NAMESPACE.into()),
+            api_group: None,
+        }]),
     }
 }
 

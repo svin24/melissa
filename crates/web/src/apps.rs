@@ -63,7 +63,7 @@ pub(crate) fn routes(ui: Ui) -> Router {
 }
 
 /// A catalog-style app name (the tools check again).
-fn valid(app: &str) -> bool {
+pub(crate) fn valid(app: &str) -> bool {
     !app.is_empty()
         && app.len() <= 63
         && app

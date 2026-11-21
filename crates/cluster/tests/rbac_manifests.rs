@@ -5,9 +5,11 @@
 use std::path::PathBuf;
 
 use melissa_cluster::render::{
-    port_service_name, APPS_SERVICE_ACCOUNT, APP_PORTS, ASSIGNED_AT_ANNOTATION, DEVICE_LABEL,
-    LEGACY_OWNER_LABEL, MELISSA_NAMESPACE, OLD_DEVICE_LABEL, OLD_OWNER_LABEL, OLD_WORKSPACE_LABEL,
-    OWNER_AGENT_LABEL, PORTS_ANNOTATION, PORT_ANNOTATION, WORKLOAD_ROLE, WORKSPACE_LABEL,
+    port_service_name, APPS_SERVICE_ACCOUNT, APP_PORTS, ASSIGNED_AT_ANNOTATION,
+    CREDENTIALS_BINDING, CREDENTIALS_DISMISSED_ANNOTATION, CREDENTIALS_ROLE,
+    CREDENTIALS_SERVICE_ACCOUNT, DEVICE_LABEL, LEGACY_OWNER_LABEL, MELISSA_NAMESPACE,
+    OLD_DEVICE_LABEL, OLD_OWNER_LABEL, OLD_WORKSPACE_LABEL, OWNER_AGENT_LABEL, PORTS_ANNOTATION,
+    PORT_ANNOTATION, WORKLOAD_ROLE, WORKSPACE_LABEL,
 };
 
 fn manifest(name: &str) -> String {
@@ -48,7 +50,11 @@ fn rules(role: &str) -> Vec<String> {
 
 #[test]
 fn no_wildcards_anywhere() {
-    for file in ["apps-rbac.yaml", "server-rbac.yaml"] {
+    for file in [
+        "apps-rbac.yaml",
+        "server-rbac.yaml",
+        "credentials-rbac.yaml",
+    ] {
         let text = docs(&manifest(file)).join("\n");
         assert!(!text.contains("\"*\""), "{file} has a wildcard");
         assert!(!text.contains("cluster-admin"), "{file}");
@@ -81,10 +87,11 @@ fn the_write_identity_is_narrow() {
     assert!(sa.contains(&format!("namespace: {MELISSA_NAMESPACE}")));
     assert!(sa.contains("automountServiceAccountToken: false"));
 
-    // Cluster-wide: namespaces, rolebindings, and `bind` on exactly the workload role.
+    // Cluster-wide: namespaces, rolebindings, `bind` on exactly the workload role and the
+    // setup password reader, and deleting exactly the reader's binding.
     let cluster = doc(&docs, "ClusterRole", "melissa-apps");
     let cluster_rules = rules(cluster);
-    assert_eq!(cluster_rules.len(), 3, "{cluster}");
+    assert_eq!(cluster_rules.len(), 4, "{cluster}");
     for word in [
         "secrets",
         "pods",
@@ -103,8 +110,20 @@ fn the_write_identity_is_narrow() {
         .find(|r| r.contains("\"bind\""))
         .expect("bind rule");
     assert!(
-        bind.contains(&format!("resourceNames: [\"{WORKLOAD_ROLE}\"]")),
+        bind.contains(&format!(
+            "resourceNames: [\"{WORKLOAD_ROLE}\", \"{CREDENTIALS_ROLE}\"]"
+        )),
         "{bind}"
+    );
+    let delete = cluster_rules
+        .iter()
+        .find(|r| r.contains("verbs: [\"delete\"]"))
+        .expect("delete rule");
+    assert!(
+        delete.contains(&format!(
+            "resources: [\"rolebindings\"]\n    verbs: [\"delete\"]\n    resourceNames: [\"{CREDENTIALS_BINDING}\"]"
+        )),
+        "{delete}"
     );
 
     // The workload role is never bound cluster-wide.
@@ -275,9 +294,63 @@ fn admission_policies_guard_the_write_identity() {
     );
     assert!(rb.contains(&format!("object.roleRef.name == '{WORKLOAD_ROLE}'")));
     assert!(rb.contains("object.subjects.size() == 1"));
+    // The setup password reader: exactly its binding, role and subject; deletes only of that
+    // binding; never again once dismissed (and the dismissal itself is frozen).
+    assert_eq!(CREDENTIALS_BINDING, CREDENTIALS_ROLE);
+    assert!(rb.contains(&format!("object.metadata.name == '{CREDENTIALS_BINDING}'")));
+    assert!(rb.contains(&format!("object.roleRef.name == '{CREDENTIALS_ROLE}'")));
+    assert!(rb.contains(&format!("s.name == '{CREDENTIALS_SERVICE_ACCOUNT}'")));
+    assert!(
+        rb.contains("request.operation == 'DELETE' || variables.workload || variables.credentials")
+    );
+    assert!(rb.contains(&format!(
+        "request.operation != 'DELETE' || oldObject.metadata.name == '{CREDENTIALS_BINDING}'"
+    )));
+    assert!(rb.contains(&format!(
+        "!variables.credentials || !has(namespaceObject.metadata.annotations) ||\n        !('{CREDENTIALS_DISMISSED_ANNOTATION}' in namespaceObject.metadata.annotations)"
+    )));
+    assert!(ns.contains(&format!(
+        "object.metadata.annotations['{CREDENTIALS_DISMISSED_ANNOTATION}'] ==\n           oldObject.metadata.annotations['{CREDENTIALS_DISMISSED_ANNOTATION}']"
+    )));
     // Policies come before the permissions they guard.
     let text = manifest("apps-rbac.yaml");
     let first_policy = text.find("kind: ValidatingAdmissionPolicy\n").unwrap();
     let first_role = text.find("kind: ClusterRole\n").unwrap();
     assert!(first_policy < first_role);
+}
+
+#[test]
+fn the_setup_password_reader_only_gets_secrets_per_app() {
+    let docs = docs(&manifest("credentials-rbac.yaml"));
+    let sa = doc(&docs, "ServiceAccount", CREDENTIALS_SERVICE_ACCOUNT);
+    assert!(sa.contains(&format!("namespace: {MELISSA_NAMESPACE}")));
+    assert!(sa.contains("automountServiceAccountToken: false"));
+    let role = doc(&docs, "ClusterRole", CREDENTIALS_ROLE);
+    let role_rules = rules(role);
+    assert_eq!(role_rules.len(), 1, "{role}");
+    assert!(
+        role_rules[0].contains("resources: [\"secrets\"]\n    verbs: [\"get\"]"),
+        "{role}"
+    );
+    // Bound per app namespace only (by melissa-apps), never cluster-wide or in a manifest.
+    for file in [
+        "apps-rbac.yaml",
+        "server-rbac.yaml",
+        "credentials-rbac.yaml",
+    ] {
+        for d in docs_of(file) {
+            assert!(
+                !(d.contains("kind: ClusterRoleBinding") && d.contains(CREDENTIALS_ROLE)),
+                "{file}"
+            );
+            assert!(
+                !(d.contains("kind: RoleBinding\n") && d.contains(CREDENTIALS_SERVICE_ACCOUNT)),
+                "{file}"
+            );
+        }
+    }
+}
+
+fn docs_of(file: &str) -> Vec<String> {
+    docs(&manifest(file))
 }
