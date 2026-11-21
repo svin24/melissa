@@ -2092,6 +2092,58 @@ pub fn action_button(action: &str, target: &str, label: &str, confirm: &str) -> 
     )
 }
 
+/// Something that can't be undone (Settings → Reset): one button that opens an in-page card
+/// with what is erased and what is kept, and a field where the word must be typed before the
+/// final button posts `confirm=<typed>`. No script needed; never a browser dialog.
+pub struct DangerConfirm<'a> {
+    /// The button, the card's heading and the final button ("Reset Melissa").
+    pub label: &'a str,
+    pub erased: &'a str,
+    pub kept: &'a str,
+    /// The word to type.
+    pub word: &'a str,
+    pub action: &'a str,
+    pub target: &'a str,
+    /// Why the last try was refused (the card is open then).
+    pub error: Option<&'a str>,
+}
+
+pub fn danger_confirm(c: &DangerConfirm<'_>) -> Markup {
+    html! {
+        details.confirm-inline.danger-confirm open[c.error.is_some()] {
+            summary { (c.label) }
+            section.approval.destructive.confirm aria-label=(c.label) {
+                (facts(&[("Erased", html! { (c.erased) }), ("Kept", html! { (c.kept) })]))
+                form.stack method="post" action=(c.action) hx-post=(c.action)
+                    hx-target={ "#" (c.target) } hx-swap="outerHTML" hx-disabled-elt="find button" {
+                    (crate::components::csrf_field())
+                    label.field {
+                        span { "Type " strong { (c.word) } " to confirm" }
+                        input type="text" name="confirm" required autocomplete="off"
+                            autocapitalize="off" spellcheck="false" pattern=(c.word)
+                            aria-invalid=[c.error.map(|_| "true")];
+                    }
+                    @if let Some(e) = c.error { (notice(e, Tone::Error)) }
+                    div { button.primary.danger type="submit" { (c.label) } }
+                }
+            }
+        }
+    }
+}
+
+/// While Melissa is away on purpose (a reset): what is happening, and a quiet poll of `poll`,
+/// which sends the browser on (`HX-Redirect`) once she is back. Without script: a link.
+pub fn away_card(title: &str, text: &str, poll: &str, link_to: (&str, &str)) -> Markup {
+    html! {
+        section.approval.confirm role="status" aria-live="polite"
+            hx-get=(poll) hx-trigger="every 3s" hx-swap="none" {
+            h3 { (title) }
+            p { (text) }
+            noscript { p { a href=(link_to.0) { (link_to.1) } } }
+        }
+    }
+}
+
 /// The in-page confirmation behind [`action_button`] and the variable list's Remove: a
 /// `<details>` whose summary is the action and whose body asks `question` next to `form`
 /// (which holds the real submit button). `link`: the summary looks like a text link.

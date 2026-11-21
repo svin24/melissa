@@ -1,0 +1,13 @@
+# Factory reset (Settings → Reset, `melissa-server factory-reset`): the server writes the request
+# marker on the /var volume; this starts the root unit that erases Melissa's data and starts her
+# again. While the marker exists (a failed run keeps it), the unit is started again; the unit
+# itself waits a minute after a failure, so this is a slow retry. Code: melissa_settings::factory_reset.
+[Unit]
+Description=Melissa: watch for a factory reset request
+
+[Path]
+PathExists=/var/lib/melissa-container/reset/factory-reset.json
+Unit=melissa-factory-reset.service
+
+[Install]
+WantedBy=multi-user.target

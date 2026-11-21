@@ -9,6 +9,8 @@
 //! - [`tailscale`]: Melissa's own Tailscale in the container (off by default, `tailscale.toml`),
 //!   its state, enable/disable and sign-in, and the agents' `tailscale_status` and
 //!   `enable_tailscale` tools.
+//! - [`factory_reset`]: erase Melissa's data and start her again unclaimed (the marker the
+//!   server writes, the fixed list of what goes, the root unit's sequence).
 //! - [`prefs`]: the owner's display preferences for the web UI (`ui.toml`), applied at once.
 //! - [`registry`]: the public ACP agent registry (parse, search, cache, install a release).
 //! - [`version`]: the installed CLIs' `--version`, cached and timed out.
@@ -16,6 +18,7 @@
 //!   the host helper writes; the fixed list of actions the lead agent may ask it for.
 
 pub mod app_access;
+pub mod factory_reset;
 pub mod install;
 pub mod prefs;
 pub mod providers;

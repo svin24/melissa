@@ -114,14 +114,14 @@ pub(crate) enum Need {
 
 /// Paths anyone may open (signed in or not).
 fn public(path: &str) -> bool {
-    matches!(path, "/login" | "/claim" | "/healthz")
+    matches!(path, "/login" | "/claim" | "/healthz" | "/reset-status")
         || ["/assets/", "/invite/", "/mcp/"]
             .iter()
             .any(|p| path.starts_with(p))
 }
 
 /// Owner-only for now (PLAN 6c step 1): People, providers, app access, Tailscale, updates, force
-/// delete.
+/// delete, factory reset.
 const OWNER_PREFIXES: &[&str] = &[
     "/settings/people",
     "/ui/people",
@@ -138,6 +138,9 @@ const OWNER_PREFIXES: &[&str] = &[
     "/ui/settings/updates",
     "/api/settings/updates",
     "/ui/settings/restart",
+    "/settings/reset",
+    "/ui/settings/reset",
+    "/api/settings/reset",
 ];
 
 pub(crate) fn need(path: &str) -> Need {
@@ -160,7 +163,7 @@ fn under(path: &str, prefix: &str) -> bool {
 
 /// Mutations that need the password entered again within 5 minutes: the setup password's
 /// Show/Copy/Dismiss, app access changes, Tailscale changes and sign-in, provider settings,
-/// People, force delete. (An
+/// People, force delete, factory reset. (An
 /// agent's request to widen app access is checked where it is approved: see
 /// [`require_owner_reauth`].)
 pub(crate) fn sensitive(method: &Method, path: &str) -> bool {
@@ -178,6 +181,8 @@ pub(crate) fn sensitive(method: &Method, path: &str) -> bool {
             "/api/settings/providers",
             "/ui/people",
             "/api/people",
+            "/ui/settings/reset",
+            "/api/settings/reset",
         ]
         .iter()
         .any(|p| under(path, p))

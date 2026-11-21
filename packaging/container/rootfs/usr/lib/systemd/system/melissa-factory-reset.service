@@ -1,0 +1,23 @@
+# Factory reset, Melissa only (docs/DECISIONS.md "Factory reset"; code: melissa_settings::factory_reset).
+# Started by melissa-factory-reset.path when the server writes the request marker, and at boot while
+# a marker is left (a stale marker always means "finish the wipe"; ordered before the server and k3s).
+# As root: waits (at most 90 s) for the server to tidy up, stops the server, Tailscale and k3s, kills
+# what k3s leaves, unmounts, removes a fixed list (never paths from a request), writes one audit line,
+# deletes the marker last, then starts k3s and the server: unclaimed, a new setup code in the log.
+# Every step can run again. Melissa's own Tailscale is logged out; the host's is never touched.
+[Unit]
+Description=Melissa: factory reset (erase Melissa's data, start again unclaimed)
+ConditionPathExists=/var/lib/melissa-container/reset/factory-reset.json
+RequiresMountsFor=/var/lib/melissa-container /var/lib/melissa
+Before=melissa-server.service k3s.service melissa-kubeconfig.service melissa-tailscaled.service melissa-app-access.service
+
+[Service]
+Type=oneshot
+# Never stop Tailscale's own when the host runs it (install.sh: MELISSA_HOST_TAILSCALE=yes).
+PassEnvironment=MELISSA_HOST_TAILSCALE
+ExecStart=/usr/libexec/melissa/factory-reset --unit
+# Stopping k3s and removing its data can take a while on a busy box.
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

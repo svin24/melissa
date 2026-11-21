@@ -6,6 +6,7 @@ fn paths_are_public_member_or_owner() {
         "/login",
         "/claim",
         "/healthz",
+        "/reset-status",
         "/assets/melissa.css",
         "/invite/abc",
         "/mcp/tok",
@@ -44,6 +45,9 @@ fn paths_are_public_member_or_owner() {
         "/ui/settings/restart",
         "/ui/apps/nextcloud/force-delete",
         "/api/apps/nextcloud/force-delete",
+        "/settings/reset",
+        "/ui/settings/reset",
+        "/api/settings/reset",
     ] {
         assert_eq!(need(p), Need::Owner, "{p}");
     }
@@ -62,6 +66,8 @@ fn sensitive_actions_are_mutations_only() {
         "/ui/settings/providers/claude",
         "/api/settings/providers/claude",
         "/ui/people/invites",
+        "/ui/settings/reset",
+        "/api/settings/reset",
     ] {
         assert!(sensitive(&post, p), "{p}");
         assert!(!sensitive(&Method::GET, p), "{p}");

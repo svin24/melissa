@@ -25,6 +25,9 @@
 //!   confirmation card; only a post with `confirm=yes` starts them.
 //! - `POST /ui/settings/restart`: restart Melissa now (saved settings also apply by
 //!   themselves once she is idle, see `apply.rs`).
+//! - `GET /settings/reset`, `POST /ui/settings/reset` (`confirm`), `POST /api/settings/reset`
+//!   `{"confirm"}`, public `GET /reset-status`: factory reset (`reset.rs`; owner, password
+//!   again, container install).
 //! - `GET /settings/voice`; `POST /ui/settings/voice` (`enabled=on` or nothing): voice input
 //!   in the composer (`ui.toml`); turning it on downloads the speech model (progress from
 //!   `GET /ui/settings/voice/poll`), `POST /ui/settings/voice/retry` tries again,
@@ -104,6 +107,7 @@ pub(crate) mod pages;
 mod permissions;
 mod providers;
 mod remove_provider;
+mod reset;
 mod schedules;
 mod tailscale;
 mod updates;
@@ -171,6 +175,8 @@ pub struct SettingsParts {
     /// Melissa's own Tailscale (Settings → Tailscale); `None`: the page says it isn't
     /// Melissa's.
     pub tailscale: Option<melissa_settings::tailscale::TailscaleControl>,
+    /// Factory reset (Settings → Reset); `None`: not on this install (no root unit).
+    pub factory_reset: Option<melissa_settings::factory_reset::Requester>,
 }
 
 /// The Settings context. Cheap to clone.
@@ -226,6 +232,7 @@ impl Settings {
             app_access: None,
             setup_passwords: None,
             tailscale: None,
+            factory_reset: None,
         })
     }
 
@@ -445,6 +452,9 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route("/settings/updates", get(updates::page))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
+        .route(pages::RESET_URL, get(reset::page))
+        .route("/ui/settings/reset", post(reset::ui_reset))
+        .route(pages::RESET_STATUS_URL, get(reset::status))
         .route("/ui/settings/developer/steps", post(developer::steps))
         .route("/ui/settings/developer/enter", post(developer::enter))
 }
@@ -515,5 +525,6 @@ pub(crate) fn api_routes(ui: Ui) -> Router {
         .merge(crate::files::api_routes())
         .merge(crate::details::api_routes())
         .route("/api/settings/updates/{action}", post(updates::api_action))
+        .route("/api/settings/reset", post(reset::api_reset))
         .with_state(ui)
 }

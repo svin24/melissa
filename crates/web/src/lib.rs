@@ -575,6 +575,7 @@ mod tests {
         mod auth;
         mod details;
         mod mobile;
+        mod reset;
 
         /// A Lead agent backend whose session never finishes opening.
         /// Melissa's first backend (provider claude in the Settings fixture); `signed_out`:
@@ -987,6 +988,10 @@ mod tests {
                     )),
                     setup_passwords: self.setup.clone(),
                     tailscale: self.tailscale.clone(),
+                    factory_reset: Some(melissa_settings::factory_reset::Requester::new(
+                        self.dir.join("reset"),
+                        Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
+                    )),
                 })
             }
 

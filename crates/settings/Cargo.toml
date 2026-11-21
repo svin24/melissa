@@ -19,3 +19,7 @@ tracing = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Factory reset tests: after a reset the box is unclaimed (crates/settings/src/factory_reset).
+melissa-auth = { workspace = true }

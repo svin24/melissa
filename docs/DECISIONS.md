@@ -1385,3 +1385,29 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   list. Alternatives: per-person API tokens now (a token file per person and CLI config for a host-only CLI),
   signed stateless cookies (no revocation), `__Host-` only (breaks plain-HTTP use), token-in-script-only CSRF
   (fails without script), lockout in the file (a restart clearing it is acceptable: only the host restarts).
+- **2026-11-21 — Factory reset (Melissa only).** Owner decisions: every agent-deployed app and its data goes (no
+  "keep apps"), every provider sign-in and API key goes, the device gets a **new device id**, the audit log and
+  the journal are wiped (afterwards one "factory reset" audit line), and k3s's data is wiped entirely. Kept: the
+  install (`server.toml`, the host's `install.env`, image, Quadlet file, drop-ins), k3s's node password
+  (`rancher-node`) and the voice model. **Who:** the owner only, password entered within 5 minutes (the gate's
+  `sensitive()` plus `require_owner_reauth`), typing `melissa` (no device name setting yet); members never see
+  Settings → Reset; refused while an update waits to install. Also `melissa-server factory-reset --confirm
+  melissa` over the host socket, and `podman exec melissa /usr/libexec/melissa/factory-reset --confirm melissa`
+  when the server is down. **How:** the server writes a marker (`/var/lib/melissa-container/reset/
+  factory-reset.json`, 0600, atomic, in a root:melissa 0770 directory on the volume) and an audit line, answers
+  with a "Resetting…" card that polls the public `/reset-status` (htmx; `HX-Redirect: /claim` once she is back
+  unclaimed), and tidies up while it runs (scheduler paused, requests denied, its own Tailscale logged out, apps
+  deleted, sessions closed; bounded). `melissa-factory-reset.path` starts the root oneshot
+  `melissa-factory-reset.service`, which waits up to 90 s for that, stops the server, Tailscale and k3s, kills
+  k3s's leftovers (cgroup.kill, shims, `cni-*` namespaces, its interfaces), unmounts anything below a target,
+  removes a **fixed list** (constants in `melissa_settings::factory_reset`; never paths from a request; no
+  symlink followed, no mount crossed, a symlinked parent refused), writes the audit line, deletes the marker
+  **last**, and starts k3s, its credentials, the app filter and the server again. Each step is recorded in the
+  marker. The same unit runs at boot (`ConditionPathExists=`, before the server and k3s): a stale marker always
+  means "finish the wipe"; a failed run waits a minute and the path unit retries. Why a root unit behind a marker:
+  the server runs as `melissa` with `ProtectSystem=strict` and can't (and shouldn't) remove k3s's or the journal's
+  files; the marker on the volume makes the reset crash-safe and idempotent. Why a list over "everything in
+  /var/lib/melissa but models": nothing outside what Melissa is known to write can go (new state files must be
+  added to the list; a test checks the list never reaches what stays). Alternatives: delete the volume from the
+  host (also drops the voice model and node password, needs the host), a polkit rule letting the server start
+  the unit directly (no crash-safe record of the request), keeping apps (owner: no).
