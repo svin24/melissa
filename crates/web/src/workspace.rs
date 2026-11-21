@@ -2,12 +2,13 @@
 //! what its sidebar row says, its menu's links, the chat header's status and the details
 //! panel's recent activity. Words only; the markup is in `components::agent`.
 //!
-//! Groups (an agent is in exactly one, the first that applies):
+//! Groups, top to bottom (an agent is in exactly one, the first that applies; 2026-11-21):
 //! - **Needs attention**: an approval it asked for waits, its last turn failed, or an app it
 //!   looks after has a problem.
-//! - **Pinned**: Melissa (always) and the helpers the user pinned.
-//! - **Working**: a turn runs (a job or a message).
-//! - **Settled**: everything else.
+//! - **Pinned**: Melissa (always) and the helpers the user pinned (working or not).
+//! - **Working**: a turn runs (a job or a message); shown last, at the bottom.
+//! - **Idle**: everything else, no heading, most recently active first; shown between Pinned
+//!   and Working, so an agent that finishes moves back up.
 
 use maud::Markup;
 use melissa_agent::{
@@ -103,6 +104,8 @@ pub struct SideEntry {
     pub working: bool,
     pub head: Option<HeadStatus>,
     pub urls: MenuUrls,
+    /// When it last did or heard something (unix seconds): orders the idle agents.
+    pub last_active: u64,
 }
 
 impl SideEntry {
@@ -185,42 +188,57 @@ pub fn groups_update(side: &SideData, current: Option<&str>) -> Markup {
     agent_groups(&side_groups(side, current), side.waiting, true)
 }
 
+/// The groups in the order they are shown.
+const GROUP_ORDER: [GroupKind; 4] = [
+    GroupKind::Attention,
+    GroupKind::Pinned,
+    GroupKind::Idle,
+    GroupKind::Working,
+];
+
+/// The entries of one group in the order they are shown: idle agents most recently active
+/// first (then by name, so the order is stable), the others as listed.
+fn group_entries(side: &SideData, kind: GroupKind) -> Vec<&SideEntry> {
+    let mut list: Vec<&SideEntry> = side.entries.iter().filter(|e| e.group == kind).collect();
+    if kind == GroupKind::Idle {
+        list.sort_by(|a, b| {
+            b.last_active
+                .cmp(&a.last_active)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+    }
+    list
+}
+
 fn side_groups<'a>(side: &'a SideData, current: Option<&str>) -> Vec<SideGroup<'a>> {
-    [
-        GroupKind::Attention,
-        GroupKind::Pinned,
-        GroupKind::Working,
-        GroupKind::Settled,
-    ]
-    .into_iter()
-    .map(|kind| SideGroup {
-        kind,
-        agents: side
-            .entries
-            .iter()
-            .filter(|e| e.group == kind)
-            .map(|e| SideAgent {
-                key: &e.key,
-                href: &e.href,
-                name: &e.name,
-                avatar: e.avatar(),
-                star: e.icon.is_none(),
-                status: e.status.as_deref(),
-                sub: e.sub.as_deref(),
-                progress: e.working.then_some(None),
-                current: current == Some(e.key.as_str()),
-                menu: AgentMenu {
-                    who: Some(MenuWho {
-                        avatar: e.avatar(),
-                        device: side.device(),
-                        status: e.status.as_deref(),
-                    }),
-                    ..e.urls.menu(&e.name)
-                },
-            })
-            .collect(),
-    })
-    .collect()
+    GROUP_ORDER
+        .into_iter()
+        .map(|kind| SideGroup {
+            kind,
+            agents: group_entries(side, kind)
+                .into_iter()
+                .map(|e| SideAgent {
+                    key: &e.key,
+                    href: &e.href,
+                    name: &e.name,
+                    avatar: e.avatar(),
+                    star: e.icon.is_none(),
+                    status: e.status.as_deref(),
+                    sub: e.sub.as_deref(),
+                    progress: e.working.then_some(None),
+                    current: current == Some(e.key.as_str()),
+                    menu: AgentMenu {
+                        who: Some(MenuWho {
+                            avatar: e.avatar(),
+                            device: side.device(),
+                            status: e.status.as_deref(),
+                        }),
+                        ..e.urls.menu(&e.name)
+                    },
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// What the agent is doing now, from its log: the running tool call's words, or None.
@@ -331,6 +349,7 @@ impl Ui {
             working: lead_busy,
             head,
             urls: MenuUrls::of("lead", true, earlier),
+            last_active: 0,
         });
 
         for a in agents.list() {
@@ -395,7 +414,7 @@ impl Ui {
         } else if a.pinned {
             (GroupKind::Pinned, None, None)
         } else {
-            (GroupKind::Settled, None, None)
+            (GroupKind::Idle, None, None)
         };
         let sub = match mine.first() {
             Some(app) => format!("{device} · {}", app.display_name()),
@@ -413,6 +432,11 @@ impl Ui {
             working,
             head,
             urls: MenuUrls::of(&a.id, a.pinned, false),
+            last_active: self
+                .lead
+                .agents()
+                .last_active(&a.id)
+                .unwrap_or(a.created_at),
         }
     }
 
@@ -494,4 +518,124 @@ fn shorten(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(key: &str, group: GroupKind, last_active: u64) -> SideEntry {
+        SideEntry {
+            key: key.into(),
+            href: format!("/agents/{key}"),
+            name: key.to_uppercase(),
+            icon: (key != "lead").then(|| AgentIcon {
+                shape: "cube".into(),
+                color: "teal".into(),
+            }),
+            group,
+            status: (group == GroupKind::Working).then(|| "Working on it".into()),
+            sub: None,
+            working: group == GroupKind::Working,
+            head: None,
+            urls: MenuUrls::of(key, group == GroupKind::Pinned, false),
+            last_active,
+        }
+    }
+
+    fn side(entries: Vec<SideEntry>) -> SideData {
+        SideData {
+            entries,
+            ..SideData::default()
+        }
+    }
+
+    /// The keys of each shown group, in order.
+    fn order(side: &SideData) -> Vec<(GroupKind, Vec<&str>)> {
+        side_groups(side, None)
+            .into_iter()
+            .filter(|g| !g.agents.is_empty())
+            .map(|g| (g.kind, g.agents.iter().map(|a| a.key).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn working_agents_sit_last_and_idle_ones_most_recent_first() {
+        let s = side(vec![
+            entry("lead", GroupKind::Pinned, 0),
+            entry("w1", GroupKind::Working, 900),
+            entry("old", GroupKind::Idle, 100),
+            entry("ask", GroupKind::Attention, 50),
+            entry("new", GroupKind::Idle, 300),
+            entry("w2", GroupKind::Working, 10),
+            entry("mid", GroupKind::Idle, 200),
+            entry("pin", GroupKind::Pinned, 1),
+        ]);
+        assert_eq!(
+            order(&s),
+            [
+                (GroupKind::Attention, vec!["ask"]),
+                (GroupKind::Pinned, vec!["lead", "pin"]),
+                (GroupKind::Idle, vec!["new", "mid", "old"]),
+                (GroupKind::Working, vec!["w1", "w2"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_agent_that_finishes_moves_back_up_into_the_idle_list() {
+        let mut s = side(vec![
+            entry("lead", GroupKind::Pinned, 0),
+            entry("a", GroupKind::Idle, 100),
+            entry("b", GroupKind::Working, 50),
+        ]);
+        assert_eq!(order(&s)[2], (GroupKind::Working, vec!["b"]));
+        // b finishes: it was active just now, so it heads the idle list.
+        s.entries[2] = entry("b", GroupKind::Idle, 200);
+        assert_eq!(
+            order(&s),
+            [
+                (GroupKind::Pinned, vec!["lead"]),
+                (GroupKind::Idle, vec!["b", "a"]),
+            ]
+        );
+        // Same time: by name, so the order doesn't flicker.
+        s.entries[1].last_active = 200;
+        assert_eq!(order(&s)[1], (GroupKind::Idle, vec!["a", "b"]));
+    }
+
+    #[test]
+    fn the_markup_has_no_settled_group_and_keys_each_row() {
+        let s = side(vec![
+            entry("lead", GroupKind::Pinned, 0),
+            entry("w", GroupKind::Working, 5),
+            entry("i", GroupKind::Idle, 5),
+            entry("ask", GroupKind::Attention, 5),
+        ]);
+        let html = groups_update(&s, None).into_string();
+        assert!(
+            !html.contains("Settled") && !html.contains("settled"),
+            "{html}"
+        );
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {html}"))
+        };
+        assert!(at("group-attention") < at("group-pinned"));
+        assert!(at("group-pinned") < at("group-idle"));
+        assert!(at("group-idle") < at("group-working"));
+        // The idle list has no visible heading or count.
+        let idle = &html[at("group-idle")..at("group-working")];
+        assert!(!idle.contains("class=\"count\""), "{idle}");
+        assert!(
+            idle.contains("<h2 class=\"visually-hidden\" id=\"group-idle\">"),
+            "{idle}"
+        );
+        for key in ["lead", "w", "i", "ask"] {
+            assert!(
+                html.contains(&format!("data-agent=\"{key}\"")),
+                "{key}: {html}"
+            );
+        }
+    }
 }

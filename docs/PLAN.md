@@ -383,8 +383,9 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   Logs and tool output stay escaped plain text.
 - Later: problem+json error codes, a build-id header with an "updated, reload" banner, SSE for live updates.
 - **Agent workspace** (2026-11-20, owner design; DECISIONS): one chat per agent ("Fresh start" clears memory, no
-  "New chat"), silent compaction, a sidebar of agents grouped by state (Needs attention, Pinned, Working, Settled)
-  with search, "+" and a menu per agent, a chat header with status, checklist cards for tool steps, permission
+  "New chat"), silent compaction, a sidebar of agents grouped by state (Needs attention, Pinned, the idle ones
+  most recently active first, Working at the bottom; 2026-11-21: no "Settled" group, agents glide to their new
+  place) with search, "+" and a menu per agent, a chat header with status, checklist cards for tool steps, permission
   cards with a tag line, and "Agent details" (services, files, permissions, recent activity).
 - **Phone views** (2026-11-20, owner design "Melissa — Mobile"; `components/mobile.rs`): at 760px and below `/` is
   the agent list (the sidebar as a screen, a tab bar Settings/Apps/Usage/Updates at the bottom) and Melissa's chat

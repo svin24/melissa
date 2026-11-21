@@ -440,19 +440,23 @@ main:focus {
 }
 
 .agent-groups {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   flex: 1 0 auto;
 }
 
-/* Working and Settled sit at the bottom of the sidebar, as in the design. */
+/* Working sits at the bottom of the sidebar; the idle agents follow Pinned (2026-11-21). */
 .agent-groups > .group-working {
   margin-top: auto;
 }
 
-.agent-groups > .group-pinned + .group-settled {
-  margin-top: auto;
+/* A row that left, fading out where it was (melissa.js). */
+.agent-row.leaving {
+  position: absolute;
+  margin: 0;
+  pointer-events: none;
 }
 
 .group-head {
@@ -5463,8 +5467,7 @@ label.attach.upload {
     gap: 1rem;
   }
 
-  .shell:has([data-phone-view="list"]) .agent-groups > .group-working,
-  .shell:has([data-phone-view="list"]) .agent-groups > .group-pinned + .group-settled {
+  .shell:has([data-phone-view="list"]) .agent-groups > .group-working {
     margin-top: 0;
   }
 
@@ -5851,3 +5854,89 @@ label.attach.upload {
   }
 }
 /* === End of phone views ===================================================================== */
+
+/* --- Motion (2026-11-21, owner) -------------------------------------------------------------
+   Quick, quiet: what arrives after the page loaded fades in with a slight rise, dialogs and
+   menus open with a short fade, pages cross-fade (where the browser can; on wide screens the
+   sidebar stays still), and agents move to their new place in the sidebar (melissa.js).
+   Nothing fades on page load, nothing moves while typing, only transform and opacity. With
+   prefers-reduced-motion: reduce none of it runs (all of it sits in this media query, and
+   melissa.js checks the same). */
+
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 160ms;
+    animation-timing-function: ease-out;
+  }
+
+  /* New in the chat: a message, a card, an event. htmx marks an entry it appends with
+     htmx-added for a moment; entries that were there at page load have no transition to run. */
+  .feed > li {
+    transition:
+      opacity 180ms ease-out,
+      transform 180ms ease-out;
+  }
+
+  .feed > li.htmx-added {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  /* Something new that melissa.js marks: a queued message, a section a form replaced, a
+     sidebar row of a new agent. */
+  [data-arrive] {
+    animation: arrive 180ms ease-out;
+  }
+
+  /* Dialogs, sheets and menus as they open. */
+  dialog[open],
+  .menu[popover]:popover-open,
+  .model-picker:popover-open {
+    animation: open 160ms ease-out;
+  }
+
+  dialog[open]::backdrop,
+  .menu[popover]:popover-open::backdrop {
+    animation: fade 160ms ease-out;
+  }
+}
+
+/* The sidebar keeps its place between pages (wide screens; on phones it is its own page). */
+@media (prefers-reduced-motion: no-preference) and (min-width: 761px) {
+  .sidebar {
+    view-transition-name: sidebar;
+  }
+
+  ::view-transition-old(sidebar) {
+    display: none;
+  }
+
+  ::view-transition-new(sidebar) {
+    animation: none;
+  }
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes open {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
