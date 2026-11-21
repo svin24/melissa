@@ -16,6 +16,7 @@ mod permission_tests;
 pub mod permissions;
 pub mod policy;
 pub mod scope;
+mod setup;
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -32,6 +33,7 @@ pub use scope::{
     crossing, describe_agent, Access, AgentNames, Owner, ResourceKind, ResourceOwners, Scope,
     ScopeDecision, Target, WorkspaceInfo, WorkspaceStore, LEAD_HANDS_OFF,
 };
+pub use setup::{SetupNotices, SetupPasswordCreated};
 
 use crate::{AuditLog, AuditRecord, BoxFuture, TaskId};
 
@@ -156,6 +158,8 @@ pub struct ToolRegistry {
     agents: Option<Arc<dyn AgentNames>>,
     /// The owner's standing permissions (rules, bypass). Default: none, in memory.
     permissions: Permissions,
+    /// Setup password cards for the chats ([`SetupNotices`]); the install pipeline sends.
+    setup_notices: SetupNotices,
 }
 
 /// Why "Always allow" could not save a rule.
@@ -201,7 +205,19 @@ impl ToolRegistry {
             owners: None,
             agents: None,
             permissions: Permissions::default(),
+            setup_notices: SetupNotices::new(),
         }
+    }
+
+    /// The channel the install pipeline tells the chats about new setup passwords on (the
+    /// same one the app tools were given).
+    pub fn with_setup_notices(mut self, notices: SetupNotices) -> Self {
+        self.setup_notices = notices;
+        self
+    }
+
+    pub fn setup_notices(&self) -> &SetupNotices {
+        &self.setup_notices
     }
 
     /// The owner's standing permissions ("Always allow" rules, No permission prompts).

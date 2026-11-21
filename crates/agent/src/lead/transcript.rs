@@ -388,6 +388,40 @@ mod tests {
         EventRecord { seq, ts: 0, event }
     }
 
+    /// The setup password card is kept with the chat (so it shows after a restart) but never
+    /// primes an agent: no agent learns about it, let alone its login.
+    #[test]
+    fn setup_password_cards_stay_out_of_the_agents_context() {
+        let dir =
+            std::env::temp_dir().join(format!("melissa-transcript-sp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let t = Transcript::new(dir.join("lead/transcript.jsonl"), 64 * 1024);
+        t.append(&record(
+            1,
+            LeadEvent::UserMessage {
+                turn: 1,
+                text: "set up photos".into(),
+                attachments: vec![],
+                scheduled: None,
+            },
+        ));
+        t.append(&record(
+            2,
+            LeadEvent::SetupPassword {
+                app: "photoprism".into(),
+                login: Some("admin".into()),
+            },
+        ));
+        let saved = std::fs::read_to_string(t.path()).unwrap();
+        assert!(saved.contains("\"type\":\"setup_password\""), "{saved}");
+        let recap = t.recap(100_000);
+        assert_eq!(recap.messages, [("user", "set up photos".to_string())]);
+        assert!(t
+            .condense(0, 100_000)
+            .is_none_or(|c| !c.contains("photoprism")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn rotates_and_summarises() {
         use std::os::unix::fs::PermissionsExt;

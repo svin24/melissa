@@ -1250,3 +1250,40 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   called that) all reach the lead agent. The brand, page titles, device menu, docs and the project keep "Melissa".
   Alternatives: a separate file in the lead agent's state directory (two files to keep names unique across), a
   fixed name (the owner asked for it).
+- **2026-11-21 — Setup passwords: a one-time chat card, server to browser only, through a get-only identity;
+  Dismiss makes Melissa forget it for good.** (Owner design.) When an install generates an app's password, the
+  install pipeline (`deploy_app`'s Secret step, not an agent's message) sends a notice with the app and login
+  name only; the lead's forwarder puts a `setup_password` event in the chat where the install ran (the helper's
+  own chat for its task, else Melissa's). The card ("<App> setup password", login, `••••••••`, Copy, Dismiss,
+  "Change this password after you first sign in.") loads its state and, on a click, the password from
+  `/ui/apps/{app}/setup-password[/reveal|/dismiss]`: `Cache-Control: no-store`, both POSTs need positive
+  same-origin evidence (`Sec-Fetch-Site` or `Origin`; a request with neither is refused, unlike other UI
+  posts), no value in a URL, the page's first HTML, an event, a transcript or a log. Every Show/Copy is audited
+  `app.credentials_viewed` and Dismiss `app.credentials_dismissed` (actor `ui`, "<app>: setup password
+  shown|copied|dismissed"; never the value). **Agents never see it:** no tool calls this path; the tool result
+  only says values are never shown to agents; an agent's context (recap, `agent_status`, condensing) is built from
+  an allowlist of other events, so the card event never primes a model; sandboxes reach only `POST
+  /mcp/<token>`, not `/ui`. **Access:** `melissa-server app-credentials` needed `sudo` because it reads Secrets
+  with k3s's root-only admin kubeconfig: none of the server's identities may read Secrets (the write identity
+  creates them, never gets them). Rather than widen `melissa-apps` (which every app tool, including
+  agent-driven `app_exec`, runs on), a third ServiceAccount `melissa/melissa-credentials`
+  (`credentials-rbac.yaml`, kubeconfig `/run/melissa-kube/credentials.kubeconfig`, root:melissa-kube 0640 like the
+  others, not mounted in any sandbox) holds a ClusterRole with only `get` on Secrets (no list/watch: the server
+  computes the one Secret's name from the stored spec). It is never bound cluster-wide or by a manifest:
+  `melissa-apps` applies the RoleBinding `melissa-app-credentials` in that one app namespace right before a
+  reveal (it may `bind` exactly that role, and the admission policy allows exactly that binding name, role and
+  subject). `resourceNames` would be narrower still, but per-app Roles need `escalate` or the reader's
+  permissions on the write identity; per-namespace `get` with Melissa-generated Secrets only (app pods get no
+  service account token, so nothing else writes Secrets there) is the narrowest that works without either.
+  **Dismiss** (asked once in the card, "Forget it?" Yes/No): the namespace gets
+  `melissa.io/credentials-dismissed=<UTC time>` and the binding is deleted (`melissa-apps` may delete only that
+  binding). The admission policies make it final: the annotation can't change or go away, and the binding is
+  refused in a namespace that has it, so a later bug can't bring the reader back. The app's Secret stays
+  untouched: workloads read the password at every start (e.g. an admin password env value), so deleting or
+  rotating it would break restarts or lock the owner out; what goes is Melissa's ability to read it.
+  `app-credentials` leaves a dismissed password out too (root can still read etcd; that is the device owner).
+  After a dismiss the reveal answers 410 and the card is one line "<App> setup password dismissed". Once logins
+  exist, Show and Copy are sensitive actions (PLAN 6c: re-enter the password). Open items: PLAN Q86.
+  Alternatives: rows in the app dialog (the owner's first design, replaced by the card the same day); giving
+  `melissa-apps` `get` on Secrets (every agent-driven app tool would hold it); keeping `sudo` only (the owner
+  asked for a UI); deleting the Secret on dismiss (breaks the app's restarts).

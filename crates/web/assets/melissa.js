@@ -732,6 +732,66 @@
     });
   });
 
+  // Copy on a setup password card: the value comes from the server (POST, same origin,
+  // no-store) straight into the clipboard; it never goes into the page. Safari wants the
+  // clipboard write started inside the click, so a ClipboardItem takes the pending fetch.
+  document.addEventListener("click", function (e) {
+    var button = e.target.closest ? e.target.closest(".copy-secret") : null;
+    if (!button || !navigator.clipboard) {
+      return;
+    }
+    var card = button.closest(".setup-password");
+    var text = fetch(button.dataset.copyUrl, {
+      method: "POST",
+      headers: { Accept: "text/plain", "Content-Type": "application/x-www-form-urlencoded" },
+      body: "purpose=copy",
+      credentials: "same-origin",
+      cache: "no-store",
+    }).then(function (r) {
+      if (!r.ok) {
+        throw new Error(String(r.status));
+      }
+      return r.text();
+    });
+    var write;
+    if (window.ClipboardItem && navigator.clipboard.write) {
+      var blob = text.then(function (t) {
+        return new Blob([t], { type: "text/plain" });
+      });
+      write = navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    } else {
+      write = text.then(function (t) {
+        return navigator.clipboard.writeText(t);
+      });
+    }
+    write.then(
+      function () {
+        button.textContent = "Copied";
+        setTimeout(function () {
+          button.textContent = "Copy";
+        }, 1500);
+      },
+      function () {
+        // Dismissed or gone meanwhile, or no answer: the card shows why.
+        if (card && window.htmx) {
+          htmx.trigger(card, "setup-refresh");
+        }
+      }
+    );
+  });
+
+  // A setup password card answers "gone", "dismissed" and "couldn't reach" with a card in
+  // that state; let htmx swap it in although the status is an error.
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var status = e.detail.xhr ? e.detail.xhr.status : 0;
+    var elt = e.detail.elt;
+    if ((status === 404 || status === 410 || status === 502) && elt && elt.closest &&
+        elt.closest(".setup-password")) {
+      e.detail.shouldSwap = true;
+      e.detail.isError = false;
+    }
+  });
+
   // --- The model picker (a popover; the browser opens and closes it, Esc and clicks outside
   // included). Here: the provider rail filters the list, the search filters as you type,
   // favorites (starred, per browser in localStorage), Ctrl+1..9 pick the first models shown,

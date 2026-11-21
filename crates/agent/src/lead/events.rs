@@ -193,6 +193,15 @@ pub enum LeadEvent {
     /// small: the next session starts with `summary` and the recent messages instead of the
     /// whole history. Not shown in the chat (the visible history stays complete).
     ContextCompacted { summary: String },
+    /// An app install generated the app's password: the chat shows a setup password card
+    /// (reveal, copy, dismiss; the web UI asks the server for the value). A system event, not
+    /// an agent's: only the app and its login name, never the password, and never part of an
+    /// agent's context (see [`crate::tools::SetupNotices`]).
+    SetupPassword {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login: Option<String>,
+    },
     /// Only in memory: the files in this conversation's file box changed (added by the user
     /// or the agent, deleted, expired), so open file panels refresh.
     FilesChanged,

@@ -61,6 +61,9 @@ pub enum Item {
     },
     /// A confirmation the user decides on.
     Approval(Approval),
+    /// An install generated an app's password: the setup password card. Only the app and its
+    /// login name; the card loads its state (and the password, on request) from the server.
+    SetupPassword { app: String, login: Option<String> },
     /// A short system line (session opened, turn stopped, errors, taint).
     Note {
         text: String,
@@ -753,6 +756,13 @@ impl Feed {
                 out
             }
             LeadEvent::ContextCompacted { .. } => Vec::new(),
+            LeadEvent::SetupPassword { app, login } => vec![self.add(
+                format!("p{}", rec.seq),
+                Item::SetupPassword {
+                    app: app.clone(),
+                    login: login.clone(),
+                },
+            )],
             LeadEvent::EarlierStart => {
                 self.prefix = "e";
                 vec![self.add(

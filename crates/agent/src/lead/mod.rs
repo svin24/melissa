@@ -249,6 +249,7 @@ impl Lead {
             workroot,
             files: files.clone(),
         });
+        forward_setup_passwords(registry.setup_notices(), events.clone(), pool.clone());
         forward_confirmations(registry.confirmations(), events, pool.clone());
         let lead = Self {
             inner: Arc::new(Inner {
@@ -705,6 +706,41 @@ fn collect_attachments(
             }
         }
     }
+}
+
+/// Puts a setup password card ([`LeadEvent::SetupPassword`]) in the chat where the install
+/// ran: the helper's own chat for a helper's task, else the lead agent's (its own installs and
+/// the user's from the UI). Only the app and login name travel; no agent is told.
+fn forward_setup_passwords(
+    notices: &crate::tools::SetupNotices,
+    events: EventLog,
+    pool: AgentPool,
+) {
+    let mut rx = notices.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(n) => {
+                    let event = LeadEvent::SetupPassword {
+                        app: n.app,
+                        login: n.login,
+                    };
+                    match pool.conversation_of_task(n.task) {
+                        Some((_, log)) => {
+                            log.push(event);
+                        }
+                        None => {
+                            events.push(event);
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("Lead missed {n} setup password notices");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Publishes confirmation inbox changes as events: every one in the lead agent's log (the

@@ -2780,3 +2780,58 @@ async fn the_user_renames_the_lead_agent_and_its_prompts_follow() {
     assert_eq!(s.pool().get("Ada").unwrap().name, "Ada");
     s.close().await;
 }
+
+/// A setup password card goes to the chat where the install ran: a helper's own chat for its
+/// task, Melissa's for anything else (the user's own installs). Only the app and login travel.
+#[tokio::test]
+async fn setup_password_cards_land_in_the_installing_chat() {
+    let s = setup("setup-password", vec![]);
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada"]).await;
+    let ada_task = s.pool().conversation_task_of("Ada").unwrap();
+    let notices = s.lead.server().registry().setup_notices().clone();
+    let card = |app: &str| LeadEvent::SetupPassword {
+        app: app.into(),
+        login: Some("admin".into()),
+    };
+
+    notices.send(crate::tools::SetupPasswordCreated {
+        task: ada_task,
+        app: "photoprism".into(),
+        login: Some("admin".into()),
+    });
+    let ada_log = s.pool().events_of("Ada").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !ada_log
+        .since(0, usize::MAX)
+        .events
+        .iter()
+        .any(|r| r.event == card("photoprism"))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no card in Ada's chat"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    notices.send(crate::tools::SetupPasswordCreated {
+        task: 0,
+        app: "nextcloud".into(),
+        login: Some("admin".into()),
+    });
+    lead_event(&s, |e| *e == card("nextcloud")).await;
+    let lead_events: Vec<LeadEvent> = s
+        .lead
+        .events()
+        .since(0, usize::MAX)
+        .events
+        .into_iter()
+        .map(|r| r.event)
+        .collect();
+    assert!(
+        !lead_events.contains(&card("photoprism")),
+        "a helper's card stays in its own chat"
+    );
+    s.close().await;
+}

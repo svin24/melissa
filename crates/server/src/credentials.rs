@@ -1,10 +1,15 @@
-//! `melissa-server app-credentials <app>`: show the owner an app's generated credentials.
+//! The owner's view of an app's generated credentials.
 //!
-//! Only for the owner, never for agents: it reads the app's Secret with k3s's admin
-//! kubeconfig (`/etc/rancher/k3s/k3s.yaml`, root-only), so it needs `sudo`. It is not a tool
-//! and not an API route; the lead agent's own identities cannot read Secrets at all (the write
-//! identity may create them, never get them), and agents run as the lead agent's unprivileged
-//! user inside a sandbox.
+//! - [`SetupPasswords`]: the web UI's setup password card (reveal, copy, dismiss) over
+//!   [`melissa_cluster::AppCredentials`], which reads only the one password Secret, through the
+//!   get-only `melissa-credentials` identity (docs/DECISIONS.md, 2026-11-21).
+//! - `melissa-server app-credentials <app>` ([`show`]): every generated value, for the owner on
+//!   the device. It reads the app's Secrets with k3s's admin kubeconfig
+//!   (`/etc/rancher/k3s/k3s.yaml`, root-only), so it needs `sudo`. A dismissed setup password
+//!   is left out there too.
+//!
+//! Neither is a tool: the agents' identities cannot read Secrets (the write identity may create
+//! them, never get them), and agents run as the lead agent's unprivileged user inside a sandbox.
 
 use std::path::Path;
 
@@ -14,11 +19,13 @@ use k8s_openapi::api::{
     core::v1::{Namespace, Secret},
 };
 use kube::{api::ListParams, Api};
+use melissa_agent::BoxFuture;
 use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec};
 use melissa_cluster::{
-    render::{APP_LABEL, CONFIG_ANNOTATION, SPEC_ANNOTATION},
-    KubeCluster,
+    render::{APP_LABEL, CONFIG_ANNOTATION, CREDENTIALS_DISMISSED_ANNOTATION, SPEC_ANNOTATION},
+    AppCredentials, CredentialsError, KubeCluster, SetupLogin,
 };
+use melissa_web::{RevealedPassword, SetupError, SetupState};
 use serde_json::{Map, Value};
 
 /// k3s's admin kubeconfig (mode 0600, root), see `config.yaml.d/10-melissa.yaml`.
@@ -117,12 +124,55 @@ pub async fn show(app: &str, domain: &str, kubeconfig: &Path) -> anyhow::Result<
     if let Some(user) = creds.and_then(|c| c.user.as_ref()) {
         println!("  user:     {user}");
     }
+    // The owner dismissed the setup password in the web UI: Melissa doesn't show it again.
+    let dismissed = annotation(CREDENTIALS_DISMISSED_ANNOTATION).is_some();
     for (key, value) in &secrets {
-        let label = match creds {
-            Some(c) if &c.password == key => "password".to_string(),
-            _ => key.clone(),
+        let (label, value) = match creds {
+            Some(c) if &c.password == key && dismissed => {
+                ("password".to_string(), "(dismissed; reset it in the app)")
+            }
+            Some(c) if &c.password == key => ("password".to_string(), value.as_str()),
+            _ => (key.clone(), value.as_str()),
         };
         println!("  {:<9} {value}", format!("{label}:"));
     }
     Ok(())
+}
+
+/// The web UI's setup password card over the cluster side.
+pub struct SetupPasswords(pub AppCredentials);
+
+fn web_error(e: CredentialsError) -> SetupError {
+    match e {
+        CredentialsError::NotFound => SetupError::NotFound,
+        CredentialsError::Dismissed => SetupError::Dismissed,
+        CredentialsError::Cluster(e) => SetupError::Unavailable(e.to_string()),
+    }
+}
+
+impl melissa_web::SetupPasswords for SetupPasswords {
+    fn state<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<SetupState, SetupError>> {
+        Box::pin(async move {
+            match self.0.login(app).await {
+                Ok(SetupLogin::Available { user }) => Ok(SetupState::Available { login: user }),
+                Ok(SetupLogin::Dismissed) => Ok(SetupState::Dismissed),
+                Ok(SetupLogin::None) => Ok(SetupState::None),
+                Err(e) => Err(SetupError::Unavailable(e.to_string())),
+            }
+        })
+    }
+
+    fn reveal<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<RevealedPassword, SetupError>> {
+        Box::pin(async move {
+            self.0
+                .reveal(app)
+                .await
+                .map(|p| RevealedPassword::new(p.expose().to_string()))
+                .map_err(web_error)
+        })
+    }
+
+    fn dismiss<'a>(&'a self, app: &'a str) -> BoxFuture<'a, Result<(), SetupError>> {
+        Box::pin(async move { self.0.dismiss(app).await.map_err(web_error) })
+    }
 }

@@ -1876,6 +1876,66 @@ svg.icon.stopped {
   font-weight: 600;
 }
 
+/* The setup password card (owner design 2026-11-21): the permission card's look, with the
+   login and the password as facts. The password shows as dots until asked for. */
+.setup-password .facts > div {
+  grid-template-columns: 8rem minmax(0, 1fr);
+  align-items: center;
+}
+
+.setup-password .facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+
+button.secret {
+  min-height: 44px;
+  padding: 0 0.25rem;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  font-family: var(--mono);
+  letter-spacing: 0.1em;
+}
+
+.secret-value {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.setup-warn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.forget-question {
+  font-weight: 600;
+}
+
+/* Copy needs the clipboard (melissa.js sets `can-copy` in a secure context). */
+.setup-password .actions button.copy-secret {
+  display: none;
+}
+
+.can-copy .setup-password .actions button.copy-secret {
+  display: inline-flex;
+}
+
+/* Dismissed, or the app is gone: one quiet line where the card was. */
+.setup-ended {
+  margin: 0 0 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .approval .outcome.ok {
   color: var(--ok);
 }

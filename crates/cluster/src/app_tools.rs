@@ -47,8 +47,8 @@ use k8s_openapi::api::{
 use melissa_agent::{
     tools::{
         describe_agent, Access, AgentNames, Effect, Labels, Owner, ResourceKind, ResourceOwners,
-        Scope, Target, TaskContext, Tool, ToolError, ToolSpec, WorkspaceInfo, WorkspaceStore,
-        LEAD_HANDS_OFF,
+        Scope, SetupNotices, SetupPasswordCreated, Target, TaskContext, Tool, ToolError, ToolSpec,
+        WorkspaceInfo, WorkspaceStore, LEAD_HANDS_OFF,
     },
     BoxFuture, TaskId,
 };
@@ -102,6 +102,9 @@ pub struct AppSettings {
     /// Who may open apps (Settings → Apps; container install): links name only addresses
     /// that setting lets in. `None`: no filter of Melissa's (the host's firewall decides).
     pub access: Option<AppAccessControl>,
+    /// Where a newly generated setup password is announced (the owner's card in the chat).
+    /// `None`: nowhere.
+    pub setup_notices: Option<SetupNotices>,
 }
 
 impl AppSettings {
@@ -159,7 +162,7 @@ fn annotation<'a>(ns: &'a Namespace, key: &str) -> Option<&'a str> {
 }
 
 /// Secret fields an old catalog install keeps in its shared `<app>-secrets`.
-fn shared_secrets_of(ns: &Namespace) -> BTreeSet<String> {
+pub(crate) fn shared_secrets_of(ns: &Namespace) -> BTreeSet<String> {
     annotation(ns, SHARED_SECRETS_ANNOTATION)
         .map(|v| v.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
@@ -167,7 +170,11 @@ fn shared_secrets_of(ns: &Namespace) -> BTreeSet<String> {
 
 /// The spec stored on the namespace, or for an app from the old catalog (no spec stored
 /// yet), the spec rebuilt from its name and install config.
-fn stored_spec(app: &str, ns: &Namespace, deployment: Option<&Deployment>) -> Option<AppSpec> {
+pub(crate) fn stored_spec(
+    app: &str,
+    ns: &Namespace,
+    deployment: Option<&Deployment>,
+) -> Option<AppSpec> {
     if let Some(text) = annotation(ns, SPEC_ANNOTATION) {
         return AppSpec::from_text(text).ok();
     }
@@ -1036,6 +1043,21 @@ impl Deployer {
                 .map_err(failed)?;
             // The value goes out of scope here; only the cluster keeps it.
             secret_states.insert(plan.key.clone(), if created { "generated" } else { "kept" });
+            // A new setup password: the owner gets its card in this install's chat (the app's
+            // name and login only; the agent is not told).
+            if let (true, Some(c), Some(notices)) = (
+                created,
+                spec.credentials.as_ref(),
+                &self.settings.setup_notices,
+            ) {
+                if c.password == plan.key {
+                    notices.send(SetupPasswordCreated {
+                        task: who.task,
+                        app: app.clone(),
+                        login: c.user.clone(),
+                    });
+                }
+            }
         }
         let has_files = objects.files.is_some();
         let has_service = objects.service.is_some();
@@ -1144,8 +1166,8 @@ impl Deployer {
             "installed_by": ownership.installed_by,
             "secrets": (!secret_states.is_empty()).then(|| json!({
                 "fields": secret_states,
-                "note": "values are never shown to agents; the owner reads the credentials with \
-                         `sudo melissa-server app-credentials <app>`",
+                "note": "values are never shown to agents; Melissa shows the owner the setup \
+                         password itself",
             })),
             "unused_volumes_kept": unused_volumes,
             "next": if stopped_from.is_some() {
@@ -1371,7 +1393,7 @@ impl Tool for UpdateApp {
 }
 
 /// Now, RFC 3339, whole seconds.
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

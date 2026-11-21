@@ -52,15 +52,15 @@ use melissa_agent::{
     mcp::McpServer,
     session::SessionBackend,
     tools::{
-        AgentNames, DeviceInfo, Permissions, ResourceOwners, Scope, TaskContext, Tool,
-        ToolRegistry, WorkspaceStore,
+        AgentNames, DeviceInfo, Permissions, ResourceOwners, Scope, SetupNotices, TaskContext,
+        Tool, ToolRegistry, WorkspaceStore,
     },
     AcpBackend, AuditLog, Backend, ClaudeBackend, CliBackend, EchoBackend, EchoSessionBackend,
     EgressProxy, McpLink, TaskBoard,
 };
 use melissa_cluster::{
-    app_tools, parse_publish_bind, AppSettings, ClusterHealth, KubeApps, LazyCluster, ReachCheck,
-    Workspaces,
+    app_tools, parse_publish_bind, AppCredentials, AppSettings, ClusterHealth, KubeApps,
+    KubeSecretReader, LazyCluster, ReachCheck, Workspaces,
 };
 use melissa_settings::app_access::{tool::SetAppAccess, AppAccessControl};
 use serde_json::{json, Value};
@@ -328,6 +328,18 @@ async fn main() -> anyhow::Result<()> {
     let apps = Arc::new(KubeApps::new(LazyCluster::for_apps(
         config.apps.kubeconfig.as_deref(),
     )));
+    // The owner's setup password card (web UI only; no tool reaches it): the write identity
+    // binds the get-only reader per app right before a reveal (docs/DECISIONS.md, 2026-11-21).
+    let setup_passwords: Arc<dyn melissa_web::SetupPasswords> =
+        Arc::new(credentials::SetupPasswords(AppCredentials::new(
+            apps.clone(),
+            apps.clone(),
+            Arc::new(KubeSecretReader::for_runtime(
+                config.apps.credentials_kubeconfig.as_deref(),
+            )),
+        )));
+    // New setup passwords go to the chat where the install ran (app and login name only).
+    let setup_notices = SetupNotices::new();
     // Who may open apps: Settings → Apps and `set_app_access` (container install, where the
     // app ports are published on every host address and Melissa's filter decides; elsewhere
     // the host's firewall does).
@@ -343,6 +355,7 @@ async fn main() -> anyhow::Result<()> {
         // published app ports on loopback while links named the Tailscale address).
         reach: Some(ReachCheck::tcp(publish_bind())),
         access: app_access.clone(),
+        setup_notices: Some(setup_notices.clone()),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
     if let Some(control) = &app_access {
@@ -360,6 +373,7 @@ async fn main() -> anyhow::Result<()> {
         names,
         registry,
         device: device.id,
+        setup_notices,
     };
 
     match command {
@@ -368,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
             let start = Startup {
                 config_path,
                 app_access,
+                setup_passwords,
                 kubeconfigs,
                 providers: ProviderSetup {
                     path: providers_path,
@@ -386,6 +401,8 @@ struct Startup {
     config_path: PathBuf,
     /// Who may open apps (container install only).
     app_access: Option<AppAccessControl>,
+    /// The setup password card's server side.
+    setup_passwords: Arc<dyn melissa_web::SetupPasswords>,
     /// Where the lead agent looks for cluster credentials (any present = k3s is there).
     kubeconfigs: Vec<PathBuf>,
     providers: ProviderSetup,
@@ -555,6 +572,8 @@ struct Wiring {
     names: Arc<dyn AgentNames>,
     registry: AgentRegistry,
     device: String,
+    /// The install pipeline's setup password notices, for the chats.
+    setup_notices: SetupNotices,
 }
 
 async fn serve(
@@ -616,6 +635,7 @@ async fn serve(
     // Confirmations wait less long than the agents' MCP clients do (see the config field).
     let mcp = McpServer::new(
         ToolRegistry::new(tools, Some(audit.clone()))
+            .with_setup_notices(wiring.setup_notices)
             .with_owners(wiring.owners)
             .with_agents(wiring.names)
             .with_permissions(permissions)
@@ -771,6 +791,7 @@ async fn serve(
         // The ACP registry cache sits with Melissa's state; fetched only on the owner's request.
         catalog: melissa_web::Catalog::new(&dirs.state),
         app_access: start.app_access,
+        setup_passwords: Some(start.setup_passwords),
     });
     melissa_web::serve(
         listener,
@@ -1261,6 +1282,7 @@ mod tests {
             agents: None,
             reach: None,
             access: None,
+            setup_notices: None,
         };
         let workspaces = Arc::new(Workspaces::new::<KubeApps>(settings, None));
         let wiring = Wiring {
@@ -1269,6 +1291,7 @@ mod tests {
             names: Arc::new(registry.clone()),
             registry,
             device: "d-0a1b2c3d".into(),
+            setup_notices: SetupNotices::new(),
         };
         assert!(
             run_tool(audit.clone(), tools.clone(), &wiring, "nope", json!({}))

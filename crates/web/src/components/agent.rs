@@ -578,6 +578,108 @@ pub fn steps_card(head: Option<&MessageHead<'_>>, steps: &[StepLine<'_>]) -> Mar
     }
 }
 
+// --- The setup password card -------------------------------------------------------------------
+
+/// What a setup password card shows (owner design 2026-11-21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupPasswordState<'a> {
+    /// As the chat first renders it: masked, loading its state from the server.
+    Loading,
+    /// Masked. `confirm`: asking "Forget it?" before a dismiss.
+    Hidden { confirm: bool },
+    /// The password in place, after the owner asked for it.
+    Shown { password: &'a str },
+    /// The owner dismissed it: Melissa can't show it again.
+    Dismissed,
+    /// The app is gone, or has no setup password any more.
+    Gone,
+    /// Masked, with a note that the last read failed.
+    Failed,
+}
+
+/// The setup password card: an install generated an app's password.
+pub struct SetupPasswordCard<'a> {
+    /// "Nextcloud setup password".
+    pub title: &'a str,
+    pub login: Option<&'a str>,
+    /// The card's URL (`GET`: the card; `/reveal` and `/dismiss` below it).
+    pub url: &'a str,
+    pub state: SetupPasswordState<'a>,
+}
+
+/// Styled like the permission card: a key mark and the title, the login and the password
+/// (dots until asked; click shows it, Hide hides it), a one-line warning, then Copy (where
+/// the clipboard works) and Dismiss, which asks "Forget it?" in the card. Dismissed or gone:
+/// one quiet line. Every swap replaces the whole card (`closest .setup-password`).
+pub fn setup_password_card(c: &SetupPasswordCard<'_>) -> Markup {
+    let reveal = format!("{}/reveal", c.url);
+    let dismiss = format!("{}/dismiss", c.url);
+    let confirm = format!("{}?confirm=1", c.url);
+    let trigger = match c.state {
+        SetupPasswordState::Loading => "load, setup-refresh",
+        _ => "setup-refresh",
+    };
+    match c.state {
+        SetupPasswordState::Dismissed | SetupPasswordState::Gone => html! {
+            p.setup-password.setup-ended {
+                (glyph(Glyph::Key))
+                span {
+                    (c.title)
+                    @if c.state == SetupPasswordState::Dismissed { " dismissed" }
+                    @else { " no longer available" }
+                }
+            }
+        },
+        state => html! {
+            article.approval.setup-password aria-label=(c.title) hx-get=(c.url)
+                hx-trigger=(trigger) hx-target="this" hx-swap="outerHTML" {
+                div.approval-head {
+                    (glyph(Glyph::Key))
+                    h3 { (c.title) }
+                }
+                dl.facts {
+                    @if let Some(login) = c.login {
+                        div { dt { "Login" } dd { (login) } }
+                    }
+                    div {
+                        dt { "Password" }
+                        dd {
+                            @if let SetupPasswordState::Shown { password } = state {
+                                code.secret-value { (password) }
+                                button.link type="button" hx-get=(c.url)
+                                    hx-target="closest .setup-password" { "Hide" }
+                            } @else {
+                                button.secret type="button" hx-post=(reveal)
+                                    hx-target="closest .setup-password" hx-disabled-elt="this"
+                                    aria-label="Show password" { "••••••••" }
+                            }
+                        }
+                    }
+                }
+                p.setup-warn.tone-warn { (glyph(Glyph::Warn)) span { "Change this password after you first sign in." } }
+                @if state == SetupPasswordState::Failed {
+                    p.sheet-msg.tone-error role="status" { "Couldn't reach the app. Try again." }
+                }
+                div.actions {
+                    button.secondary.copy-secret type="button" data-copy-url=(reveal) { "Copy" }
+                    @if state == (SetupPasswordState::Hidden { confirm: true }) {
+                        span.forget-question { "Forget it?" }
+                        form method="post" action=(dismiss) hx-post=(dismiss)
+                            hx-target="closest .setup-password" {
+                            button.primary.danger type="submit" { "Yes" }
+                        }
+                        button.secondary type="button" hx-get=(c.url)
+                            hx-target="closest .setup-password" autofocus { "No" }
+                    } @else {
+                        button.secondary type="button" hx-get=(confirm)
+                            hx-target="closest .setup-password" { "Dismiss" }
+                    }
+                }
+            }
+        },
+    }
+}
+
 // --- The permission card ------------------------------------------------------------------------
 
 /// A permission card (the approval card, owner design 2026-11-20).

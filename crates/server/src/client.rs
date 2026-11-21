@@ -335,6 +335,9 @@ impl Printer {
             }
             LeadEvent::NewChat => self.line("[new chat] the earlier chat was archived"),
             LeadEvent::FreshStart => self.line("[fresh start] memory cleared; the chat goes on"),
+            LeadEvent::SetupPassword { app, .. } => self.line(&format!(
+                "[setup password] {app}: shown in the web UI (Melissa's chat card)"
+            )),
             LeadEvent::EarlierStart
             | LeadEvent::EarlierEnd
             | LeadEvent::FilesChanged

@@ -339,6 +339,7 @@ fn settings() -> AppSettings {
         agents: Some(Arc::new(Names)),
         reach: None,
         access: None,
+        setup_notices: None,
     }
 }
 
@@ -551,6 +552,57 @@ fn minecraft() -> Value {
         }],
         "volumes": [{"name": "data", "size": "5Gi"}],
     })
+}
+
+/// A new setup password reaches the chat as the app and login name only, once, for the
+/// task that installed it; the tool result says nothing about it but that agents never see it.
+#[tokio::test]
+async fn a_new_setup_password_is_announced_once_without_the_value() {
+    let fake = Arc::new(Fake::default());
+    let notices = SetupNotices::new();
+    let mut rx = notices.subscribe();
+    let settings = AppSettings {
+        setup_notices: Some(notices.clone()),
+        ..settings()
+    };
+    let t: BTreeMap<&'static str, Arc<dyn Tool>> = app_tools(settings, Some(fake.clone()))
+        .into_iter()
+        .map(|t| (t.spec().name, t))
+        .collect();
+    // The user's own install (task 7); a helper's works the same way.
+    let mut ctx = TaskContext {
+        scope: Scope::User,
+        ..TaskContext::default()
+    };
+    let out = t["deploy_app"]
+        .call_in(7, &mut ctx, json!({"spec": nc(), "app": "nextcloud"}))
+        .await
+        .unwrap();
+    let secret = password(&fake);
+    assert!(!out.to_string().contains(&secret));
+    assert!(!out.to_string().contains("setup password card"));
+    let n = rx.try_recv().unwrap();
+    assert_eq!(
+        n,
+        SetupPasswordCreated {
+            task: 7,
+            app: "nextcloud".into(),
+            login: Some("admin".into()),
+        }
+    );
+    assert!(rx.try_recv().is_err(), "one card per generated password");
+
+    // An update keeps the Secret: no new card.
+    t["update_app"]
+        .call_in(8, &mut ctx, json!({"spec": nc(), "app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert!(rx.try_recv().is_err());
+    // Nor does app_status show the value.
+    let s = call(&t, "app_status", json!({"app": "nextcloud"}))
+        .await
+        .unwrap();
+    assert!(!s.to_string().contains(&secret));
 }
 
 #[tokio::test]
