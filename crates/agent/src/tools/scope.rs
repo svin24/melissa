@@ -115,8 +115,9 @@ impl Owner {
 pub trait AgentNames: Send + Sync {
     /// The display name of agent `id`.
     fn name_of(&self, id: &str) -> Option<String>;
-    /// The id of the agent called `name_or_id` (or with that id).
-    fn resolve_id(&self, name_or_id: &str) -> Option<String>;
+    /// The id of the agent with id `name_or_id`, or whose exact current name it is. Err: why
+    /// not (unknown, a former name, ambiguous: never a guess), for the caller to pass on.
+    fn resolve_id(&self, name_or_id: &str) -> Result<String, String>;
 }
 
 /// `agent Ada (d-0a1b2c3d.a1)`, or the id alone when the name is unknown.
@@ -397,8 +398,8 @@ mod tests {
                 _ => None,
             }
         }
-        fn resolve_id(&self, _: &str) -> Option<String> {
-            None
+        fn resolve_id(&self, n: &str) -> Result<String, String> {
+            Err(format!("no agent `{n}`"))
         }
     }
 

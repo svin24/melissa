@@ -41,7 +41,9 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   `sessionCapabilities.systemPrompt`.
 - **Agents** (`agents.rs`, `registry.rs`, since 2026-11-18): persistent, named agents. The registry
   (`$XDG_STATE_HOME/melissa/agents/registry.json`, 0600, atomic) keeps id (`<device>.a<n>`, never reused), name
-  (unique per device, the lead agent chooses, the user renames), backend, tools, created-by/at, stopped. Each agent
+  (unique per device, the lead agent chooses, the user renames; never id-shaped: `d-` + 8 hex is refused), its
+  former names, backend, tools, created-by/at, stopped; plus the lead agent's name and former names and every
+  deleted agent's id and names. Each agent
   has `agents/<id>/` with its `session.json`, `agent-sessions/<backend>/` (bound as the agent's session
   store, so its session resumes like the lead agent's) and `transcript.jsonl`; it works in `work/agents/<id>`.
   Its conversation is made on first use (task id reserved from the board per daemon run) with
@@ -213,7 +215,8 @@ to, by). Agent text is untrusted: the web UI renders it with the safe `component
   since}` (follow events from `since`; a queued message starts its turn later), 422 empty/too long.
   `GET /api/lead/queue`, `POST /api/lead/queue/{id}/steer|remove` (same for agents). `POST /api/lead/cancel`, `GET /api/lead/status`,
   `GET /api/confirmations`, `POST /api/confirmations/{id}/approve|deny` (audited `confirmation.*`, actor ui).
-- Agents (`{agent}` = name, any case, or id; 404 unknown): `GET /api/agents`, `GET /api/agents/{agent}`,
+- Agents (`{agent}` = id, or exact current name in any case, through the same strict resolver as the tools;
+  404 unknown or deleted, 409 ambiguous, 422 a former name): `GET /api/agents`, `GET /api/agents/{agent}`,
   `POST /api/agents/{agent}/messages|cancel`, `GET /api/agents/{agent}/events|status` (same shapes as the lead agent's),
   `POST /api/agents/{agent}/rename {"name"}` (422 bad/taken). Workspaces: `GET /api/workspaces` (502 without k3s),
   `POST /api/workspaces/{workspace}/reassign {"to"}` (the user's own reassignment, no confirmation).
@@ -224,9 +227,16 @@ to, by). Agent text is untrusted: the web UI renders it with the safe `component
   <id>|deny <id>]`, `melissa-server agent list` (also `agents`; `workers` is a hidden alias for one release),
   `agent rename <agent> <new name>`, `workspace list`, `workspace reassign <workspace> --to <agent>`, `new-chat` (`chat --new`
   starts one, then talks).
-- Agent tool results lead with the agent's name (`"agent": "Ada"`, id in `agent_id`; `reassign_workspace`: `to` name,
-  `to_id`): agents echo what they read, and the prompts tell them to use names, "this device" and "apps",
-  never ids or internal terms. Tool arguments still take a name or an id.
+- **Agent references (2026-11-21)**: agent-facing output names agents `Name (id)` (`"agent": "Ada (d-….a1)"`, id
+  also in `agent_id`; `reassign_workspace`: `to`/`to_id`, `from`/`from_id`; `list_agents` adds `"lead": "Melissa
+  (lead)"`; `my_apps` owners; schedules; reports `helper Ada (id) finished`; relayed `from="agent Ada (id)"`). Tool
+  arguments take the id (preferred) or an exact current name: `AgentRegistry::lookup` resolves `lead`, ids, then a
+  name only when exactly one agent has it now and no other agent had it before (former names and deleted agents'
+  names are kept in the registry). A former name → `ResolveError::Renamed` ("`Iris` is now called Ada (id); use the
+  id"), a deleted one → `Deleted`, more than one → `Ambiguous` naming all with ids: never a silent pick. A name
+  that resolved adds `"resolved": "\"ada\" → Ada (id); next time use the id"` to the result. The lead agent's old
+  default name `Melissa` is a former name once it is renamed. Prompts tell agents to give ids in tool calls but
+  still talk to the user in names. The web chat strips the `(id)` when it shows a relayed message.
   They use `listen` from the same `server.toml` (`--config` works too).
 - `melissa-server demo` (`just demo`): serve with a startup summary on stdout (URL, agents and why each is
   unusable, the lead agent's backend, bwrap namespace probe, k3s) and only warnings in the log. Code:

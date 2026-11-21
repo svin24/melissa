@@ -1182,7 +1182,17 @@ fn relayed(text: &str, lead: &str) -> Option<Item> {
     let (source, rest) = rest.split_once("\">")?;
     let body = rest.rsplit_once(RELAY_CLOSE).map_or(rest, |(b, _)| b);
     let from = match source.strip_prefix("agent ") {
-        Some(name) => format!("A message from {name}, passed on by {lead}"),
+        // `Bo (d-….a2)` for the agent; the person reads the name.
+        Some(named) => {
+            let name = named
+                .rsplit_once(" (")
+                .filter(|(_, id)| {
+                    id.strip_suffix(')')
+                        .is_some_and(melissa_agent::device::valid_agent_id)
+                })
+                .map_or(named, |(name, _)| name);
+            format!("A message from {name}, passed on by {lead}")
+        }
         None => format!("A message from {lead}"),
     };
     Some(Item::Relayed {
@@ -2108,6 +2118,15 @@ mod tests {
                    <melissa-data from=\"agent Bo\">\nNextcloud is <ready>\n</melissa-data>";
         assert_eq!(
             relayed(msg, "Melissa"),
+            Some(Item::Relayed {
+                from: "A message from Bo, passed on by Melissa".into(),
+                text: "Nextcloud is <ready>".into()
+            })
+        );
+        // Agent-facing text names agents with their ids (2026-11-21); the chat shows the name.
+        let with_id = msg.replace("agent Bo", "agent Bo (d-0a1b2c3d.a2)");
+        assert_eq!(
+            relayed(&with_id, "Melissa"),
             Some(Item::Relayed {
                 from: "A message from Bo, passed on by Melissa".into(),
                 text: "Nextcloud is <ready>".into()

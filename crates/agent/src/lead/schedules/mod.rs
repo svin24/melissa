@@ -859,12 +859,13 @@ fn summary(s: &Schedule) -> String {
     )
 }
 
-/// Who a schedule is for, in words: "the lead agent" or "Ada".
+/// Who a schedule is for, in words: "the lead agent (lead)" or "Ada (d-0a1b2c3d.a1)" (the
+/// id too: names can change, see [`crate::lead::registry::AgentRegistry::lookup`]).
 pub fn agent_words(agent: &Principal, names: Option<&dyn AgentNames>) -> String {
     match agent {
-        Principal::Lead => "the lead agent".into(),
+        Principal::Lead => "the lead agent (lead)".into(),
         Principal::Agent(id) => names
             .and_then(|n| n.name_of(id))
-            .unwrap_or_else(|| id.clone()),
+            .map_or_else(|| id.clone(), |name| format!("{name} ({id})")),
     }
 }

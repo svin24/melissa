@@ -7,7 +7,8 @@
 
 use serde_json::{json, Value};
 
-use super::{agent_param, lead_only, needs_context, object, str_arg, AgentPool};
+use super::{agent_param, lead_only, needs_context, object, str_arg, with_note, AgentPool};
+use crate::lead::registry::{Who, LEAD_KEY};
 use crate::{
     attachments::human_size,
     files::{BoxFile, FileBoxError, Transfer},
@@ -29,29 +30,40 @@ const KNOWN: &[&str] = &["from_agent", "file", "to_agent", "move"];
 /// A resolved box: its owner and how to name it to the owner.
 struct BoxRef {
     owner: Principal,
-    /// The lead agent's name (`Melissa` until renamed) or the agent's.
+    /// For the lead agent's results: `Melissa (lead)` or `Bo (<id>)`.
     name: String,
     /// For the confirmation: `Melissa (the lead agent)` or `agent Bo (<id>)`.
     described: String,
+    /// Named by name, not id: the result says which id was used.
+    note: Option<String>,
 }
 
 impl TransferFile {
     fn box_of(&self, who: &str) -> Result<BoxRef, ToolError> {
         let key = who.trim();
         let registry = &self.0.inner.registry;
-        if registry.is_lead(key) || ["me", "you"].iter().any(|k| key.eq_ignore_ascii_case(k)) {
-            let name = registry.lead_name();
-            return Ok(BoxRef {
-                owner: Principal::Lead,
-                described: format!("{name} (the lead agent)"),
-                name,
-            });
+        let found = if ["me", "you"].iter().any(|k| key.eq_ignore_ascii_case(k)) {
+            registry.lookup(LEAD_KEY)
+        } else {
+            registry.lookup(key)
         }
-        let agent = self.0.resolve(key)?;
-        Ok(BoxRef {
-            described: describe_agent(Some(&self.0.inner.registry), &agent.id),
-            owner: Principal::Agent(agent.id),
-            name: agent.name,
+        .map_err(|e| ToolError::BadArgs(e.to_string()))?;
+        let note = found
+            .note(key)
+            .filter(|_| !key.eq_ignore_ascii_case("me") && !key.eq_ignore_ascii_case("you"));
+        Ok(match found.who {
+            Who::Lead => BoxRef {
+                owner: Principal::Lead,
+                described: format!("{} (the lead agent)", registry.lead_name()),
+                name: found.label,
+                note,
+            },
+            Who::Agent(agent) => BoxRef {
+                described: describe_agent(Some(registry), &agent.id),
+                name: found.label,
+                owner: Principal::Agent(agent.id),
+                note,
+            },
         })
     }
 
@@ -77,7 +89,7 @@ impl TransferFile {
             .into_iter()
             .find(|f| f.name == name)
             .ok_or_else(|| {
-                ToolError::BadArgs(format!("no file `{name}` in {}'s file box", from.name))
+                ToolError::BadArgs(format!("no file `{name}` in the file box of {}", from.name))
             })?;
         Ok((from, file, to, mode))
     }
@@ -163,19 +175,24 @@ impl Tool for TransferFile {
                     .await
                     .map_err(|e| ToolError::Failed(e.to_string()))?;
             match done {
-                Ok(t) => Ok(json!({
-                    "file": t.file.name,
-                    "from": from.name,
-                    "to": to.name,
-                    "size": human_size(t.file.size),
-                    "moved": t.mode == Transfer::Move,
-                })),
+                Ok(t) => {
+                    let mut out = json!({
+                        "file": t.file.name,
+                        "from": from.name,
+                        "to": to.name,
+                        "size": human_size(t.file.size),
+                        "moved": t.mode == Transfer::Move,
+                    });
+                    let notes: Vec<String> = from.note.into_iter().chain(to.note).collect();
+                    with_note(&mut out, (!notes.is_empty()).then(|| notes.join("; ")));
+                    Ok(out)
+                }
                 Err(FileBoxError::NotFound) => Err(ToolError::BadArgs(format!(
-                    "no file `{}` in {}'s file box",
+                    "no file `{}` in the file box of {}",
                     file.name, from.name
                 ))),
                 Err(FileBoxError::Full(_)) => Err(ToolError::Refused(format!(
-                    "{}'s file box is full",
+                    "the file box of {} is full",
                     to.name
                 ))),
                 Err(e @ FileBoxError::Invalid(_)) => Err(ToolError::BadArgs(e.to_string())),

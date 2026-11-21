@@ -640,11 +640,11 @@ impl AgentNames for Names {
             _ => None,
         }
     }
-    fn resolve_id(&self, name_or_id: &str) -> Option<String> {
+    fn resolve_id(&self, name_or_id: &str) -> Result<String, String> {
         match name_or_id {
-            "Ada" | ADA => Some(ADA.into()),
-            "Bo" | BO => Some(BO.into()),
-            _ => None,
+            "Ada" | ADA => Ok(ADA.into()),
+            "Bo" | BO => Ok(BO.into()),
+            _ => Err(format!("no agent `{name_or_id}` on this device")),
         }
     }
 }
@@ -729,7 +729,7 @@ async fn an_agent_proposes_a_schedule_for_itself_and_the_owner_must_approve_it()
     assert!(s.list().is_empty(), "nothing before the owner's yes");
     reg.confirmations().resolve(c.id, Verdict::Approved);
     let out = call.await.unwrap().unwrap();
-    assert_eq!(out["created"]["agent"], "Ada");
+    assert_eq!(out["created"]["agent"], format!("Ada ({ADA})"));
     let made = s.list().remove(0);
     assert_eq!(made.agent, Principal::Agent(ADA.into()));
     assert_eq!(made.created_by, Creator::Agent(ADA.into()));

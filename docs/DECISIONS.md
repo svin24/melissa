@@ -1250,3 +1250,18 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   called that) all reach the lead agent. The brand, page titles, device menu, docs and the project keep "Melissa".
   Alternatives: a separate file in the lead agent's state directory (two files to keep names unique across), a
   fixed name (the owner asked for it).
+- **2026-11-21 — Agents are addressed by id; names resolve strictly and never silently pick** (owner: "must be
+  fixed for resilience"). Agent-facing output (tool results, `list_agents`, `my_apps`, schedules, job reports,
+  relayed messages, helper prompts) names agents `Name (id)`; the lead agent is `Name (lead)`. Tool parameters
+  ask for the id (preferred) or the exact current name, and the prompts tell agents to give ids. The registry
+  keeps every agent's former names, the lead agent's (its default "Melissa" counts once it is renamed) and each
+  deleted agent's id and names. `AgentRegistry::lookup` resolves `lead`, then ids, then a name only when exactly
+  one agent has it now and no other agent had it before; a result found by name says which id it used
+  (`"resolved"`). A former name nobody has now is refused with the new name and id; a name that one agent has and
+  another had (rename, then a new agent takes the name), or a deleted agent's name, is refused naming every
+  candidate with its id. Names shaped like ids (`d-` and 8 hex digits) are refused. The user's routes use the same
+  resolver (404 unknown/deleted, 409 ambiguous, 422 former name); the web chat still shows names. This replaces
+  the earlier "`Melissa` reaches the lead agent while no helper is called that". Alternatives: ids only in tool
+  arguments (models type names; the owner wanted names to keep working where they are clear), first-match by
+  current name (the misrouting this fixes), forbidding the reuse of former names (blocks the user for a rare
+  case; the refusal is enough).

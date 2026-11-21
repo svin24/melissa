@@ -91,6 +91,9 @@ pub enum LeadError {
     NoBackends,
     #[error("no agent `{0}` on this device")]
     NoSuchAgent(String),
+    /// A name that more than one agent has or had: the caller must use the id.
+    #[error("{0}")]
+    Ambiguous(String),
     /// The backend asked for cannot run here now (not installed, not logged in).
     #[error("{0}")]
     Unavailable(String),

@@ -255,8 +255,8 @@ async fn a_rename_keeps_the_rule() {
         fn name_of(&self, id: &str) -> Option<String> {
             (id == ADA).then(|| self.0.to_string())
         }
-        fn resolve_id(&self, _: &str) -> Option<String> {
-            None
+        fn resolve_id(&self, n: &str) -> Result<String, String> {
+            Err(format!("no agent `{n}`"))
         }
     }
     let permissions = Permissions::in_memory();
