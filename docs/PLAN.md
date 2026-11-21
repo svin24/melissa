@@ -1096,3 +1096,11 @@ Roadmap (rough, phases may overlap):
     user's next message: is 3 right, and should the chat say a report is waiting? (g) A job's report reads the
     helper's last outcome; if the helper's own queue starts another turn that fails at once, the report can
     carry that turn's outcome instead (rare).
+83. Browser notifications (owner, 2026-11-21; later, not started). Notify only when (a) an agent finished
+    something the user asked for (a turn started by the user's own message, or the lead's report of a helper
+    job the user asked for; never scheduled/automated runs), (b) an agent hit an error, automated tasks
+    included (failed turn, lost session, failed/timed-out job, failed scheduled run), or (c) an agent needs
+    the user (approval waiting, question/input needed: the sidebar's "Needs attention"). Only when the tab is
+    hidden or on another agent's chat; one per event across tabs; click opens that chat. Permission through a
+    Settings row (needs a user gesture). Needs a secure context (HTTPS or localhost), so it waits on TLS (Q22);
+    notifications with every tab closed need a service worker + Web Push (later still).
