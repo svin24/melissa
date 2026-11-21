@@ -6,13 +6,14 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        action_button, actions, badge, card, code, command_block, confirm_card, detail_head,
-        disclosure, external_button, facts, group, inline_form, inline_number, inline_select,
-        lines_field, link, link_button, live_region, log_view, notice, one_field_form, page_header,
-        pick_list, plain_action, progress_bar, provider_logo, region, select_field_at,
-        setting_card, setting_row, setting_row_with, settings_form, settings_frame_at,
-        settings_head, split_card, table, text_field, toggle, var_list, Choice, ConfirmCard, Glyph,
-        LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
+        action_button, actions, away_card, badge, card, code, command_block, confirm_card,
+        danger_confirm, detail_head, disclosure, external_button, facts, group, inline_form,
+        inline_number, inline_select, lines_field, link, link_button, live_region, log_view,
+        notice, one_field_form, page_header, pick_list, plain_action, progress_bar, provider_logo,
+        region, select_field_at, setting_card, setting_row, setting_row_with, settings_form,
+        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list, Choice,
+        ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone,
+        VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -30,7 +31,7 @@ pub struct Section {
 }
 
 /// The Settings sections, in order and grouped. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [Section; 12] = [
+pub const SECTIONS: [Section; 13] = [
     Section {
         href: "/settings/providers",
         label: "Providers",
@@ -102,6 +103,13 @@ pub const SECTIONS: [Section; 12] = [
         keywords: "Developer mode No permission prompts Full access per agent agent tasks Show thinking and timings chat",
     },
     Section {
+        href: RESET_URL,
+        label: "Reset",
+        group: "System",
+        icon: Glyph::Trash,
+        keywords: "Reset Melissa factory reset erase start over",
+    },
+    Section {
         href: "/settings/account",
         label: "Account",
         group: "People",
@@ -150,6 +158,13 @@ pub const PERMISSIONS_ID: &str = "permissions";
 pub const BYPASS_ID: &str = "bypass";
 /// DOM id of Full access per agent on the Developer page.
 pub const FULL_ACCESS_ID: &str = "full-access";
+
+/// The Reset section: erase Melissa's data and start again (owner only, container install).
+pub const RESET_URL: &str = "/settings/reset";
+/// DOM id of the Reset region.
+pub const RESET_ID: &str = "reset-settings";
+/// Polled while a reset runs (public: the session ends with the reset).
+pub const RESET_STATUS_URL: &str = "/reset-status";
 
 /// The Voice section: voice input for the chat composer.
 pub const VOICE_URL: &str = "/settings/voice";
@@ -1395,6 +1410,61 @@ pub fn tailscale_region(v: &TailscaleView) -> Markup {
             (page_header("Tailscale", Some("Puts this device on your tailnet. Off until you enable it.")))
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
             (setting_card(None, setting_row("Tailscale", Some(&v.sentence), actions(controls))))
+        },
+    )
+}
+
+/// What the Reset page shows.
+pub struct ResetView {
+    /// This install can reset (the container's root unit is there).
+    pub available: bool,
+    /// A reset runs: the page waits for Melissa to come back.
+    pub resetting: bool,
+    /// Why it can't run now (an update waits to install).
+    pub blocked: Option<&'static str>,
+    /// The word to type.
+    pub word: String,
+    /// The last try was refused.
+    pub error: Option<String>,
+}
+
+pub fn reset_page(f: &Frame<'_>, v: &ResetView) -> Markup {
+    frame(f, "Reset", reset_region(v))
+}
+
+pub fn reset_region(v: &ResetView) -> Markup {
+    const LABEL: &str = "Reset Melissa";
+    region(
+        RESET_ID,
+        html! {
+            (page_header("Reset", Some("Start over with an empty Melissa.")))
+            @if v.resetting {
+                (away_card(
+                    "Resetting Melissa…",
+                    "This takes a few minutes. The setup opens here when she is back.",
+                    RESET_STATUS_URL,
+                    ("/claim", "Open the setup"),
+                ))
+            } @else if !v.available {
+                (setting_card(None, setting_row(LABEL, Some("Not available on this install."), html! {})))
+            } @else if let Some(b) = v.blocked {
+                (setting_card(None, setting_row(LABEL, Some(b), html! {})))
+            } @else {
+                (setting_card(None, setting_row_with(
+                    html! { (LABEL) },
+                    Some(html! { "Erases her data on this device. This can't be undone." }),
+                    html! {},
+                    Some(danger_confirm(&DangerConfirm {
+                        label: LABEL,
+                        erased: melissa_settings::factory_reset::ERASED,
+                        kept: melissa_settings::factory_reset::KEPT,
+                        word: &v.word,
+                        action: "/ui/settings/reset",
+                        target: RESET_ID,
+                        error: v.error.as_deref(),
+                    })),
+                )))
+            }
         },
     )
 }

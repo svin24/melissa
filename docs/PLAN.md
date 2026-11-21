@@ -579,6 +579,25 @@ Build order: (1) logins: accounts, owner claim, invites, sessions, re-auth; (2) 
 a lead-agent conversation per person; (3) permissions with presets and requests to the owner; (4) shared
 providers with "may use"; (5) HTTPS and passkeys; (6) per-person provider accounts.
 
+## 6d. Factory reset (owner, 2026-11-21; built, DECISIONS "Factory reset")
+
+Settings → Reset (System group, owner only, container install): erase Melissa's data on this device and start
+her again unclaimed, with a new device id and a new setup code.
+- **Erased:** people and sessions, agents, chats and transcripts, file boxes, schedules, permissions, the audit
+  log (it starts again with one "factory reset" line), every agent-deployed app and its data (the whole k3s
+  datastore, no "keep apps"), provider sign-ins and API keys (the server user's home), Settings
+  (`providers.toml`, `ui.toml`, `app-access.toml`, `tailscale.toml`), Melissa's own Tailscale (logged out
+  first; never the host's) and the journal.
+- **Kept:** the install (`server.toml`; on the host `install.env`, the image, the Quadlet file, drop-ins), k3s's
+  node password and the voice model.
+- **Guard:** password entered within 5 minutes, the word `melissa` typed in an in-page card (no device name
+  setting yet), not while an update waits to install. CLI: `melissa-server factory-reset --confirm melissa`
+  (host socket), or `podman exec melissa /usr/libexec/melissa/factory-reset --confirm melissa` without the
+  server.
+- **Mechanism:** a request marker on the `/var` volume, a path unit and a root oneshot that removes a fixed list
+  (`melissa_settings::factory_reset`), crash-safe and idempotent, finished at boot when left over. Open items:
+  Q89.
+
 ## 7. Language and code layout
 
 Repository: private GitHub repo for now (owner approved 2026-11-18); public only with an explicit yes.
@@ -1175,3 +1194,17 @@ Roadmap (rough, phases may overlap):
     (7 days idle, 30 days at most) and the 5-minute password window: right for a household? (h) Per-person
     API tokens for remote clients (desktop/Android, 6b) are not built; the CLI uses the host socket. (i) Failed
     tries and the setup code live in memory: a restart clears lockouts and makes a new code.
+89. Factory reset (2026-11-21; section 6d, DECISIONS "Factory reset"). (a) Container install only: on Nix
+    installs Settings → Reset says "Not available" (a Nix module unit and marker directory would be needed). (b)
+    The list of what goes is explicit: a new state file Melissa starts writing must be added to
+    `factory_reset::WIPE` or it survives a reset (a test checks only that nothing kept is reached). (c) A reset
+    finished at boot (the server never ran) can't log Melissa's own Tailscale out when tailscaled isn't running:
+    its state is deleted, so the node stays in the tailnet's admin list until removed there or its key expires.
+    (d) iptables rules k3s left are not flushed (kube-proxy and flannel rewrite theirs when k3s starts again);
+    verify on a box with many apps. (e) The server's user may write the marker directory, so anything running
+    as that user (an unsandboxed agent backend, an explicit owner setting) could ask for a reset without the
+    password; the same user can already delete Melissa's state. (f) The page and its copy are built from existing
+    components without a Figma design (owner review): the System group's last section "Reset", one button that
+    opens a card (Erased / Kept, type `melissa`). (g) A device name setting doesn't exist; when it comes, the word
+    to type becomes the device's name. (h) Not tested on a real container yet (the owner's dev box must not be
+    reset): run once on a throwaway install, including a kill during the wipe and a restart of the container.

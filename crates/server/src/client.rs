@@ -1053,6 +1053,18 @@ pub async fn reset_owner(client: &Client, listen: SocketAddr) -> anyhow::Result<
     Ok(())
 }
 
+/// `factory-reset --confirm <word>`: the daemon checks the word, writes the request and tidies
+/// up; the root unit erases and starts Melissa again.
+pub async fn factory_reset(client: &Client, word: &str) -> anyhow::Result<()> {
+    let (status, body) = client
+        .post("/api/settings/reset", json!({"confirm": word}))
+        .await?;
+    ok(status, body)?;
+    println!("Resetting Melissa. She starts again in a few minutes, unclaimed.");
+    println!("Then the setup code: melissa-server setup-code");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

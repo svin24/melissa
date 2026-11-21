@@ -1346,6 +1346,7 @@ name = "melissa-settings"
 version = "0.0.1"
 dependencies = [
  "melissa-agent",
+ "melissa-auth",
  "rustix",
  "serde",
  "serde_json",

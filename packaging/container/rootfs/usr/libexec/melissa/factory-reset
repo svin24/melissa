@@ -1,0 +1,13 @@
+#!/bin/sh
+# Factory reset, Melissa only (Settings → Reset; docs/DECISIONS.md "Factory reset").
+# Erases Melissa's data in this container: people and sign-ins, helpers, chats, files, schedules,
+# every app and its data (the whole k3s datastore), provider sign-ins and API keys, settings,
+# Melissa's own Tailscale (logged out first), the audit log and the journal. Keeps the image,
+# server.toml, k3s's node password and the voice model; the host is never touched.
+# Afterwards Melissa starts unclaimed with a new device id and a new setup code.
+#
+# melissa-factory-reset.service runs it with --unit (only while the request marker exists).
+# By hand, as root, e.g. when the web UI doesn't start:
+#   sudo podman exec melissa /usr/libexec/melissa/factory-reset --confirm melissa
+# What goes is a fixed list in the binary (melissa_settings::factory_reset), never arguments.
+exec /usr/bin/melissa-server factory-reset run "$@"

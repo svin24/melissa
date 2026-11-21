@@ -166,6 +166,27 @@ the `melissa-var` volume (`/var`): k3s and app data, the server's state, chats, 
 (`/var/lib/melissa/home`). Two things from `/etc` are symlinked onto it: `/etc/melissa` (server.toml,
 Settings' providers.toml) and `/etc/rancher/node` (k3s's node password).
 
+### Factory reset (Settings → Reset)
+Erases Melissa's data and starts her again **unclaimed**, with a new device id and a new setup code.
+- **Erased:** people and sign-ins, helpers, chats, files, schedules and permissions, every app and its data
+  (the whole k3s datastore), provider sign-ins and API keys (`/var/lib/melissa/home`), Settings
+  (`providers.toml`, `ui.toml`, `app-access.toml`, `tailscale.toml`), Melissa's own Tailscale (logged out
+  first), the audit log (it starts again with one "factory reset" line) and the journal.
+- **Kept:** the image and Melissa's version, `server.toml`, k3s's node password, the voice model, and
+  everything on the host (`install.env`, the Quadlet file, the drop-ins; the host's Tailscale is never
+  touched).
+- **How:** the owner (password entered again) opens Settings → Reset, types `melissa` and confirms. Not
+  while an update waits to install. From the host: `sudo podman exec melissa melissa-server factory-reset
+  --confirm melissa`. When the web UI doesn't start: `sudo podman exec melissa
+  /usr/libexec/melissa/factory-reset --confirm melissa` (runs the reset without the server).
+- The server writes a request marker (`/var/lib/melissa-container/reset/factory-reset.json`);
+  `melissa-factory-reset.path` starts the root unit `melissa-factory-reset.service`, which stops the server,
+  Tailscale and k3s, removes a fixed list (`melissa_settings::factory_reset`), deletes the marker last and
+  starts everything again. A marker left by a crash is finished at the next start. Progress:
+  `sudo podman exec melissa journalctl -u melissa-factory-reset`. The new setup code:
+  `sudo podman exec melissa melissa-server setup-code`.
+- To remove everything instead (the volume too), see Uninstall.
+
 ## Updates (Settings → Updates)
 - **Automatic**: Quadlet `AutoUpdate=registry` (registry images) or `local` (images loaded on the host),
   run daily by `podman-auto-update.timer`; podman rolls back by itself if the new container fails.

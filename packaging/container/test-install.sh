@@ -163,5 +163,26 @@ eq "node name is a DNS label" melissa-my-box "$(tailscale_name My_Box)"
 eq "TAILSCALE_NAME overrides it" home-server "$(TAILSCALE_NAME=Home-Server tailscale_name box)"
 eq "an empty host name still gives a name" melissa "$(tailscale_name '')"
 
+# --- factory reset: the server's request reaches one root unit (no container is reset here) -----
+reset_marker=/var/lib/melissa-container/reset/factory-reset.json
+eq "the path unit watches the marker" yes \
+    "$(yes_no grep -qx "PathExists=$reset_marker" "$units/melissa-factory-reset.path")"
+eq "the reset unit runs only with a marker" yes \
+    "$(yes_no grep -qx "ConditionPathExists=$reset_marker" "$units/melissa-factory-reset.service")"
+eq "a stale marker is finished at boot, before the server and k3s" yes \
+    "$(yes_no grep -q '^Before=melissa-server.service k3s.service' "$units/melissa-factory-reset.service")"
+eq "the reset unit runs the helper" yes \
+    "$(yes_no grep -qx 'ExecStart=/usr/libexec/melissa/factory-reset --unit' "$units/melissa-factory-reset.service")"
+eq "the helper is executable" yes "$(yes_no test -x "$here/rootfs/usr/libexec/melissa/factory-reset")"
+eq "the helper adds no paths of its own" yes \
+    "$(yes_no grep -qx 'exec /usr/bin/melissa-server factory-reset run "$@"' "$here/rootfs/usr/libexec/melissa/factory-reset")"
+eq "the server may write requests" yes \
+    "$(yes_no grep -qx 'ReadWritePaths=-/var/lib/melissa-container/reset' "$units/melissa-server.service.d/10-container.conf")"
+eq "the marker directory belongs to root and the server's group" yes \
+    "$(yes_no grep -qx 'd /var/lib/melissa-container/reset 0770 root melissa -' "$here/rootfs/usr/lib/tmpfiles.d/melissa-container.conf")"
+eq "the image enables the reset units" yes \
+    "$(yes_no grep -q 'melissa-factory-reset.path melissa-factory-reset.service; ' "$here/Containerfile")"
+eq "uninstall.sh never runs a reset" no "$(yes_no grep -q factory-reset "$here/uninstall.sh")"
+
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"

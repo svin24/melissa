@@ -14,6 +14,9 @@
 //!                                                            new box (prints a fresh one)
 //!   `melissa-server reset-owner`                             a one-hour link that sets a new
 //!                                                            owner password
+//!   `melissa-server factory-reset --confirm melissa`         erase Melissa's data, start again
+//!                                                            unclaimed (container install)
+//!   `melissa-server factory-reset run [--unit|--confirm melissa]` the root side of it
 //!   `melissa-server [--config <path>] chat [--agent <agent>]`      talk to the lead agent or an agent
 //!   `melissa-server [--config <path>] fresh-start [--agent <agent>]` clear an agent's memory
 //!   `melissa-server [--config <path>] ask [--agent <agent>] <message>`  one message, stream it
@@ -40,6 +43,7 @@ mod client;
 mod config;
 mod credentials;
 mod preflight;
+mod reset;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -100,6 +104,15 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
   setup-code                  the one-time code to claim a new Melissa in the web UI
                               (a fresh one, valid 1 hour)
   reset-owner                 a link, valid 1 hour, that sets a new password for the owner
+  factory-reset --confirm melissa
+                              erase Melissa's data on this device (people, helpers, chats,
+                              files, apps and their data, provider sign-ins and keys, settings,
+                              logs) and start her again unclaimed; keeps her version, the
+                              install settings and the voice model (container install)
+  factory-reset run [--confirm melissa]
+                              (root, container) the same without the server; the unit runs
+                              `run --unit`. By hand: podman exec melissa
+                              /usr/libexec/melissa/factory-reset --confirm melissa
   chat [--agent <agent>]          talk to the lead agent, or directly to an agent (Ctrl-C cancels a turn)
   fresh-start [--agent <agent>]  clear the lead agent's (or an agent's) memory; the chat goes on
                               (clears its taint; old names: new-chat, chat --new)
@@ -165,6 +178,8 @@ enum Command {
     SetupCode,
     /// `reset-owner`: a reset link for the owner's password.
     ResetOwner,
+    /// `factory-reset --confirm <word>`: ask the daemon for a factory reset.
+    FactoryReset(String),
     /// `app details|logs|force-delete <app>`: the same as the app dialog.
     App(AppCommand, String),
     /// Talk to the lead agent (None) or an agent.
@@ -210,6 +225,11 @@ async fn main() -> anyhow::Result<()> {
     // Root's helper for the app port filter: no config, no state, nothing else.
     if argv.first().is_some_and(|c| c == "app-access") {
         return app_access_command(&argv[1..]);
+    }
+    // Root's side of the factory reset (melissa-factory-reset.service, or by hand).
+    if argv.first().is_some_and(|c| c == "factory-reset") && argv.get(1).is_some_and(|c| c == "run")
+    {
+        return reset::command(&argv[2..]);
     }
     // Root's check before tailscaled starts (the unit's ExecCondition).
     if argv.first().is_some_and(|c| c == "tailscale") {
@@ -329,6 +349,7 @@ async fn main() -> anyhow::Result<()> {
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
         Command::SetupCode => return client::setup_code(&api).await,
         Command::ResetOwner => return client::reset_owner(&api, config.listen).await,
+        Command::FactoryReset(word) => return client::factory_reset(&api, word).await,
         Command::AppCredentials(app) => {
             return credentials::show(
                 app,
@@ -894,6 +915,10 @@ async fn serve(
         app_access: start.app_access,
         setup_passwords: Some(start.setup_passwords),
         tailscale: Some(start.tailscale),
+        // The container's root unit erases and restarts (Settings → Reset); elsewhere none.
+        factory_reset: melissa_settings::factory_reset::Requester::system(Some(
+            audit_for_auth.clone(),
+        )),
     });
     let app = melissa_web::router_with_settings(board, mcp, lead.clone(), settings, auth);
     // The host's CLI (`chat`, `ask`, `confirm`, ...) talks over a local socket that only root
@@ -1046,6 +1071,16 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
         [c, tail @ ..] if c == "provider" || c == "providers" => parse_provider(tail)?,
         [c] if c == "setup-code" => Command::SetupCode,
         [c] if c == "reset-owner" => Command::ResetOwner,
+        [c, flag, word] if c == "factory-reset" && flag == "--confirm" => {
+            Command::FactoryReset(word.clone())
+        }
+        [c, ..] if c == "factory-reset" => bail!(
+            "factory-reset erases Melissa's data on this device ({}) and starts her again \
+             unclaimed; it keeps {}. To go ahead: melissa-server factory-reset --confirm {}",
+            melissa_settings::factory_reset::ERASED,
+            melissa_settings::factory_reset::KEPT,
+            melissa_settings::factory_reset::CONFIRM_WORD
+        ),
         [c] if c == "update" => Command::Update {
             action: None,
             yes: false,
@@ -1280,6 +1315,21 @@ mod tests {
             assert!(prompt.contains("`start_app`"));
             assert!(prompt.contains("turn off"));
             assert!(prompt.contains("only when"));
+        }
+    }
+
+    #[test]
+    fn factory_reset_needs_the_word() {
+        assert!(
+            matches!(parse(&["factory-reset", "--confirm", "melissa"]).unwrap().1, Command::FactoryReset(w) if w == "melissa")
+        );
+        for bad in [
+            &["factory-reset"][..],
+            &["factory-reset", "--yes"],
+            &["factory-reset", "--confirm"],
+        ] {
+            let e = parse(bad).err().unwrap().to_string();
+            assert!(e.contains("--confirm melissa"), "{e}");
         }
     }
 

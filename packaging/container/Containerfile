@@ -129,7 +129,8 @@ RUN rm -f /README.md
 # an app is deployed.
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
-        melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service; \
+        melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
+        melissa-factory-reset.path melissa-factory-reset.service; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
         systemd-networkd-wait-online.service 2>/dev/null || true; \
@@ -168,7 +169,8 @@ RUN printf 'MELISSA_VERSION=%s\nMELISSA_REVISION=%s\nMELISSA_RUNTIME=container\n
 RUN set -eu; \
     for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
         /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
-        /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled; do \
+        /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled \
+        /usr/libexec/melissa/factory-reset; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
     . /usr/lib/melissa/tailscale.lock; \
     [ "$(/usr/bin/tailscale version | head -1)" = "$TAILSCALE_VERSION" ] \
@@ -183,14 +185,17 @@ RUN set -eu; \
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket \
-        melissa-app-access.service melissa-tailscaled.service; \
+        melissa-app-access.service melissa-tailscaled.service melissa-factory-reset.path \
+        melissa-factory-reset.service; \
     test ! -e /usr/lib/systemd/system/tailscaled.service || { echo "lint: tailscaled.service must not exist"; exit 1; }; \
     for u in systemd-logind.service sleep.target suspend.target hibernate.target; do \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket \
         /usr/lib/systemd/system/melissa-app-access.service \
-        /usr/lib/systemd/system/melissa-tailscaled.service; \
+        /usr/lib/systemd/system/melissa-tailscaled.service \
+        /usr/lib/systemd/system/melissa-factory-reset.path \
+        /usr/lib/systemd/system/melissa-factory-reset.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }

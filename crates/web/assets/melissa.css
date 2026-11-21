@@ -4018,6 +4018,24 @@ table.usage th[scope="row"] {
   margin: 0 0 1.25rem;
 }
 
+/* Settings → Reset: the button opens a card below it (what goes, what stays, a typed word). */
+.danger-confirm {
+  display: block;
+}
+
+.danger-confirm > summary {
+  color: var(--caution);
+  border-color: var(--caution);
+}
+
+.danger-confirm > .confirm {
+  margin: 0.75rem 0 0;
+}
+
+.danger-confirm form {
+  max-width: 24rem;
+}
+
 a.button-like {
   display: inline-flex;
   align-items: center;
