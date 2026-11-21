@@ -1162,3 +1162,13 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   buttons, ui-craft); apps show the facts Melissa knows (a game port, a web port), not "local only" or player
   slots; there is no "System agent" (Melissa keeps updates and device health); the caption "Device changes require
   your permission" is left out (not true for every change). Phone layouts are a separate change.
+- **2026-11-21 — People, logins and permissions** (PLAN section 6c). Accounts per person with username +
+  password (Argon2id); the first person claims the box with a one-time console code and is the owner, others
+  join by single-use invite; passkeys later (need HTTPS). No guest role. Members get granular permissions
+  (per-app Use/Operate/Manage, install apps, app access, agent count off/N/unlimited, providers/models, approvals)
+  filled from editable presets. Agents belong to a person, private unless the owner shares them; an agent never
+  does more for a person than that person could. One lead agent per device with a separate conversation per
+  person, limited to that person's permissions. Providers shared first (owner-only settings, "may use" per
+  member), per-person provider accounts second. Why: Melissa is a household sysadmin tool; a shared key gives no
+  attribution, no per-person revocation and all-or-nothing power; fixed user types don't fit different
+  households. Alternatives: one shared passkey (too coarse), fixed roles only (too rigid), guest role (not needed).

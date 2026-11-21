@@ -368,10 +368,10 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 - Headless OS, so the UI is a web app served by the agent. Stack: **Rust server-side templating (axum + maud, or askama) + htmx**, with htmx and CSS embedded in the binary via **rust-embed** (no CDN, works offline). Optional Alpine.js for tiny client state, Pico.css for styling. Pin and vendor all assets (see `crates/web/assets`).
 - Rationale: light, stable, little churn, nothing that needs constant updating; easy for contributors to extend.
 - **Fixed component library + app manifests.** The UI is built only from a reviewed set of components (cards, tables, forms, logs, status badges, confirm dialogs). Apps declare their needs in manifests (name, icon, ports, storage, config fields, health checks). **AI agents must NEVER generate custom UI elements.** They only select components and fill manifests. New components are human-reviewed code.
-- Auth: local accounts + passkeys later; sessions with CSRF protection from day one. Until login exists the lead agent
+- Auth: see section 6c (people, logins and permissions); sessions with CSRF protection from day one. Until login exists the lead agent
   binds to loopback only, mutating requests must be same-origin (`Sec-Fetch-Site`/`Origin`), and a strict CSP
   (no inline script/style) is set. With login: `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Strict`), CSRF
-  tokens, Argon2id passwords, revocable sessions, and a one-time setup code shown on the console to claim a new agent.
+  tokens, Argon2id passwords, revocable sessions, and a one-time setup code shown on the console to claim the box.
 - Agent and model output is untrusted. Agent prose is Markdown (CommonMark + GFM tables, strikethrough, task lists)
   rendered by one fixed component (`components::markdown`, owner-approved 2026-11-19): raw HTML shows as text,
   links only to http/https/mailto (new tab, `noopener noreferrer nofollow`), bare URLs linked, images never loaded.
@@ -498,6 +498,54 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 
 - A **desktop app** and an **Android app** are planned after the web UI is solid. They should reuse the same
   server API and component rules (no AI-generated UI). Stack to be decided (open question).
+
+## 6c. People, logins and permissions (owner, 2026-11-21)
+
+Today anyone who reaches the UI can do everything. Melissa is a sysadmin utility for a household: one owner
+runs the box and gives other people exactly what they need. Example: a parent gives their kid Operate on the
+Minecraft server and lets them make their own agents.
+
+- **Accounts per person, never a shared key.** Username + password (Argon2id, slow-down then temporary lockout
+  after failed tries). The first person claims the box with a one-time setup code shown on the host console and
+  becomes the **owner**; others join through a single-use, expiring invite link from the owner. Passkeys come
+  later as an optional extra per person (they need HTTPS; see below). Recovery: the owner resets members'
+  passwords; a host-side command resets the owner's (access to the box is the last authority).
+- **Sessions:** `__Host-` cookies (`HttpOnly`, `Secure` where HTTPS, `SameSite=Strict`), CSRF tokens, one
+  session per browser, listed and revocable. **Sensitive actions ask for the password again** (approvals that
+  widen access, viewing app credentials, deleting data, security and provider settings).
+- **No guest role.** The owner plus members.
+- **Granular permissions with presets.** Each member has a list of permissions; presets ("Admin", "Adult",
+  "Kid") only fill the list, and every line stays editable per person. Permissions (first cut):
+  - per app: **Use** (open it), **Operate** (start/stop/restart, logs, change settings through an agent),
+    **Manage** (install/update/delete, change who can reach it);
+  - install new apps; change who can open apps (section 4, app access);
+  - create agents: off, a number, or unlimited;
+  - which providers and models they may use;
+  - approve their own agents' risky actions; see device health and usage.
+  The **owner** always has everything and can't be removed or demoted, so the box never ends up without an admin.
+- **Agents belong to a person** and are private by default. The owner can share an agent with a member ("can
+  chat" or "can manage"). Rule: **an agent never does more for you than you could do yourself**: when a person
+  talks to an agent, it acts with the intersection of the agent's own permissions and that person's.
+  Anything beyond becomes a request to the owner ("<member> asks to open Minecraft to the home network",
+  Allow/Decline).
+- **One lead agent, one conversation per person.** Melissa stays the device's single sysadmin, but each person
+  has their own chat with her. She doesn't carry one person's conversation into another's, and in a member's
+  chat she sees and acts only within that member's permissions (other apps, agents and chats are not visible).
+- **Agents can never act as a person.** Approvals only count from a signed-in person's session with the right
+  permission, never through an agent's tools. CLI/API access gets per-person, revocable tokens; the
+  loopback API (Q37) needs auth too, e.g. a host-local socket with peer credentials.
+- **Providers.** Step 1: providers stay **shared** (the owner's sign-ins); only the owner edits provider settings;
+  members get "may use" per provider/model. Step 2: **per-person provider accounts**: a member may sign in to
+  their own subscription in their own Settings and their agents use it (Claude Code and Grok keep logins in a
+  directory Melissa can choose per person). Check each provider's terms before encouraging sharing one
+  consumer subscription across a household.
+- **Audit:** logins, failed tries, permission changes and approvals are logged under the person's name.
+- **HTTPS** is wanted (passwords on a plain-HTTP LAN leg are sniffable; Tailscale encrypts its own leg) and
+  required for passkeys. It follows the TLS question (Q22: Tailscale certificates or an internal CA).
+
+Build order: (1) logins: accounts, owner claim, invites, sessions, re-auth; (2) agents owned by a person and
+a lead-agent conversation per person; (3) permissions with presets and requests to the owner; (4) shared
+providers with "may use"; (5) HTTPS and passkeys; (6) per-person provider accounts.
 
 ## 7. Language and code layout
 
@@ -1014,3 +1062,9 @@ Roadmap (rough, phases may overlap):
     on your devices ask first")? (c) The Figma frames show the agent list's attention card on `--surface` with
     a honey edge; the desktop's honey-soft row is kept for one look per element. (d) The approvals page and
     other pages reached by link have no back button on phones (only the browser's).
+80. People and permissions (2026-11-21; section 6c). (a) Can members share their own agents with other members,
+    or only the owner? (Assumed: only the owner, for now.) (b) A usage budget per person, or are provider/model
+    limits enough? (c) How a member's own provider account is chosen when they talk to a shared agent (the
+    agent's provider, or theirs?). (d) Exact preset contents ("Admin", "Adult", "Kid"). (e) What a member sees
+    of device health and other people's apps. (f) Whether Tailscale identity (`tailscale whois`) may sign people
+    in on the tailnet.
