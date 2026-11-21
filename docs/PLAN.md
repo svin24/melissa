@@ -1104,3 +1104,8 @@ Roadmap (rough, phases may overlap):
     hidden or on another agent's chat; one per event across tabs; click opens that chat. Permission through a
     Settings row (needs a user gesture). Needs a secure context (HTTPS or localhost), so it waits on TLS (Q22);
     notifications with every tab closed need a service worker + Web Push (later still).
+84. App setup passwords, later (owner, 2026-11-21). Once there is a secure store for the user's secrets (encrypted
+    at rest, unlocked by the user's login, never readable by agents), the setup-password card gets a "Save"
+    option next to Copy/Dismiss, and saved app passwords are listed in Settings (reveal/copy/delete, same
+    audit and re-auth rules). Until then a password is shown once in chat and forgotten on Dismiss. Which store
+    (per-user key derived from the login password, OS keyring on the host, age/sops file)?
