@@ -291,6 +291,7 @@ pub fn inline_form(action: &str, target: &str, field: Markup) -> Markup {
     html! {
         form.inline-form method="post" action=(action) hx-post=(action) hx-trigger="change, submit"
             hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
             (field)
             button.toggle-save.secondary type="submit" { "Save" }
         }

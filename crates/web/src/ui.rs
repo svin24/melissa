@@ -82,6 +82,8 @@ pub(crate) struct Ui {
     pub(crate) settings: crate::settings::Settings,
     /// One-shot agent tasks (Settings → Developer), to tell whether Melissa is busy.
     pub(crate) board: Option<melissa_agent::TaskBoard>,
+    /// The login store (Settings → Account and People).
+    pub(crate) auth: crate::auth::Auth,
 }
 
 impl Ui {
@@ -95,7 +97,14 @@ impl Ui {
             cluster,
             settings,
             board: None,
+            auth: crate::auth::Auth::in_memory(),
         }
+    }
+
+    /// Use this login store (the one the sign-in gate checks).
+    pub(crate) fn with_auth(mut self, auth: crate::auth::Auth) -> Self {
+        self.auth = auth;
+        self
     }
 
     pub(crate) fn with_board(mut self, board: melissa_agent::TaskBoard) -> Self {
@@ -1381,7 +1390,15 @@ async fn resolve(
     State(ui): State<Ui>,
     headers: HeaderMap,
     Path((id, verdict)): Path<(u64, String)>,
+    viewer: Option<axum::Extension<crate::auth::Viewer>>,
 ) -> Response {
+    if verdict != "deny" {
+        if let Err(r) =
+            crate::auth::check_approval(&ui.lead, id, viewer.as_ref().map(|v| &v.0), &headers)
+        {
+            return *r;
+        }
+    }
     let verdict = match verdict.as_str() {
         "approve" => Verdict::Approved,
         "deny" => Verdict::Denied,

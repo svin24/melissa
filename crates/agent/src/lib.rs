@@ -29,7 +29,7 @@ pub mod session;
 pub mod tools;
 
 pub use acp::{AcpBackend, AcpSpec};
-pub use audit::{AuditLog, AuditRecord};
+pub use audit::{AuditLog, AuditRecord, PERSON as AUDIT_PERSON};
 pub use backend::{
     AgentError, Backend, BackendInfo, BoxFuture, EventSink, McpEndpoint, OutputLine, RunRequest,
     Stream,

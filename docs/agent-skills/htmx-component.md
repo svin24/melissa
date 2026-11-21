@@ -183,7 +183,11 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   doesn't inject inline styles or use eval (`hx-on`, `js:` values and `hx-trigger` filters like
   `keydown[key=='Enter']` won't work; put such behaviour in `melissa.js`).
 - Mutating requests must be same-origin (`Sec-Fetch-Site` or `Origin` vs `Host`), including all `/ui/*` POSTs.
-  Real CSRF tokens and `__Host-` session cookies come with login.
+  On top, every mutating request from a session carries its CSRF token (2026-11-21): melissa.js adds
+  `X-CSRF-Token` to htmx and fetch requests, and **every `method="post"` form starts with
+  `(crate::components::csrf_field())`** (forms without script; the token must be a multipart form's first
+  part). A new path is open to members unless it is in `auth::need`'s owner list or `auth::sensitive`
+  (password again); add it there when it changes People, providers, app access, updates or deletes data.
 
 ## Layout (2026-11-20)
 - Above 760px the page is the viewport: `body` is a 100dvh column, the banner takes its height, `.shell` the rest;

@@ -1,0 +1,19 @@
+[package]
+name = "melissa-auth"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Melissa logins: accounts (Argon2id), owner claim, invites, sessions, sign-in limits"
+
+[dependencies]
+argon2 = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

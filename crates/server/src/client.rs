@@ -1,11 +1,18 @@
 //! Command-line client for a running lead agent: `chat`, `ask` (with the lead agent or, with `--agent`,
 //! any agent), `confirm`, `agent list|rename`, `workspace list|reassign`.
 //!
-//! Talks to the daemon's JSON API (`/api/...`) on its configured listen address (loopback)
-//! with plain HTTP/1.1, one connection per request. Sends no `Origin` header, like any
-//! non-browser client, so the same-origin check lets it through.
+//! Talks to the daemon's JSON API (`/api/...`) over its host-local Unix socket with plain
+//! HTTP/1.1, one connection per request. The web UI needs a login; this socket instead
+//! trusts the host: only root and Melissa's own user may connect (peer credentials), and
+//! they act as the owner (audited as `host`). Sends no `Origin` header, like any
+//! non-browser client.
 
-use std::{io::Write, net::SocketAddr, time::Duration};
+use std::{
+    io::Write,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{bail, Context};
 use http_body_util::{BodyExt, Full};
@@ -18,8 +25,28 @@ use tokio::io::AsyncBufReadExt;
 /// Seconds one events request waits for news.
 const POLL_SECS: u64 = 20;
 
+/// The socket's file name in Melissa's runtime directory.
+pub const SOCKET_NAME: &str = "api.sock";
+/// The service's runtime directory (`RuntimeDirectory=melissa`), for root's shell, which has
+/// no `XDG_RUNTIME_DIR` of Melissa's (e.g. `podman exec`).
+const SERVICE_SOCKET: &str = "/run/melissa/api.sock";
+
+/// Where the daemon's socket is: `$MELISSA_SOCKET`, else `<runtime>/api.sock` (the same user's
+/// daemon), else the service's.
+pub fn socket_path(runtime: &Path) -> PathBuf {
+    if let Some(p) = std::env::var_os("MELISSA_SOCKET").filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    let own = runtime.join(SOCKET_NAME);
+    if own.exists() || !Path::new(SERVICE_SOCKET).exists() {
+        own
+    } else {
+        PathBuf::from(SERVICE_SOCKET)
+    }
+}
+
 pub struct Client {
-    addr: SocketAddr,
+    socket: PathBuf,
     /// The conversation `chat`/`ask` talk to: `/api/lead` or `/api/agents/<agent>`.
     base: String,
     /// Who that is, for messages ("the lead agent", "agent Ada").
@@ -27,9 +54,9 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(addr: SocketAddr) -> Self {
+    pub fn new(socket: &Path) -> Self {
         Self {
-            addr,
+            socket: socket.to_path_buf(),
             base: "/api/lead".into(),
             who: "the lead agent".into(),
         }
@@ -48,12 +75,14 @@ impl Client {
         path: &str,
         body: Option<Value>,
     ) -> anyhow::Result<(StatusCode, Value)> {
-        let stream = tokio::net::TcpStream::connect(self.addr)
+        let stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .with_context(|| {
                 format!(
-                    "cannot reach the lead at http://{} (is `melissa-server` running?)",
-                    self.addr
+                    "cannot reach Melissa at {} (is `melissa-server` running? Run this as root \
+                     or as Melissa's user; in the container: sudo podman exec -it melissa \
+                     melissa-server ...)",
+                    self.socket.display()
                 )
             })?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
@@ -67,7 +96,7 @@ impl Client {
         let mut req = Request::builder()
             .method(method)
             .uri(path)
-            .header(hyper::header::HOST, self.addr.to_string());
+            .header(hyper::header::HOST, "localhost");
         let body = match body {
             Some(v) => {
                 req = req.header(hyper::header::CONTENT_TYPE, "application/json");
@@ -436,9 +465,9 @@ pub async fn chat(client: &Client) -> anyhow::Result<()> {
     let status = client.get(&format!("{}/status", client.base)).await?;
     let mut since = status["last_seq"].as_u64().unwrap_or(0);
     println!(
-        "Talking to {} at http://{}. Enter sends; Ctrl-C cancels a running turn; \
+        "Talking to {}. Enter sends; Ctrl-C cancels a running turn; \
          Ctrl-D (or Ctrl-C at the prompt) quits.",
-        client.who, client.addr
+        client.who
     );
     let mut printer = Printer::default();
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -990,6 +1019,37 @@ pub async fn update_action(client: &Client, action: &str, yes: bool) -> anyhow::
     }
     let body = ok(status, body)?;
     println!("{}", body["message"].as_str().unwrap_or("started"));
+    Ok(())
+}
+
+/// `setup-code`: the code that claims a box nobody owns yet (a fresh one when it expired).
+pub async fn setup_code(client: &Client) -> anyhow::Result<()> {
+    let body = client.get("/api/host/setup-code").await?;
+    if body["claimed"].as_bool() == Some(true) {
+        println!(
+            "This Melissa already has an owner. Lost the password? melissa-server reset-owner"
+        );
+        return Ok(());
+    }
+    let code = body["code"].as_str().context("no code in the reply")?;
+    println!("Setup code: {code}");
+    println!("Open Melissa's web UI and enter it to become the owner. It works for 1 hour.");
+    Ok(())
+}
+
+/// `reset-owner`: a one-hour link that sets a new password for the owner.
+pub async fn reset_owner(client: &Client, listen: SocketAddr) -> anyhow::Result<()> {
+    let (status, body) = client.post("/api/host/reset-owner", json!({})).await?;
+    let body = ok(status, body)?;
+    let path = body["path"].as_str().context("no link in the reply")?;
+    let base = if listen.ip().is_unspecified() {
+        format!("http://<this box>:{}", listen.port())
+    } else {
+        format!("http://{listen}")
+    };
+    println!("Open this link within 1 hour to set a new owner password:");
+    println!("  {base}{path}");
+    println!("It works once. Every browser signed in as the owner is signed out.");
     Ok(())
 }
 

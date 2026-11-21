@@ -486,8 +486,8 @@ impl ServerConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         if !self.listen.ip().is_loopback() {
             bail!(
-                "listen = {} is not a loopback address; the UI has no login yet, so only \
-                 127.0.0.1/::1 are allowed",
+                "listen = {} is not a loopback address; sign-in runs over plain HTTP, so only \
+                 127.0.0.1/::1 are allowed (from elsewhere: SSH or `tailscale serve`, which adds HTTPS)",
                 self.listen
             );
         }

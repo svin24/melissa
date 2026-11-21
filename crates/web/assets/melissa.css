@@ -3058,6 +3058,12 @@ main.plain {
   padding: 1.5rem;
 }
 
+/* Sign in, claim, invite, password again: one narrow card. */
+.auth-card {
+  max-width: 34rem;
+  margin: 2rem auto 0;
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);

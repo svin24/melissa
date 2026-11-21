@@ -30,7 +30,7 @@ pub struct Section {
 }
 
 /// The Settings sections, in order and grouped. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [Section; 10] = [
+pub const SECTIONS: [Section; 12] = [
     Section {
         href: "/settings/providers",
         label: "Providers",
@@ -100,6 +100,20 @@ pub const SECTIONS: [Section; 10] = [
         group: "System",
         icon: Glyph::Code,
         keywords: "Developer mode No permission prompts Full access per agent agent tasks Show thinking and timings chat",
+    },
+    Section {
+        href: "/settings/account",
+        label: "Account",
+        group: "People",
+        icon: Glyph::Key,
+        keywords: "Username password change password signed in sessions sign out everywhere",
+    },
+    Section {
+        href: "/settings/people",
+        label: "People",
+        group: "People",
+        icon: Glyph::Person,
+        keywords: "Members invite link reset password remove owner",
     },
 ];
 
@@ -199,8 +213,11 @@ pub(crate) fn frame_at(
     page: Option<&str>,
     content: Markup,
 ) -> Markup {
+    // Members don't see the owner's sections (the gate refuses them anyway).
+    let owner = crate::auth::signed_in().is_none_or(|p| p.is_owner());
     let sections: Vec<SettingsSection<'_>> = SECTIONS
         .iter()
+        .filter(|s| owner || crate::auth::need(s.href) != crate::auth::Need::Owner)
         .map(|s| SettingsSection {
             href: s.href,
             label: s.label,
@@ -1153,6 +1170,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                     html! {
                         form method="post" action={ (base) "/pin" } hx-post={ (base) "/pin" }
                             hx-target={ "#" (AGENT_ID) } hx-swap="outerHTML" {
+                            (crate::components::csrf_field())
                             input type="hidden" name="pinned" value=(if a.pinned { "off" } else { "on" });
                             button.secondary type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
                         }
@@ -1238,6 +1256,7 @@ pub fn new_agent_region(
             @if let Some(f) = flash { (notice(&f.text, f.tone)) }
             form.stack.settings-form method="post" action="/ui/settings/agents/new"
                 hx-post="/ui/settings/agents/new" hx-target={ "#" (NEW_AGENT_ID) } hx-swap="outerHTML" {
+                (crate::components::csrf_field())
                 label.field {
                     span { "Name" }
                     input type="text" name="name" value=(name) required maxlength="40"

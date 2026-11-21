@@ -14,6 +14,56 @@
     Array.prototype.forEach.call(list, fn);
   }
 
+  // Sign-in: every request that changes something carries the session's CSRF token (the
+  // page's <meta name="csrf-token">). htmx and fetch send it as a header; a form posted
+  // without htmx gets the hidden field if it has none (forms that came in with a live
+  // update). Without script the server puts the field in every form itself.
+  function csrfToken() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute("content") : "";
+  }
+
+  document.addEventListener("htmx:configRequest", function (e) {
+    var token = csrfToken();
+    if (token) {
+      e.detail.headers["X-CSRF-Token"] = token;
+    }
+  });
+
+  document.addEventListener(
+    "submit",
+    function (e) {
+      var form = e.target;
+      var token = csrfToken();
+      if (!token || !form || (form.getAttribute("method") || "").toLowerCase() !== "post") {
+        return;
+      }
+      if (!form.querySelector('input[name="_csrf"]')) {
+        var field = document.createElement("input");
+        field.type = "hidden";
+        field.name = "_csrf";
+        field.value = token;
+        form.insertBefore(field, form.firstChild);
+      }
+    },
+    true
+  );
+
+  // fetch() with the token; a sensitive action that needs the password again goes to the
+  // password page and comes back.
+  function postSame(url, init) {
+    init.headers = init.headers || {};
+    init.headers["X-CSRF-Token"] = csrfToken();
+    init.credentials = "same-origin";
+    return fetch(url, init).then(function (res) {
+      var again = res.headers.get("X-Melissa-Reauth");
+      if (res.status === 401 && again && again.charAt(0) === "/") {
+        window.location.assign(again);
+      }
+      return res;
+    });
+  }
+
   // Remembered choices, per browser (or per tab with `session`). Storage can be blocked
   // (private windows): then nothing is remembered and reading gives null.
   function stored(key, session) {
@@ -660,11 +710,10 @@
       .arrayBuffer()
       .then(toWav)
       .then(function (wav) {
-        return fetch(url, {
+        return postSame(url, {
           method: "POST",
           headers: { "Content-Type": "audio/wav" },
           body: wav,
-          credentials: "same-origin",
         });
       })
       .then(function (res) {
@@ -741,11 +790,10 @@
       return;
     }
     var card = button.closest(".setup-password");
-    var text = fetch(button.dataset.copyUrl, {
+    var text = postSame(button.dataset.copyUrl, {
       method: "POST",
       headers: { Accept: "text/plain", "Content-Type": "application/x-www-form-urlencoded" },
       body: "purpose=copy",
-      credentials: "same-origin",
       cache: "no-store",
     }).then(function (r) {
       if (!r.ok) {

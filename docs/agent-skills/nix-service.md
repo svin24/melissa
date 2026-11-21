@@ -38,7 +38,7 @@ other track is the rootful container ([container-mode.md](container-mode.md)).
 |---|---|---|
 | `enable` | false | everything below |
 | `package` | flake's `melissa` | |
-| `listen` | `127.0.0.1:8080` | `listen` (the lead agent refuses non-loopback: no login yet) |
+| `listen` | `127.0.0.1:8080` | `listen` (the lead agent refuses non-loopback: sign-in runs over plain HTTP) |
 | `backends` | `[]` | extra `[[backend]]` entries |
 | `settings` | `{}` | free-form server.toml, merged last |
 | `apps.catalog` | null | deprecated no-op (warns): the catalog was dropped 2026-11-19 |

@@ -8,6 +8,7 @@ description = "Melissa server: runs the lead agent, coordinates the cluster and 
 
 [dependencies]
 melissa-agent = { workspace = true }
+melissa-auth = { workspace = true }
 melissa-web = { workspace = true }
 melissa-cluster = { workspace = true }
 melissa-appspec = { workspace = true }

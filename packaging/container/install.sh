@@ -10,7 +10,7 @@
 #                                   be in root's storage (podman load) or come from IMAGE_ARCHIVE.
 #   IMAGE_ARCHIVE=path.tar          `podman save` archive to load first (tagged as IMAGE)
 #   UI_PORT=8080                    host port of the web UI (on UI_BIND)
-#   UI_BIND=127.0.0.1               keep it on loopback: the UI has no login yet (README, "Remote")
+#   UI_BIND=127.0.0.1               keep it on loopback: sign-in runs over plain HTTP (README, "Remote")
 #   APP_PORT_BASE=30000             host port of app NodePort 30000 (80 ports: base..base+79)
 #   BIND=0.0.0.0                    host address for the app ports. Default: every address, and
 #                                   Melissa decides who may open apps (Settings → Apps: this device,
@@ -438,7 +438,9 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
               (automatic: $AUTO_UPDATE)
   Tailscale:  $(case "$(host_tailscale)" in yes) echo "the host's (Melissa uses it)" ;; *) echo "Settings → Tailscale (Melissa's own, off until you enable it)" ;; esac)
+  First sign-in: open the web UI and claim it with the setup code from
+              sudo podman exec melissa melissa-server setup-code
   From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
-  (the UI has no login yet: only people you trust may reach it). See $SHARE/README.md.
+  (HTTPS; sign-in sends passwords, so not plain HTTP across the network). See $SHARE/README.md.
   --privileged rootful container: it has root on this host.
 EOF

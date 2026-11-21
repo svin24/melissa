@@ -324,7 +324,13 @@ pub(crate) fn ui_routes() -> Router<Ui> {
     Router::new()
         .route(
             "/settings",
-            get(|| async { Redirect::to("/settings/providers") }),
+            // The first section this person may open (Providers is the owner's).
+            get(|| async {
+                match crate::auth::signed_in() {
+                    Some(p) if !p.is_owner() => Redirect::to(pages::AGENTS_URL),
+                    _ => Redirect::to("/settings/providers"),
+                }
+            }),
         )
         .route("/settings/providers", get(providers::page))
         .route(add_provider::ADD_URL, get(add_provider::page))

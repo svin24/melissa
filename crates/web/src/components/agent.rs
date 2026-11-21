@@ -175,6 +175,7 @@ pub fn agent_menu_items(m: &AgentMenu<'_>) -> Markup {
             (menu_link(m.settings, Glyph::Gear, "Agent settings", false))
             @if let Some((action, pinned)) = m.pin {
                 form method="post" action=(action) {
+                    (crate::components::csrf_field())
                     input type="hidden" name="pinned" value=(if pinned { "off" } else { "on" });
                     button.menu-item type="submit" {
                         (glyph(Glyph::Pin)) span { (if pinned { "Unpin" } else { "Pin" }) }
@@ -186,6 +187,7 @@ pub fn agent_menu_items(m: &AgentMenu<'_>) -> Markup {
                 div.menu-confirm-body {
                     p { "Clear " (m.name) "'s memory? Its next message starts without the earlier conversation. The chat stays." }
                     form method="post" action=(m.fresh) {
+                        (crate::components::csrf_field())
                         button.primary type="submit" { "Clear memory" }
                     }
                 }
@@ -315,6 +317,13 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                             span.name { (d.name) }
                             span.meta { (d.status) }
                         }
+                    }
+                    @if let Some(me) = crate::auth::signed_in() {
+                        p.menu-label { "Signed in" }
+                        a.menu-item href="/settings/account" {
+                            (glyph(Glyph::Person)) span { (me.username) }
+                        }
+                        (super::people::sign_out_item())
                     }
                 }
                 (new_agent_round(s.new_agent))
@@ -666,6 +675,7 @@ pub fn setup_password_card(c: &SetupPasswordCard<'_>) -> Markup {
                         span.forget-question { "Forget it?" }
                         form method="post" action=(dismiss) hx-post=(dismiss)
                             hx-target="closest .setup-password" {
+                            (crate::components::csrf_field())
                             button.primary.danger type="submit" { "Yes" }
                         }
                         button.secondary type="button" hx-get=(c.url)
@@ -736,17 +746,20 @@ pub fn permission_card(c: &PermissionCard<'_>) -> Markup {
                 ApprovalState::Pending => div.actions {
                     form method="post" action=(action("approve")) hx-post=(action("approve"))
                         hx-target=(target) hx-swap="innerHTML" {
+                        (crate::components::csrf_field())
                         button.primary.danger[c.destructive] type="submit" {
                             (glyph(Glyph::Check)) span { (c.yes) }
                         }
                     }
                     form method="post" action=(action("deny")) hx-post=(action("deny"))
                         hx-target=(target) hx-swap="innerHTML" {
+                        (crate::components::csrf_field())
                         button.secondary type="submit" { (c.no) }
                     }
                     @if let Some(question) = c.always {
                         form method="post" action=(action("always")) hx-post=(action("always"))
                             hx-target=(target) hx-swap="innerHTML" {
+                            (crate::components::csrf_field())
                             button.ghost type="submit" title=(question) { "Always allow" }
                         }
                     }

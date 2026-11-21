@@ -8,6 +8,7 @@ description = "Melissa web UI: axum + maud, fixed component library, embedded ht
 
 [dependencies]
 melissa-agent = { workspace = true }
+melissa-auth = { workspace = true }
 melissa-settings = { workspace = true }
 melissa-voice = { workspace = true }
 axum = { workspace = true, features = ["multipart"] }
@@ -23,6 +24,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 tower = { workspace = true }
 
 [lints]

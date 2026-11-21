@@ -7,6 +7,7 @@
 mod agents;
 mod api;
 mod apps;
+pub mod auth;
 pub mod components;
 mod details;
 mod feed;
@@ -38,6 +39,7 @@ use melissa_agent::{
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 
+pub use auth::{bind_host, pages::log_setup_code, serve_host, Auth, Gate, Viewer};
 pub use axum::Router;
 pub use settings::{Catalog, CheckFn, ProbeFn, ProbeRequest, Settings, SettingsParts};
 pub use setup_password::{RevealedPassword, SetupError, SetupPasswords, SetupState};
@@ -54,49 +56,71 @@ const CSP: &str =
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; \
                    connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
-/// The task UI, without agent tools or the lead agent (`/` goes to the task list).
-pub fn router(board: TaskBoard) -> Router {
-    ui_routes(board, None)
-        .route("/", get(|| async { Redirect::to("/tasks") }))
-        .layer(middleware::from_fn(security))
+/// The task UI, without agent tools or the lead agent (`/` goes to the task list); tests only.
+#[cfg(test)]
+pub(crate) fn router(board: TaskBoard) -> Router {
+    let (auth, session) = auth::testing::owner();
+    auth::testing::signed_in(
+        ui_routes(board, None)
+            .route("/", get(|| async { Redirect::to("/tasks") }))
+            .layer(middleware::from_fn_with_state(Gate::new(auth), auth::layer))
+            .layer(middleware::from_fn(security)),
+        &session,
+    )
 }
 
-/// The task UI plus the MCP endpoint (`POST /mcp/{token}`) agent CLIs use to call tools.
-pub fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
-    ui_routes(board, None)
-        .route("/", get(|| async { Redirect::to("/tasks") }))
-        .merge(
-            Router::new()
-                .route("/mcp/{token}", post(mcp_post).get(mcp_get))
-                .with_state(mcp),
-        )
-        .layer(middleware::from_fn(security))
+/// The task UI plus the MCP endpoint (`POST /mcp/{token}`) agent CLIs use to call tools;
+/// tests only.
+#[cfg(test)]
+pub(crate) fn router_with_mcp(board: TaskBoard, mcp: McpServer) -> Router {
+    let (auth, session) = auth::testing::owner();
+    auth::testing::signed_in(
+        ui_routes(board, None)
+            .route("/", get(|| async { Redirect::to("/tasks") }))
+            .merge(
+                Router::new()
+                    .route("/mcp/{token}", post(mcp_post).get(mcp_get))
+                    .with_state(mcp),
+            )
+            .layer(middleware::from_fn_with_state(Gate::new(auth), auth::layer))
+            .layer(middleware::from_fn(security)),
+        &session,
+    )
+}
+
+/// The full UI without Settings, signed in as a test owner; tests only.
+#[cfg(test)]
+pub(crate) fn router_with_lead(board: TaskBoard, mcp: McpServer, lead: Lead) -> Router {
+    let (auth, session) = auth::testing::owner();
+    auth::testing::signed_in(
+        router_with_settings(board, mcp, lead, Settings::detached(), auth),
+        &session,
+    )
 }
 
 /// The full UI: the chat with the lead agent as home (see [`ui`]), the task pages, the MCP
-/// endpoint and the lead agent's JSON API (`/api/...`, see [`api`]).
-pub fn router_with_lead(board: TaskBoard, mcp: McpServer, lead: Lead) -> Router {
-    router_with_settings(board, mcp, lead, Settings::detached())
-}
-
-/// [`router_with_lead`] plus the Settings pages and API (`/settings/...`,
-/// `/api/settings/...`) backed by the lead agent's provider settings and update helper.
+/// endpoint, the lead agent's JSON API (`/api/...`, see [`api`]), the Settings pages and API
+/// (`/settings/...`, `/api/settings/...`), and sign-in (see [`auth`]): every page and API
+/// call needs a session from `auth`, except the sign-in pages, assets and `/mcp/<token>`.
 pub fn router_with_settings(
     board: TaskBoard,
     mcp: McpServer,
     lead: Lead,
     settings: Settings,
+    auth: Auth,
 ) -> Router {
     let ui = ui::Ui::new(
         lead.clone(),
         state::ClusterCache::new(mcp.clone(), Some(lead.clone())),
         settings,
     )
-    .with_board(board.clone());
+    .with_board(board.clone())
+    .with_auth(auth.clone());
     ui_routes(board, Some(ui.clone()))
         .merge(ui::routes(ui.clone()))
         .merge(apps::routes(ui.clone()))
         .merge(setup_password::routes(ui.clone()))
+        .merge(auth::pages::settings_routes().with_state(ui.clone()))
         .merge(settings::api_routes(ui))
         .merge(api::tool_routes(mcp.clone()))
         .merge(
@@ -105,7 +129,9 @@ pub fn router_with_settings(
                 .with_state(mcp),
         )
         .merge(api::routes(lead))
+        .merge(auth::pages::routes(Gate::new(auth.clone())))
         .layer(middleware::from_fn(panel::layer))
+        .layer(middleware::from_fn_with_state(Gate::new(auth), auth::layer))
         .layer(middleware::from_fn(security))
 }
 
@@ -169,8 +195,13 @@ async fn mcp_get() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
+/// Serve the UI on TCP. The peer address feeds the failed sign-in limits and the audit.
 pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
-    axum::serve(listener, app).await
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
 }
 
 async fn dashboard(State(t): State<Tasks>) -> Markup {
@@ -296,10 +327,9 @@ pub(crate) fn is_htmx(headers: &HeaderMap) -> bool {
 
 /// Cross-site request check for state-changing requests, plus security headers.
 ///
-/// Until accounts and session tokens exist, CSRF protection relies on the browser's
-/// `Sec-Fetch-Site` and `Origin` headers: a mutating request is rejected unless it
-/// comes from this origin. Non-browser clients that send neither header are allowed
-/// (the lead agent only binds to loopback for now).
+/// A mutating request is rejected unless the browser's `Sec-Fetch-Site` or `Origin` says
+/// it comes from this origin; clients that send neither header pass here (the CLI on the
+/// host socket). Sessions add their own CSRF token on top (see [`auth`]).
 async fn security(req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     if !safe && !same_origin(req.headers()) {
@@ -542,6 +572,7 @@ mod tests {
 
         use super::*;
 
+        mod auth;
         mod details;
         mod mobile;
 
@@ -663,6 +694,31 @@ mod tests {
             workspaces: Option<Arc<dyn melissa_agent::tools::WorkspaceStore>>,
             signed_out: bool,
         ) -> (Router, Lead) {
+            let (board, mcp, lead) = lead_parts(workspaces, signed_out);
+            let router = match page_settings {
+                Some(s) => {
+                    let (auth, session) = crate::auth::testing::owner();
+                    crate::auth::testing::signed_in(
+                        router_with_settings(board, mcp, lead.clone(), s, auth),
+                        &session,
+                    )
+                }
+                None => router_with_lead(board, mcp, lead.clone()),
+            };
+            (router, lead)
+        }
+
+        /// The full router with this login store and no session added (sign-in tests).
+        fn app_signed_out(auth: crate::auth::Auth) -> (Router, Lead) {
+            let (board, mcp, lead) = lead_parts(None, false);
+            let router = router_with_settings(board, mcp, lead.clone(), Settings::detached(), auth);
+            (router, lead)
+        }
+
+        fn lead_parts(
+            workspaces: Option<Arc<dyn melissa_agent::tools::WorkspaceStore>>,
+            signed_out: bool,
+        ) -> (TaskBoard, McpServer, Lead) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "melissa-web-lead-{}-{}",
@@ -717,11 +773,7 @@ mod tests {
                 &pool,
             )
             .unwrap();
-            let router = match page_settings {
-                Some(s) => router_with_settings(board, mcp, lead.clone(), s),
-                None => router_with_lead(board, mcp, lead.clone()),
-            };
-            (router, lead)
+            (board, mcp, lead)
         }
 
         fn app() -> (Router, Lead) {
