@@ -211,6 +211,14 @@ impl Who<'_> {
         }
     }
 
+    /// Names the chat's unsent text in the browser (the composer's `data-draft`).
+    pub fn draft_key(self) -> String {
+        match self {
+            Self::Lead => "lead".into(),
+            Self::Agent(id) => format!("agent.{id}"),
+        }
+    }
+
     /// The chat page.
     pub fn chat_url(self) -> String {
         match self {
@@ -624,9 +632,11 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
 pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
     let placeholder = format!("Message {}…", v.speaker.name);
+    let draft_key = v.who.draft_key();
     composer(
         &ComposerTarget {
             send: &send,
+            draft_key: &draft_key,
             placeholder: &placeholder,
             voice: v.voice,
             caption: v

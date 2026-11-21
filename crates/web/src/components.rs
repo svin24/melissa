@@ -1466,6 +1466,8 @@ pub(crate) fn approval_state_outcome(state: ApprovalState) -> Markup {
 pub struct ComposerTarget<'a> {
     /// POST URL for a message (form field `text`).
     pub send: &'a str,
+    /// Names the chat for its unsent text (`data-draft`; melissa.js keeps it per browser).
+    pub draft_key: &'a str,
     pub placeholder: &'a str,
     /// POST URL that turns a recording into text (voice input on and ready), if any.
     pub voice: Option<&'a str>,
@@ -1486,6 +1488,7 @@ pub fn composer(
 ) -> Markup {
     html! {
         form.composer id=(COMPOSER_ID) method="post" action=(to.send) hx-post=(to.send)
+            data-draft=(to.draft_key)
             enctype="multipart/form-data" hx-encoding="multipart/form-data"
             hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
             @if let Some(e) = error { p.composer-error role="alert" { (e) } }

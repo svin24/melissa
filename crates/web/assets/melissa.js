@@ -87,6 +87,95 @@
   document.addEventListener("input", function (e) {
     if (e.target === composer()) {
       grow(e.target);
+      draftSoon();
+    }
+  });
+
+  // --- Drafts: each chat keeps its unsent text, per browser. ---------------------------------
+  // The composer form's `data-draft` names the chat. The text is saved shortly after typing and
+  // when the page goes away (switching chats is a page load), put back when the chat opens
+  // again, and cleared once the message is sent. Files are not kept. Without storage the box
+  // simply starts empty, as before.
+
+  var draftTimer = null;
+
+  function draftKey() {
+    var box = composer();
+    var key = box && box.form ? box.form.getAttribute("data-draft") : null;
+    return key ? "melissa.draft." + key : null;
+  }
+
+  function forget(key) {
+    try {
+      if (key) {
+        window.localStorage.removeItem(key);
+      }
+    } catch (e) {
+      // Nothing stored.
+    }
+  }
+
+  function saveDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    var key = draftKey();
+    if (!key) {
+      return;
+    }
+    var text = composer().value;
+    if (text.trim() === "") {
+      forget(key);
+    } else {
+      store(key, text);
+    }
+  }
+
+  function draftSoon() {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(saveDraft, 400);
+  }
+
+  // On page load: an empty box gets its draft back. Text the server put in the box (a message
+  // it refused, to retry) wins and becomes the draft.
+  function restoreDraft() {
+    var key = draftKey();
+    var box = composer();
+    if (!key) {
+      return;
+    }
+    if (box.value !== "") {
+      saveDraft();
+      return;
+    }
+    var text = stored(key);
+    if (text) {
+      box.value = text;
+      box.setSelectionRange(text.length, text.length);
+      grow(box);
+    }
+  }
+
+  // Sending: forget the draft now, so leaving the chat right away doesn't bring the sent text
+  // back. A refused message comes back in the box and is saved again (after the swap).
+  document.addEventListener("submit", function (e) {
+    // (Stop is a submit button with its own `formaction`: that keeps the draft.)
+    var other = e.submitter && e.submitter.hasAttribute("formaction");
+    if (e.target && e.target.id === "composer" && !other) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+      forget(draftKey());
+    }
+  });
+
+  window.addEventListener("pagehide", function () {
+    if (draftTimer !== null) {
+      saveDraft();
+    }
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden" && draftTimer !== null) {
+      saveDraft();
     }
   });
 
@@ -308,6 +397,8 @@
         kept = [];
         clearPreviews();
       }
+      // Sent: the box is empty and the draft goes. Refused: the box has the text back.
+      saveDraft();
       var box = composer();
       if (box) {
         grow(box);
@@ -522,6 +613,7 @@
     box.setRangeText(piece, start, end, "end");
     grow(box);
     box.focus();
+    saveDraft();
   }
 
   function finishRecording(blob, url) {
@@ -1623,6 +1715,7 @@
     showVoice();
     initDetails();
     initSidebar();
+    restoreDraft();
     if (document.getElementById("feed")) {
       scrollToBottom();
       // After the first scroll, so the top of the feed isn't "in view" while the page loads.
