@@ -84,6 +84,10 @@ pub enum AgentError {
     Protocol(String),
     #[error("a turn is already running in this session")]
     Busy,
+    #[error("no turn is running in this session")]
+    NotRunning,
+    #[error("this agent does not support {0}")]
+    Unsupported(&'static str),
     #[error("the session is closed")]
     SessionClosed,
     #[error("the agent process ended unexpectedly{0}")]

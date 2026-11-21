@@ -23,6 +23,9 @@ pub struct Prefs {
     /// A microphone button in the chat composer; speech becomes text on this device
     /// (Settings → Voice). Turning it on downloads the speech model once.
     pub voice_input: bool,
+    /// While an agent works, Enter in the chat composer steers the message into the running
+    /// turn (double Enter queues it); off: Enter queues it (double Enter steers).
+    pub enter_steers: bool,
 }
 
 impl Prefs {

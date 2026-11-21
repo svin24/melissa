@@ -404,6 +404,7 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
         .route("/ui/settings/developer/steps", post(developer::steps))
+        .route("/ui/settings/developer/enter", post(developer::enter))
 }
 
 /// The JSON API routes.

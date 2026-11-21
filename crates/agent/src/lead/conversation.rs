@@ -5,9 +5,20 @@
 //! - **Lazy session, ordered backends.** The session opens on the first message, trying
 //!   the configured session backends in order (a backend that fails to start is logged
 //!   and the next one tried). It stays open across messages.
-//! - **One turn at a time.** A message while a turn runs is refused with
-//!   [`LeadError::Busy`]: clients see the turn end in the event stream and send the next
-//!   message then; nothing runs behind the user's back on a stale queued instruction.
+//! - **One turn at a time, with a queue** (owner, 2026-11-21; was "refused with Busy").
+//!   A message while a turn runs waits in the conversation's queue (FIFO,
+//!   `message_queued`); when the turn ends (finished, failed or cancelled) the next one
+//!   starts. The user sees queued messages, can take one back (`message_unqueued`) or
+//!   **steer** it: into the running turn where the session can take it
+//!   ([`SessionCapabilities::steer`](crate::session::SessionCapabilities), Claude Code),
+//!   else the running turn is stopped and the message starts next. Cancel keeps the queue.
+//!   The queue lives in memory: a daemon restart drops it. Scheduled runs and the lead
+//!   agent's jobs still need an idle conversation ([`LeadError::Busy`]).
+//! - **Helper reports.** When a helper's job ends, its report is queued for the lead agent
+//!   as data ([`Conversation::report`]) and gives it a turn of its own to tell the user
+//!   (`helper_report` instead of a user message). At most [`MAX_AUTO_TURNS`] such turns
+//!   run in a row without a message from the user; later reports wait as notes for the
+//!   next message.
 //! - **Cancel** asks the agent to stop the turn; if it has not stopped after a grace
 //!   period, Melissa kills the session.
 //! - **Agent death.** If the agent process dies, the turn fails, a `session_lost` event
@@ -39,7 +50,7 @@
 //!   field that Grok supports.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -82,6 +93,119 @@ const COMPACT_KEEP: usize = 6;
 /// Context use (percent of the window) at which a turn that ended in an error or at its
 /// length limit is taken as an overflow: condensed at once.
 const OVERFLOW_PERCENT: u64 = 90;
+
+/// Turns started by helpers' reports in a row, without a message from the user in between;
+/// after that, reports wait for the user's next message as notes (no report loops).
+pub(crate) const MAX_AUTO_TURNS: u32 = 3;
+
+/// Where a queued message came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuedFrom {
+    /// Someone typed it (the user, through the UI, CLI or API).
+    User,
+    /// The lead agent passed it on (a brokered message, framed as data).
+    Lead,
+    /// A helper's report for the lead agent (framed as data).
+    Helper,
+}
+
+impl QueuedFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Lead => "lead",
+            Self::Helper => "helper",
+        }
+    }
+}
+
+/// A message waiting for the running turn to end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QueuedMessage {
+    pub id: u64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+    pub from: QueuedFrom,
+    /// When it was queued (Unix seconds).
+    pub at: u64,
+}
+
+/// What became of a message sent to a conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Sent {
+    /// A turn started for it.
+    Started { turn: TurnId, since: u64 },
+    /// It waits for the running turn to end (`id`: its place in the queue).
+    Queued { id: u64, since: u64 },
+    /// It went into the running turn `turn`.
+    Steered { turn: TurnId, since: u64 },
+    /// The session can't take it mid-turn: the running turn is being stopped and the
+    /// message starts as soon as it has.
+    Next { since: u64 },
+}
+
+impl Sent {
+    /// The event sequence number to follow from.
+    pub fn since(self) -> u64 {
+        match self {
+            Self::Started { since, .. }
+            | Self::Queued { since, .. }
+            | Self::Steered { since, .. }
+            | Self::Next { since } => since,
+        }
+    }
+
+    /// The turn it started or went into, if any yet.
+    pub fn turn(self) -> Option<TurnId> {
+        match self {
+            Self::Started { turn, .. } | Self::Steered { turn, .. } => Some(turn),
+            Self::Queued { .. } | Self::Next { .. } => None,
+        }
+    }
+}
+
+/// What to do with a message while a turn runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendMode {
+    /// Wait for the turn to end.
+    #[default]
+    Queue,
+    /// Into the running turn now (or next, once it has stopped).
+    Steer,
+}
+
+/// A helper's job that ended (for [`Conversation::report`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Report {
+    pub agent: String,
+    pub name: String,
+    /// `succeeded`, `failed` or `cancelled`.
+    pub status: String,
+}
+
+/// A queued message with what starting it needs.
+struct Pending {
+    msg: QueuedMessage,
+    actor: String,
+    report: Option<Report>,
+}
+
+#[derive(Default)]
+struct Queue {
+    items: VecDeque<Pending>,
+    /// Steered while the session could not take it: starts as soon as the stopped turn has
+    /// ended, before the queue.
+    next: Option<Pending>,
+    /// The turn the last `next` message started.
+    next_turn: Option<TurnId>,
+    last_id: u64,
+    /// No queued message starts (a fresh start is under way).
+    held: bool,
+}
 
 /// When Melissa condenses a conversation's context (`[lead] compact_at_percent`,
 /// `compact_idle_secs`).
@@ -228,6 +352,8 @@ struct TurnState {
     confirm_wait: Option<Duration>,
     /// When the running turn started (usage: time spent).
     started: Option<Instant>,
+    /// Turns started by helpers' reports since the user's last message.
+    auto: u32,
 }
 
 struct Inner {
@@ -256,6 +382,8 @@ struct Inner {
     /// The next turn opens a new session without resuming the old one (the context was
     /// condensed while a session was open).
     fresh: AtomicBool,
+    /// Messages waiting for the running turn to end.
+    queue: Mutex<Queue>,
 }
 
 /// The running turn's open steps.
@@ -338,6 +466,7 @@ impl Conversation {
                 steps: Mutex::new(Steps::default()),
                 usage: Mutex::new(usage),
                 fresh: AtomicBool::new(false),
+                queue: Mutex::new(Queue::default()),
             }),
         }
     }
@@ -626,6 +755,16 @@ impl Conversation {
     /// knows nothing of the earlier conversation. The chat itself goes on. `Busy` if a
     /// running turn does not stop in time.
     pub(crate) async fn fresh_start(&self, actor: &str) -> Result<(), LeadError> {
+        // Queued messages wait for the new session (not the old one, as the stopped turn
+        // ends).
+        lock(&self.inner.queue).held = true;
+        let result = self.fresh_start_held(actor).await;
+        lock(&self.inner.queue).held = false;
+        self.drain();
+        result
+    }
+
+    async fn fresh_start_held(&self, actor: &str) -> Result<(), LeadError> {
         if let Some(turn) = self.busy() {
             self.cancel(Some(turn), actor).await;
             if !self
@@ -748,16 +887,16 @@ impl Conversation {
         true
     }
 
-    /// Send a message: starts a turn and returns its id and the event sequence number to
-    /// follow from (the `user_message` event comes right after it). `actor` is recorded in
-    /// the audit log (`ui`, `lead`). Must be called inside a Tokio runtime.
+    /// Start a turn with a message now (the lead agent's jobs and messages to agents need
+    /// one): returns its id and the event sequence number to follow from (the
+    /// `user_message` event comes right after it). [`LeadError::Busy`] while a turn runs;
+    /// [`Conversation::submit`] queues instead. `actor` is recorded in the audit log
+    /// (`ui`, `lead`). Must be called inside a Tokio runtime.
     pub(crate) fn send(&self, text: &str, actor: &str) -> Result<(TurnId, u64), LeadError> {
-        self.send_with(text, Vec::new(), actor)
+        self.start(text, Vec::new(), actor, None)
     }
 
-    /// [`Conversation::send`] with files: they are validated and stored before the turn
-    /// starts (nothing is stored if the message is refused). The text may be empty when
-    /// there are files.
+    /// [`Conversation::send`] with files.
     pub(crate) fn send_with(
         &self,
         text: &str,
@@ -767,12 +906,79 @@ impl Conversation {
         self.start(text, files, actor, None)
     }
 
-    /// Start a scheduled job's turn: the instruction is shown as the message, labelled with
+    /// A message from the user (or passed on by the lead agent): starts a turn when none
+    /// runs, else waits in the queue ([`SendMode::Queue`]) or goes into the running turn
+    /// ([`SendMode::Steer`], see [`Conversation::steer`]). Files are validated and stored
+    /// first (nothing is stored if the message is refused); the text may be empty when
+    /// there are files. Must be called inside a Tokio runtime.
+    pub(crate) async fn submit(
+        &self,
+        text: &str,
+        files: Vec<Upload>,
+        actor: &str,
+        mode: SendMode,
+    ) -> Result<Sent, LeadError> {
+        let from = if actor == "lead" {
+            QueuedFrom::Lead
+        } else {
+            QueuedFrom::User
+        };
+        let (text, stored) = if files.is_empty() {
+            self.check_and_store(text, files)?
+        } else {
+            // Writing the files can take a moment.
+            let (conv, text) = (self.clone(), text.to_string());
+            tokio::task::spawn_blocking(move || conv.check_and_store(&text, files))
+                .await
+                .map_err(|e| LeadError::Failed(format!("storing the files: {e}")))??
+        };
+        let pending = self.pending(text, stored, actor, from, None);
+        match self.start_or_queue(pending) {
+            Ok(sent) => Ok(sent),
+            Err(p) if mode == SendMode::Steer => Ok(self.steer_pending(*p).await),
+            Err(p) => Ok(self.enqueue(*p)),
+        }
+    }
+
+    /// [`Conversation::submit`] for a text without files that waits its turn (the lead
+    /// agent's messages to its agents): starts a turn, or queues.
+    pub(crate) fn offer(&self, text: &str, actor: &str) -> Result<Sent, LeadError> {
+        let from = if actor == "lead" {
+            QueuedFrom::Lead
+        } else {
+            QueuedFrom::User
+        };
+        let (text, stored) = self.check_and_store(text, Vec::new())?;
+        let pending = self.pending(text, stored, actor, from, None);
+        Ok(match self.start_or_queue(pending) {
+            Ok(sent) => sent,
+            Err(p) => self.enqueue(*p),
+        })
+    }
+
+    /// A helper's job ended: `text` (its report, framed as data) gives the lead agent a turn
+    /// of its own, now or when the running turn and the messages before it are done. Never
+    /// fails: past [`MAX_AUTO_TURNS`] it waits for the user's next message as a note.
+    pub(crate) fn report(&self, text: &str, report: Report) -> Sent {
+        let pending = self.pending(
+            text.to_string(),
+            Vec::new(),
+            "melissa",
+            QueuedFrom::Helper,
+            Some(report),
+        );
+        match self.start_or_queue(pending) {
+            Ok(sent) => sent,
+            Err(p) => self.enqueue(*p),
+        }
+    }
+
+    /// A scheduled job's turn: the instruction is shown as the message, labelled with
     /// the schedule's name (`scheduled` on the `user_message` event), and the agent is told
     /// that nobody is watching. The turn runs unattended: its MCP session's policy context
     /// says so for the length of the turn, so actions that need a watching human ask for a
-    /// confirmation (or match one of the owner's "Always allow" rules). Busy: refused, like
-    /// any message.
+    /// confirmation (or match one of the owner's "Always allow" rules). Busy: refused (a
+    /// run due while the agent works is skipped, not queued).
     /// `wait`: how long its confirmations wait for the owner before they are withdrawn.
     pub(crate) fn send_scheduled(
         &self,
@@ -784,6 +990,39 @@ impl Conversation {
         self.start(text, Vec::new(), actor, Some((name, wait)))
     }
 
+    /// The trimmed text, after checking it and the files, and the files stored.
+    fn check_and_store(
+        &self,
+        text: &str,
+        files: Vec<Upload>,
+    ) -> Result<(String, Vec<Attachment>), LeadError> {
+        let text = check(text, &files)?;
+        let spec = &self.inner.spec;
+        let stored = spec.files.store_uploads(&spec.owner, files)?;
+        Ok((text.to_string(), stored))
+    }
+
+    fn pending(
+        &self,
+        text: String,
+        attachments: Vec<Attachment>,
+        actor: &str,
+        from: QueuedFrom,
+        report: Option<Report>,
+    ) -> Pending {
+        Pending {
+            msg: QueuedMessage {
+                id: 0,
+                text,
+                attachments,
+                from,
+                at: now_secs(),
+            },
+            actor: actor.to_string(),
+            report,
+        }
+    }
+
     fn start(
         &self,
         text: &str,
@@ -791,62 +1030,326 @@ impl Conversation {
         actor: &str,
         scheduled: Option<(&str, Duration)>,
     ) -> Result<(TurnId, u64), LeadError> {
-        let (scheduled, wait) = match scheduled {
-            Some((name, wait)) => (Some(name), Some(wait)),
-            None => (None, None),
-        };
-        let text = text.trim();
-        if text.is_empty() && files.is_empty() {
-            return Err(LeadError::Empty);
-        }
-        if text.len() > MAX_PROMPT_BYTES {
-            return Err(LeadError::TooLong);
-        }
-        attachments::validate(&files)?;
+        check(text, &files)?;
         if self.busy().is_some() {
             return Err(LeadError::Busy);
         }
         // Written outside the turn lock (it can take a moment).
-        let spec = &self.inner.spec;
-        let stored = spec.files.store_uploads(&spec.owner, files)?;
+        let (text, stored) = self.check_and_store(text, files)?;
         let mut t = lock(&self.inner.turn);
         if t.busy.is_some() {
             drop(t);
+            let spec = &self.inner.spec;
             spec.files.remove_uploads(&spec.owner, &stored);
             return Err(LeadError::Busy);
         }
+        let mut pending = self.pending(text, stored, actor, QueuedFrom::User, None);
+        if actor == "lead" {
+            pending.msg.from = QueuedFrom::Lead;
+        }
+        let scheduled = scheduled.map(|(name, wait)| (name.to_string(), wait));
+        Ok(self.begin(&mut t, pending, scheduled))
+    }
+
+    /// Start `p` if no turn runs and nothing waits before it; else hand it back.
+    fn start_or_queue(&self, p: Pending) -> Result<Sent, Box<Pending>> {
+        let mut t = lock(&self.inner.turn);
+        let waiting = {
+            let q = lock(&self.inner.queue);
+            q.held || q.next.is_some() || !q.items.is_empty()
+        };
+        if t.busy.is_some() || waiting {
+            return Err(Box::new(p));
+        }
+        let (turn, since) = self.begin(&mut t, p, None);
+        Ok(Sent::Started { turn, since })
+    }
+
+    /// Put `p` at the end of the queue (`message_queued`, audited `<kind>.queued`), then
+    /// start the queue if the turn ended meanwhile.
+    fn enqueue(&self, mut p: Pending) -> Sent {
+        let since = self.inner.events.last_seq();
+        let id = {
+            // Under the turn lock, so a turn ending now drains after this is queued.
+            let _t = lock(&self.inner.turn);
+            let mut q = lock(&self.inner.queue);
+            q.last_id += 1;
+            p.msg.id = q.last_id;
+            self.inner.events.push(LeadEvent::MessageQueued {
+                id: p.msg.id,
+                text: p.msg.text.clone(),
+                attachments: p.msg.attachments.clone(),
+                from: p.msg.from.as_str().into(),
+            });
+            let id = p.msg.id;
+            let detail = format!(
+                "{} {id}: {}",
+                p.msg.from.as_str(),
+                shorten(&p.msg.text, 300)
+            );
+            let actor = p.actor.clone();
+            q.items.push_back(p);
+            drop(q);
+            drop(_t);
+            self.audit("queued", &actor, &detail);
+            id
+        };
+        self.drain();
+        Sent::Queued { id, since }
+    }
+
+    /// The messages waiting for the running turn, in order.
+    pub(crate) fn queued(&self) -> Vec<QueuedMessage> {
+        lock(&self.inner.queue)
+            .items
+            .iter()
+            .map(|p| p.msg.clone())
+            .collect()
+    }
+
+    /// Take queued message `id` back (`removed`, or `edited`: the user took the text back
+    /// into the composer). Its files are deleted. None if it is not queued (any more).
+    pub(crate) fn unqueue(&self, id: u64, edited: bool, actor: &str) -> Option<QueuedMessage> {
+        let p = self.take_queued(id, if edited { "edited" } else { "removed" })?;
+        if !p.msg.attachments.is_empty() {
+            let spec = &self.inner.spec;
+            spec.files.remove_uploads(&spec.owner, &p.msg.attachments);
+        }
+        self.audit(
+            "unqueued",
+            actor,
+            &format!(
+                "{} {id}: {}",
+                if edited { "edited" } else { "removed" },
+                shorten(&p.msg.text, 300)
+            ),
+        );
+        Some(p.msg)
+    }
+
+    fn take_queued(&self, id: u64, reason: &str) -> Option<Pending> {
+        let mut q = lock(&self.inner.queue);
+        let i = q.items.iter().position(|p| p.msg.id == id)?;
+        let p = q.items.remove(i)?;
+        self.inner.events.push(LeadEvent::MessageUnqueued {
+            id,
+            reason: reason.into(),
+        });
+        Some(p)
+    }
+
+    /// "Send now": queued message `id` goes into the running turn where the session can
+    /// take it, else the turn is stopped and the message starts next (at once when no turn
+    /// runs). None if it is not queued (any more).
+    pub(crate) async fn steer(&self, id: u64, actor: &str) -> Option<Sent> {
+        let mut p = self.take_queued(id, "steered")?;
+        p.actor = actor.to_string();
+        Some(self.steer_pending(p).await)
+    }
+
+    async fn steer_pending(&self, p: Pending) -> Sent {
+        let since = self.inner.events.last_seq();
+        let (turn, live) = {
+            let t = lock(&self.inner.turn);
+            (t.busy, lock(&self.inner.live).clone())
+        };
+        let Some(turn) = turn else {
+            return self.start_next(p, since);
+        };
+        if let Some(live) = live.filter(|l| l.session.capabilities().steer) {
+            let mut text = p.msg.text.clone();
+            let blocks = self.deliver(&live, &p.msg.attachments, &mut text).await;
+            match live.session.steer(&text, &blocks).await {
+                Ok(()) => {
+                    // Shown (and kept in the transcript) as the user's message in this turn.
+                    self.inner.events.push(LeadEvent::UserMessage {
+                        turn,
+                        text: p.msg.text.clone(),
+                        attachments: p.msg.attachments.clone(),
+                        scheduled: None,
+                    });
+                    self.audit(
+                        "steer",
+                        &p.actor,
+                        &format!("into turn {turn}: {}", shorten(&p.msg.text, 300)),
+                    );
+                    return Sent::Steered { turn, since };
+                }
+                // The turn ended meanwhile: the message starts the next one.
+                Err(AgentError::NotRunning) => {}
+                Err(e) => {
+                    tracing::warn!(who = %self.inner.spec.who, "steering: {e}; stopping the turn instead");
+                }
+            }
+        }
+        self.audit(
+            "steer",
+            &p.actor,
+            &format!("stops turn {turn}, then: {}", shorten(&p.msg.text, 300)),
+        );
+        let actor = p.actor.clone();
+        let sent = self.start_next(p, since);
+        self.cancel(Some(turn), &actor).await;
+        // Stopped at once (no session yet): it started already.
+        match lock(&self.inner.queue).next_turn {
+            Some(turn) if sent == (Sent::Next { since }) => Sent::Started { turn, since },
+            _ => sent,
+        }
+    }
+
+    /// `p` starts before the queue: now if no turn runs, else when the running one ends.
+    fn start_next(&self, p: Pending, since: u64) -> Sent {
+        {
+            let _t = lock(&self.inner.turn);
+            let mut q = lock(&self.inner.queue);
+            q.next = Some(p);
+            q.next_turn = None;
+        }
+        self.drain();
+        match lock(&self.inner.queue).next_turn {
+            Some(turn) => Sent::Started { turn, since },
+            None => Sent::Next { since },
+        }
+    }
+
+    /// No turn runs: start the next waiting message, if any (and nothing holds the queue).
+    /// A helper's report past [`MAX_AUTO_TURNS`] becomes a note for the next message.
+    fn drain(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        loop {
+            let mut t = lock(&self.inner.turn);
+            if t.busy.is_some() {
+                return;
+            }
+            let (p, queued) = {
+                let mut q = lock(&self.inner.queue);
+                if q.held {
+                    return;
+                }
+                match q.next.take() {
+                    Some(p) => (p, false),
+                    None => match q.items.pop_front() {
+                        Some(p) => (p, true),
+                        None => return,
+                    },
+                }
+            };
+            if p.report.is_some() && t.auto >= MAX_AUTO_TURNS {
+                drop(t);
+                if queued {
+                    self.inner.events.push(LeadEvent::MessageUnqueued {
+                        id: p.msg.id,
+                        reason: "noted".into(),
+                    });
+                }
+                self.note(&p.msg.text);
+                self.audit(
+                    "noted",
+                    "melissa",
+                    &format!(
+                        "{MAX_AUTO_TURNS} report turns in a row: report kept for the next message"
+                    ),
+                );
+                continue;
+            }
+            if queued {
+                self.inner.events.push(LeadEvent::MessageUnqueued {
+                    id: p.msg.id,
+                    reason: "started".into(),
+                });
+            }
+            let (turn, _) = self.begin(&mut t, p, None);
+            if !queued {
+                lock(&self.inner.queue).next_turn = Some(turn);
+            }
+            return;
+        }
+    }
+
+    /// Start a turn for `p` (no turn runs; the caller holds the turn lock): publish its
+    /// message, audit it and run it.
+    fn begin(
+        &self,
+        t: &mut TurnState,
+        p: Pending,
+        scheduled: Option<(String, Duration)>,
+    ) -> (TurnId, u64) {
+        let Pending { msg, actor, report } = p;
         t.last += 1;
         let turn = t.last;
         t.busy = Some(turn);
         t.started = Some(Instant::now());
         t.scheduled = scheduled.is_some();
-        t.confirm_wait = wait;
+        t.confirm_wait = scheduled.as_ref().map(|(_, w)| *w);
+        if report.is_some() {
+            t.auto += 1;
+        } else if msg.from == QueuedFrom::User {
+            t.auto = 0;
+        }
         let since = self.inner.events.last_seq();
-        self.inner.events.push(LeadEvent::UserMessage {
-            turn,
-            text: text.to_string(),
-            attachments: stored.clone(),
-            scheduled: scheduled.map(str::to_string),
-        });
-        let mut audited = shorten(text, 500);
+        let text = msg.text;
+        let stored = msg.attachments;
+        match &report {
+            Some(r) => self.inner.events.push(LeadEvent::HelperReport {
+                turn,
+                agent: r.agent.clone(),
+                name: r.name.clone(),
+                status: r.status.clone(),
+            }),
+            None => self.inner.events.push(LeadEvent::UserMessage {
+                turn,
+                text: text.clone(),
+                attachments: stored.clone(),
+                scheduled: scheduled.as_ref().map(|(n, _)| n.clone()),
+            }),
+        };
+        let mut audited = shorten(&text, 500);
         if !stored.is_empty() {
             let names: Vec<&str> = stored.iter().map(|a| a.name.as_str()).collect();
             audited.push_str(&format!(" [files: {}]", names.join(", ")));
         }
-        if let Some(name) = scheduled {
+        if let Some((name, _)) = &scheduled {
             audited = format!("scheduled `{name}`: {audited}");
         }
-        self.audit("message", actor, &audited);
+        if let Some(r) = &report {
+            audited = format!("report of helper {} ({}): {audited}", r.name, r.status);
+        }
+        self.audit("message", &actor, &audited);
         // The turn runs on the backend chosen when it starts; a later switch waits for it.
         let choice = self.choice();
-        let note = scheduled.map(scheduled_note);
-        let handle =
-            tokio::spawn(
-                self.clone()
-                    .run_turn(turn, text.to_string(), stored, choice, note),
-            );
+        let note = scheduled.as_ref().map(|(name, _)| scheduled_note(name));
+        let handle = tokio::spawn(self.clone().run_turn(turn, text, stored, choice, note));
         t.abort = Some(handle.abort_handle());
-        Ok((turn, since))
+        (turn, since)
+    }
+
+    /// Files for the open session: native blocks where it takes them; the note listing them
+    /// all (in its file box) is added to `text`.
+    async fn deliver(
+        &self,
+        live: &Live,
+        files: &[Attachment],
+        text: &mut String,
+    ) -> Vec<crate::session::PromptBlock> {
+        if files.is_empty() {
+            return Vec::new();
+        }
+        let boxes = self.inner.spec.files.clone();
+        let owner = self.inner.spec.owner.clone();
+        let caps = live.session.capabilities().clone();
+        let files = files.to_vec();
+        let delivery = tokio::task::spawn_blocking(move || {
+            attachments::deliver(&boxes, &owner, &files, &caps)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("preparing attachments: {e}");
+            attachments::Delivery::default()
+        });
+        text.push_str(&delivery.note);
+        delivery.blocks
     }
 
     /// Wait up to `wait` for `turn` to end; true if it has.
@@ -967,23 +1470,7 @@ impl Conversation {
             self.preamble(&text, body)
         };
         // Files: native blocks where the session takes them; all are listed in its file box.
-        let blocks = if files.is_empty() {
-            Vec::new()
-        } else {
-            let boxes = self.inner.spec.files.clone();
-            let owner = self.inner.spec.owner.clone();
-            let caps = live.session.capabilities().clone();
-            let delivery = tokio::task::spawn_blocking(move || {
-                attachments::deliver(&boxes, &owner, &files, &caps)
-            })
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("preparing attachments: {e}");
-                attachments::Delivery::default()
-            });
-            prompt.push_str(&delivery.note);
-            delivery.blocks
-        };
+        let blocks = self.deliver(&live, &files, &mut prompt).await;
         match live.session.prompt_with(&prompt, &blocks).await {
             // The event pump ends the turn when it sees the agent's `TurnFinished`, so the
             // turn's last events are published before it.
@@ -1359,6 +1846,8 @@ impl Conversation {
         self.withdraw_confirmations();
         self.count_turn(spent);
         self.plan_compaction(turn, stop_reason);
+        // The next waiting message, if any (a cancel keeps the queue).
+        self.drain();
         // Files the agent saved in its box during the turn show up for the owner.
         let (files, owner) = (self.inner.spec.files.clone(), self.inner.spec.owner.clone());
         match tokio::runtime::Handle::try_current() {
@@ -1594,6 +2083,19 @@ impl Drop for TokenGuard {
             self.server.close_session(&token);
         }
     }
+}
+
+/// The trimmed text of a message, if it and its files may be sent.
+fn check<'a>(text: &'a str, files: &[Upload]) -> Result<&'a str, LeadError> {
+    let text = text.trim();
+    if text.is_empty() && files.is_empty() {
+        return Err(LeadError::Empty);
+    }
+    if text.len() > MAX_PROMPT_BYTES {
+        return Err(LeadError::TooLong);
+    }
+    attachments::validate(files)?;
+    Ok(text)
 }
 
 /// What the agent reads before a scheduled job's instruction.

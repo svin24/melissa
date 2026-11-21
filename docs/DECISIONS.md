@@ -1162,3 +1162,30 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   buttons, ui-craft); apps show the facts Melissa knows (a game port, a web port), not "local only" or player
   slots; there is no "System agent" (Melissa keeps updates and device health); the caption "Device changes require
   your permission" is left out (not true for every change). Phone layouts are a separate change.
+- **2026-11-21 — Queue and steer instead of "busy"; helpers' reports give the lead agent a turn** (owner report:
+  Melissa sat in `agent_status` with `wait_secs` while Iris worked, so her chat stayed busy, and every message
+  sent during a turn was refused). Supersedes the 2026-11-18 "a second message is refused, not queued" and, for
+  job results, the "the Queen gets a note with her next message, never a turn of her own" of the force-delete
+  entry (force-delete notes are unchanged). (1) **Queue:** every conversation (Melissa's and each helper's)
+  keeps a FIFO of messages sent while a turn runs (`message_queued`; audited `<kind>.queued`); when the turn
+  ends (finished, failed or cancelled) the next one starts (`message_unqueued` `started`). Cancel keeps the
+  queue. The user can take a message back (`removed`, or `edited`: back into the composer). In memory only: a
+  restart drops it. Scheduled runs and `give_agent_job` still need an idle conversation (skip / error, as
+  before); `message_agent` and Melissa's notices to a working helper queue instead of the old 1 h retry loop.
+  (2) **Steer** ("Send now", double Enter): the backend says whether its sessions take a message mid-turn
+  (`SessionCapabilities::steer`, `AgentSession::steer`). Claude Code does: a second `user` line on stdin during
+  a turn is read at its next step and answered in the same turn, which ends with one `result` (verified with
+  Claude Code 2.1.330). ACP v1 has no such call: the running turn is cancelled and the message starts next. A
+  steered message shows as a normal user message in the running turn (`lead.steer`). (3) **Helper jobs don't
+  block:** `give_agent_job` returns at once and its description and the lead prompt say to end the turn;
+  `agent_status` no longer takes `wait_secs` (an error explains why). When a job ends, its report (outcome plus
+  the helper's last reply, framed as data, the helper's taint carried over) is queued for the lead agent as a
+  `helper_report` turn: the chat shows a small "Iris finished" line, not a user message. No loops: a report
+  comes only from a job's end (never from a lead turn), once per job, and after 3 report turns in a row without
+  a user message further reports wait as notes for the user's next message. (4) **UI** (owner design in Figma,
+  2026-11-21): queued messages show after the chat as the user's bubble with a dashed outline and muted text,
+  with "Send now", Edit and Remove under it; Enter while an agent works queues, double Enter (within 400 ms)
+  steers; Settings → Developer → Chat "Enter while working: Queues / Steers" swaps the two. API: message posts
+  return `started`/`queued`/`steered`/`next` (no 409), plus `GET …/queue`, `POST …/queue/{id}/steer|remove`.
+  Alternatives: keep refusing (the owner's report), a client-side queue (lost on reload, invisible to other
+  clients), interrupt-and-replace for every backend (needlessly loses Claude's work in progress).

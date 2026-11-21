@@ -1448,6 +1448,76 @@ svg.glyph {
   color: var(--muted);
 }
 
+/* Queued messages (owner design, 2026-11-21): after the chat, the user's bubble with a dashed
+   outline, no fill and muted text (not sent yet), then one quiet row of actions. */
+.chat-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding-bottom: 1rem;
+}
+
+.chat-queue:empty {
+  display: none;
+}
+
+.msg-queued {
+  gap: 0;
+}
+
+.msg-queued .bubble {
+  background: none;
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.queue-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.queue-actions form {
+  margin: 0;
+}
+
+.queue-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 0.5rem;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.queue-actions svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (hover: hover) {
+  .queue-actions button:hover {
+    color: var(--ink);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .queue-actions button {
+    transition: color 150ms ease-out;
+  }
+}
+
 .msg-relayed {
   margin-left: 28px;
   padding: 0.6rem 0.9rem;

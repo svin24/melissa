@@ -174,11 +174,11 @@ async fn dashboard(State(t): State<Tasks>) -> Markup {
     let (backends, tasks) = (t.board.backends(), t.board.list());
     match &t.ui {
         Some(ui) => {
-            let steps = ui.settings.prefs().show_steps;
-            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, steps))
+            let prefs = ui.settings.prefs();
+            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, prefs))
                 .await
         }
-        None => pages::dashboard(None, &backends, &tasks, false),
+        None => pages::dashboard(None, &backends, &tasks, Default::default()),
     }
 }
 
@@ -2031,28 +2031,74 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn messages_events_busy_and_cancel() {
+        async fn messages_events_queue_steer_and_cancel() {
             let (app, _) = app();
             let (status, body) =
                 send_json(&app, json_post("/api/lead/messages", r#"{"text":"Hello"}"#)).await;
             assert_eq!(status, StatusCode::ACCEPTED);
+            assert_eq!(body["status"], "started");
             assert_eq!(body["turn"], 1);
             let since = body["since"].as_u64().unwrap();
 
-            // One turn at a time.
+            // A message while a turn runs waits in the queue (no 409 any more).
             let (status, body) =
                 send_json(&app, json_post("/api/lead/messages", r#"{"text":"Again"}"#)).await;
-            assert_eq!(status, StatusCode::CONFLICT);
-            assert!(body["error"].as_str().unwrap().contains("previous message"));
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            assert_eq!(body["status"], "queued");
+            assert_eq!(body["id"], 1);
+            let (_, body) =
+                send_json(&app, json_post("/api/lead/messages", r#"{"text":"Third"}"#)).await;
+            assert_eq!(body["id"], 2);
             let (status, _) =
                 send_json(&app, json_post("/api/lead/messages", r#"{"text":"  "}"#)).await;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            let (_, q) = send_json(&app, get("/api/lead/queue")).await;
+            let texts: Vec<&str> = q["queued"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["text"].as_str().unwrap())
+                .collect();
+            assert_eq!(texts, ["Again", "Third"]);
+            assert_eq!(q["queued"][0]["from"], "user");
+            let (status, body) = send_json(&app, json_post("/api/lead/queue/2/remove", "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["removed"]["text"], "Third");
+            let (status, _) = send_json(&app, json_post("/api/lead/queue/2/remove", "")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
             let (_, st) = send_json(&app, get("/api/lead/status")).await;
             assert_eq!(st["turn"], 1);
 
+            // Cancel keeps the queue: the next message starts at once.
             let (status, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["cancelled"], true);
+            let (_, st) = send_json(&app, get("/api/lead/status")).await;
+            assert_eq!(st["turn"], 2);
+            let (_, q) = send_json(&app, get("/api/lead/queue")).await;
+            assert_eq!(q["queued"], serde_json::json!([]));
+
+            // Steering where the session can't take it mid-turn: the running turn stops and
+            // the message starts next.
+            let (_, body) = send_json(
+                &app,
+                json_post("/api/lead/messages", r#"{"text":"Now","steer":true}"#),
+            )
+            .await;
+            assert_eq!(body["status"], "started", "{body}");
+            assert_eq!(body["turn"], 3);
+            // "Send now" on a queued one does the same.
+            let (_, body) =
+                send_json(&app, json_post("/api/lead/messages", r#"{"text":"Later"}"#)).await;
+            let id = body["id"].as_u64().unwrap();
+            let (status, body) =
+                send_json(&app, json_post(&format!("/api/lead/queue/{id}/steer"), "")).await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            assert_eq!(body["status"], "started", "{body}");
+            assert_eq!(body["turn"], 4);
+            let (status, _) =
+                send_json(&app, json_post(&format!("/api/lead/queue/{id}/steer"), "")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
 
             let (status, page) =
                 send_json(&app, get(&format!("/api/lead/events?since={since}&wait=1"))).await;
@@ -2063,12 +2109,31 @@ mod tests {
                 .iter()
                 .map(|e| e["type"].as_str().unwrap())
                 .collect();
-            assert_eq!(types, ["user_message", "turn_finished"]);
-            assert_eq!(page["events"][1]["stop_reason"], "cancelled");
+            assert_eq!(
+                types,
+                [
+                    "user_message",
+                    "message_queued",
+                    "message_queued",
+                    "message_unqueued",
+                    "turn_finished",
+                    "message_unqueued",
+                    "user_message",
+                    "turn_finished",
+                    "user_message",
+                    "message_queued",
+                    "message_unqueued",
+                    "turn_finished",
+                    "user_message",
+                ]
+            );
+            assert_eq!(page["events"][3]["reason"], "removed");
+            assert_eq!(page["events"][4]["stop_reason"], "cancelled");
+            assert_eq!(page["events"][5]["reason"], "started");
+            assert_eq!(page["events"][10]["reason"], "steered");
             assert_eq!(page["missed"], false);
-            let next = page["next"].as_u64().unwrap();
-            let (_, page) = send_json(&app, get(&format!("/api/lead/events?since={next}"))).await;
-            assert_eq!(page["events"], serde_json::json!([]));
+            let (_, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;
+            assert_eq!(body["cancelled"], true);
             let (_, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;
             assert_eq!(body["cancelled"], false);
             let (_, body) = send_json(&app, get("/api/agents")).await;
@@ -2097,8 +2162,14 @@ mod tests {
             assert_eq!(body["turn"], 1);
             let since = body["since"].as_u64().unwrap();
             let uri = format!("/api/agents/{}/messages", ada.id);
-            let (status, _) = send_json(&app, json_post(&uri, r#"{"text":"Again"}"#)).await;
-            assert_eq!(status, StatusCode::CONFLICT);
+            let (status, body) = send_json(&app, json_post(&uri, r#"{"text":"Again"}"#)).await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            assert_eq!(body["status"], "queued");
+            let (_, q) = send_json(&app, get("/api/agents/Ada/queue")).await;
+            assert_eq!(q["queued"][0]["text"], "Again");
+            let (status, _) =
+                send_json(&app, json_post("/api/agents/Ada/queue/1/remove", "")).await;
+            assert_eq!(status, StatusCode::OK);
             let (_, st) = send_json(&app, get("/api/agents/Ada/status")).await;
             assert_eq!(st["turn"], 1);
             let (_, b) = send_json(&app, get("/api/agents/Ada")).await;
@@ -2117,7 +2188,15 @@ mod tests {
                 .iter()
                 .map(|e| e["type"].as_str().unwrap())
                 .collect();
-            assert_eq!(types, ["user_message", "turn_finished"]);
+            assert_eq!(
+                types,
+                [
+                    "user_message",
+                    "message_queued",
+                    "message_unqueued",
+                    "turn_finished"
+                ]
+            );
             assert_eq!(page["events"][0]["text"], "Hello Ada");
             // The lead agent's log did not get the agent's conversation.
             let (_, page) = send_json(&app, get("/api/lead/events?since=0")).await;
@@ -3183,10 +3262,46 @@ mod tests {
             assert!(html.contains("></textarea>"), "box is cleared");
             assert_eq!(lead.status().turn, Some(1));
 
-            // Busy: the text stays and the reason is shown.
+            // While Melissa works: queued (the box is cleared), shown after the chat with
+            // "Send now", Edit and Remove.
             let (_, _, html) = send(&app, htmx_post("/ui/messages", "text=Second")).await;
-            assert!(html.contains("Still working on your last message"));
-            assert!(html.contains(">Second</textarea>"));
+            assert!(html.contains("></textarea>"), "box is cleared: {html}");
+            assert!(html.contains(r#"data-enter="queue""#));
+            assert_eq!(lead.queued()[0].text, "Second");
+            let (_, _, page) = get_html(&app, "/").await;
+            let queue = page.split(r#"id="chat-queue""#).nth(1).expect("the queue");
+            assert!(
+                queue.contains("msg-queued") && queue.contains("Second"),
+                "{queue}"
+            );
+            assert!(queue.contains("Send now") && queue.contains(r#"aria-label="Edit""#));
+            assert!(queue.contains(r#"action="/ui/queue/1/remove""#));
+
+            // Edit: back into the composer, out of the queue.
+            let (status, _, html) = send(&app, htmx_post("/ui/queue/1/edit", "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains(">Second</textarea>"), "{html}");
+            assert!(lead.queued().is_empty());
+            // Gone already: nothing to do.
+            let (status, _, _) = send(&app, htmx_post("/ui/queue/1/edit", "")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+
+            // Remove.
+            send(&app, htmx_post("/ui/messages", "text=Third")).await;
+            let (status, _, _) = send(&app, htmx_post("/ui/queue/2/remove", "")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            assert!(lead.queued().is_empty());
+
+            // "Send now": this session can't take it mid-turn, so the turn stops and it runs.
+            send(&app, htmx_post("/ui/messages", "text=Fourth")).await;
+            let (status, _, _) = send(&app, htmx_post("/ui/queue/3/steer", "")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            assert_eq!(lead.status().turn, Some(2));
+            assert!(lead.queued().is_empty());
+            // Double Enter (`mode=steer`) does the same without queueing first.
+            send(&app, htmx_post("/ui/messages", "text=Fifth&mode=steer")).await;
+            assert_eq!(lead.status().turn, Some(3));
+            assert!(lead.queued().is_empty());
 
             // Stop.
             let (status, _, _) = send(&app, htmx_post("/ui/cancel", "")).await;

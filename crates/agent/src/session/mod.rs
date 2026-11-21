@@ -44,6 +44,10 @@ pub struct SessionCapabilities {
     pub images: bool,
     /// Takes PDFs in a prompt ([`PromptBlock::Pdf`]).
     pub pdfs: bool,
+    /// Takes a user message during a running turn ([`AgentSession::steer`]): the agent reads
+    /// it at its next step and answers it within the same turn (Claude Code). Without it,
+    /// steering falls back to cancelling the turn and sending the message as the next one.
+    pub steer: bool,
 }
 
 /// A non-text part of a prompt (a file the user attached), base64-encoded. Only sent to a
@@ -462,6 +466,19 @@ pub trait AgentSession: Send + Sync {
     /// `cancelled`; the running [`AgentSession::prompt`] then returns
     /// [`StopReason::Cancelled`]. A no-op when no turn runs.
     fn cancel(&self) -> BoxFuture<'_, Result<(), AgentError>>;
+
+    /// Add a user message to the running turn (only where [`SessionCapabilities::steer`]):
+    /// the agent reads it at its next step and the turn goes on; it still ends once, with
+    /// the one `TurnFinished`. Fails with [`AgentError::NotRunning`] when no turn runs (the
+    /// caller sends it as a new turn instead) and [`AgentError::Unsupported`] by default.
+    fn steer<'a>(
+        &'a self,
+        text: &'a str,
+        blocks: &'a [PromptBlock],
+    ) -> BoxFuture<'a, Result<(), AgentError>> {
+        let _ = (text, blocks);
+        Box::pin(async { Err(AgentError::Unsupported("steering a running turn")) })
+    }
 
     /// End the session and stop the agent process. Later calls fail with
     /// [`AgentError::SessionClosed`]. Dropping the session also stops the agent (by force).

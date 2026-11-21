@@ -3,7 +3,9 @@
 //! Protocol (Claude Code 2.1.327, verified on the dev laptop 2026-11-18): newline-delimited
 //! JSON objects with a `type`.
 //! - Melissa → Claude: `{"type":"user","message":{"role":"user","content":"…"}, …}` starts
-//!   a turn; `{"type":"control_request","request_id":…,"request":{"subtype":"initialize"}}`
+//!   a turn; another `user` message while the turn runs is read at the agent's next step and
+//!   answered in the same turn, which still ends with one `result` (steering; verified with
+//!   Claude Code 2.1.330 on 2026-11-21); `{"type":"control_request","request_id":…,"request":{"subtype":"initialize"}}`
 //!   (handshake) and `{"subtype":"interrupt"}` (cancel the turn); `control_response`s to
 //!   Claude's requests.
 //! - Claude → Melissa: `stream_event` (Anthropic streaming events: text and thinking
@@ -72,6 +74,11 @@ enum Command {
         text: String,
         blocks: Vec<PromptBlock>,
         reply: oneshot::Sender<Result<StopReason, AgentError>>,
+    },
+    Steer {
+        text: String,
+        blocks: Vec<PromptBlock>,
+        reply: oneshot::Sender<Result<(), AgentError>>,
     },
     Cancel {
         reply: oneshot::Sender<()>,
@@ -163,6 +170,7 @@ where
         mcp_http: true,
         images: true,
         pdfs: true,
+        steer: true,
     };
     Ok(OpenedSession {
         session: Box::new(ClaudeSession {
@@ -269,6 +277,9 @@ impl Actor {
                 },
                 cmd = commands.recv() => match cmd {
                     Some(Command::Prompt { text, blocks, reply }) => self.prompt(text, blocks, reply),
+                    Some(Command::Steer { text, blocks, reply }) => {
+                        let _ = reply.send(self.steer(text, &blocks));
+                    }
                     Some(Command::Cancel { reply }) => {
                         self.cancel();
                         let _ = reply.send(());
@@ -311,6 +322,21 @@ impl Actor {
             "session_id": "",
         }));
         self.turn = Some(reply);
+    }
+
+    /// A user message into the running turn (not one being interrupted: Claude would start
+    /// a new turn for it after the interrupt, outside any turn Melissa knows about).
+    fn steer(&mut self, text: String, blocks: &[PromptBlock]) -> Result<(), AgentError> {
+        if self.turn.is_none() || self.interrupted {
+            return Err(AgentError::NotRunning);
+        }
+        self.send(json!({
+            "type": "user",
+            "message": {"role": "user", "content": user_content(text, blocks)},
+            "parent_tool_use_id": null,
+            "session_id": "",
+        }));
+        Ok(())
     }
 
     fn cancel(&mut self) {
@@ -760,6 +786,24 @@ impl AgentSession for ClaudeSession {
                 Ok(Err(AgentError::AgentExited(_))) | Err(_) => Err(self.closed()),
                 Ok(result) => result,
             }
+        })
+    }
+
+    fn steer<'a>(
+        &'a self,
+        text: &'a str,
+        blocks: &'a [PromptBlock],
+    ) -> BoxFuture<'a, Result<(), AgentError>> {
+        Box::pin(async move {
+            let (reply, rx) = oneshot::channel();
+            self.cmd_tx
+                .send(Command::Steer {
+                    text: text.to_string(),
+                    blocks: blocks.to_vec(),
+                    reply,
+                })
+                .map_err(|_| self.closed())?;
+            rx.await.map_err(|_| self.closed())?
         })
     }
 

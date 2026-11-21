@@ -103,24 +103,50 @@ impl Client {
         Ok(serde_json::from_value(body)?)
     }
 
-    /// Send a message; returns the turn and the event cursor to follow it from.
+    /// Send a message; returns the turn and the event cursor to follow it from. While a turn
+    /// runs the message waits in the queue: this waits (printing a line) until its turn starts.
     async fn send(&self, text: &str) -> anyhow::Result<(TurnId, u64)> {
         let (status, body) = self
             .post(&format!("{}/messages", self.base), json!({"text": text}))
             .await?;
-        if status == StatusCode::CONFLICT {
-            bail!(
-                "{} is still working on another message (from this or another client, or a \
-                 job from the lead agent); wait for it or cancel it",
-                self.who
-            );
-        }
         let body = ok(status, body)?;
-        let turn = body["turn"].as_u64().context("no turn id in the reply")?;
         let since = body["since"]
             .as_u64()
             .context("no event cursor in the reply")?;
-        Ok((turn, since))
+        if let Some(turn) = body["turn"].as_u64() {
+            return Ok((turn, since));
+        }
+        let id = body["id"]
+            .as_u64()
+            .context("no turn or queue id in the reply")?;
+        eprintln!(
+            "[queued #{id}: starts when {} is done with the current turn]",
+            self.who
+        );
+        self.wait_queued(id, since).await
+    }
+
+    /// Follow the events until queued message `id` starts its turn.
+    async fn wait_queued(&self, id: u64, mut since: u64) -> anyhow::Result<(TurnId, u64)> {
+        let mut started = false;
+        loop {
+            let page = self.events(since, 30).await?;
+            for record in &page.events {
+                match &record.event {
+                    LeadEvent::MessageUnqueued { id: i, reason } if *i == id => {
+                        if reason != "started" && reason != "steered" {
+                            bail!("the queued message was {reason}");
+                        }
+                        started = true;
+                    }
+                    LeadEvent::UserMessage { turn, .. } if started => {
+                        return Ok((*turn, record.seq - 1));
+                    }
+                    _ => {}
+                }
+            }
+            since = page.next;
+        }
     }
 }
 
@@ -295,6 +321,17 @@ impl Printer {
                 self.line(&format!(
                     "[taint] read untrusted content{from}; changes now need your OK until a new chat"
                 ));
+            }
+            LeadEvent::HelperReport { name, status, .. } => {
+                self.line(&format!(
+                    "[agent {name}] report ({status}) passed to the lead agent"
+                ));
+            }
+            LeadEvent::MessageQueued { id, text, from, .. } => {
+                self.line(&format!("[queued #{id}] ({from}) {}", one_line(text)));
+            }
+            LeadEvent::MessageUnqueued { id, reason } => {
+                self.line(&format!("[queued #{id}] {reason}"));
             }
             LeadEvent::NewChat => self.line("[new chat] the earlier chat was archived"),
             LeadEvent::FreshStart => self.line("[fresh start] memory cleared; the chat goes on"),

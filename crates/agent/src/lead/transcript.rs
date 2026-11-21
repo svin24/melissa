@@ -181,6 +181,10 @@ impl Transcript {
                 LeadEvent::UserMessage {
                     text, attachments, ..
                 } => ("user", with_file_names(text, attachments)),
+                LeadEvent::HelperReport { name, status, .. } => (
+                    "melissa",
+                    format!("helper {name}'s job ended ({status}); its report reached you as data"),
+                ),
                 // Seen from the agent being primed: its own earlier replies.
                 LeadEvent::AgentMessage { text, .. } => ("you", text.clone()),
                 _ => continue,
@@ -304,7 +308,11 @@ fn parse_chat(text: &str, max_turns: usize) -> Vec<EventRecord> {
         .filter(|r| {
             !matches!(
                 r.event,
-                LeadEvent::Text { .. } | LeadEvent::EarlierStart | LeadEvent::EarlierEnd
+                LeadEvent::Text { .. }
+                    | LeadEvent::EarlierStart
+                    | LeadEvent::EarlierEnd
+                    | LeadEvent::MessageQueued { .. }
+                    | LeadEvent::MessageUnqueued { .. }
             )
         })
         .collect();
@@ -317,7 +325,12 @@ fn parse_chat(text: &str, max_turns: usize) -> Vec<EventRecord> {
     let starts: Vec<usize> = records
         .iter()
         .enumerate()
-        .filter(|(_, r)| matches!(r.event, LeadEvent::UserMessage { .. }))
+        .filter(|(_, r)| {
+            matches!(
+                r.event,
+                LeadEvent::UserMessage { .. } | LeadEvent::HelperReport { .. }
+            )
+        })
         .map(|(i, _)| i)
         .collect();
     if starts.len() > max_turns {
@@ -330,7 +343,8 @@ fn parse_chat(text: &str, max_turns: usize) -> Vec<EventRecord> {
     let mut next: TurnId = 0;
     for (i, r) in records.iter_mut().enumerate() {
         r.seq = i as u64 + 1;
-        if let LeadEvent::UserMessage { turn, .. } = &r.event {
+        if let LeadEvent::UserMessage { turn, .. } | LeadEvent::HelperReport { turn, .. } = &r.event
+        {
             next += 1;
             turns.insert(*turn, next);
         }

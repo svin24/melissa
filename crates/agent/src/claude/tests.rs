@@ -426,6 +426,55 @@ async fn cancel_interrupts_and_withdraws_pending_permissions() {
 }
 
 #[tokio::test]
+async fn steering_adds_a_user_message_to_the_running_turn() {
+    let (perms, _registry) = policy(None);
+    let mut steps = init_steps();
+    steps.extend([
+        user("look"),
+        delta("one"),
+        // The steered message reaches Claude mid-turn; the turn still ends with one result.
+        user("also two"),
+        delta(" two"),
+        result_ok("one two"),
+    ]);
+    let (opened, agent) = open_replay(steps, Arc::new(perms)).await;
+    let OpenedSession {
+        session,
+        mut events,
+        ..
+    } = opened;
+    assert!(session.capabilities().steer);
+    let session: Arc<dyn AgentSession> = Arc::from(session);
+    assert!(matches!(
+        session.steer("too early", &[]).await,
+        Err(AgentError::NotRunning)
+    ));
+    let turn = {
+        let s = session.clone();
+        tokio::spawn(async move { s.prompt("look").await })
+    };
+    loop {
+        match events.recv().await {
+            Some(SessionEvent::Text(t)) if t == "one" => break,
+            Some(_) => {}
+            None => panic!("events ended"),
+        }
+    }
+    session.steer("also two", &[]).await.unwrap();
+    assert_eq!(turn.await.unwrap().unwrap(), StopReason::EndTurn);
+    session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+    let got = drain(&mut events).await;
+    assert!(got.contains(&SessionEvent::Text(" two".into())));
+    assert_eq!(
+        got.iter()
+            .filter(|e| matches!(e, SessionEvent::TurnFinished(_)))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn agent_withdrawn_requests_get_no_answer() {
     let (perms, registry) = policy(None);
     let mut steps = init_steps();

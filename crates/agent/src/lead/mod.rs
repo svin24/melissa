@@ -44,7 +44,9 @@ use crate::{
 
 use agents::AgentPool;
 use backends::{BackendChoice, BackendView, ModelCache, ProbeOutcome, Switched};
-pub use conversation::{CompactPolicy, LeadStatus, TurnOutcome};
+pub use conversation::{
+    CompactPolicy, LeadStatus, QueuedFrom, QueuedMessage, SendMode, Sent, TurnOutcome,
+};
 use conversation::{Conversation, ConversationSpec};
 use events::{EventLog, LeadEvent, TurnId};
 
@@ -234,6 +236,7 @@ impl Lead {
             agent_prompt: settings.agent_prompt.clone(),
             lead_allow: allow,
             lead_task: task,
+            lead: conv.clone(),
             workroot,
             files: files.clone(),
         });
@@ -454,9 +457,38 @@ impl Lead {
         (spec.ctx.clone(), spec.allow.clone())
     }
 
-    /// Send a user message: starts a turn and returns its id and the event sequence number
-    /// to follow from (the `user_message` event comes right after it). Must be called
-    /// inside a Tokio runtime.
+    /// A user message for Melissa: starts a turn when none runs, else waits in the queue
+    /// or (`mode` [`SendMode::Steer`]) goes into the running turn. See
+    /// the conversation module's "One turn at a time, with a queue". Must be called inside a Tokio
+    /// runtime.
+    pub async fn submit(
+        &self,
+        text: &str,
+        files: Vec<Upload>,
+        mode: SendMode,
+    ) -> Result<Sent, LeadError> {
+        self.inner.conv.submit(text, files, "ui", mode).await
+    }
+
+    /// Melissa's queued messages, in order.
+    pub fn queued(&self) -> Vec<QueuedMessage> {
+        self.inner.conv.queued()
+    }
+
+    /// Take queued message `id` back (`edited`: into the composer). None: not queued.
+    pub fn unqueue(&self, id: u64, edited: bool) -> Option<QueuedMessage> {
+        self.inner.conv.unqueue(id, edited, "ui")
+    }
+
+    /// "Send now" for queued message `id` (into the running turn, or next). None: not queued.
+    pub async fn steer(&self, id: u64) -> Option<Sent> {
+        self.inner.conv.steer(id, "ui").await
+    }
+
+    /// Start a turn with a user message now: returns its id and the event sequence number
+    /// to follow from (the `user_message` event comes right after it). [`LeadError::Busy`]
+    /// while a turn runs ([`Lead::submit`] queues instead). Must be called inside a Tokio
+    /// runtime.
     pub fn send(&self, text: &str) -> Result<(TurnId, u64), LeadError> {
         self.inner.conv.send(text, "ui")
     }
