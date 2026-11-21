@@ -121,6 +121,8 @@ fn head(title: &str) -> Markup {
         meta name="color-scheme" content="light dark";
         // Keep htmx from injecting inline styles, so the CSP can forbid them.
         meta name="htmx-config" content=r#"{"includeIndicatorStyles":false,"allowEval":false}"#;
+        // melissa.js sends it with every htmx and fetch request (X-CSRF-Token).
+        @if let Some(t) = crate::auth::csrf_token() { meta name="csrf-token" content=(t); }
         title { (title) " · Melissa" }
         link rel="preload" href="/assets/fonts/AtkinsonHyperlegibleNext-Variable.woff2" as="font" type="font/woff2" crossorigin;
         link rel="stylesheet" href="/assets/melissa.css";
@@ -612,15 +614,18 @@ pub fn queued_messages(items: &[QueuedView<'_>]) -> Markup {
                 }
                 div.queue-actions {
                     form method="post" action=(q.steer) hx-post=(q.steer) hx-swap="none" {
+                        (crate::components::csrf_field())
                         button.queue-send type="submit" { (arrow_up_icon()) "Send now" }
                     }
                     @if let Some(edit) = &q.edit {
                         form method="post" action=(edit) hx-post=(edit)
                             hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
+                            (crate::components::csrf_field())
                             button.queue-icon type="submit" title="Edit" aria-label="Edit" { (pencil_icon()) }
                         }
                     }
                     form method="post" action=(q.remove) hx-post=(q.remove) hx-swap="none" {
+                        (crate::components::csrf_field())
                         button.queue-icon type="submit" title="Remove" aria-label="Remove" { (cross_icon()) }
                     }
                 }
@@ -1167,6 +1172,7 @@ pub fn detail_permissions(p: &DetailPermissions<'_>) -> Markup {
                             }
                             form method="post" action=(r.remove) hx-post=(r.remove)
                                 hx-target=(target) hx-swap="outerHTML" {
+                                (crate::components::csrf_field())
                                 button.link type="submit" aria-label={ "Stop always allowing: " (r.what) } { "Remove" }
                             }
                         }
@@ -1218,6 +1224,7 @@ pub fn detail_schedules(s: &DetailSchedules<'_>) -> Markup {
                             }
                             form method="post" action=(sc.toggle) hx-post=(sc.toggle)
                                 hx-target=(target) hx-swap="outerHTML" {
+                                (crate::components::csrf_field())
                                 input type="hidden" name="enabled" value=(if sc.enabled { "off" } else { "on" });
                                 button.secondary type="submit" aria-label={
                                     (if sc.enabled { "Turn off " } else { "Turn on " }) (sc.name)
@@ -1313,6 +1320,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
         div.file-tools {
             form.file-upload method="post" action=(p.upload) enctype="multipart/form-data"
                 hx-post=(p.upload) hx-target=(target) hx-swap="outerHTML" {
+                (crate::components::csrf_field())
                 input #box-upload .attach-input type="file" name="files" multiple required
                     data-autosubmit;
                 label.attach.upload for="box-upload" title="Upload files" {
@@ -1323,6 +1331,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
             }
             form.file-keep method="post" action=(p.keep_action) hx-post=(p.keep_action)
                 hx-target=(target) hx-swap="outerHTML" title=(p.keep) {
+                (crate::components::csrf_field())
                 label.select-wrap {
                     span.visually-hidden { "Keep files for" }
                     select name="keep" data-autosubmit {
@@ -1367,6 +1376,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                                     @if !p.send_to.is_empty() {
                                         form.file-send method="post" action=(f.send) hx-post=(f.send)
                                             hx-target=(target) hx-swap="outerHTML" {
+                                            (crate::components::csrf_field())
                                             label.field {
                                                 span { "Send to" }
                                                 select name="to" {
@@ -1580,6 +1590,7 @@ pub fn composer(
             enctype="multipart/form-data" hx-encoding="multipart/form-data"
             hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML"
             data-enter=(if to.enter_steers { "steer" } else { "queue" }) {
+            (crate::components::csrf_field())
             // While the agent works: `queue` or `steer` (melissa.js sets it for Enter and
             // double Enter); empty follows the owner's setting.
             input type="hidden" name="mode" value="";
@@ -1781,6 +1792,7 @@ pub fn model_picker(p: &ModelPicker) -> Markup {
             data-error[p.error.is_some()] {
             form.picker method="post" action=(p.action) hx-post=(p.action) hx-target=(target)
                 hx-swap="outerHTML" {
+                (crate::components::csrf_field())
                 input type="hidden" name="current" value=(p.current);
                 @if !p.backends.is_empty() {
                     div.picker-rail role="group" aria-label="Providers" {
@@ -2056,6 +2068,7 @@ pub fn textarea_field(name: &str, label: &str, placeholder: &str, max_len: usize
 pub fn post_form(action: &str, target: &str, submit_label: &str, fields: Markup) -> Markup {
     html! {
         form.stack method="post" action=(action) hx-post=(action) hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
             (fields)
             div { button.primary type="submit" { (submit_label) } }
         }
@@ -2072,6 +2085,7 @@ pub fn action_button(action: &str, target: &str, label: &str, confirm: &str) -> 
         html! {
             form method="post" action=(action) hx-post=(action) hx-target={ "#" (target) }
                 hx-swap="outerHTML" {
+                (crate::components::csrf_field())
                 button.primary.danger type="submit" { "Yes, " (label.to_lowercase()) }
             }
         },
@@ -2122,6 +2136,7 @@ pub fn settings_head(
             }
             form.checked method="post" action=(action_url) hx-post=(action_url)
                 hx-target={ "#" (target) } hx-swap="outerHTML" {
+                (crate::components::csrf_field())
                 span { (checked) }
                 button.link type="submit" { (action) }
             }
@@ -2154,6 +2169,8 @@ pub use mobile::{
     sheet_handle, sheet_sub, MenuWho, PhoneView, SheetWho,
 };
 mod panel;
+pub mod people;
+pub use people::csrf_field;
 mod provider_add;
 pub use provider_add::{
     add_panel, link_button, provider_tiles, registry_list, search_box, stepper, ProviderTile,
@@ -2205,6 +2222,7 @@ pub fn toggle(t: &Toggle<'_>) -> Markup {
     html! {
         form.toggle method="post" action=(t.action) hx-post=(t.action) hx-trigger="change"
             hx-target={ "#" (t.target) } hx-swap="outerHTML" title=[t.locked] {
+            (crate::components::csrf_field())
             label {
                 input type="checkbox" name="enabled" value="on" role="switch" checked[t.on]
                     disabled[t.locked.is_some()];
@@ -2320,6 +2338,7 @@ pub fn settings_form(action: &str, target: &str, submit: &str, fields: Markup) -
     html! {
         form.stack.settings-form method="post" action=(action) hx-post=(action)
             hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
             (fields)
             div { button.secondary type="submit" { (submit) } }
         }
@@ -2352,6 +2371,7 @@ pub fn var_list(rows: &[VarRow<'_>], target: &str, empty: &str) -> Markup {
                             (inline_confirm(true, "Remove", &format!("Remove {}?", r.name), html! {
                                 form method="post" action=(r.remove_action) hx-post=(r.remove_action)
                                     hx-target={ "#" (target) } hx-swap="outerHTML" {
+                                    (crate::components::csrf_field())
                                     input type="hidden" name="name" value=(r.name);
                                     button.primary.danger type="submit" {
                                         "Yes, remove" span.visually-hidden { " " (r.name) }
@@ -2395,6 +2415,7 @@ pub fn confirm_card(c: &ConfirmCard<'_>) -> Markup {
             div.actions {
                 form.inline method="post" action=(c.action) hx-post=(c.action)
                     hx-target={ "#" (c.target) } hx-swap="outerHTML" {
+                    (crate::components::csrf_field())
                     input type="hidden" name="confirm" value="yes";
                     button.primary.danger type="submit" { (c.confirm) }
                 }
@@ -2420,6 +2441,7 @@ pub fn plain_action(action: &str, target: &str, label: &str, primary: bool) -> M
     html! {
         form.inline method="post" action=(action) hx-post=(action)
             hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
             button class=(if primary { "primary" } else { "secondary" }) type="submit" { (label) }
         }
     }
@@ -2464,6 +2486,7 @@ pub fn one_field_form(action: &str, target: &str, submit: &str, field: Markup) -
     html! {
         form.one-field method="post" action=(action) hx-post=(action)
             hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
             (field)
             button.primary type="submit" { (submit) }
         }

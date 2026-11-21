@@ -1302,3 +1302,43 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   arguments (models type names; the owner wanted names to keep working where they are clear), first-match by
   current name (the misrouting this fixes), forbidding the reuse of former names (blocks the user for a rare
   case; the refusal is enough).
+- **2026-11-21 — Logins (PLAN 6c, step 1): accounts, the owner's claim with a setup code from the host,
+  invites, sessions, the password again for sensitive actions; the CLI on a host-local socket.** Supersedes
+  the 2026-11-18 "Until login exists" entry's "no auth yet" (loopback bind, same-origin check and CSP stay).
+  **Store:** `crates/auth` (`melissa-auth`), one file `<state>/auth/auth.json` (directory 0700, file 0600,
+  written atomically): accounts (Argon2id PHC hashes with argon2's default cost, 19 MiB / 2 passes / 1 lane),
+  pending invites and sessions; session cookies and invite tokens are 256-bit random values stored only as
+  SHA-256. Roles `owner` (exactly one, can't be removed) and `member`. Usernames 1–32 of `a-z 0-9 . _ -`
+  (`host` reserved), passwords 8–256 characters, nothing else. **Failed tries** (in memory): per username 3
+  free, then a wait that doubles up to 60 s, a 15-minute lockout at 10; per source address 10 free, locked at
+  30; a check during a wait is refused without hashing; unknown names verify against a dummy hash. Audited
+  `auth.login`, `auth.login_failed`, `auth.lockout` (and claim, invites, resets, removals, sign-outs, password
+  changes), with a new `person` field. **Claim:** with no owner every page goes to `/claim` (the API answers
+  401); a 10-character code (about 50 bits, no look-alike characters) made at start, printed on the console
+  and in the log, shown again by `melissa-server setup-code`; valid 1 hour, a new one at each start or when
+  asked after it expired, unusable after 10 wrong tries; per-address limits too. **Invites:** the owner's
+  single-use links in Settings → People, 24 hours, withdrawable; reset links for a member (24 h) or, from the
+  host, `melissa-server reset-owner` (1 h); a reset signs that person out everywhere. **Sessions:** idle 7
+  days, at most 30; Settings → Account lists them ("Sign out" each, "Sign out everywhere") and changes the
+  password (other sessions end). Cookie `__Host-melissa_session` with `Secure` when the request came over
+  HTTPS (`X-Forwarded-Proto: https` or an https `Origin`), else `melissa_session; HttpOnly; SameSite=Strict;
+  Path=/`: browsers refuse `Secure` cookies from `http://` pages and `__Host-` requires `Secure`, and the UI is
+  plain HTTP on loopback today. **CSRF:** a token per session in `<meta name="csrf-token">`; melissa.js sends
+  `X-CSRF-Token` with htmx and fetch; every POST form also has a `_csrf` field first (forms without script;
+  the gate strips it from urlencoded bodies, and reads it as a multipart body's first part); the same-origin
+  check stays in front. **Gate:** one middleware with one path table (public: sign-in pages, assets,
+  `/healthz`, `/mcp/<token>`; owner-only: People, providers, app access, updates and restart, force delete;
+  members don't see those Settings sections), the person and token in a task-local for components and the
+  audit. **Password again (5 min):** the setup password's Show/Copy/Dismiss, app access changes, provider
+  settings, People, force delete, and approving an agent's `set_app_access` (owner only); pages go to
+  `/reauth` and come back, the API answers 401 with `reauth`. Approvals count only from a signed-in session
+  or the host socket and name the person in the audit. **CLI:** `melissa-server chat`, `ask`, `confirm` and the
+  rest talk over `<runtime>/melissa/api.sock` (the service's `/run/melissa/api.sock`; `$MELISSA_SOCKET`
+  overrides), 0600 in a 0700 directory, accepting only uid 0 and the server's own uid (peer credentials),
+  serving the same routes with the owner's authority (audited as `host`); `/api/host/setup-code` and
+  `/api/host/reset-owner` exist only there. Sandboxes don't see the runtime directory. Why the socket over
+  per-person API tokens: nothing to store, show or leak, no CLI setup, and access to the box is already the last
+  authority (6c); tokens come with remote clients (6b). Why server-side sessions: revocation and a session
+  list. Alternatives: per-person API tokens now (a token file per person and CLI config for a host-only CLI),
+  signed stateless cookies (no revocation), `__Host-` only (breaks plain-HTTP use), token-in-script-only CSRF
+  (fails without script), lockout in the file (a restart clearing it is acceptable: only the host restarts).

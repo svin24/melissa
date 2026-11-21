@@ -72,6 +72,7 @@ pub fn provider_tiles(label: &str, tiles: &[ProviderTile<'_>], target: &str) -> 
                     @if let Some(action) = t.action {
                         form method="post" action=(action) hx-post=(action)
                             hx-target={ "#" (target) } hx-swap="outerHTML" {
+                            (crate::components::csrf_field())
                             button.ptile type="submit" {
                                 (provider_logo(t.id, t.letter, false))
                                 span.ptile-name { (t.label) }
@@ -144,6 +145,7 @@ pub fn registry_list(rows: &[RegistryRow<'_>], target: &str, empty: &str) -> Mar
                                 RegistryAction::Add { action } => {
                                     form method="post" action=(action) hx-post=(action)
                                         hx-target={ "#" (target) } hx-swap="outerHTML" {
+                                        (crate::components::csrf_field())
                                         button.secondary type="submit" {
                                             "Add" span.visually-hidden { " " (r.name) }
                                         }
@@ -164,6 +166,7 @@ pub fn registry_list(rows: &[RegistryRow<'_>], target: &str, empty: &str) -> Mar
                                     span.reg-error role="alert" { (why) }
                                     form method="post" action=(action) hx-post=(action)
                                         hx-target={ "#" (target) } hx-swap="outerHTML" {
+                                        (crate::components::csrf_field())
                                         button.secondary type="submit" { "Try again" }
                                     }
                                 }

@@ -10,6 +10,10 @@
 //!                                                            waiting for confirmations
 //!   `sudo melissa-server app-credentials <app>`                the owner's view of an app's
 //!                                                            generated credentials
+//!   `melissa-server setup-code`                              the one-time code that claims a
+//!                                                            new box (prints a fresh one)
+//!   `melissa-server reset-owner`                             a one-hour link that sets a new
+//!                                                            owner password
 //!   `melissa-server [--config <path>] chat [--agent <agent>]`      talk to the lead agent or an agent
 //!   `melissa-server [--config <path>] fresh-start [--agent <agent>]` clear an agent's memory
 //!   `melissa-server [--config <path>] ask [--agent <agent>] <message>`  one message, stream it
@@ -20,7 +24,9 @@
 //!   `melissa-server [--config <path>] app force-delete <app> --yes`  remove it and its data now;
 //!                                                            its agent and the lead agent are told
 //!
-//! The client commands talk to the running daemon on its configured `listen` address.
+//! The client commands talk to the running daemon over its host-local socket
+//! (`$XDG_RUNTIME_DIR/melissa/api.sock`, the service's `/run/melissa/api.sock`): only root
+//! and Melissa's own user may connect, and they act as the owner (the web UI needs a login).
 //!
 //! Config: `$XDG_CONFIG_HOME/melissa/server.toml` (optional). Audit log, agent working
 //! directory, device id (`device.json`), agent registry (`agents/`), "Always allow" rules
@@ -85,6 +91,9 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
   tool --wait <name> [json]   run one tool in the running daemon; waits for a confirmation
                               (answer it with `confirm approve <id>` from another shell)
   app-credentials <app>       show an app's generated credentials (owner only, needs root)
+  setup-code                  the one-time code to claim a new Melissa in the web UI
+                              (a fresh one, valid 1 hour)
+  reset-owner                 a link, valid 1 hour, that sets a new password for the owner
   chat [--agent <agent>]          talk to the lead agent, or directly to an agent (Ctrl-C cancels a turn)
   fresh-start [--agent <agent>]  clear the lead agent's (or an agent's) memory; the chat goes on
                               (clears its taint; old names: new-chat, chat --new)
@@ -143,6 +152,10 @@ enum Command {
         args: Value,
     },
     AppCredentials(String),
+    /// `setup-code`: the code that claims a box without an owner.
+    SetupCode,
+    /// `reset-owner`: a reset link for the owner's password.
+    ResetOwner,
     /// `app details|logs|force-delete <app>`: the same as the app dialog.
     App(AppCommand, String),
     /// Talk to the lead agent (None) or an agent.
@@ -240,10 +253,11 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let api = client::Client::new(config.listen);
+    let socket = client::socket_path(&dirs.scratch);
+    let api = client::Client::new(&socket);
     let to = |agent: &Option<String>| match agent {
-        Some(b) => client::Client::new(config.listen).with_agent(b),
-        None => client::Client::new(config.listen),
+        Some(b) => client::Client::new(&socket).with_agent(b),
+        None => client::Client::new(&socket),
     };
     match &command {
         Command::Chat(agent) => return client::chat(&to(agent)).await,
@@ -300,6 +314,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::ToolWait { name, args } => return client::tool(&api, name, args.clone()).await,
+        Command::SetupCode => return client::setup_code(&api).await,
+        Command::ResetOwner => return client::reset_owner(&api, config.listen).await,
         Command::AppCredentials(app) => {
             return credentials::show(
                 app,
@@ -706,6 +722,7 @@ async fn serve(
         workroot: workdir.clone(),
     };
     let settings_audit = audit.clone();
+    let audit_for_auth = audit.clone();
     let board = TaskBoard::with_tools(backends, config.task_timeout(), Some(audit), link);
     let settings = LeadSettings {
         backends: q.backends.clone(),
@@ -748,6 +765,32 @@ async fn serve(
     .await;
     // The summary is for the person who started the daemon; stdout keeps it apart from the log.
     print!("{}", report.render());
+    // Logins (PLAN 6c): accounts, invites and sessions in <state>/auth (0700/0600), audited.
+    let auth_audit = audit_for_auth.clone();
+    let auth = melissa_web::Auth::open(&dirs.state.join("auth"))
+        .context("opening the login store")?
+        .with_events(Arc::new(move |ev: &melissa_auth::AuthEvent| {
+            let mut record = melissa_agent::AuditRecord::now(
+                ev.action,
+                0,
+                "",
+                format!("{} (from {})", ev.detail, ev.source),
+            )
+            .by("ui");
+            record.person = Some(ev.person.clone());
+            if let Err(e) = auth_audit.append(&record) {
+                tracing::error!("audit log write failed: {e}");
+            }
+        }));
+    // A box nobody has claimed: the code goes to the console and the log only.
+    if let Some((code, _)) = auth.setup_code().context("making the setup code")? {
+        println!(
+            "  Claim:    open http://{}/claim and enter the setup code {code}\n            \
+             (valid 1 hour; a new one: melissa-server setup-code)",
+            config.listen
+        );
+        melissa_web::log_setup_code(&code);
+    }
     let ProviderSetup {
         path,
         file,
@@ -793,11 +836,26 @@ async fn serve(
         app_access: start.app_access,
         setup_passwords: Some(start.setup_passwords),
     });
-    melissa_web::serve(
-        listener,
-        melissa_web::router_with_settings(board, mcp, lead.clone(), settings),
-    )
-    .await?;
+    let app = melissa_web::router_with_settings(board, mcp, lead.clone(), settings, auth);
+    // The host's CLI (`chat`, `ask`, `confirm`, ...) talks over a local socket that only root
+    // and Melissa's user can open: no password on the box itself, the owner's authority.
+    let socket = dirs.scratch.join(client::SOCKET_NAME);
+    match melissa_web::bind_host(&socket) {
+        Ok(host) => {
+            let app = app.clone();
+            tracing::info!(path = %socket.display(), "host CLI socket");
+            tokio::spawn(async move {
+                if let Err(e) = melissa_web::serve_host(host, &socket, app).await {
+                    tracing::error!("host CLI socket stopped: {e}");
+                }
+            });
+        }
+        Err(e) => tracing::error!(
+            path = %socket.display(),
+            "no host CLI socket (melissa-server chat, ask, confirm won't reach this daemon): {e}"
+        ),
+    }
+    melissa_web::serve(listener, app).await?;
     lead.close().await;
     Ok(())
 }
@@ -927,6 +985,8 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
         }
         [c, tail @ ..] if c == "backend" || c == "backends" => parse_backend(tail)?,
         [c, tail @ ..] if c == "provider" || c == "providers" => parse_provider(tail)?,
+        [c] if c == "setup-code" => Command::SetupCode,
+        [c] if c == "reset-owner" => Command::ResetOwner,
         [c] if c == "update" => Command::Update {
             action: None,
             yes: false,

@@ -119,8 +119,16 @@ accepts podman's forwarded DNAT traffic; others may need 30000–30079 opened). 
 `BIND` (e.g. `BIND=127.0.0.1`); the server then leaves out addresses `BIND` doesn't cover, and
 `set_app_access` can't widen past it.
 
+### Signing in
+The first person to open the UI claims it: Melissa asks for a one-time **setup code**, printed in its log
+when it starts (`sudo podman logs melissa`) and shown by `sudo podman exec melissa melissa-server setup-code`
+(valid 1 hour, a new one at every restart). That person becomes the owner and invites others from Settings →
+People (single-use links, 24 hours). Lost the owner password: `sudo podman exec melissa melissa-server
+reset-owner` prints a one-hour link that sets a new one. The CLI (`melissa-server chat`, `ask`, `confirm`)
+needs no password: it uses a local socket only root and Melissa's user can open, and acts as the owner.
+
 ### From another machine
-The UI has **no login yet**: anyone who reaches it controls Melissa. Keep `UI_BIND=127.0.0.1` and use:
+Sign-in runs over plain HTTP, which sends passwords readable on the network. Keep `UI_BIND=127.0.0.1` and use:
 - SSH: `ssh -L 8080:127.0.0.1:8080 you@host`, then open http://127.0.0.1:8080 on your machine.
 - Tailscale (on the host): `sudo tailscale serve --bg 8080` serves it on your tailnet over HTTPS.
   Only for a tailnet of people you trust (no Funnel).

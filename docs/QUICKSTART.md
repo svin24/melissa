@@ -1,7 +1,8 @@
 # Try Melissa from source
 
 > **Pre-alpha.** Expect bugs and missing pieces. Run it on a machine you don't mind experimenting on,
-> keep it on this machine (it listens on 127.0.0.1 only and has no login), and read what the agents
+> keep it on this machine (it listens on 127.0.0.1 only; the first person to open it claims it with a
+> setup code from the host), and read what the agents
 > ask to do before you approve it.
 
 From source you get the lead agent, its agents and the web UI on your own Linux machine. You chat with the
@@ -61,9 +62,14 @@ Melissa (pre-alpha) is running.
     ...
   k3s:      not found on this machine. Chat, agents and machine checks work; installing apps needs k3s.
   Stop with Ctrl-C.
+  Claim:    open http://127.0.0.1:8080/claim and enter the setup code ABCDE-FGHJK
+            (valid 1 hour; a new one: melissa-server setup-code)
 ```
 
-Open **http://127.0.0.1:8080**. The lead agent starts with your first message; it uses the first agent of
+Open **http://127.0.0.1:8080**. The first time, it asks for that setup code and a username and password:
+you become the owner (others join through Settings → People). Forgot the password: `melissa-server
+reset-owner` prints a one-hour link to set a new one. The CLI (`melissa-server chat`, `ask`) needs no
+password on the same machine. The lead agent starts with your first message; it uses the first agent of
 `grok-acp`, `claude-session`, `opencode-acp` that is installed (and moves on to the next if one fails to
 start, for example because it is not logged in).
 
@@ -107,6 +113,7 @@ just container-install         # sudo: installs the Quadlet, starts melissa.serv
 just container-smoke           # sudo: k3s, Traefik, policies, an app port, pods can't reach the UI
 sudo podman exec -it melissa melissa-setup agent opencode     # free models; or claude / grok (log in)
 sudo podman exec -it melissa melissa-server chat               # or the web UI: http://127.0.0.1:8080
+sudo podman exec melissa melissa-server setup-code             # the code that claims the web UI
 systemctl status melissa
 just container-uninstall       # keeps your data; `just container-uninstall --purge` deletes it
 ```
@@ -123,7 +130,7 @@ just container-uninstall       # keeps your data; `just container-uninstall --pu
 
 ### Use it from another machine
 
-The web UI listens on `127.0.0.1:8080` of the host only (it has no login yet). Reach it through SSH, which does the
+The web UI listens on `127.0.0.1:8080` of the host only (sign-in runs over plain HTTP). Reach it through SSH, which does the
 authentication. `<host>` is the machine running Melissa, `<user>` your account there; `-N` keeps the tunnel
 open without a shell:
 ```
@@ -141,9 +148,9 @@ sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
 It is then at `https://<host>.example.ts.net:8443` (your tailnet's name instead of `example.ts.net`);
 `tailscale serve --https=8443 off` turns it off.
 
-**Warning:** Melissa has no login yet. Everyone and every device that can reach that address on your tailnet can
-chat with the lead agent and **approve its actions**, including deleting apps and their data. Only do this on a tailnet
-you alone use, or restrict who can reach the host on that port with Tailscale ACLs (grants) first.
+Everyone who can reach that address on your tailnet sees the sign-in page; only people with an account
+(the owner and the members they invite) get further. Restricting who can reach the host on that port with
+Tailscale ACLs (grants) still helps.
 
 ## Run on NixOS — experimental
 
@@ -168,7 +175,8 @@ melissa.nixosModules.default
 Then `sudo nixos-rebuild switch`, and log in to an agent: `sudo melissa-setup login opencode` (or `claude`).
 Settings → Providers doesn't install agents on NixOS; add them to `agents.packages`. (By hand,
 `sudo melissa-setup agent <name>` still works: the vendors' CLIs run through nix-ld, which the module turns
-on.) The web UI listens on 127.0.0.1:8080 only (no login yet): `ssh -L 8080:127.0.0.1:8080 you@box`.
+on.) The web UI listens on 127.0.0.1:8080 only (sign-in runs over plain HTTP): `ssh -L 8080:127.0.0.1:8080 you@box`;
+claim it with `sudo melissa-server setup-code`.
 Updates come with your system: `nix flake update && sudo nixos-rebuild switch` (rollback with
 `sudo nixos-rebuild switch --rollback`); Settings → Updates shows the same commands.
 

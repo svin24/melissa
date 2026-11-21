@@ -605,6 +605,7 @@ fn registry_region(ui: &Ui, q: &str, error: Option<&str>) -> Markup {
             p.quiet { "Melissa asks the ACP registry only when you load it." }
             form method="post" action=(REGISTRY_URL) hx-post=(REGISTRY_URL)
                 hx-target={ "#" (REGISTRY_ID) } hx-swap="outerHTML" {
+                (crate::components::csrf_field())
                 button.secondary type="submit" { "Load the list" }
             }
         },
@@ -664,6 +665,7 @@ fn registry_region(ui: &Ui, q: &str, error: Option<&str>) -> Markup {
                     span.quiet.small { "Updated " (ago(*at, now_secs())) }
                     form.inline method="post" action=(REGISTRY_URL) hx-post=(REGISTRY_URL)
                         hx-target={ "#" (REGISTRY_ID) } hx-swap="outerHTML" {
+                        (crate::components::csrf_field())
                         button.link type="submit" { "Refresh" }
                     }
                 }

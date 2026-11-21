@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agent", "crates/appspec", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/voice", "crates/web"]
+members = ["crates/agent", "crates/auth", "crates/appspec", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/voice", "crates/web"]
 
 [workspace.package]
 edition = "2021"
@@ -9,6 +9,7 @@ license = "MIT"
 
 [workspace.dependencies]
 melissa-agent = { path = "crates/agent" }
+melissa-auth = { path = "crates/auth" }
 melissa-web = { path = "crates/web" }
 melissa-cluster = { path = "crates/cluster" }
 melissa-appspec = { path = "crates/appspec" }
@@ -17,6 +18,9 @@ melissa-voice = { path = "crates/voice" }
 # ACP (Agent Client Protocol) client: long-lived agent sessions (Grok `agent stdio`). Apache-2.0.
 agent-client-protocol = { version = "5.3", default-features = false }
 anyhow = "1"
+# Password hashing for logins (MIT OR Apache-2.0, RustCrypto): Argon2id, the OWASP and RFC 9106
+# recommendation; no rand feature (salts come from /dev/urandom like Melissa's other secrets).
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
 base64 = "0.22"
 # Cron expressions for scheduled jobs (MIT): standard 5-field syntax (Vixie/OCPS semantics,
 # DST-aware) on jiff time zones; maintained, and no chrono needed.

@@ -11,13 +11,23 @@ use std::{
 
 use serde::Serialize;
 
+tokio::task_local! {
+    /// Who is signed in for the request being handled (the web layer sets it around each
+    /// request), so every audit record made while handling it names the person.
+    pub static PERSON: String;
+}
+
 /// One audit entry, written as a single JSON line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuditRecord {
     /// Seconds since the Unix epoch.
     pub ts: u64,
-    /// Who acted. `ui` for the local web UI until accounts exist.
+    /// Who acted: `ui` for the web UI and the API, `agent`, `melissa`, ...
     pub actor: String,
+    /// The signed-in person behind a `ui` action (their username; `host` for the host's own
+    /// CLI on the local socket). Set from [`PERSON`] when the record is made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
     /// What happened, e.g. `task.dispatch`, `task.cancel`, `task.finish`.
     pub action: String,
     pub task: u64,
@@ -44,6 +54,7 @@ impl AuditRecord {
         Self {
             ts,
             actor: "ui".into(),
+            person: PERSON.try_with(Clone::clone).ok(),
             action: action.into(),
             task,
             backend: backend.into(),
@@ -123,5 +134,23 @@ mod tests {
         assert_eq!(lines[0]["action"], "task.dispatch");
         assert_eq!(lines[1]["detail"], "succeeded");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn records_name_the_signed_in_person() {
+        let outside = AuditRecord::now("x", 0, "", "");
+        assert_eq!(outside.person, None);
+        let inside = PERSON
+            .scope("ana".to_string(), async {
+                AuditRecord::now("x", 0, "", "")
+            })
+            .await;
+        assert_eq!(inside.person.as_deref(), Some("ana"));
+        let line = serde_json::to_value(&inside).unwrap();
+        assert_eq!(line["person"], "ana");
+        assert!(serde_json::to_value(&outside)
+            .unwrap()
+            .get("person")
+            .is_none());
     }
 }

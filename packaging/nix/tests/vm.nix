@@ -105,13 +105,16 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import json, shlex
 
+    # The web UI needs a login; root on the box uses the host socket (acts as the owner).
+    SOCK = "--unix-socket /run/melissa/api.sock "
+
     def api(path, body=None, method=None):
-        cmd = "curl -sS --max-time 120 -H 'Content-Type: application/json' "
+        cmd = "curl -sS " + SOCK + "--max-time 120 -H 'Content-Type: application/json' "
         if body is not None:
             cmd += "-X POST -d " + shlex.quote(json.dumps(body)) + " "
         elif method:
             cmd += "-X " + method + " "
-        return server.succeed(cmd + "http://127.0.0.1:8080" + path)
+        return server.succeed(cmd + "http://localhost" + path)
 
     def kubectl(args):
         return server.succeed("k3s kubectl " + args)
@@ -125,11 +128,11 @@ pkgs.testers.runNixOSTest {
         body = shlex.quote(json.dumps(args))
         out = "/tmp/tool-" + name + ".json"
         server.succeed(
-            f"(curl -sS --max-time 600 -H 'Content-Type: application/json' -X POST -d {body} "
-            f"http://127.0.0.1:8080/api/tools/{name} > {out}; echo done >> {out}.done) >/dev/null 2>&1 &"
+            f"(curl -sS {SOCK}--max-time 600 -H 'Content-Type: application/json' -X POST -d {body} "
+            f"http://localhost/api/tools/{name} > {out}; echo done >> {out}.done) >/dev/null 2>&1 &"
         )
         if confirm:
-            server.wait_until_succeeds("curl -sS http://127.0.0.1:8080/api/confirmations | grep -q '\"id\"'", timeout=60)
+            server.wait_until_succeeds("curl -sS " + SOCK + "http://localhost/api/confirmations | grep -q '\"id\"'", timeout=60)
             approve_all()
         server.wait_for_file(out + ".done", timeout=600)
         text = server.succeed("cat " + out)
@@ -142,7 +145,7 @@ pkgs.testers.runNixOSTest {
         server.wait_for_unit("melissa-server.service")
         server.wait_for_open_port(8080, addr="127.0.0.1")
         assert api("/healthz").strip() == "ok"
-        server.succeed("curl -sSfL http://127.0.0.1:8080/tasks | grep -qi melissa")
+        server.succeed("curl -sSfL " + SOCK + "http://localhost/tasks | grep -qi melissa")
         # Local addresses of every listener on 8080 (column 4): only loopback.
         listen = server.succeed("ss -Hltn 'sport = :8080' | awk '{print $4}'").split()
         assert listen == ["127.0.0.1:8080"], listen
@@ -177,10 +180,10 @@ pkgs.testers.runNixOSTest {
         server.succeed("systemctl restart melissa-server.service")
         server.wait_for_open_port(8080, addr="127.0.0.1")
         server.succeed(
-            "curl -sS -o /dev/null -w '%{redirect_url}' -d backend=foreign -d prompt=sandboxed-hello "
-            "http://127.0.0.1:8080/tasks > /tmp/task-url"
+            "curl -sS " + SOCK + "-o /dev/null -w '%{redirect_url}' -d backend=foreign -d prompt=sandboxed-hello "
+            "http://localhost/tasks > /tmp/task-url"
         )
-        server.wait_until_succeeds("curl -sS $(cat /tmp/task-url) | grep -q sandboxed-hello", timeout=60)
+        server.wait_until_succeeds("curl -sS " + SOCK + "$(cat /tmp/task-url) | grep -q sandboxed-hello", timeout=60)
 
     with subtest("k3s Ready, Melissa's RBAC and admission policies applied"):
         server.wait_for_unit("k3s.service")
@@ -258,10 +261,10 @@ pkgs.testers.runNixOSTest {
         assert updates["host"] == "nix", updates["host"]
         assert updates["actions"] == ["restart"], updates["actions"]
         assert any(c["command"] == "sudo nixos-rebuild switch" for c in updates["commands"]), updates["commands"]
-        page = server.succeed("curl -sSf http://127.0.0.1:8080/settings/updates")
+        page = server.succeed("curl -sSf " + SOCK + "http://localhost/settings/updates")
         assert "nix flake update" in page and "podman" not in page and "git pull" not in page
         # Agent tasks moved into Settings → Developer.
-        page = server.succeed("curl -sSf http://127.0.0.1:8080/settings/developer")
+        page = server.succeed("curl -sSf " + SOCK + "http://localhost/settings/developer")
         assert "Agent tasks" in page and 'href="/settings/developer"' in page
         # Agent installs from Settings are container-only: no Install button, no units, no
         # extra polkit rights on Nix.

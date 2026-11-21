@@ -598,7 +598,19 @@ async fn confirmations(State(lead): State<Lead>) -> Response {
     Json(json!({"confirmations": list})).into_response()
 }
 
-async fn resolve(State(lead): State<Lead>, Path((id, verdict)): Path<(u64, String)>) -> Response {
+async fn resolve(
+    State(lead): State<Lead>,
+    Path((id, verdict)): Path<(u64, String)>,
+    viewer: Option<axum::Extension<crate::auth::Viewer>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if verdict != "deny" {
+        if let Err(r) =
+            crate::auth::check_approval(&lead, id, viewer.as_ref().map(|v| &v.0), &headers)
+        {
+            return *r;
+        }
+    }
     let verdict = match verdict.as_str() {
         "approve" => Verdict::Approved,
         "deny" => Verdict::Denied,

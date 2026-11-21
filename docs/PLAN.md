@@ -374,10 +374,12 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 - Headless OS, so the UI is a web app served by the agent. Stack: **Rust server-side templating (axum + maud, or askama) + htmx**, with htmx and CSS embedded in the binary via **rust-embed** (no CDN, works offline). Optional Alpine.js for tiny client state, Pico.css for styling. Pin and vendor all assets (see `crates/web/assets`).
 - Rationale: light, stable, little churn, nothing that needs constant updating; easy for contributors to extend.
 - **Fixed component library + app manifests.** The UI is built only from a reviewed set of components (cards, tables, forms, logs, status badges, confirm dialogs). Apps declare their needs in manifests (name, icon, ports, storage, config fields, health checks). **AI agents must NEVER generate custom UI elements.** They only select components and fill manifests. New components are human-reviewed code.
-- Auth: see section 6c (people, logins and permissions); sessions with CSRF protection from day one. Until login exists the lead agent
-  binds to loopback only, mutating requests must be same-origin (`Sec-Fetch-Site`/`Origin`), and a strict CSP
-  (no inline script/style) is set. With login: `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Strict`), CSRF
-  tokens, Argon2id passwords, revocable sessions, and a one-time setup code shown on the console to claim the box.
+- Auth: see section 6c (people, logins and permissions). Since 2026-11-21 (step 1, DECISIONS "Logins"): every
+  page, API call and event stream needs a session (Argon2id passwords, revocable server-side sessions, a CSRF
+  token per session, the password again for sensitive actions); the first person claims the box with a
+  one-time setup code from the host. The lead agent still binds to loopback only, mutating requests must also
+  be same-origin (`Sec-Fetch-Site`/`Origin`), and a strict CSP (no inline script/style) is set. `__Host-`
+  cookies (`Secure`) when served over HTTPS. The host's CLI uses a local socket instead (owner authority).
 - Agent and model output is untrusted. Agent prose is Markdown (CommonMark + GFM tables, strikethrough, task lists)
   rendered by one fixed component (`components::markdown`, owner-approved 2026-11-19): raw HTML shows as text,
   links only to http/https/mailto (new tab, `noopener noreferrer nofollow`), bare URLs linked, images never loaded.
@@ -552,6 +554,12 @@ Minecraft server and lets them make their own agents.
 - **HTTPS** is wanted (passwords on a plain-HTTP LAN leg are sniffable; Tailscale encrypts its own leg) and
   required for passkeys. It follows the TLS question (Q22: Tailscale certificates or an internal CA).
 
+- **Progress:** step 1 (logins) built 2026-11-21 (DECISIONS "Logins"): `crates/auth`, the gate in
+  `crates/web/src/auth`, sign-in / claim / invite / password-again pages, Settings → Account (password,
+  sessions) and Settings → People (owner: members, invite and reset links), `melissa-server setup-code` and
+  `reset-owner`, the CLI on a host-local socket. Members have today's access except People, providers, app
+  access, updates and force delete. Open items: Q87.
+
 Build order: (1) logins: accounts, owner claim, invites, sessions, re-auth; (2) agents owned by a person and
 a lead-agent conversation per person; (3) permissions with presets and requests to the owner; (4) shared
 providers with "may use"; (5) HTTPS and passkeys; (6) per-person provider accounts.
@@ -569,6 +577,7 @@ Cargo.toml          # workspace, lints (forbid unsafe, warn on unwrap)
 crates/server        # server: lead agent, coordinator, agent layer entrypoint
 crates/device         # per-device daemon (device)
 crates/web          # axum + maud UI, embedded htmx (rust-embed)
+crates/auth         # logins: accounts (Argon2id), owner claim, invites, sessions, sign-in limits
 crates/agent        # backend trait, echo + CLI backends (claude, grok, opencode), task board, audit log
 crates/cluster         # k3s client (kube-rs, rustls) behind small traits, cluster + app tools, rendering
 crates/appspec      # the app spec agents write, validation, legacy catalog specs
@@ -1120,11 +1129,23 @@ Roadmap (rough, phases may overlap):
     check: host-network vs in-container tailscaled, how app ports and the app access filter (section 4) see
     tailnet traffic then, auth-key vs interactive login, and whether `tailscale serve` can give the UI HTTPS
     (Q22, passkeys, notifications Q83).
-86. Setup passwords (2026-11-21; DECISIONS). (a) Show and Copy need the owner's password again once logins
-    exist (6c); until then anyone who can open the web UI on the LAN can reveal an undismissed one, like
-    every other owner action. (b) Copy works only in a secure context (HTTPS or localhost); on plain HTTP the
+86. Setup passwords (2026-11-21; DECISIONS). (a) Done 2026-11-21: Show, Copy and Dismiss need the password
+    again (5 minutes); members can still reveal one until permissions (6c step 3). (b) Copy works only in a secure context (HTTPS or localhost); on plain HTTP the
     owner selects the shown value (TLS, Q22). (c) `app_exec` (confirmed by the user, audited) can still read an
     app's environment, which holds the password for apps that take it as an env value; tightening that is
     separate. (d) An old card of an app force-deleted and installed again shows the new app's password (it
     goes by app name); a new card comes with the new install. (e) Unsandboxed agent backends (an explicit
     owner setting) run as the server's user with its groups, like for the other kubeconfigs.
+87. Logins (2026-11-21; DECISIONS "Logins"). (a) Behind the container's UI forward and `tailscale serve` every
+    request comes from a local address, so the per-address limit counts everyone together: 30 failed tries
+    (or 10 on a known username) lock sign-in for 15 minutes for all. Trust `X-Forwarded-For` from the local
+    proxy, or limit per username only? (b) An open event stream (SSE) keeps running after its session is
+    revoked, until it reconnects. (c) In step 1 members keep Developer (No permission prompts, Full access),
+    Permissions, Schedules and the setup password card; they move under permissions in step 3. (d) Any app
+    access change asks for the password again, not only widening. (e) Account and People reuse the Key and
+    Person icons; a people icon is a new glyph (design). The sign-in pages, Account and People are built from
+    existing components without a Figma design: owner review. (f) Does `tailscale serve` send
+    `X-Forwarded-Proto: https` (for the `__Host-` cookie)? Verify on a real tailnet. (g) Session lifetimes
+    (7 days idle, 30 days at most) and the 5-minute password window: right for a household? (h) Per-person
+    API tokens for remote clients (desktop/Android, 6b) are not built; the CLI uses the host socket. (i) Failed
+    tries and the setup code live in memory: a restart clears lockouts and makes a new code.
