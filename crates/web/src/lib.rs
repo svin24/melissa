@@ -3174,6 +3174,26 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn each_composer_names_its_chat_for_drafts() {
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
+                .unwrap();
+            let (_, _, home) = get_html(&app, "/").await;
+            assert!(home.contains("data-draft=\"lead\""), "{home}");
+            let (_, _, page) = get_html(&app, &format!("/agents/{}", ada.id)).await;
+            assert!(
+                page.contains(&format!("data-draft=\"agent.{}\"", ada.id)),
+                "{page}"
+            );
+            // The answer to a send (it replaces the composer) keeps the attribute.
+            let (_, _, html) = send(&app, htmx_post("/ui/messages", "text=Hi")).await;
+            assert!(html.contains("data-draft=\"lead\""), "{html}");
+        }
+
+        #[tokio::test]
         async fn sending_a_message_from_the_composer() {
             let (app, lead) = app();
             let (status, _, html) = send(&app, htmx_post("/ui/messages", "text=Hello+there")).await;
