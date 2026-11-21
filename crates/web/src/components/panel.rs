@@ -307,9 +307,11 @@ pub fn inline_select(
     let id = format!("f-{name}");
     html! {
         label.visually-hidden for=(id) { (label) }
-        select id=(id) name=(name) {
-            @for (value, text) in choices {
-                option value=(value) selected[value == selected] { (text) }
+        span.select-wrap {
+            select id=(id) name=(name) {
+                @for (value, text) in choices {
+                    option value=(value) selected[value == selected] { (text) }
+                }
             }
         }
     }

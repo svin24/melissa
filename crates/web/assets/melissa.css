@@ -4660,8 +4660,8 @@ main,
   margin: 0;
 }
 
-/* "Keep for": a compact select that matches the upload button (same height, border and
-   radius) with its own chevron, drawn in CSS (no image URLs under the CSP). */
+/* Compact select (Files "Keep for", settings rows): matches the upload button (same height,
+   border and radius) with its own chevron, drawn in CSS (no image URLs under the CSP). */
 .select-wrap {
   position: relative;
   display: inline-flex;
@@ -4680,7 +4680,7 @@ main,
   pointer-events: none;
 }
 
-.file-keep select {
+.select-wrap select {
   appearance: none;
   -webkit-appearance: none;
   min-height: 40px;
@@ -4695,12 +4695,12 @@ main,
 }
 
 @media (hover: hover) {
-  .file-keep select:hover {
+  .select-wrap select:hover {
     border-color: var(--muted);
   }
 }
 
-.file-keep select:focus-visible {
+.select-wrap select:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
