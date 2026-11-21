@@ -136,4 +136,6 @@ argument hash (`app_exec`: who, app, argv, stdin length, pod, container, exit co
 - A registry without `with_owners` treats every workspace as existing and unassigned (the lead agent gets asked);
   without `with_agents` messages show agent ids instead of names. `melissa-server` wires both.
 - Two reassignments in the same second must still differ: `assigned-at` has nanoseconds.
-- A renamed agent keeps its old name in its running agent's system prompt until its session is new.
+- A renamed agent keeps its old name in its running agent's system prompt until its session is new (it and
+  the lead agent get a note). Its old name no longer resolves: `AgentNames::resolve_id` returns `Err(why)`
+  (former, ambiguous, deleted) for the caller to pass on; see lead-loop.md, "Agent references".

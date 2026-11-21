@@ -34,7 +34,7 @@ use super::{
     conversation::{lock, Conversation, ConversationSpec},
     events::{EventLog, LeadEvent, TurnId},
     prompt::SystemPrompt,
-    registry::{AgentRecord, AgentRegistry, RegistryError},
+    registry::{AgentRecord, AgentRegistry, RegistryError, ResolveError, Who},
     transcript::{shorten, Transcript},
     LeadError,
 };
@@ -279,16 +279,16 @@ impl AgentPool {
     /// removed, and it leaves the registry (its id is never reused). Audited
     /// `agent.delete`. The lead agent is not in the registry and cannot be deleted.
     pub async fn delete(&self, name_or_id: &str, actor: &str) -> Result<AgentDeleted, LeadError> {
-        let agent = self.inner.registry.resolve(name_or_id).ok_or_else(|| {
-            if self.inner.registry.is_lead(name_or_id) {
-                LeadError::Invalid(format!(
-                    "{} (the lead agent) can't be deleted",
-                    self.inner.registry.lead_name()
-                ))
-            } else {
-                LeadError::NoSuchAgent(name_or_id.into())
-            }
-        })?;
+        let agent = self
+            .inner
+            .registry
+            .resolve(name_or_id)
+            .map_err(|e| match e {
+                ResolveError::Lead(name) => {
+                    LeadError::Invalid(format!("{name} (the lead agent) can't be deleted"))
+                }
+                other => resolve_error(other),
+            })?;
         if let Some(store) = &self.inner.workspaces {
             let all = store.workspaces().await.map_err(|e| {
                 LeadError::InUse(format!(
@@ -436,10 +436,24 @@ impl AgentPool {
     }
 
     fn resolve(&self, name_or_id: &str) -> Result<AgentRecord, ToolError> {
-        self.inner
+        self.pick(name_or_id).map(|(a, _)| a)
+    }
+
+    /// A helper for a tool's `agent` argument ([`AgentRegistry::lookup`]: strict), with the
+    /// note for the result when it was named by name (`"ada" → Ada (d-…a1); …`).
+    fn pick(&self, name_or_id: &str) -> Result<(AgentRecord, Option<String>), ToolError> {
+        let found = self
+            .inner
             .registry
-            .resolve(name_or_id)
-            .ok_or_else(|| ToolError::BadArgs(format!("no agent `{name_or_id}` on this device")))
+            .lookup(name_or_id)
+            .map_err(|e| ToolError::BadArgs(e.to_string()))?;
+        let note = found.note(name_or_id);
+        match found.who {
+            Who::Agent(a) => Ok((*a, note)),
+            Who::Lead => Err(ToolError::BadArgs(
+                ResolveError::Lead(self.inner.registry.lead_name()).to_string(),
+            )),
+        }
     }
 
     /// The agent's conversation (made on first use; no agent runs until a message comes).
@@ -482,7 +496,8 @@ impl AgentPool {
                     "{base}\n\nYou are agent {name} (id {id}) on device {device}. Your scope: the \
                      workspaces you look after (my_apps lists them) and new workspaces you create \
                      (they become yours). Messages come from the lead agent, whom the user calls \
-                     {lead} (\"A job from the lead agent\"), or from the user directly.\n\n{files}"
+                     {lead} (id lead) (\"A job from the lead agent\"), or from the user directly. \
+                     Name agents by id: names can change.\n\n{files}"
                 )
             })
         };
@@ -655,7 +670,7 @@ impl AgentPool {
     /// The MCP token of an agent's open session (tests act as the agent's agent with it).
     #[cfg(test)]
     pub(crate) fn session_token(&self, name_or_id: &str) -> Option<String> {
-        let agent = self.inner.registry.resolve(name_or_id)?;
+        let agent = self.inner.registry.resolve(name_or_id).ok()?;
         lock(&self.inner.convs).get(&agent.id)?.token()
     }
 
@@ -673,7 +688,7 @@ impl AgentPool {
     /// the chat is open in this daemon run, else when its saved chat last changed, else when
     /// it was made. Opens nothing (cheap enough for every sidebar update).
     pub fn last_active(&self, id: &str) -> Option<u64> {
-        let agent = self.inner.registry.resolve(id)?;
+        let agent = self.inner.registry.resolve(id).ok()?;
         let open = lock(&self.inner.convs).get(&agent.id).cloned();
         let from_log = open.and_then(|c| {
             let log = c.events();
@@ -702,21 +717,19 @@ impl AgentPool {
         )
     }
 
-    /// One agent by name or id.
+    /// One agent by id or exact current name (see [`AgentRegistry::lookup`]).
     pub fn get(&self, name_or_id: &str) -> Option<AgentView> {
-        self.inner
-            .registry
-            .resolve(name_or_id)
-            .map(|b| self.view(&b))
+        self.find(name_or_id).ok()
+    }
+
+    /// [`Self::get`] with the reason when it finds nobody, or more than one agent.
+    pub fn find(&self, name_or_id: &str) -> Result<AgentView, LeadError> {
+        self.user_agent(name_or_id).map(|b| self.view(&b))
     }
 
     /// The user renames an agent (audited, actor `ui`).
     pub fn rename(&self, name_or_id: &str, new_name: &str) -> Result<AgentView, LeadError> {
-        let old = self
-            .inner
-            .registry
-            .resolve(name_or_id)
-            .ok_or_else(|| LeadError::NoSuchAgent(name_or_id.into()))?;
+        let old = self.user_agent(name_or_id)?;
         let agent = self
             .inner
             .registry
@@ -727,12 +740,22 @@ impl AgentPool {
             "ui",
             &format!("{}: {} → {}", agent.id, old.name, agent.name),
         );
-        // Its prompt has the new name from its next session; an open one is told now.
+        // Its prompt has the new name from its next session; an open one is told now, and so
+        // is the lead agent (its chat may still say the old name, which no longer reaches it).
         if old.name != agent.name {
             if let Some(c) = lock(&self.inner.convs).get(&agent.id) {
                 c.note(&format!(
                     "The user renamed you: you are now called {}.",
                     agent.name
+                ));
+            }
+            if let Some(a) = self.inner.attached.get() {
+                a.lead.note(&format!(
+                    "The user renamed helper {} to {}. Its id stays {}: use the id, the old \
+                     name no longer reaches it.",
+                    old.label(),
+                    agent.name,
+                    agent.id
                 ));
             }
         }
@@ -763,7 +786,8 @@ impl AgentPool {
             }
             for c in lock(&self.inner.convs).values() {
                 c.note(&format!(
-                    "The user renamed the lead agent: the user now calls it {new}."
+                    "The user renamed the lead agent: the user now calls it {new} (its id stays \
+                     `lead`)."
                 ));
             }
         }
@@ -1034,7 +1058,7 @@ impl AgentPool {
         self.inner
             .registry
             .resolve(name_or_id)
-            .ok_or_else(|| LeadError::NoSuchAgent(name_or_id.into()))
+            .map_err(resolve_error)
     }
 
     /// Every workspace on this device with its owning agent.
@@ -1131,7 +1155,7 @@ impl AgentPool {
         let agent = info
             .owner
             .label_value()
-            .and_then(|id| self.inner.registry.resolve(id));
+            .and_then(|id| self.inner.registry.get(id));
         self.inner.events.push(LeadEvent::WorkspaceForceDeleted {
             workspace: workspace.into(),
             agent: agent.as_ref().map(|b| b.id.clone()),
@@ -1197,9 +1221,8 @@ impl AgentPool {
             return;
         };
         let detail = format!(
-            "from {source} to agent {} ({}), tagged as data{note}: {}",
-            agent.name,
-            agent.id,
+            "from {source} to agent {}, tagged as data{note}: {}",
+            agent.label(),
             shorten(text, 200)
         );
         let record = crate::AuditRecord::now("agent.brokered", task, "", detail).by("lead");
@@ -1377,9 +1400,9 @@ impl AgentPool {
                 &format!("the lead agent (task {task})"),
             )
             .map_err(|e| match e {
-                RegistryError::BadName | RegistryError::NameTaken(_) => {
-                    ToolError::BadArgs(e.to_string())
-                }
+                RegistryError::BadName
+                | RegistryError::NameTaken(_)
+                | RegistryError::IdShapedName(_) => ToolError::BadArgs(e.to_string()),
                 other => ToolError::Failed(other.to_string()),
             })?;
         self.inner.events.push(LeadEvent::AgentCreated {
@@ -1388,8 +1411,8 @@ impl AgentPool {
             backend: agent.backend.clone(),
         });
         let out = json!({
-            // The name is what the agent says (and may pass back); the id is for reference.
-            "agent": agent.name,
+            // Name it by its id from now on: names can change.
+            "agent": agent.label(),
             "agent_id": agent.id,
             "backend": agent.backend,
             "tools": agent.tools,
@@ -1404,9 +1427,11 @@ impl AgentPool {
             args,
             &["agent", "goal", "user_request", "research", "timeout_secs"],
         )?;
-        let agent = self.resolve(str_arg(&args, "agent")?)?;
+        let (agent, note) = self.pick(str_arg(&args, "agent")?)?;
         let brief = self.brief(&args, "goal")?;
-        self.start_job(ctx, &agent, brief)
+        let mut out = self.start_job(ctx, &agent, brief)?;
+        with_note(&mut out, note);
+        Ok(out)
     }
 
     /// A job from `goal_key` (`goal` or `job`), the optional `user_request` and `research`,
@@ -1472,7 +1497,7 @@ impl AgentPool {
             conv.send(&text, "lead").map_err(|e| match e {
                 LeadError::Busy => ToolError::Failed(format!(
                     "agent {} is still working on something; wait for it (agent_status) or stop it",
-                    agent.name
+                    agent.label()
                 )),
                 other => ToolError::BadArgs(other.to_string()),
             })?
@@ -1505,7 +1530,7 @@ impl AgentPool {
         let events = self.inner.events.clone();
         let registry = self.inner.registry.clone();
         let lead = self.attached().ok().map(|a| a.lead.clone());
-        let (id, name) = (agent.id.clone(), agent.name.clone());
+        let (id, name, labelled) = (agent.id.clone(), agent.name.clone(), agent.label());
         tokio::spawn(async move {
             let mut over_time = false;
             if !conv.wait_turn(turn, timeout).await {
@@ -1543,7 +1568,7 @@ impl AgentPool {
                         subject: Some(name.clone()),
                     });
                 }
-                let text = report_text(&name, status, error.as_deref(), &reply);
+                let text = report_text(&labelled, status, error.as_deref(), &reply);
                 lead.report(
                     &text,
                     super::conversation::Report {
@@ -1555,8 +1580,7 @@ impl AgentPool {
             }
         });
         Ok(json!({
-            // The name is what the agent says (and may pass back); the id is for reference.
-            "agent": agent.name,
+            "agent": agent.label(),
             "agent_id": agent.id,
             "turn": turn,
             "timeout_secs": timeout.as_secs(),
@@ -1577,7 +1601,7 @@ impl AgentPool {
             ));
         }
         let args = object(args, &["agent"])?;
-        let agent = self.resolve(str_arg(&args, "agent")?)?;
+        let (agent, note) = self.pick(str_arg(&args, "agent")?)?;
         let conv = self.conversation(&agent)?;
         let job = lock(&self.inner.jobs).get(&agent.id).cloned();
         let tainted = conv.is_tainted();
@@ -1614,9 +1638,8 @@ impl AgentPool {
             o.reply.chars().skip(skip).collect::<String>()
         });
         let view = self.view(&agent);
-        Ok(json!({
-            // The name is what the agent says (and may pass back); the id is for reference.
-            "agent": agent.name,
+        let mut out = json!({
+            "agent": agent.label(),
             "agent_id": agent.id,
             "backend": agent.backend,
             "status": view.status,
@@ -1626,7 +1649,9 @@ impl AgentPool {
             "error": outcome.and_then(|o| o.error),
             "result": result,
             "read_untrusted_content": tainted,
-        }))
+        });
+        with_note(&mut out, note);
+        Ok(out)
     }
 
     async fn list_tool(&self, ctx: &TaskContext) -> Result<Value, ToolError> {
@@ -1657,7 +1682,7 @@ impl AgentPool {
             .map(|b| {
                 let workspaces = owned.remove(&b.id).unwrap_or_default();
                 json!({
-                    "agent": b.name,
+                    "agent": super::registry::label(&b.name, &b.id),
                     "agent_id": b.id,
                     "backend": b.backend,
                     "status": b.status,
@@ -1667,16 +1692,18 @@ impl AgentPool {
             })
             .collect();
         Ok(json!({
+            "lead": self.inner.registry.label_of(super::registry::LEAD_KEY),
             "agents": agents,
             "unassigned_workspaces": unassigned,
             "workspaces_known": workspaces_known,
+            "address_agents_by": "agent_id",
         }))
     }
 
     async fn stop(&self, ctx: &TaskContext, args: &Value) -> Result<Value, ToolError> {
         lead_only(ctx)?;
         let args = object(args, &["agent"])?;
-        let agent = self.resolve(str_arg(&args, "agent")?)?;
+        let (agent, note) = self.pick(str_arg(&args, "agent")?)?;
         let conv = lock(&self.inner.convs).get(&agent.id).cloned();
         if let Some(conv) = conv {
             conv.cancel(None, "lead").await;
@@ -1690,7 +1717,9 @@ impl AgentPool {
             .set_stopped(&agent.id, true)
             .map_err(|e| ToolError::Failed(e.to_string()))?;
         self.audit("agent.stop", "lead", &agent.id);
-        Ok(json!({"agent": agent.name, "agent_id": agent.id, "status": "stopped"}))
+        let mut out = json!({"agent": agent.label(), "agent_id": agent.id, "status": "stopped"});
+        with_note(&mut out, note);
+        Ok(out)
     }
 
     /// Agent-to-agent talk, brokered by the lead agent: the text reaches the agent as data, never as
@@ -1698,19 +1727,24 @@ impl AgentPool {
     fn message(&self, task: TaskId, ctx: &TaskContext, args: &Value) -> Result<Value, ToolError> {
         lead_only(ctx)?;
         let args = object(args, &["agent", "text", "from_agent"])?;
-        let agent = self.resolve(str_arg(&args, "agent")?)?;
+        let (agent, note) = self.pick(str_arg(&args, "agent")?)?;
         let text = str_arg(&args, "text")?;
+        let mut notes: Vec<String> = note.into_iter().collect();
         let from = match args.get("from_agent") {
             None | Some(Value::Null) => None,
-            Some(Value::String(f)) => Some(self.resolve(f)?),
+            Some(Value::String(f)) => {
+                let (from, note) = self.pick(f)?;
+                notes.extend(note);
+                Some(from)
+            }
             Some(_) => {
                 return Err(ToolError::BadArgs(
-                    "`from_agent` must be an agent name".into(),
+                    "`from_agent` must be an agent id".into(),
                 ))
             }
         };
         let source = match &from {
-            Some(f) => format!("agent {}", f.name),
+            Some(f) => format!("agent {}", f.label()),
             None => "the lead agent".into(),
         };
         let framed = framed_data(&source, text);
@@ -1738,32 +1772,36 @@ impl AgentPool {
         }
         self.attached()?;
         self.audit_brokered(task, &source, &agent, text, "");
-        Ok(json!({
-            // The name is what the agent says (and may pass back); the id is for reference.
-            "agent": agent.name,
+        let mut out = json!({
+            "agent": agent.label(),
             "agent_id": agent.id,
             "turn": sent.turn(),
             "queued": matches!(sent, super::Sent::Queued { .. }),
             "from": source,
             "delivered_as": "data",
-        }))
+        });
+        with_note(&mut out, (!notes.is_empty()).then(|| notes.join("; ")));
+        Ok(out)
     }
 
     async fn reassign_tool(&self, ctx: &TaskContext, args: &Value) -> Result<Value, ToolError> {
         lead_only(ctx)?;
         let args = object(args, &["workspace", "to"])?;
         let workspace = str_arg(&args, "workspace")?;
-        let to = self.resolve(str_arg(&args, "to")?)?;
+        let (to, note) = self.pick(str_arg(&args, "to")?)?;
         // The registry asked the user already (Effect::Ownership), naming the current agent.
         let from = self
             .assign(workspace, &to, "the lead agent, approved by the user")
             .await?;
-        Ok(json!({
+        let mut out = json!({
             "workspace": workspace,
-            "from": from.label_value(),
-            "to": to.name,
+            "from": from.label_value().map(|id| self.inner.registry.label_of(id)),
+            "from_id": from.label_value(),
+            "to": to.label(),
             "to_id": to.id,
-        }))
+        });
+        with_note(&mut out, note);
+        Ok(out)
     }
 }
 
@@ -1781,7 +1819,8 @@ fn framed_data(source: &str, text: &str) -> String {
 const REPORT_CHARS: usize = 4000;
 
 /// What the lead agent reads when a helper's job ended: the outcome, then the helper's last
-/// reply framed as data (nothing inside may close the block early).
+/// reply framed as data (nothing inside may close the block early). `name` is its label,
+/// `Ada (d-…a1)`.
 fn report_text(name: &str, status: &str, error: Option<&str>, reply: &str) -> String {
     let outcome = match (status, error) {
         ("succeeded", _) => "finished its job".to_string(),
@@ -1819,8 +1858,29 @@ fn from_text(names: &dyn AgentNames, owner: &Owner) -> String {
 fn registry_error(e: RegistryError) -> LeadError {
     match e {
         RegistryError::NoSuchAgent(b) => LeadError::NoSuchAgent(b),
-        RegistryError::BadName | RegistryError::NameTaken(_) => LeadError::Invalid(e.to_string()),
+        RegistryError::BadName | RegistryError::NameTaken(_) | RegistryError::IdShapedName(_) => {
+            LeadError::Invalid(e.to_string())
+        }
         other => LeadError::Failed(other.to_string()),
+    }
+}
+
+/// A reference the user's routes could not resolve: unknown or deleted is "no such agent",
+/// more than one agent is [`LeadError::Ambiguous`], a former name says who it is now.
+pub(crate) fn resolve_error(e: ResolveError) -> LeadError {
+    match e {
+        ResolveError::NotFound(key) | ResolveError::Deleted { key, .. } => {
+            LeadError::NoSuchAgent(key)
+        }
+        e @ ResolveError::Ambiguous { .. } => LeadError::Ambiguous(e.to_string()),
+        other => LeadError::Invalid(other.to_string()),
+    }
+}
+
+/// Add the "named by name" note to a tool result (see [`super::registry::Found::note`]).
+fn with_note(out: &mut Value, note: Option<String>) {
+    if let (Some(note), Some(map)) = (note, out.as_object_mut()) {
+        map.insert("resolved".into(), note.into());
     }
 }
 
@@ -1905,7 +1965,9 @@ fn needs_context<'a>() -> BoxFuture<'a, Result<Value, ToolError>> {
 
 /// The schema of an `agent` argument.
 fn agent_param(what: &str) -> Value {
-    json!({"type": "string", "description": format!("{what}: the agent's name or id")})
+    json!({"type": "string", "description": format!(
+        "{what}: the agent's id (preferred, e.g. from list_agents) or its exact current name"
+    )})
 }
 
 impl Tool for CreateAgent {
@@ -2175,8 +2237,8 @@ impl Tool for ReassignWorkspace {
         let workspace = args.get("workspace")?.as_str()?;
         let to = args.get("to")?.as_str()?;
         let to = match self.0.inner.registry.resolve(to) {
-            Some(b) => describe_agent(Some(&self.0.inner.registry), &b.id),
-            None => format!("`{}`", shorten(to, 40)),
+            Ok(b) => describe_agent(Some(&self.0.inner.registry), &b.id),
+            Err(_) => format!("`{}`", shorten(to, 40)),
         };
         Some(format!(
             "the lead agent wants to move workspace `{workspace}` to {to}"
@@ -2216,16 +2278,28 @@ impl Tool for DeleteAgent {
             lead_only(ctx)?;
             let args = object(&args, &["agent"])?;
             let name = str_arg(&args, "agent")?;
+            let note = self
+                .0
+                .inner
+                .registry
+                .lookup(name)
+                .ok()
+                .and_then(|f| f.note(name));
             match self.0.delete(name, "lead").await {
-                Ok(d) => Ok(json!({
-                    "agent": d.name,
-                    "agent_id": d.agent,
-                    "deleted": true,
-                    "removed": d.removed,
-                })),
+                Ok(d) => {
+                    let mut out = json!({
+                        "agent": super::registry::label(&d.name, &d.agent),
+                        "agent_id": d.agent,
+                        "deleted": true,
+                        "removed": d.removed,
+                    });
+                    with_note(&mut out, note);
+                    Ok(out)
+                }
                 Err(LeadError::NoSuchAgent(_)) => Err(ToolError::BadArgs(format!(
                     "no agent `{name}` on this device"
                 ))),
+                Err(e @ LeadError::Ambiguous(_)) => Err(ToolError::BadArgs(e.to_string())),
                 Err(e @ (LeadError::InUse(_) | LeadError::Invalid(_))) => {
                     Err(ToolError::Refused(e.to_string()))
                 }
@@ -2248,8 +2322,8 @@ impl Tool for DeleteAgent {
     fn describe_call(&self, args: &Value) -> Option<String> {
         let agent = args.get("agent")?.as_str()?;
         let who = match self.0.inner.registry.resolve(agent) {
-            Some(b) => describe_agent(Some(&self.0.inner.registry), &b.id),
-            None => format!("`{}`", shorten(agent, 40)),
+            Ok(b) => describe_agent(Some(&self.0.inner.registry), &b.id),
+            Err(_) => format!("`{}`", shorten(agent, 40)),
         };
         Some(format!(
             "the lead agent wants to delete {who} with its chat, file box and schedules"

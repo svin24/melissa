@@ -84,19 +84,22 @@ impl ScheduleJobTool {
             Scope::Nothing => Err(not_yours()),
             Scope::Agent { id } => match named {
                 None => Ok(Principal::Agent(id.clone())),
-                Some(n) => match self.names().and_then(|names| names.resolve_id(n)) {
-                    Some(other) if other == *id => Ok(Principal::Agent(other)),
+                Some(n) => match self.names().map(|names| names.resolve_id(n)) {
+                    Some(Ok(other)) if other == *id => Ok(Principal::Agent(other)),
+                    // Anyone else (or a name that is unclear) is not the agent's to schedule.
                     _ => Err(not_yours()),
                 },
             },
             Scope::Lead { .. } | Scope::User => match named {
                 None => Ok(Principal::Lead),
                 Some(n) if n.eq_ignore_ascii_case("lead") => Ok(Principal::Lead),
-                Some(n) => self
-                    .names()
-                    .and_then(|names| names.resolve_id(n))
-                    .map(Principal::Agent)
-                    .ok_or_else(|| ToolError::BadArgs(format!("no agent `{n}` on this device"))),
+                Some(n) => match self.names() {
+                    Some(names) => names
+                        .resolve_id(n)
+                        .map(Principal::Agent)
+                        .map_err(ToolError::BadArgs),
+                    None => Err(ToolError::BadArgs(format!("no agent `{n}` on this device"))),
+                },
             },
         }
     }

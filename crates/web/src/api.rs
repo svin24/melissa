@@ -378,7 +378,9 @@ async fn status(State(lead): State<Lead>) -> Response {
 
 fn lead_error(e: LeadError) -> Response {
     match e {
-        LeadError::Busy | LeadError::InUse(_) => error(StatusCode::CONFLICT, e),
+        LeadError::Busy | LeadError::InUse(_) | LeadError::Ambiguous(_) => {
+            error(StatusCode::CONFLICT, e)
+        }
         LeadError::NoSuchAgent(_) => error(StatusCode::NOT_FOUND, e),
         LeadError::Failed(_) => error(StatusCode::BAD_GATEWAY, e),
         _ => error(StatusCode::UNPROCESSABLE_ENTITY, e),
@@ -390,9 +392,9 @@ async fn agents(State(lead): State<Lead>) -> Response {
 }
 
 async fn agent(State(lead): State<Lead>, Path(agent): Path<String>) -> Response {
-    match lead.agents().get(&agent) {
-        Some(b) => Json(b).into_response(),
-        None => lead_error(LeadError::NoSuchAgent(agent)),
+    match lead.agents().find(&agent) {
+        Ok(b) => Json(b).into_response(),
+        Err(e) => lead_error(e),
     }
 }
 
@@ -459,8 +461,8 @@ async fn agent_rename(
     Json(body): Json<Rename>,
 ) -> Response {
     let pool = lead.agents();
-    // The lead agent by `lead`, its name or `Melissa` (its default name).
-    if pool.get(&agent).is_none() && pool.registry().is_lead(&agent) {
+    // The lead agent by `lead` or its current name (strict, like every agent reference).
+    if pool.registry().is_lead(&agent) {
         return match pool.rename_lead(&body.name) {
             Ok(name) => Json(json!({"key": "lead", "name": name, "role": "lead"})).into_response(),
             Err(e) => lead_error(e),

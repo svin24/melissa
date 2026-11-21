@@ -321,11 +321,11 @@ impl AgentNames for Names {
             _ => None,
         }
     }
-    fn resolve_id(&self, name: &str) -> Option<String> {
+    fn resolve_id(&self, name: &str) -> Result<String, String> {
         match name.to_ascii_lowercase().as_str() {
-            "ada" | ADA => Some(ADA.into()),
-            "bo" | BO => Some(BO.into()),
-            _ => None,
+            "ada" | ADA => Ok(ADA.into()),
+            "bo" | BO => Ok(BO.into()),
+            _ => Err(format!("no agent `{name}` on this device")),
         }
     }
 }
@@ -3208,7 +3208,7 @@ async fn my_apps_shows_an_agent_its_own_apps_and_only_names_and_owners_of_the_re
         .call(1, &mut agent(BO), "my_apps", json!({}))
         .await
         .unwrap();
-    assert_eq!(out["you"], "Bo");
+    assert_eq!(out["you"], format!("Bo ({BO})"));
     let yours = out["yours"].as_array().unwrap();
     assert_eq!(yours.len(), 1);
     let mine = &yours[0];
@@ -3223,7 +3223,7 @@ async fn my_apps_shows_an_agent_its_own_apps_and_only_names_and_owners_of_the_re
     assert_eq!(
         out["not_yours"],
         json!([
-            {"app": "minecraft", "owner": "Ada"},
+            {"app": "minecraft", "owner": format!("Ada ({ADA})")},
             {"app": "valheim", "owner": null},
         ])
     );
@@ -3241,7 +3241,7 @@ async fn my_apps_shows_an_agent_its_own_apps_and_only_names_and_owners_of_the_re
     assert_eq!(apps.len(), 3);
     assert_eq!(
         apps[0],
-        json!({"app": "minecraft", "owner": "Ada", "not_yours": true})
+        json!({"app": "minecraft", "owner": format!("Ada ({ADA})"), "not_yours": true})
     );
     assert_eq!(apps[1]["app"], "minecraft-2");
     assert_eq!(apps[1]["phase"], "ready");
@@ -3288,8 +3288,16 @@ async fn my_apps_shows_the_lead_agent_every_app_grouped_by_owner() {
     assert_eq!(
         summary,
         [
-            (json!("Ada"), json!(ADA), vec![json!("minecraft")]),
-            (json!("Bo"), json!(BO), vec![json!("minecraft-2")]),
+            (
+                json!(format!("Ada ({ADA})")),
+                json!(ADA),
+                vec![json!("minecraft")]
+            ),
+            (
+                json!(format!("Bo ({BO})")),
+                json!(BO),
+                vec![json!("minecraft-2")]
+            ),
             (Value::Null, Value::Null, vec![json!("valheim")]),
         ]
     );

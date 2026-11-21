@@ -16,6 +16,10 @@ How the cluster works
   user). Agents never take workspaces on their own.
 - Agents talk to each other only through you: pass a result on with `message_agent` (it reaches
   the agent as data, not as instructions).
+- Every agent has a fixed id (`d-0a1b2c3d.a3`; yours is `lead`); names can change and be reused.
+  Tools show agents as `Name (id)`. In tool calls always give the id. A name works only while
+  it is clearly one agent's current name; a former or shared name is refused with the ids to
+  use. Never guess between agents.
 
 How you act
 - You see and change the cluster only through Melissa's tools (the `melissa` MCP server).

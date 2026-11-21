@@ -844,11 +844,12 @@ impl Deployer {
             self.settings
                 .agents
                 .as_ref()
-                .and_then(|b| b.resolve_id(name))
+                .map(|b| b.resolve_id(name))
+                .unwrap_or_else(|| Err(format!("no agent `{name}` on this device")))
                 .map(Owner::Agent)
-                .ok_or_else(|| {
+                .map_err(|why| {
                     ToolError::BadArgs(format!(
-                        "no agent `{name}` on this device (create one with create_agent)"
+                        "{why} (agents: list_agents; a new one: create_agent)"
                     ))
                 })
         };
@@ -928,7 +929,11 @@ impl Deployer {
             Some(ns) => {
                 let mut o = Ownership::of(ns);
                 if let Some(b) = agent_arg {
-                    let wanted = names.and_then(|n| n.resolve_id(b));
+                    let wanted = match names.map(|n| n.resolve_id(b)) {
+                        Some(Err(why)) => return Err(ToolError::BadArgs(why)),
+                        Some(Ok(id)) => Some(id),
+                        None => None,
+                    };
                     if wanted.as_deref() != o.owner.label_value() {
                         return Err(ToolError::BadArgs(format!(
                             "`{app}` exists and is looked after by {}; deploy without `agent` \
@@ -1660,18 +1665,21 @@ impl AppStatus {
     }
 }
 
-/// The name of an app's owner (`None`: no agent looks after it).
+/// An app's owner for agents: `Ada (<id>)` (`None`: no agent looks after it).
 fn owner_name(owner: &Owner, settings: &AppSettings) -> Option<String> {
     match owner {
-        Owner::Agent(id) => Some(
-            settings
-                .agents
-                .as_ref()
-                .and_then(|n| n.name_of(id))
-                .unwrap_or_else(|| id.clone()),
-        ),
+        Owner::Agent(id) => Some(agent_label(settings, id)),
         Owner::Unassigned => None,
     }
+}
+
+/// `Ada (<id>)`, or the id alone when the name is unknown: agents address each other by id.
+fn agent_label(settings: &AppSettings, id: &str) -> String {
+    settings
+        .agents
+        .as_ref()
+        .and_then(|n| n.name_of(id))
+        .map_or_else(|| id.to_string(), |name| format!("{name} ({id})"))
 }
 
 /// Another agent's app as an agent sees it: its name and owner, nothing else.
@@ -1761,7 +1769,7 @@ impl MyApps {
         }
         if let Some(me) = me {
             return Ok(json!({
-                "you": settings.agents.as_ref().and_then(|n| n.name_of(me)).unwrap_or_else(|| me.to_string()),
+                "you": agent_label(settings, me),
                 "yours": yours,
                 "not_yours": others,
                 "rule": "Act only on `yours`. `not_yours` belong to other agents (owner null: \
