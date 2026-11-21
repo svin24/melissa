@@ -130,7 +130,7 @@ fn users(ui: &Ui, id: &str) -> Vec<String> {
         .iter()
         .any(|v| v.current && of(&v.name).as_deref() == Some(id))
     {
-        names.push("Melissa".into());
+        names.push(ui.lead.agents().lead_name());
     }
     names
 }

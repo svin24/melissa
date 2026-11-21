@@ -26,7 +26,7 @@ const OWNER: Creator = Creator::Owner;
 
 fn who(ui: &Ui, agent: &Principal) -> (String, String) {
     match agent {
-        Principal::Lead => ("Melissa".into(), "/".into()),
+        Principal::Lead => (ui.lead.agents().lead_name(), "/".into()),
         Principal::Agent(id) => (
             ui.lead
                 .agents()
@@ -76,7 +76,7 @@ fn rows(ui: &Ui, sched: &Scheduler) -> Vec<ScheduleRow> {
 }
 
 fn agent_choices(ui: &Ui) -> Vec<(String, String)> {
-    std::iter::once(("lead".to_string(), "Melissa".to_string()))
+    std::iter::once(("lead".to_string(), ui.lead.agents().lead_name()))
         .chain(ui.lead.agents().list().into_iter().map(|a| (a.id, a.name)))
         .collect()
 }

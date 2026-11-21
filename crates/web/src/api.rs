@@ -35,7 +35,8 @@
 //!   /api/agents/{agent}/messages`, `GET /api/agents/{agent}/events`, `POST /api/agents/{agent}/cancel`,
 //!   `GET /api/agents/{agent}/status`; and its queue: `GET /api/agents/{agent}/queue`,
 //!   `POST /api/agents/{agent}/queue/{id}/steer`, `POST /api/agents/{agent}/queue/{id}/remove`.
-//! - `POST /api/agents/{agent}/rename` `{"name": "..."}` → the agent (the user renames; 422 for a
+//! - `POST /api/agents/{agent}/rename` `{"name": "..."}` → the agent (the user renames; `lead`
+//!   renames the lead agent: `{"key": "lead", "name", "role": "lead"}`; 422 for a
 //!   bad or taken name).
 //! - `POST /api/agents` `{"name", "icon"?: {"shape", "color"}}` → 201 the new agent (the user's
 //!   own; 422 bad or taken name, unknown icon). `POST /api/agents/{agent}/icon` `{"shape",
@@ -457,7 +458,15 @@ async fn agent_rename(
     Path(agent): Path<String>,
     Json(body): Json<Rename>,
 ) -> Response {
-    match lead.agents().rename(&agent, &body.name) {
+    let pool = lead.agents();
+    // The lead agent by `lead`, its name or `Melissa` (its default name).
+    if pool.get(&agent).is_none() && pool.registry().is_lead(&agent) {
+        return match pool.rename_lead(&body.name) {
+            Ok(name) => Json(json!({"key": "lead", "name": name, "role": "lead"})).into_response(),
+            Err(e) => lead_error(e),
+        };
+    }
+    match pool.rename(&agent, &body.name) {
         Ok(b) => Json(b).into_response(),
         Err(e) => lead_error(e),
     }

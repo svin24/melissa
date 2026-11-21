@@ -5,7 +5,8 @@
 //! made by `AgentPool::user_create` and opened in its chat. Deleting is the agent layer's
 //! [`melissa_agent::lead::agents::AgentPool::delete`]: refused while the helper looks after
 //! apps ("Reassign or remove its apps first"), otherwise its chat, file box and schedules go
-//! with it; audited `agent.delete`, actor `ui`. Melissa herself can't be deleted.
+//! with it; audited `agent.delete`, actor `ui`. The lead agent can't be deleted; its page
+//! (`/settings/agents/lead`, its menu's Rename agent) has its name only (2026-11-21).
 
 use axum::{
     extract::{Form, Path, State},
@@ -16,6 +17,7 @@ use melissa_agent::lead::{
     agents::AgentView,
     backends::BackendView,
     icon::{AgentIcon, COLORS, SHAPES},
+    registry::LEAD_KEY,
     LeadError,
 };
 use serde::Deserialize;
@@ -64,7 +66,7 @@ fn rows(ui: &Ui) -> Vec<AgentRow> {
     let lead_views = ui.lead.backends();
     let mut rows = vec![AgentRow {
         id: None,
-        name: "Melissa".into(),
+        name: ui.lead.agents().lead_name(),
         href: "/".into(),
         runs_on: runs_on(&lead_views, ""),
         status: status_words(if ui.lead.status().turn.is_some() {
@@ -141,10 +143,10 @@ pub(super) async fn delete(
     Redirect::to(AGENTS_URL).into_response()
 }
 
-/// `the lead agent (task 3)` → `Melissa`, `the user` → `You`.
-fn creator_words(created_by: &str) -> String {
+/// `the lead agent (task 3)` → its name (`Melissa`), `the user` → `You`.
+fn creator_words(created_by: &str, lead: &str) -> String {
     if created_by.starts_with("the lead agent") {
-        "Melissa".into()
+        lead.into()
     } else if created_by == "the user" || created_by == "ui" {
         "You".into()
     } else {
@@ -173,11 +175,12 @@ async fn agent_region(ui: &Ui, a: &AgentView, flash: Option<&Flash>, whole: bool
     let runs = runs_on(&views, &a.backend);
     let made = format!(
         "By {}, {}",
-        creator_words(&a.created_by),
+        creator_words(&a.created_by, &ui.lead.agents().lead_name()),
         short_date(a.created_at)
     );
     let page = AgentPage {
         id: &a.id,
+        lead: false,
         name: &a.name,
         shape: &a.icon.shape,
         color: &a.icon.color,
@@ -199,7 +202,42 @@ async fn agent_region(ui: &Ui, a: &AgentView, flash: Option<&Flash>, whole: bool
     }
 }
 
+/// The lead agent's page: its name (the rest of its settings are in its chat's menu).
+async fn lead_region(ui: &Ui, flash: Option<&Flash>, whole: bool) -> Response {
+    let name = ui.lead.agents().lead_name();
+    let runs = runs_on(&ui.lead.backends(), "");
+    let page = AgentPage {
+        id: LEAD_KEY,
+        lead: true,
+        name: &name,
+        shape: "",
+        color: "",
+        shapes: SHAPES,
+        colors: COLORS,
+        runs_on: &runs,
+        status: status_words(if ui.lead.status().turn.is_some() {
+            "working"
+        } else {
+            "idle"
+        }),
+        made: "",
+        pinned: true,
+        kept: None,
+        flash,
+    };
+    if whole {
+        ui.framed(|f| pages::agent_settings_page(f, &page))
+            .await
+            .into_response()
+    } else {
+        pages::agent_settings_region(&page).into_response()
+    }
+}
+
 pub(super) async fn agent_page(State(ui): State<Ui>, Path(id): Path<String>) -> Response {
+    if id == LEAD_KEY {
+        return lead_region(&ui, None, true).await;
+    }
     match ui.lead.agents().get(&id) {
         Some(a) => agent_region(&ui, &a, None, true).await,
         None => (
@@ -245,6 +283,9 @@ pub(super) async fn rename(
     headers: HeaderMap,
     Form(form): Form<NameForm>,
 ) -> Response {
+    if id == LEAD_KEY {
+        return rename_lead(&ui, &headers, &form.name).await;
+    }
     let flash = match ui.lead.agents().rename(&id, &form.name) {
         // The name shows in the sidebar, the title and the chat: reload the page.
         Ok(_) if is_htmx(&headers) => return hx("hx-refresh", "true"),
@@ -258,6 +299,28 @@ pub(super) async fn rename(
         },
     };
     after(&ui, &headers, &id, flash).await
+}
+
+/// The lead agent's rename (same form and rules as a helper's).
+async fn rename_lead(ui: &Ui, headers: &HeaderMap, name: &str) -> Response {
+    let flash = match ui.lead.agents().rename_lead(name) {
+        Ok(_) if is_htmx(headers) => return hx("hx-refresh", "true"),
+        Ok(name) => Flash {
+            text: format!("Renamed to {name}."),
+            tone: Tone::Ok,
+        },
+        Err(e) => Flash {
+            text: format!("Couldn't rename it: {e}"),
+            tone: Tone::Error,
+        },
+    };
+    if is_htmx(headers) {
+        return lead_region(ui, Some(&flash), false).await;
+    }
+    if flash.tone == Tone::Error {
+        return lead_region(ui, Some(&flash), true).await;
+    }
+    Redirect::to(&agent_settings_href(LEAD_KEY)).into_response()
 }
 
 #[derive(Deserialize, Default)]

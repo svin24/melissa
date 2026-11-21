@@ -27,6 +27,10 @@ use crate::tools::AgentNames;
 /// Longest agent name, in characters.
 pub const MAX_NAME_CHARS: usize = 40;
 
+/// The lead agent's name until the user renames it (only the default display name: the
+/// product stays "Melissa" whatever the lead agent is called).
+pub const LEAD_DEFAULT_NAME: &str = "Melissa";
+
 /// One agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRecord {
@@ -80,7 +84,31 @@ struct RegistryFile {
     /// Number for the next agent; only grows.
     next: u64,
     agents: Vec<AgentRecord>,
+    /// The lead agent's display name, once the user renamed it (None: [`LEAD_DEFAULT_NAME`]).
+    /// Kept here, beside the helpers' names, so one lock keeps every name unique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lead_name: Option<String>,
 }
+
+impl RegistryFile {
+    fn lead_name(&self) -> &str {
+        self.lead_name.as_deref().unwrap_or(LEAD_DEFAULT_NAME)
+    }
+
+    /// `name` is already used by the lead agent or by a helper other than `except` (an id,
+    /// or [`LEAD_KEY`]); `lead` itself always is (it names the lead agent).
+    fn name_taken(&self, name: &str, except: Option<&str>) -> bool {
+        name.eq_ignore_ascii_case(LEAD_KEY)
+            || (except != Some(LEAD_KEY) && self.lead_name().eq_ignore_ascii_case(name))
+            || self
+                .agents
+                .iter()
+                .any(|b| Some(b.id.as_str()) != except && b.name.eq_ignore_ascii_case(name))
+    }
+}
+
+/// How clients name the lead agent whatever it is called (`/api/agents/lead/...`).
+pub const LEAD_KEY: &str = "lead";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryError {
@@ -136,6 +164,7 @@ impl AgentRegistry {
                 device: device.into(),
                 next: 1,
                 agents: Vec::new(),
+                lead_name: None,
             },
             Err(e) => {
                 return Err(RegistryError::Io {
@@ -249,11 +278,7 @@ impl AgentRegistry {
     ) -> Result<AgentRecord, RegistryError> {
         let name = check_name(name)?;
         let mut file = lock(&self.inner.file);
-        if file
-            .agents
-            .iter()
-            .any(|b| b.name.eq_ignore_ascii_case(&name))
-        {
+        if file.name_taken(&name, None) {
             return Err(RegistryError::NameTaken(name));
         }
         let id = agent_id(&file.device, file.next);
@@ -286,11 +311,7 @@ impl AgentRegistry {
             .ok_or_else(|| RegistryError::NoSuchAgent(name_or_id.into()))?
             .id;
         let mut file = lock(&self.inner.file);
-        if file
-            .agents
-            .iter()
-            .any(|b| b.id != id && b.name.eq_ignore_ascii_case(&new_name))
-        {
+        if file.name_taken(&new_name, Some(&id)) {
             return Err(RegistryError::NameTaken(new_name));
         }
         let agent = file
@@ -302,6 +323,42 @@ impl AgentRegistry {
         let out = agent.clone();
         self.save(&file)?;
         Ok(out)
+    }
+
+    /// The lead agent's display name ([`LEAD_DEFAULT_NAME`] until the user renames it).
+    pub fn lead_name(&self) -> String {
+        lock(&self.inner.file).lead_name().to_string()
+    }
+
+    /// `key` names the lead agent: `lead`, its current name, or `Melissa` (its default name,
+    /// which older chats and habits use) while no helper is called that. Ignores case.
+    pub fn is_lead(&self, key: &str) -> bool {
+        let key = key.trim();
+        let file = lock(&self.inner.file);
+        key.eq_ignore_ascii_case(LEAD_KEY)
+            || key.eq_ignore_ascii_case(file.lead_name())
+            || (key.eq_ignore_ascii_case(LEAD_DEFAULT_NAME)
+                && !file.agents.iter().any(|b| b.name.eq_ignore_ascii_case(key)))
+    }
+
+    /// The user gives the lead agent a new display name (same rules as a helper's, unique
+    /// among the lead agent and every helper). Returns the old and the new name.
+    pub fn rename_lead(&self, new_name: &str) -> Result<(String, String), RegistryError> {
+        let new_name = check_name(new_name)?;
+        let mut file = lock(&self.inner.file);
+        if file.name_taken(&new_name, Some(LEAD_KEY)) {
+            return Err(RegistryError::NameTaken(new_name));
+        }
+        let old = file.lead_name().to_string();
+        let mut next = RegistryFile {
+            device: file.device.clone(),
+            next: file.next,
+            agents: file.agents.clone(),
+            lead_name: (new_name != LEAD_DEFAULT_NAME).then(|| new_name.clone()),
+        };
+        self.save(&next)?;
+        std::mem::swap(&mut *file, &mut next);
+        Ok((old, new_name))
     }
 
     /// The user moves an agent to another backend (and model and reasoning level).
@@ -337,6 +394,7 @@ impl AgentRegistry {
             device: file.device.clone(),
             next: file.next,
             agents: file.agents.clone(),
+            lead_name: file.lead_name.clone(),
         };
         let gone = next.agents.remove(i);
         self.save(&next)?;
@@ -571,5 +629,46 @@ mod tests {
                 .stopped
         );
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn the_lead_agent_has_a_name_unique_among_all_and_kept() {
+        let dir = std::env::temp_dir().join(format!("melissa-lead-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let reg = AgentRegistry::open(&dir, "d-0a1b2c3d").unwrap();
+        assert_eq!(reg.lead_name(), LEAD_DEFAULT_NAME);
+        // Nobody else may take the lead agent's name, or `lead`.
+        for taken in ["melissa", "Lead"] {
+            assert!(matches!(
+                reg.create(taken, "b", None, "the user"),
+                Err(RegistryError::NameTaken(_))
+            ));
+        }
+        reg.create("Bo", "b", None, "the user").unwrap();
+        assert!(matches!(
+            reg.rename_lead("bo"),
+            Err(RegistryError::NameTaken(_))
+        ));
+        assert_eq!(reg.rename_lead("x!"), Err(RegistryError::BadName));
+        assert_eq!(
+            reg.rename_lead("Athena").unwrap(),
+            ("Melissa".to_string(), "Athena".to_string())
+        );
+        // Its old name is free now; its new one is taken.
+        assert!(matches!(
+            reg.rename("Bo", "athena"),
+            Err(RegistryError::NameTaken(_))
+        ));
+        assert!(reg.is_lead("Melissa"), "its default name still reaches it");
+        reg.create("Melissa", "b", None, "the user").unwrap();
+        assert!(!reg.is_lead("melissa"), "unless a helper is called that");
+        assert!(reg.is_lead("athena") && reg.is_lead("LEAD"));
+        // Its own name in another case is fine.
+        assert_eq!(reg.rename_lead("ATHENA").unwrap().1, "ATHENA");
+
+        let again = AgentRegistry::open(&dir, "d-0a1b2c3d").unwrap();
+        assert_eq!(again.lead_name(), "ATHENA");
+        assert_eq!(again.list().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

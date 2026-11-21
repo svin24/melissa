@@ -1226,3 +1226,13 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   return `started`/`queued`/`steered`/`next` (no 409), plus `GET …/queue`, `POST …/queue/{id}/steer|remove`.
   Alternatives: keep refusing (the owner's report), a client-side queue (lost on reload, invisible to other
   clients), interrupt-and-replace for every backend (needlessly loses Claude's work in progress).
+- **2026-11-21 — The user can rename the lead agent like a helper; the product stays "Melissa".** Its menu's
+  Rename agent opens `/settings/agents/lead` (the helper page's name form, nothing else); the API is the helpers'
+  (`POST /api/agents/lead/rename`, or by its name). Same name rules as a helper, unique among the lead agent and
+  every helper; `lead` is reserved. The name is stored in the agent registry file (`lead_name`, default "Melissa")
+  so one lock checks every name; audited `agent.rename` (`lead: old → new`, actor `ui`). System prompts (the lead
+  agent's `{lead_name}` and each helper's, which now also follow a helper's own rename) are built when a session
+  starts, and an open session gets a note with its next turn. `lead`, its name and "Melissa" (while no helper is
+  called that) all reach the lead agent. The brand, page titles, device menu, docs and the project keep "Melissa".
+  Alternatives: a separate file in the lead agent's state directory (two files to keep names unique across), a
+  fixed name (the owner asked for it).

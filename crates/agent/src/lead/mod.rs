@@ -13,6 +13,7 @@ pub mod backends;
 pub(crate) mod conversation;
 pub mod events;
 pub mod icon;
+pub(crate) mod prompt;
 pub mod registry;
 pub mod schedules;
 pub mod transcript;
@@ -188,11 +189,19 @@ impl Lead {
         let choice_backend = choice.as_ref().map(|c| c.backend.clone());
         let files = settings.files.clone();
         migrate_attachments(&settings.state_dir, &files, pool);
-        let system_prompt = format!(
-            "{}\n\n{}",
-            settings.system_prompt.trim_end(),
-            file_box_words(&files, &Principal::Lead)
-        );
+        // With the lead agent's current name, read when a session starts (a rename applies
+        // from the next session; the open one gets a note, see `AgentPool::rename_lead`).
+        let system_prompt = {
+            let template = format!(
+                "{}\n\n{}",
+                settings.system_prompt.trim_end(),
+                file_box_words(&files, &Principal::Lead)
+            );
+            let registry = pool.registry().clone();
+            prompt::SystemPrompt::new(move || {
+                prompt::with_lead_name(&template, &registry.lead_name())
+            })
+        };
         let spec = ConversationSpec {
             who: "the lead agent".into(),
             audit_kind: "lead",

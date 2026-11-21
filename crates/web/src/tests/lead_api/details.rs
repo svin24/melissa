@@ -81,13 +81,12 @@ async fn each_chat_shows_its_own_agents_details() {
     assert!(p.contains("melissa-notes.txt") && !p.contains("ada-notes.txt"));
     assert!(p.contains("Permissions") && p.contains("Nothing asked or allowed ahead."));
     assert!(p.contains("Recent activity"));
-    // The header of the chat: the agent's icon, "device / name", the menu; no rename for her.
+    // The header of the chat: the agent's icon, "device / name", the menu (rename too).
     assert!(page.contains("<h1>Melissa</h1>"), "{page}");
     assert!(page.contains("<span class=\"chat-device\">device-1</span>"));
     assert!(page.contains("popovertarget=\"menu-head\""));
     assert!(page.contains("action=\"/ui/fresh-start\""));
-    assert!(!page
-        .contains("Rename agent</span></a><a class=\"menu-item\" href=\"/settings/agents/lead"));
+    assert!(page.contains("href=\"/settings/agents/lead#agent-name\""));
     assert!(page.contains("id=\"app-dialog\""));
 
     // Ada's chat: hers only; her app with its key facts, her menu (rename, icon, pin, delete).
@@ -653,4 +652,108 @@ async fn sent_files_and_status_update_the_open_panel() {
         frames.push_str(&next_frame(&mut body).await);
     }
     assert!(frames.contains("<span class=\"pill working\">"), "{frames}");
+}
+
+#[tokio::test]
+async fn the_lead_agent_is_renamed_like_a_helper() {
+    let (app, lead) = app_full(None, None, false);
+    lead.agents()
+        .registry()
+        .create("Bo", "stuck", None, "the lead agent (task 1)")
+        .unwrap();
+
+    // Its menu's Rename agent leads to its page: its name only (no icon, pin or delete).
+    let (status, _, page) = get_html(&app, "/settings/agents/lead").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        page.contains("action=\"/ui/settings/agents/lead/rename\""),
+        "{page}"
+    );
+    assert!(page.contains("id=\"agent-name\""));
+    assert!(page.contains("value=\"Melissa\""));
+    for absent in [
+        "/ui/settings/agents/lead/delete",
+        "/ui/settings/agents/lead/icon",
+        "/ui/settings/agents/lead/pin",
+    ] {
+        assert!(!page.contains(absent), "{absent}");
+    }
+
+    // Names stay unique among the lead agent and its helpers: the section says why.
+    let (_, _, html) = send(
+        &app,
+        htmx_post("/ui/settings/agents/lead/rename", "name=bo"),
+    )
+    .await;
+    assert!(html.contains("id=\"agent-settings\""), "{html}");
+    assert!(html.contains("already an agent called"), "{html}");
+    assert_eq!(lead.agents().lead_name(), "Melissa");
+
+    // Renamed: the page reloads to show the name everywhere.
+    let (status, headers, _) = send(
+        &app,
+        htmx_post("/ui/settings/agents/lead/rename", "name=Athena"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["hx-refresh"], "true");
+    assert_eq!(lead.agents().lead_name(), "Athena");
+    let (_, _, page) = get_html(&app, "/chat").await;
+    assert!(page.contains("<h1>Athena</h1>"), "chat header: {page}");
+    assert!(
+        page.contains("<span class=\"name\">Athena</span>"),
+        "sidebar: {page}"
+    );
+    assert!(page.contains("Hi, I&#39;m Athena.") || page.contains("Hi, I'm Athena."));
+    // The product keeps its name: the brand and the page title.
+    assert!(
+        page.contains("<span class=\"brand-word\">Melissa</span>"),
+        "brand: {page}"
+    );
+    assert!(page.contains(" · Melissa</title>"));
+    // A helper's chat and settings name it too.
+    let bo = lead.agents().get("Bo").unwrap().id;
+    let (_, _, page) = get_html(&app, &format!("/settings/agents/{bo}")).await;
+    assert!(page.contains("By Athena, "), "{page}");
+    let (_, _, page) = get_html(&app, "/settings/agents").await;
+    assert!(page.contains("<a href=\"/\">Athena</a>"), "{page}");
+    // A helper can't take its name.
+    let (_, _, html) = send(
+        &app,
+        htmx_post(&format!("/ui/settings/agents/{bo}/rename"), "name=athena"),
+    )
+    .await;
+    assert!(html.contains("already an agent called"), "{html}");
+
+    // Without script: back to its page.
+    let req = post("/ui/settings/agents/lead/rename")
+        .body(Body::from("name=Iris"))
+        .unwrap();
+    let (status, headers, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/settings/agents/lead");
+    assert_eq!(lead.agents().lead_name(), "Iris");
+
+    // The API: by `lead` or by its name, the same rules.
+    let (status, body) = send_json(
+        &app,
+        json_post("/api/agents/lead/rename", r#"{"name":"Ada"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "Ada");
+    assert_eq!(body["key"], "lead");
+    let (status, _) = send_json(
+        &app,
+        json_post("/api/agents/Ada/rename", r#"{"name":"BO"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, body) = send_json(
+        &app,
+        json_post("/api/agents/ada/rename", r#"{"name":"Melissa"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(lead.agents().lead_name(), "Melissa");
 }

@@ -167,7 +167,7 @@ pub(crate) fn query_escape(text: &str) -> String {
 impl Ui {
     fn name_of(&self, owner: &Principal) -> String {
         match owner {
-            Principal::Lead => "Melissa".into(),
+            Principal::Lead => self.lead.agents().lead_name(),
             Principal::Agent(id) => self
                 .lead
                 .agents()
@@ -210,7 +210,7 @@ impl Ui {
     fn send_targets(&self, owner: &Principal) -> Vec<(String, String)> {
         let mut out = Vec::new();
         if *owner != Principal::Lead {
-            out.push(("lead".to_string(), "Melissa".to_string()));
+            out.push(("lead".to_string(), self.lead.agents().lead_name()));
         }
         out.extend(
             self.lead
@@ -275,7 +275,7 @@ impl Ui {
 
     /// The box named in a request: `lead`, an agent's id, or an agent's name.
     pub(crate) fn box_named(&self, key: &str) -> Option<Principal> {
-        if key.eq_ignore_ascii_case("melissa") {
+        if self.lead.agents().registry().is_lead(key) {
             return Some(Principal::Lead);
         }
         if let Some(owner) = owner_of_key(key) {
