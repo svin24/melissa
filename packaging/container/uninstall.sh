@@ -24,6 +24,11 @@ IMAGE=; TIMER_OURS=no
 # shellcheck source=/dev/null
 [ -r "$STATE/install.env" ] && . "$STATE/install.env"
 
+# --purge deletes Melissa's own Tailscale's state: log the node out first, so it leaves the
+# tailnet instead of staying there as an offline machine (only while it is signed in).
+if [ "$PURGE" = yes ] && podman exec melissa test -S /run/tailscale/tailscaled.sock 2>/dev/null; then
+    podman exec melissa tailscale logout >/dev/null 2>&1 && say "logged Melissa's Tailscale node out" || true
+fi
 if systemctl cat melissa.service >/dev/null 2>&1; then
     say "stopping melissa.service"
     systemctl stop melissa.service || true

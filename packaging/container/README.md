@@ -14,7 +14,8 @@ Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files 
 - Kernel modules `br_netfilter` and `overlay` (install.sh loads them and adds
   `/etc/modules-load.d/melissa.conf`).
 - Free host ports: the UI port (8080) and the app range (30000–30079).
-- The host provides networking, DNS, time, SSH and (optionally) Tailscale. None of that is in the image.
+- The host provides networking, DNS, time and SSH. None of that is in the image. Tailscale is the host's
+  when it runs it; otherwise the image carries its own, off until the owner enables it (Settings → Tailscale).
 
 ## Install
 From a source checkout (until a published image exists):
@@ -119,10 +120,35 @@ accepts podman's forwarded DNAT traffic; others may need 30000–30079 opened). 
 `BIND` (e.g. `BIND=127.0.0.1`); the server then leaves out addresses `BIND` doesn't cover, and
 `set_app_access` can't widen past it.
 
+### Tailscale (Settings → Tailscale)
+install.sh checks whether the host runs Tailscale (`tailscale0` exists or `tailscaled.service` is active;
+`HOST_TAILSCALE=yes|no` overrides it) and tells the container (`MELISSA_HOST_TAILSCALE` in melissa.container).
+- **The host runs it:** Melissa uses the host's as before; Settings → Tailscale only says "Tailscale is not
+  managed by Melissa on this system", and Melissa never starts its own.
+- **It doesn't:** the image carries the official static Tailscale binaries (pinned in `tailscale.lock`), **off
+  by default**. Settings → Tailscale → **Enable** starts `melissa-tailscaled.service` inside the container
+  (kernel mode through `/dev/net/tun`, interface `tailscale0`, node name `melissa-<host>` or `TAILSCALE_NAME`,
+  state in the `melissa-var` volume under `/var/lib/melissa-tailscale`). **Sign in** opens Tailscale's sign-in
+  page in a new tab: whoever opens that link can add this device to their tailnet, so it goes only to the
+  browser that asked (never to an agent, a log or the chat). **Disable** asks once, logs the node out and stops
+  it. An agent can propose turning it on (`enable_tailscale`); you approve it in the chat.
+
+Apps over Melissa's own Tailscale: tailnet devices reach the app ports on the node's tailnet address or
+MagicDNS name (at the NodePort, 30000–30079, whatever `APP_PORT_BASE` is) once Settings → Apps is *Tailnet*
+or wider; under *This device* nothing from `tailscale0` gets in. Everything else tailnet devices send to the
+container (the web UI, k3s's API, the kubelet) is dropped (`melissa_app_access`'s `input` chain), at every
+setting. The web UI is not served on the tailnet yet (`tailscale serve` waits for logins).
+
+While it is enabled, tailscaled talks to Tailscale's coordination server and DERP relays; no logs are sent to
+Tailscale (`--no-logs-no-support`). Check it with `sudo podman exec melissa tailscale status`.
+`uninstall.sh --purge` logs the node out before deleting its state. Changing `HOST_TAILSCALE` later needs
+install.sh again.
+
 ### From another machine
 The UI has **no login yet**: anyone who reaches it controls Melissa. Keep `UI_BIND=127.0.0.1` and use:
 - SSH: `ssh -L 8080:127.0.0.1:8080 you@host`, then open http://127.0.0.1:8080 on your machine.
-- Tailscale (on the host): `sudo tailscale serve --bg 8080` serves it on your tailnet over HTTPS.
+- Tailscale on the host: `sudo tailscale serve --bg 8080` serves it on your tailnet over HTTPS. (Melissa's
+  own Tailscale doesn't serve the UI yet.)
   Only for a tailnet of people you trust (no Funnel).
 - For apps on the tailnet or the LAN: Settings → Apps (the host firewall must allow 30000–30079).
 

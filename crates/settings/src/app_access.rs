@@ -10,13 +10,17 @@
 //! - **This device**: the podman bridge gateway only. Rootful netavark masquerades
 //!   connections to the host's loopback (`127.0.0.1:<port>`) to that address; it is the
 //!   container's default gateway, read from `/proc/net/route`.
-//! - **Tailnet**: also Tailscale's ranges, 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+//! - **Tailnet**: also Tailscale's ranges, 100.64.0.0/10 and fd7a:115c:a1e0::/48 (the host's
+//!   Tailscale: podman forwards with the source kept), and anything arriving on `tailscale0`
+//!   (Melissa's own Tailscale, `crate::tailscale`). "This device" never matches `tailscale0`.
 //! - **Home network**: also the private ranges (RFC 1918, 169.254.0.0/16, IPv6 ULA and
 //!   link-local). The container can't see the host's interfaces, and a laptop's network
 //!   changes, so the fixed private ranges are used rather than the host's current subnet.
 //!
-//! Everything else to those ports is dropped. The container itself (`lo`) and k3s's pods
-//! (`cni0`) are not filtered. A drop is final in nftables whatever other tables (kube-proxy,
+//! Everything else to those ports is dropped. Traffic from `tailscale0` to the container
+//! itself (not the app ports: the UI forward, k3s's API, the kubelet) is dropped at every
+//! level, replies to the container's own connections excepted. The container itself (`lo`)
+//! and k3s's pods (`cni0`) are not filtered. A drop is final in nftables whatever other tables (kube-proxy,
 //! flannel, network policies) say, so the table takes precedence without ordering tricks.
 //!
 //! **Fail closed.** The root oneshot `melissa-app-access.service` runs
@@ -73,6 +77,12 @@ const HOME_V4: [&str; 4] = [
 const HOME_V6: [&str; 2] = ["fc00::/7", "fe80::/10"];
 /// The comment on the final drop rule (verification looks for it).
 const DROP: &str = "melissa:drop";
+/// Melissa's own Tailscale's interface (`crate::tailscale`). Its traffic reaches the app ports
+/// under Tailnet and wider; anything else it sends to the container itself (the UI forward,
+/// k3s's API, the kubelet) is dropped at every level, closed included.
+const TAILSCALE_IF: &str = crate::tailscale::INTERFACE;
+const TAILNET_REPLIES: &str = "melissa:tailnet_replies";
+const TAILNET_INPUT: &str = "melissa:tailnet_input";
 /// Largest setting file read (it holds one line).
 const MAX_SETTING_BYTES: u64 = 4096;
 
@@ -259,12 +269,17 @@ pub fn ruleset(open: Option<(AppAccess, Ipv4Addr)>) -> String {
     let ports = format!("{FIRST_PORT}-{LAST_PORT}");
     let mut allow = Vec::new();
     if let Some((level, gateway)) = open {
+        // Never from the tailnet interface, whatever its source address.
         allow.push(format!(
-            "ip saddr {gateway} accept comment \"{}\"",
+            "iifname != \"{TAILSCALE_IF}\" ip saddr {gateway} accept comment \"{}\"",
             comment(AppAccess::ThisDevice)
         ));
         if level >= AppAccess::Tailnet {
             let c = comment(AppAccess::Tailnet);
+            // Melissa's own Tailscale: tailnet traffic arrives on its interface (also from
+            // a peer's subnet routes, whose sources aren't in Tailscale's ranges).
+            allow.push(format!("iifname \"{TAILSCALE_IF}\" accept comment \"{c}\""));
+            // The host's Tailscale: podman forwards tailnet traffic with its source kept.
             allow.push(format!("ip saddr {TAILNET_V4} accept comment \"{c}\""));
             allow.push(format!("ip6 saddr {TAILNET_V6} accept comment \"{c}\""));
         }
@@ -289,6 +304,11 @@ pub fn ruleset(open: Option<(AppAccess, Ipv4Addr)>) -> String {
          \t\ttype filter hook prerouting priority -150; policy accept;\n\
          \t\tiifname != {{ {inside} }} tcp dport {ports} jump app_ports\n\
          \t\tiifname != {{ {inside} }} udp dport {ports} jump app_ports\n\
+         \t}}\n\
+         \tchain input {{\n\
+         \t\ttype filter hook input priority -150; policy accept;\n\
+         \t\tiifname \"{TAILSCALE_IF}\" ct state established,related accept comment \"{TAILNET_REPLIES}\"\n\
+         \t\tiifname \"{TAILSCALE_IF}\" counter drop comment \"{TAILNET_INPUT}\"\n\
          \t}}\n\
          \tchain app_ports {{\n",
         open.map_or("closed", |(l, _)| l.as_str())
@@ -316,10 +336,22 @@ pub fn verify(listing: &str, open: Option<(AppAccess, Ipv4Addr)>) -> Result<(), 
         format!("tcp dport {ports} jump app_ports"),
         format!("udp dport {ports} jump app_ports"),
         format!("drop comment \"{DROP}\""),
+        "hook input".to_string(),
+        format!("iifname \"{TAILSCALE_IF}\" ct state established,related accept"),
     ] {
         if !listing.contains(&want) {
             missing.push(want);
         }
+    }
+    // The tailnet input drop: one rule, on that interface (nft adds counter values when listing).
+    let input_drop = listing.lines().any(|l| {
+        l.trim_start()
+            .starts_with(&format!("iifname \"{TAILSCALE_IF}\" counter"))
+            && l.trim_end()
+                .ends_with(&format!("drop comment \"{TAILNET_INPUT}\""))
+    });
+    if !input_drop {
+        missing.push(format!("iifname \"{TAILSCALE_IF}\" … drop (input)"));
     }
     for level in AppAccess::ALL {
         let tag = format!("comment \"{}\"", comment(level));
@@ -330,11 +362,21 @@ pub fn verify(listing: &str, open: Option<(AppAccess, Ipv4Addr)>) -> Result<(), 
             _ => {}
         }
     }
-    if let Some((_, gateway)) = open {
-        let rule = format!("ip saddr {gateway} accept");
+    if let Some((level, gateway)) = open {
+        let rule = format!("iifname != \"{TAILSCALE_IF}\" ip saddr {gateway} accept");
         if !listing.contains(&rule) {
             missing.push(rule);
         }
+        let tailnet_if = format!("iifname \"{TAILSCALE_IF}\" accept comment");
+        match (level >= AppAccess::Tailnet, listing.contains(&tailnet_if)) {
+            (true, false) => missing.push(tailnet_if),
+            (false, true) => {
+                return Err(format!("the filter also lets in {TAILSCALE_IF}"));
+            }
+            _ => {}
+        }
+    } else if listing.contains(&format!("iifname \"{TAILSCALE_IF}\" accept comment")) {
+        return Err(format!("the filter also lets in {TAILSCALE_IF}"));
     }
     if missing.is_empty() {
         Ok(())

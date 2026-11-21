@@ -52,8 +52,9 @@ AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `
 - **Container image** (`packaging/container/Containerfile`): `FROM registry.fedoraproject.org/fedora:45`, systemd as
   PID 1. Stages: Rust build (+ license report), k3s fetch (pinned and sha256-checked from `k3s.lock`), runtime with
   only what Melissa needs (`packages.txt`: systemd, bubblewrap, nftables, iptables-nft, polkit, curl, ...). No
-  kernel, bootloader, bootc, sshd, NetworkManager, chrony, firewalld or Tailscale: **the host provides networking,
-  time, SSH and Tailscale.** logind and the sleep targets are masked (the container must never handle the host's
+  kernel, bootloader, bootc, sshd, NetworkManager, chrony or firewalld: **the host provides networking, time and
+  SSH.** Tailscale is the host's when it runs it; otherwise the image's own pinned static binaries, **off by
+  default** (Settings → Tailscale, section 4; DECISIONS 2026-11-21). logind and the sleep targets are masked (the container must never handle the host's
   power keys or lid). An image lint step checks what must and must not be in it. `/usr/lib/melissa/release`
   carries version, revision and `MELISSA_RUNTIME=container`.
 - **Install** (`packaging/container/install.sh`, root): preflight (podman ≥ 5, cgroup v2 controllers, br_netfilter
@@ -153,6 +154,20 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 - **Two access modes for remote use:**
   1. *Hosted relay with login* — user signs in to a hosted service that relays to their cluster (like T3 Connect with an auth provider such as Clerk). Easiest for non-technical users.
   2. *Bring your own Tailscale* — the user joins their own tailnet; no Melissa-run service involved.
+- **Built-in Tailscale (owner, 2026-11-21; DECISIONS):** detect first, then one click. install.sh tells the
+  container whether the host runs Tailscale (`MELISSA_HOST_TAILSCALE`); if it does, Melissa uses the host's
+  and Settings → Tailscale only says "Tailscale is not managed by Melissa on this system". Otherwise Settings →
+  Tailscale → Enable runs tailscaled inside the privileged container (`melissa-tailscaled.service`, kernel
+  mode, `tailscale0`, node `melissa-<host>`, state on the `/var` volume), Sign in opens Tailscale's sign-in
+  page (the URL goes from the server to the owner's browser only, like the setup password; audited
+  `tailscale.login_started`), Disable logs the node out and stops it. Off by default. The app access filter
+  lets `tailscale0` reach the app ports under Tailnet and wider (never This device) and drops everything else
+  from it to the container; app links add the node's MagicDNS name and address. The lead agent sees the state
+  (`tailscale_status`) and may propose `enable_tailscale` (owner approval), never the sign-in URL.
+  **Owner-approved third-party network calls:** only while enabled, tailscaled talks to Tailscale's
+  coordination server (login.tailscale.com, controlplane.tailscale.com) and DERP relays; no logs go to
+  Tailscale (`--no-logs-no-support`). The image build downloads the pinned binaries from pkgs.tailscale.com
+  and their licenses from GitHub (build time only). Open items: Q85.
 - Public exposure goes through an edge agent (VPS) over the mesh, not by opening home router ports.
 - The LAN UI must keep working with no internet.
 
@@ -1113,13 +1128,24 @@ Roadmap (rough, phases may overlap):
     option next to Copy/Dismiss, and saved app passwords are listed in Settings (reveal/copy/delete, same
     audit and re-auth rules). Until then a password is shown once in chat and forgotten on Dismiss. Which store
     (per-user key derived from the login password, OS keyring on the host, age/sops file)?
-85. Tailscale from Settings (owner, 2026-11-21; investigate later). A Settings → Tailscale section: if the host
-    already runs Tailscale, it only says "Tailscale is not managed by Melissa on this system". Otherwise
-    Melissa can install and enable it (e.g. the official `tailscale/tailscale` container image, or tailscaled
-    inside the Melissa container) and the lead agent helps with sign-in (login URL button, no terminal). To
-    check: host-network vs in-container tailscaled, how app ports and the app access filter (section 4) see
-    tailnet traffic then, auth-key vs interactive login, and whether `tailscale serve` can give the UI HTTPS
-    (Q22, passkeys, notifications Q83).
+85. Tailscale from Settings (owner, 2026-11-21). **Decided and built 2026-11-21** (section 4, DECISIONS):
+    tailscaled inside the Melissa container from pinned static binaries, off by default, detect the host's
+    first, interactive sign-in through a server-to-browser URL. Still open: (a) **Auth keys:** no auth-key
+    field for now (interactive sign-in only); add one (stored like a secret, never shown to agents) for
+    headless setups? (b) **UI over the tailnet:** `tailscale serve` (HTTPS with a ts.net certificate) for the
+    web UI is the next step, once logins exist (6c); it would also give the secure context passkeys and
+    notifications need (Q22, Q83). Not exposed today: `tailscale0` can reach only the app ports. (c) Detection
+    happens at install: a host that starts or stops running Tailscale later needs install.sh again (or
+    `HOST_TAILSCALE=`); should the host helper report it at each start? An install from before the check has
+    no flag and is treated as not Melissa's. (d) Image size: the two static binaries add about 78 MB; a
+    single combined binary (`tailscaled` with the CLI built in, from source) would roughly halve it. (e)
+    tailscaled's UDP port (41641) isn't published by podman: direct connections rely on NAT traversal
+    through podman's masquerade, else DERP relays (slower); publish it? (f) App links name the node's
+    MagicDNS name and IPv4 address, not its IPv6 one. (g) Headscale or another control server (custom login
+    server URL; the sign-in URL check accepts only tailscale.com) and Tailscale identity for logins (Q80f).
+    (h) Unsandboxed agent backends (an explicit owner setting) run as the server's user and could read
+    `tailscale status`, which holds a pending sign-in URL (like Q86e). (i) The Settings → Tailscale section
+    and its copy are provisional; the owner reviews them (Figma first for UI).
 86. Setup passwords (2026-11-21; DECISIONS). (a) Show and Copy need the owner's password again once logins
     exist (6c); until then anyone who can open the web UI on the LAN can reveal an undismissed one, like
     every other owner action. (b) Copy works only in a secure context (HTTPS or localhost); on plain HTTP the

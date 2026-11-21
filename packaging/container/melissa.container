@@ -44,6 +44,10 @@ PublishPort=@BIND@:@APP_PORT_BASE@-@APP_PORT_LAST@:30000-30079/udp
 # container a connect to the host's published address fails (no hairpin) even when it works from
 # everywhere else. melissa-server.service gets it through PassEnvironment (10-container.conf).
 Environment=MELISSA_PUBLISH_BIND=@PUBLISH_BIND@
+# Settings → Tailscale: whether the host runs Tailscale (yes: Melissa keeps using the host's and never
+# starts its own), and the node name Melissa's own gets when the owner enables it (off by default).
+Environment=MELISSA_HOST_TAILSCALE=@HOST_TAILSCALE@
+Environment=MELISSA_TAILSCALE_NAME=@TAILSCALE_NAME@
 Volume=melissa-var:/var
 # Updates: the host helper writes status here (read-only inside) and picks up requests there.
 Volume=/var/lib/melissa-container/status:/run/melissa-update:ro,z

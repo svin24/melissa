@@ -5,8 +5,15 @@ table inet melissa_app_access {
 		iifname != { "lo", "cni0" } udp dport 30000-30079 jump app_ports
 	}
 
+	chain input {
+		type filter hook input priority mangle; policy accept;
+		iifname "tailscale0" ct state established,related accept comment "melissa:tailnet_replies"
+		iifname "tailscale0" counter packets 0 bytes 0 drop comment "melissa:tailnet_input"
+	}
+
 	chain app_ports {
-		ip saddr 10.88.0.1 accept comment "melissa:this_device"
+		iifname != "tailscale0" ip saddr 10.88.0.1 accept comment "melissa:this_device"
+		iifname "tailscale0" accept comment "melissa:tailnet"
 		ip saddr 100.64.0.0/10 accept comment "melissa:tailnet"
 		ip6 saddr fd7a:115c:a1e0::/48 accept comment "melissa:tailnet"
 		ip saddr { 10.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } accept comment "melissa:home_network"

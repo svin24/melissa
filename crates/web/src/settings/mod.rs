@@ -49,6 +49,11 @@
 //! - `GET /settings/apps`; `POST /ui/settings/apps` (`open_to` = `this_device`, `tailnet` or
 //!   `home_network`): who may open the apps on this device, applied at once (`apps.rs`;
 //!   container install only, else the page says the host's firewall decides).
+//! - `GET /settings/tailscale` (`tailscale.rs`): Melissa's own Tailscale, off by default;
+//!   `GET /ui/settings/tailscale[?waiting=1]` the region (polled while starting; `waiting`:
+//!   204 while a sign-in page is open), `POST /ui/settings/tailscale/{enable|disable}`, and
+//!   `POST /ui/settings/tailscale/sign-in`, whose answer alone carries the sign-in page's URL
+//!   (strict same-origin, no-store, audited `tailscale.login_started` without it).
 //! - `GET /settings/permissions`: the "Always allow" rules; `POST
 //!   /ui/settings/permissions/{id}/remove` removes one.
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
@@ -100,6 +105,7 @@ mod permissions;
 mod providers;
 mod remove_provider;
 mod schedules;
+mod tailscale;
 mod updates;
 mod voice;
 
@@ -162,6 +168,9 @@ pub struct SettingsParts {
     pub app_access: Option<AppAccessControl>,
     /// The setup password card's server side (reveal, dismiss); `None`: no cluster here.
     pub setup_passwords: Option<std::sync::Arc<dyn crate::setup_password::SetupPasswords>>,
+    /// Melissa's own Tailscale (Settings → Tailscale); `None`: the page says it isn't
+    /// Melissa's.
+    pub tailscale: Option<melissa_settings::tailscale::TailscaleControl>,
 }
 
 /// The Settings context. Cheap to clone.
@@ -216,6 +225,7 @@ impl Settings {
             catalog: Catalog::unavailable(),
             app_access: None,
             setup_passwords: None,
+            tailscale: None,
         })
     }
 
@@ -410,6 +420,11 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route("/ui/settings/schedules/wait", post(schedules::wait))
         .route(pages::APPS_URL, get(apps::page))
         .route("/ui/settings/apps", post(apps::save))
+        .route(pages::TAILSCALE_URL, get(tailscale::page))
+        .route("/ui/settings/tailscale", get(tailscale::region))
+        .route("/ui/settings/tailscale/enable", post(tailscale::enable))
+        .route("/ui/settings/tailscale/disable", post(tailscale::disable))
+        .route("/ui/settings/tailscale/sign-in", post(tailscale::sign_in))
         .route(pages::FILES_URL, get(files::page))
         .route("/ui/settings/files", post(files::save))
         .route(pages::VOICE_URL, get(voice::page))

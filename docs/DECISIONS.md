@@ -1302,3 +1302,46 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   arguments (models type names; the owner wanted names to keep working where they are clear), first-match by
   current name (the misrouting this fixes), forbidding the reuse of former names (blocks the user for a rare
   case; the refusal is enough).
+- **2026-11-21 — Tailscale is built into the container image, off by default; the host's wins when it has
+  one.** Owner decision (resolves PLAN Q85's investigation). **Detect first:** install.sh checks the host
+  (`tailscale0` exists or `tailscaled.service` is active; `HOST_TAILSCALE=yes|no` overrides) and writes
+  `MELISSA_HOST_TAILSCALE` and the node name (`MELISSA_TAILSCALE_NAME`, `melissa-<host>`) into the Quadlet.
+  With the host's Tailscale, Settings → Tailscale only says "Tailscale is not managed by Melissa on this
+  system" and Melissa's own never starts (the unit checks the flag too); an install without the flag (from
+  before) is treated the same. **Otherwise one click:** the image ships the official static `tailscale` and
+  `tailscaled` (1.104.7, sha256-pinned in `packaging/container/tailscale.lock` with their BSD-3-Clause
+  `LICENSE` and the Go modules' license list, shipped in `/usr/share/licenses/tailscale/`), rather than
+  downloading at run time (no network step or third-party fetch when the owner clicks, works the same on
+  every install, verified at build) or the `tailscale/tailscale` container image (a second container with
+  host networking would touch the host's network, which the host owns). `melissa-tailscaled.service`
+  (root, enabled in the image) runs tailscaled in kernel mode in the privileged container (`/dev/net/tun`,
+  `tailscale0` in the container's network namespace), state in `/var/lib/melissa-tailscale` on the volume,
+  socket `/run/tailscale/tailscaled.sock` in a `root:melissa 0750` directory, `--no-logs-no-support`, and
+  only while `/etc/melissa/tailscale.toml` says enabled (`ExecCondition=melissa-server tailscale enabled`)
+  and the app access table exists (fail closed). Its `ExecStartPost` makes the server's user tailscaled's
+  **operator**, so the server runs `tailscale up --hostname=<node> --accept-dns=false --operator=melissa`
+  and `tailscale logout` itself; polkit (`53-melissa-tailscale.rules`) lets it start and stop that one unit.
+  Enable/Disable are audited `settings.tailscale` (actor `ui` or `agent`); Disable asks once in the page, logs
+  the node out and stops it. **Sign-in:** the login URL lets whoever opens it attach this device to their
+  tailnet, so it is handled like the setup password: the server starts `tailscale up` (output discarded),
+  reads the URL from `tailscale status --json`, accepts only `https://…tailscale.com/…`, and returns it only
+  in the answer to `POST /ui/settings/tailscale/sign-in` (positive same-origin evidence, `no-store`), as an
+  "Open Tailscale sign-in" button that opens a new tab; the region then polls until the sign-in is done. The
+  URL type has no `Display` and a redacted `Debug`; it is never logged, put in the chat, a transcript or a
+  tool result; audited `tailscale.login_started` without it. **States** (existing components only): Not
+  managed by Melissa | Off [Enable] | Starting | Sign in needed [Sign in] | Waiting for approval |
+  Connected · node · 100.x [Disable] | Error (one line). **Apps:** tailnet traffic now arrives on
+  `tailscale0` inside the container. The `melissa_app_access` table accepts app-port traffic from that
+  interface under Tailnet and Home network (a peer's subnet routes can carry non-Tailscale sources), never
+  under This device (its gateway rule excludes `tailscale0`), and a new `input` chain drops everything else
+  `tailscale0` sends to the container itself (the UI forward, k3s's API, the kubelet) at every level, closed
+  included, replies excepted; verification checks both. App links add the node's MagicDNS name and IPv4
+  address at the NodePort (they reach the container directly, so no `APP_PORT_BASE` offset and no
+  publish-bind check), only where the access setting allows them. **Agents:** `tailscale_status` (read only)
+  and `enable_tailscale` (owner approval every time, like widening app access); neither sees the URL;
+  disabling is the owner's. **Network calls** (owner-approved, PLAN section 4): only while enabled,
+  Tailscale's coordination server and DERP relays. **Not in this change:** the web UI over the tailnet
+  (`tailscale serve`, after logins), an auth-key field (PLAN Q85). Alternatives: tailscaled on the host
+  installed by Melissa (needs root on the host, changes the host's network), userspace networking (no
+  `tailscale0`, so the app filter couldn't tell tailnet traffic apart and apps would need a proxy per port),
+  downloading Tailscale when enabled (a run-time fetch, unpinned unless Melissa ships the hashes anyway).

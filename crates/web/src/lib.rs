@@ -790,6 +790,7 @@ mod tests {
             voice: melissa_voice::Voice,
             catalog: Catalog,
             setup: Option<Arc<dyn SetupPasswords>>,
+            tailscale: Option<melissa_settings::tailscale::TailscaleControl>,
         }
 
         impl SettingsFixture {
@@ -810,6 +811,7 @@ mod tests {
                     voice: melissa_voice::Voice::unavailable(),
                     catalog: Catalog::unavailable(),
                     setup: None,
+                    tailscale: None,
                 }
             }
 
@@ -932,6 +934,7 @@ mod tests {
                         Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
                     )),
                     setup_passwords: self.setup.clone(),
+                    tailscale: self.tailscale.clone(),
                 })
             }
 
@@ -1270,6 +1273,179 @@ mod tests {
             let (status, _, _) =
                 send(&app, htmx_post("/ui/settings/apps", "open_to=everyone")).await;
             assert_eq!(status, StatusCode::OK);
+        }
+
+        /// A tailscaled in memory: off until started; Sign in gives a URL; `signed_in` connects.
+        #[derive(Default)]
+        struct FakeTailscale {
+            running: std::sync::Mutex<bool>,
+            json: std::sync::Mutex<String>,
+        }
+
+        const TS_URL: &str = "https://login.tailscale.com/a/feedface0123";
+
+        fn ts_status(backend: &str, url: &str) -> String {
+            serde_json::json!({
+                "BackendState": backend,
+                "AuthURL": url,
+                "Self": {"HostName": "melissa-box", "DNSName": "melissa-box.tail0000.ts.net.",
+                         "TailscaleIPs": ["100.64.0.7"]},
+                "CurrentTailnet": {"MagicDNSEnabled": true},
+            })
+            .to_string()
+        }
+
+        impl melissa_settings::tailscale::Cli for FakeTailscale {
+            fn status(&self) -> melissa_agent::BoxFuture<'_, Result<String, String>> {
+                Box::pin(async move {
+                    if !*self.running.lock().unwrap() {
+                        return Err("cannot connect".into());
+                    }
+                    Ok(self.json.lock().unwrap().clone())
+                })
+            }
+            fn start_login<'a>(
+                &'a self,
+                _name: &'a str,
+            ) -> melissa_agent::BoxFuture<'a, Result<(), String>> {
+                Box::pin(async move {
+                    *self.json.lock().unwrap() = ts_status("NeedsLogin", TS_URL);
+                    Ok(())
+                })
+            }
+            fn logout(&self) -> melissa_agent::BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    *self.json.lock().unwrap() = ts_status("NeedsLogin", "");
+                    Ok(())
+                })
+            }
+        }
+
+        impl melissa_settings::tailscale::Service for FakeTailscale {
+            fn start(&self) -> melissa_agent::BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    *self.json.lock().unwrap() = ts_status("NeedsLogin", "");
+                    *self.running.lock().unwrap() = true;
+                    Ok(())
+                })
+            }
+            fn stop(&self) -> melissa_agent::BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    *self.running.lock().unwrap() = false;
+                    Ok(())
+                })
+            }
+        }
+
+        fn ts_control(
+            fx: &SettingsFixture,
+            management: melissa_settings::tailscale::Management,
+            fake: Arc<FakeTailscale>,
+        ) -> melissa_settings::tailscale::TailscaleControl {
+            use melissa_settings::tailscale as ts;
+            ts::TailscaleControl::new(ts::Parts {
+                management,
+                setting: fx.dir.join("config").join(ts::FILE_NAME),
+                node_name: "melissa-box".into(),
+                cli: fake.clone(),
+                service: fake,
+                audit: Some(melissa_agent::AuditLog::new(fx.dir.join("audit.jsonl"))),
+                wait: std::time::Duration::from_millis(300),
+            })
+        }
+
+        #[tokio::test]
+        async fn settings_tailscale_enable_sign_in_and_disable() {
+            use melissa_settings::tailscale::Management;
+            let mut fx = SettingsFixture::new("tailscale");
+            let fake = Arc::new(FakeTailscale::default());
+            fx.tailscale = Some(ts_control(&fx, Management::Melissa, fake.clone()));
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(
+                html.contains("<p class=\"setting-title\">Tailscale</p>"),
+                "{html}"
+            );
+            assert!(html.contains("Off."), "{html}");
+            assert!(html.contains("action=\"/ui/settings/tailscale/enable\""));
+            assert!(!html.contains("/ui/settings/tailscale/sign-in"));
+
+            let (status, _, region) =
+                send(&app, htmx_post("/ui/settings/tailscale/enable", "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(region.contains("id=\"tailscale-settings\""), "{region}");
+            assert!(region.contains("Sign in needed."), "{region}");
+            assert!(region.contains("action=\"/ui/settings/tailscale/sign-in\""));
+            assert!(region.contains("action=\"/ui/settings/tailscale/disable\""));
+
+            // Sign in needs positive same-origin evidence (htmx alone isn't enough).
+            let bare = post("/ui/settings/tailscale/sign-in")
+                .header("hx-request", "true")
+                .body(Body::from(""))
+                .unwrap();
+            let (status, h, body) = send(&app, bare).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(h.get(header::CACHE_CONTROL).unwrap(), "no-store");
+            assert!(!body.contains("login.tailscale.com"));
+
+            let (status, h, region) =
+                send(&app, htmx_post("/ui/settings/tailscale/sign-in", "")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(h.get(header::CACHE_CONTROL).unwrap(), "no-store");
+            assert!(
+                region.contains(&format!(
+                    "href=\"{TS_URL}\" target=\"_blank\" rel=\"noopener noreferrer\""
+                )),
+                "{region}"
+            );
+            assert!(region.contains("Open Tailscale sign-in"));
+            assert!(region.contains("hx-get=\"/ui/settings/tailscale?waiting=1\""));
+            // Nowhere else: not the page, not the region, not the audit log.
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(!html.contains("feedface"), "{html}");
+            let (status, _, _) = send(&app, get("/ui/settings/tailscale?waiting=1")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "no swap while signing in");
+            let log = fx.audit();
+            assert!(log.contains("tailscale.login_started"), "{log}");
+            assert!(
+                !log.contains("feedface") && !log.contains("login.tailscale.com"),
+                "{log}"
+            );
+
+            // The owner signed in: the waiting poll swaps in the connected state.
+            *fake.json.lock().unwrap() = ts_status("Running", "");
+            let (status, _, region) = send(&app, get("/ui/settings/tailscale?waiting=1")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                region.contains("Connected · melissa-box · 100.64.0.7"),
+                "{region}"
+            );
+            assert!(region.contains("Disable Tailscale?"), "asks once: {region}");
+
+            let (_, _, region) = send(&app, htmx_post("/ui/settings/tailscale/disable", "")).await;
+            assert!(region.contains("Off."), "{region}");
+            let log = fx.audit();
+            assert!(log.contains("disabled; logged out; stopped"), "{log}");
+            assert!(log.contains("\"actor\":\"ui\""), "{log}");
+        }
+
+        #[tokio::test]
+        async fn settings_tailscale_is_not_melissas_when_the_host_runs_it() {
+            use melissa_settings::tailscale::Management;
+            let mut fx = SettingsFixture::new("tailscale-host");
+            let fake = Arc::new(FakeTailscale::default());
+            fx.tailscale = Some(ts_control(&fx, Management::Host, fake));
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(
+                html.contains("Tailscale is not managed by Melissa on this system."),
+                "{html}"
+            );
+            assert!(!html.contains("/ui/settings/tailscale/enable"));
+            let (_, _, region) = send(&app, htmx_post("/ui/settings/tailscale/enable", "")).await;
+            assert!(region.contains("not managed by Melissa"), "{region}");
+            assert!(!fx.dir.join("config/tailscale.toml").exists());
         }
 
         /// A setup password service in memory: one app, `nextcloud`, until dismissed.

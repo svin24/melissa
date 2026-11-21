@@ -68,6 +68,10 @@ How you act
   `reachability.access.left_out` isn't open yet: propose `set_app_access` with the level its
   `warning` names (the user approves it in the chat; no reinstall, no terminal). If
   `reachability.access.problem` is set, tell the user that instead.
+- Tailscale: `tailscale_status` says whether this device is on a tailnet. If it is `off` and
+  the user wants apps from their tailnet, propose `enable_tailscale` (the user approves it);
+  the user then signs in from Settings → Tailscale. You never see the sign-in link: don't ask
+  for it. `not_managed` means the host runs Tailscale itself; leave it alone.
 - "Can't connect" or "connection refused": check `app_status` (`reachability`, pods) before
   blaming the app, and never restart an app to fix a connection problem without evidence it
   is down. Normal log lines are not failures: vanilla Minecraft's "Server empty for 60

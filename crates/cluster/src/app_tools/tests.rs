@@ -340,6 +340,7 @@ fn settings() -> AppSettings {
         reach: None,
         access: None,
         setup_notices: None,
+        tailscale: None,
     }
 }
 
@@ -355,7 +356,7 @@ fn links_add_the_port_offset() {
         node_port: 30002,
         web: true,
     }];
-    let f = link_fields(&shifted, &shifted.addresses(), "nextcloud", &web);
+    let f = link_fields(&shifted, &shifted.addresses(), &[], "nextcloud", &web);
     assert_eq!(f["port"], 31002);
     assert_eq!(f["node_port"], 30002);
     assert_eq!(f["url"], "http://203.0.113.10:31002");
@@ -373,7 +374,13 @@ fn links_add_the_port_offset() {
         node_port: 30002,
         web: false,
     }];
-    let f = link_fields(&settings(), &settings().addresses(), "minecraft", &game);
+    let f = link_fields(
+        &settings(),
+        &settings().addresses(),
+        &[],
+        "minecraft",
+        &game,
+    );
     assert_eq!(f["url"], Value::Null);
     assert_eq!(f["dns_url"], Value::Null);
     assert_eq!(
@@ -382,7 +389,7 @@ fn links_add_the_port_offset() {
                 "web": false, "address": "203.0.113.10:30002", "url": null}])
     );
     // No port: no links.
-    let f = link_fields(&shifted, &shifted.addresses(), "nextcloud", &[]);
+    let f = link_fields(&shifted, &shifted.addresses(), &[], "nextcloud", &[]);
     assert_eq!(f["urls"], json!([]));
     assert_eq!(f["port"], Value::Null);
 }
@@ -3342,13 +3349,12 @@ impl melissa_settings::app_access::Applier for Done {
     }
 }
 
-/// Container install published on every address, Melissa's filter at `setting` with
-/// `in_force` verified (`None`: it failed closed).
-fn access_tools(
+/// Melissa's filter at `setting` with `in_force` verified (`None`: it failed closed).
+fn access_control(
     tag: &str,
     setting: melissa_settings::app_access::AppAccess,
     in_force: Option<melissa_settings::app_access::AppAccess>,
-) -> BTreeMap<&'static str, Arc<dyn Tool>> {
+) -> melissa_settings::app_access::AppAccessControl {
     use melissa_settings::app_access::{self as access, AppAccessControl, Status};
     let dir = std::env::temp_dir().join(format!("melissa-access-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -3367,8 +3373,17 @@ fn access_tools(
         at: 1,
     };
     access::write_status(&dir.join("status.json"), &status).unwrap();
-    let control =
-        AppAccessControl::new(setting_file, dir.join("status.json"), Arc::new(Done), None);
+    AppAccessControl::new(setting_file, dir.join("status.json"), Arc::new(Done), None)
+}
+
+/// Container install published on every address, Melissa's filter at `setting` with
+/// `in_force` verified (`None`: it failed closed).
+fn access_tools(
+    tag: &str,
+    setting: melissa_settings::app_access::AppAccess,
+    in_force: Option<melissa_settings::app_access::AppAccess>,
+) -> BTreeMap<&'static str, Arc<dyn Tool>> {
+    let control = access_control(tag, setting, in_force);
     let settings = AppSettings {
         addresses: Some(vec![
             "192.168.1.20".into(),
@@ -3445,4 +3460,147 @@ async fn links_fail_closed_when_the_filter_is_not_in_force() {
     let warning = access["warning"].as_str().unwrap();
     assert!(warning.contains("isn't in force"), "{warning}");
     assert!(!warning.contains("call set_app_access"), "{warning}");
+}
+
+/// Melissa's own Tailscale, connected (`tailscale status --json` as tailscaled prints it).
+struct ConnectedTailscale;
+
+impl melissa_settings::tailscale::Cli for ConnectedTailscale {
+    fn status(&self) -> BoxFuture<'_, Result<String, String>> {
+        Box::pin(async {
+            Ok(json!({
+                "BackendState": "Running",
+                "AuthURL": "",
+                "Self": {"HostName": "melissa-box", "DNSName": "melissa-box.tail0000.ts.net.",
+                         "TailscaleIPs": ["100.64.0.7", "fd7a:115c:a1e0::7"]},
+                "CurrentTailnet": {"MagicDNSEnabled": true},
+            })
+            .to_string())
+        })
+    }
+    fn start_login<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("not in this test".into()) })
+    }
+    fn logout(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Err("not in this test".into()) })
+    }
+}
+
+impl melissa_settings::tailscale::Service for ConnectedTailscale {
+    fn start(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn stop(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Apps published on loopback only at host port 31000+ (BIND=127.0.0.1, APP_PORT_BASE=31000),
+/// Melissa's Tailscale connected, the filter at `setting`.
+fn tailnet_tools(
+    tag: &str,
+    setting: melissa_settings::app_access::AppAccess,
+) -> BTreeMap<&'static str, Arc<dyn Tool>> {
+    use melissa_settings::tailscale as ts;
+    let control = access_control(tag, setting, Some(setting));
+    let dir = std::env::temp_dir().join(format!("melissa-ts-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(ts::FILE_NAME), "enabled = true\n").unwrap();
+    let tailscale = ts::TailscaleControl::new(ts::Parts {
+        management: ts::Management::Melissa,
+        setting: dir.join(ts::FILE_NAME),
+        node_name: "melissa-box".into(),
+        cli: Arc::new(ConnectedTailscale),
+        service: Arc::new(ConnectedTailscale),
+        audit: None,
+        wait: std::time::Duration::from_millis(100),
+    });
+    let settings = AppSettings {
+        // The configured addresses, plus the tailnet address the container sees on
+        // tailscale0 (found at run time without `[apps] addresses`): it must not be doubled.
+        addresses: Some(vec!["127.0.0.1".into(), "100.64.0.7".into()]),
+        port_offset: 1000,
+        reach: Some(crate::reach::ReachCheck {
+            probe: Arc::new(NoHairpin),
+            control: Some("10.88.0.2".into()),
+            publish_bind: crate::reach::parse_publish_bind("127.0.0.1"),
+        }),
+        access: Some(control),
+        tailscale: Some(tailscale),
+        ..settings()
+    };
+    app_tools(settings, Some(Arc::new(Fake::default())))
+        .into_iter()
+        .map(|t| (t.spec().name, t))
+        .collect()
+}
+
+/// Melissa's own Tailscale: links add the node's MagicDNS name and tailnet address at the
+/// NodePort (they reach the container directly, not through the host's loopback-only
+/// publishing), and only once apps are open to the tailnet.
+#[tokio::test]
+async fn links_name_melissas_tailnet_node_when_apps_are_open_to_the_tailnet() {
+    use melissa_settings::app_access::AppAccess;
+    let t = tailnet_tools("ts-open", AppAccess::Tailnet);
+    call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    let s = call(&t, "app_status", json!({"app": "minecraft"}))
+        .await
+        .unwrap();
+    // Loopback keeps the host's published port; the tailnet node gets the NodePort.
+    assert_eq!(s["ports"][0]["address"], "127.0.0.1:31000", "{s}");
+    let reach = &s["reachability"];
+    assert_eq!(reach["access"]["left_out"], Value::Null, "{reach}");
+    // The host's publish check judged only the host's addresses.
+    let checked: Vec<&str> = reach["addresses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["address"].as_str().unwrap())
+        .collect();
+    assert_eq!(checked, ["127.0.0.1"], "{reach}");
+    assert_eq!(reach["warning"], Value::Null, "{reach}");
+
+    let web = call(&t, "deploy_app", json!({"spec": nc(), "app": "nextcloud"}))
+        .await
+        .unwrap();
+    let node_port = web["node_port"].as_u64().unwrap();
+    assert_eq!(web["port"], node_port + 1000, "{web}");
+    assert_eq!(
+        web["urls"],
+        json!([
+            format!("http://127.0.0.1:{}", node_port + 1000),
+            format!("http://melissa-box.tail0000.ts.net:{node_port}"),
+            format!("http://100.64.0.7:{node_port}"),
+        ]),
+        "{web}"
+    );
+}
+
+#[tokio::test]
+async fn links_leave_the_tailnet_node_out_while_apps_are_open_to_this_device_only() {
+    use melissa_settings::app_access::AppAccess;
+    let t = tailnet_tools("ts-closed", AppAccess::ThisDevice);
+    let out = call(
+        &t,
+        "deploy_app",
+        json!({"spec": minecraft(), "app": "minecraft"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["ports"][0]["address"], "127.0.0.1:31000", "{out}");
+    let access = &out["reachability"]["access"];
+    assert_eq!(
+        access["left_out"],
+        json!(["melissa-box.tail0000.ts.net", "100.64.0.7"]),
+        "{out}"
+    );
+    let warning = access["warning"].as_str().unwrap();
+    assert!(warning.contains("open_to `tailnet`"), "{warning}");
 }

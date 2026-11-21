@@ -62,7 +62,13 @@ use melissa_cluster::{
     app_tools, parse_publish_bind, AppCredentials, AppSettings, ClusterHealth, KubeApps,
     KubeSecretReader, LazyCluster, ReachCheck, Workspaces,
 };
-use melissa_settings::app_access::{tool::SetAppAccess, AppAccessControl};
+use melissa_settings::{
+    app_access::{tool::SetAppAccess, AppAccessControl},
+    tailscale::{
+        tool::{EnableTailscale, TailscaleStatus},
+        Management, TailscaleControl,
+    },
+};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
 
@@ -118,7 +124,10 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
   app-access apply [<file>]   (root, container: melissa-app-access.service) put the app port
                               filter in place for the setting in <file> (default
                               /etc/melissa/app-access.toml), verify it, write its status
-  app-access status           what the filter lets in now";
+  app-access status           what the filter lets in now
+  tailscale enabled [<file>]  (root, container: melissa-tailscaled.service) exit 0 when
+                              Melissa's own Tailscale should run (setting in <file>, default
+                              /etc/melissa/tailscale.toml; never when the host runs Tailscale)";
 
 #[derive(Debug, PartialEq, Eq)]
 enum AppCommand {
@@ -188,6 +197,10 @@ async fn main() -> anyhow::Result<()> {
     // Root's helper for the app port filter: no config, no state, nothing else.
     if argv.first().is_some_and(|c| c == "app-access") {
         return app_access_command(&argv[1..]);
+    }
+    // Root's check before tailscaled starts (the unit's ExecCondition).
+    if argv.first().is_some_and(|c| c == "tailscale") {
+        return tailscale_command(&argv[1..]);
     }
     let (config_path, command) = parse_args(argv)?;
     // Logs go to stderr so `tool` output on stdout stays clean JSON; client commands only
@@ -345,6 +358,14 @@ async fn main() -> anyhow::Result<()> {
     // the host's firewall does).
     let app_access = melissa_settings::app_access::available()
         .then(|| AppAccessControl::system(&dirs.config, Some(audit.clone())));
+    // Melissa's own Tailscale (container image; off by default), or "not managed by Melissa"
+    // when the host runs Tailscale or this install has none (docs/DECISIONS.md, 2026-11-21).
+    let tailscale = TailscaleControl::system(&dirs.config, Some(audit.clone()));
+    tracing::info!(
+        managed_by = tailscale.management().as_str(),
+        node = tailscale.node_name(),
+        "tailscale"
+    );
     let app_settings = AppSettings {
         domain: config.apps.domain.clone(),
         addresses: config.apps.addresses.clone(),
@@ -356,10 +377,16 @@ async fn main() -> anyhow::Result<()> {
         reach: Some(ReachCheck::tcp(publish_bind())),
         access: app_access.clone(),
         setup_notices: Some(setup_notices.clone()),
+        tailscale: Some(tailscale.clone()),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
     if let Some(control) = &app_access {
         tools.push(Arc::new(SetAppAccess(control.clone())));
+    }
+    // Status and a proposal to enable; never the sign-in URL (web UI only).
+    if tailscale.management() != Management::Unavailable {
+        tools.push(Arc::new(TailscaleStatus(tailscale.clone())));
+        tools.push(Arc::new(EnableTailscale(tailscale.clone())));
     }
     // Who owns which workspace, for the scope check before every workspace-changing tool call; also
     // the list of workspaces and the reassign path.
@@ -382,6 +409,7 @@ async fn main() -> anyhow::Result<()> {
             let start = Startup {
                 config_path,
                 app_access,
+                tailscale,
                 setup_passwords,
                 kubeconfigs,
                 providers: ProviderSetup {
@@ -401,6 +429,8 @@ struct Startup {
     config_path: PathBuf,
     /// Who may open apps (container install only).
     app_access: Option<AppAccessControl>,
+    /// Melissa's own Tailscale (Settings → Tailscale).
+    tailscale: TailscaleControl,
     /// The setup password card's server side.
     setup_passwords: Arc<dyn melissa_web::SetupPasswords>,
     /// Where the lead agent looks for cluster credentials (any present = k3s is there).
@@ -530,6 +560,34 @@ fn app_access_command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         _ => bail!("usage: melissa-server app-access apply [<setting file>] | app-access status"),
+    }
+}
+
+/// `tailscale enabled [<setting file>]`: exit 0 when Melissa's own tailscaled should run (the
+/// setting is on and the host doesn't run Tailscale), 1 when not. `melissa-tailscaled.service`
+/// uses it as its `ExecCondition`, so the daemon comes back after a restart only while enabled.
+fn tailscale_command(args: &[String]) -> anyhow::Result<()> {
+    use melissa_settings::tailscale::{self as ts};
+    match args {
+        [c, rest @ ..] if c == "enabled" && rest.len() <= 1 => {
+            let setting = rest.first().map_or_else(
+                || PathBuf::from("/etc/melissa").join(ts::FILE_NAME),
+                PathBuf::from,
+            );
+            let host = std::env::var(ts::HOST_ENV).ok();
+            match ts::should_run(&setting, host.as_deref()) {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    println!("melissa-tailscale: off (or the host runs Tailscale)");
+                    std::process::exit(1)
+                }
+                Err(e) => {
+                    eprintln!("melissa-tailscale: {e}; treated as off");
+                    std::process::exit(1)
+                }
+            }
+        }
+        _ => bail!("usage: melissa-server tailscale enabled [<setting file>]"),
     }
 }
 
@@ -792,6 +850,7 @@ async fn serve(
         catalog: melissa_web::Catalog::new(&dirs.state),
         app_access: start.app_access,
         setup_passwords: Some(start.setup_passwords),
+        tailscale: Some(start.tailscale),
     });
     melissa_web::serve(
         listener,
@@ -1283,6 +1342,7 @@ mod tests {
             reach: None,
             access: None,
             setup_notices: None,
+            tailscale: None,
         };
         let workspaces = Arc::new(Workspaces::new::<KubeApps>(settings, None));
         let wiring = Wiring {

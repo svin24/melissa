@@ -100,6 +100,9 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
     bind check, addresses the filter in force doesn't let in are left out, under
     `reachability.access` (`open_to`, `setting`, `left_out`, `warning`, `problem`). The warning
     names the `set_app_access` level that would open them; the owner approves each widening.
+  - Melissa's own Tailscale connected (Settings → Tailscale, `melissa_settings::tailscale`):
+    the node's MagicDNS name and IPv4 address come last, at the NodePort itself (they reach
+    the container directly: no `port_offset`, no bind check), and only under Tailnet or wider.
   - No bind known (Nix/host install): a TCP connect to every `address:port` (800 ms; open and
     timed-out results cached 15 s). A failure while the app answers is `unverified` with a
     `note`; the link is kept (a connect from the device isn't proof either way). Loopback and

@@ -53,7 +53,10 @@ use melissa_agent::{
     BoxFuture, TaskId,
 };
 use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec, Protocol};
-use melissa_settings::app_access::{self, AppAccessControl, View as AccessView};
+use melissa_settings::{
+    app_access::{self, AppAccessControl, View as AccessView},
+    tailscale::TailscaleControl,
+};
 use serde_json::{json, Map, Value};
 
 use crate::{
@@ -105,6 +108,10 @@ pub struct AppSettings {
     /// Where a newly generated setup password is announced (the owner's card in the chat).
     /// `None`: nowhere.
     pub setup_notices: Option<SetupNotices>,
+    /// Melissa's own Tailscale (container install): while connected, links also name the
+    /// node's MagicDNS name and tailnet address, which reach the container directly (at the
+    /// NodePort, not through the host's publishing). `None`: no Tailscale of Melissa's.
+    pub tailscale: Option<TailscaleControl>,
 }
 
 impl AppSettings {
@@ -248,31 +255,49 @@ fn device_ports(ns: &Namespace, spec: Option<&AppSpec>) -> Vec<DevicePort> {
 /// Link fields for an app with `ports` on the device (empty: none, e.g. uninstalled) at
 /// `addresses`. `port` and `url` are the web port's (where people reach it: the NodePort plus
 /// `[apps] port_offset`); `ports` lists every port with `address:port` and its protocol.
+///
+/// `direct`: those of `addresses` that reach the container itself (Melissa's own Tailscale),
+/// where the port is the NodePort, without the offset.
 fn link_fields(
     settings: &AppSettings,
     addresses: &[String],
+    direct: &[String],
     app: &str,
     ports: &[DevicePort],
 ) -> Value {
     let first = addresses.first();
     let web = ports.iter().find(|p| p.web);
     let published = |p: &DevicePort| device::published_port(p.node_port, settings.port_offset);
+    // The port people use at `address`.
+    let port_at = |address: &String, p: &DevicePort| {
+        if direct.contains(address) {
+            Some(p.node_port)
+        } else {
+            published(p)
+        }
+    };
     let web_port = web.and_then(published);
-    let urls: Vec<String> = web_port
-        .map(|p| addresses.iter().map(|a| device::url(a, p)).collect())
+    let urls: Vec<String> = web
+        .map(|w| {
+            addresses
+                .iter()
+                .filter_map(|a| port_at(a, w).map(|p| device::url(a, p)))
+                .collect()
+        })
         .unwrap_or_default();
     let list: Vec<Value> = ports
         .iter()
         .filter_map(|p| {
             let port = published(p)?;
+            let at_first = first.and_then(|a| Some((a, port_at(a, p)?)));
             Some(json!({
                 "name": p.name,
                 "protocol": p.protocol.lower(),
                 "port": port,
                 "node_port": p.node_port,
                 "web": p.web,
-                "address": first.map(|a| device::host_port(a, port)),
-                "url": (p.web).then(|| first.map(|a| device::url(a, port))).flatten(),
+                "address": at_first.map(|(a, port)| device::host_port(a, port)),
+                "url": (p.web).then(|| at_first.map(|(a, port)| device::url(a, port))).flatten(),
             }))
         })
         .collect();
@@ -292,6 +317,15 @@ fn link_fields(
 /// one: `reach.rs`).
 async fn checked_links(settings: &AppSettings, app: &str, ports: &[DevicePort]) -> Value {
     let mut addresses = settings.addresses();
+    // Melissa's own Tailscale: its addresses reach the container directly. They go last, are
+    // judged by the access setting like the others (tailnet), and skip the host's publish
+    // check (the host doesn't publish them).
+    let own = match (&settings.tailscale, ports.is_empty()) {
+        (Some(t), false) => t.own_addresses().await,
+        _ => Vec::new(),
+    };
+    addresses.retain(|a| !own.contains(a));
+    addresses.extend(own.iter().cloned());
     let access = settings
         .access
         .as_ref()
@@ -309,12 +343,17 @@ async fn checked_links(settings: &AppSettings, app: &str, ports: &[DevicePort]) 
                 })
             })
             .collect();
-        if let Some(r) = reach::check(check, &addresses, &checked).await {
+        let host: Vec<String> = addresses
+            .iter()
+            .filter(|a| !own.contains(a))
+            .cloned()
+            .collect();
+        if let Some(r) = reach::check(check, &host, &checked).await {
             addresses.retain(|a| !r.dead.contains(a));
             report = Some(r.report);
         }
     }
-    let mut fields = link_fields(settings, &addresses, app, ports);
+    let mut fields = link_fields(settings, &addresses, &own, app, ports);
     if let Some(r) = report {
         fields["reachability"] = r;
     }

@@ -58,7 +58,7 @@ licenses under `/usr/share/licenses`):
 |---|---|---|
 | k3s (binary and airgap images) | Apache License 2.0 | <https://github.com/k3s-io/k3s> |
 | k3s-selinux | Apache License 2.0 | <https://github.com/k3s-io/k3s-selinux> |
-| Tailscale | BSD-3-Clause style (RPM metadata: MIT) | <https://tailscale.com> |
+| Tailscale 1.104.7 (`tailscale`, `tailscaled`: Melissa's own Tailscale, off by default) | BSD-3-Clause, Copyright (c) 2020 Tailscale Inc & contributors; the Go modules built in are listed with their licenses in `THIRD-PARTY.md` | <https://github.com/tailscale/tailscale>, the official static binaries from pkgs.tailscale.com (sha256 in `packaging/container/tailscale.lock`); `LICENSE` and `THIRD-PARTY.md` (the tag's `licenses/tailscale.md`) ship in `/usr/share/licenses/tailscale/` |
 | bubblewrap | LGPL-2.1-or-later | Fedora package |
 | whisper.cpp 1.9.5 (`whisper-cli` and its ggml libraries, voice input) | MIT, Copyright (c) 2023-2026 The ggml authors | <https://github.com/ggml-org/whisper.cpp>, built from the tag's tarball (sha256 in `packaging/container/whisper.lock`); on Nix from nixpkgs |
 

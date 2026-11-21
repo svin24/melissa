@@ -1,0 +1,14 @@
+# Tailscale pinned for Melissa's own Tailscale (Settings → Tailscale; off by default; docs/DECISIONS.md
+# 2026-11-21). Sourced as shell by the image build, which ships the official static binaries
+# (tailscale, tailscaled; BSD-3-Clause) from pkgs.tailscale.com. Update: bump the version, then
+#   curl -fsSL https://pkgs.tailscale.com/stable/tailscale_<version>_amd64.tgz.sha256
+# (and check it against `curl -fsSL <tgz> | sha256sum`). The license files at the release tag ship in
+# /usr/share/licenses/tailscale/:
+#   curl -fsSL https://raw.githubusercontent.com/tailscale/tailscale/v<version>/LICENSE | sha256sum
+#   curl -fsSL https://raw.githubusercontent.com/tailscale/tailscale/v<version>/licenses/tailscale.md | sha256sum
+# (the second lists the Go modules built into the binaries and their licenses). If a hash differs,
+# read the diff before updating it.
+TAILSCALE_VERSION=1.104.7
+TAILSCALE_SHA256=e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c
+TAILSCALE_LICENSE_SHA256=a7ca6186a7963a0a60740f6047760eecd7a0234e8c38bd7e1e0bbcb324bda45b
+TAILSCALE_DEPS_LICENSES_SHA256=fe5729149b37198fad6c6227f2923760f3fa1540ad99a7b8d1981cebb80d65d1
