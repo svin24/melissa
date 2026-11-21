@@ -57,6 +57,11 @@
 //!   204 while a sign-in page is open), `POST /ui/settings/tailscale/{enable|disable}`, and
 //!   `POST /ui/settings/tailscale/sign-in`, whose answer alone carries the sign-in page's URL
 //!   (strict same-origin, no-store, audited `tailscale.login_started` without it).
+//! - First-run setup (`setup.rs`): `GET /setup[/{device|provider|model|extras}]`,
+//!   `POST /ui/setup/{device|model}`, `POST /ui/setup/{step}/later`, `POST /ui/setup/dismiss`;
+//!   `POST /ui/settings/tailscale/switch` (`enabled=on` or nothing) is Enable/Disable as one
+//!   switch for its Extras step. The Providers, Voice and Tailscale handlers answer with the
+//!   setup step's region (or redirect back to it) when the request comes from `/setup`.
 //! - `GET /settings/permissions`: the "Always allow" rules; `POST
 //!   /ui/settings/permissions/{id}/remove` removes one.
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
@@ -109,6 +114,7 @@ mod providers;
 mod remove_provider;
 mod reset;
 mod schedules;
+pub(crate) mod setup;
 mod tailscale;
 mod updates;
 mod voice;
@@ -177,6 +183,9 @@ pub struct SettingsParts {
     pub tailscale: Option<melissa_settings::tailscale::TailscaleControl>,
     /// Factory reset (Settings → Reset); `None`: not on this install (no root unit).
     pub factory_reset: Option<melissa_settings::factory_reset::Requester>,
+    /// First-run setup sends the owner through its steps (`setup.rs`); off in routers built
+    /// for tests, which open the chat directly.
+    pub onboarding: bool,
 }
 
 /// The Settings context. Cheap to clone.
@@ -233,6 +242,7 @@ impl Settings {
             setup_passwords: None,
             tailscale: None,
             factory_reset: None,
+            onboarding: false,
         })
     }
 
@@ -246,6 +256,16 @@ impl Settings {
     /// The owner's display preferences.
     pub(crate) fn prefs(&self) -> Prefs {
         self.inner.parts.prefs.get()
+    }
+
+    /// First-run setup is on (see `setup.rs`).
+    pub(crate) fn onboarding(&self) -> bool {
+        self.inner.parts.onboarding
+    }
+
+    /// The name the UI shows for this device, if the owner gave one (display only).
+    pub(crate) fn device_name(&self) -> Option<String> {
+        self.inner.parts.prefs.get().device_name
     }
 
     /// Where the composer sends a recording, when voice input is on and ready.
@@ -438,6 +458,7 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route("/ui/settings/tailscale/enable", post(tailscale::enable))
         .route("/ui/settings/tailscale/disable", post(tailscale::disable))
         .route("/ui/settings/tailscale/sign-in", post(tailscale::sign_in))
+        .route("/ui/settings/tailscale/switch", post(tailscale::switch))
         .route(pages::FILES_URL, get(files::page))
         .route("/ui/settings/files", post(files::save))
         .route(pages::VOICE_URL, get(voice::page))
@@ -457,6 +478,7 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route(pages::RESET_STATUS_URL, get(reset::status))
         .route("/ui/settings/developer/steps", post(developer::steps))
         .route("/ui/settings/developer/enter", post(developer::enter))
+        .merge(setup::routes())
 }
 
 /// The JSON API routes.

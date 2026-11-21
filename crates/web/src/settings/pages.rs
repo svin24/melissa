@@ -447,6 +447,43 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
     )
 }
 
+/// First-run setup's Provider step (`settings::setup`): the providers as `tiles`, then the
+/// chosen one's next action (the same forms as [`providers_region`], so the same handlers),
+/// and the step's buttons. Same id, so those handlers' answers replace it.
+pub fn setup_provider_region(
+    v: &ProvidersView,
+    tiles: Markup,
+    selected: Option<&ProviderCard>,
+    footer: Markup,
+) -> Markup {
+    live_region(
+        PROVIDERS_ID,
+        v.poll.as_deref().unwrap_or(""),
+        2,
+        v.poll.is_some(),
+        html! {
+            (tiles)
+            @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
+            @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
+            @if let Some(c) = selected {
+                div.setup-provider {
+                    @let url = provider_url(&c.id);
+                    (detail_head(provider_logo(&c.id, &letter(&c.label), false), &c.label, "",
+                        html! { (badge(&c.status, c.tone)) }))
+                    (step_view(c, &url))
+                    @if let Some(set) = c.key { (key_view(set, c.key_open, &url)) }
+                    @if c.tone != Tone::Ok {
+                        (actions(plain_action(
+                            &format!("/ui/settings/providers/refresh?p={}", c.id),
+                            PROVIDERS_ID, "Check again", false)))
+                    }
+                }
+            }
+            (footer)
+        },
+    )
+}
+
 /// Saved changes that wait: one line (and, from source only, how to restart).
 pub(super) fn pending_note(p: Pending, manual: Option<&str>) -> Markup {
     let text = match p {
@@ -1379,6 +1416,8 @@ pub struct TailscaleView {
     /// Refresh the region from this URL every few seconds (starting, waiting for a sign-in).
     pub poll: Option<&'static str>,
     pub flash: Option<Flash>,
+    /// In first-run setup: a switch instead of Enable/Disable, no heading, no filled button.
+    pub compact: bool,
 }
 
 pub fn tailscale_page(f: &Frame<'_>, v: &TailscaleView) -> Markup {
@@ -1401,6 +1440,9 @@ pub fn tailscale_region(v: &TailscaleView) -> Markup {
             (action_button("/ui/settings/tailscale/disable", TAILSCALE_ID, "Disable", DISABLE_ASK))
         }
     };
+    if v.compact {
+        return tailscale_switch(v);
+    }
     live_region(
         TAILSCALE_ID,
         v.poll.unwrap_or(""),
@@ -1466,6 +1508,48 @@ pub fn reset_region(v: &ResetView) -> Markup {
                 )))
             }
         },
+    )
+}
+
+/// Tailscale as one switch (first-run setup): on is Enable, off is Disable; a sign-in it
+/// needs shows below the row. Not managed by Melissa: the sentence only.
+fn tailscale_switch(v: &TailscaleView) -> Markup {
+    let managed = v.enable.is_some() || v.disable || v.poll.is_some();
+    let on = v.disable || (v.poll.is_some() && v.enable.is_none());
+    let locked = (v.poll.is_some() && !v.disable).then_some("Starting…");
+    let control = if managed {
+        toggle(&Toggle {
+            action: "/ui/settings/tailscale/switch",
+            target: TAILSCALE_ID,
+            label: "Tailscale",
+            on,
+            locked,
+        })
+    } else {
+        html! {}
+    };
+    let extra = html! {
+        @if let Some(url) = &v.login_url {
+            (actions(external_button(url, "Open Tailscale sign-in")))
+        } @else if v.sign_in {
+            (actions(plain_action("/ui/settings/tailscale/sign-in", TAILSCALE_ID, "Sign in", false)))
+        }
+        @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
+    };
+    live_region(
+        TAILSCALE_ID,
+        v.poll.unwrap_or(""),
+        3,
+        v.poll.is_some(),
+        setting_card(
+            None,
+            setting_row_with(
+                html! { "Tailscale" },
+                Some(html! { (v.sentence) }),
+                control,
+                (!extra.0.is_empty()).then_some(extra),
+            ),
+        ),
     )
 }
 

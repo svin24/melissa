@@ -1411,3 +1411,24 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   added to the list; a test checks the list never reaches what stays). Alternatives: delete the volume from the
   host (also drops the voice model and node password, needs the host), a polkit rule letting the server start
   the unit directly (no crash-safe record of the request), keeping apps (owner: no).
+- **2026-11-21 — Onboarding: a first-run wizard plus a checklist** (owner decision). After the claim the owner
+  goes through `/setup`: Device (a display name only: `device_name` in `ui.toml`, shown where the UI names this
+  device; the Tailscale and k3s node names stay), Provider (tiles with the live status; the chosen provider's
+  Install / Sign in / API key are the Settings → Providers forms, whose handlers answer with the setup region
+  when the request comes from `/setup`), Model ("Use this model" through `Lead::use_backend`, i.e.
+  `lead/backend.json`) and Extras (Voice and Tailscale switches over their Settings handlers). One primary
+  action and one quiet "Later" per step. **Progress is the real state** (a device name, a usable backend, a
+  saved model choice, voice or Tailscale on); setup itself keeps only `[setup] skipped` and `dismissed` in
+  `ui.toml`, so a restart (adding a provider restarts Melissa) resumes where it was. While Device, Provider or
+  Model is neither done nor put off, the owner's `/` and `/chat` redirect to it; steps put off show as a
+  "Finish setup" card in Melissa's empty chat until done or hidden. Members never see setup (invites land in
+  the chat). The empty chat shows three fixed suggestion chips (hardcoded strings filling the message box via
+  `?draft=`) and, when no provider works, a notice in place of pretending to be ready. **Claim, shortened:** one
+  password field with a "Show password" switch (melissa.js, CSP-safe; hidden without script), no "Password
+  again"; the setup code is kept 0600 in `<state>/auth/setup-code.json` until used or expired, and
+  `install.sh` prints it at the end (or how to get it if the server isn't answering yet). Why: a person who
+  just installed Melissa should reach a working chat without a terminal or a hunt through Settings, and
+  deriving progress from state means nothing goes stale. Alternatives: a checklist only (no guidance on the
+  first visit), a wizard only (no way back to skipped steps), storing step completion flags (drift from the
+  real state), renaming the node from the device name (owner: display only), keeping the code in memory
+  (a restart after install invalidated the printed code).

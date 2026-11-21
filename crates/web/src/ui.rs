@@ -66,11 +66,12 @@ use crate::{
     agents,
     components::{
         model_chip, model_picker, oob_inner, status_pill, AgentMenu, ApprovalState, Avatar,
-        ChatHead, HeadStatus, MenuWho, ModelPicker, CHAT_STATUS_ID, MODEL_CHIP_ID,
+        ChatHead, ChecklistItem, HeadStatus, MenuWho, ModelPicker, CHAT_STATUS_ID, MODEL_CHIP_ID,
     },
     feed::{always_words, approval_words, asked_by, backend_label, Approval, Change, Feed, Lookup},
     is_htmx, pages,
     pages::{ChatView, EntryCtx, Frame, Speaker, View, Who},
+    settings::setup,
     state::ClusterCache,
     workspace::{MenuUrls, SideData},
 };
@@ -308,6 +309,19 @@ impl Ui {
         let details = self.details_of(&crate::files::owner_of(who), agent).await?;
         let files = details.files.view();
         let panel = details.view(&files);
+        // First-run setup's open steps under Melissa's empty chat (the owner's only).
+        let lines = match who {
+            Who::Lead => setup::checklist(self).await,
+            Who::Agent(_) => Vec::new(),
+        };
+        let lines: Vec<_> = lines
+            .iter()
+            .map(|(step, later)| setup::checklist_line(*step, *later))
+            .collect();
+        let checklist: Vec<ChecklistItem<'_>> = lines
+            .iter()
+            .map(|(label, href, state)| ChecklistItem { label, href, state })
+            .collect();
         let view = ChatView {
             who,
             epoch: log.epoch(),
@@ -324,6 +338,9 @@ impl Ui {
             all,
             caption: !self.registry().permissions().bypass(),
             enter_steers: self.settings.prefs().enter_steers,
+            no_provider: !setup::provider_ready(self),
+            owner: crate::auth::signed_in().is_some_and(|p| p.is_owner()),
+            checklist: &checklist,
         };
         Ok(self
             .framed(|f| {
@@ -393,6 +410,10 @@ async fn home(state: State<Ui>, q: Query<HomeQuery>) -> Response {
 
 /// Melissa's chat (`/chat`; also `/` on wide screens).
 async fn melissa_chat(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
+    // The owner finishes (or puts off) first-run setup's required steps first.
+    if let Some(to) = setup::redirect(&ui).await {
+        return Redirect::to(&to).into_response();
+    }
     // A draft is only a suggestion for the box; it is never sent by itself.
     let draft: String = q.draft.chars().take(300).collect();
     match ui
@@ -1085,6 +1106,9 @@ fn composer_reply(
         all: false,
         caption: !ui.registry().permissions().bypass(),
         enter_steers: ui.settings.prefs().enter_steers,
+        no_provider: !setup::provider_ready(ui),
+        owner: crate::auth::signed_in().is_some_and(|p| p.is_owner()),
+        checklist: &[],
     })
     .into_response()
 }

@@ -705,6 +705,7 @@ fn tiles_view(ui: &Ui) -> Markup {
             letter: l,
             vendor,
             action: store.is_removed(id).then_some(action.as_str()),
+            link: None,
         })
         .collect();
     provider_tiles("Providers Melissa runs", &tiles, PANEL_ID)

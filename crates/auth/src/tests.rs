@@ -425,3 +425,64 @@ fn the_file_is_private_and_keeps_only_hashes() {
     assert!(again.session(&s.token).is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn setup_code_survives_a_restart_until_used_or_expired() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("melissa-auth-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join(SETUP_FILE_NAME);
+    let f = Fixture::with(Auth::open(&dir).unwrap());
+    let (code, expires) = f.auth.setup_code().unwrap().unwrap();
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    // A wrong try is counted on disk too.
+    let _ = f
+        .auth
+        .claim("XXXXX-XXXXX", "ana", "owner-password", "a", "");
+
+    // "Restart": the same code, the same expiry, the try remembered.
+    let again = Fixture::with(Auth::open(&dir).unwrap());
+    assert_eq!(
+        again.auth.setup_code().unwrap().unwrap(),
+        (code.clone(), expires)
+    );
+    assert_eq!(again.auth.lock().setup.as_ref().unwrap().failures, 1);
+
+    // Expired: a restart doesn't bring it back; a new one replaces it on disk.
+    let late = Fixture::with(Auth::open(&dir).unwrap());
+    late.advance(SETUP_CODE_SECS);
+    let (fresh, _) = late.auth.setup_code().unwrap().unwrap();
+    assert_ne!(fresh, code);
+    let reopened = Fixture::with(Auth::open(&dir).unwrap());
+    reopened.advance(SETUP_CODE_SECS);
+    assert_eq!(reopened.auth.setup_code().unwrap().unwrap().0, fresh);
+
+    // Used: the file goes, and a restart has no code.
+    reopened
+        .auth
+        .claim(&fresh, "ana", "owner-password", "a", "")
+        .unwrap();
+    assert!(!file.exists());
+    let owned = Fixture::with(Auth::open(&dir).unwrap());
+    assert_eq!(owned.auth.setup_code().unwrap(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_stale_setup_code_file_is_removed_once_claimed() {
+    let dir = std::env::temp_dir().join(format!("melissa-auth-stale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let f = Fixture::with(Auth::open(&dir).unwrap());
+    f.claimed();
+    // Left behind by a crash between the two writes.
+    std::fs::write(
+        dir.join(SETUP_FILE_NAME),
+        br#"{"code":"ABCDE-FGHJK","expires":99999999999}"#,
+    )
+    .unwrap();
+    let again = Auth::open(&dir).unwrap();
+    assert!(!dir.join(SETUP_FILE_NAME).exists());
+    assert_eq!(again.setup_code().unwrap(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}

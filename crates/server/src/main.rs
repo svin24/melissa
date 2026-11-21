@@ -862,10 +862,16 @@ async fn serve(
             }
         }));
     // A box nobody has claimed: the code goes to the console and the log only.
-    if let Some((code, _)) = auth.setup_code().context("making the setup code")? {
+    // It is kept until used or expired, so a restart shows the same code.
+    if let Some((code, expires)) = auth.setup_code().context("making the setup code")? {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let minutes = expires.saturating_sub(now).div_ceil(60);
         println!(
             "  Claim:    open http://{}/claim and enter the setup code {code}\n            \
-             (valid 1 hour; a new one: melissa-server setup-code)",
+             (valid {minutes} more minutes; a new one: melissa-server setup-code)",
             config.listen
         );
         melissa_web::log_setup_code(&code);
@@ -919,6 +925,8 @@ async fn serve(
         factory_reset: melissa_settings::factory_reset::Requester::system(Some(
             audit_for_auth.clone(),
         )),
+        // First-run setup after the claim (device name, provider, model, extras).
+        onboarding: true,
     });
     let app = melissa_web::router_with_settings(board, mcp, lead.clone(), settings, auth);
     // The host's CLI (`chat`, `ask`, `confirm`, ...) talks over a local socket that only root

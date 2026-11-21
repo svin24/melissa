@@ -575,6 +575,23 @@ Minecraft server and lets them make their own agents.
   `reset-owner`, the CLI on a host-local socket. Members have today's access except People, providers, app
   access, updates and force delete. Open items: Q87.
 
+- **First-run setup (2026-11-21, owner decision "wizard plus checklist"; DECISIONS "Onboarding"):** the claim
+  asks for the setup code, a username and one password (a "Show password" switch, no "Password again"); the
+  code is printed at the end of `install.sh`, kept 0600 in `<state>/auth/setup-code.json` until it is used or
+  expires (a restart keeps it). Then the owner goes through `/setup`: **Device** (a display name, prefilled
+  with the host name, `device_name` in `ui.toml`; shown in the chat header and the sidebar's device line; it
+  does not rename the Tailscale or k3s node), **Provider** (the providers as tiles with their status; the
+  chosen one's Install / Sign in / API key are the Settings → Providers forms and handlers), **Model**
+  (the usable providers' models, Melissa's current one chosen; "Use this model" writes `lead/backend.json`
+  through `Lead::use_backend`) and **Extras** (Voice input and Tailscale switches, both off; the Settings
+  handlers). Each step has one quiet "Later". Progress comes from the real state; setup keeps only `[setup]`
+  in `ui.toml` (the steps put off, whether the checklist is hidden), so it resumes after a restart. While
+  Device, Provider or Model is neither done nor put off, the owner's `/` and `/chat` go to it (Model waits
+  while no provider works). Steps put off show as a "Finish setup" checklist in Melissa's empty chat (linking
+  back; "Hide"), next to three fixed suggestion chips (`?draft=`; hardcoded words, never an agent's). With no
+  usable provider the composer says so (the owner gets a link to the Provider step). Members who join by
+  invite go straight to the chat and never see setup. Open items: Q88.
+
 Build order: (1) logins: accounts, owner claim, invites, sessions, re-auth; (2) agents owned by a person and
 a lead-agent conversation per person; (3) permissions with presets and requests to the owner; (4) shared
 providers with "may use"; (5) HTTPS and passkeys; (6) per-person provider accounts.
@@ -1194,6 +1211,23 @@ Roadmap (rough, phases may overlap):
     (7 days idle, 30 days at most) and the 5-minute password window: right for a household? (h) Per-person
     API tokens for remote clients (desktop/Android, 6b) are not built; the CLI uses the host socket. (i) Failed
     tries and the setup code live in memory: a restart clears lockouts and makes a new code.
+88. Onboarding (2026-11-21; DECISIONS "Onboarding"). (a) The setup pages, the checklist card, the suggestion
+    chips and the composer's "No provider is ready yet." are built from existing components plus a few new
+    ones (`components/onboarding.rs`, a link variant of the provider tile) without a Figma design: owner
+    review (Figma first). (b) The three suggestions ("What's running on this device?", "Install an app", "How
+    much disk space is left?") are a first guess; the owner picks the final words. (c) A box that was set up
+    before onboarding existed sends its owner to the Device step (no `device_name`) and the Model step (no
+    `lead/backend.json`) once; "Later" or one click clears it. (d) "Provider done" is live state: if every
+    provider later stops working (a sign-in expires), the owner's chat goes back to the Provider step. Right,
+    or only a notice? (e) Extras counts as done when voice input or Melissa's Tailscale is on; "Finish setup"
+    without either keeps nothing, so Extras shows in the checklist only after "Later". (f) The Model step
+    asks a provider for its models in the background and refreshes the list every 3 s for up to 30 s; a
+    choice made in that time is replaced by the refreshed list's default. (g) The device name is display only
+    (owner, 2026-11-21); the details panel's device card and Usage still show the cluster node's name. (h) The
+    setup code sits in plain text in the 0600 file until used or expired (it was already printed to the console
+    and the log). (i) Provider actions in setup need the password within 5 minutes like Settings (the claim
+    counts); later than that the owner enters it again and comes back.
+
 89. Factory reset (2026-11-21; section 6d, DECISIONS "Factory reset"). (a) Container install only: on Nix
     installs Settings → Reset says "Not available" (a Nix module unit and marker directory would be needed). (b)
     The list of what goes is explicit: a new state file Melissa starts writing must be added to
@@ -1208,3 +1242,5 @@ Roadmap (rough, phases may overlap):
     opens a card (Erased / Kept, type `melissa`). (g) A device name setting doesn't exist; when it comes, the word
     to type becomes the device's name. (h) Not tested on a real container yet (the owner's dev box must not be
     reset): run once on a throwaway install, including a kill during the wipe and a restart of the container.
+    tries live in memory: a restart clears lockouts. Since 2026-11-21 (Q88) the setup code is kept on disk
+    (0600) until used or expired, so a restart keeps it.

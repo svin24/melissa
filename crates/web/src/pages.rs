@@ -22,6 +22,7 @@ use crate::{
         ChatHead, ComposerTarget, DetailsPanel, FilePanel, HeadStatus, ModelPicker, SentFile,
         UpdateHint, UsageRow, CHAT_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
     },
+    components::{notice_link, setup_checklist, suggestion_chips, ChecklistItem, Suggestion},
     components::{phone_view, queued_messages, PhoneView, QueuedView, SheetWho, QUEUE_ID},
     feed::{Approval, Change, Clock, Entry, Feed, Item},
     state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
@@ -600,6 +601,31 @@ pub struct ChatView<'a> {
     pub caption: bool,
     /// While the agent works, Enter steers (else it queues; Settings → Developer → Chat).
     pub enter_steers: bool,
+    /// No provider works now: the composer says so (instead of pretending to be ready).
+    pub no_provider: bool,
+    /// The viewer is the owner (the notice links to setup's Provider step).
+    pub owner: bool,
+    /// First-run setup's open steps, under Melissa's empty chat (owner only).
+    pub checklist: &'a [ChecklistItem<'a>],
+}
+
+/// The suggestions under Melissa's empty chat: fixed words, never written by an agent. Each
+/// puts its text in the message box (`?draft=`); nothing is sent by itself.
+pub const SUGGESTIONS: [&str; 3] = [
+    "What's running on this device?",
+    "Install an app",
+    "How much disk space is left?",
+];
+
+fn suggestions() -> Markup {
+    let items: Vec<Suggestion<'_>> = SUGGESTIONS
+        .iter()
+        .map(|t| Suggestion {
+            text: t,
+            href: format!("{MELISSA_CHAT_URL}?draft={}", crate::auth::encode(t)),
+        })
+        .collect();
+    suggestion_chips(&items)
 }
 
 /// A chat page: Melissa's (home) or a helper's. `head`: its header.
@@ -614,13 +640,22 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
         clock: v.feed.clock(),
     };
     let empty = match v.who {
-        Who::Lead => empty_state(
-            &format!("Hi, I'm {}.", f.lead_name()),
-            "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
-        ),
+        Who::Lead => html! {
+            (empty_state(
+                &format!("Hi, I'm {}.", f.lead_name()),
+                "I look after the apps on your devices. Ask me to install one, check on them, or explain what's going on.",
+            ))
+            @if !v.no_provider { (suggestions()) }
+            @if !v.checklist.is_empty() {
+                (setup_checklist(v.checklist, crate::settings::setup::DISMISS_URL))
+            }
+        },
         Who::Agent(_) => empty_state(
             &format!("Nothing here yet with {}.", v.speaker.name),
-            &format!("Its jobs from {} and your messages show up here.", f.lead_name()),
+            &format!(
+                "Its jobs from {} and your messages show up here.",
+                f.lead_name()
+            ),
         ),
     };
     // The details sheet's line on phones: "Minecraft agent · melissa".
@@ -679,7 +714,15 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
     let placeholder = format!("Message {}…", v.speaker.name);
     let draft_key = v.who.draft_key();
-    composer(
+    let not_ready = v.no_provider.then(|| {
+        notice_link(
+            "No provider is ready yet.",
+            v.owner
+                .then_some((crate::settings::setup::PROVIDER_URL, "Connect a provider")),
+            Tone::Warn,
+        )
+    });
+    let composer = composer(
         &ComposerTarget {
             send: &send,
             draft_key: &draft_key,
@@ -694,7 +737,11 @@ pub fn composer_box(v: &ChatView<'_>) -> Markup {
         v.error,
         v.picker.map(model_chip).unwrap_or_default(),
         composer_status(&cancel, v.busy, v.backend.filter(|_| v.picker.is_none())),
-    )
+    );
+    match not_ready {
+        Some(n) => html! { (n) (composer) },
+        None => composer,
+    }
 }
 
 /// An archived chat with Melissa: read-only, no composer.

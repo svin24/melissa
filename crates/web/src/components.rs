@@ -2226,7 +2226,12 @@ pub use people::csrf_field;
 mod provider_add;
 pub use provider_add::{
     add_panel, link_button, provider_tiles, registry_list, search_box, stepper, ProviderTile,
-    RegistryAction, RegistryRow,
+    RegistryAction, RegistryRow, TileLink,
+};
+mod onboarding;
+pub use onboarding::{
+    notice_link, setup_actions, setup_checklist, setup_page, setup_submit, suggestion_chips,
+    ChecklistItem, Suggestion, CHECKLIST_ID,
 };
 
 /// A provider's logo where Melissa ships one for `name` (a backend name, provider id or ACP

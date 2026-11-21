@@ -1033,7 +1033,19 @@ pub async fn setup_code(client: &Client) -> anyhow::Result<()> {
     }
     let code = body["code"].as_str().context("no code in the reply")?;
     println!("Setup code: {code}");
-    println!("Open Melissa's web UI and enter it to become the owner. It works for 1 hour.");
+    let left = body["expires"]
+        .as_u64()
+        .map(|e| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            e.saturating_sub(now).div_ceil(60)
+        })
+        .unwrap_or(60);
+    println!(
+        "Open Melissa's web UI and enter it to become the owner. It works for {left} more minutes."
+    );
     Ok(())
 }
 

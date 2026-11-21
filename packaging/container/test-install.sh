@@ -183,6 +183,19 @@ eq "the marker directory belongs to root and the server's group" yes \
 eq "the image enables the reset units" yes \
     "$(yes_no grep -q 'melissa-factory-reset.path melissa-factory-reset.service; ' "$here/Containerfile")"
 eq "uninstall.sh never runs a reset" no "$(yes_no grep -q factory-reset "$here/uninstall.sh")"
+# --- The claim line at the end of the install -------------------------------------------------
+case "$(claim_line "$(printf 'Setup code: ABCDE-FGHJK\nOpen Melissa...\n')")" in
+    *"Setup code: ABCDE-FGHJK "*) eq "the setup code is printed" ok ok ;;
+    *) eq "the setup code is printed" ok bad ;;
+esac
+case "$(claim_line 'This Melissa already has an owner. Lost the password? melissa-server reset-owner')" in
+    *"already has an owner"*) eq "a claimed box says sign in" ok ok ;;
+    *) eq "a claimed box says sign in" ok bad ;;
+esac
+case "$(claim_line '')" in
+    *"melissa-server setup-code"*) eq "no answer yet: the fallback command" ok ok ;;
+    *) eq "no answer yet: the fallback command" ok bad ;;
+esac
 
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"

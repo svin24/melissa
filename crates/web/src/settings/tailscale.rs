@@ -10,14 +10,17 @@
 //! `settings.tailscale`, actor `ui`.
 
 use axum::{
-    extract::{Query, State},
+    extract::{Form, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
 use melissa_settings::tailscale::{Login, State as TsState, TailscaleControl, TailscaleError};
 use serde::Deserialize;
 
-use super::pages::{self, Flash, TailscaleView, TAILSCALE_URL};
+use super::{
+    pages::{self, Flash, TailscaleView, TAILSCALE_URL},
+    setup::from_setup,
+};
 use crate::{
     components::Tone,
     is_htmx,
@@ -50,6 +53,7 @@ fn view(state: &TsState, flash: Option<Flash>) -> TailscaleView {
         login_url: None,
         poll: None,
         flash,
+        compact: false,
     };
     match state {
         TsState::NotManaged => {}
@@ -87,12 +91,30 @@ pub(super) struct RegionQuery {
 
 /// The region (htmx polling). `waiting`: a sign-in page is open in this browser; answer 204
 /// until the sign-in is done, so the open button stays.
-pub(super) async fn region(State(ui): State<Ui>, Query(q): Query<RegionQuery>) -> Response {
+pub(super) async fn region(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Query(q): Query<RegionQuery>,
+) -> Response {
     let s = state(&ui).await;
     if q.waiting.is_some() && s == TsState::SignInNeeded {
         return StatusCode::NO_CONTENT.into_response();
     }
-    pages::tailscale_region(&view(&s, None)).into_response()
+    let mut v = view(&s, None);
+    v.compact = from_setup(&headers);
+    pages::tailscale_region(&v).into_response()
+}
+
+/// The setup page's view of Tailscale (first-run setup, Extras).
+pub(super) async fn setup_view(ui: &Ui) -> TailscaleView {
+    let mut v = view(&state(ui).await, None);
+    v.compact = true;
+    v
+}
+
+/// Whether Melissa's own Tailscale is on (setup's Extras counts as done then).
+pub(super) async fn is_on(ui: &Ui) -> bool {
+    !matches!(state(ui).await, TsState::NotManaged | TsState::Off)
 }
 
 fn flash_for(e: &TailscaleError) -> Flash {
@@ -110,9 +132,13 @@ fn flash_for(e: &TailscaleError) -> Flash {
 
 async fn answer(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> Response {
     let failed = flash.is_some();
-    let v = view(&state(ui).await, flash);
+    let mut v = view(&state(ui).await, flash);
+    v.compact = from_setup(headers);
     if is_htmx(headers) {
         return pages::tailscale_region(&v).into_response();
+    }
+    if v.compact && !failed {
+        return Redirect::to(super::setup::EXTRAS_URL).into_response();
     }
     if failed {
         return ui
@@ -151,6 +177,19 @@ pub(super) async fn disable(State(ui): State<Ui>, headers: HeaderMap) -> Respons
     answer(&ui, &headers, flash).await
 }
 
+/// The switch in first-run setup (`enabled=on` or nothing): Enable or Disable.
+pub(super) async fn switch(
+    state: State<Ui>,
+    headers: HeaderMap,
+    Form(form): Form<Vec<(String, String)>>,
+) -> Response {
+    if form.iter().any(|(k, v)| k == "enabled" && v == "on") {
+        enable(state, headers).await
+    } else {
+        disable(state, headers).await
+    }
+}
+
 /// Start a sign-in and give this browser the sign-in page (never logged).
 pub(super) async fn sign_in(State(ui): State<Ui>, headers: HeaderMap) -> Response {
     if !from_this_page(&headers) {
@@ -168,6 +207,7 @@ pub(super) async fn sign_in(State(ui): State<Ui>, headers: HeaderMap) -> Respons
         }
     };
     let mut v = view(&c.state().await, flash);
+    v.compact = from_setup(&headers);
     if let Some(url) = url {
         v.login_url = Some(url.expose().to_string());
         v.sign_in = false;

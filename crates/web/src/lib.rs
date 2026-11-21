@@ -576,6 +576,7 @@ mod tests {
         mod details;
         mod mobile;
         mod reset;
+        mod setup;
 
         /// A Lead agent backend whose session never finishes opening.
         /// Melissa's first backend (provider claude in the Settings fixture); `signed_out`:
@@ -844,6 +845,8 @@ mod tests {
             catalog: Catalog,
             setup: Option<Arc<dyn SetupPasswords>>,
             tailscale: Option<melissa_settings::tailscale::TailscaleControl>,
+            /// First-run setup on (its own tests; the others open the chat directly).
+            onboarding: bool,
         }
 
         impl SettingsFixture {
@@ -865,6 +868,7 @@ mod tests {
                     catalog: Catalog::unavailable(),
                     setup: None,
                     tailscale: None,
+                    onboarding: false,
                 }
             }
 
@@ -992,6 +996,7 @@ mod tests {
                         self.dir.join("reset"),
                         Some(melissa_agent::AuditLog::new(self.dir.join("audit.jsonl"))),
                     )),
+                    onboarding: self.onboarding,
                 })
             }
 
