@@ -1868,7 +1868,12 @@ impl Tool for MyApps {
 }
 
 fn unreachable(e: &ClusterError) -> Value {
-    json!({"k3s_reachable": false, "reason": e.to_string()})
+    let mut out = json!({"k3s_reachable": false, "reason": e.to_string()});
+    // No cluster credentials at all: k3s isn't set up here (not merely down or starting).
+    if matches!(e, ClusterError::NotConfigured) {
+        out["k3s_set_up"] = json!(false);
+    }
+    out
 }
 
 /// The status answer from the app's objects. Pure, for tests.

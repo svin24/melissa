@@ -505,7 +505,11 @@ pub(crate) fn activity_from(events: &[EventRecord], look: &dyn Lookup) -> Vec<(u
                 "denied" => Some(("You declined a request".to_string(), false)),
                 _ => None,
             },
-            LeadEvent::AgentCreated { name, .. } => Some((format!("New helper: {name}"), false)),
+            LeadEvent::AgentCreated { agent, name, .. } => {
+                // The current name: the helper may have been renamed since.
+                let name = look.agent_name(agent).unwrap_or_else(|| name.clone());
+                Some((format!("New helper: {name}"), false))
+            }
             LeadEvent::AgentFinished { name, status, .. } => Some(match status.as_str() {
                 "succeeded" => (format!("{name} finished a job"), false),
                 "cancelled" => (format!("{name} was stopped"), false),

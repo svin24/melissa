@@ -108,7 +108,12 @@ impl Tool for ClusterHealth {
 }
 
 fn unreachable(e: &ClusterError) -> Value {
-    json!({"k3s_reachable": false, "reason": e.to_string()})
+    let mut out = json!({"k3s_reachable": false, "reason": e.to_string()});
+    // No cluster credentials at all: k3s isn't set up here (not merely down or starting).
+    if matches!(e, ClusterError::NotConfigured) {
+        out["k3s_set_up"] = json!(false);
+    }
+    out
 }
 
 fn pod_phase(pod: &Pod) -> String {
@@ -330,6 +335,7 @@ mod tests {
         let out = ClusterHealth::new(None).call(Value::Null).await.unwrap();
         assert_eq!(out["k3s_reachable"], false);
         assert!(out["reason"].as_str().unwrap().contains("not running"));
+        assert_eq!(out["k3s_set_up"], false);
     }
 
     #[tokio::test]
@@ -346,6 +352,12 @@ mod tests {
             .unwrap();
             assert_eq!(out["k3s_reachable"], false);
             assert!(out["reason"].as_str().unwrap().contains(needle), "{out}");
+            // Only missing credentials mean "not set up"; starting is not.
+            assert_eq!(
+                out.get("k3s_set_up").is_some(),
+                needle == "not running",
+                "{out}"
+            );
         }
     }
 

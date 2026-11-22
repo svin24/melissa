@@ -413,6 +413,7 @@ async fn info(
             label,
             version,
             enabled: saved.is_enabled(),
+            installed,
             status: status.to_string(),
             tone,
             lock,

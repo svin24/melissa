@@ -142,6 +142,7 @@ fn apps_empty(snap: &ClusterSnapshot, owner: &Principal) -> String {
     match (&snap.apps, owner) {
         (Apps::Unknown, _) => "Checking your apps…".into(),
         (Apps::Unreachable, _) => "Can't reach the app platform right now.".into(),
+        (Apps::NotSetUp, _) => "The app platform isn't set up on this device.".into(),
         (_, Principal::Lead) => "No apps yet.".into(),
         (_, Principal::Agent(_)) => "No apps yet.".into(),
     }

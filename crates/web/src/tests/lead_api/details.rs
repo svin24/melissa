@@ -132,7 +132,7 @@ async fn each_chat_shows_its_own_agents_details() {
     assert!(!page.contains(&format!("/ui/settings/agents/{ada}/delete")));
     // Bo's: made by the user, no apps, deletable (in-page confirmation).
     let (_, _, page) = get_html(&app, &format!("/settings/agents/{bo}")).await;
-    assert!(page.contains("By You, "), "{page}");
+    assert!(page.contains("By you, "), "{page}");
     assert!(page.contains(&format!("action=\"/ui/settings/agents/{bo}/delete\"")));
     assert!(page.contains("Delete Bo? Its chat, file box and schedules go with it."));
     let (_, _, page) = get_html(&app, &format!("/agents/{bo}")).await;
@@ -381,13 +381,22 @@ async fn helpers_are_made_renamed_pinned_and_deleted_in_their_settings() {
     let (status, headers, _) = send(&app, req).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(headers[header::LOCATION], format!("/settings/agents/{ada}"));
-    // Change icon.
-    let (_, headers, _) = send(
+    // Change icon: the section swaps in place, its notice by the Icon form (no reload).
+    let (_, headers, html) = send(
         &app,
         htmx_post(&format!("{base}/icon"), "shape=leaf&color=green"),
     )
     .await;
-    assert_eq!(headers["hx-refresh"], "true");
+    assert!(!headers.contains_key("hx-refresh"));
+    assert!(html.contains("id=\"agent-settings\""), "{html}");
+    let icon_at = html.find(">Icon<").expect("icon section");
+    let notice_at = html.find("Icon saved.").expect("notice");
+    assert!(notice_at > icon_at, "notice by the Icon form: {html}");
+    // The sidebar shows the new icon too (out of band: Settings has no live stream).
+    assert!(
+        html.contains("id=\"agent-groups\" hx-swap-oob=\"true\""),
+        "{html}"
+    );
     assert_eq!(lead.agents().get(&ada).unwrap().icon.shape, "leaf");
 
     // Pin from its page or its menu (a plain form that goes back where it came from).

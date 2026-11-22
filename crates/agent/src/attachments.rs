@@ -337,9 +337,27 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Memory and disk sizes, in binary units like the rest of Melissa (`474 GiB`, `8.0 GiB`):
+/// the web UI and `device_info` both use this so the chat and the pages agree.
+pub fn gib_size(bytes: u64) -> String {
+    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if gib >= 10.0 {
+        format!("{gib:.0} GiB")
+    } else {
+        format!("{gib:.1} GiB")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gib_sizes_are_binary_and_labelled_so() {
+        assert_eq!(gib_size(8 * 1024 * 1024 * 1024), "8.0 GiB");
+        // A "512 GB" disk: 509 GB in powers of ten, 474 GiB here.
+        assert_eq!(gib_size(509_000_000_000), "474 GiB");
+    }
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n";
