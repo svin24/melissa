@@ -546,6 +546,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_steered_turn_survives_a_reload_and_unknown_events_are_skipped() {
+        let mut lines: Vec<String> = [
+            LeadEvent::UserMessage {
+                turn: 5,
+                text: "get immich working".into(),
+                attachments: vec![],
+                scheduled: None,
+            },
+            LeadEvent::TurnSteered { turn: 5 },
+            LeadEvent::UserMessage {
+                turn: 6,
+                text: "and jellyfin".into(),
+                attachments: vec![],
+                scheduled: None,
+            },
+            LeadEvent::TurnFinished {
+                turn: 5,
+                stop_reason: "cancelled".into(),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| serde_json::to_string(&record(i as u64 + 1, e)).unwrap())
+        .collect();
+        assert!(
+            lines[1].contains("\"type\":\"turn_steered\""),
+            "{}",
+            lines[1]
+        );
+        // A line from a newer Melissa that this one does not know.
+        lines.insert(
+            2,
+            r#"{"seq":9,"ts":0,"type":"some_future_event","turn":5}"#.into(),
+        );
+        let all = parse_chat(&lines.join("\n"), 10);
+        assert_eq!(all.len(), 4, "the unknown line is skipped");
+        // Turn ids are renumbered together, so the steer still points at its turn.
+        assert_eq!(all[1].event, LeadEvent::TurnSteered { turn: 1 });
+        assert_eq!(
+            all[3].event,
+            LeadEvent::TurnFinished {
+                turn: 1,
+                stop_reason: "cancelled".into(),
+            }
+        );
+    }
+
     fn user(text: &str) -> LeadEvent {
         LeadEvent::UserMessage {
             turn: 1,

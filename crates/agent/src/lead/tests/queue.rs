@@ -131,6 +131,10 @@ async fn a_cancelled_turn_keeps_the_queue() {
     }));
     assert!(events.contains(&user(turn + 1, "Next")));
     assert_eq!(finished(&events), "end_turn");
+    // A plain stop, not a steer: the chat says "Stopped.".
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, LeadEvent::TurnSteered { .. })));
     s.close().await;
 }
 
@@ -172,6 +176,10 @@ async fn steering_goes_into_the_running_turn_where_the_session_takes_it() {
         reason: "steered".into()
     }));
     assert!(s.lead.queued().is_empty());
+    // Nothing was stopped, so no steered note either.
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, LeadEvent::TurnSteered { .. })));
     s.close().await;
     assert!(!s.audit().contains(r#""action":"lead.cancel""#));
     assert!(s.audit().contains(r#""action":"lead.steer""#));
@@ -213,6 +221,18 @@ async fn steering_stops_the_turn_where_the_session_cannot_take_it() {
     assert!(events.contains(&user(turn + 1, "Do this instead.")));
     assert_eq!(finished(&events), "end_turn");
     assert!(s.replay.steered().is_empty());
+    // The stopped turn is marked as steered before it ends (the chat says "Conversation
+    // steered." instead of "Stopped.").
+    let at = |want: &LeadEvent| events.iter().position(|e| e == want).unwrap();
+    let steered = at(&LeadEvent::TurnSteered { turn });
+    assert!(
+        steered
+            < at(&LeadEvent::TurnFinished {
+                turn,
+                stop_reason: "cancelled".into()
+            })
+    );
+    assert!(steered < at(&user(turn + 1, "Do this instead.")));
     s.close().await;
 }
 

@@ -371,6 +371,9 @@ impl Printer {
             | LeadEvent::EarlierEnd
             | LeadEvent::FilesChanged
             | LeadEvent::ContextCompacted { .. } => {}
+            LeadEvent::TurnSteered { .. } => {
+                self.line("[steered] stopping the turn for your message")
+            }
             LeadEvent::TurnFinished { stop_reason, .. } => {
                 if stop_reason == "end_turn" {
                     if self.mid_line {

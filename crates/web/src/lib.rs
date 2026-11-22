@@ -2656,10 +2656,12 @@ mod tests {
                     "turn_finished",
                     "message_unqueued",
                     "user_message",
+                    "turn_steered",
                     "turn_finished",
                     "user_message",
                     "message_queued",
                     "message_unqueued",
+                    "turn_steered",
                     "turn_finished",
                     "user_message",
                 ]
@@ -2667,8 +2669,14 @@ mod tests {
             assert_eq!(page["events"][3]["reason"], "removed");
             assert_eq!(page["events"][4]["stop_reason"], "cancelled");
             assert_eq!(page["events"][5]["reason"], "started");
-            assert_eq!(page["events"][10]["reason"], "steered");
+            assert_eq!(page["events"][7]["turn"], 2);
+            assert_eq!(page["events"][11]["reason"], "steered");
+            assert_eq!(page["events"][12]["turn"], 3);
             assert_eq!(page["missed"], false);
+            // The plain cancel says "Stopped."; both steered turns say so instead.
+            let (_, _, html) = send(&app, get("/")).await;
+            assert_eq!(html.matches("Stopped.").count(), 1, "{html}");
+            assert_eq!(html.matches("Conversation steered.").count(), 2, "{html}");
             let (_, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;
             assert_eq!(body["cancelled"], true);
             let (_, body) = send_json(&app, json_post("/api/lead/cancel", "")).await;

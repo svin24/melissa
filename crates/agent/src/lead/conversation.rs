@@ -1183,6 +1183,9 @@ impl Conversation {
                 }
             }
         }
+        // Before the cancel (and the next turn's message): the chat then says the turn was
+        // steered, not just stopped.
+        self.inner.events.push(LeadEvent::TurnSteered { turn });
         self.audit(
             "steer",
             &p.actor,
