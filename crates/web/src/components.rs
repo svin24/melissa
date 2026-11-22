@@ -137,7 +137,8 @@ fn head(title: &str) -> Markup {
 pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
     html! {
         (DOCTYPE)
-        html lang="en" {
+        // The sidebar's collapsed state comes with the page (`looks`), so it doesn't move.
+        html lang="en" data-sidebar=[crate::looks::current().sidebar_collapsed.then_some("collapsed")] {
             head { (head(title)) }
             body {
                 a.skip href="#main" { "Skip to content" }
@@ -170,15 +171,19 @@ pub fn page(title: &str, content: Markup) -> Markup {
 }
 
 /// The slim pre-alpha notice at the top of every page. Its close button hides it in this
-/// browser (melissa.js remembers it; without JavaScript it stays).
+/// browser (melissa.js remembers it in a cookie, so later pages come without it and nothing
+/// flashes; without JavaScript it stays).
 pub fn banner() -> Markup {
+    if crate::looks::current().banner_dismissed {
+        return html! {};
+    }
     html! {
         div.banner #prealpha role="note" {
             p {
                 strong { "Pre-alpha." }
                 " Things will break. Don't trust Melissa with data you can't lose yet."
             }
-            button.banner-close type="button" data-dismiss="prealpha" title="Dismiss" hidden {
+            button.banner-close type="button" data-dismiss="prealpha" title="Dismiss" data-script-only {
                 span aria-hidden="true" { "×" }
                 span.visually-hidden { "Dismiss" }
             }
@@ -1017,12 +1022,14 @@ pub struct DetailsPanel<'a> {
     pub schedules: DetailSchedules<'a>,
 }
 
-/// The Details button of a chat page (shown by melissa.js; without script the panel is
-/// always visible, so the button stays hidden).
+/// The Details button of a chat page (works with melissa.js; without script the panel is
+/// always visible, so the button is hidden: `data-script-only`).
 pub fn details_toggle() -> Markup {
+    let open = !crate::looks::current().details_closed;
     html! {
-        button.icon-button.details-toggle type="button" aria-controls=(DETAILS_ID) aria-expanded="false"
-            data-details-toggle hidden title="Agent details" {
+        button.icon-button.details-toggle type="button" aria-controls=(DETAILS_ID)
+            aria-expanded=(if open { "true" } else { "false" })
+            data-details-toggle data-script-only title="Agent details" {
             (glyph(Glyph::Sidebar))
             span.visually-hidden { "Agent details" }
         }
@@ -1034,7 +1041,9 @@ pub fn details_toggle() -> Markup {
 pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup {
     html! {
         div.details-backdrop data-details-close hidden {}
-        aside.details id=(DETAILS_ID) aria-labelledby="details-h" tabindex="-1" {
+        // Hidden on wide screens when this browser closed it (`looks`; phones ignore it).
+        aside.details id=(DETAILS_ID) aria-labelledby="details-h" tabindex="-1"
+            data-closed[crate::looks::current().details_closed] {
             div.details-head {
                 (sheet_handle())
                 @if let Some(w) = who { (sheet_avatar(w)) }
@@ -1043,7 +1052,7 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
                     @if let Some(w) = who { (sheet_sub(w)) }
                 }
                 button.icon-button.details-close type="button" data-details-close
-                    hidden title="Hide details" {
+                    data-script-only title="Hide details" {
                     span.close-wide { (glyph(Glyph::Sidebar)) }
                     span.close-phone { (glyph(Glyph::Close)) }
                     span.visually-hidden { "Hide details" }
@@ -1628,7 +1637,7 @@ pub fn composer(
                         // sends the clip to `url` and puts the text in the box to edit; nothing
                         // is sent by itself. Where the browser can't record (plain http on the
                         // LAN) a click says why.
-                        button.voice #voice type="button" hidden data-url=(url) aria-pressed="false"
+                        button.voice #voice type="button" data-script-only data-url=(url) aria-pressed="false"
                             title="Speak instead of typing" {
                             (mic_icon())
                             span.voice-time aria-hidden="true" {}
@@ -2167,7 +2176,7 @@ fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Mark
 pub use panel::{
     glyph, inline_form, inline_number, inline_select, overlay_dialog, panel, section_bar,
     setting_card, setting_row, setting_row_with, settings_frame_at, usage_table, Glyph,
-    SettingsSection, UpdateHint, UsageRow, OVERLAY_BODY_ID, OVERLAY_ID,
+    SettingsSection, UpdateHint, UsageRow, OVERLAY_BODY_ID, OVERLAY_ID, SETTINGS_MAIN_ID,
 };
 
 /// A heading row with an action on the right, e.g. "Providers" and "Checked just now · Check

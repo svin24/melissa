@@ -13,6 +13,7 @@ mod details;
 mod feed;
 mod files;
 mod logos;
+mod looks;
 mod markdown;
 mod pages;
 mod panel;
@@ -132,6 +133,8 @@ pub fn router_with_settings(
         .merge(auth::pages::routes(Gate::new(auth.clone())))
         .layer(middleware::from_fn(panel::layer))
         .layer(middleware::from_fn_with_state(Gate::new(auth), auth::layer))
+        // Outside auth, so pages the sign-in gate answers with get the looks too.
+        .layer(middleware::from_fn(looks::layer))
         .layer(middleware::from_fn(security))
 }
 
@@ -3038,6 +3041,65 @@ mod tests {
                 .unwrap();
             let (_, _, body) = send(&app, req).await;
             assert!(body.starts_with("<!DOCTYPE html>"));
+        }
+
+        #[tokio::test]
+        async fn another_settings_section_answers_alone_for_the_section_swap() {
+            // melissa.js swaps only `#settings-main` when Settings is already open
+            // (2026-11-22): it asks with that target and gets the panel alone, whose section
+            // part says which list entry is current.
+            let (app, _) = app();
+            let req = axum::http::Request::get("/settings/voice")
+                .header("hx-request", "true")
+                .header("hx-target", "settings-main")
+                .body(Body::empty())
+                .unwrap();
+            let (status, _, alone) = send(&app, req).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(!alone.contains("<html"));
+            assert!(alone.contains(
+                "<div class=\"settings-main\" id=\"settings-main\" data-section=\"/settings/voice\" tabindex=\"-1\">"
+            ));
+            assert!(alone.contains("href=\"/settings/voice\" aria-current=\"page\""));
+        }
+
+        fn get_with_cookie(uri: &str, cookie: &str) -> axum::http::Request<Body> {
+            axum::http::Request::get(uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn remembered_looks_come_with_the_page() {
+            // 2026-11-22: what melissa.js remembers in cookies is rendered by the server, so
+            // nothing flashes or moves after the first paint.
+            let (app, _) = app();
+            for uri in ["/chat", "/settings/voice"] {
+                let (_, _, page) = get_html(&app, uri).await;
+                assert!(page.contains("Pre-alpha."), "{uri}");
+                assert!(page.contains("<html lang=\"en\">"), "{uri}");
+                let (status, _, page) =
+                    send(&app, get_with_cookie(uri, "melissa_banner=dismissed")).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(!page.contains("Pre-alpha."), "{uri}");
+                assert!(!page.contains("id=\"prealpha\""), "{uri}");
+            }
+            let (_, _, page) = get_html(&app, "/chat").await;
+            assert!(page.contains("data-details-toggle data-script-only"));
+            assert!(page.contains("aria-expanded=\"true\""));
+            assert!(!page.contains("data-closed"));
+            assert!(page.contains("data-sidebar-expand hidden"));
+            let (status, _, page) = send(
+                &app,
+                get_with_cookie("/chat", "melissa_sidebar=collapsed; melissa_details=closed"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(page.contains("<html lang=\"en\" data-sidebar=\"collapsed\">"));
+            assert!(page.contains("tabindex=\"-1\" data-closed>"));
+            assert!(!page.contains("data-sidebar-expand hidden"));
+            assert!(page.contains("Pre-alpha."));
         }
 
         #[tokio::test]

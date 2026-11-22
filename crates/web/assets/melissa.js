@@ -75,12 +75,43 @@
   }
 
   function store(key, value, session) {
+    if (!session) {
+      mirror(key, value);
+    }
     try {
       (session ? window.sessionStorage : window.localStorage).setItem(key, value);
     } catch (e) {
       // Not remembered.
     }
   }
+
+  // Choices that change how the page looks are also kept in a cookie, so the server sends the
+  // page that way and nothing moves after the first paint (web `looks.rs`, 2026-11-22): key in
+  // storage -> [cookie, stored value -> cookie value (else the cookie goes)].
+  var LOOKS = {
+    "melissa.dismissed.prealpha": ["melissa_banner", { 1: "dismissed" }],
+    "melissa.sidebar": ["melissa_sidebar", { collapsed: "collapsed" }],
+    "melissa.details.wide": ["melissa_details", { 0: "closed" }],
+  };
+
+  function mirror(key, value) {
+    var look = LOOKS[key];
+    if (!look) {
+      return;
+    }
+    var v = look[1][value];
+    var secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie =
+      look[0] + "=" + (v || "") + "; Path=/; SameSite=Lax" + (v ? "; Max-Age=31536000" : "; Max-Age=0") + secure;
+  }
+
+  // Choices made before the cookies existed: copy them over once per page (cheap).
+  Object.keys(LOOKS).forEach(function (key) {
+    var v = stored(key);
+    if (v !== null) {
+      mirror(key, v);
+    }
+  });
 
   // What scrolls the chat: the nearest scrolling box around the feed (the main column, or the
   // chat column beside the details panel), or the page on phones.
@@ -534,7 +565,6 @@
     if (!b) {
       return;
     }
-    b.hidden = false;
     var state = rec ? "recording" : transcribing ? "working" : "idle";
     var label = {
       idle: "Speak instead of typing",
@@ -1250,12 +1280,6 @@
     if (!p) {
       return;
     }
-    if (p.toggle) {
-      p.toggle.hidden = false;
-    }
-    each(p.panel.querySelectorAll(".details-close"), function (b) {
-      b.hidden = false;
-    });
     showDetails(storedOpen(isWide()), false);
     // Slide from now on (not while the page settles).
     window.requestAnimationFrame(function () {
@@ -1292,9 +1316,6 @@
     var collapsed = sideCollapsed();
     each(document.querySelectorAll("[data-sidebar-expand]"), function (b) {
       b.hidden = !collapsed;
-    });
-    each(document.querySelectorAll("[data-sidebar-collapse]"), function (b) {
-      b.hidden = false;
     });
   }
 
@@ -1434,10 +1455,10 @@
   document.addEventListener("animationend", settled);
   document.addEventListener("animationcancel", settled);
 
-  // A form's answer (or a panel loaded into the settings window or a dialog) fades in.
-  // Not: live updates, polled regions and results as you type (they come often), toggles (the switch itself
-  // moves), the composer and the model picker (used all the time). A notice in the answer
-  // (saved, failed) fades in even then.
+  // In a form's answer only a notice (saved, failed) fades in: the rest of the answer is the
+  // same section shown again, and fading it reads as a jump (owner, 2026-11-22). Panels and
+  // Settings sections that load are still too. Not: live updates, polled regions and results
+  // as you type (they come often).
   var NOTICES = ".notice, .sheet-msg";
 
   function swapStyleOf(el) {
@@ -1457,17 +1478,14 @@
     if (/every|input|keyup/.test(trigger) || swapStyleOf(from) === "none") {
       return;
     }
-    var quiet =
-      from.closest("form.toggle, .composer, .model-picker") ||
-      t.closest(".composer, .model-picker");
+    // A panel, a Settings section or a page that loaded: shown, not new.
+    if (t.id === "overlay-body" || t.id === "main" || t.matches(".settings-main")) {
+      return;
+    }
     // innerHTML: the target stays and its children are new; outerHTML: the target is new.
     var fresh = t === d.target ? t.children : [t];
     each(fresh, function (el) {
-      if (!quiet) {
-        arrive(el);
-      } else {
-        each(el.matches(NOTICES) ? [el] : el.querySelectorAll(NOTICES), arrive);
-      }
+      each(el.matches(NOTICES) ? [el] : el.querySelectorAll(NOTICES), arrive);
     });
   });
 
@@ -1724,7 +1742,9 @@
   });
 
   // Dismissable notices (the pre-alpha banner): the close button hides one for good in this
-  // browser. Storage can be blocked (private windows); then it only hides for this page.
+  // browser. Storage can be blocked (private windows); then it only hides for this page. The
+  // cookie (LOOKS) has the server leave it out of later pages; the removal here is for pages
+  // from before it was set.
   function initDismiss() {
     var buttons = document.querySelectorAll("[data-dismiss]");
     each(buttons, function (b) {
@@ -1738,7 +1758,6 @@
         el.remove();
         return;
       }
-      b.hidden = false;
       b.addEventListener("click", function () {
         store(key, "1");
         el.remove();
@@ -1789,11 +1808,77 @@
     }
   }
 
+  // Pages shown inside the Settings panel (a section, or a page below one).
+  var SETTINGS_PATHS = /^\/(settings(\/|$|\?)|tasks\/\d)/;
+
+  // Record where the panel is now in the history (`push`: a new entry).
+  function notePanel(url, push) {
+    var at = panelState.loaded || url;
+    if (push) {
+      panelState.depth += 1;
+      window.history.pushState({ panel: at, depth: panelState.depth }, "", at);
+    } else {
+      window.history.replaceState({ panel: at, depth: panelState.depth }, "", at);
+    }
+  }
+
+  // Settings is open and `url` is another of its pages: swap in only the section (breadcrumb
+  // and content), so the section list, its scroll and the search stay as they are and nothing
+  // fades (owner, 2026-11-22). Focus stays on the list entry that was clicked; if it was in
+  // the old section, it goes to the new one.
+  function openSection(o, url, push) {
+    var main = document.getElementById("settings-main");
+    var focusWasIn = main.contains(document.activeElement);
+    panelState.loaded = null;
+    window.htmx
+      .ajax("GET", url, { target: "#settings-main", swap: "outerHTML", select: "#settings-main" })
+      .then(function () {
+        var now = document.getElementById("settings-main");
+        if (!now || now === main) {
+          // Not a Settings page after all (or it failed): load the whole panel instead.
+          openPanel(url, push, true);
+          return;
+        }
+        notePanel(url, push);
+        var section = now.getAttribute("data-section");
+        each(o.body.querySelectorAll(".settings-nav a[href]"), function (a) {
+          if (a.getAttribute("href") === section) {
+            a.setAttribute("aria-current", "page");
+          } else {
+            a.removeAttribute("aria-current");
+          }
+        });
+        var input = o.body.querySelector("[data-settings-search] input");
+        if (input && input.value) {
+          filterSettings(o.body, input.value);
+        }
+        if (focusWasIn || !o.body.contains(document.activeElement)) {
+          now.focus({ preventScroll: true });
+        }
+        showPanelPart(url);
+      });
+  }
+
+  // An answer for the Settings section that has no section in it is not swapped in.
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var d = e.detail || {};
+    var text = d.xhr ? d.xhr.responseText || "" : "";
+    if (d.target && d.target.id === "settings-main" && text.indexOf('id="settings-main"') < 0) {
+      d.shouldSwap = false;
+    }
+  });
+
   // Load `url` into the modal; `push`: a new history entry (else the current one is replaced).
-  function openPanel(url, push) {
+  // `whole`: the whole panel even when only a Settings section would do.
+  function openPanel(url, push, whole) {
     var o = overlayParts();
     if (!o || !window.htmx) {
       window.location.assign(url);
+      return;
+    }
+    var inSettings = o.dialog.open && document.getElementById("settings-main");
+    if (!whole && inSettings && SETTINGS_PATHS.test(url)) {
+      openSection(o, url, push);
       return;
     }
     var before = o.body.firstElementChild;
@@ -1808,13 +1893,7 @@
           return;
         }
         // Where it ended up (`/settings` redirects to the first section).
-        var at = panelState.loaded || url;
-        if (push) {
-          panelState.depth += 1;
-          window.history.pushState({ panel: at, depth: panelState.depth }, "", at);
-        } else {
-          window.history.replaceState({ panel: at, depth: panelState.depth }, "", at);
-        }
+        notePanel(url, push);
         showPanel(o);
         showPanelPart(url);
       });
@@ -1898,7 +1977,8 @@
 
   document.addEventListener("htmx:afterRequest", function (e) {
     var d = e.detail;
-    if (d && d.target && d.target.id === "overlay-body" && d.xhr && d.xhr.responseURL) {
+    var into = d && d.target ? d.target.id : "";
+    if ((into === "overlay-body" || into === "settings-main") && d.xhr && d.xhr.responseURL) {
       try {
         var u = new URL(d.xhr.responseURL);
         if (u.origin === window.location.origin) {

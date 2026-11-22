@@ -17,6 +17,10 @@ use super::{badge, crumbs, Nav, Tone};
 pub const OVERLAY_ID: &str = "overlay";
 /// DOM id of the element a panel is loaded into (also the `HX-Target` that asks for a panel).
 pub const OVERLAY_BODY_ID: &str = "overlay-body";
+/// DOM id of the open Settings section (breadcrumb and content). melissa.js swaps only it when
+/// another section opens, so the section list stays put; as `HX-Target` it also asks for the
+/// panel alone.
+pub const SETTINGS_MAIN_ID: &str = "settings-main";
 
 // --- Icons (16-unit viewBox, 1.5 stroke, `svg.glyph`) -------------------------------------------
 
@@ -228,7 +232,8 @@ pub fn settings_frame_at(
                     p.settings-none.quiet role="status" hidden { "No settings match." }
                 }
             }
-            div.settings-main {
+            // `data-section`: the list entry to mark current when only this part is swapped in.
+            div.settings-main id=(SETTINGS_MAIN_ID) data-section=[section_href] tabindex="-1" {
                 header.panel-head {
                     (crumbs(&match (page, section_href) {
                         (Some(_), Some(href)) => vec![("/settings", "Settings"), (href, current)],
