@@ -20,11 +20,11 @@ struct Words {
     turns: String,
     time: String,
     approvals: String,
-    context: String,
-    cost: String,
+    /// `None` where the provider did not report it.
+    context: Option<String>,
+    /// `None` where the provider did not report it.
+    cost: Option<String>,
 }
-
-const NOT_REPORTED: &str = "Not reported";
 
 fn words(name: String, href: String, role: &'static str, u: &Usage) -> Words {
     Words {
@@ -34,10 +34,9 @@ fn words(name: String, href: String, role: &'static str, u: &Usage) -> Words {
         turns: u.turns.to_string(),
         time: duration(u.busy_ms),
         approvals: u.approvals.to_string(),
-        context: u.context.map_or_else(
-            || NOT_REPORTED.to_string(),
-            |c| format!("{} of {}", tokens(c.used), tokens(c.size)),
-        ),
+        context: u
+            .context
+            .map(|c| format!("{} of {}", tokens(c.used), tokens(c.size))),
         cost: cost(&u.cost()),
     }
 }
@@ -69,12 +68,12 @@ fn tokens(n: u64) -> String {
     }
 }
 
-/// Reported cost per unit: "US$0.42", "3.5 credits"; nothing reported: "Not reported".
-fn cost(by_unit: &BTreeMap<String, u64>) -> String {
+/// Reported cost per unit: "US$0.42", "3.5 credits"; `None` when nothing was reported.
+fn cost(by_unit: &BTreeMap<String, u64>) -> Option<String> {
     if by_unit.is_empty() {
-        return NOT_REPORTED.into();
+        return None;
     }
-    by_unit
+    let text = by_unit
         .iter()
         .map(|(unit, micros)| {
             if unit == "USD" {
@@ -92,7 +91,27 @@ fn cost(by_unit: &BTreeMap<String, u64>) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    Some(text)
+}
+
+/// The note under the table: "Counted since 21 Nov." plus one sentence when Context or Cost is
+/// missing for some or all agents (the table hides a column nobody reported).
+fn note(since: Option<String>, rows: &[Words]) -> String {
+    let context = rows.iter().any(|w| w.context.is_none());
+    let cost = rows.iter().any(|w| w.cost.is_none());
+    let missing = match (context, cost) {
+        (true, true) => Some("Context and cost show only where the provider reports them."),
+        (true, false) => Some("Context shows only where the provider reports it."),
+        (false, true) => Some("Cost shows only where the provider reports it."),
+        (false, false) => None,
+    };
+    let since = since.map(|d| format!("Counted since {d}."));
+    [since.as_deref(), missing]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `GET /usage`: the page, or the panel alone for the modal.
@@ -120,29 +139,23 @@ pub(crate) async fn page(State(ui): State<Ui>) -> Markup {
         .map(|(_, s)| *s)
         .filter(|s| *s > 0)
         .min()
-        .map_or_else(
-            || "Context and cost show only where the provider reports them.".to_string(),
-            |s| {
-                format!(
-                    "Counted since {}. Context and cost show only where the provider reports them.",
-                    pages::short_date(s)
-                )
-            },
-        );
+        .map(pages::short_date);
+    let all: Vec<Words> = all.into_iter().map(|(w, _)| w).collect();
+    let note = note(since, &all);
     let rows: Vec<UsageRow<'_>> = all
         .iter()
-        .map(|(w, _)| UsageRow {
+        .map(|w| UsageRow {
             name: &w.name,
             href: &w.href,
             role: w.role,
             turns: &w.turns,
             time: &w.time,
             approvals: &w.approvals,
-            context: &w.context,
-            cost: &w.cost,
+            context: w.context.as_deref(),
+            cost: w.cost.as_deref(),
         })
         .collect();
-    ui.framed(|f| pages::usage(f, &rows, &since)).await
+    ui.framed(|f| pages::usage(f, &rows, &note)).await
 }
 
 #[cfg(test)]
@@ -160,18 +173,18 @@ mod tests {
         assert_eq!(tokens(45_200), "45k");
         assert_eq!(tokens(1_234_567), "1.2M");
         let mut c = BTreeMap::new();
-        assert_eq!(cost(&c), "Not reported");
+        assert_eq!(cost(&c), None);
         c.insert("USD".to_string(), 420_000);
-        assert_eq!(cost(&c), "US$0.42");
+        assert_eq!(cost(&c).as_deref(), Some("US$0.42"));
         c.insert("credits".to_string(), 3_500_000);
-        assert_eq!(cost(&c), "US$0.42, 3.5\u{a0}credits");
+        assert_eq!(cost(&c).as_deref(), Some("US$0.42, 3.5\u{a0}credits"));
         c.clear();
         c.insert("USD".to_string(), 3_000);
-        assert_eq!(cost(&c), "<US$0.01");
+        assert_eq!(cost(&c).as_deref(), Some("<US$0.01"));
     }
 
     #[test]
-    fn a_row_says_not_reported_where_the_provider_said_nothing() {
+    fn a_row_has_no_context_or_cost_where_the_provider_said_nothing() {
         let mut u = Usage::starting(1);
         u.count_turn(90_000, 2);
         let w = words("Ada".into(), "/agents/a1".into(), "Helper", &u);
@@ -179,15 +192,43 @@ mod tests {
             (w.turns.as_str(), w.time.as_str(), w.approvals.as_str()),
             ("1", "1\u{a0}min", "2")
         );
-        assert_eq!(w.context, "Not reported");
-        assert_eq!(w.cost, "Not reported");
+        assert_eq!(w.context, None);
+        assert_eq!(w.cost, None);
         u.context = Some(Context {
             used: 45_000,
             size: 200_000,
         });
         u.report_cost("s", "USD", 1_250_000);
         let w = words("Ada".into(), "/agents/a1".into(), "Helper", &u);
-        assert_eq!(w.context, "45k of 200k");
-        assert_eq!(w.cost, "US$1.25");
+        assert_eq!(w.context.as_deref(), Some("45k of 200k"));
+        assert_eq!(w.cost.as_deref(), Some("US$1.25"));
+    }
+
+    #[test]
+    fn the_note_mentions_context_and_cost_only_when_something_is_missing() {
+        let mut full = Usage::starting(1);
+        full.context = Some(Context {
+            used: 1_000,
+            size: 2_000,
+        });
+        full.report_cost("s", "USD", 10_000);
+        let bare = Usage::starting(1);
+        let w = |u: &Usage| words("Ada".into(), "/".into(), "Helper", u);
+        let since = || Some("21 Nov".to_string());
+        assert_eq!(note(since(), &[w(&full)]), "Counted since 21 Nov.");
+        assert_eq!(
+            note(since(), &[w(&full), w(&bare)]),
+            "Counted since 21 Nov. Context and cost show only where the provider reports them."
+        );
+        let mut context_only = Usage::starting(1);
+        context_only.context = full.context;
+        assert_eq!(
+            note(since(), &[w(&full), w(&context_only)]),
+            "Counted since 21 Nov. Cost shows only where the provider reports it."
+        );
+        assert_eq!(
+            note(None, &[w(&bare)]),
+            "Context and cost show only where the provider reports them."
+        );
     }
 }
