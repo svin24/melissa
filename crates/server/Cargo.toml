@@ -30,6 +30,8 @@ tracing-subscriber = { workspace = true }
 [features]
 # The screenshot harness's fake app tools (melissa-web/src/fake_apps.rs). Never in normal builds.
 fake-apps = ["melissa-web/fake-apps"]
+# The screenshot harness's fake provider usage (melissa-web/src/fake_usage.rs). Never in normal builds.
+fake-usage = ["melissa-web/fake-usage"]
 
 [lints]
 workspace = true

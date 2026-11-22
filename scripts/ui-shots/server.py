@@ -94,6 +94,49 @@ FAKE_APPS = {
     }},
 }
 
+# The providers' plan usage the harness shows (crates/web/src/fake_usage.rs, `fake-usage`
+# feature), as on the owner's board B1: Claude and Codex with plenty, low and nearly gone
+# windows, OpenCode, Gemini unavailable (an expired sign-in), Grok without limits. Weekly
+# resets are fixed times after FAKE_START; session resets are seconds from the check.
+def _utc(text):
+    from datetime import datetime, timezone
+    return int(datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp())
+
+
+def _window(id, label, kind, used, resets_in=None, resets_at=None, scope=None):
+    w = {"id": id, "label": label, "kind": kind, "used_pct": used}
+    if resets_in is not None:
+        w["resets_in"] = resets_in
+    if resets_at is not None:
+        w["resets_at"] = _utc(resets_at)
+    if scope:
+        w["model_scope"] = scope
+    return w
+
+
+FAKE_USAGE = {"providers": [
+    {"id": "claude", "plan": "max",
+     "windows": [_window("five_hour", "5-hour", "session", 38, resets_in=7800),
+                 _window("seven_day", "Weekly", "weekly", 52, resets_at="2026-11-23 09:00"),
+                 _window("seven_day_opus", "Weekly · Opus", "weekly", 91,
+                         resets_at="2026-11-23 09:00", scope="Opus")],
+     "cost": {"USD": 2460000},
+     "tokens": [{"model": "claude-opus", "input": 182000, "output": 41000,
+                 "cache_read": 2400000, "cache_write": 310000},
+                {"model": "claude-sonnet", "input": 96000, "output": 22000,
+                 "cache_read": 880000, "cache_write": 120000}]},
+    {"id": "codex-acp", "plan": "plus",
+     "windows": [_window("primary", "5-hour", "session", 15, resets_in=13500),
+                 _window("secondary", "Weekly", "weekly", 70, resets_at="2026-11-26 14:00")],
+     "tokens": [{"model": "gpt-codex", "input": 64000, "output": 18000, "cache_read": 350000}]},
+    {"id": "opencode", "plan": "go",
+     "windows": [_window("rolling", "5-hour", "session", 30, resets_in=4800),
+                 _window("weekly", "Weekly", "weekly", 45, resets_at="2026-11-22 00:00")]},
+    {"id": "gemini", "unavailable": "the Google sign-in expired; Gemini renews it on its next run"},
+    {"id": "grok"},
+]}
+
+
 CONFIG = """\
 listen = "127.0.0.1:{port}"
 confirm_timeout_secs = 3600
@@ -190,6 +233,8 @@ class Server:
         env["FAKETIME_DONT_RESET"] = "1"
         # Read only by a build with the `fake-apps` feature (ui_shots.py builds one).
         env["MELISSA_FAKE_APPS"] = str(self.fake_apps)
+        # Read only by a build with the `fake-usage` feature.
+        env["MELISSA_FAKE_USAGE"] = str(self.root / "fake-usage.json")
         return env
 
     @property
@@ -207,6 +252,7 @@ class Server:
         env = self.env()
         seed_state(self.root / "state" / "melissa")
         self.apps_platform(True)
+        (self.root / "fake-usage.json").write_text(json.dumps(FAKE_USAGE, indent=2))
         config = self.root / "config" / "melissa" / "server.toml"
         config.write_text(CONFIG.format(
             port=self.port, python=sys.executable, agent=HERE / "fake_agent.py"))

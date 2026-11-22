@@ -1,7 +1,7 @@
 //! What each provider's plan allows and what was used: plan windows (a 5-hour window, a
-//! week, a month), credits, cost and tokens per model. The data layer behind the Usage panel
-//! (the panel itself is designed later); the owner reads it as JSON at
-//! `GET /api/usage/providers`.
+//! week, a month), credits, cost and tokens per model. The data layer behind Usage and
+//! resources (its Limits, Cost and Tokens views, `melissa_web`'s `usage`); the owner also
+//! reads it as JSON at `GET /api/usage/providers`.
 //!
 //! Rules (docs/DECISIONS.md, 2026-11-20 and 2026-11-22):
 //! - **Counted, never estimated.** Every number is one a provider reported. There is no price
@@ -55,6 +55,10 @@ pub use pace::Pace;
 pub struct UsageReport {
     /// When this report was put together (Unix seconds).
     pub generated_at: u64,
+    /// When the providers' sources were last asked (Unix seconds): the start of the round
+    /// this report reuses. `None` before the first round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
     pub providers: Vec<ProviderUsage>,
 }
 

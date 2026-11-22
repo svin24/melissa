@@ -105,6 +105,8 @@ type Chosen = (Arc<dyn SessionBackend>, Result<(), String>);
 /// The last round of source answers.
 struct Round {
     at: tokio::time::Instant,
+    /// The same moment in Unix seconds (the report's `checked_at`).
+    at_unix: u64,
     results: Vec<Answer>,
 }
 
@@ -148,11 +150,28 @@ impl Collector {
         if !fresh {
             *last = Some(Round {
                 at: tokio::time::Instant::now(),
+                at_unix: now_secs(),
                 results: run_sources(sources).await,
             });
         }
         let results = last.as_ref().map(|r| r.results.as_slice()).unwrap_or(&[]);
-        build(&providers, results, &self.hub, now_secs())
+        let checked = last.as_ref().map(|r| r.at_unix);
+        build(&providers, results, checked, &self.hub, now_secs())
+    }
+
+    /// The report from the last round if it is younger than [`CACHE_FOR`], without asking any
+    /// source or waiting for a round in progress (`None` then): for pages that must not wait.
+    pub fn cached(&self) -> Option<UsageReport> {
+        let last = self.last.try_lock().ok()?;
+        let round = last.as_ref().filter(|r| r.at.elapsed() < CACHE_FOR)?;
+        let (providers, _) = (self.planner)();
+        Some(build(
+            &providers,
+            &round.results,
+            Some(round.at_unix),
+            &self.hub,
+            now_secs(),
+        ))
     }
 }
 
@@ -201,7 +220,13 @@ async fn run_sources(sources: Vec<Arc<dyn Source>>) -> Vec<Answer> {
 }
 
 /// The report from the providers, the round's answers and the hub, at `now`.
-fn build(providers: &[ProviderEntry], results: &[Answer], hub: &UsageHub, now: u64) -> UsageReport {
+fn build(
+    providers: &[ProviderEntry],
+    results: &[Answer],
+    checked_at: Option<u64>,
+    hub: &UsageHub,
+    now: u64,
+) -> UsageReport {
     let mut out = Vec::new();
     for p in providers {
         let mut usage = ProviderUsage {
@@ -270,6 +295,7 @@ fn build(providers: &[ProviderEntry], results: &[Answer], hub: &UsageHub, now: u
     }
     UsageReport {
         generated_at: now,
+        checked_at,
         providers: out,
     }
 }
@@ -705,6 +731,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_cached_report_never_asks_and_says_when_it_was_checked() {
+        tokio::time::pause();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source: Arc<dyn Source> = Arc::new(fake("grok", "grok.billing", &calls, || {
+            Ok(Fetched::default())
+        }));
+        let providers = vec![entry("grok", true)];
+        let c = Collector::with_planner(
+            UsageHub::new(),
+            Arc::new(move || (providers.clone(), vec![source.clone()])),
+        );
+        assert_eq!(c.cached(), None, "nothing asked yet");
+        let report = c.report(false).await;
+        assert!(report.checked_at.is_some());
+        let cached = c.cached().expect("a fresh round");
+        assert_eq!(cached.checked_at, report.checked_at);
+        assert_eq!(cached.providers.len(), 1);
+        tokio::time::advance(CACHE_FOR).await;
+        assert_eq!(c.cached(), None, "too old");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn providers_not_signed_in_are_off_and_not_asked() {
         let calls = Arc::new(AtomicUsize::new(0));
         let providers = vec![entry("gemini", false)];
@@ -777,7 +826,7 @@ mod tests {
 
     #[test]
     fn the_report_serializes_without_secrets_or_raw_answers() {
-        let report = build(&[entry("grok", true)], &[], &UsageHub::new(), 5);
+        let report = build(&[entry("grok", true)], &[], None, &UsageHub::new(), 5);
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["providers"][0]["provider"], "grok");
         assert_eq!(json["providers"][0]["ready"], true);
