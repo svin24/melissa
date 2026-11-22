@@ -337,6 +337,16 @@ impl ClusterSnapshot {
     }
 }
 
+/// When a read of the cluster wakes [`ClusterCache::changes`].
+#[derive(Clone, Copy)]
+enum Wake {
+    Always,
+    /// Only when the apps differ from the last read (the harness's fake apps, read on every
+    /// call).
+    #[cfg_attr(not(feature = "fake-apps"), allow(dead_code))]
+    IfAppsChanged,
+}
+
 struct Cached {
     snap: Option<Arc<ClusterSnapshot>>,
     at: Option<Instant>,
@@ -412,9 +422,11 @@ impl ClusterCache {
     /// cached answer and refresh it in the background once it is stale.
     pub async fn get(&self) -> Arc<ClusterSnapshot> {
         // The screenshot harness changes its fake apps while the server runs: read them fresh.
+        // Open chats are woken only when the apps changed: they read the cluster when woken,
+        // so waking them on every read would never stop.
         #[cfg(feature = "fake-apps")]
         if crate::fake_apps::on() {
-            return self.refresh().await;
+            return self.read(Wake::IfAppsChanged).await;
         }
         let (snap, stale) = {
             let mut c = lock(&self.cached);
@@ -444,6 +456,11 @@ impl ClusterCache {
     }
 
     async fn refresh(&self) -> Arc<ClusterSnapshot> {
+        self.read(Wake::Always).await
+    }
+
+    /// Read everything and keep it; `wake`: when to tell [`Self::changes`].
+    async fn read(&self, wake: Wake) -> Arc<ClusterSnapshot> {
         let (apps, cluster, agent, workspaces) = tokio::join!(
             self.call("list_apps"),
             self.call("cluster_health"),
@@ -454,13 +471,19 @@ impl ClusterCache {
             ClusterSnapshot::from_tools(apps.as_ref(), cluster.as_ref(), agent.as_ref())
                 .with_keepers(keepers(&workspaces)),
         );
-        {
+        let woke = {
             let mut c = lock(&self.cached);
-            c.snap = Some(snap.clone());
+            let old = c.snap.replace(snap.clone());
             c.at = Some(Instant::now());
             c.refreshing = false;
+            match wake {
+                Wake::Always => true,
+                Wake::IfAppsChanged => old.is_none_or(|o| o.apps != snap.apps),
+            }
+        };
+        if woke {
+            self.changed.send_modify(|n| *n = n.wrapping_add(1));
         }
-        self.changed.send_modify(|n| *n = n.wrapping_add(1));
         snap
     }
 
