@@ -28,7 +28,7 @@ impl ClusterHealth {
 
     async fn report(&self) -> Result<Value, ToolError> {
         let Some(cluster) = &self.cluster else {
-            return Ok(unreachable(&ClusterError::NotConfigured));
+            return Ok(crate::cluster::unavailable(&ClusterError::NotConfigured));
         };
         // The version endpoint is public to any authenticated client; use it as the probe.
         let version = match cluster.server_version().await {
@@ -37,7 +37,7 @@ impl ClusterHealth {
                 e @ (ClusterError::Unreachable(_)
                 | ClusterError::NotConfigured
                 | ClusterError::Starting),
-            ) => return Ok(unreachable(&e)),
+            ) => return Ok(crate::cluster::unavailable(&e)),
             Err(e) => return Err(ToolError::Failed(e.to_string())),
         };
         // k3s restarts itself now and then (e.g. when the node's IPs change at boot), so the
@@ -45,7 +45,7 @@ impl ClusterHealth {
         let lists = tokio::try_join!(cluster.nodes(), cluster.namespaces(), cluster.pods());
         let (nodes, namespaces, pods) = match lists {
             Ok(l) => l,
-            Err(e @ ClusterError::Unreachable(_)) => return Ok(unreachable(&e)),
+            Err(e @ ClusterError::Unreachable(_)) => return Ok(crate::cluster::unavailable(&e)),
             Err(e) => return Err(ToolError::Failed(e.to_string())),
         };
 
@@ -94,7 +94,8 @@ impl Tool for ClusterHealth {
             description:
                 "Health of this cluster's k3s cluster: whether the API is reachable, server \
                 version, nodes (ready, roles, kubelet version, allocatable CPU/memory), pod counts \
-                by phase per namespace, and pods that are not Running/Succeeded with the reason.",
+                by phase per namespace, and pods that are not Running/Succeeded with the reason. \
+                When k3s can't be used, `app_platform` says why in words for the user.",
             // Only names, counts and kubelet-set reason codes are returned (sanitized below);
             // no free-text messages an app could write, so this stays untainted.
             labels: Labels::READ_ONLY,
@@ -105,15 +106,6 @@ impl Tool for ClusterHealth {
     fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(self.report())
     }
-}
-
-fn unreachable(e: &ClusterError) -> Value {
-    let mut out = json!({"k3s_reachable": false, "reason": e.to_string()});
-    // No cluster credentials at all: k3s isn't set up here (not merely down or starting).
-    if matches!(e, ClusterError::NotConfigured) {
-        out["k3s_set_up"] = json!(false);
-    }
-    out
 }
 
 fn pod_phase(pod: &Pod) -> String {
@@ -334,14 +326,21 @@ mod tests {
     async fn no_cluster_says_k3s_is_not_running() {
         let out = ClusterHealth::new(None).call(Value::Null).await.unwrap();
         assert_eq!(out["k3s_reachable"], false);
-        assert!(out["reason"].as_str().unwrap().contains("not running"));
+        assert!(out["reason"].as_str().unwrap().contains("not set up"));
         assert_eq!(out["k3s_set_up"], false);
+        assert_eq!(
+            out["app_platform"],
+            "not installed on this device: this copy of Melissa runs without the app platform \
+             (k3s), so it can't install or run apps here. Apps need the full install, the \
+             container or NixOS (see docs/QUICKSTART.md). Chat, helpers, schedules, files and \
+             describing this device still work."
+        );
     }
 
     #[tokio::test]
     async fn missing_or_pending_credentials_are_results() {
         for (err, needle) in [
-            (ClusterError::NotConfigured, "not running"),
+            (ClusterError::NotConfigured, "not set up"),
             (ClusterError::Starting, "starting"),
         ] {
             let out = call(Fake {
@@ -355,9 +354,15 @@ mod tests {
             // Only missing credentials mean "not set up"; starting is not.
             assert_eq!(
                 out.get("k3s_set_up").is_some(),
-                needle == "not running",
+                needle == "not set up",
                 "{out}"
             );
+            let words = if needle == "not set up" {
+                crate::cluster::NOT_INSTALLED
+            } else {
+                crate::cluster::NOT_ANSWERING
+            };
+            assert_eq!(out["app_platform"], words, "{out}");
         }
     }
 
@@ -374,6 +379,12 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("connection refused"));
+        assert_eq!(
+            out["app_platform"],
+            "installed but not answering right now (starting or restarting). Melissa keeps \
+             trying; try again in a minute."
+        );
+        assert!(out.get("k3s_set_up").is_none(), "{out}");
     }
 
     #[tokio::test]

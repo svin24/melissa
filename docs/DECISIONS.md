@@ -1712,3 +1712,14 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   Alternatives: generating `:root` from `tokens.json` (a build step), struct components with every attribute
   (`Button { does, hx, … }`, a large API for ~80 call sites with different htmx attributes), keeping the old
   names (two vocabularies).
+- **2026-11-22 — Without k3s, the cluster and app tools give the lead the words to pass on (`app_platform`).** The
+  server tells two cases apart: no kubeconfig and no `/run/melissa-kube` (from source, a desktop: k3s *not
+  installed*) and k3s set up but its API not answering (credentials pending, or the API down). Read tools add
+  `app_platform` to their result: "not installed on this device: this copy of Melissa runs without the app
+  platform (k3s) … Apps need the full install, the container or NixOS (see docs/QUICKSTART.md). Chat, helpers,
+  schedules, files and describing this device still work." or "installed but not answering right now … Melissa
+  keeps trying"; write tools fail with the same words. One prompt rule: pass `app_platform` on in two or three
+  short sentences, never give helpers or tool checks as the reason. The UI keeps its words ("isn't set up on this
+  device", "isn't answering right now. Melissa keeps trying."). Why: the lead (Grok from source) said only "not set
+  up, no helpers", a dead end. Alternatives: long prompt prose (every provider must read it; a tool result is
+  where the fact lives), a new `ClusterError` Display (also shown in the UI's workspace errors).

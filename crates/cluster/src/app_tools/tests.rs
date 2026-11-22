@@ -1002,8 +1002,20 @@ async fn without_a_cluster_reads_say_so_and_writes_fail() {
         .await
         .unwrap();
     assert_eq!(s["k3s_reachable"], false);
+    assert_eq!(s["k3s_set_up"], false);
+    assert_eq!(s["app_platform"], crate::cluster::NOT_INSTALLED);
+    let l = call(&t, "list_apps", json!({})).await.unwrap();
+    assert_eq!(l["app_platform"], crate::cluster::NOT_INSTALLED);
+    // A write says the same, in words the lead agent can pass on.
     let r = call(&t, "deploy_app", json!({"spec": nc(), "app": "nextcloud"})).await;
-    assert!(matches!(r, Err(ToolError::Failed(m)) if m.contains("not running")));
+    let Err(ToolError::Failed(m)) = r else {
+        panic!("{r:?}")
+    };
+    assert!(
+        m.starts_with("The app platform is not installed on this device: this copy of Melissa"),
+        "{m}"
+    );
+    assert!(m.contains("docs/QUICKSTART.md"), "{m}");
     let fake = Arc::new(Fake {
         down: true,
         ..Fake::default()
@@ -1013,8 +1025,12 @@ async fn without_a_cluster_reads_say_so_and_writes_fail() {
         .await
         .unwrap();
     assert_eq!(s["k3s_reachable"], false);
+    // Installed but down: not answering, never "not installed".
+    assert_eq!(s["app_platform"], crate::cluster::NOT_ANSWERING);
+    assert!(s.get("k3s_set_up").is_none(), "{s}");
     let l = call(&t, "list_apps", json!({})).await.unwrap();
     assert_eq!(l["k3s_reachable"], false);
+    assert_eq!(l["app_platform"], crate::cluster::NOT_ANSWERING);
     // A bad spec fails before anything else, cluster or not.
     let r = call(
         &t,
@@ -1146,6 +1162,41 @@ async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     reg.confirmations().resolve(pending.id, Verdict::Approved);
     waiter.await.unwrap().unwrap();
     assert!(fake.state().namespace.is_none());
+}
+
+/// What the lead agent receives over MCP (any provider) when k3s isn't on this device: the
+/// words to pass on, not just a flag.
+#[tokio::test]
+async fn the_agent_gets_the_no_k3s_words_over_mcp() {
+    let mut tools = app_tools::<Fake>(settings(), None);
+    tools.push(Arc::new(crate::ClusterHealth::new(None)));
+    let server = melissa_agent::mcp::McpServer::new(ToolRegistry::new(tools, None));
+    let ctx = TaskContext {
+        delegate: true,
+        ..TaskContext::default()
+    };
+    let token = server.open_session(1, ctx, None).unwrap();
+    for name in ["cluster_health", "list_apps"] {
+        let reply = server
+            .handle(
+                &token,
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": {}}}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let result = &reply["result"];
+        assert_ne!(result["isError"], true, "{name}: {result}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["k3s_set_up"], false, "{name}: {text}");
+        assert_eq!(
+            body["app_platform"],
+            crate::cluster::NOT_INSTALLED,
+            "{name}: {text}"
+        );
+    }
 }
 
 // ---- workspaces, agents and scopes ---------------------------------------------------------------
