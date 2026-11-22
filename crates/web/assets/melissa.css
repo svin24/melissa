@@ -1944,6 +1944,42 @@ svg.glyph {
   margin-top: 0.35rem;
 }
 
+/* Settings → About (2026-11-22): the mark beside the name, the heart, license texts. */
+.about-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.about-head .lead {
+  margin-top: 0;
+}
+
+/* On a phone a section's own h1 is hidden (the head bar says it); About's says Melissa. */
+.settings-main .panel-body .about-head h1 {
+  display: block;
+}
+
+.about-head + p {
+  margin-bottom: var(--space-3);
+}
+
+.glyph .heart {
+  stroke: var(--icon-rose);
+}
+
+.license-text {
+  margin: 0;
+  background: var(--color-bg-sunken);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .block {
   margin-bottom: 2.25rem;
 }

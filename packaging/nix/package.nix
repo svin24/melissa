@@ -82,6 +82,9 @@ let
         (repo + "/Cargo.lock")
         (repo + "/clippy.toml")
         (repo + "/crates")
+        # Built into the binary (Settings → About).
+        (repo + "/LICENSE")
+        (repo + "/ACKNOWLEDGMENTS.md")
       ];
     };
     cargoLock.lockFile = repo + "/Cargo.lock";

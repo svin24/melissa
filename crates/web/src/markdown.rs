@@ -87,10 +87,24 @@ enum Frame {
     CodeBlock(String),
 }
 
-/// Parses agent Markdown into a safe tree.
+/// Parses agent Markdown into a safe tree. A line break in a paragraph stays a line break, as
+/// the agent wrote it.
 pub fn parse(text: &str) -> Vec<Node> {
+    parse_with(text, false)
+}
+
+/// [`parse`] for a document wrapped at a fixed width (Settings → About's credits): a single
+/// line break in a paragraph is a space, as in CommonMark; two spaces or `\\` still break.
+pub fn parse_document(text: &str) -> Vec<Node> {
+    parse_with(text, true)
+}
+
+fn parse_with(text: &str, document: bool) -> Vec<Node> {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let mut b = Builder::default();
+    let mut b = Builder {
+        document,
+        ..Builder::default()
+    };
     for ev in TextMergeStream::new(Parser::new_ext(text, opts)) {
         b.event(ev);
     }
@@ -110,6 +124,8 @@ struct Builder {
     in_head: bool,
     /// Inside a link or image: no linkifying.
     in_link: usize,
+    /// A soft line break is a space ([`parse_document`]).
+    document: bool,
 }
 
 impl Builder {
@@ -242,6 +258,7 @@ impl Builder {
             // Not enabled; kept as written.
             Event::InlineMath(t) | Event::DisplayMath(t) => self.push(Node::Text(t.to_string())),
             Event::FootnoteReference(t) => self.push(Node::Text(format!("[^{t}]"))),
+            Event::SoftBreak if self.document => self.push(Node::Text(" ".into())),
             Event::SoftBreak | Event::HardBreak => self.push(Node::Break),
             Event::Rule => self.push(Node::Rule),
             Event::TaskListMarker(done) => self.push(Node::Task(done)),
@@ -437,6 +454,35 @@ mod tests {
                 Segment::Text(_) => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_document_joins_wrapped_lines_and_chat_keeps_them() {
+        let text = "one\ntwo  \nthree";
+        assert_eq!(
+            parse(text),
+            [Node::El(
+                El::Para,
+                vec![
+                    Node::Text("one".into()),
+                    Node::Break,
+                    Node::Text("two".into()),
+                    Node::Break,
+                    Node::Text("three".into()),
+                ],
+            )]
+        );
+        assert_eq!(
+            parse_document(text),
+            [Node::El(
+                El::Para,
+                vec![
+                    Node::Text("one two".into()),
+                    Node::Break,
+                    Node::Text("three".into()),
+                ],
+            )]
+        );
     }
 
     #[test]

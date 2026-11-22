@@ -726,6 +726,12 @@ pub fn markdown(text: &str) -> Markup {
     html! { div.md { (md_nodes(&markdown::parse(text))) } }
 }
 
+/// [`markdown`] for a document wrapped at a fixed width (Settings → About's credits): a single
+/// line break in a paragraph reads as a space. The same safe tree and look.
+pub fn markdown_document(text: &str) -> Markup {
+    html! { div.md { (md_nodes(&markdown::parse_document(text))) } }
+}
+
 fn md_nodes(nodes: &[Node]) -> Markup {
     html! { @for n in nodes { (md_node(n)) } }
 }
@@ -2636,6 +2642,43 @@ pub fn external_button(href: &str, label: &str) -> Markup {
     html! {
         a.(Btn::primary()) href=(href) target="_blank" rel="noopener noreferrer" { (label) }
     }
+}
+
+/// A link that opens in a new tab, in a button's look, with an optional glyph before its label
+/// (Settings → About: Sponsor, Source code). Screen readers hear that it opens a new tab;
+/// `noopener noreferrer`: the other page gets neither this page nor its address. Only for
+/// http(s) URLs Melissa chose and paths on this site; anything else renders as plain text.
+pub fn new_tab_button(look: Btn, href: &str, label: &str, icon: Option<Glyph>) -> Markup {
+    let local = href.starts_with('/') && !href.starts_with("//");
+    if !(local || href.starts_with("https://") || href.starts_with("http://")) {
+        return html! { span { (label) } };
+    }
+    html! {
+        a.(look) href=(href) target="_blank" rel="noopener noreferrer" {
+            @if let Some(g) = icon { (glyph(g)) }
+            (label)
+            span.visually-hidden { " (opens in a new tab)" }
+        }
+    }
+}
+
+/// The head of Settings → About: Melissa's mark, her name and one quiet line (the version).
+pub fn about_head(name: &str, detail: &str) -> Markup {
+    html! {
+        header.page-header.about-head {
+            (mark("mark-lg"))
+            div {
+                h1 { (name) }
+                p.lead { (detail) }
+            }
+        }
+    }
+}
+
+/// A license or notice text as written (line breaks kept), in a box that scrolls; focusable,
+/// so a keyboard can scroll it too, and named by `label` for screen readers.
+pub fn license_text(label: &str, text: &str) -> Markup {
+    html! { pre.license-text tabindex="0" aria-label=(label) { (text) } }
 }
 
 /// One field and a primary button on one row, e.g. "Paste the code" + Continue. Swaps

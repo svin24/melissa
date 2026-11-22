@@ -6,14 +6,14 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        action_button, actions, away_card, badge, card, code, command_block, confirm_card,
-        danger_confirm, detail_head, disclosure, external_button, facts, group, inline_form,
-        inline_number, inline_select, lines_field, link, link_button, live_region, log_view,
-        notice, one_field_form, page_header, pick_list, plain_action, progress_bar, provider_logo,
-        region, select_field_at, setting_card, setting_row, setting_row_with, settings_form,
-        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list, Btn,
-        Choice, ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle,
-        Tone, VarRow,
+        about_head, action_button, actions, away_card, badge, card, code, command_block,
+        confirm_card, danger_confirm, detail_head, disclosure, external_button, facts, group,
+        inline_form, inline_number, inline_select, license_text, lines_field, link, link_button,
+        live_region, log_view, markdown_document, new_tab_button, notice, one_field_form,
+        page_header, pick_list, plain_action, progress_bar, provider_logo, region, select_field_at,
+        setting_card, setting_row, setting_row_with, settings_form, settings_frame_at,
+        settings_head, split_card, table, text_field, toggle, var_list, Btn, Choice, ConfirmCard,
+        DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -31,7 +31,7 @@ pub struct Section {
 }
 
 /// The Settings sections, in order and grouped. Add new ones here (and a route in `mod.rs`).
-pub const SECTIONS: [Section; 13] = [
+pub const SECTIONS: [Section; 14] = [
     Section {
         href: "/settings/providers",
         label: "Providers",
@@ -123,7 +123,20 @@ pub const SECTIONS: [Section; 13] = [
         icon: Glyph::Person,
         keywords: "Members invite link reset password remove owner",
     },
+    // Last, for everyone signed in (2026-11-22).
+    Section {
+        href: ABOUT_URL,
+        label: "About",
+        group: "Melissa",
+        icon: Glyph::Info,
+        keywords: "About version revision build license licence MIT credits acknowledgments third-party notices sponsor donate source code GitHub report a problem issues",
+    },
 ];
+
+/// The About section: version, links, Sponsor, license and credits (everyone signed in).
+pub const ABOUT_URL: &str = "/settings/about";
+/// Plain text: the license report for the Rust crates, where the image ships one.
+pub const RUST_LICENSES_URL: &str = "/settings/about/rust-crates";
 
 /// The Agents section: Melissa and her helpers (Delete).
 pub const AGENTS_URL: &str = "/settings/agents";
@@ -1746,4 +1759,95 @@ pub fn voice_region(v: &VoiceView) -> Markup {
 /// Bytes as whole megabytes (10^6, like download sizes elsewhere).
 pub fn mb(bytes: u64) -> String {
     format!("{} MB", bytes.div_ceil(1_000_000))
+}
+
+// --- About ---------------------------------------------------------------------------------------
+
+/// DOM id of the About region.
+pub const ABOUT_ID: &str = "about";
+/// Melissa's public pages (fixed; they open in a new tab).
+const SOURCE_URL: &str = "https://github.com/svin24/melissa";
+const ISSUES_URL: &str = "https://github.com/svin24/melissa/issues";
+const SPONSOR_URL: &str = "https://github.com/sponsors/svin24";
+
+/// Something built into Melissa's pages: what it is, its license, and the license's text where
+/// one ships with it.
+pub struct Notice {
+    pub name: &'static str,
+    pub license: &'static str,
+    pub text: Option<&'static str>,
+}
+
+/// What the About page shows. The texts are built into the binary.
+pub struct AboutView {
+    /// The same values as Settings → Updates.
+    pub version: String,
+    pub revision: Option<String>,
+    /// Melissa's LICENSE.
+    pub license: &'static str,
+    /// ACKNOWLEDGMENTS.md, whole.
+    pub credits: &'static str,
+    pub notices: &'static [Notice],
+    /// The image ships a license report for the Rust crates ([`RUST_LICENSES_URL`]).
+    pub rust_report: bool,
+}
+
+pub fn about_page(f: &Frame<'_>, v: &AboutView) -> Markup {
+    frame(f, "About", about_region(v))
+}
+
+pub fn about_region(v: &AboutView) -> Markup {
+    let detail = match &v.revision {
+        Some(r) => format!("Version {} · Revision {r}", v.version),
+        None => format!("Version {}", v.version),
+    };
+    let notices = html! {
+        @for n in v.notices {
+            p { strong { (n.name) } " · " (n.license) }
+            @if let Some(t) = n.text { (license_text(&format!("{} license", n.name), t)) }
+        }
+    };
+    region(
+        ABOUT_ID,
+        html! {
+            (about_head("Melissa", &detail))
+            p.quiet { strong { "Pre-alpha." } " Things will break. Don't trust Melissa with data you can't lose yet." }
+            (actions(html! {
+                (new_tab_button(Btn::secondary(), SPONSOR_URL, "Sponsor", Some(Glyph::Heart)))
+                (new_tab_button(Btn::secondary(), SOURCE_URL, "Source code", None))
+                (new_tab_button(Btn::secondary(), ISSUES_URL, "Report a problem", None))
+            }))
+            (setting_card(Some("Licenses"), html! {
+                (setting_row_with(
+                    html! { "Melissa" },
+                    Some(html! { "MIT License" }),
+                    html! {},
+                    Some(disclosure("License text", false, license_text("Melissa's license", v.license))),
+                ))
+                (setting_row_with(
+                    html! { "Credits" },
+                    Some(html! { "Projects Melissa learned from or includes." }),
+                    html! {},
+                    Some(disclosure("Show credits", false, html! {
+                        p.visually-hidden { "Links open in a new tab." }
+                        (markdown_document(v.credits))
+                    })),
+                ))
+                (setting_row_with(
+                    html! { "Fonts, scripts and logos" },
+                    Some(html! { "Built into Melissa's pages." }),
+                    html! {},
+                    Some(disclosure("Show licenses", false, notices)),
+                ))
+                @if v.rust_report {
+                    (setting_row_with(
+                        html! { "Rust crates" },
+                        Some(html! { "Their licenses, as shipped in this image." }),
+                        new_tab_button(Btn::secondary().sm(), RUST_LICENSES_URL, "Open list", None),
+                        None,
+                    ))
+                }
+            }))
+        },
+    )
 }

@@ -1739,3 +1739,17 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   because the drop is in Docker's own chain. Alternatives: Docker's `"ip-forward-no-drop"` / `"iptables": false`
   (changes Docker for everyone), nftables rules of our own (an accept can't override another base chain's drop),
   a hard-coded 10.88.0.0/16 (wrong for a changed podman network).
+- **2026-11-22 — Settings → About, the last section, for everyone signed in (owner).** Its own group "Melissa" at
+  the end of the list (the phone's row shows the version). It shows the mark, the name, the version and revision
+  (the same `Release` values as Updates; no tagline, owner), the pre-alpha line, and three links that open a new
+  tab (`new_tab_button`: `rel="noopener noreferrer"`, "(opens in a new tab)" for screen readers): Sponsor with a
+  new `Glyph::Heart` stroked in the rose token, Source code and Report a problem (the public GitHub pages). Below,
+  in disclosures: the MIT `LICENSE`, the whole `ACKNOWLEDGMENTS.md` as credits (`markdown_document`: the safe
+  Markdown tree with wrapped lines joined), and the bundled fonts', htmx's and logos' licenses. All are
+  `include_str!` in the binary, so the Containerfile's build stage and the Nix package's source set now include
+  `LICENSE` and `ACKNOWLEDGMENTS.md`. Where the image ships the cargo-about report
+  (`/usr/share/licenses/melissa/THIRD-PARTY-LICENSES.md`), a row opens it as plain text
+  (`GET /settings/about/rust-crates`, new tab); Nix and source installs have none, so the row is absent. Why: the
+  owner asked for license, credits and a sponsor link in the app; nothing remote (no GitHub button or badge), so
+  it works offline. Alternatives: the device menu (no room for the texts), one subpage per text (more clicks,
+  more routes), a hand-written credits list (would drift from ACKNOWLEDGMENTS.md).

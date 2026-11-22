@@ -581,6 +581,7 @@ mod tests {
 
         use super::*;
 
+        mod about;
         mod apps;
         mod auth;
         mod details;
