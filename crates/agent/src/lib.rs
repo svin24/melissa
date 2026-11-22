@@ -24,6 +24,7 @@ pub mod files;
 pub mod lead;
 pub mod mcp;
 pub mod migrate;
+pub mod provider_usage;
 pub mod sandbox;
 pub mod session;
 pub mod tools;

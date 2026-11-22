@@ -123,6 +123,8 @@ struct Inner {
     models: ModelCache,
     /// Model probes run in `<probe_dir>/<backend>` (empty directories).
     probe_dir: PathBuf,
+    /// Plan usage, cost and tokens per provider (the Usage panel's data).
+    provider_usage: crate::provider_usage::Collector,
     files: FileBoxes,
     /// Runs the scheduled jobs, once [`Lead::start_schedules`] was called.
     scheduler: OnceLock<schedules::Scheduler>,
@@ -178,6 +180,7 @@ impl Lead {
             ..TaskContext::default()
         };
         let models = ModelCache::open(settings.state_dir.join("models.json"));
+        let usage_hub = crate::provider_usage::UsageHub::open(&settings.state_dir);
         let choice_path = settings.state_dir.join("backend.json");
         let choice = backends::load_choice(&choice_path).filter(|c| {
             let known = settings.backends.contains(&c.backend);
@@ -222,6 +225,7 @@ impl Lead {
             files: files.clone(),
             owner: Principal::Lead,
             compact: pool.limits().compact,
+            provider_usage: usage_hub.clone(),
         };
         let conv = Conversation::new(
             spec,
@@ -237,6 +241,16 @@ impl Lead {
             .map_or_else(|| settings.workdir.join("agents"), |p| p.join("agents"));
         let probe_dir = workroot.with_file_name("probe");
         let all_backends = backends.clone();
+        let provider_usage = provider_usage_collector(
+            usage_hub.clone(),
+            &backends,
+            &settings.state_dir,
+            pool.registry()
+                .agent_dir("-")
+                .parent()
+                .map(Path::to_path_buf),
+            probe_dir.clone(),
+        );
         pool.attach(agents::Attached {
             board: board.clone(),
             server: link.server.clone(),
@@ -251,6 +265,7 @@ impl Lead {
             lead: conv.clone(),
             workroot,
             files: files.clone(),
+            provider_usage: usage_hub.clone(),
         });
         forward_setup_passwords(registry.setup_notices(), events.clone(), pool.clone());
         forward_confirmations(registry.confirmations(), events, pool.clone());
@@ -264,6 +279,7 @@ impl Lead {
                 backends: all_backends,
                 models,
                 probe_dir,
+                provider_usage,
                 files,
                 scheduler: OnceLock::new(),
                 prune: Mutex::new(None),
@@ -291,6 +307,11 @@ impl Lead {
     /// Every agent's file box.
     pub fn files(&self) -> &FileBoxes {
         &self.inner.files
+    }
+
+    /// Plan usage, cost and tokens per provider ([`crate::provider_usage`]).
+    pub fn provider_usage(&self) -> &crate::provider_usage::Collector {
+        &self.inner.provider_usage
     }
 
     /// Remove expired files now and then every `every` (the first run right away). Once;
@@ -791,4 +812,55 @@ fn forward_confirmations(store: &ConfirmationStore, events: EventLog, pool: Agen
             }
         }
     });
+}
+
+/// The usage collector: the agents' home (`$HOME`) for sign-in files, the HTTPS client, and
+/// where Codex keeps each conversation's sessions (`<state>/agent-sessions/<backend>` of the
+/// lead agent and of every agent under `agents_root`).
+fn provider_usage_collector(
+    hub: crate::provider_usage::UsageHub,
+    backends: &[Arc<dyn SessionBackend>],
+    lead_state: &Path,
+    agents_root: Option<PathBuf>,
+    probe_dir: PathBuf,
+) -> crate::provider_usage::Collector {
+    use crate::provider_usage::{https, CollectorParts};
+    let codex: Vec<String> = backends
+        .iter()
+        .filter(|b| b.provider_id().as_deref() == Some("codex-acp"))
+        .map(|b| b.info().name)
+        .collect();
+    let lead_state = lead_state.to_path_buf();
+    let codex_roots = Arc::new(move || {
+        let mut dirs = vec![lead_state.clone()];
+        if let Some(root) = &agents_root {
+            if let Ok(entries) = std::fs::read_dir(root) {
+                dirs.extend(
+                    entries
+                        .flatten()
+                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                        .map(|e| e.path()),
+                );
+            }
+        }
+        dirs.iter()
+            .flat_map(|d| codex.iter().map(move |n| d.join("agent-sessions").join(n)))
+            .filter(|d| d.is_dir())
+            .collect()
+    });
+    let http: Option<Arc<dyn https::HttpClient>> = match https::Https::new() {
+        Ok(c) => Some(Arc::new(c)),
+        Err(e) => {
+            tracing::warn!("provider usage: {e}");
+            None
+        }
+    };
+    crate::provider_usage::Collector::new(CollectorParts {
+        hub,
+        backends: backends.to_vec(),
+        home: std::env::var_os("HOME").map(PathBuf::from),
+        http,
+        codex_roots,
+        probe_dir,
+    })
 }

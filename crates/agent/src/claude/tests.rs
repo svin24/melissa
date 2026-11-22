@@ -811,3 +811,84 @@ fn files_go_before_the_text_as_image_and_document_blocks() {
         ])
     );
 }
+
+#[tokio::test]
+async fn plan_usage_and_rate_limits_come_from_the_stream() {
+    use crate::provider_usage::{claude, Observation};
+    let (perms, _) = policy(None);
+    let answer: Value = serde_json::from_str(include_str!(
+        "../provider_usage/fixtures/claude_get_usage.json"
+    ))
+    .unwrap();
+    let mut steps = init_steps();
+    steps.extend([
+        Step::send(
+            json!({"type": "control_request", "request_id": "melissa-usage-1",
+            "request": {"subtype": "get_usage", "skip_behaviors": true}}),
+        ),
+        Step::recv(
+            json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "melissa-usage-1", "response": answer}}),
+        ),
+        user("hi"),
+        Step::recv(
+            serde_json::from_str(include_str!(
+                "../provider_usage/fixtures/claude_rate_limit_event.json"
+            ))
+            .unwrap(),
+        ),
+        delta("ok"),
+        Step::recv(
+            serde_json::from_str(include_str!(
+                "../provider_usage/fixtures/claude_result.json"
+            ))
+            .unwrap(),
+        ),
+    ]);
+    let (opened, agent) = open_replay(steps, Arc::new(perms)).await;
+    let OpenedSession {
+        session,
+        mut events,
+        ..
+    } = opened;
+    let got = session.plan_usage().await.unwrap().unwrap();
+    let fetched = claude::get_usage(&got, 1).unwrap();
+    assert_eq!(fetched.plan.as_deref(), Some("max"));
+    assert_eq!(session.prompt("hi").await.unwrap(), StopReason::EndTurn);
+    session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+    let got = drain(&mut events).await;
+    let windows = got
+        .iter()
+        .find_map(|e| match e {
+            SessionEvent::ProviderUsage(Observation::Windows(w)) => Some(w.clone()),
+            _ => None,
+        })
+        .expect("rate limits reported");
+    assert!(windows.iter().any(|w| w.id == "five_hour"));
+    let totals = got
+        .iter()
+        .find_map(|e| match e {
+            SessionEvent::ProviderUsage(Observation::ProcessTotals(m)) => Some(m.clone()),
+            _ => None,
+        })
+        .expect("tokens reported");
+    assert!(totals.iter().any(|m| m.model == "claude-example-large"));
+}
+
+#[tokio::test]
+async fn a_refused_get_usage_is_an_error_not_a_hang() {
+    let (perms, _) = policy(None);
+    let mut steps = init_steps();
+    steps.extend([
+        Step::send(json!({"type": "control_request", "request_id": "melissa-usage-1",
+            "request": {"subtype": "get_usage"}})),
+        Step::recv(json!({"type": "control_response", "response": {"subtype": "error",
+            "request_id": "melissa-usage-1", "error": "get_usage is not supported in this context"}})),
+    ]);
+    let (opened, agent) = open_replay(steps, Arc::new(perms)).await;
+    let err = opened.session.plan_usage().await.unwrap_err();
+    assert!(err.to_string().contains("not supported"), "{err}");
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+}

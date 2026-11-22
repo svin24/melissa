@@ -266,6 +266,8 @@ pub(crate) struct ConversationSpec {
     pub owner: crate::tools::permissions::Principal,
     /// When the context is condensed.
     pub compact: CompactPolicy,
+    /// Plan usage reported mid-session goes here (shared by every conversation).
+    pub provider_usage: crate::provider_usage::UsageHub,
 }
 
 /// What a client sees of a conversation right now.
@@ -1945,6 +1947,7 @@ impl Conversation {
             SessionEvent::Thought(_)
                 | SessionEvent::Usage { .. }
                 | SessionEvent::Cost { .. }
+                | SessionEvent::ProviderUsage(_)
                 | SessionEvent::Other(_)
         ) {
             self.end_thought();
@@ -2033,8 +2036,29 @@ impl Conversation {
                     lock(&self.inner.usage).report_cost(&session, &unit, micros);
                 }
             }
+            SessionEvent::ProviderUsage(obs) => self.report_provider_usage(obs),
             SessionEvent::ToolUpdated { .. } | SessionEvent::Plan(_) | SessionEvent::Other(_) => {}
         }
+    }
+
+    /// Pass plan usage from the open session to the shared hub, under its provider and its
+    /// session (a new session starts its own running totals).
+    fn report_provider_usage(&self, obs: crate::provider_usage::Observation) {
+        let Some((backend, token)) = lock(&self.inner.live)
+            .as_ref()
+            .map(|l| (l.backend.clone(), l.token.clone()))
+        else {
+            return;
+        };
+        let Some(provider) = self.backend(&backend).and_then(|b| b.provider_id()) else {
+            return;
+        };
+        self.inner.spec.provider_usage.observe(
+            &provider,
+            &token,
+            obs,
+            crate::provider_usage::now_secs(),
+        );
     }
 
     /// Audit `<kind>.<action>` (e.g. `lead.message`, `agent.session`) on this conversation's

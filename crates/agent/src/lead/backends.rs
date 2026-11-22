@@ -358,6 +358,26 @@ async fn probe_within(
     Ok(opened.models)
 }
 
+/// Ask one backend for its plan usage ([`crate::session::AgentSession::plan_usage`]): open a session like
+/// [`probe`] does (sandboxed, no tools, no prompt), ask, close. `Ok(None)`: the agent has no
+/// such request. The whole exchange takes at most [`PROBE_TIMEOUT`] to open plus the
+/// request's own limit.
+pub async fn probe_usage(
+    backend: &dyn SessionBackend,
+    cwd: PathBuf,
+) -> Result<Option<serde_json::Value>, String> {
+    std::fs::create_dir_all(&cwd).map_err(|e| format!("cannot create {}: {e}", cwd.display()))?;
+    let open = OpenSession::new(cwd, Vec::new(), Arc::new(RefuseAll));
+    let opened = tokio::time::timeout(PROBE_TIMEOUT, backend.open(open))
+        .await
+        .map_err(|_| format!("no answer within {} s", PROBE_TIMEOUT.as_secs()))?
+        .map_err(|e| e.to_string())?;
+    let answer = opened.session.plan_usage().await.map_err(|e| e.to_string());
+    // Dropping the session kills the agent if closing takes too long.
+    let _ = tokio::time::timeout(PROBE_CLOSE, opened.session.close()).await;
+    answer
+}
+
 /// A probe runs no prompt, so the agent has nothing to ask; refuse anything anyway.
 struct RefuseAll;
 

@@ -620,6 +620,12 @@ impl SessionBackend for ClaudeBackend {
     fn compacts_itself(&self) -> bool {
         true
     }
+
+    fn provider_id(&self) -> Option<String> {
+        Some(crate::provider_usage::provider_for_command(
+            &self.spec.command,
+        ))
+    }
 }
 
 impl Backend for ClaudeBackend {

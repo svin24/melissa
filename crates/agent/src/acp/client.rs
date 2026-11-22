@@ -89,8 +89,16 @@ enum Command {
     Cancel {
         reply: oneshot::Sender<()>,
     },
+    /// An extension request with no parameters (`_x.ai/billing`); the agent's answer.
+    Ext {
+        method: &'static str,
+        reply: oneshot::Sender<Result<Value, AgentError>>,
+    },
     Close,
 }
+
+/// How long an extension request may take.
+const EXT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Title and kind of each tool call seen in this session (updates may omit them).
 type ToolTable = Arc<Mutex<HashMap<String, (String, ToolKind)>>>;
@@ -98,11 +106,14 @@ type ToolTable = Arc<Mutex<HashMap<String, (String, ToolKind)>>>;
 /// Start a session over an established transport. `shutdown` runs after the connection
 /// ends, whether it ended normally or not; it does not run if the task is aborted (drop),
 /// which is why the agent process must also be killed on drop.
+/// `usage_method`: the extension request the agent answers with its plan usage
+/// ([`AgentSession::plan_usage`]), if it has one.
 pub(crate) async fn start<T>(
     transport: T,
     open: OpenSession,
     shutdown: Option<Shutdown>,
     stderr: StderrTail,
+    usage_method: Option<&'static str>,
 ) -> Result<OpenedSession, AgentError>
 where
     T: ConnectTo<Client> + Send + 'static,
@@ -157,6 +168,7 @@ where
             done: done_rx,
             stderr,
             closing: AtomicBool::new(false),
+            usage_method,
             _task: abort,
         }),
         events: events_rx,
@@ -279,6 +291,21 @@ where
                             cancel_tx.send_modify(|g| *g += 1);
                         }
                         let _ = reply.send(());
+                    }
+                    Command::Ext { method, reply } => {
+                        let cx2 = cx.clone();
+                        cx.spawn(async move {
+                            let answer = match UntypedMessage::new(method, serde_json::json!({})) {
+                                Ok(req) => cx2
+                                    .send_request(req)
+                                    .block_task()
+                                    .await
+                                    .map_err(|e| AgentError::Protocol(e.to_string())),
+                                Err(e) => Err(AgentError::Protocol(e.to_string())),
+                            };
+                            let _ = reply.send(answer);
+                            Ok(())
+                        })?;
                     }
                     Command::Close => break,
                 }
@@ -1073,6 +1100,8 @@ struct AcpSession {
     stderr: StderrTail,
     /// `close` was called: later failures are "closed", not "the agent died".
     closing: AtomicBool,
+    /// The extension request that answers with plan usage, if the agent has one.
+    usage_method: Option<&'static str>,
     _task: AbortOnDrop,
 }
 
@@ -1089,6 +1118,26 @@ impl AcpSession {
 impl AgentSession for AcpSession {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn plan_usage(&self) -> BoxFuture<'_, Result<Option<Value>, AgentError>> {
+        Box::pin(async move {
+            let Some(method) = self.usage_method else {
+                return Ok(None);
+            };
+            let (reply, rx) = oneshot::channel();
+            self.cmd_tx
+                .send(Command::Ext { method, reply })
+                .map_err(|_| self.closed())?;
+            match tokio::time::timeout(EXT_TIMEOUT, rx).await {
+                Ok(Ok(answer)) => answer.map(Some),
+                Ok(Err(_)) => Err(self.closed()),
+                Err(_) => Err(AgentError::Protocol(format!(
+                    "no answer to {method} within {} s",
+                    EXT_TIMEOUT.as_secs()
+                ))),
+            }
+        })
     }
 
     fn capabilities(&self) -> &SessionCapabilities {

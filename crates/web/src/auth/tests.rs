@@ -48,6 +48,7 @@ fn paths_are_public_member_or_owner() {
         "/settings/reset",
         "/ui/settings/reset",
         "/api/settings/reset",
+        "/api/usage/providers",
     ] {
         assert_eq!(need(p), Need::Owner, "{p}");
     }

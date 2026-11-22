@@ -160,6 +160,7 @@ impl SessionBackend for Replay {
                 req,
                 None,
                 StderrTail::default(),
+                None,
             )
             .await?;
             if !self.steerable.load(std::sync::atomic::Ordering::SeqCst) {

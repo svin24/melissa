@@ -515,6 +515,27 @@ async fn multipart_forms_carry_the_token_as_their_first_part() {
 }
 
 #[tokio::test]
+async fn provider_usage_is_the_owners_only() {
+    let (auth, _) = store();
+    let owner = claimed(&auth);
+    let bob = member(&auth, &owner);
+    let (app, _) = app_signed_out(auth);
+    let uri = "/api/usage/providers";
+    let (status, _, _) = send(&app, req("GET", uri).body(Body::empty()).unwrap()).await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status.is_redirection(),
+        "signed out: {status}"
+    );
+    let (status, _, _) = send(&app, as_(&bob, "GET", uri).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, body) = send(&app, as_(&owner, "GET", uri).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json["providers"].is_array(), "{body}");
+    assert!(json["generated_at"].is_u64(), "{body}");
+}
+
+#[tokio::test]
 async fn owner_only_sections_refuse_members() {
     let (auth, _) = store();
     let owner = claimed(&auth);

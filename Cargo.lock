@@ -1258,10 +1258,12 @@ version = "0.0.1"
 dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
+ "bytes",
  "croner",
  "futures",
  "http-body-util",
  "hyper",
+ "hyper-rustls",
  "hyper-util",
  "jiff",
  "rustix",
