@@ -11,7 +11,7 @@ use maud::{html, Markup};
 
 use super::{
     agent::{avatar, icon_picker, Avatar},
-    glyph, live_region_on, log_view, Glyph, Health, LogLine, Tone,
+    glyph, live_region_on, log_view, Btn, Glyph, Health, LogLine, Tone,
 };
 
 /// The list's region id (its refresh and the filter swap it).
@@ -123,7 +123,7 @@ fn app_row(r: &AppRow<'_>) -> Markup {
                 span.app-row-person { (person_chip(p)) }
             }
             span.app-row-status { (app_status(r.health, r.status)) }
-            a.btn.secondary.app-row-details href=(r.details) {
+            a.app-row-details.(Btn::secondary()) href=(r.details) {
                 "Details" span.visually-hidden { ": " (r.name) }
             }
         }
@@ -153,7 +153,7 @@ fn show_filter(choices: &[ShowChoice<'_>]) -> Markup {
 
 fn add_button(href: &str) -> Markup {
     html! {
-        a.btn.primary href=(href) { (glyph(Glyph::Plus)) "Add an app" }
+        a.(Btn::primary()) href=(href) { (glyph(Glyph::Plus)) "Add an app" }
     }
 }
 
@@ -264,13 +264,13 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                     @if !d.gone {
                         div.app-head-actions {
                             @if let Some(open) = d.open {
-                                a.btn.secondary href=(open) rel="noreferrer" target="_blank" {
+                                a.(Btn::secondary()) href=(open) rel="noreferrer" target="_blank" {
                                     (glyph(Glyph::Expand)) "Open"
                                 }
                             }
                             @if let Some((label, url)) = d.toggle {
                                 @if d.ask.is_none() {
-                                    button.btn.secondary type="button" hx-post=(url)
+                                    button.(Btn::secondary()) type="button" hx-post=(url)
                                         hx-target={ "#" (APP_DETAILS_ID) } hx-swap="outerHTML"
                                         hx-disabled-elt="this" { (label) }
                                 }
@@ -288,11 +288,11 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                             p.app-ask-detail { (a.detail) }
                         }
                         div.app-ask-actions {
-                            button.btn.secondary type="button" hx-post=(a.deny)
+                            button.(Btn::secondary()) type="button" hx-post=(a.deny)
                                 hx-target={ "#" (APP_DETAILS_ID) } hx-swap="outerHTML" autofocus {
                                 "Cancel"
                             }
-                            button.btn.primary type="button" hx-post=(a.approve)
+                            button.(Btn::primary()) type="button" hx-post=(a.approve)
                                 hx-target={ "#" (APP_DETAILS_ID) } hx-swap="outerHTML"
                                 hx-disabled-elt="this" { (a.label) }
                         }
@@ -336,7 +336,7 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                                     input #app-delete-confirm type="text" name="confirm" required
                                         autocomplete="off" autocapitalize="off" spellcheck="false"
                                         pattern=(d.app) placeholder=(d.app);
-                                    button.btn.danger type="submit" { "Force delete" }
+                                    button.(Btn::danger()) type="submit" { "Force delete" }
                                 }
                             }
                         }
@@ -364,7 +364,7 @@ pub fn app_icon_card(
                 hx-target="#app-icon-card" hx-swap="outerHTML" {
                 (super::csrf_field())
                 (icon_picker(shapes, colors, shape, color))
-                button.btn.secondary type="submit" data-no-script-only { "Save icon" }
+                button.(Btn::secondary()) type="submit" data-no-script-only { "Save icon" }
                 @if let Some(s) = saved { p.quiet role="status" { (s) } }
             }
         }
@@ -426,13 +426,13 @@ pub fn app_logs_region(l: &AppLogsView<'_>) -> Markup {
                                 option value=(c) selected[l.container == Some(c.as_str())] { (c) }
                             }
                         }
-                        button.btn.secondary type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
+                        button.(Btn::secondary()) type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
                     }
                 } @else {
                     @if let Some(c) = l.container {
                         input type="hidden" name="container" value=(c);
                     }
-                    button.btn.secondary type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
+                    button.(Btn::secondary()) type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
                 }
             }
             @if let Some(text) = l.empty {

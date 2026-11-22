@@ -57,7 +57,7 @@ use super::{apply, pages::Flash};
 use crate::{
     components::{
         actions, add_panel, disclosure, group, lines_field, link, link_button, live_region, notice,
-        provider_tiles, registry_list, search_box, settings_form, stepper, text_field,
+        provider_tiles, registry_list, search_box, settings_form, stepper, text_field, Btn,
         ProviderTile, RegistryAction, RegistryRow, Tone,
     },
     is_htmx,
@@ -606,7 +606,7 @@ fn registry_region(ui: &Ui, q: &str, error: Option<&str>) -> Markup {
             form method="post" action=(REGISTRY_URL) hx-post=(REGISTRY_URL)
                 hx-target={ "#" (REGISTRY_ID) } hx-swap="outerHTML" {
                 (crate::components::csrf_field())
-                button.secondary type="submit" { "Load the list" }
+                button.(Btn::secondary()) type="submit" { "Load the list" }
             }
         },
         Some((reg, at)) => {
@@ -666,7 +666,7 @@ fn registry_region(ui: &Ui, q: &str, error: Option<&str>) -> Markup {
                     form.inline method="post" action=(REGISTRY_URL) hx-post=(REGISTRY_URL)
                         hx-target={ "#" (REGISTRY_ID) } hx-swap="outerHTML" {
                         (crate::components::csrf_field())
-                        button.link type="submit" { "Refresh" }
+                        button.(Btn::link()) type="submit" { "Refresh" }
                     }
                 }
                 @if let Some(e) = error { (notice(e, Tone::Error)) }
@@ -785,7 +785,7 @@ fn identity_view(id: &str, a: &AddedProvider, key_set: bool, error: Option<&str>
                     Some("Where the agent looks for its key.")))
                 (text_field("value", "API key", "", "", "password", None))
             }))
-            (actions(link_button(&next, if key_set { "Next" } else { "Skip" }, key_set)))
+            (actions(link_button(if key_set { Btn::primary() } else { Btn::secondary() }, &next, if key_set { "Next" } else { "Skip" })))
         },
     )
 }

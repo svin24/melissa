@@ -45,7 +45,7 @@ async fn a_chat_has_a_back_button_to_the_agent_list() {
         let head = &head[..head.find("</header>").unwrap()];
         assert!(
             head.starts_with(
-                "<header class=\"chat-head\"><a class=\"icon-button back-link\" href=\"/\" title=\"Back to agents\">"
+                "<header class=\"chat-head\"><a class=\"back-link btn btn-ghost btn-icon\" href=\"/\" title=\"Back to agents\">"
             ),
             "{uri}: {head}"
         );
@@ -61,7 +61,7 @@ async fn the_agent_list_has_a_new_button_and_a_tab_bar() {
     let side = &side[..side.find("<main").unwrap()];
     // "+" next to the brand (phones) as well as in the search row (wide).
     assert!(side.contains(
-        "<a class=\"icon-button round-button phone-new\" href=\"/settings/agents/new\" title=\"New helper\">"
+        "<a class=\"phone-new btn btn-secondary btn-round\" href=\"/settings/agents/new\" title=\"New helper\">"
     ));
     let tabs = &side[side
         .find("<nav class=\"tab-bar\" aria-label=\"Sections\">")

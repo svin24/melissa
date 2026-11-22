@@ -41,7 +41,8 @@ use super::{
 use crate::{
     components::{
         link_button, live_region, notice, notice_link, provider_tiles, select_field_at,
-        setup_actions, setup_page, setup_submit, text_field, Choice, ProviderTile, TileLink, Tone,
+        setup_actions, setup_page, setup_submit, text_field, Btn, Choice, ProviderTile, TileLink,
+        Tone,
     },
     feed::backend_label,
     ui::Ui,
@@ -434,7 +435,7 @@ pub(crate) fn provider_region(ui: &Ui, v: &ProvidersView) -> Markup {
     let model_href = model_href(selected.map(|c| c.id.as_str()), &working);
     let footer = setup_actions(
         html! {
-            @if ready { (link_button(&model_href, "Choose a model", !busy)) }
+            @if ready { (link_button(if busy { Btn::secondary() } else { Btn::primary() }, &model_href, "Choose a model")) }
         },
         Some(&later_url(SetupStep::Provider)),
     );
@@ -566,7 +567,11 @@ async fn model_poll(State(ui): State<Ui>, Query(q): Query<StepQuery>) -> Respons
 /// only while there is something left to turn on.
 async fn extras(ui: &Ui) -> Markup {
     let voice = voice::view(&ui.settings, None);
-    let finish = link_button(crate::pages::MELISSA_CHAT_URL, "Finish setup", true);
+    let finish = link_button(
+        Btn::primary(),
+        crate::pages::MELISSA_CHAT_URL,
+        "Finish setup",
+    );
     if !voice.available && !voice.on && !tailscale::managed(ui).await {
         return html! {
             (notice("Voice input and Tailscale aren't available on this install.", Tone::Info))

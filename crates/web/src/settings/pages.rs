@@ -11,9 +11,9 @@ use crate::{
         inline_number, inline_select, lines_field, link, link_button, live_region, log_view,
         notice, one_field_form, page_header, pick_list, plain_action, progress_bar, provider_logo,
         region, select_field_at, setting_card, setting_row, setting_row_with, settings_form,
-        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list, Choice,
-        ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone,
-        VarRow,
+        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list, Btn,
+        Choice, ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle,
+        Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -467,7 +467,7 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
             ))
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
             @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
-            (actions(link_button("/settings/providers/add", "Add provider", false)))
+            (actions(link_button(Btn::secondary(), "/settings/providers/add", "Add provider")))
             (split_card("provider-card", "Providers", pick_list("Providers", &rows, None), detail))
         },
     )
@@ -746,7 +746,7 @@ pub fn device_name_region(v: &DeviceNameView) -> Markup {
                     (crate::components::csrf_field())
                     (text_field("name", "Device name", &v.value, "", "text", Some("Shown in Melissa only.")))
                     @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
-                    div { button.btn.secondary type="submit" { "Save name" } }
+                    div { button.(Btn::secondary()) type="submit" { "Save name" } }
                 }
             }
         }
@@ -1279,7 +1279,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                             hx-target={ "#" (AGENT_ID) } hx-swap="outerHTML" {
                             (crate::components::csrf_field())
                             input type="hidden" name="pinned" value=(if a.pinned { "off" } else { "on" });
-                            button.secondary type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
+                            button.(Btn::secondary()) type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
                         }
                     },
                 ))
@@ -1371,7 +1371,7 @@ pub fn new_agent_region(
                         autocomplete="off" spellcheck="false" autofocus;
                 }
                 (icon_picker(shapes, colors, icon.0, icon.1))
-                div { button.primary type="submit" { "Create helper" } }
+                div { button.(Btn::primary()) type="submit" { "Create helper" } }
             }
         },
     )

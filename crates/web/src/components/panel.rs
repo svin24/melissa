@@ -11,7 +11,7 @@
 
 use maud::{html, Markup};
 
-use super::{badge, crumbs, Nav, Tone};
+use super::{badge, crumbs, Btn, Nav, Tone};
 
 /// DOM id of the modal that holds a panel.
 pub const OVERLAY_ID: &str = "overlay";
@@ -154,7 +154,7 @@ pub fn overlay_dialog() -> Markup {
 /// closes the modal instead.
 fn panel_close(what: &str) -> Markup {
     html! {
-        a.panel-close href="/" data-panel-close title="Close" {
+        a.panel-close.(Btn::ghost().icon()) href="/" data-panel-close title="Close" {
             (glyph(Glyph::Close))
             span.visually-hidden { "Close " (what) }
         }
@@ -303,7 +303,7 @@ pub fn inline_form(action: &str, target: &str, field: Markup) -> Markup {
             hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             (field)
-            button.toggle-save.secondary type="submit" { "Save" }
+            button.toggle-save.(Btn::secondary().sm()) type="submit" { "Save" }
         }
     }
 }

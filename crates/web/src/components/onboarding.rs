@@ -9,7 +9,7 @@
 
 use maud::{html, Markup};
 
-use super::{csrf_field, page, stepper, Tone};
+use super::{csrf_field, page, stepper, Btn, Tone};
 
 /// The setup page: one panel with the steps, the step's heading and its content. A page of
 /// its own (no rail: the owner hasn't finished setting up).
@@ -37,7 +37,7 @@ pub fn setup_actions(primary: Markup, later: Option<&str>) -> Markup {
             @if let Some(action) = later {
                 form.inline method="post" action=(action) {
                     (csrf_field())
-                    button.link type="submit" { "Later" }
+                    button.(Btn::link()) type="submit" { "Later" }
                 }
             }
         }
@@ -46,7 +46,7 @@ pub fn setup_actions(primary: Markup, later: Option<&str>) -> Markup {
 
 /// The submit button of the step's form `form` (placed outside it, in [`setup_actions`]).
 pub fn setup_submit(form: &str, label: &str) -> Markup {
-    html! { button.primary type="submit" form=(form) { (label) } }
+    html! { button.(Btn::primary()) type="submit" form=(form) { (label) } }
 }
 
 /// One line of the setup checklist.
@@ -69,7 +69,7 @@ pub fn setup_checklist(items: &[ChecklistItem<'_>], dismiss: &str) -> Markup {
                 form.inline method="post" action=(dismiss) hx-post=(dismiss)
                     hx-target={ "#" (CHECKLIST_ID) } hx-swap="outerHTML" {
                     (csrf_field())
-                    button.link type="submit" { "Hide" }
+                    button.(Btn::link()) type="submit" { "Hide" }
                 }
             }
             ul.setup-checklist-items {

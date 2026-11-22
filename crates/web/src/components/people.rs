@@ -5,7 +5,7 @@ use maud::{html, Markup};
 
 use super::{
     action_button, card, command_block, notice, page, page_header, plain_action, region,
-    setting_card, setting_row, setting_row_with, Tone,
+    setting_card, setting_row, setting_row_with, Btn, Tone,
 };
 
 /// The CSRF token as a hidden form field: the first field of every POST form (multipart
@@ -74,7 +74,7 @@ pub fn auth_page(f: &AuthForm<'_>) -> Markup {
                         (csrf_field())
                         @if let Some(n) = f.next { input type="hidden" name="next" value=(n); }
                         (f.fields)
-                        div { button.primary type="submit" { (f.submit) } }
+                        div { button.(Btn::primary()) type="submit" { (f.submit) } }
                     }
                 }))
             }
@@ -146,7 +146,7 @@ pub fn account_region(v: &AccountView<'_>) -> Markup {
                         (credential_field("current", "Current password", "password", "current-password", "", None))
                         (credential_field("password", "New password", "password", "new-password", "", Some("At least 8 characters.")))
                         (credential_field("again", "New password again", "password", "new-password", "", None))
-                        div { button.secondary type="submit" { "Change password" } }
+                        div { button.(Btn::secondary()) type="submit" { "Change password" } }
                     }
                 }
             }))

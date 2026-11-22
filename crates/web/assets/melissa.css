@@ -470,61 +470,256 @@ pre {
   color: var(--muted);
 }
 
-/* --- Buttons ------------------------------------------------------------------------- */
+/* --- Buttons (COMPONENT-SPEC 2.1, Penpot board DS-01; components::Btn) -------------------------
+   Every button, link-as-button, confirm summary and file label is `.btn` + one variant
+   (`btn-primary`, `btn-secondary`, `btn-ghost`, `btn-danger`, `btn-danger-quiet`, `btn-link`),
+   optionally a size (`btn-sm` 28px, md 32px by default, `btn-lg` 40px) and a shape (`btn-icon`
+   square, `btn-round`). States come from the platform: :hover, :active, :focus-visible,
+   :disabled / aria-disabled, aria-pressed, and htmx's request class while busy. Under a finger
+   (`pointer: coarse`) the hit area grows to 44px (`--size-target-min`); the look stays thin. */
 
+/* The few buttons that aren't `.btn` (menu items, the model picker's rows, segments, tiles)
+   set their own look; they share only this. */
 button {
   font: inherit;
-  min-height: 44px;
-  padding: 0.5rem 1.1rem;
-  border-radius: 10px;
-  border: 1px solid transparent;
   cursor: pointer;
-}
-
-button.primary {
-  background: var(--action);
-  color: var(--action-ink);
-  font-weight: 600;
-}
-
-button.primary.danger {
-  background: var(--caution);
-  color: var(--caution-ink);
-}
-
-button.secondary,
-button.ghost {
-  background: var(--surface);
-  color: var(--ink);
-  border-color: var(--border);
-}
-
-button.ghost {
-  width: 100%;
-  margin-top: 0.5rem;
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-md);
 }
 
 button:disabled {
   cursor: not-allowed;
-  color: var(--muted);
 }
 
-button.link {
-  min-height: 44px;
-  padding: 0 0.25rem;
-  background: none;
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--button-height-md);
+  margin: 0;
+  padding: 0 var(--button-padding-x-md);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--button-radius-md);
+  background: transparent;
+  color: var(--color-text-default);
+  font: inherit;
+  font-size: var(--button-font-size-md);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--line-height-control);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* The hit area: as big as the button, at least --size-target-min (24px; 44px under a finger). */
+.btn::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--size-target-min)) / 2));
+}
+
+.btn > .glyph,
+.btn > svg {
+  flex: none;
+  width: var(--button-icon-md);
+  height: var(--button-icon-md);
+}
+
+.btn::-webkit-details-marker {
+  display: none;
+}
+
+summary.btn {
+  list-style: none;
+}
+
+.btn-sm {
+  min-height: var(--button-height-sm);
+  padding-inline: var(--button-padding-x-sm);
+  border-radius: var(--button-radius-sm);
+  font-size: var(--button-font-size-sm);
+}
+
+.btn-sm > .glyph,
+.btn-sm > svg {
+  width: var(--button-icon-sm);
+  height: var(--button-icon-sm);
+}
+
+.btn-lg {
+  min-height: var(--button-height-lg);
+  padding-inline: var(--button-padding-x-lg);
+  border-radius: var(--button-radius-lg);
+  font-size: var(--button-font-size-lg);
+}
+
+.btn-lg > .glyph,
+.btn-lg > svg {
+  width: var(--button-icon-lg);
+  height: var(--button-icon-lg);
+}
+
+.btn-icon,
+.btn-round {
+  width: var(--button-height-md);
+  padding: 0;
+}
+
+.btn-icon.btn-sm,
+.btn-round.btn-sm {
+  width: var(--button-height-sm);
+}
+
+.btn-icon.btn-lg,
+.btn-round.btn-lg {
+  width: var(--button-height-lg);
+}
+
+.btn-round {
+  border-radius: var(--radius-full);
+}
+
+/* Variants. */
+.btn-primary {
+  background: var(--button-primary-bg-default);
+  color: var(--button-primary-text-default);
+}
+
+.btn-secondary {
+  background: var(--button-secondary-bg-default);
+  color: var(--button-secondary-text-default);
+  border-color: var(--button-secondary-border-default);
+}
+
+.btn-ghost {
+  color: var(--button-ghost-text-default);
+}
+
+.btn-danger {
+  background: var(--button-danger-bg-default);
+  color: var(--button-danger-text-default);
+}
+
+.btn-danger-quiet {
+  color: var(--button-danger-quiet-text-default);
+}
+
+.btn-link {
+  min-height: auto;
+  padding: 0;
   border: 0;
-  color: var(--action);
+  border-radius: var(--radius-xs);
+  color: var(--button-link-text-default);
+  font-weight: var(--font-weight-regular);
   text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* Pressed toggles (aria-pressed): secondary and ghost. */
+.btn-secondary[aria-pressed="true"],
+.btn-ghost[aria-pressed="true"] {
+  background: var(--button-secondary-bg-pressed);
+  border-color: var(--button-secondary-border-hover);
 }
 
 @media (hover: hover) {
-  button.primary:hover:not(:disabled) {
-    filter: brightness(1.08);
+  .btn-primary:hover:not(:disabled, [aria-disabled="true"]) {
+    background: var(--button-primary-bg-hover);
   }
 
-  button.secondary:hover:not(:disabled) {
-    border-color: var(--muted);
+  .btn-secondary:hover:not(:disabled, [aria-disabled="true"]) {
+    background: var(--button-secondary-bg-hover);
+    border-color: var(--button-secondary-border-hover);
+  }
+
+  .btn-ghost:hover:not(:disabled, [aria-disabled="true"]) {
+    background: var(--button-ghost-bg-hover);
+  }
+
+  .btn-danger:hover:not(:disabled, [aria-disabled="true"]) {
+    background: var(--button-danger-bg-hover);
+  }
+
+  .btn-danger-quiet:hover:not(:disabled, [aria-disabled="true"]) {
+    background: var(--button-danger-quiet-bg-hover);
+  }
+
+  .btn-link:hover:not(:disabled, [aria-disabled="true"]) {
+    text-decoration-thickness: 2px;
+  }
+}
+
+.btn-primary:active:not(:disabled, [aria-disabled="true"]) {
+  background: var(--button-primary-bg-active);
+}
+
+.btn-secondary:active:not(:disabled, [aria-disabled="true"]) {
+  background: var(--button-secondary-bg-active);
+}
+
+.btn-ghost:active:not(:disabled, [aria-disabled="true"]) {
+  background: var(--button-ghost-bg-active);
+}
+
+.btn-danger:active:not(:disabled, [aria-disabled="true"]) {
+  background: var(--button-danger-bg-active);
+}
+
+.btn:focus-visible {
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* Disabled: dimmer text; filled buttons lose their colour (shown on any background). */
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+}
+
+.btn-primary:is(:disabled, [aria-disabled="true"]),
+.btn-danger:is(:disabled, [aria-disabled="true"]) {
+  background: var(--button-primary-bg-disabled);
+  color: var(--button-primary-text-disabled);
+}
+
+.btn-secondary:is(:disabled, [aria-disabled="true"]) {
+  border-color: var(--color-border-default);
+}
+
+/* Busy: the request is on its way (htmx marks the button, or the form it submits). */
+.btn.htmx-request,
+.htmx-request > .btn[type="submit"],
+.htmx-request > div > .btn[type="submit"] {
+  cursor: progress;
+}
+
+.btn.htmx-request::before,
+.htmx-request > .btn[type="submit"]::before,
+.htmx-request > div > .btn[type="submit"]::before {
+  content: "";
+  flex: none;
+  width: 0.8em;
+  height: 0.8em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .btn {
+    transition: background-color var(--motion-duration-fast) var(--motion-ease-out),
+      border-color var(--motion-duration-fast) var(--motion-ease-out),
+      color var(--motion-duration-fast) var(--motion-ease-out);
+  }
+
+  .btn.htmx-request::before,
+  .htmx-request > .btn[type="submit"]::before,
+  .htmx-request > div > .btn[type="submit"]::before {
+    animation: spin 0.8s linear infinite;
   }
 }
 
@@ -550,16 +745,10 @@ button.link {
 
 .banner-close {
   position: absolute;
-  right: 0.5rem;
+  right: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-  min-height: 32px;
-  width: 32px;
-  padding: 0;
-  border-radius: 8px;
-  background: none;
-  color: inherit;
-  font-size: 1.1rem;
+  font-size: var(--font-size-lg);
   line-height: 1;
 }
 
@@ -673,14 +862,9 @@ main h1[tabindex="-1"]:focus,
 
 .device-button {
   flex: 1 1 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
+  justify-content: flex-start;
   min-width: 0;
-  padding: 0 0.5rem;
-  background: none;
-  color: var(--ink);
-  border-radius: 10px;
+  padding-inline: var(--space-2);
 }
 
 .device-button .mark {
@@ -945,8 +1129,6 @@ progress.agent-progress:indeterminate::-moz-progress-bar {
 }
 
 .agent-row > .more-button {
-  width: 36px;
-  height: 44px;
   opacity: 0.85;
 }
 
@@ -1654,12 +1836,8 @@ svg.glyph {
 .copy-code {
   display: none;
   position: absolute;
-  top: 0.35rem;
-  right: 0.35rem;
-  min-height: 32px;
-  padding: 0.2rem 0.65rem;
-  font-size: 0.8rem;
-  border-radius: 8px;
+  top: var(--space-1);
+  right: var(--space-1);
 }
 
 /* melissa.js sets `can-copy` when the clipboard is usable (secure context). */
@@ -1783,19 +1961,8 @@ svg.glyph {
   margin: 0;
 }
 
-.queue-actions button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.25rem;
-  min-height: 44px;
-  min-width: 44px;
-  padding: 0 0.5rem;
-  background: none;
-  border: 0;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.8rem;
+.queue-actions .btn {
+  color: var(--color-text-muted);
 }
 
 .queue-actions svg {
@@ -2029,7 +2196,7 @@ svg.icon.stopped {
   font-variant-numeric: tabular-nums;
 }
 
-.icon-button[hidden],
+.btn[hidden],
 .menu-item[hidden] {
   display: none;
 }
@@ -2147,19 +2314,7 @@ svg.icon.stopped {
   margin: 0;
 }
 
-.approval .actions button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
 
-.approval .actions button.ghost {
-  width: auto;
-  margin: 0;
-  background: none;
-  border-color: transparent;
-  color: var(--muted);
-}
 
 .approval .waiting {
   margin-left: auto;
@@ -2187,11 +2342,6 @@ svg.icon.stopped {
 }
 
 button.secret {
-  min-height: 44px;
-  padding: 0 0.25rem;
-  background: none;
-  border: 0;
-  color: var(--ink);
   font-family: var(--mono);
   letter-spacing: 0.1em;
 }
@@ -2340,22 +2490,12 @@ button.secret {
 }
 
 button.send {
-  width: 40px;
-  height: 40px;
-  min-height: 40px;
-  padding: 0;
-  border-radius: 50%;
-  background: var(--action);
-  display: grid;
-  place-items: center;
   flex: none;
 }
 
 button.send svg {
-  width: 20px;
-  height: 20px;
   fill: none;
-  stroke: var(--action-ink);
+  stroke: currentColor;
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -2379,9 +2519,7 @@ button.send svg {
   color: var(--ink);
 }
 
-.composer-status button.link {
-  min-height: 32px;
-}
+
 
 .composer-error {
   color: var(--caution);
@@ -2404,29 +2542,21 @@ button.send svg {
 }
 
 label.attach {
-  width: 40px;
-  height: 40px;
   flex: none;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-label.attach:hover {
-  color: var(--ink);
 }
 
 .attach-input:focus-visible + label.attach {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.file-icon {
+  width: var(--size-icon-md);
+  height: var(--size-icon-md);
 }
 
 label.attach svg,
 .file-icon {
-  width: 20px;
-  height: 20px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
@@ -2443,36 +2573,17 @@ label.attach svg,
 /* Voice input: a mic next to the paperclip (shown by melissa.js). Recording turns it into a
    caution-coloured pill with the elapsed time; while the box transcribes it waits, dimmed. */
 button.voice {
-  min-width: 40px;
-  height: 40px;
-  min-height: 40px;
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.35rem;
-  padding: 0 0.6rem;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--muted);
+  min-width: var(--button-height-lg);
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
 }
 
 button.voice[hidden] {
   display: none;
 }
 
-button.voice:hover {
-  color: var(--ink);
-}
-
-button.voice:focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-}
-
 button.voice svg {
-  width: 20px;
-  height: 20px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
@@ -2480,12 +2591,11 @@ button.voice svg {
   stroke-linejoin: round;
 }
 
+/* Recording: the danger look (a live microphone). */
 button.voice.recording {
-  background: var(--caution);
-  color: var(--caution-ink);
+  background: var(--button-danger-bg-default);
+  color: var(--button-danger-text-default);
   font-variant-numeric: tabular-nums;
-  font-size: 0.9rem;
-  font-weight: 600;
 }
 
 button.voice.working {
@@ -2562,18 +2672,9 @@ progress {
 }
 
 .file-chip button.remove {
-  min-height: 32px;
-  width: 32px;
-  padding: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 1.1rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-lg);
   line-height: 1;
-}
-
-.file-chip button.remove:hover {
-  color: var(--ink);
 }
 
 /* Files in a sent message (inside the user's bubble). */
@@ -3035,8 +3136,7 @@ svg.warn .mark {
 
 .picker-more {
   align-self: flex-start;
-  min-height: 32px;
-  margin-left: 0.4rem;
+  margin-left: var(--space-2);
 }
 
 .picker-levels {
@@ -3156,89 +3256,11 @@ svg.warn .mark {
   }
 }
 
-/* --- Buttons, 32px (2026-11-22, owner: thinner buttons; COMPONENT-SPEC 2.1) -----------------
-   `.btn` on a button or a link. The Apps list and an app's details use it first; other pages
-   move to it step by step. Under a finger (`pointer: coarse`) its hit area grows to 44px
-   without changing its look. */
-
-.btn {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: var(--button-height-md);
-  padding: 0 var(--button-padding-x-md);
-  border: var(--border-width-hairline) solid transparent;
-  border-radius: var(--button-radius-md);
-  font: inherit;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-strong);
-  line-height: var(--line-height-control);
-  white-space: nowrap;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.btn .glyph {
-  width: var(--size-icon-sm);
-  height: var(--size-icon-sm);
-}
-
-.btn.primary {
-  background: var(--button-primary-bg-default);
-  color: var(--button-primary-text-default);
-}
-
-.btn.secondary {
-  background: var(--button-secondary-bg-default);
-  color: var(--button-secondary-text-default);
-  border-color: var(--button-secondary-border-default);
-}
-
-.btn.danger {
-  background: var(--button-danger-bg-default);
-  color: var(--button-danger-text-default);
-}
-
-.btn:disabled {
-  color: var(--color-text-disabled);
-  cursor: not-allowed;
-}
-
-.btn:focus-visible {
-  outline: var(--focus-width) solid var(--color-focus-ring);
-  outline-offset: var(--focus-offset);
-}
-
-@media (hover: hover) {
-  .btn {
-    transition: background-color var(--motion-duration-fast) var(--motion-ease-out),
-      border-color var(--motion-duration-fast) var(--motion-ease-out);
-  }
-
-  .btn.primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--button-primary-bg-default) 88%, var(--color-text-default));
-  }
-
-  .btn.secondary:hover:not(:disabled) {
-    border-color: var(--button-secondary-border-hover);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .btn {
-    transition: none;
-  }
-}
-
-@media (pointer: coarse) {
-  .btn::after,
-  .show-filter a::after {
-    content: "";
-    position: absolute;
-    inset: min(0px, calc((100% - var(--size-target-touch)) / 2));
-  }
+/* The filter's links get the same touch hit area as buttons. */
+.show-filter a::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--size-target-min)) / 2));
 }
 
 /* With script these forms save on change; their Save button is for pages without it. */
@@ -4115,35 +4137,14 @@ form.inline {
 
 .panel-close {
   flex: none;
-  display: inline-grid;
-  place-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  color: var(--muted);
-}
-
-.panel-close .glyph {
-  width: 18px;
-  height: 18px;
 }
 
 /* Add provider's close: a plain svg, not a glyph. */
 .panel-close svg {
-  width: 16px;
-  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
   stroke-linecap: round;
-}
-
-@media (hover: hover) {
-  .panel-close:hover {
-    color: var(--ink);
-    background: var(--ground);
-  }
 }
 
 .panel-body {
@@ -4853,7 +4854,15 @@ table.usage th[scope="row"] {
 .action-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+@media (pointer: coarse) {
+  /* Neighbours' hit areas must not overlap. */
+  .action-row {
+    gap: var(--space-3);
+  }
 }
 
 .action-row form.inline {
@@ -4865,38 +4874,8 @@ table.usage th[scope="row"] {
   display: inline-block;
 }
 
-.confirm-inline > summary {
-  list-style: none;
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0.5rem 1.1rem;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.confirm-inline.link > summary {
-  padding: 0 0.25rem;
-  border: 0;
-  background: none;
-  color: var(--action);
-  text-decoration: underline;
-}
-
-.confirm-inline > summary::-webkit-details-marker {
-  display: none;
-}
-
-.confirm-inline > summary:focus-visible {
-  outline: 2px solid var(--action);
-  outline-offset: 2px;
-}
-
-.confirm-inline[open] > summary {
-  border-color: var(--muted);
+.confirm-inline[open] > summary.btn-secondary {
+  border-color: var(--button-secondary-border-hover);
 }
 
 .confirm-inline-body {
@@ -4933,18 +4912,6 @@ table.usage th[scope="row"] {
   max-width: 24rem;
 }
 
-a.button-like {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0.5rem 1.1rem;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink);
-  text-decoration: none;
-}
-
 .small {
   font-size: 0.85rem;
 }
@@ -4973,13 +4940,6 @@ a.button-like {
 }
 
 /* --- Disclosure, sign-in steps, one-field forms (2026-11-19) ----------------------------- */
-
-a.button-like.primary {
-  background: var(--action);
-  border-color: var(--action);
-  color: var(--action-ink);
-  font-weight: 600;
-}
 
 .disclosure {
   border-top: 1px solid var(--border);
@@ -5226,12 +5186,6 @@ ol.steps > li::marker {
   scrollbar-color: var(--idle) transparent;
 }
 
-.details-toggle:focus-visible,
-.details-close:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
 .details-toggle[aria-expanded="true"] {
   color: var(--ink);
 }
@@ -5390,11 +5344,6 @@ ol.steps > li::marker {
   font-size: 0.8rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-
-.service .more-button {
-  width: 36px;
-  height: 36px;
 }
 
 .service-group {
@@ -5577,12 +5526,6 @@ ol.steps > li::marker {
   outline-offset: 2px;
 }
 
-/* The upload icon reuses the composer's paperclip look (label.attach). */
-label.attach.upload {
-  border: 1px solid var(--border);
-  background: var(--surface);
-}
-
 .box-files {
   list-style: none;
   margin: 0 0 0.5rem;
@@ -5715,25 +5658,6 @@ label.attach.upload {
   accent-color: var(--action);
 }
 
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.icon-button:focus-visible {
-  outline: 2px solid var(--focus);
-}
-
 .file-more .file-icon circle {
   fill: currentColor;
   stroke: none;
@@ -5741,8 +5665,7 @@ label.attach.upload {
 
 @media (hover: hover) {
   .box-file:hover,
-  a.detail-main:hover,
-  .icon-button:hover {
+  a.detail-main:hover {
     background: var(--ground);
   }
 }
@@ -6208,21 +6131,12 @@ label.attach.upload {
     margin-left: auto;
   }
 
-  .round-button {
-    border-radius: 50%;
-    background: var(--surface);
-    color: var(--ink);
-  }
-
   /* The header's round "⋯": a smaller disc inside the same 44px tap target, so it sits with
      the plain icons beside it instead of standing out as a large white circle. */
   .chat-head > .more-button {
     grid-area: more;
-    padding: 6px;
-    border-radius: 50%;
-    background: var(--surface);
-    background-clip: content-box;
-    color: var(--ink);
+    border-radius: var(--radius-full);
+    background: var(--color-bg-surface);
   }
 
   .shell:has([data-phone-view="list"]) .side-search {
@@ -6474,9 +6388,8 @@ label.attach.upload {
   }
 
   .details-close {
-    border-radius: 50%;
-    background: var(--ground);
-    color: var(--ink);
+    border-radius: var(--radius-full);
+    background: var(--color-bg-ground);
   }
 
   .js .details {

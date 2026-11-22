@@ -37,6 +37,142 @@ impl Tone {
     }
 }
 
+/// What a button looks like (docs/design/COMPONENT-SPEC.md 2.1, Penpot board DS-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonVariant {
+    /// The one main action of a view or card.
+    Primary,
+    /// Other actions.
+    Secondary,
+    /// Toolbars, low-weight and icon-only actions: no fill until hovered.
+    Ghost,
+    /// The confirming step of a destructive action.
+    Danger,
+    /// The first click of a destructive action (it opens the in-page confirm).
+    DangerQuiet,
+    /// An inline, low-emphasis action that reads as a link.
+    Link,
+}
+
+/// The size of a control: 28, 32 (the default) or 40px high.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    Sm,
+    Md,
+    Lg,
+}
+
+/// The one button component: its look, rendered as the element's classes so the same look
+/// fits `<button>`, `<a>` (navigation), `<summary>` (an in-page confirm) and `<label>` (a file
+/// input), each keeping its own attributes:
+/// `button.(Btn::secondary()) type="submit" { "Save" }`. Simple buttons use [`submit_button`]
+/// and [`link_button`]. Icon-only buttons ([`Btn::icon`], [`Btn::round`]) need an
+/// `aria-label` or a visually hidden label, and a `title`. The CSS is `.btn` in melissa.css.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Btn {
+    variant: ButtonVariant,
+    size: Size,
+    shape: BtnShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtnShape {
+    Text,
+    /// Square, a glyph only.
+    Icon,
+    /// Round, a glyph only.
+    Round,
+}
+
+impl Btn {
+    pub const fn new(variant: ButtonVariant) -> Self {
+        Self {
+            variant,
+            size: Size::Md,
+            shape: BtnShape::Text,
+        }
+    }
+    pub const fn primary() -> Self {
+        Self::new(ButtonVariant::Primary)
+    }
+    pub const fn secondary() -> Self {
+        Self::new(ButtonVariant::Secondary)
+    }
+    pub const fn ghost() -> Self {
+        Self::new(ButtonVariant::Ghost)
+    }
+    pub const fn danger() -> Self {
+        Self::new(ButtonVariant::Danger)
+    }
+    pub const fn danger_quiet() -> Self {
+        Self::new(ButtonVariant::DangerQuiet)
+    }
+    pub const fn link() -> Self {
+        Self::new(ButtonVariant::Link)
+    }
+    pub const fn size(self, size: Size) -> Self {
+        Self { size, ..self }
+    }
+    pub const fn sm(self) -> Self {
+        self.size(Size::Sm)
+    }
+    pub const fn lg(self) -> Self {
+        self.size(Size::Lg)
+    }
+    /// A square button with a glyph only.
+    pub const fn icon(self) -> Self {
+        Self {
+            shape: BtnShape::Icon,
+            ..self
+        }
+    }
+    /// A round button with a glyph only.
+    pub const fn round(self) -> Self {
+        Self {
+            shape: BtnShape::Round,
+            ..self
+        }
+    }
+
+    fn classes(self) -> String {
+        let variant = match self.variant {
+            ButtonVariant::Primary => "btn-primary",
+            ButtonVariant::Secondary => "btn-secondary",
+            ButtonVariant::Ghost => "btn-ghost",
+            ButtonVariant::Danger => "btn-danger",
+            ButtonVariant::DangerQuiet => "btn-danger-quiet",
+            ButtonVariant::Link => "btn-link",
+        };
+        let size = match self.size {
+            Size::Sm => " btn-sm",
+            Size::Md => "",
+            Size::Lg => " btn-lg",
+        };
+        let shape = match self.shape {
+            BtnShape::Text => "",
+            BtnShape::Icon => " btn-icon",
+            BtnShape::Round => " btn-round",
+        };
+        format!("btn {variant}{size}{shape}")
+    }
+}
+
+impl maud::Render for Btn {
+    fn render_to(&self, buffer: &mut String) {
+        buffer.push_str(&self.classes());
+    }
+}
+
+/// A submit button for the enclosing form.
+pub fn submit_button(look: Btn, label: &str) -> Markup {
+    html! { button.(look) type="submit" { (label) } }
+}
+
+/// A link that looks like a button (navigation is always a link).
+pub fn link_button(look: Btn, href: &str, label: &str) -> Markup {
+    html! { a.(look) href=(href) { (label) } }
+}
+
 /// State of an activity row (a tool call or a helper's job).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityState {
@@ -206,7 +342,7 @@ pub fn banner() -> Markup {
                 strong { "Pre-alpha." }
                 " Things will break. Don't trust Melissa with data you can't lose yet."
             }
-            button.banner-close type="button" data-dismiss="prealpha" title="Dismiss" data-script-only {
+            button.banner-close.(Btn::ghost().icon().sm()) type="button" data-dismiss="prealpha" title="Dismiss" data-script-only {
                 span aria-hidden="true" { "×" }
                 span.visually-hidden { "Dismiss" }
             }
@@ -439,18 +575,18 @@ pub fn queued_messages(items: &[QueuedView<'_>]) -> Markup {
                 div.queue-actions {
                     form method="post" action=(q.steer) hx-post=(q.steer) hx-swap="none" {
                         (crate::components::csrf_field())
-                        button.queue-send type="submit" { (arrow_up_icon()) "Send now" }
+                        button.queue-send.(Btn::ghost().sm()) type="submit" { (arrow_up_icon()) "Send now" }
                     }
                     @if let Some(edit) = &q.edit {
                         form method="post" action=(edit) hx-post=(edit)
                             hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
                             (crate::components::csrf_field())
-                            button.queue-icon type="submit" title="Edit" aria-label="Edit" { (pencil_icon()) }
+                            button.queue-icon.(Btn::ghost().icon().sm()) type="submit" title="Edit" aria-label="Edit" { (pencil_icon()) }
                         }
                     }
                     form method="post" action=(q.remove) hx-post=(q.remove) hx-swap="none" {
                         (crate::components::csrf_field())
-                        button.queue-icon type="submit" title="Remove" aria-label="Remove" { (cross_icon()) }
+                        button.queue-icon.(Btn::ghost().icon().sm()) type="submit" title="Remove" aria-label="Remove" { (cross_icon()) }
                     }
                 }
             }
@@ -569,7 +705,7 @@ fn md_node(node: &Node) -> Markup {
         Node::CodeBlock(t) => html! {
             div.md-code {
                 pre tabindex="0" { code { (t) } }
-                button.copy-code.secondary type="button" aria-label="Copy code" { "Copy" }
+                button.copy-code.(Btn::secondary().sm()) type="button" aria-label="Copy code" { "Copy" }
             }
         },
         Node::Link {
@@ -853,7 +989,7 @@ pub struct DetailsPanel<'a> {
 pub fn details_toggle() -> Markup {
     let open = !crate::looks::current().details_closed;
     html! {
-        button.icon-button.details-toggle type="button" aria-controls=(DETAILS_ID)
+        button.details-toggle.(Btn::ghost().icon()) type="button" aria-controls=(DETAILS_ID)
             aria-expanded=(if open { "true" } else { "false" })
             data-details-toggle data-script-only title="Agent details" {
             (glyph(Glyph::Sidebar))
@@ -877,7 +1013,7 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
                     h2 #details-h { "Agent details" }
                     @if let Some(w) = who { (sheet_sub(w)) }
                 }
-                button.icon-button.details-close type="button" data-details-close
+                button.details-close.(Btn::ghost().icon()) type="button" data-details-close
                     data-script-only title="Hide details" {
                     span.close-wide { (glyph(Glyph::Sidebar)) }
                     span.close-phone { (glyph(Glyph::Close)) }
@@ -951,7 +1087,7 @@ pub fn detail_apps_inner(s: &DetailApps<'_>) -> Markup {
                                     @if let Some(f) = &a.facts { p.service-facts { (f) } }
                                 }
                                 // The app's details (melissa.js opens them in the Apps modal).
-                                a.icon-button.more-button href=(a.details)
+                                a.more-button.(Btn::ghost().icon()) href=(a.details)
                                     title={ "More for " (a.name) } {
                                     (glyph(Glyph::More))
                                     span.visually-hidden { "More for " (a.name) }
@@ -1018,7 +1154,7 @@ pub fn detail_permissions_inner(p: &DetailPermissions<'_>) -> Markup {
                             form method="post" action=(r.remove) hx-post=(r.remove)
                                 hx-target=(target) hx-swap="outerHTML" {
                                 (crate::components::csrf_field())
-                                button.link type="submit" aria-label={ "Stop always allowing: " (r.what) } { "Remove" }
+                                button.(Btn::link()) type="submit" aria-label={ "Stop always allowing: " (r.what) } { "Remove" }
                             }
                         }
                     }
@@ -1077,7 +1213,7 @@ pub fn detail_schedules_inner(s: &DetailSchedules<'_>) -> Markup {
                                 hx-target=(target) hx-swap="outerHTML" {
                                 (crate::components::csrf_field())
                                 input type="hidden" name="enabled" value=(if sc.enabled { "off" } else { "on" });
-                                button.secondary type="submit" aria-label={
+                                button.(Btn::secondary()) type="submit" aria-label={
                                     (if sc.enabled { "Turn off " } else { "Turn on " }) (sc.name)
                                 } { (if sc.enabled { "Turn off" } else { "Turn on" }) }
                             }
@@ -1173,11 +1309,11 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                 (crate::components::csrf_field())
                 input #box-upload .attach-input type="file" name="files" multiple required
                     data-autosubmit;
-                label.attach.upload for="box-upload" title="Upload files" {
+                label.attach.upload.(Btn::secondary().icon()) for="box-upload" title="Upload files" {
                     (upload_icon())
                     span.visually-hidden { "Upload files" }
                 }
-                noscript { button.secondary type="submit" { "Upload" } }
+                noscript { button.(Btn::secondary()) type="submit" { "Upload" } }
             }
             form.file-keep method="post" action=(p.keep_action) hx-post=(p.keep_action)
                 hx-target=(target) hx-swap="outerHTML" title=(p.keep) {
@@ -1190,7 +1326,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                         }
                     }
                 }
-                noscript { button.secondary type="submit" { "Save" } }
+                noscript { button.(Btn::secondary()) type="submit" { "Save" } }
             }
         }
         // No empty-state prose (owner, 2026-11-20): the count in the heading says it.
@@ -1216,12 +1352,12 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                                 }
                             }
                             details.file-more {
-                                summary.icon-button title={ "More for " (f.name) } {
+                                summary.(Btn::ghost().icon()) title={ "More for " (f.name) } {
                                     span.visually-hidden { "More for " (f.name) }
                                     (glyph(Glyph::More))
                                 }
                                 div.file-more-body {
-                                    a.button-like href=(f.reference_href)
+                                    a.(Btn::secondary()) href=(f.reference_href)
                                         data-insert=(f.reference) { "Reference in chat" }
                                     @if !p.send_to.is_empty() {
                                         form.file-send method="post" action=(f.send) hx-post=(f.send)
@@ -1239,7 +1375,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                                                 input type="checkbox" name="mode" value="move";
                                                 span { "Move (remove it here)" }
                                             }
-                                            button.secondary type="submit" { "Send" }
+                                            button.(Btn::secondary()) type="submit" { "Send" }
                                         }
                                     }
                                     (action_button(
@@ -1453,7 +1589,7 @@ pub fn composer(
                     img.thumb alt="" hidden;
                     span.name {}
                     span.size {}
-                    button.remove type="button" aria-label="Remove" { span aria-hidden="true" { "×" } }
+                    button.remove.(Btn::ghost().icon().sm()) type="button" aria-label="Remove" { span aria-hidden="true" { "×" } }
                 }
             }
             div.composer-box {
@@ -1466,14 +1602,14 @@ pub fn composer(
                     input #attach .attach-input type="file" name="files" multiple
                         data-max-file=(MAX_FILE_BYTES) data-max-total=(MAX_MESSAGE_BYTES)
                         data-max-count=(MAX_FILES);
-                    label.attach for="attach" title="Attach files" {
+                    label.attach.(Btn::ghost().icon().lg()) for="attach" title="Attach files" {
                         (paperclip_icon())
                         span.visually-hidden { "Attach files" }
                     }
                     span.bar-gap {}
                     span id=(MODEL_CHIP_ID) { (chip) }
                     (composer_prefs(to.enter_steers, to.voice, false))
-                    button.send type="submit" title="Send" {
+                    button.send.(Btn::primary().round().lg()) type="submit" title="Send" {
                         svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" {} }
                         span.visually-hidden { "Send" }
                     }
@@ -1509,7 +1645,7 @@ pub fn composer_prefs(enter_steers: bool, voice: Option<&str>, oob: bool) -> Mar
                 // sends the clip to `url` and puts the text in the box to edit; nothing
                 // is sent by itself. Where the browser can't record (plain http on the
                 // LAN) a click says why.
-                button.voice #voice type="button" data-script-only data-url=(url) aria-pressed="false"
+                button.voice.(Btn::ghost().lg()) #voice type="button" data-script-only data-url=(url) aria-pressed="false"
                     title="Speak instead of typing" {
                     (mic_icon())
                     span.voice-time aria-hidden="true" {}
@@ -1532,7 +1668,7 @@ pub fn composer_status(cancel: &str, busy: bool, runs_on: Option<&str>) -> Marku
     html! {
         @if busy {
             span.working { span.icon.spin aria-hidden="true" {} "Working on it" }
-            button.link type="submit" formaction=(cancel) hx-post=(cancel) hx-swap="none" formnovalidate { "Stop" }
+            button.(Btn::link()) type="submit" formaction=(cancel) hx-post=(cancel) hx-swap="none" formnovalidate { "Stop" }
         }
         @if let Some(b) = runs_on {
             @if busy { span.sep aria-hidden="true" { "·" } }
@@ -1740,7 +1876,7 @@ fn picker_markup(p: &ModelPicker, oob: bool) -> Markup {
                             p.picker-empty data-empty="search" hidden { "No models match." }
                             p.picker-empty data-empty="favorites" hidden { "Star a model to keep it here." }
                         }
-                        button.picker-more.link type="button" hidden { "Show more" }
+                        button.picker-more.(Btn::link()) type="button" hidden { "Show more" }
                     }
                 }
                 @if !p.levels.is_empty() {
@@ -1783,7 +1919,7 @@ fn picker_markup(p: &ModelPicker, oob: bool) -> Markup {
                                             summary.seg { "Full access" }
                                             div.seg-confirm-body {
                                                 p { "This agent's own requests run without asking you. Other agents' apps, schedules and moves still ask. All of it is logged." }
-                                                button.primary.danger type="submit" name="access" value="full" { "Allow full access" }
+                                                button.(Btn::danger()) type="submit" name="access" value="full" { "Allow full access" }
                                             }
                                         }
                                     }
@@ -1961,7 +2097,7 @@ pub fn post_form(action: &str, target: &str, submit_label: &str, fields: Markup)
         form.stack method="post" action=(action) hx-post=(action) hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             (fields)
-            div { button.primary type="submit" { (submit_label) } }
+            div { button.(Btn::primary()) type="submit" { (submit_label) } }
         }
     }
 }
@@ -1977,7 +2113,7 @@ pub fn action_button(action: &str, target: &str, label: &str, confirm: &str) -> 
             form method="post" action=(action) hx-post=(action) hx-target={ "#" (target) }
                 hx-swap="outerHTML" {
                 (crate::components::csrf_field())
-                button.primary.danger type="submit" { "Yes, " (label.to_lowercase()) }
+                button.(Btn::danger()) type="submit" { "Yes, " (label.to_lowercase()) }
             }
         },
     )
@@ -2002,7 +2138,7 @@ pub struct DangerConfirm<'a> {
 pub fn danger_confirm(c: &DangerConfirm<'_>) -> Markup {
     html! {
         details.confirm-inline.danger-confirm open[c.error.is_some()] {
-            summary { (c.label) }
+            summary.(Btn::secondary()) { (c.label) }
             section.approval.destructive.confirm aria-label=(c.label) {
                 (facts(&[("Erased", html! { (c.erased) }), ("Kept", html! { (c.kept) })]))
                 form.stack method="post" action=(c.action) hx-post=(c.action)
@@ -2015,7 +2151,7 @@ pub fn danger_confirm(c: &DangerConfirm<'_>) -> Markup {
                             aria-invalid=[c.error.map(|_| "true")];
                     }
                     @if let Some(e) = c.error { (notice(e, Tone::Error)) }
-                    div { button.primary.danger type="submit" { (c.label) } }
+                    div { button.(Btn::danger()) type="submit" { (c.label) } }
                 }
             }
         }
@@ -2041,7 +2177,7 @@ pub fn away_card(title: &str, text: &str, poll: &str, link_to: (&str, &str)) -> 
 fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Markup {
     html! {
         details.confirm-inline.link[link] {
-            summary { (label) }
+            summary.(if link { Btn::link() } else { Btn::secondary() }) { (label) }
             div.confirm-inline-body {
                 span { (question) }
                 (form)
@@ -2081,7 +2217,7 @@ pub fn settings_head(
                 hx-target={ "#" (target) } hx-swap="outerHTML" {
                 (crate::components::csrf_field())
                 span { (checked) }
-                button.link type="submit" { (action) }
+                button.(Btn::link()) type="submit" { (action) }
             }
         }
     }
@@ -2122,8 +2258,8 @@ pub mod people;
 pub use people::csrf_field;
 mod provider_add;
 pub use provider_add::{
-    add_panel, link_button, provider_tiles, registry_list, search_box, stepper, ProviderTile,
-    RegistryAction, RegistryRow, TileLink,
+    add_panel, provider_tiles, registry_list, search_box, stepper, ProviderTile, RegistryAction,
+    RegistryRow, TileLink,
 };
 mod onboarding;
 pub use onboarding::{
@@ -2182,7 +2318,7 @@ pub fn toggle(t: &Toggle<'_>) -> Markup {
                     disabled[t.locked.is_some()];
                 span.visually-hidden { (t.label) }
             }
-            button.toggle-save.secondary type="submit" disabled[t.locked.is_some()] { "Save" }
+            button.toggle-save.(Btn::secondary().sm()) type="submit" disabled[t.locked.is_some()] { "Save" }
         }
     }
 }
@@ -2294,7 +2430,7 @@ pub fn settings_form(action: &str, target: &str, submit: &str, fields: Markup) -
             hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             (fields)
-            div { button.secondary type="submit" { (submit) } }
+            div { button.(Btn::secondary()) type="submit" { (submit) } }
         }
     }
 }
@@ -2327,7 +2463,7 @@ pub fn var_list(rows: &[VarRow<'_>], target: &str, empty: &str) -> Markup {
                                     hx-target={ "#" (target) } hx-swap="outerHTML" {
                                     (crate::components::csrf_field())
                                     input type="hidden" name="name" value=(r.name);
-                                    button.primary.danger type="submit" {
+                                    button.(Btn::danger()) type="submit" {
                                         "Yes, remove" span.visually-hidden { " " (r.name) }
                                     }
                                 }
@@ -2345,7 +2481,7 @@ pub fn command_block(cmd: &str) -> Markup {
     html! {
         div.md-code.command {
             pre tabindex="0" { code { (cmd) } }
-            button.copy-code.secondary type="button" aria-label="Copy command" { "Copy" }
+            button.copy-code.(Btn::secondary().sm()) type="button" aria-label="Copy command" { "Copy" }
         }
     }
 }
@@ -2371,9 +2507,9 @@ pub fn confirm_card(c: &ConfirmCard<'_>) -> Markup {
                     hx-target={ "#" (c.target) } hx-swap="outerHTML" {
                     (crate::components::csrf_field())
                     input type="hidden" name="confirm" value="yes";
-                    button.primary.danger type="submit" { (c.confirm) }
+                    button.(Btn::danger()) type="submit" { (c.confirm) }
                 }
-                a.button-like href=(c.cancel_href) { "Keep as is" }
+                a.(Btn::secondary()) href=(c.cancel_href) { "Keep as is" }
             }
         }
     }
@@ -2396,7 +2532,7 @@ pub fn plain_action(action: &str, target: &str, label: &str, primary: bool) -> M
         form.inline method="post" action=(action) hx-post=(action)
             hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
-            button class=(if primary { "primary" } else { "secondary" }) type="submit" { (label) }
+            button.(if primary { Btn::primary() } else { Btn::secondary() }) type="submit" { (label) }
         }
     }
 }
@@ -2430,7 +2566,7 @@ pub fn external_button(href: &str, label: &str) -> Markup {
         return html! { span { (label) } };
     }
     html! {
-        a.button-like.primary href=(href) target="_blank" rel="noopener noreferrer" { (label) }
+        a.(Btn::primary()) href=(href) target="_blank" rel="noopener noreferrer" { (label) }
     }
 }
 
@@ -2442,7 +2578,7 @@ pub fn one_field_form(action: &str, target: &str, submit: &str, field: Markup) -
             hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             (field)
-            button.primary type="submit" { (submit) }
+            button.(Btn::primary()) type="submit" { (submit) }
         }
     }
 }
@@ -2456,7 +2592,7 @@ mod tests {
         let out = action_button("/x/remove", "t", "Remove", "Remove <this>?").into_string();
         assert!(!out.contains("hx-confirm"), "no browser dialogs: {out}");
         assert!(out.contains("<details class=\"confirm-inline\">"));
-        assert!(out.contains("<summary>Remove</summary>"));
+        assert!(out.contains("<summary class=\"btn btn-secondary\">Remove</summary>"));
         assert!(out.contains("Remove &lt;this&gt;?"));
         assert!(out.contains("hx-post=\"/x/remove\""));
         assert!(out.contains(">Yes, remove</button>"));
@@ -2738,17 +2874,18 @@ mod tests {
         assert!(pending.contains("Remove &lt;Nextcloud&gt;?"));
         assert!(!pending.contains("Can't be undone"));
         assert!(!pending.contains("danger"));
+        assert!(pending.contains("class=\"btn btn-primary\""));
         // The tag line, the quiet third action and the waiting note (owner design).
         assert!(pending.contains("<span class=\"tag-kind\">Network access</span>"));
         assert!(pending.contains("<span class=\"tag-detail\">TCP 25565</span>"));
-        assert!(pending.contains("button class=\"ghost\""));
+        assert!(pending.contains("button class=\"btn btn-ghost\""));
         assert!(pending.contains("Waiting for your decision"));
         assert!(pending.contains(">Decline<"));
 
         let destructive = card_for(ApprovalState::Pending, true, true);
         assert!(destructive.contains("approval destructive"));
         assert!(destructive.contains("Can't be undone."));
-        assert!(destructive.contains("primary danger"));
+        assert!(destructive.contains("btn btn-danger"));
 
         for (state, text) in [
             (ApprovalState::Approved, "You allowed this."),

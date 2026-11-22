@@ -14,7 +14,7 @@ use super::{
     activity_icon, approval_state_outcome, markdown,
     mobile::{back_link, menu_cancel, menu_head, new_agent_round, MenuWho},
     panel::{glyph, section_bar, Glyph, UpdateHint},
-    ActivityState, ApprovalState, Health, Nav,
+    ActivityState, ApprovalState, Btn, Health, Nav,
 };
 
 // --- Icons --------------------------------------------------------------------------------------
@@ -156,7 +156,7 @@ fn menu_link(href: &str, icon: Glyph, label: &str, danger: bool) -> Markup {
 /// [`agent_menu_items`], so another container (a sheet on phones) can show the same.
 pub fn agent_menu(id: &str, m: &AgentMenu<'_>) -> Markup {
     html! {
-        button.icon-button.more-button type="button" popovertarget=(id) aria-haspopup="true"
+        button.more-button.(Btn::ghost().icon()) type="button" popovertarget=(id) aria-haspopup="true"
             title={ "More for " (m.name) } {
             (glyph(Glyph::More))
             span.visually-hidden { "More for " (m.name) }
@@ -194,7 +194,7 @@ pub fn agent_menu_items(m: &AgentMenu<'_>) -> Markup {
                     p { "Clear " (m.name) "'s memory? Its next message starts without the earlier conversation. The chat stays." }
                     form method="post" action=(m.fresh) {
                         (crate::components::csrf_field())
-                        button.primary type="submit" { "Clear memory" }
+                        button.(Btn::primary()) type="submit" { "Clear memory" }
                     }
                 }
             }
@@ -301,12 +301,12 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
     html! {
         nav.sidebar id=(SIDEBAR_ID) aria-label="Agents" {
             div.side-head {
-                button.icon-button.side-collapse type="button" data-sidebar-collapse data-script-only
+                button.side-collapse.(Btn::ghost().icon()) type="button" data-sidebar-collapse data-script-only
                     title="Collapse sidebar" {
                     (glyph(Glyph::Sidebar))
                     span.visually-hidden { "Collapse sidebar" }
                 }
-                button.device-button type="button" popovertarget="device-menu" aria-haspopup="true"
+                button.device-button.(Btn::ghost()) type="button" popovertarget="device-menu" aria-haspopup="true"
                     title="Devices" {
                     svg.mark viewBox="0 0 24 24" aria-hidden="true" focusable="false" {
                         polygon points="12,1.5 21.1,6.75 21.1,17.25 12,22.5 2.9,17.25 2.9,6.75" {}
@@ -339,7 +339,7 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
                 (glyph(Glyph::Search))
                 input #agent-search type="search" placeholder="Search agents" autocomplete="off"
                     spellcheck="false" data-agent-search aria-controls=(AGENT_GROUPS_ID);
-                a.icon-button.side-new href=(s.new_agent) title="New helper" {
+                a.side-new.(Btn::ghost().icon()) href=(s.new_agent) title="New helper" {
                     (glyph(Glyph::Plus))
                     span.visually-hidden { "New helper" }
                 }
@@ -487,7 +487,7 @@ pub fn chat_head(h: &ChatHead<'_>, details: Markup) -> Markup {
     html! {
         header.chat-head {
             (back_link("/", "Back to agents"))
-            button.icon-button.side-expand type="button" data-sidebar-expand
+            button.side-expand.(Btn::ghost().icon()) type="button" data-sidebar-expand
                 hidden[!crate::looks::current().sidebar_collapsed] title="Show agents" {
                 (glyph(Glyph::Sidebar))
                 span.visually-hidden { "Show agents" }
@@ -683,10 +683,10 @@ pub fn setup_password_card(c: &SetupPasswordCard<'_>) -> Markup {
                         dd {
                             @if let SetupPasswordState::Shown { password } = state {
                                 code.secret-value { (password) }
-                                button.link type="button" hx-get=(c.url)
+                                button.(Btn::link()) type="button" hx-get=(c.url)
                                     hx-target="closest .setup-password" { "Hide" }
                             } @else {
-                                button.secret type="button" hx-post=(reveal)
+                                button.secret.(Btn::ghost().sm()) type="button" hx-post=(reveal)
                                     hx-target="closest .setup-password" hx-disabled-elt="this"
                                     aria-label="Show password" { "••••••••" }
                             }
@@ -698,18 +698,18 @@ pub fn setup_password_card(c: &SetupPasswordCard<'_>) -> Markup {
                     p.sheet-msg.tone-error role="status" { "Couldn't reach the app. Try again." }
                 }
                 div.actions {
-                    button.secondary.copy-secret type="button" data-copy-url=(reveal) { "Copy" }
+                    button.copy-secret.(Btn::secondary().sm()) type="button" data-copy-url=(reveal) { "Copy" }
                     @if state == (SetupPasswordState::Hidden { confirm: true }) {
                         span.forget-question { "Forget it?" }
                         form method="post" action=(dismiss) hx-post=(dismiss)
                             hx-target="closest .setup-password" {
                             (crate::components::csrf_field())
-                            button.primary.danger type="submit" { "Yes" }
+                            button.(Btn::danger()) type="submit" { "Yes" }
                         }
-                        button.secondary type="button" hx-get=(c.url)
+                        button.(Btn::secondary()) type="button" hx-get=(c.url)
                             hx-target="closest .setup-password" autofocus { "No" }
                     } @else {
-                        button.secondary type="button" hx-get=(confirm)
+                        button.(Btn::secondary()) type="button" hx-get=(confirm)
                             hx-target="closest .setup-password" { "Dismiss" }
                     }
                 }
@@ -775,20 +775,20 @@ pub fn permission_card(c: &PermissionCard<'_>) -> Markup {
                     form method="post" action=(action("approve")) hx-post=(action("approve"))
                         hx-target=(target) hx-swap="innerHTML" {
                         (crate::components::csrf_field())
-                        button.primary.danger[c.destructive] type="submit" {
+                        button.(if c.destructive { Btn::danger() } else { Btn::primary() }) type="submit" {
                             (glyph(Glyph::Check)) span { (c.yes) }
                         }
                     }
                     form method="post" action=(action("deny")) hx-post=(action("deny"))
                         hx-target=(target) hx-swap="innerHTML" {
                         (crate::components::csrf_field())
-                        button.secondary type="submit" { (c.no) }
+                        button.(Btn::secondary()) type="submit" { (c.no) }
                     }
                     @if let Some(question) = c.always {
                         form method="post" action=(action("always")) hx-post=(action("always"))
                             hx-target=(target) hx-swap="innerHTML" {
                             (crate::components::csrf_field())
-                            button.ghost type="submit" title=(question) { "Always allow" }
+                            button.(Btn::ghost()) type="submit" title=(question) { "Always allow" }
                         }
                     }
                     span.waiting { "Waiting for your decision" }
