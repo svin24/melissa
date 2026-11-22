@@ -1323,3 +1323,7 @@ Roadmap (rough, phases may overlap):
     them like the chat. (e) Each page or older-page request clones and folds the whole in-memory log (52ms /
     32ms in a debug build for a 2100-event chat); a folded feed cached per conversation by its last event would
     make that one render.
+93. An About section in the app (owner, 2026-11-22; later). Version, links (the repo, issues, license and
+    credits) and a sponsor link to https://github.com/sponsors/svin24: a plain link with Melissa's own image
+    or icon, bundled in the binary, not GitHub's button or a shields.io badge (no remote images; the UI
+    works offline). Where it lives (a Settings section, or the device menu) is for the owner's design.
