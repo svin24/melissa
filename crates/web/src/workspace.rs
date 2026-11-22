@@ -456,15 +456,17 @@ impl Ui {
 
     /// The last notable things in `owner`'s conversation and file box, newest first: what it
     /// did (tool calls that finished), what it asked for, what the owner decided, files
-    /// added, helpers and jobs (Melissa's).
+    /// added, helpers and jobs (Melissa's). `may_see`: whether the person looking may see an
+    /// app (by its name); lines about other apps are left out.
     pub(crate) fn recent_activity(
         &self,
         owner: &Principal,
         log: &EventLog,
         clock: &Clock,
+        may_see: &dyn Fn(&str) -> bool,
     ) -> Vec<ActivityLine> {
         let page = log.since(0, EventLog::CAPACITY);
-        let mut lines: Vec<(u64, String, bool)> = activity_from(&page.events, self);
+        let mut lines: Vec<(u64, String, bool)> = activity_from(&page.events, self, may_see);
         for f in self.lead.files().list(owner) {
             lines.push((f.added, format!("Added {}", shorten(&f.name, 40)), false));
         }
@@ -485,14 +487,39 @@ impl Ui {
 /// Lines in the recent activity section.
 const RECENT_LINES: usize = 6;
 
+/// Tools whose outcome has an event of its own in the log (and its own activity line).
+const OWN_LINES: [&str; 2] = ["reassign_workspace", "delete_agent"];
+
 /// The notable events of a conversation as (time, words, attention).
-pub(crate) fn activity_from(events: &[EventRecord], look: &dyn Lookup) -> Vec<(u64, String, bool)> {
+pub(crate) fn activity_from(
+    events: &[EventRecord],
+    look: &dyn Lookup,
+    may_see: &dyn Fn(&str) -> bool,
+) -> Vec<(u64, String, bool)> {
     let mut out = Vec::new();
     for r in events {
         let line = match &r.event {
-            LeadEvent::ToolCall { title, status, .. } if status == "done" => {
+            // Handing an app over and deleting a helper have their own lines (below), which
+            // say who and what.
+            LeadEvent::ToolCall { title, status, .. }
+                if status == "done" && !OWN_LINES.iter().any(|t| title.contains(t)) =>
+            {
                 let w = tool_words(title);
                 (!w.hidden && !w.unknown).then(|| (w.done.to_string(), false))
+            }
+            LeadEvent::WorkspaceReassigned { workspace, .. } if !may_see(workspace) => None,
+            LeadEvent::WorkspaceReassigned { workspace, to, .. } => {
+                let who = look.agent_name(to).unwrap_or_else(|| to.clone());
+                Some((
+                    format!(
+                        "{who} looks after {} now",
+                        crate::feed::display_app(workspace)
+                    ),
+                    false,
+                ))
+            }
+            LeadEvent::AgentDeleted { name, .. } => {
+                Some((format!("Deleted helper: {name}"), false))
             }
             LeadEvent::ConfirmationNeeded {
                 id, tool, reason, ..

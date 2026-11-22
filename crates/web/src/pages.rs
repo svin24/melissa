@@ -9,19 +9,23 @@ use crate::{
     app_list::{filter_people, groups, kind_words, person_words, shown, visible, AppsCx, Show},
     components::{
         action_button, activity_row, agent_message, app_list, app_page, badge, card, chat_divider,
-        composer, composer_status, crumbs, device_card, empty_state, facts, feed, feed_entry, link,
-        live_region, log_view, main_part, markdown, note, oob_inner, page, page_header,
-        permission_card, plain_text, post_form, relayed_message, scheduled_message, section,
-        select_field, steps_card, table, textarea_field, truncated, user_message_with, AppGroup,
-        AppList, AppRow, AppsEmpty, Avatar, Choice, DeviceCard, Health, LogLine, MessageHead,
-        Meter, Nav, PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
-        FEED_ID,
+        composer, composer_notice, composer_status, crumbs, device_card, empty_state, facts, feed,
+        feed_entry, link, live_region, log_view, main_part, markdown, note, oob_inner, page,
+        page_header, permission_card, plain_text, post_form, relayed_message, scheduled_message,
+        section, select_field, steps_card, table, textarea_field, truncated, user_message_with,
+        AppGroup, AppList, AppRow, AppsEmpty, Avatar, Choice, DeviceCard, Health, LogLine,
+        MessageHead, Meter, Nav, PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID,
+        COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
         chat_head, composer_closed, details_panel, details_toggle, feed_archive, file_count,
         file_panel_inner, model_chip, model_picker, panel, setting_card, status_pill, usage_table,
         ChatHead, ComposerTarget, DetailsPanel, FilePanel, HeadStatus, ModelPicker, SentFile,
         UpdateHint, UsageRow, CHAT_STATUS_ID, FILE_BODY_ID, MODEL_CHIP_ID,
+    },
+    components::{
+        chat_who_update, composer_caption, composer_prefs, model_picker_oob, this_device_update,
+        COMPOSER_CAPTION_ID, COMPOSER_NOTICE_ID,
     },
     components::{notice_link, setup_checklist, suggestion_chips, ChecklistItem, Suggestion},
     components::{phone_view, queued_messages, PhoneView, QueuedView, SheetWho, QUEUE_ID},
@@ -722,6 +726,7 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
                         empty,
                         Some(queue(v.feed, v.who)),
                     ))
+                    (provider_notice(v.no_provider, v.owner))
                     (composer_box(v))
                     @if let Some(p) = v.picker { (model_picker(p)) }
                 }
@@ -749,39 +754,136 @@ pub fn queue(feed: &Feed, who: Who<'_>) -> Markup {
     queued_messages(&items)
 }
 
-/// The composer (also the response to sending a message).
+/// The line under the composer on phones while device changes need the user's OK.
+const PERMISSION_CAPTION: &str = "Device changes require your permission.";
+
+/// What the slot above the composer says: that no provider is ready (`no_provider`; the
+/// owner gets a link to connect one), or nothing.
+pub fn provider_notice(no_provider: bool, owner: bool) -> Markup {
+    composer_notice(provider_notice_inner(no_provider, owner))
+}
+
+fn provider_notice_inner(no_provider: bool, owner: bool) -> Option<Markup> {
+    no_provider.then(|| {
+        notice_link(
+            "No provider is ready yet.",
+            owner.then_some((crate::settings::setup::PROVIDER_URL, "Connect a provider")),
+            Tone::Warn,
+        )
+    })
+}
+
+/// What a chat page shows from the settings and the agent's profile besides the
+/// conversation. The stream keeps the one it last sent and sends what changed
+/// ([`look_update`]), so a save in Settings shows at once on the page behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatLook {
+    /// The agent's thinking and step times show (Settings → Developer). The feed is folded
+    /// with it, so a change re-renders the feed.
+    pub steps: bool,
+    /// The agent's name and icon (shape, colour; None: Melissa's), on its messages and in the
+    /// header.
+    pub name: String,
+    pub icon: Option<(String, String)>,
+    /// This device's name.
+    pub device: String,
+    /// Enter steers while the agent works (else it queues).
+    pub enter_steers: bool,
+    /// Where the mic sends recordings (voice input on and ready).
+    pub voice: Option<&'static str>,
+    /// The line under the composer (device changes need the user's OK).
+    pub caption: bool,
+    /// No provider is ready (the notice above the composer).
+    pub no_provider: bool,
+    /// The viewer is the owner (the notice's link).
+    pub owner: bool,
+    /// The model picker (None: the chat has none).
+    pub picker: Option<ModelPicker>,
+}
+
+impl ChatLook {
+    pub fn avatar(&self) -> Avatar<'_> {
+        match &self.icon {
+            None => Avatar::Melissa,
+            Some((shape, color)) => Avatar::Agent { shape, color },
+        }
+    }
+
+    /// The feed shows this differently than `old` did (it needs rendering again).
+    pub fn feed_changed(&self, old: &Self) -> bool {
+        self.steps != old.steps || self.name != old.name || self.icon != old.icon
+    }
+}
+
+/// Out-of-band updates for what changed from `old` to `new` on a chat page (`view`): the
+/// header's icon and title, this device's name in the sidebar, the composer's settings, the
+/// line under it, the notice above it and the model picker.
+/// The feed itself is the caller's ([`ChatLook::feed_changed`]). Empty if nothing changed.
+pub fn look_update(old: &ChatLook, new: &ChatLook, view: View) -> Markup {
+    let chat = view == View::Chat;
+    let who = old.name != new.name || old.icon != new.icon || old.device != new.device;
+    html! {
+        @if old.device != new.device { (this_device_update(&new.device)) }
+        @if chat {
+            @if who { (chat_who_update(&new.avatar(), &new.device, &new.name)) }
+            @if old.enter_steers != new.enter_steers || old.voice != new.voice {
+                (composer_prefs(new.enter_steers, new.voice, true))
+            }
+            @if old.caption != new.caption {
+                (oob_inner(COMPOSER_CAPTION_ID, html! {
+                    @if new.caption { (composer_caption(PERMISSION_CAPTION)) }
+                }))
+            }
+            @if old.no_provider != new.no_provider || old.owner != new.owner {
+                (oob_inner(COMPOSER_NOTICE_ID, html! {
+                    @if let Some(n) = provider_notice_inner(new.no_provider, new.owner) { (n) }
+                }))
+            }
+            @if let (true, Some(p)) = (old.picker != new.picker, &new.picker) {
+                (model_picker_oob(p))
+                (oob_inner(MODEL_CHIP_ID, model_chip(p)))
+            }
+        }
+    }
+}
+
+/// A live update that renders the whole feed again (thinking shown or hidden, the agent
+/// renamed): the newest entries, like a fresh page. Nothing for an empty feed (its
+/// placeholder stays).
+pub fn feed_again(feed: &Feed, who: Who<'_>, epoch: u64, x: &EntryCtx<'_>) -> Markup {
+    if feed.entries().is_empty() {
+        return html! {};
+    }
+    oob_inner(
+        FEED_ID,
+        html! {
+            // Hidden (CSS) while there are entries; the placeholder only shows when empty.
+            li.feed-empty {}
+            (feed_page(feed, feed.entries().len(), who, epoch, false, x))
+        },
+    )
+}
+
+/// The composer (also the response to sending a message). The notice above it is
+/// [`provider_notice`], outside it so that response doesn't repeat it.
 pub fn composer_box(v: &ChatView<'_>) -> Markup {
     let (send, cancel) = (v.who.send_url(), v.who.cancel_url());
     let placeholder = format!("Message {}…", v.speaker.name);
     let draft_key = v.who.draft_key();
-    let not_ready = v.no_provider.then(|| {
-        notice_link(
-            "No provider is ready yet.",
-            v.owner
-                .then_some((crate::settings::setup::PROVIDER_URL, "Connect a provider")),
-            Tone::Warn,
-        )
-    });
-    let composer = composer(
+    composer(
         &ComposerTarget {
             send: &send,
             draft_key: &draft_key,
             enter_steers: v.enter_steers,
             placeholder: &placeholder,
             voice: v.voice,
-            caption: v
-                .caption
-                .then_some("Device changes require your permission."),
+            caption: v.caption.then_some(PERMISSION_CAPTION),
         },
         v.draft,
         v.error,
         v.picker.map(model_chip).unwrap_or_default(),
         composer_status(&cancel, v.busy, v.backend.filter(|_| v.picker.is_none())),
-    );
-    match not_ready {
-        Some(n) => html! { (n) (composer) },
-        None => composer,
-    }
+    )
 }
 
 /// An archived chat with Melissa: read-only, no composer.

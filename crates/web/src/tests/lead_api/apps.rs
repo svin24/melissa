@@ -13,6 +13,7 @@ struct Box3 {
     app: Router,
     owner: NewSession,
     member: NewSession,
+    lead: Lead,
 }
 
 /// A box with an owner (`ana`) and a member (`bob`), and three apps: Jellyfin installed for
@@ -35,13 +36,22 @@ fn box3() -> Box3 {
          "installed_for": member.view.person.id},
         {"app": "forgejo", "phase": "stopped", "kind": "developer"},
     ]});
+    let nodes = serde_json::json!({"nodes": [{"name": "device-1", "ready": true}]});
     let (board, mcp, lead) = lead_parts_with(
         None,
         false,
-        vec![Arc::new(Fixed("list_apps", list)) as Arc<dyn Tool>],
+        vec![
+            Arc::new(Fixed("list_apps", list)) as Arc<dyn Tool>,
+            Arc::new(Fixed("cluster_health", nodes)),
+        ],
     );
-    let app = router_with_settings(board, mcp, lead, Settings::detached(), auth);
-    Box3 { app, owner, member }
+    let app = router_with_settings(board, mcp, lead.clone(), Settings::detached(), auth);
+    Box3 {
+        app,
+        owner,
+        member,
+        lead,
+    }
 }
 
 fn as_(s: &NewSession, method: &str, uri: &str) -> axum::http::Request<Body> {
@@ -237,4 +247,91 @@ async fn without_k3s_the_list_says_it_isnt_set_up() {
     assert!(!body.contains("Couldn't") && !body.contains("tone-error"));
     let (_, v) = api(&app, &owner, "/api/apps").await;
     assert_eq!(v["k3s"], "not_set_up");
+}
+
+/// Melissa's chat stream for `s`, from where its page ends.
+async fn stream_as(b: &Box3, s: &NewSession) -> Body {
+    let (since, epoch) = (b.lead.events().last_seq(), b.lead.events().epoch());
+    let uri = format!("/ui/stream?since={since}&epoch={epoch}");
+    let res = b.app.clone().oneshot(as_(s, "GET", &uri)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res.into_body()
+}
+
+/// SSE frames from `body` until one matches `found` (each within 5 s), joined.
+async fn frames_until(body: &mut Body, found: impl Fn(&str) -> bool) -> String {
+    let mut all = String::new();
+    while !found(&all) {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
+            .await
+            .expect("an SSE frame within 5 s")
+            .expect("stream still open")
+            .unwrap();
+        all.push_str(std::str::from_utf8(&frame.into_data().unwrap()).unwrap());
+    }
+    all
+}
+
+/// The live details panel (merge of the Apps list with live settings, 2026-11-22): the chat's
+/// stream runs outside the request's sign-in scope, yet a member's updates still hold only
+/// their own apps. A device rename reaches both open panels and headers without a reload.
+#[tokio::test]
+async fn live_details_updates_keep_each_persons_apps() {
+    let b = box3();
+    let mut owner = stream_as(&b, &b.owner).await;
+    let mut member = stream_as(&b, &b.member).await;
+
+    let mut rename = as_(&b.owner, "POST", "/ui/settings/device-name");
+    *rename.body_mut() = Body::from("name=Den+box");
+    let (status, _, _) = send(&b.app, rename).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let services = |f: &str| {
+        f.find("innerHTML:#details-apps")
+            .is_some_and(|i| f[i..].contains("Den box"))
+    };
+    let frames = frames_until(&mut owner, services).await;
+    assert!(
+        frames.contains("Jellyfin") && frames.contains("Minecraft") && frames.contains("Forgejo"),
+        "{frames}"
+    );
+    let frames = frames_until(&mut member, services).await;
+    assert!(frames.contains("Minecraft"), "{frames}");
+    assert!(
+        !frames.contains("Jellyfin") && !frames.contains("Forgejo"),
+        "{frames}"
+    );
+
+    // Melissa hands both people's apps to a helper: the panel's recent activity names only
+    // the apps the person looking may see.
+    let ada = b
+        .lead
+        .agents()
+        .registry()
+        .create("Ada", "stuck", None, "the user")
+        .unwrap()
+        .id;
+    for app in ["jellyfin", "minecraft"] {
+        b.lead.events().push(LeadEvent::WorkspaceReassigned {
+            workspace: app.into(),
+            from: None,
+            to: ada.clone(),
+            by: "lead".into(),
+        });
+    }
+    let activity = |f: &str| -> Option<String> {
+        let i = f.rfind("innerHTML:#details-activity")?;
+        let rest = &f[i..];
+        Some(rest[..rest.find("</ul>").unwrap_or(rest.len())].to_string())
+    };
+    let done = |f: &str| activity(f).is_some_and(|a| a.contains("Ada looks after Minecraft now"));
+    let frames = frames_until(&mut owner, done).await;
+    assert!(
+        activity(&frames)
+            .unwrap()
+            .contains("Ada looks after Jellyfin now"),
+        "{frames}"
+    );
+    let frames = frames_until(&mut member, done).await;
+    assert!(!activity(&frames).unwrap().contains("Jellyfin"), "{frames}");
 }

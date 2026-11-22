@@ -341,6 +341,9 @@ struct Cached {
     snap: Option<Arc<ClusterSnapshot>>,
     at: Option<Instant>,
     refreshing: bool,
+    /// A [`ClusterCache::refresh_soon`] read runs; `again`: another was asked for meanwhile.
+    soon: bool,
+    again: bool,
 }
 
 /// The cached snapshot. Cheap to clone.
@@ -349,6 +352,8 @@ pub struct ClusterCache {
     mcp: McpServer,
     lead: Option<Lead>,
     cached: Arc<Mutex<Cached>>,
+    /// Counts new snapshots (see [`ClusterCache::changes`]).
+    changed: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl ClusterCache {
@@ -366,8 +371,41 @@ impl ClusterCache {
                 snap: None,
                 at: None,
                 refreshing: false,
+                soon: false,
+                again: false,
             })),
+            changed: Arc::new(tokio::sync::watch::Sender::new(0)),
         }
+    }
+
+    /// Wakes when a new snapshot is in (open chats then update their details panel).
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+
+    /// Read everything again in the background, now: Melissa or a helper just changed an app
+    /// or who looks after it. However many ask while a read runs, one more read follows it;
+    /// [`Self::changes`] wakes when it is in.
+    pub fn refresh_soon(&self) {
+        {
+            let mut c = lock(&self.cached);
+            if c.soon {
+                c.again = true;
+                return;
+            }
+            c.soon = true;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                me.refresh().await;
+                let mut c = lock(&me.cached);
+                if !std::mem::take(&mut c.again) {
+                    c.soon = false;
+                    break;
+                }
+            }
+        });
     }
 
     /// The newest snapshot. The first call waits for the tools; later calls return the
@@ -416,10 +454,13 @@ impl ClusterCache {
             ClusterSnapshot::from_tools(apps.as_ref(), cluster.as_ref(), agent.as_ref())
                 .with_keepers(keepers(&workspaces)),
         );
-        let mut c = lock(&self.cached);
-        c.snap = Some(snap.clone());
-        c.at = Some(Instant::now());
-        c.refreshing = false;
+        {
+            let mut c = lock(&self.cached);
+            c.snap = Some(snap.clone());
+            c.at = Some(Instant::now());
+            c.refreshing = false;
+        }
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
         snap
     }
 

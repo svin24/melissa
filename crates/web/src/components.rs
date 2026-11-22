@@ -724,14 +724,15 @@ pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
 // a column beside the chat (its collapse button hides it, remembered per browser). Narrow
 // screens with script: a sheet over the chat, opened with the Details button (Esc or the
 // collapse button shut it; focus moves in and back). Without script it is always shown: beside
-// the chat, or below it on narrow screens. Live: the stream swaps the file list and count; the
-// services poll like the app strip did.
+// the chat, or below it on narrow screens. Live: the chat's stream swaps the file list and
+// count, and the content of the services, permissions, activity and schedules sections when
+// they change (the services also poll, for app status from the cluster).
 
 /// DOM id of the details panel.
 pub const DETAILS_ID: &str = "details-panel";
-/// DOM id of the services section (it polls).
+/// DOM id of the services section (it polls; the stream replaces its content).
 pub const DETAILS_APPS_ID: &str = "details-apps";
-/// DOM id of the schedules section (on/off swaps it).
+/// DOM id of the schedules section (on/off swaps it; the stream replaces its content).
 pub const DETAILS_SCHEDULES_ID: &str = "details-schedules";
 /// DOM id of the permissions section (removing a rule swaps it; the stream replaces it).
 pub const DETAILS_PERMISSIONS_ID: &str = "details-permissions";
@@ -744,6 +745,7 @@ pub const FILE_BODY_ID: &str = "file-box-body";
 pub const FILE_COUNT_ID: &str = "file-count";
 
 /// One app in the details panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailApp {
     pub name: String,
     /// Its details page (`/cluster/apps/{app}`).
@@ -758,6 +760,7 @@ pub struct DetailApp {
 }
 
 /// This device in the services section.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailDevice {
     pub name: String,
     /// "Linux · This device".
@@ -779,6 +782,7 @@ pub struct DetailApps<'a> {
 }
 
 /// One schedule in the details panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailSchedule {
     pub name: String,
     /// "Every day at 03:00".
@@ -799,6 +803,7 @@ pub struct DetailSchedules<'a> {
 }
 
 /// An approval this agent waits for, in the Permissions section.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailWaiting {
     /// "Network access".
     pub kind: String,
@@ -809,6 +814,7 @@ pub struct DetailWaiting {
 }
 
 /// An "Always allow" rule of this agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailRule {
     /// "Update Minecraft".
     pub what: String,
@@ -824,6 +830,7 @@ pub struct DetailPermissions<'a> {
 }
 
 /// One line of recent activity.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityLine {
     pub text: String,
     /// "10:42" (today) or "18 Nov".
@@ -905,6 +912,15 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
 /// The services section's content (one card: the apps, then this device), polling for
 /// changes like the app strip.
 pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
+    html! {
+        div id=(DETAILS_APPS_ID) hx-get=(s.url) hx-trigger="every 15s" hx-swap="outerHTML" {
+            (detail_apps_inner(s))
+        }
+    }
+}
+
+/// What [`detail_apps`] holds (a live update replaces it: an app handed over, a helper gone).
+pub fn detail_apps_inner(s: &DetailApps<'_>) -> Markup {
     let mut groups: Vec<Option<&str>> = Vec::new();
     for a in s.apps {
         if !groups.contains(&a.keeper.as_deref()) {
@@ -912,7 +928,6 @@ pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
         }
     }
     html! {
-        div id=(DETAILS_APPS_ID) hx-get=(s.url) hx-trigger="every 15s" hx-swap="outerHTML" {
             div.services-card {
                 h3.services-head #details-apps-h {
                     span { "On-device services" }
@@ -960,15 +975,18 @@ pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
                     }
                 }
             }
-        }
     }
 }
 
 /// The permissions section's content (the response to removing a rule).
 pub fn detail_permissions(p: &DetailPermissions<'_>) -> Markup {
+    html! { div id=(DETAILS_PERMISSIONS_ID) { (detail_permissions_inner(p)) } }
+}
+
+/// What [`detail_permissions`] holds (a live update replaces it).
+pub fn detail_permissions_inner(p: &DetailPermissions<'_>) -> Markup {
     let target = format!("#{DETAILS_PERMISSIONS_ID}");
     html! {
-        div id=(DETAILS_PERMISSIONS_ID) {
             @if let Some((text, tone)) = p.flash { (notice(text, tone)) }
             @if p.waiting.is_empty() && p.rules.is_empty() {
                 p.quiet { "Nothing asked or allowed ahead." }
@@ -1006,14 +1024,17 @@ pub fn detail_permissions(p: &DetailPermissions<'_>) -> Markup {
                     }
                 }
             }
-        }
     }
 }
 
 /// The recent activity section's content.
 pub fn detail_activity(lines: &[ActivityLine]) -> Markup {
+    html! { div id=(DETAILS_ACTIVITY_ID) { (detail_activity_inner(lines)) } }
+}
+
+/// What [`detail_activity`] holds (a live update replaces it).
+pub fn detail_activity_inner(lines: &[ActivityLine]) -> Markup {
     html! {
-        div id=(DETAILS_ACTIVITY_ID) {
             @if lines.is_empty() {
                 p.quiet { "Nothing yet." }
             } @else {
@@ -1027,15 +1048,18 @@ pub fn detail_activity(lines: &[ActivityLine]) -> Markup {
                     }
                 }
             }
-        }
     }
 }
 
 /// The schedules section's content (the response to on/off).
 pub fn detail_schedules(s: &DetailSchedules<'_>) -> Markup {
+    html! { div id=(DETAILS_SCHEDULES_ID) { (detail_schedules_inner(s)) } }
+}
+
+/// What [`detail_schedules`] holds (a live update replaces it).
+pub fn detail_schedules_inner(s: &DetailSchedules<'_>) -> Markup {
     let target = format!("#{DETAILS_SCHEDULES_ID}");
     html! {
-        div id=(DETAILS_SCHEDULES_ID) {
             @if let Some((text, tone)) = s.flash { (notice(text, tone)) }
             @if !s.available {
                 p.quiet { "Schedules aren't running on this device." }
@@ -1062,7 +1086,6 @@ pub fn detail_schedules(s: &DetailSchedules<'_>) -> Markup {
                 }
             }
             a.detail-more href="/settings/schedules" { "All schedules" }
-        }
     }
 }
 
@@ -1415,8 +1438,7 @@ pub fn composer(
         form.composer id=(COMPOSER_ID) method="post" action=(to.send) hx-post=(to.send)
             data-draft=(to.draft_key)
             enctype="multipart/form-data" hx-encoding="multipart/form-data"
-            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML"
-            data-enter=(if to.enter_steers { "steer" } else { "queue" }) {
+            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             // While the agent works: `queue` or `steer` (melissa.js sets it for Enter and
             // double Enter); empty follows the owner's setting.
@@ -1450,18 +1472,7 @@ pub fn composer(
                     }
                     span.bar-gap {}
                     span id=(MODEL_CHIP_ID) { (chip) }
-                    @if let Some(url) = to.voice {
-                        // Voice input: melissa.js shows it (recording needs script), records,
-                        // sends the clip to `url` and puts the text in the box to edit; nothing
-                        // is sent by itself. Where the browser can't record (plain http on the
-                        // LAN) a click says why.
-                        button.voice #voice type="button" data-script-only data-url=(url) aria-pressed="false"
-                            title="Speak instead of typing" {
-                            (mic_icon())
-                            span.voice-time aria-hidden="true" {}
-                            span.visually-hidden.voice-label { "Speak instead of typing" }
-                        }
-                    }
+                    (composer_prefs(to.enter_steers, to.voice, false))
                     button.send type="submit" title="Send" {
                         svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" {} }
                         span.visually-hidden { "Send" }
@@ -1472,9 +1483,47 @@ pub fn composer(
             // turn's events. The response to a send can land after the turn already ended, so
             // `hx-preserve` keeps the status on the page instead of this (stale) copy.
             div.composer-status id=(COMPOSER_STATUS_ID) hx-preserve aria-live="polite" { (status) }
-            @if let Some(c) = to.caption { (composer_caption(c)) }
+            div id=(COMPOSER_CAPTION_ID) { @if let Some(c) = to.caption { (composer_caption(c)) } }
         }
     }
+}
+
+/// DOM id of the composer's settings: what Enter does while the agent works and the mic
+/// (a live update replaces it when they change in Settings).
+pub const COMPOSER_PREFS_ID: &str = "composer-prefs";
+/// DOM id of the slot for the line under the composer ([`composer_caption`]).
+pub const COMPOSER_CAPTION_ID: &str = "composer-caption";
+/// DOM id of the slot for the notice above the composer ([`composer_notice`]).
+pub const COMPOSER_NOTICE_ID: &str = "composer-notice";
+
+/// The composer's settings (in its bar, no box of its own): `data-enter` says what Enter does
+/// while the agent works (`steer` or `queue`; melissa.js reads it on each Enter), and the mic
+/// when voice input is on and ready (`voice`: where recordings go). `oob`: as an out-of-band
+/// replacement in a live update.
+pub fn composer_prefs(enter_steers: bool, voice: Option<&str>, oob: bool) -> Markup {
+    html! {
+        span id=(COMPOSER_PREFS_ID) data-enter=(if enter_steers { "steer" } else { "queue" })
+            hx-swap-oob=[oob.then_some("true")] {
+            @if let Some(url) = voice {
+                // Voice input: melissa.js shows it (recording needs script), records,
+                // sends the clip to `url` and puts the text in the box to edit; nothing
+                // is sent by itself. Where the browser can't record (plain http on the
+                // LAN) a click says why.
+                button.voice #voice type="button" data-script-only data-url=(url) aria-pressed="false"
+                    title="Speak instead of typing" {
+                    (mic_icon())
+                    span.voice-time aria-hidden="true" {}
+                    span.visually-hidden.voice-label { "Speak instead of typing" }
+                }
+            }
+        }
+    }
+}
+
+/// The slot above the composer for a notice about it (no provider ready), empty otherwise.
+/// A live update fills or empties it ([`oob_inner`]).
+pub fn composer_notice(notice: Option<Markup>) -> Markup {
+    html! { div id=(COMPOSER_NOTICE_ID) { @if let Some(n) = notice { (n) } } }
 }
 
 /// The line under the composer: a stop button (posting to `cancel`) while a turn runs, and
@@ -1498,6 +1547,7 @@ pub const MODEL_CHIP_ID: &str = "model-chip";
 pub const MODEL_PICKER_ID: &str = "model-picker";
 
 /// One model in the picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerModel {
     /// Form value (`choice`): `<backend>` or `<backend> <model>`.
     pub value: String,
@@ -1506,6 +1556,7 @@ pub struct PickerModel {
 }
 
 /// One backend (provider) in the picker: its mark on the rail and its models.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerBackend {
     /// The backend's name: the rail's filter key, never shown.
     pub name: String,
@@ -1516,6 +1567,7 @@ pub struct PickerBackend {
 }
 
 /// One reasoning level of the current model.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerLevel {
     /// Form value (`effort`); empty: the agent's default.
     pub value: String,
@@ -1525,6 +1577,7 @@ pub struct PickerLevel {
 
 /// The access level in the picker (shown only with the developer option "Full access per
 /// agent").
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerAccess {
     /// The agent is on Full access (else Ask).
     pub full: bool,
@@ -1538,6 +1591,7 @@ pub struct PickerAccess {
 /// Picking posts the picker's own form (`choice`, or `effort`/`fast` with the hidden
 /// `current`, or `access`) to `action`; a model option applies from the next turn. Built
 /// from the API's `BackendView`s in `agents.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPicker {
     pub action: String,
     /// What the chat runs on, for the chip: "Opus 5.5 · High".
@@ -1613,10 +1667,20 @@ fn check_icon() -> Markup {
 /// groups and each pick is a plain form post; melissa.js adds the rail filter, search,
 /// favorites, Ctrl+1..9 and "Show more".
 pub fn model_picker(p: &ModelPicker) -> Markup {
+    picker_markup(p, false)
+}
+
+/// [`model_picker`] as an out-of-band replacement in a live update (the providers or their
+/// models changed in Settings).
+pub fn model_picker_oob(p: &ModelPicker) -> Markup {
+    picker_markup(p, true)
+}
+
+fn picker_markup(p: &ModelPicker, oob: bool) -> Markup {
     let target = format!("#{MODEL_PICKER_ID}");
     html! {
         div.model-picker id=(MODEL_PICKER_ID) popover="auto" role="dialog" aria-label="Choose a model"
-            data-error[p.error.is_some()] {
+            hx-swap-oob=[oob.then_some("true")] data-error[p.error.is_some()] {
             form.picker method="post" action=(p.action) hx-post=(p.action) hx-target=(target)
                 hx-swap="outerHTML" {
                 (crate::components::csrf_field())
@@ -2036,11 +2100,11 @@ pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup
 
 mod agent;
 pub use agent::{
-    agent_groups, agent_menu, agent_menu_items, agent_message, avatar, chat_head, icon_picker,
-    permission_card, setup_password_card, shape, sidebar, status_pill, steps_card, AgentMenu,
-    Avatar, ChatHead, GroupKind, HeadStatus, MessageHead, PermissionCard, SetupPasswordCard,
-    SetupPasswordState, SideAgent, SideDevice, SideGroup, Sidebar, StepLine, AGENT_GROUPS_ID,
-    CHAT_STATUS_ID, SIDEBAR_ID,
+    agent_groups, agent_menu, agent_menu_items, agent_message, avatar, chat_head, chat_who_update,
+    icon_picker, permission_card, setup_password_card, shape, sidebar, status_pill, steps_card,
+    this_device_update, AgentMenu, Avatar, ChatHead, GroupKind, HeadStatus, MessageHead,
+    PermissionCard, SetupPasswordCard, SetupPasswordState, SideAgent, SideDevice, SideGroup,
+    Sidebar, StepLine, AGENT_GROUPS_ID, CHAT_STATUS_ID, SIDEBAR_ID,
 };
 mod apps;
 pub use apps::{

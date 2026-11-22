@@ -1602,3 +1602,11 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   index (a key would survive eviction); `content-visibility: auto` on entries made a relayout 1.3ms but clips
   focus rings at an entry's edge and needs scroll anchoring (not in Safari); archived chats (`/chats/<id>`)
   still render whole.
+- **2026-11-22 — Live updates show each person only what they may see; a device rename is live** (merging the
+  live settings and details panel with the Apps list by person). A chat's stream keeps running after its request
+  ended, outside the sign-in scope, so it captures who is looking when it opens and builds every live update of
+  the details panel for that person: a member's panel never gets an app that isn't theirs, the same rule as the
+  page, `/api/details` and the Apps list. The panel's device card now takes the owner's device name too, so a
+  rename in Settings → Updates reaches open chats at once: header, sidebar and details panel. Alternatives:
+  reading the person again on each update (there is no request then), sending live updates only to the owner
+  (members' panels would go stale).

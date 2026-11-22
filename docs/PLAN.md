@@ -1286,7 +1286,7 @@ Roadmap (rough, phases may overlap):
     "Home-assistant"); a spec field for a display name would fix it.
     tries live in memory: a restart clears lockouts. Since 2026-11-21 (Q88) the setup code is kept on disk
     (0600) until used or expired, so a restart keeps it.
-90. Provider plan usage (2026-11-22; DECISIONS "Provider plan usage"). (a) The panel itself (owner designs it;
+91. Provider plan usage (2026-11-22; DECISIONS "Provider plan usage"). (a) The panel itself (owner designs it;
     the data is at `GET /api/usage/providers`). (b) Verified only with fixtures and the CLIs' own schemas, not
     live with signed-in accounts (the owner's sign-ins must not be touched from a dev agent): check once each on a
     test box — Claude `get_usage` in a prompt-less session, Grok `_x.ai/billing` (exact answer shape over ACP
@@ -1298,7 +1298,7 @@ Roadmap (rough, phases may overlap):
     OpenCode Go's 5-hour/weekly lengths follow T3 Code (not sent by OpenCode). (e) Muse: nothing until `muse acp`
     reports usage. (f) Each Claude/Grok refresh starts a short sandboxed agent process (a few seconds; no
     prompt, no tokens); reuse an open idle session instead if that proves slow.
-90. Long chats (2026-11-22; DECISIONS "A chat opens at its end"). (a) A conversation keeps its newest 2000 events
+92. Long chats (2026-11-22; DECISIONS "A chat opens at its end"). (a) A conversation keeps its newest 2000 events
     in memory; in a long live session the oldest entries drop out of the chat, and the transcript only gives back
     the last 100 turns after a restart. Should the chat page older entries from the transcript on disk instead?
     (b) Older loads count by entry index (`before=<n>`); when events are dropped at the front the indices shift
