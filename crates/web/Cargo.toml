@@ -8,6 +8,7 @@ description = "Melissa web UI: axum + maud, fixed component library, embedded ht
 
 [dependencies]
 melissa-agent = { workspace = true }
+melissa-appspec = { workspace = true }
 melissa-auth = { workspace = true }
 melissa-settings = { workspace = true }
 melissa-voice = { workspace = true }
@@ -21,6 +22,10 @@ futures = { workspace = true }
 jiff = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[features]
+# The screenshot harness's fake app tools (src/fake_apps.rs). Never in normal builds.
+fake-apps = []
 
 [dev-dependencies]
 http-body-util = { workspace = true }

@@ -103,13 +103,24 @@ fn app_facts(a: &crate::state::App) -> Option<String> {
     }
 }
 
-/// The apps `owner` looks after (Melissa: every app, each with who looks after it).
-fn apps_of(snap: &ClusterSnapshot, owner: &Principal) -> Vec<DetailApp> {
+/// The apps `owner` looks after (Melissa: every app, each with who looks after it), of those
+/// the person looking may see (`cx`; None: all, to tell whether the agent has any).
+fn apps_of(
+    snap: &ClusterSnapshot,
+    owner: &Principal,
+    cx: Option<&crate::app_list::AppsCx>,
+) -> Vec<DetailApp> {
     let Apps::Known { installed, .. } = &snap.apps else {
         return Vec::new();
     };
     let mut apps: Vec<DetailApp> = installed
         .iter()
+        .filter(|a| {
+            cx.is_none_or(|cx| {
+                cx.looker
+                    .may_see(crate::app_list::person_of(a, &cx.owners).as_deref())
+            })
+        })
         .filter(|a| match owner {
             Principal::Lead => true,
             Principal::Agent(id) => {
@@ -120,7 +131,7 @@ fn apps_of(snap: &ClusterSnapshot, owner: &Principal) -> Vec<DetailApp> {
             let (health, words) = phase_words(&a.phase);
             DetailApp {
                 name: a.display_name(),
-                details: format!("/ui/apps/{}", a.name),
+                details: format!("/cluster/apps/{}", a.name),
                 health,
                 status: words.to_string(),
                 facts: app_facts(a),
@@ -289,7 +300,7 @@ impl Ui {
         let key = box_key(owner).unwrap_or_default();
         Ok(DetailsData {
             apps_url: format!("/ui/details/{key}/apps"),
-            apps: apps_of(&snap, owner),
+            apps: apps_of(&snap, owner, Some(&self.apps_cx(None))),
             apps_empty: apps_empty(&snap, owner),
             device: Some(device_of(&snap)),
             waiting,
@@ -343,7 +354,7 @@ async fn apps(State(ui): State<Ui>, Path(key): Path<String>) -> Response {
         return not_found();
     };
     let snap = ui.cluster.get().await;
-    let list = apps_of(&snap, &owner);
+    let list = apps_of(&snap, &owner, Some(&ui.apps_cx(None)));
     let url = format!("/ui/details/{}/apps", box_key(&owner).unwrap_or_default());
     let device = device_of(&snap);
     detail_apps(&DetailApps {
@@ -467,7 +478,7 @@ async fn api_details(State(ui): State<Ui>, Path(key): Path<String>) -> Response 
                 "status": a.status,
                 "created_by": a.created_by,
                 "created_at": a.created_at,
-                "can_delete": apps_of(&snap, &owner).is_empty(),
+                "can_delete": apps_of(&snap, &owner, None).is_empty(),
                 "runs_on": runs_on(&views, &a.backend),
                 "icon": a.icon,
                 "pinned": a.pinned,
@@ -483,9 +494,15 @@ async fn api_details(State(ui): State<Ui>, Path(key): Path<String>) -> Response 
             "pinned": true,
         }),
     };
+    let cx = ui.apps_cx(None);
     let apps: Vec<Value> = match &snap.apps {
         Apps::Known { installed, .. } => installed
             .iter()
+            // Only apps the person may see (a member: their own).
+            .filter(|a| {
+                cx.looker
+                    .may_see(crate::app_list::person_of(a, &cx.owners).as_deref())
+            })
             .filter_map(|a| {
                 let (agent, agent_name) = match &a.keeper {
                     Some(Keeper::Agent { id, name }) => (Some(id.clone()), Some(name.clone())),

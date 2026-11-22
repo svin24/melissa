@@ -491,14 +491,8 @@
     }
   });
 
-  // App details: a Details button loads the dialog's content; open it as a modal. The
-  // browser handles Escape, focus containment and returning focus to the button.
-  document.addEventListener("htmx:afterSwap", function (e) {
-    var dialog = e.detail && e.detail.target;
-    if (dialog && dialog.id === "app-dialog" && !dialog.open && dialog.showModal) {
-      dialog.showModal();
-    }
-    // Logs: show the newest lines first (the end of the tail).
+  // An app's logs: show the newest lines first (the end of the tail).
+  document.addEventListener("htmx:afterSwap", function () {
     var log = document.querySelector("#app-logs .log");
     if (log) {
       log.scrollTop = log.scrollHeight;
@@ -1771,7 +1765,8 @@
   // alone) and pushes its URL, so reload and Back work; closing goes back to where the page
   // was. A page that is a panel (a deep link, a reload) moves its panel into the modal; closing
   // it then goes to the chat. Without script every panel is a plain page.
-  var PANEL_PATHS = /^\/(settings(\/|$|\?)|tasks\/\d|cluster($|\?)|usage($|\?))/;
+  // `/cluster/apps/<app>`: an app's details, a page of the Apps panel (2026-11-22).
+  var PANEL_PATHS = /^\/(settings(\/|$|\?)|tasks\/\d|cluster($|\?|\/apps\/)|usage($|\?))/;
 
   function overlayParts() {
     var dialog = document.getElementById("overlay");

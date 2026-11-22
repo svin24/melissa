@@ -21,6 +21,8 @@ use melissa_agent::{
 };
 use serde_json::{json, Value};
 
+use melissa_appspec::{valid_person_id, AppKind};
+
 use crate::{components::Health, feed::display_app};
 
 /// One installed app.
@@ -41,6 +43,10 @@ pub struct App {
     /// Its first port on the device that is not the web link (a game server's TCP port):
     /// the port people use and `TCP`/`UDP`.
     pub other_port: Option<(u16, &'static str)>,
+    /// Its group in the app list (`games`; None: the spec names none).
+    pub kind: Option<AppKind>,
+    /// The person (account id) it was installed for (`melissa.io/installed-for`), if recorded.
+    pub installed_for: Option<String>,
 }
 
 /// Who looks after an app (workspace).
@@ -262,6 +268,11 @@ impl ClusterSnapshot {
                             url: a["url"].as_str().map(str::to_string),
                             port: a["port"].as_u64().and_then(|p| u16::try_from(p).ok()),
                             keeper: None,
+                            kind: a["kind"].as_str().and_then(AppKind::from_name),
+                            installed_for: a["installed_for"]
+                                .as_str()
+                                .filter(|p| valid_person_id(p))
+                                .map(str::to_string),
                             other_port: a["ports"]
                                 .as_array()
                                 .into_iter()
@@ -362,6 +373,11 @@ impl ClusterCache {
     /// The newest snapshot. The first call waits for the tools; later calls return the
     /// cached answer and refresh it in the background once it is stale.
     pub async fn get(&self) -> Arc<ClusterSnapshot> {
+        // The screenshot harness changes its fake apps while the server runs: read them fresh.
+        #[cfg(feature = "fake-apps")]
+        if crate::fake_apps::on() {
+            return self.refresh().await;
+        }
         let (snap, stale) = {
             let mut c = lock(&self.cached);
             let stale = c.at.is_none_or(|at| at.elapsed() > Self::TTL);
@@ -422,6 +438,10 @@ impl ClusterCache {
     }
 
     async fn call(&self, tool: &str) -> Option<Value> {
+        #[cfg(feature = "fake-apps")]
+        if let Some(v) = crate::fake_apps::answer(tool, &json!({})) {
+            return Some(v);
+        }
         // The UI only reads: no scope (reads only), unattended, read-only tools.
         let mut ctx = TaskContext {
             scope: Scope::Nothing,
@@ -483,6 +503,8 @@ mod tests {
             port: Some(30000),
             keeper: None,
             other_port: None,
+            kind: None,
+            installed_for: None,
         };
         for (host, link) in [
             (Some("192.0.2.15:8080"), "http://192.0.2.15:30000"),
@@ -547,6 +569,8 @@ mod tests {
             port: None,
             keeper: None,
             other_port: Some((30001, "TCP")),
+            kind: None,
+            installed_for: None,
         };
         for (host, address) in [
             (

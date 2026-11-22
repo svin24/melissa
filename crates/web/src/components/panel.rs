@@ -161,6 +161,11 @@ fn panel_close(what: &str) -> Markup {
     }
 }
 
+/// [`panel_close`] for panels with their own head (an app's details).
+pub(crate) fn panel_close_link(what: &str) -> Markup {
+    panel_close(what)
+}
+
 /// A panel with a title, a close control and its content (Apps, Usage and resources).
 pub fn panel(title: &str, content: Markup) -> Markup {
     html! {

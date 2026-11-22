@@ -6,10 +6,13 @@
 
 mod agents;
 mod api;
+mod app_list;
 mod apps;
 pub mod auth;
 pub mod components;
 mod details;
+#[cfg(feature = "fake-apps")]
+mod fake_apps;
 mod feed;
 mod files;
 mod logos;
@@ -576,6 +579,7 @@ mod tests {
 
         use super::*;
 
+        mod apps;
         mod auth;
         mod details;
         mod mobile;
@@ -725,6 +729,15 @@ mod tests {
             workspaces: Option<Arc<dyn melissa_agent::tools::WorkspaceStore>>,
             signed_out: bool,
         ) -> (TaskBoard, McpServer, Lead) {
+            lead_parts_with(workspaces, signed_out, Vec::new())
+        }
+
+        /// [`lead_parts`] with `own` tools in place of the cluster tools of the same names.
+        fn lead_parts_with(
+            workspaces: Option<Arc<dyn melissa_agent::tools::WorkspaceStore>>,
+            signed_out: bool,
+            own: Vec<Arc<dyn Tool>>,
+        ) -> (TaskBoard, McpServer, Lead) {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "melissa-web-lead-{}-{}",
@@ -740,7 +753,13 @@ mod tests {
             let pool = AgentPool::new(AgentLimits::default(), events.clone(), registry, workspaces);
             let mut tools: Vec<Arc<dyn Tool>> = pool.tools();
             tools.push(Arc::new(Touch));
-            tools.extend(cluster_tools());
+            let mine: Vec<&str> = own.iter().map(|t| t.spec().name).collect();
+            tools.extend(
+                cluster_tools()
+                    .into_iter()
+                    .filter(|t| !mine.contains(&t.spec().name)),
+            );
+            tools.extend(own);
             let mcp = McpServer::new(ToolRegistry::new(tools, None));
             let board = TaskBoard::with_tools(
                 vec![Arc::new(EchoBackend::new())],
@@ -2994,10 +3013,13 @@ mod tests {
             let (app, _) = app();
             let (status, _, body) = get_html(&app, "/cluster").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("class=\"hex h-ok\""));
-            assert!(body.contains("class=\"hex h-busy\""));
+            // The Apps list (2026-11-22): rows with status words, grouped by kind.
+            assert!(body.contains("<li class=\"app-row\">"), "{body}");
+            assert!(body.contains("class=\"app-status h-ok\""));
+            assert!(body.contains("class=\"app-status h-busy\""));
             assert!(body.contains("href=\"http://nextcloud.example.com\""));
             assert!(body.contains("Add an app"));
+            assert!(body.contains(">Other<"), "no kind: Other");
             // Devices and their resources are in Usage and resources (2026-11-20).
             assert!(!body.contains("Fedora Linux 45"));
             let (status, _, body) = get_html(&app, "/usage").await;
@@ -3017,6 +3039,7 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
             let (_, _, body) = get_html(&app, "/ui/cluster/apps").await;
             assert!(body.starts_with("<div id=\"cluster-apps\""));
+            assert!(body.contains("hx-get=\"/ui/cluster/apps?by=everyone\""));
         }
 
         fn panel_get(uri: &str) -> axum::http::Request<Body> {
@@ -3281,15 +3304,13 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn app_tiles_open_details_with_status_logs_and_actions() {
+        async fn app_rows_open_details_with_status_logs_and_actions() {
             let (app, _) = app();
             let (_, _, body) = get_html(&app, "/cluster").await;
-            assert!(
-                body.contains("<dialog class=\"sheet\" id=\"app-dialog\""),
-                "{body}"
-            );
-            assert!(body.contains("hx-get=\"/ui/apps/nextcloud\""));
+            // Details are a page of the Apps panel (melissa.js opens it in the modal).
+            assert!(body.contains("href=\"/cluster/apps/nextcloud\""), "{body}");
             assert!(body.contains("cluster-changed from:body"));
+            assert!(!body.contains("app-dialog"));
 
             let req = axum::http::Request::get("/ui/apps/nextcloud")
                 .header(header::HOST, "192.0.2.7:8080")
@@ -3298,23 +3319,65 @@ mod tests {
             let (status, _, body) = send(&app, req).await;
             assert_eq!(status, StatusCode::OK);
             assert!(
-                body.contains("<h2 id=\"app-dialog-h\">Nextcloud</h2>"),
+                body.starts_with("<div class=\"app-details\" id=\"app-details\">"),
                 "{body}"
             );
+            assert!(body.contains("<h2>Nextcloud</h2>"), "{body}");
             assert!(body.contains("Running"));
-            assert!(body.contains("<dd>Ada</dd>"));
+            assert!(body.contains("<dd><span>Ada</span></dd>"));
             assert!(body.contains("href=\"http://192.0.2.7:30000\""));
-            assert!(body.contains("<dd>1/1 ready</dd>"));
+            assert!(body.contains("192.0.2.7:30000 (HTTP)"));
+            assert!(body.contains("<span>1 of 1 running</span>"));
             assert!(body.contains("docker.io/library/nextcloud:34.0.6"));
             assert!(body.contains("hx-get=\"/ui/apps/nextcloud/logs\""));
             assert!(body.contains(">Stop</button>"));
-            assert!(body.contains("Deletes Nextcloud and all its data."));
-            assert!(body.contains("<form method=\"dialog\">"));
+            assert!(body.contains("Removes the app and its data now."));
+            assert!(body.contains("hx-post=\"/ui/apps/nextcloud/icon\""));
+            // The page: the Apps panel with a breadcrumb back to the list.
+            let (status, _, page) = get_html(&app, "/cluster/apps/nextcloud").await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(page
+                .contains("<div class=\"panel panel-plain\" data-panel data-title=\"Nextcloud\">"));
+            assert!(page.contains("<a href=\"/cluster\">Apps</a>"));
+            let (status, _, alone) = send(&app, panel_get("/cluster/apps/nextcloud")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                alone.starts_with("<div class=\"panel panel-plain\""),
+                "{alone}"
+            );
             // Bad names never reach a tool.
             assert_eq!(
                 get_html(&app, "/ui/apps/..%2Fx").await.0,
                 StatusCode::NOT_FOUND
             );
+            assert_eq!(
+                get_html(&app, "/cluster/apps/A").await.0,
+                StatusCode::NOT_FOUND
+            );
+        }
+
+        #[tokio::test]
+        async fn an_apps_icon_is_saved_and_shown() {
+            let (app, _) = app();
+            let (status, headers, body) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/icon", "shape=cube&color=lime"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(headers["hx-trigger"], "cluster-changed");
+            assert!(body.contains("id=\"app-icon-card\""));
+            assert!(body.contains("hx-swap-oob=\"outerHTML\""));
+            assert!(body.contains("value=\"cube\" checked"), "{body}");
+            let (_, _, list) = get_html(&app, "/ui/cluster/apps").await;
+            assert!(list.contains("avatar ic-lime av-sm"), "{list}");
+            // Unknown names: refused, nothing changes.
+            let (status, _, _) = send(
+                &app,
+                htmx_post("/ui/apps/nextcloud/icon", "shape=%3Csvg%3E&color=lime"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         }
 
         #[tokio::test]

@@ -467,8 +467,11 @@ async fn run_as(
         csrf,
         person: Some(viewer.person.clone()),
     };
+    let id = viewer.person.id.clone();
     req.extensions_mut().insert(viewer);
     let fut = melissa_agent::AUDIT_PERSON.scope(audit_name.to_string(), next.run(req));
+    // Whose message starts a turn, whose app an install is (`melissa.io/installed-for`).
+    let fut = melissa_agent::PERSON_ID.scope(id, fut);
     CURRENT.scope(current, fut).await
 }
 

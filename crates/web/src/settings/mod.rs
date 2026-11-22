@@ -258,6 +258,14 @@ impl Settings {
         self.inner.parts.prefs.get()
     }
 
+    /// Change and save the display preferences (an app's icon).
+    pub(crate) fn update_prefs(
+        &self,
+        change: impl FnOnce(&mut Prefs),
+    ) -> Result<Prefs, melissa_settings::SettingsError> {
+        self.inner.parts.prefs.update(change)
+    }
+
     /// First-run setup is on (see `setup.rs`).
     pub(crate) fn onboarding(&self) -> bool {
         self.inner.parts.onboarding

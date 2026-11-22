@@ -6,15 +6,15 @@ use maud::{html, Markup};
 use melissa_agent::{BackendInfo, Stream, TaskSnapshot, TaskStatus, MAX_PROMPT_BYTES};
 
 use crate::{
+    app_list::{filter_people, groups, kind_words, person_words, shown, visible, AppsCx, Show},
     components::{
-        action_button, activity_row, add_app_tile, agent_message, app_dialog, app_grid, app_page,
-        app_tile, badge, card, chat_divider, composer, composer_status, crumbs, device_card,
-        empty_state, facts, feed, feed_entry, link, live_region, live_region_on, log_view,
-        markdown, note, oob_inner, page, page_header, permission_card, plain_text, post_form,
-        relayed_message, scheduled_message, section, select_field, steps_card, table,
-        textarea_field, truncated, user_message_with, AppWorkspace, Avatar, Choice, DeviceCard,
-        Health, LogLine, MessageHead, Meter, Nav, PermissionCard, StepLine, Tone, APPROVALS_ID,
-        COMPOSER_STATUS_ID, FEED_ID,
+        action_button, activity_row, agent_message, app_list, app_page, badge, card, chat_divider,
+        composer, composer_status, crumbs, device_card, empty_state, facts, feed, feed_entry, link,
+        live_region, log_view, markdown, note, oob_inner, page, page_header, permission_card,
+        plain_text, post_form, relayed_message, scheduled_message, section, select_field,
+        steps_card, table, textarea_field, truncated, user_message_with, AppGroup, AppList, AppRow,
+        AppsEmpty, Avatar, Choice, DeviceCard, Health, LogLine, MessageHead, Meter, Nav,
+        PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
     },
     components::{
         chat_head, composer_closed, details_panel, details_toggle, feed_archive, file_count,
@@ -25,7 +25,7 @@ use crate::{
     components::{notice_link, setup_checklist, suggestion_chips, ChecklistItem, Suggestion},
     components::{phone_view, queued_messages, PhoneView, QueuedView, SheetWho, QUEUE_ID},
     feed::{Approval, Change, Clock, Entry, Feed, Item},
-    state::{phase_words, Apps, ClusterSnapshot, Device, Disk, Keeper},
+    state::{host_name_of, phase_words, short_host, App, Apps, ClusterSnapshot, Device, Disk},
     workspace::{groups_update, sidebar_markup, SideData},
 };
 use melissa_agent::{
@@ -688,7 +688,6 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
                     (details_panel(p, Some(&SheetWho { avatar: head.avatar, sub: &sheet_sub })))
                 }
             }
-            (app_dialog())
         },
     )
 }
@@ -885,76 +884,190 @@ fn device(d: &Device) -> Markup {
     })
 }
 
-/// The apps region of the cluster page (refreshes itself). App links use `host`, the address
-/// the visitor reached the UI at.
-pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
-    let content = match &snap.apps {
-        Apps::Unknown => html! {
-            (app_grid("Apps", add_app_tile("/?draft=Install%20")))
-            p.quiet { "Couldn't read the app list yet." }
-        },
-        Apps::Unreachable => html! {
-            (app_grid("Apps", add_app_tile("/?draft=Install%20")))
-            p.quiet { "The app platform isn't answering right now. Melissa keeps trying." }
-        },
-        Apps::NotSetUp => html! {
-            (app_grid("Apps", add_app_tile("/?draft=Install%20")))
-            p.quiet { "The app platform isn't set up on this device." }
-        },
-        Apps::Known { installed } => {
-            let names: Vec<String> = installed.iter().map(|a| a.display_name()).collect();
-            let details: Vec<String> = installed
-                .iter()
-                .map(|a| format!("/ui/apps/{}", a.name))
-                .collect();
-            let links: Vec<Option<String>> = installed.iter().map(|a| a.link(host)).collect();
-            // An app without a web link shows where to reach it instead (`host:port (TCP)`).
-            let keepers: Vec<Option<String>> = installed
-                .iter()
-                .map(|a| {
-                    a.address(host).or_else(|| match &a.keeper {
-                        Some(Keeper::Agent { name, .. }) => Some(format!("Looked after by {name}")),
-                        Some(Keeper::Owner) => Some("Looked after by you".to_string()),
-                        None => None,
-                    })
-                })
-                .collect();
-            html! {
-                (app_grid("Apps", html! {
-                    @for ((((a, name), keeper), link), details) in installed.iter().zip(&names).zip(&keepers).zip(&links).zip(&details) {
-                        @let (health, status) = phase_words(&a.phase);
-                        (app_tile(&AppWorkspace { name, health, status, detail: keeper.as_deref(), url: link.as_deref(), details: Some(details) }))
-                    }
-                    (add_app_tile("/?draft=Install%20"))
-                }))
-            }
+/// A row's texts: name, (address, link), whose it is, details URL.
+type RowTexts = (
+    String,
+    (Option<String>, Option<String>),
+    Option<String>,
+    String,
+);
+
+/// Where to reach an app in its row (`box:8096 (HTTP)`) and the link for a web app, at the
+/// address the visitor used (`host`).
+fn row_address(a: &App, host: Option<&str>) -> (Option<String>, Option<String>) {
+    let link = a
+        .link(host)
+        .filter(|l| l.starts_with("http://") || l.starts_with("https://"));
+    match link {
+        Some(link) => {
+            let text = match (host.and_then(host_name_of), a.port) {
+                (Some(h), Some(port)) => format!("{}:{port} (HTTP)", short_host(h)),
+                _ => {
+                    let bare = link
+                        .trim_start_matches("https://")
+                        .trim_start_matches("http://");
+                    format!("{} (HTTP)", bare.trim_end_matches('/'))
+                }
+            };
+            (Some(text), Some(link))
         }
+        None => (a.address(host), None),
+    }
+}
+
+/// The Apps list (refreshes itself): the apps `cx.looker` may see, grouped by kind; the owner
+/// can show one person's. App links use `host`, the address the visitor reached the UI at.
+pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>, cx: &AppsCx) -> Markup {
+    const ADD: &str = "/?draft=Install%20";
+    let url = if cx.looker.owner {
+        format!("/ui/cluster/apps?by={}", cx.show.key(&cx.looker))
+    } else {
+        "/ui/cluster/apps".to_string()
     };
-    // Also refreshed at once after a change from the app dialog (`cluster-changed`).
-    live_region_on(
-        "cluster-apps",
-        "/ui/cluster/apps",
-        15,
-        "cluster-changed",
-        content,
+    let empty_list = |title: Option<&'static str>, text: &'static str| {
+        app_list(&AppList {
+            filter: None,
+            count: 0,
+            add: ADD,
+            groups: &[],
+            empty: Some(AppsEmpty { title, text }),
+            url: &url,
+        })
+    };
+    let installed = match &snap.apps {
+        Apps::Unknown => return empty_list(None, "Couldn't read the app list yet."),
+        Apps::Unreachable => {
+            return empty_list(
+                None,
+                "The app platform isn't answering right now. Melissa keeps trying.",
+            )
+        }
+        Apps::NotSetUp => {
+            return empty_list(
+                Some("No apps yet"),
+                "The app platform isn't set up on this device.",
+            )
+        }
+        Apps::Known { installed } => installed,
+    };
+    let all = visible(installed, &cx.looker, &cx.owners, &cx.prefs);
+    if all.is_empty() {
+        return empty_list(
+            Some("No apps yet"),
+            "Ask Melissa to install one. It shows up here.",
+        );
+    }
+    // The owner gets a filter (and each row says whose it is) once some apps aren't theirs.
+    let others = if cx.looker.owner {
+        filter_people(&all, &cx.looker, &cx.names)
+    } else {
+        Vec::new()
+    };
+    let show = if others.is_empty() {
+        Show::Everyone
+    } else {
+        cx.show.clone()
+    };
+    let keys: Vec<(String, String)> = if others.is_empty() {
+        Vec::new()
+    } else {
+        [
+            (Show::Everyone, "Everyone".to_string()),
+            (Show::Person(cx.looker.id.clone()), "Me".to_string()),
+        ]
+        .into_iter()
+        .chain(others)
+        .map(|(s, label)| (s.key(&cx.looker), label))
+        .collect()
+    };
+    let current = show.key(&cx.looker);
+    let choices: Vec<ShowChoice<'_>> = keys
+        .iter()
+        .map(|(key, label)| ShowChoice {
+            label,
+            key,
+            current: *key == current,
+        })
+        .collect();
+    let rows = shown(&all, &show);
+    let count = rows.len();
+    let grouped = groups(rows);
+    let texts: Vec<Vec<RowTexts>> = grouped
+        .iter()
+        .map(|(_, apps)| {
+            apps.iter()
+                .map(|l| {
+                    let person = (!choices.is_empty()).then(|| match &l.person {
+                        Some(p) => person_words(p, &cx.names),
+                        None => "Unknown".to_string(),
+                    });
+                    (
+                        l.app.display_name(),
+                        row_address(l.app, host),
+                        person,
+                        format!("/cluster/apps/{}", l.app.name),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let app_groups: Vec<AppGroup<'_>> = grouped
+        .iter()
+        .zip(&texts)
+        .map(|((kind, apps), texts)| AppGroup {
+            title: kind_words(*kind),
+            rows: apps
+                .iter()
+                .zip(texts)
+                .map(|(l, (name, (address, link), person, details))| {
+                    let (health, status) = phase_words(&l.app.phase);
+                    AppRow {
+                        name,
+                        shape: &l.icon.shape,
+                        color: &l.icon.color,
+                        address: address.as_deref(),
+                        link: link.as_deref(),
+                        person: person.as_deref(),
+                        health,
+                        status,
+                        details,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    let empty = (count == 0).then_some(AppsEmpty {
+        title: None,
+        text: "No apps to show for this person.",
+    });
+    app_list(&AppList {
+        filter: (!choices.is_empty()).then_some(choices.as_slice()),
+        count,
+        add: ADD,
+        groups: &app_groups,
+        empty,
+        url: &url,
+    })
+}
+
+/// An app's details as a page of the Apps panel (`region`: [`crate::components::app_details_region`]).
+pub fn app_details_page(f: &Frame<'_>, name: &str, region: Markup) -> Markup {
+    panel_shell(
+        f,
+        name,
+        rail_for(Nav::Cluster, f, None),
+        crate::components::app_details_panel(name, region),
     )
 }
 
-/// Apps (the rail's hexagon): every app with its status and who looks after it. Devices and
-/// their resources are in Usage and resources.
-pub fn cluster(f: &Frame<'_>) -> Markup {
+/// Apps (the rail's hexagon): the apps this person may see, by kind. Devices and their
+/// resources are in Usage and resources.
+pub fn cluster(f: &Frame<'_>, cx: &AppsCx) -> Markup {
     panel_shell(
         f,
         "Apps",
         rail_for(Nav::Cluster, f, None),
-        panel(
-            "Apps",
-            html! {
-                p.lead { "What runs on your devices. Ask in the chat to change anything." }
-                (cluster_apps(f.snap, f.host))
-                (app_dialog())
-            },
-        ),
+        panel("Apps", cluster_apps(f.snap, f.host, cx)),
     )
 }
 
