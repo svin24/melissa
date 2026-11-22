@@ -473,6 +473,9 @@ button.link {
 
 main {
   min-width: 0;
+  /* Scrollbars in the theme's colours (the default track is light in dark mode). */
+  scrollbar-width: thin;
+  scrollbar-color: var(--idle) transparent;
 }
 
 /* Wider than a phone, the page is the viewport (2026-11-20): the banner takes its own height,
@@ -613,6 +616,8 @@ main:focus,
   padding: 0.25rem 0.5rem 0.75rem;
   display: flex;
   flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: var(--idle) transparent;
 }
 
 .agent-groups {
@@ -1811,13 +1816,15 @@ svg.glyph {
   border-color: currentColor;
 }
 
-.activity,
 .note {
   margin-left: 28px;
   font-size: 0.9rem;
+  color: var(--muted);
 }
 
 .activity {
+  margin-left: 28px;
+  font-size: 0.9rem;
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
@@ -1883,10 +1890,6 @@ svg.icon.stopped {
     border-style: dotted;
     border-color: var(--honey);
   }
-}
-
-.note {
-  color: var(--muted);
 }
 
 .note.caution > span:first-child {
@@ -3398,6 +3401,11 @@ form.inline {
   min-height: 44px;
 }
 
+.field textarea {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+}
+
 /* A task's error or "cut off" note under its facts. */
 .card > .facts + .notice {
   margin: 0.9rem 0 0;
@@ -3436,10 +3444,10 @@ form.inline {
 }
 
 .panel-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   flex: none;
+  display: inline-grid;
+  place-items: center;
+  justify-content: center;
   width: 44px;
   height: 44px;
   border-radius: 10px;
@@ -3451,10 +3459,20 @@ form.inline {
   height: 18px;
 }
 
+/* Add provider's close: a plain svg, not a glyph. */
+.panel-close svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
 @media (hover: hover) {
   .panel-close:hover {
     color: var(--ink);
-    background: var(--surface);
+    background: var(--ground);
   }
 }
 
@@ -4104,11 +4122,6 @@ table.usage th[scope="row"] {
   width: 100%;
 }
 
-.field textarea {
-  font-family: var(--mono);
-  font-size: 0.9rem;
-}
-
 .field .hint {
   font-weight: 400;
   color: var(--muted);
@@ -4398,11 +4411,6 @@ ol.steps > li::marker {
 }
 
 @media (max-width: 760px) {
-  /* Short pages: keep the top bar compact instead of stretching the grid rows. */
-  .shell {
-    align-content: start;
-  }
-
   /* Settings on a phone: the sections are one row of tabs above the section. */
   .settings,
   .overlay .settings {
@@ -4450,11 +4458,13 @@ ol.steps > li::marker {
     padding: 1rem;
   }
 
+  /* The panels (Settings, Apps, Usage) fill the phone's screen; keep their bottom clear. */
   dialog.overlay {
     width: 100vw;
     height: 100dvh;
     border: 0;
     border-radius: 0;
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .setting-row {
@@ -4491,20 +4501,17 @@ ol.steps > li::marker {
 /* --- Phone width ------------------------------------------------------------------------- */
 
 @media (max-width: 760px) {
+  /* Short pages: keep the top bar compact instead of stretching the grid rows. */
   .shell {
     grid-template-columns: minmax(0, 1fr);
+    align-content: start;
   }
 
   .chat > .feed-wrap,
-  .chat > .composer,
   .page-pad,
   .wide {
     padding-left: 1rem;
     padding-right: 1rem;
-  }
-
-  .chat-head {
-    padding-left: 0.5rem;
   }
 
   .chat-device,
@@ -4518,11 +4525,6 @@ ol.steps > li::marker {
   .msg-relayed,
   .msg-agent > .body,
   .msg-steps > .steps-card {
-    margin-left: 0;
-  }
-
-  .approval .waiting {
-    flex-basis: 100%;
     margin-left: 0;
   }
 
@@ -4616,11 +4618,10 @@ dialog.sheet::backdrop {
   margin-left: auto;
 }
 
-.pill {
+/* The app's health beside its name (the pill itself is defined with the chat header). */
+.sheet-head .pill {
   font-size: 0.85rem;
-  font-weight: 600;
   padding: 0.1rem 0.6rem;
-  border-radius: 999px;
   background: var(--ground);
 }
 
@@ -4721,6 +4722,8 @@ dialog.sheet::backdrop {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: var(--idle) transparent;
 }
 
 .details-toggle:focus-visible,
@@ -4737,6 +4740,8 @@ dialog.sheet::backdrop {
   background: var(--surface);
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--idle) transparent;
 }
 
 .details:focus {
@@ -4773,15 +4778,6 @@ dialog.sheet::backdrop {
 
 .details .quiet {
   font-size: 0.85rem;
-}
-
-/* Scrollbars in the theme's colours (the default track is light in dark mode). */
-main,
-.chat-layout > .chat,
-.details,
-.side-main {
-  scrollbar-width: thin;
-  scrollbar-color: var(--idle) transparent;
 }
 
 .permission .review {
@@ -4879,8 +4875,7 @@ main,
 }
 
 .service-status .dot,
-.service-state .dot,
-.activity-line .dot {
+.service-state .dot {
   width: 6px;
   height: 6px;
 }
@@ -4948,6 +4943,8 @@ main,
 }
 
 .activity-line .dot {
+  width: 6px;
+  height: 6px;
   background: var(--ok);
 }
 
@@ -5413,25 +5410,6 @@ label.attach.upload {
   margin: 0;
 }
 
-.panel-close {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  color: var(--muted);
-}
-
-.panel-close svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-}
-
 .stepper {
   display: flex;
   flex-wrap: wrap;
@@ -5637,11 +5615,6 @@ label.attach.upload {
   button.ptile:hover {
     border-color: var(--action);
   }
-
-  .panel-close:hover {
-    background: var(--ground);
-    color: var(--ink);
-  }
 }
 
 /* A disclosure at the end of a setting card ("Details" under Updates). */
@@ -5735,8 +5708,7 @@ label.attach.upload {
     margin-left: auto;
   }
 
-  .round-button,
-  .chat-head > .more-button {
+  .round-button {
     border-radius: 50%;
     background: var(--surface);
     color: var(--ink);
@@ -5745,8 +5717,12 @@ label.attach.upload {
   /* The header's round "⋯": a smaller disc inside the same 44px tap target, so it sits with
      the plain icons beside it instead of standing out as a large white circle. */
   .chat-head > .more-button {
+    grid-area: more;
     padding: 6px;
+    border-radius: 50%;
+    background: var(--surface);
     background-clip: content-box;
+    color: var(--ink);
   }
 
   .shell:has([data-phone-view="list"]) .side-search {
@@ -5923,10 +5899,6 @@ label.attach.upload {
     grid-area: details;
   }
 
-  .chat-head > .more-button {
-    grid-area: more;
-  }
-
   /* The permission card: Allow and Decline side by side across the card, the wait below. */
   .approval .actions {
     display: grid;
@@ -5948,6 +5920,7 @@ label.attach.upload {
   }
 
   .approval .waiting {
+    flex-basis: 100%;
     grid-column: 1 / -1;
     margin: 0;
     text-align: center;
@@ -5962,6 +5935,8 @@ label.attach.upload {
   }
 
   .chat > .composer {
+    padding-left: 1rem;
+    padding-right: 1rem;
     padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
   }
 
@@ -6140,13 +6115,6 @@ label.attach.upload {
     min-height: 52px;
     color: var(--ink);
     font-weight: 600;
-  }
-}
-
-/* The panels (Settings, Apps, Usage) fill the phone's screen; keep their bottom clear. */
-@media (max-width: 760px) {
-  dialog.overlay {
-    padding-bottom: env(safe-area-inset-bottom);
   }
 }
 
