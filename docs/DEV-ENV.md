@@ -67,7 +67,7 @@ container ([QUICKSTART.md](QUICKSTART.md)).
 ### Run it
 
 ```
-git clone <repo-url> melissa && cd melissa
+git clone https://github.com/svin24/melissa.git melissa && cd melissa
 devenv shell          # skip with rustup
 just demo
 ```

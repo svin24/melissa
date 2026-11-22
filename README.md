@@ -28,7 +28,7 @@ internet, and open source so others can build on top.
    hardware.
 
 Steps for each: [docs/QUICKSTART.md](docs/QUICKSTART.md). To remove it:
-[Uninstall](docs/QUICKSTART.md#uninstall).
+[Uninstall](docs/QUICKSTART.md#uninstall). Bugs and ideas: [issues](https://github.com/svin24/melissa/issues).
 
 ## Develop
 

@@ -24,7 +24,7 @@ Full guide, settings and what it changes on the host:
 [packaging/container/README.md](../packaging/container/README.md).
 
 ```
-git clone <repo-url> melissa && cd melissa
+git clone https://github.com/svin24/melissa.git melissa && cd melissa
 just container-build           # builds localhost/melissa:dev (no root; compiles inside podman)
 just container-install         # sudo: installs the Quadlet, starts melissa.service, prints the setup code
 ```
@@ -85,7 +85,7 @@ the agent sandbox. Verified in a NixOS VM test (`nix build .#checks.x86_64-linux
 install reachable from another machine, stop/start, Settings); not yet on real hardware. In your system flake:
 
 ```nix
-inputs.melissa.url = "path:/path/to/melissa";   # a checkout
+inputs.melissa.url = "github:svin24/melissa";   # or "path:/path/to/a/checkout"
 # in nixosSystem { modules = [ ... ]; }:
 melissa.nixosModules.default
 ({ pkgs, ... }: {
@@ -158,6 +158,6 @@ Reboot first if k3s ran, so no pod mounts are left under `/var/lib/kubelet`.
 
 ## Feedback
 
-Please open an issue on the project's repository with what you tried, what happened, your distribution and
+Please [open an issue](https://github.com/svin24/melissa/issues) with what you tried, what happened, your distribution and
 how you installed (remove anything private first). Ideas and "this was confusing" are just as welcome as
 bug reports.

@@ -856,7 +856,7 @@ Roadmap (rough, phases may overlap):
     rail are UTC (no time zone setting yet).
 49. Pre-alpha "from source" (2026-11-18, docs/QUICKSTART.md, `just demo`): (a) the Ubuntu 23.10+ AppArmor
     workaround for bwrap is documented but untested on Ubuntu; check on a 24.04 VM before the release.
-    (b) QUICKSTART has `<repo-url>` and "open an issue" without a link: fill in when the repo is public.
+    (b) Done 2026-11-22: QUICKSTART and DEV-ENV link the repo (github.com/svin24/melissa) and its issues.
     (c) The dev shell pulls QEMU/OVMF/cargo-about for everyone; split a light "try it" shell from the
     image/VM tooling? (d) A user's `tool --wait deploy_app` asks for confirmation before finding out that
     k3s is missing (the lead agent's path fails first, through the owner lookup). (e) Asked to install without
