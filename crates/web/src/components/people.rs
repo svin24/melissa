@@ -42,7 +42,7 @@ pub fn credential_field(
     html! {
         div.field-pw {
             (field)
-            label.show-password {
+            label.check.show-password {
                 input type="checkbox" data-show-password;
                 span { "Show password" }
             }
