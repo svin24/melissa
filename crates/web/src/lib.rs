@@ -3062,6 +3062,122 @@ mod tests {
             assert!(body.starts_with("<!DOCTYPE html>"));
         }
 
+        fn main_get(uri: &str) -> axum::http::Request<Body> {
+            axum::http::Request::get(uri)
+                .header("hx-request", "true")
+                .header("hx-target", "main")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        /// The page's `<title>…</title>`.
+        fn title_tag(page: &str) -> &str {
+            let start = page.find("<title>").expect("a title");
+            let end = page[start..].find("</title>").expect("a closed title") + start;
+            &page[start..end + "</title>".len()]
+        }
+
+        #[tokio::test]
+        async fn pages_answer_with_the_main_column_alone_for_in_page_navigation() {
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
+                .unwrap();
+            let ada_page = format!("/agents/{}", ada.id);
+            let ada_stream = format!("sse-connect=\"/ui/agents/{}/stream", ada.id);
+            for (uri, selected, stream) in [
+                ("/", Some("/chat"), Some("sse-connect=\"/ui/stream")),
+                ("/chat", Some("/chat"), Some("sse-connect=\"/ui/stream")),
+                (
+                    ada_page.as_str(),
+                    Some(ada_page.as_str()),
+                    Some(ada_stream.as_str()),
+                ),
+                ("/chats", None, None),
+                ("/approvals", None, Some("&amp;view=approvals\"")),
+            ] {
+                // A load, a reload, no script: the whole page.
+                let (status, headers, page) = get_html(&app, uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(page.starts_with("<!DOCTYPE html>"), "{uri}");
+                assert!(page.contains("<nav class=\"sidebar\""), "{uri}");
+                assert!(
+                    headers[header::VARY]
+                        .to_str()
+                        .unwrap()
+                        .contains("HX-Target"),
+                    "{uri}"
+                );
+                // In-page navigation: the title, the main column's content and the agent
+                // groups out of band; no sidebar, no document around it.
+                let (status, headers, part) = send(&app, main_get(uri)).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(
+                    headers[header::VARY]
+                        .to_str()
+                        .unwrap()
+                        .contains("HX-Target"),
+                    "{uri}"
+                );
+                assert!(
+                    part.starts_with(title_tag(&page)),
+                    "{uri}: {}",
+                    &part[..part.len().min(120)]
+                );
+                assert!(!part.contains("<html"), "{uri}");
+                assert!(!part.contains("<nav class=\"sidebar\""), "{uri}");
+                assert!(!part.contains("id=\"main\""), "{uri}");
+                assert!(!part.contains("class=\"banner"), "{uri}");
+                assert_eq!(
+                    part.matches(
+                        "<div class=\"agent-groups\" id=\"agent-groups\" hx-swap-oob=\"true\">"
+                    )
+                    .count(),
+                    1,
+                    "{uri}"
+                );
+                // The open chat is the selected agent (none on the other pages). The groups
+                // come last.
+                let groups = &part[part.find("<div class=\"agent-groups\"").unwrap()..];
+                assert_eq!(
+                    groups.matches("aria-current=\"page\"").count(),
+                    usize::from(selected.is_some()),
+                    "{uri}"
+                );
+                if let Some(href) = selected {
+                    assert!(
+                        part.contains(&format!(
+                            "class=\"agent-link\" href=\"{href}\" aria-current=\"page\""
+                        )),
+                        "{uri}"
+                    );
+                }
+                // A chat (and Waiting for you) brings its own live stream, only its own.
+                assert_eq!(
+                    part.matches("sse-connect=").count(),
+                    usize::from(stream.is_some()),
+                    "{uri}"
+                );
+                if let Some(stream) = stream {
+                    assert!(part.contains(stream), "{uri}");
+                }
+            }
+            // Phones show the agent list at `/`: the marker comes along with the swap.
+            let (_, _, home) = send(&app, main_get("/")).await;
+            assert!(home.contains("data-phone-view=\"list\""));
+            let (_, _, chat) = send(&app, main_get("/chat")).await;
+            assert!(!chat.contains("data-phone-view"));
+            // A page without the sidebar answers as a whole page (melissa.js then loads it so).
+            let (status, _, missing) = send(&app, main_get("/no-such-page")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert!(!missing.contains("hx-swap-oob"));
+            // A panel asked for as a page part is still a part, never a whole document.
+            let (_, _, usage) = send(&app, main_get("/usage")).await;
+            assert!(!usage.contains("<html"));
+        }
+
         #[tokio::test]
         async fn another_settings_section_answers_alone_for_the_section_swap() {
             // melissa.js swaps only `#settings-main` when Settings is already open

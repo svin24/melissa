@@ -10,8 +10,8 @@ use crate::{
         action_button, activity_row, add_app_tile, agent_message, app_dialog, app_grid, app_page,
         app_tile, badge, card, chat_divider, composer, composer_status, crumbs, device_card,
         empty_state, facts, feed, feed_entry, link, live_region, live_region_on, log_view,
-        markdown, note, oob_inner, page, page_header, permission_card, plain_text, post_form,
-        relayed_message, scheduled_message, section, select_field, steps_card, table,
+        main_part, markdown, note, oob_inner, page, page_header, permission_card, plain_text,
+        post_form, relayed_message, scheduled_message, section, select_field, steps_card, table,
         textarea_field, truncated, user_message_with, AppWorkspace, Avatar, Choice, DeviceCard,
         Health, LogLine, MessageHead, Meter, Nav, PermissionCard, StepLine, Tone, APPROVALS_ID,
         COMPOSER_STATUS_ID, FEED_ID,
@@ -72,8 +72,15 @@ impl Frame<'_> {
 
 /// A page with the sidebar. (No permission prompts shows no banner: the owner turned it on
 /// knowingly; Settings → Developer shows it.)
+///
+/// In-page navigation (`crate::panel::main_only`) gets the main column alone; `rail` is then
+/// the sidebar's live update ([`rail_for`] gives it).
 pub fn shell(_f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
-    app_page(title, rail, main)
+    if crate::panel::main_only() {
+        main_part(title, rail, main)
+    } else {
+        app_page(title, rail, main)
+    }
 }
 
 /// A page that is a panel (Settings, Apps, Usage and resources): the panel alone when the
@@ -138,14 +145,19 @@ pub fn agent_href(id: &str) -> String {
 }
 
 /// The sidebar. `current_agent`: the helper whose conversation is open (Melissa's: `nav` is
-/// [`Nav::Chat`]).
+/// [`Nav::Chat`]). For in-page navigation only its agent groups, as an out-of-band update
+/// (the sidebar stays; the groups show the new selection and the latest states).
 pub fn rail_for(nav: Nav, f: &Frame<'_>, current_agent: Option<&str>) -> Markup {
     let current = match (nav, current_agent) {
         (_, Some(id)) => Some(id),
         (Nav::Chat, None) => Some("lead"),
         _ => None,
     };
-    sidebar_markup(nav, f.side, current, &f.update)
+    if crate::panel::main_only() {
+        sidebar_update(f.side, current)
+    } else {
+        sidebar_markup(nav, f.side, current, &f.update)
+    }
 }
 
 /// A live update of the sidebar's agent groups (agents came, went, moved between groups or

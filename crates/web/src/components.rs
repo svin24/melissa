@@ -113,6 +113,8 @@ pub const COMPOSER_ID: &str = "composer";
 pub const FEED_ID: &str = "feed";
 /// DOM id of the list on the approvals page.
 pub const APPROVALS_ID: &str = "approvals";
+/// DOM id of the main column (in-page navigation swaps its content, see `crate::panel`).
+pub const MAIN_ID: &str = "main";
 
 fn head(title: &str) -> Markup {
     html! {
@@ -145,11 +147,22 @@ pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
                 (banner())
                 div.shell {
                     (rail)
-                    main #main tabindex="-1" { (main) }
+                    main id=(MAIN_ID) tabindex="-1" { (main) }
                 }
                 (overlay_dialog())
             }
         }
+    }
+}
+
+/// The main column's content alone, for in-page navigation (melissa.js swaps it into
+/// `#main`): the page's title (htmx sets it), the content, and `rail_update`, the sidebar's
+/// out-of-band update (the agent groups, with the open chat selected).
+pub fn main_part(title: &str, rail_update: Markup, main: Markup) -> Markup {
+    html! {
+        title { (title) " · Melissa" }
+        (main)
+        (rail_update)
     }
 }
 

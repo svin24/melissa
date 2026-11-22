@@ -1460,3 +1460,33 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   bodies and the wide chat column keep `scrollbar-gutter: stable`. Alternatives: an inline pre-paint script
   (the CSP forbids it), naming the Settings parts for View Transitions (still motion where none is wanted),
   re-rendering the whole panel without the fade (the list's scroll and search reset).
+- **2026-11-22 — Moving between pages swaps only the main column** (owner: "we should not need full page loads
+  in general if we can avoid that"). A link to a page with the sidebar (`/`, `/chat`, `/agents/<id>`, `/chats`,
+  `/chats/<id>`, `/approvals`, with or without a query) loads with htmx into `#main` and pushes its address:
+  wherever the link is (the sidebar, the phone's agent list and back button, a chat card, the details panel, a
+  panel in the modal). The request carries `HX-Target: main`; `crate::panel` notes it and `pages::shell`
+  answers with the page's `<title>`, the main column's content and the sidebar's agent groups as an
+  out-of-band update (the selected agent and the latest states, as the live stream sends them), with `Vary:
+  HX-Target`. Every other request (a load, a reload, no script) gets the whole page, so deep links, reloads and
+  pages without script are unchanged. The sidebar is not re-rendered: its scroll, collapse, search and open
+  groups stay. melissa.js (`openPage`, one controller beside the panels' own) keeps one history model with the
+  panels: page entries `{page}`, panel entries `{panel, depth}`; Back and Forward between pages swap again
+  (the phone's agent list comes back where it was scrolled); a page link inside a panel closes the panel and
+  its history entries first; closing a panel opened by a deep link opens `/` the same way (was a full load).
+  The chat's stream goes with the old content (htmx's cleanup closes its EventSource) and the new chat opens
+  its own; page swaps settle at once (`settle:0ms`) because htmx processes new content as it settles, and
+  with the default 20ms a quicker next click could replace a chat before its stream opened, which then opened
+  for a chat already gone. A newer click aborts the request in flight. After a swap: the composer, its draft
+  and files, voice button and details panel are set up again (the width listener is bound once), the chat
+  scrolls to its end, the older-messages watcher restarts, and focus goes to the page's heading (no ring),
+  to the details sheet when it is open over the chat, or on the phone's agent list to the agent just left.
+  Anything that does not come back as part of a page (an error status, a whole document such as the sign-in
+  page or the task pages, a network failure) loads as a whole page instead. Still whole loads: form posts
+  that redirect (creating a helper, Fresh start, onboarding steps, the provider pages), the sign-in pages,
+  task pages, and any link while a voice message is being recorded (the load ends the recording, as before).
+  Fixed on the way (also on master before): the phone's agent list no longer opens scrolled to its end (the
+  chat it hides was scrolled), and a details sheet remembered open no longer makes that list inert. Why not
+  `hx-boost`/`hx-push-url`: htmx's history keeps snapshots of the swapped part in localStorage (chat text in
+  storage) and restores them stale with a dead stream, its Back/Forward would fight the panels' own history
+  entries, and boosting a container also boosts its forms. A small controller over `htmx.ajax`, like the
+  panels', keeps links plain `<a href>` (no per-link attributes, agent-written same-origin links included).

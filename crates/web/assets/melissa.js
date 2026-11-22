@@ -1185,7 +1185,9 @@
       return;
     }
     var wide = isWide();
-    var sheet = open && !wide;
+    // The phone's agent list hides the chat and its sheet: then nothing is covered.
+    var main = p.panel.closest("main");
+    var sheet = open && !wide && !!main && main.getClientRects().length > 0;
     if (wide) {
       p.panel.removeAttribute("data-open");
       if (open) {
@@ -1287,11 +1289,14 @@
         p.panel.setAttribute("data-ready", "");
       });
     });
-    if (WIDE && WIDE.addEventListener) {
-      WIDE.addEventListener("change", function () {
-        showDetails(storedOpen(isWide()), false);
-      });
-    }
+  }
+
+  // Bound once (initDetails runs again after each in-page navigation); without a panel on the
+  // page showDetails does nothing.
+  if (WIDE && WIDE.addEventListener) {
+    WIDE.addEventListener("change", function () {
+      showDetails(storedOpen(isWide()), false);
+    });
   }
 
   // --- The sidebar (2026-11-20, owner design): agents grouped by state. --------------------
@@ -1471,7 +1476,7 @@
     var t = e.target;
     // Only answers to a request (live updates over the stream have no xhr).
     var from = d.xhr && d.requestConfig ? d.requestConfig.elt || d.elt : null;
-    if (!(t instanceof Element) || !(from instanceof Element) || still()) {
+    if (!(t instanceof Element) || !(from instanceof Element) || still() || t.id === "main") {
       return;
     }
     var trigger = from.getAttribute("hx-trigger") || "";
@@ -1699,12 +1704,13 @@
   }
 
   function watchOlder() {
+    if (olderSeen) {
+      olderSeen.disconnect();
+      olderSeen = null;
+    }
     var marker = document.querySelector("#feed .feed-older");
     if (!marker || !window.IntersectionObserver) {
       return;
-    }
-    if (olderSeen) {
-      olderSeen.disconnect();
     }
     olderSeen = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
@@ -1911,20 +1917,32 @@
     if (!o) {
       return;
     }
+    // Closing goes back to the page under the panel; a link in the panel to a page
+    // (pageState.next) opens that page once the panel's history entries are gone.
     o.dialog.addEventListener("close", function () {
       document.title = panelState.title;
-      if (panelState.deep) {
-        window.location.assign("/");
-        return;
-      }
       o.body.replaceChildren();
-      if (panelState.opener && panelState.opener.focus) {
-        panelState.opener.focus();
-      }
       var back = panelState.depth;
       panelState.depth = 0;
+      var next = pageState.next;
+      if (panelState.deep) {
+        // The panel was the page (a deep link): its page is the chat, or the link's page.
+        panelState.deep = false;
+        pageState.next = null;
+        openPage(next ? next.url : "/", true, next ? next.hash : "");
+        return;
+      }
+      if (!next && panelState.opener && panelState.opener.focus) {
+        panelState.opener.focus();
+      }
       if (back > 0) {
         window.history.go(-back);
+      } else if (next) {
+        pageState.next = null;
+        openPage(next.url, next.url !== pageState.shown, next.hash);
+      } else if (window.history.state && window.history.state.panel && pageState.shown) {
+        // Back into a panel and closed: the address is the page's again.
+        window.history.replaceState({ page: pageState.shown }, "", pageState.shown);
       }
     });
     // A click on the backdrop (the dialog itself, outside its content) closes it.
@@ -1948,6 +1966,7 @@
     var own = main && main.querySelector(":scope > [data-panel]");
     if (own) {
       panelState.deep = true;
+      pageState.shown = null;
       o.body.appendChild(own);
       window.history.replaceState({ panel: window.location.pathname + window.location.search, depth: 0 }, "");
       showPanel(o);
@@ -1989,6 +2008,269 @@
       }
     }
   });
+
+  // --- Pages without full loads (2026-11-22, owner: "we should not need full page loads in
+  // general"). A link to a page with the sidebar (a chat, earlier chats, everything waiting)
+  // swaps only the main column: htmx asks for the page into #main, the server answers with the
+  // main column's content, its title and the sidebar's agent groups out of band (the selected
+  // agent, the latest states), and the address is pushed, so reload, Back, Forward and links
+  // from elsewhere work. The sidebar itself stays (scroll, collapse, search, open groups). The
+  // old chat's live stream goes with its content (htmx cleans the old elements up and the SSE
+  // extension closes their EventSource); the new chat opens its own. What doesn't come back as
+  // a part of a page (an error, a redirect to sign in, another kind of page) loads as a whole
+  // page. Without script every link is a plain page load.
+  var PAGE_PATHS = /^\/(chat|approvals|chats(\/\d+)?|agents\/[^/?#]+)?(\?|$)/;
+
+  function here() {
+    return window.location.pathname + window.location.search;
+  }
+
+  // `shown`: the page in the main column (null: a panel opened as the page, nothing under it).
+  // `next`: a page to open once the panel above it has closed. `pending`: the one loading.
+  // `focus`: move focus to the new page once it has settled. `from`: the page before it.
+  var pageState = { shown: here(), next: null, pending: null, focus: false, from: null };
+
+  // The page loaded as a page: its history entry is a page's (a panel's page has its own).
+  function initPage() {
+    if (!window.history.state && PAGE_PATHS.test(here())) {
+      window.history.replaceState({ page: here() }, "");
+    }
+  }
+
+  // The page a link leads to, if it is one of these: {url, hash}.
+  function pageLink(a) {
+    if (!a || a.target || a.hasAttribute("download") || a.hasAttribute("hx-get")) {
+      return null;
+    }
+    var u;
+    try {
+      u = new URL(a.href, window.location.href);
+    } catch (err) {
+      return null;
+    }
+    var url = u.pathname + u.search;
+    return u.origin === window.location.origin && PAGE_PATHS.test(url) ? { url: url, hash: u.hash } : null;
+  }
+
+  // In-page navigation needs the sidebar's page (not the sign-in or task pages), htmx, and no
+  // voice message being recorded (a whole page load ends it, as before).
+  function canSwapPage() {
+    return !!(window.htmx && document.getElementById("main") && document.getElementById("sidebar")) &&
+      !rec && !transcribing && !asking;
+  }
+
+  function pageScroller() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  // Open `url` in the main column; `push`: a new history entry (else this one is replaced);
+  // `scroll`: where the page was when it was left (Back, Forward).
+  function openPage(url, push, hash, scroll) {
+    hash = hash || "";
+    if (!canSwapPage()) {
+      window.location.assign(url + hash);
+      return;
+    }
+    if (draftTimer !== null) {
+      saveDraft();
+    }
+    var main = document.getElementById("main");
+    // Remember where this page is scrolled (the phone's agent list scrolls the page).
+    var st = window.history.state;
+    if (push && st && st.page === pageState.shown) {
+      window.history.replaceState({ page: st.page, scroll: pageScroller().scrollTop }, "");
+    }
+    // Only the last click counts.
+    window.htmx.trigger(main, "htmx:abort");
+    pageState.pending = { url: url, push: push, hash: hash, scroll: scroll };
+    // Settled at once: htmx processes new content (the chat opens its stream) as it settles,
+    // and a later settle could run after a quicker next page had already replaced it, opening
+    // a stream for a chat that is gone.
+    window.htmx.ajax("GET", url, { source: main, target: main, swap: "innerHTML settle:0ms" }).catch(function () {
+      // Aborted by a newer click, or failed (htmx:sendError loads the page).
+    });
+  }
+
+  function isPageSwap(e) {
+    var d = e.detail;
+    return !!(d && d.target && d.target.id === "main" && pageState.pending);
+  }
+
+  function wholePage() {
+    var p = pageState.pending;
+    pageState.pending = null;
+    if (p) {
+      window.location.assign(p.url + p.hash);
+    }
+  }
+
+  // Not a part of a page: load it as a page (shows the error, the sign-in, ...).
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    if (!isPageSwap(e)) {
+      return;
+    }
+    var xhr = e.detail.xhr;
+    if (!xhr || xhr.status !== 200 || /^\s*<(!doctype|html)/i.test(xhr.responseText || "")) {
+      e.detail.shouldSwap = false;
+      e.detail.isError = false;
+      wholePage();
+    }
+  });
+
+  document.addEventListener("htmx:sendError", function (e) {
+    if (isPageSwap(e)) {
+      wholePage();
+    }
+  });
+
+  document.addEventListener("htmx:timeout", function (e) {
+    if (isPageSwap(e)) {
+      wholePage();
+    }
+  });
+
+  document.addEventListener("htmx:afterSwap", function (e) {
+    if (!isPageSwap(e) || e.target !== e.detail.target) {
+      return;
+    }
+    var p = pageState.pending;
+    pageState.pending = null;
+    // Where it ended up (a page may redirect).
+    var at = p.url;
+    try {
+      var u = new URL(e.detail.xhr.responseURL);
+      if (u.origin === window.location.origin) {
+        at = u.pathname + u.search;
+      }
+    } catch (err) {
+      // Keep the requested URL.
+    }
+    pageState.from = pageState.shown;
+    pageState.shown = at;
+    if (p.push) {
+      window.history.pushState({ page: at }, "", at + p.hash);
+    } else {
+      window.history.replaceState({ page: at }, "", at + p.hash);
+    }
+    // What the old page had open over the rest goes with it.
+    each(document.querySelectorAll(".shell > .sidebar, .banner, .skip"), function (el) {
+      el.inert = false;
+    });
+    each(document.querySelectorAll(".menu[popover]:popover-open"), function (m) {
+      m.hidePopover();
+    });
+    // The new page starts at its top (on phones the page scrolls, else the main column), or
+    // where it was when the user left it; a chat at its end.
+    var main = e.detail.target;
+    main.scrollTop = 0;
+    pageScroller().scrollTop = typeof p.scroll === "number" ? p.scroll : 0;
+    initMain(p.hash);
+    pageState.focus = true;
+  });
+
+  // After the title changed (htmx sets it as the swap settles): the title a panel restores,
+  // and focus on the new page's heading so screen readers start there (on the phone's agent
+  // list, which hides the main column: on the open agent).
+  document.addEventListener("htmx:afterSettle", function (e) {
+    var main = e.detail && e.detail.target;
+    if (!main || main.id !== "main" || e.target !== main || !pageState.focus) {
+      return;
+    }
+    pageState.focus = false;
+    panelState.title = document.title;
+    var usable = function (el) {
+      return !!el && el.getClientRects().length > 0 && !el.closest("[inert]");
+    };
+    var heading = Array.prototype.find.call(main.querySelectorAll("h1"), usable);
+    var details = detailsParts();
+    var to;
+    if (heading) {
+      heading.setAttribute("tabindex", "-1");
+      to = heading;
+    } else if (details && !isWide() && detailsOpen() && usable(details.panel)) {
+      // The details sheet is open over the chat (remembered): it has the focus.
+      to = details.panel;
+    } else if (usable(main)) {
+      to = main;
+    } else {
+      // The phone's agent list: the agent whose chat the user just left, else the open one.
+      var left = pageState.from ? '#agent-groups .agent-link[href="' + CSS.escape(pageState.from) + '"]' : null;
+      to = (left && document.querySelector(left)) ||
+        document.querySelector("#agent-groups .agent-link[aria-current='page']") ||
+        document.getElementById("agent-search");
+    }
+    if (to) {
+      to.focus({ preventScroll: true });
+    }
+  });
+
+  document.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+      return;
+    }
+    var t = e.target;
+    var link = t instanceof Element ? pageLink(t.closest("a[href]")) : null;
+    if (!link || !canSwapPage()) {
+      return;
+    }
+    // A part of this page (#an-entry): the browser goes there.
+    if (link.url === pageState.shown && link.hash) {
+      return;
+    }
+    e.preventDefault();
+    var o = overlayParts();
+    if (o && o.dialog.open) {
+      // From a panel: close it first (its history entries go), then open the page.
+      pageState.next = link;
+      closePanel();
+      return;
+    }
+    openPage(link.url, link.url !== pageState.shown, link.hash);
+  });
+
+  // Back and Forward between pages (a panel's entries are the panel's own, above).
+  window.addEventListener("popstate", function (e) {
+    var next = pageState.next;
+    if (next) {
+      pageState.next = null;
+      openPage(next.url, next.url !== pageState.shown, next.hash);
+      return;
+    }
+    if (e.state && e.state.panel) {
+      return;
+    }
+    var at = here();
+    if (at === pageState.shown) {
+      return;
+    }
+    if (PAGE_PATHS.test(at)) {
+      openPage(at, false, window.location.hash, e.state && e.state.page === at ? e.state.scroll : undefined);
+    } else {
+      window.location.reload();
+    }
+  });
+
+  // What a page's main column needs once it is in place (on load and after each in-page
+  // navigation): the composer, its draft and files, the details panel, the chat at its end.
+  function initMain(hash) {
+    kept = [];
+    clearPreviews();
+    stickToBottom = true;
+    grow(composer());
+    showVoice();
+    initDetails();
+    restoreDraft();
+    var to = hash ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
+    var feed = document.getElementById("feed");
+    if (to) {
+      to.scrollIntoView({ block: "center" });
+    } else if (feed && feed.getClientRects().length) {
+      // (Not on the phone's agent list, which hides the chat.)
+      scrollToBottom();
+    }
+    // After the first scroll, so the top of the feed isn't "in view" while the page loads.
+    window.requestAnimationFrame(watchOlder);
+  }
 
   // Settings search: filters the section list by name and the settings in each section, and
   // the rows of the open section. "/" focuses it while Settings is open.
@@ -2135,15 +2417,8 @@
   document.addEventListener("DOMContentLoaded", function () {
     initDismiss();
     initPanel();
-    grow(composer());
-    showVoice();
-    initDetails();
+    initPage();
     initSidebar();
-    restoreDraft();
-    if (document.getElementById("feed")) {
-      scrollToBottom();
-      // After the first scroll, so the top of the feed isn't "in view" while the page loads.
-      window.requestAnimationFrame(watchOlder);
-    }
+    initMain("");
   });
 })();

@@ -328,7 +328,9 @@ main {
   }
 }
 
+/* Where focus lands after moving to another page or section (not a control): no ring. */
 main:focus,
+main h1[tabindex="-1"]:focus,
 .settings-main:focus {
   outline: none;
 }
