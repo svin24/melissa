@@ -14,13 +14,35 @@ SHARE=/usr/local/share/melissa
 SYSCTL_FILE=/etc/sysctl.d/90-melissa-kubelet.conf
 MODULES_FILE=/etc/modules-load.d/melissa.conf
 PREVIOUS=localhost/melissa-rollback:previous
+DOCKER_FORWARD_UNIT=melissa-docker-forward.service
 
 say() { echo "melissa-uninstall: $*"; }
+
+# remove_docker_forward SUBNETS: install.sh's DOCKER-USER rules for Docker hosts (install.env
+# DOCKER_FORWARD_SUBNETS; empty: install.sh added none, nothing is touched). Deletes the unit and
+# one copy of each rule, the one the unit inserted.
+remove_docker_forward() {
+    local s f
+    [ -n "$1" ] || return 0
+    systemctl disable -q --now "$DOCKER_FORWARD_UNIT" 2>/dev/null || true
+    rm -f "$UNITDIR/$DOCKER_FORWARD_UNIT"
+    for s in $1; do
+        for f in -s -d; do iptables -D DOCKER-USER "$f" "$s" -j ACCEPT 2>/dev/null || true; done
+    done
+    if [ -w "$STATE/install.env" ]; then
+        sed -i 's/^DOCKER_FORWARD_SUBNETS=.*/DOCKER_FORWARD_SUBNETS=""/' "$STATE/install.env"
+    fi
+    say "removed $DOCKER_FORWARD_UNIT and its DOCKER-USER rules for $1"
+}
+
+# Sourced (packaging/container/test-install.sh): only the functions.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+
 PURGE=no
 case "${1:-}" in --purge) PURGE=yes ;; "") ;; *) sed -n '2,8p' "$0"; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo "melissa-uninstall: run as root" >&2; exit 1; }
 
-IMAGE=; TIMER_OURS=no
+IMAGE=; TIMER_OURS=no; DOCKER_FORWARD_SUBNETS=
 # shellcheck source=/dev/null
 [ -r "$STATE/install.env" ] && . "$STATE/install.env"
 
@@ -42,6 +64,7 @@ if [ "$TIMER_OURS" = yes ]; then
     systemctl disable -q --now podman-auto-update.timer || true
     say "disabled podman-auto-update.timer (install.sh had enabled it)"
 fi
+remove_docker_forward "$DOCKER_FORWARD_SUBNETS"
 systemctl daemon-reload
 
 if [ -e "$SYSCTL_FILE" ]; then

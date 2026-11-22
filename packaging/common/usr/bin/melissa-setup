@@ -146,6 +146,25 @@ ensure_user() {
     install -d -o "$user" -g "$user" -m 0700 "$home"
 }
 
+# net_check URL: fail at once when the download host's name doesn't resolve (a few seconds at most),
+# instead of curl retrying a lookup that can't work. In the container this usually means the host's
+# firewall drops its traffic (Docker on the same host: see the README).
+net_check() {
+    local host=${1#*://}
+    host=${host%%[/:?]*}
+    timeout 5 getent ahosts "$host" >/dev/null 2>&1 && return 0
+    if [ -r "$release" ] && grep -qx 'MELISSA_RUNTIME=container' "$release"; then
+        die "This container can't reach the internet (name lookup failed). If Docker runs on this host, see packaging/container/README.md → Docker."
+    fi
+    die "This machine can't reach the internet (name lookup for $host failed). Check its network and DNS."
+}
+
+# curl for downloads: --retry covers transient HTTP errors (a failed lookup is caught by
+# net_check first); --connect-timeout keeps a blocked network from hanging.
+download() { # url, file
+    as_melissa curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --retry 2 -o "$2" "$1"
+}
+
 confirm() {
     [ "$yes" = 1 ] && return 0
     local answer
@@ -165,6 +184,7 @@ install_npm() {
     echo "Packages:  $(npm_pins "$name" | awk 'NF == 2 { printf "%s ", $1 }')(npm, pinned; no install scripts run)"
     echo "Runs as:   the '$user' system user; installs into $npm_root/$name, with Node.js $("$node" --version)"
     echo "By installing and logging in you accept that vendor's terms. Melissa only runs the CLI."
+    net_check https://registry.npmjs.org/
     confirm "Download and install it now?" || die "cancelled"
     ensure_user
     prefix=$npm_root/$name
@@ -228,14 +248,14 @@ install_binary() {
     echo "SHA-256:   $sha (pinned)"
     echo "Runs as:   the '$user' system user; installs into $bin"
     echo "By installing and logging in you accept that vendor's terms. Melissa only runs the CLI."
+    net_check "$url"
     confirm "Download and install it now?" || die "cancelled"
     ensure_user
     as_melissa mkdir -p "$home/.local/bin"
     tmp=$(as_melissa mktemp "$home/.local/bin/.$name.XXXXXX")
     # shellcheck disable=SC2064
     trap "rm -f '$tmp'" EXIT
-    as_melissa curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$tmp" "$url" \
-        || die "download failed: $url"
+    download "$url" "$tmp" || die "download failed: $url"
     printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c --quiet - \
         || die "the download doesn't match Melissa's pinned SHA-256"
     as_melissa chmod 0755 "$tmp"
@@ -256,13 +276,13 @@ install_agent() {
     echo "Installer: $url (the vendor's official installer)"
     echo "Runs as:   the '$user' system user; installs into $home"
     echo "By installing and logging in you accept that vendor's terms. Melissa only runs the CLI."
+    net_check "$url"
     confirm "Download and run it now?" || die "cancelled"
     ensure_user
     tmp=$(as_melissa mktemp "$home/.melissa-installer.XXXXXX")
     # shellcheck disable=SC2064
     trap "rm -f '$tmp'" EXIT
-    as_melissa curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$tmp" "$url" \
-        || die "download failed: $url"
+    download "$url" "$tmp" || die "download failed: $url"
     echo "Downloaded installer, sha256 $(sha256sum "$tmp" | cut -d' ' -f1)"
     as_melissa bash "$tmp" || die "the $name installer failed"
     rm -f "$tmp"
@@ -441,6 +461,9 @@ status() {
     echo "Or chat here in the terminal:  melissa-server chat"
     echo "Guide: docs/QUICKSTART.md in the Melissa repository."
 }
+
+# Sourced (packaging/container/test-melissa-setup.sh): only the functions.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 yes=0
 login=1

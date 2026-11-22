@@ -153,6 +153,9 @@ Reboot first if k3s ran, so no pod mounts are left under `/var/lib/kubelet`.
   `tailscale serve` ([Use it from another machine](#use-it-from-another-machine)).
 - Agents reach the internet only through Melissa's proxy. A CLI version that needs a new host for its AI
   service fails with a network error; the audit log shows `egress.deny` for it.
+- Container: if installing an agent says "This container can't reach the internet", the host's firewall
+  drops its traffic. Docker on the same host does that; install.sh fixes it for you (rerun it). See
+  [Docker on the same host](../packaging/container/README.md#docker-on-the-same-host).
 - Sign-ins are refreshed by the agents inside the sandbox; this is not well tested yet. If an agent suddenly
   says it is not signed in, sign in again in Settings → Providers (NixOS: `sudo melissa-setup login <name>`).
 

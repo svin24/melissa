@@ -77,9 +77,11 @@ container-install:
         IMAGE_ARCHIVE=target/melissa-image.tar packaging/container/install.sh
     rm -f target/melissa-image.tar
 
-# install.sh's address checks and server.toml edits (no root, no podman).
+# install.sh's address checks, server.toml edits and Docker rules; melissa-setup's network check
+# (no root, no podman, no network).
 container-test:
     bash packaging/container/test-install.sh
+    bash packaging/container/test-melissa-setup.sh
 
 # Remove the installation (keeps the data volume unless purge=--purge).
 container-uninstall purge="":

@@ -34,7 +34,8 @@ Settings (environment of install.sh): `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `
 (30000), `BIND` (0.0.0.0: every address; who may open apps is Settings → Apps, see "Who may open
 apps"), `APP_ADDRESSES`
 (see "Network"), `ALLOW_ADDRESS_MISMATCH` (no), `AUTO_UPDATE` (`registry` | `local` | `off`),
-`SET_SYSCTLS` (yes). `install.sh --preflight` only checks.
+`SET_SYSCTLS` (yes), `DOCKER_FORWARD` (auto; see "Docker on the same host"), `NET_CHECK` (yes).
+`install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
 
 Then open the web UI and claim it (see "Signing in"): the first-run setup installs a provider and signs
@@ -58,6 +59,8 @@ sudo podman exec -it melissa melissa-server chat
   container sets them on the host anyway (any k3s does), so install.sh sets them openly, prints a notice
   and keeps the old values; uninstall.sh restores them. `SET_SYSCTLS=no` leaves them to the kubelet.
 - Unless `AUTO_UPDATE=off`: enables `podman-auto-update.timer` (if it was off; uninstall turns it off again).
+- Only when Docker is on the host: `/etc/systemd/system/melissa-docker-forward.service` and two rules in
+  Docker's `DOCKER-USER` chain (see "Docker on the same host"; uninstall removes both).
 
 ## Uninstall
 ```
@@ -162,6 +165,32 @@ Sign-in runs over plain HTTP, which sends passwords readable on the network. Kee
   own Tailscale doesn't serve the UI yet.)
   Only for a tailnet of people you trust (no Funnel).
 - For apps on the tailnet or the LAN: Settings → Apps (the host firewall must allow 30000–30079).
+
+### Docker on the same host
+Docker sets the iptables `FORWARD` policy to DROP and accepts only its own bridges. An nftables accept
+(netavark's, for podman's network) doesn't stop the next hook, so Docker's chain still drops the
+container's traffic: no DNS, no downloads, no app ports from the LAN.
+
+install.sh sees this (Docker's `DOCKER-USER` chain with a DROP policy, or `docker.service`/`docker.socket`
+running or enabled) and installs `melissa-docker-forward.service`. It inserts two rules for podman's
+subnet (read from `podman network inspect podman`) into `DOCKER-USER`, Docker's chain for your own rules,
+and runs again whenever Docker starts. Without Docker it does nothing. `DOCKER_FORWARD=no` only prints
+the commands. By hand (10.88.0.0/16 is podman's default; rules made like this are gone after a reboot):
+```
+sudo iptables -I DOCKER-USER -s 10.88.0.0/16 -j ACCEPT
+sudo iptables -I DOCKER-USER -d 10.88.0.0/16 -j ACCEPT
+```
+Undo: `sudo iptables -D DOCKER-USER -s 10.88.0.0/16 -j ACCEPT` and the same with `-d`. uninstall.sh
+removes the unit and its two rules (only when install.sh added them).
+
+### No network in the container
+After the start, install.sh looks up `example.com` from inside the container (a few seconds at most;
+`NET_CHECK=no` skips it) and warns when that fails. `melissa-setup` checks the same before a download
+and stops at once: "This container can't reach the internet". Likely causes:
+- Docker on the host (above): check `sudo iptables -S DOCKER-USER` lists the two rules.
+- Another firewall whose forward policy drops podman's network (10.88.0.0/16 by default).
+- IP forwarding off on the host: `sysctl net.ipv4.ip_forward` should be 1 (podman turns it on).
+Test: `sudo podman exec melissa getent ahosts example.com`.
 
 ## Data and persistence
 The container is **recreated from the image at every start** (and on updates). Everything kept lives on
