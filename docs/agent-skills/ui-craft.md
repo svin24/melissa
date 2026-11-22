@@ -236,11 +236,16 @@ Melissa moves little: motion shows a state change, nothing else. What exists tod
   reduced-motion rule in the same commit. [M][T][I]
 - **Transitions only after the page is ready** (the details sheet waits for `data-ready`), so nothing slides
   on load. [M]
-- **What arrives later fades in** (owner, 2026-11-21): new chat entries, queued messages, a form's answer, a new
-  sidebar row: `arrive` (opacity and a 4px rise, 180ms ease-out); dialogs and menus `open` (opacity, scale 0.98,
-  160ms); sidebar rows that change group slide to their new place (FLIP, 200ms); pages cross-fade (View
-  Transitions, 160ms, sidebar still). Not for things on screen at page load, polled regions, typing, toggles,
-  the composer or the model picker. All of it in one `prefers-reduced-motion: no-preference` block at the end of
+- **What arrives later fades in** (owner, 2026-11-21; narrowed 2026-11-22): new chat entries, queued messages,
+  a notice in a form's answer, a new sidebar row: `arrive` (opacity and a 4px rise, 180ms ease-out); dialogs and
+  menus `open` (opacity, scale 0.98, 160ms); sidebar rows that change group slide to their new place (FLIP,
+  200ms). Not for things on screen at page load, polled regions, typing, toggles, the composer or the model
+  picker, and never for content that is only shown again: no page cross-fades, no fade of a Settings section,
+  a panel or the rest of a form's answer (owner: "every time I tap a category I get a fade-in").
+- **Nothing moves after the first paint** (2026-11-22): a look the browser remembers (banner closed, sidebar
+  collapsed, details hidden) comes from the server via a cookie (`looks.rs`), not from script after load; a
+  control that needs script is in place from the start (`data-script-only`, hidden only under
+  `@media (scripting: none)`); scrolling regions keep `scrollbar-gutter: stable`. All of it in one `prefers-reduced-motion: no-preference` block at the end of
   `melissa.css`; melissa.js checks the same query. [M]
 - **Never:** load animations or entrances (of what is there at page load), staggered lists, scroll-triggered reveals, parallax, carousels or
   auto-advancing content, rotating notices, marquees, blinking or shimmer, typing effects on agent text beyond

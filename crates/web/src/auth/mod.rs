@@ -786,9 +786,15 @@ pub(crate) mod testing {
                 let (cookie, csrf) = (cookie.clone(), csrf.clone());
                 async move {
                     let h = req.headers_mut();
-                    if !h.contains_key(header::COOKIE) {
+                    // Signed in unless the request brings its own session cookie (other
+                    // cookies, such as the looks in `crate::looks`, don't count).
+                    let own = h.get_all(header::COOKIE).iter().any(|v| {
+                        v.to_str()
+                            .is_ok_and(|t| t.contains(COOKIE_PLAIN) || t.contains(COOKIE_SECURE))
+                    });
+                    if !own {
                         if let Ok(v) = HeaderValue::from_str(&cookie) {
-                            h.insert(header::COOKIE, v);
+                            h.append(header::COOKIE, v);
                         }
                     }
                     if !h.contains_key(CSRF_HEADER) && !h.contains_key("x-test-no-csrf") {

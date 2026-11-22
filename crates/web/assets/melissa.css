@@ -328,7 +328,8 @@ main {
   }
 }
 
-main:focus {
+main:focus,
+.settings-main:focus {
   outline: none;
 }
 
@@ -3457,6 +3458,8 @@ dialog.overlay:focus {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* Room for the scrollbar either way, so a long section doesn't narrow the content. */
+  scrollbar-gutter: stable;
 }
 
 .overlay .settings {
@@ -5093,6 +5096,8 @@ label.attach.upload {
     margin: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
+    /* The chat doesn't narrow when it grows past one screen. */
+    scrollbar-gutter: stable;
   }
 
 
@@ -5970,25 +5975,25 @@ label.attach.upload {
 }
 /* === End of phone views ===================================================================== */
 
-/* --- Motion (2026-11-21, owner) -------------------------------------------------------------
-   Quick, quiet: what arrives after the page loaded fades in with a slight rise, dialogs and
-   menus open with a short fade, pages cross-fade (where the browser can; on wide screens the
-   sidebar stays still), and agents move to their new place in the sidebar (melissa.js).
-   Nothing fades on page load, nothing moves while typing, only transform and opacity. With
-   prefers-reduced-motion: reduce none of it runs (all of it sits in this media query, and
-   melissa.js checks the same). */
+/* Controls that only work with melissa.js (collapse the sidebar, show the details, dismiss the
+   banner, voice input) are in place from the first paint when script runs, so nothing moves
+   when it starts; without script they are not shown (2026-11-22). */
+@media (scripting: none) {
+  [data-script-only] {
+    display: none !important;
+  }
+}
+
+/* --- Motion (2026-11-21, owner; 2026-11-22: no page fades) ---------------------------------
+   Quick, quiet: what is new after the page loaded (a chat entry, a notice) fades in with a
+   slight rise, dialogs and menus open with a short fade, and agents move to their new place in
+   the sidebar (melissa.js). Going somewhere else (a chat, a Settings section) is instant and
+   still: no cross-fade of the page, no fade of content that is only shown again (owner,
+   2026-11-22). Nothing fades on page load, nothing moves while typing, only transform and
+   opacity. With prefers-reduced-motion: reduce none of it runs (all of it sits in this media
+   query, and melissa.js checks the same). */
 
 @media (prefers-reduced-motion: no-preference) {
-  @view-transition {
-    navigation: auto;
-  }
-
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation-duration: 160ms;
-    animation-timing-function: ease-out;
-  }
-
   /* New in the chat: a message, a card, an event. htmx marks an entry it appends with
      htmx-added for a moment; entries that were there at page load have no transition to run. */
   .feed > li {
@@ -6002,7 +6007,7 @@ label.attach.upload {
     transform: translateY(4px);
   }
 
-  /* Something new that melissa.js marks: a queued message, a section a form replaced, a
+  /* Something new that melissa.js marks: a queued message, a notice in a form's answer, a
      sidebar row of a new agent. */
   [data-arrive] {
     animation: arrive 180ms ease-out;
@@ -6018,21 +6023,6 @@ label.attach.upload {
   dialog[open]::backdrop,
   .menu[popover]:popover-open::backdrop {
     animation: fade 160ms ease-out;
-  }
-}
-
-/* The sidebar keeps its place between pages (wide screens; on phones it is its own page). */
-@media (prefers-reduced-motion: no-preference) and (min-width: 761px) {
-  .sidebar {
-    view-transition-name: sidebar;
-  }
-
-  ::view-transition-old(sidebar) {
-    display: none;
-  }
-
-  ::view-transition-new(sidebar) {
-    animation: none;
   }
 }
 

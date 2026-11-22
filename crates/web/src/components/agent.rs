@@ -295,7 +295,7 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
     html! {
         nav.sidebar id=(SIDEBAR_ID) aria-label="Agents" {
             div.side-head {
-                button.icon-button.side-collapse type="button" data-sidebar-collapse hidden
+                button.icon-button.side-collapse type="button" data-sidebar-collapse data-script-only
                     title="Collapse sidebar" {
                     (glyph(Glyph::Sidebar))
                     span.visually-hidden { "Collapse sidebar" }
@@ -481,7 +481,8 @@ pub fn chat_head(h: &ChatHead<'_>, details: Markup) -> Markup {
     html! {
         header.chat-head {
             (back_link("/", "Back to agents"))
-            button.icon-button.side-expand type="button" data-sidebar-expand hidden title="Show agents" {
+            button.icon-button.side-expand type="button" data-sidebar-expand
+                hidden[!crate::looks::current().sidebar_collapsed] title="Show agents" {
                 (glyph(Glyph::Sidebar))
                 span.visually-hidden { "Show agents" }
             }

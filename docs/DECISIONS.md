@@ -1432,3 +1432,21 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   first visit), a wizard only (no way back to skipped steps), storing step completion flags (drift from the
   real state), renaming the node from the device name (owner: display only), keeping the code in memory
   (a restart after install invalidated the printed code).
+- **2026-11-22 — No page fades; Settings swaps only the section; remembered looks come from the server**
+  (owner request: "Every time I tap a category I get a fade-in", "a lot of the UI just jumps", "the pre-alpha
+  banner pops in"). Replaces the cross-fade and the "a form's answer fades in" parts of the 2026-11-21 motion
+  entry. (1) The cross-document View Transition (160ms page cross-fade) is gone: moving somewhere is instant.
+  (2) With Settings open, a link to another Settings page loads only `#settings-main` (breadcrumb and content;
+  `HX-Target: settings-main` answers with the panel alone like `overlay-body`); the section list, its scroll
+  and the search stay, `aria-current` moves, focus stays on the clicked entry (or goes to the section when it
+  was inside the old one); URL pushed, so reload and Back work. (3) Of a form's answer only a notice fades in,
+  not the section it replaces; panels and sections that load don't fade. (4) Looks melissa.js remembers in
+  localStorage (banner dismissed, sidebar collapsed, details hidden on wide screens) are mirrored into plain
+  cookies (`melissa_banner`, `melissa_sidebar`, `melissa_details`; no data, not secret, one year, SameSite=Lax),
+  and the server renders the page that way, so nothing flashes or shifts on any full page load (an agent switch
+  in the sidebar, reload, Back). (5) Controls that need script (collapse sidebar, details toggle and close,
+  dismiss banner, voice) are shown from the first paint and hidden only under `@media (scripting: none)`,
+  instead of being un-hidden by script after load (the chat header's buttons moved 52px). (6) Scrolling panel
+  bodies and the wide chat column keep `scrollbar-gutter: stable`. Alternatives: an inline pre-paint script
+  (the CSP forbids it), naming the Settings parts for View Transitions (still motion where none is wanted),
+  re-rendering the whole panel without the fade (the list's scroll and search reset).
