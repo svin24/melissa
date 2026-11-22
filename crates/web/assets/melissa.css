@@ -392,32 +392,32 @@ html {
 
 body {
   margin: 0;
-  background: var(--ground);
-  color: var(--ink);
-  font-family: var(--font);
-  font-size: 1rem;
+  background: var(--color-bg-ground);
+  color: var(--color-text-default);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-md);
   line-height: 1.5;
 }
 
 h1,
 h2,
 h3 {
-  font-family: var(--font-head);
-  font-weight: 650;
+  font-family: var(--font-family-head);
+  font-weight: var(--font-weight-heading);
   line-height: 1.2;
   margin: 0;
 }
 
 h1 {
-  font-size: 1.75rem;
+  font-size: var(--font-size-xl);
 }
 
 h2 {
-  font-size: 1.15rem;
+  font-size: var(--font-size-lg);
 }
 
 h3 {
-  font-size: 1rem;
+  font-size: var(--font-size-md);
 }
 
 p {
@@ -425,20 +425,20 @@ p {
 }
 
 a {
-  color: var(--action);
+  color: var(--color-action-bg);
   text-underline-offset: 0.15em;
 }
 
 :focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: 4px;
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-xs);
 }
 
 code,
 pre {
-  font-family: var(--mono);
-  font-size: 0.875rem;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
 }
 
 .visually-hidden {
@@ -457,8 +457,8 @@ pre {
   position: absolute;
   left: 0.5rem;
   top: -4rem;
-  padding: 0.5rem 1rem;
-  background: var(--surface);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-bg-surface);
   z-index: 10;
 }
 
@@ -467,7 +467,7 @@ pre {
 }
 
 .quiet {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 /* --- Buttons (COMPONENT-SPEC 2.1, Penpot board DS-01; components::Btn) -------------------------
@@ -1211,7 +1211,7 @@ main {
   min-width: 0;
   /* Scrollbars in the theme's colours (the default track is light in dark mode). */
   scrollbar-width: thin;
-  scrollbar-color: var(--idle) transparent;
+  scrollbar-color: var(--color-idle-fg) transparent;
 }
 
 /* Wider than a phone, the page is the viewport (2026-11-20): the banner takes its own height,
@@ -1253,25 +1253,25 @@ main h1[tabindex="-1"]:focus,
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  color: var(--ink);
+  color: var(--color-text-default);
   text-decoration: none;
-  font-family: var(--font-head);
-  font-weight: 700;
+  font-family: var(--font-family-head);
+  font-weight: var(--font-weight-brand);
   font-size: 1.25rem;
-  min-height: 44px;
+  min-height: var(--size-control-lg);
 }
 
 .mark {
   width: 26px;
   height: 26px;
-  fill: var(--honey);
+  fill: var(--color-attention-fg);
   flex: none;
 }
 
 .mark-lg {
   width: 44px;
   height: 44px;
-  fill: var(--honey);
+  fill: var(--color-attention-fg);
 }
 
 /* --- Sidebar (2026-11-20, owner design: agents grouped by state) ------------------------- */
@@ -1280,18 +1280,18 @@ main h1[tabindex="-1"]:focus,
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  background: var(--color-bg-surface);
+  border-right: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .side-head {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: var(--space-1);
   min-height: 56px;
-  padding: 0 0.5rem;
-  border-bottom: 1px solid var(--border);
+  padding: 0 var(--space-2);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .device-button {
@@ -1307,14 +1307,14 @@ main h1[tabindex="-1"]:focus,
 }
 
 .brand-word {
-  font-family: var(--font-head);
-  font-weight: 700;
-  font-size: 1.1rem;
+  font-family: var(--font-family-head);
+  font-weight: var(--font-weight-brand);
+  font-size: var(--font-size-lg);
 }
 
 .device-button .glyph {
   margin-left: auto;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .side-search {
@@ -1334,18 +1334,18 @@ main h1[tabindex="-1"]:focus,
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.25rem 0.5rem 0.75rem;
+  padding: var(--space-1) var(--space-2) var(--space-3);
   display: flex;
   flex-direction: column;
   scrollbar-width: thin;
-  scrollbar-color: var(--idle) transparent;
+  scrollbar-color: var(--color-idle-fg) transparent;
 }
 
 .agent-groups {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
   flex: 1 0 auto;
 }
 
@@ -1383,13 +1383,13 @@ main h1[tabindex="-1"]:focus,
 }
 
 .group-attention .group-head {
-  color: var(--honey-text);
+  color: var(--color-attention-text);
 }
 
 details.agent-group > summary {
   list-style: none;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 details.agent-group > summary::-webkit-details-marker {
@@ -1403,7 +1403,7 @@ details.agent-group:not([open]) > summary .chev {
 
 @media (prefers-reduced-motion: no-preference) {
   details.agent-group > summary .chev {
-    transition: transform 0.15s ease-out;
+    transition: transform var(--motion-duration-fast) var(--motion-ease-out);
   }
 }
 
@@ -1467,8 +1467,8 @@ details.agent-group:not([open]) > summary .chev {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: var(--font-size-control-md);
+  font-weight: var(--font-weight-strong);
 }
 
 .agent-name .name,
@@ -1488,18 +1488,18 @@ details.agent-group:not([open]) > summary .chev {
   height: 13px;
   flex: none;
   fill: none;
-  stroke: var(--honey);
+  stroke: var(--color-attention-fg);
   stroke-width: 1.5;
   stroke-linejoin: round;
 }
 
 .agent-status {
-  font-size: 0.8rem;
-  color: var(--honey-text);
+  font-size: var(--font-size-xs);
+  color: var(--color-attention-text);
 }
 
 .agent-status.working {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .agent-status.working::before {
@@ -1508,14 +1508,14 @@ details.agent-group:not([open]) > summary .chev {
   width: 6px;
   height: 6px;
   margin-right: 0.35rem;
-  border-radius: 50%;
-  background: var(--ok);
+  border-radius: var(--radius-full);
+  background: var(--color-ok-fg);
   vertical-align: 0.1em;
 }
 
 .agent-sub {
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 /* A thin bar under a working agent; without a known share it is a still, partly filled line
@@ -1526,26 +1526,26 @@ progress.agent-progress {
   height: 3px;
   margin-top: 0.3rem;
   border: 0;
-  border-radius: 999px;
-  background: var(--border);
-  color: var(--ok);
+  border-radius: var(--radius-full);
+  background: var(--color-border-default);
+  color: var(--color-ok-fg);
   overflow: hidden;
 }
 
 progress.agent-progress::-webkit-progress-bar {
-  background: var(--border);
+  background: var(--color-border-default);
 }
 
 progress.agent-progress::-webkit-progress-value {
-  background: var(--ok);
+  background: var(--color-ok-fg);
 }
 
 progress.agent-progress::-moz-progress-bar {
-  background: var(--ok);
+  background: var(--color-ok-fg);
 }
 
 progress.agent-progress:indeterminate {
-  background: linear-gradient(to right, var(--ok) 0 40%, var(--border) 40%);
+  background: linear-gradient(to right, var(--color-ok-fg) 0 40%, var(--color-border-default) 40%);
 }
 
 progress.agent-progress:indeterminate::-moz-progress-bar {
@@ -1557,8 +1557,8 @@ progress.agent-progress:indeterminate::-moz-progress-bar {
 }
 
 .side-none {
-  padding: 0.5rem;
-  font-size: 0.9rem;
+  padding: var(--space-2);
+  font-size: var(--font-size-control-md);
 }
 
 @media (hover: hover) {
@@ -1571,7 +1571,7 @@ progress.agent-progress:indeterminate::-moz-progress-bar {
   }
 
   .device-button:hover {
-    background: var(--ground);
+    background: var(--color-bg-ground);
   }
 }
 
@@ -1597,46 +1597,46 @@ svg.avatar.av {
 }
 
 .ic-honey {
-  color: var(--honey);
+  color: var(--color-attention-fg);
 }
 
 .ic-green {
-  color: var(--icon-green);
+  color: var(--color-avatar-green);
 }
 
 .ic-teal {
-  color: var(--icon-teal);
+  color: var(--color-avatar-teal);
 }
 
 .ic-blue {
-  color: var(--icon-blue);
+  color: var(--color-avatar-blue);
 }
 
 .ic-violet {
-  color: var(--icon-violet);
+  color: var(--color-avatar-violet);
 }
 
 .ic-rose {
-  color: var(--icon-rose);
+  color: var(--color-avatar-rose);
 }
 
 .ic-orange {
-  color: var(--icon-orange);
+  color: var(--color-avatar-orange);
 }
 
 .ic-lime {
-  color: var(--icon-lime);
+  color: var(--color-avatar-lime);
 }
 
 .ic-slate {
-  color: var(--icon-slate);
+  color: var(--color-avatar-slate);
 }
 
 /* The icon picker: radio buttons drawn as the shapes and colour swatches; the shapes take the
    chosen colour. */
 .icon-picker {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .icon-picker fieldset {
@@ -1651,7 +1651,7 @@ svg.avatar.av {
 .icon-picker legend {
   padding: 0;
   margin-bottom: 0.4rem;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 .icon-option,
@@ -1660,11 +1660,11 @@ svg.avatar.av {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
+  width: var(--size-control-lg);
+  height: var(--size-control-lg);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
   cursor: pointer;
 }
 
@@ -1681,31 +1681,31 @@ svg.avatar.av {
 
 .icon-option:has(input:checked),
 .color-option:has(input:checked) {
-  border-color: var(--action);
-  box-shadow: 0 0 0 1px var(--action);
+  border-color: var(--color-action-bg);
+  box-shadow: 0 0 0 1px var(--color-action-bg);
 }
 
 .icon-option:has(input:focus-visible),
 .color-option:has(input:focus-visible) {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-offset);
 }
 
 .swatch {
   width: 20px;
   height: 20px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: currentColor;
 }
 
-.icon-picker:has(input[value="green"]:checked) .icon-option svg { color: var(--icon-green); }
-.icon-picker:has(input[value="teal"]:checked) .icon-option svg { color: var(--icon-teal); }
-.icon-picker:has(input[value="blue"]:checked) .icon-option svg { color: var(--icon-blue); }
-.icon-picker:has(input[value="violet"]:checked) .icon-option svg { color: var(--icon-violet); }
-.icon-picker:has(input[value="rose"]:checked) .icon-option svg { color: var(--icon-rose); }
-.icon-picker:has(input[value="orange"]:checked) .icon-option svg { color: var(--icon-orange); }
-.icon-picker:has(input[value="lime"]:checked) .icon-option svg { color: var(--icon-lime); }
-.icon-picker:has(input[value="slate"]:checked) .icon-option svg { color: var(--icon-slate); }
+.icon-picker:has(input[value="green"]:checked) .icon-option svg { color: var(--color-avatar-green); }
+.icon-picker:has(input[value="teal"]:checked) .icon-option svg { color: var(--color-avatar-teal); }
+.icon-picker:has(input[value="blue"]:checked) .icon-option svg { color: var(--color-avatar-blue); }
+.icon-picker:has(input[value="violet"]:checked) .icon-option svg { color: var(--color-avatar-violet); }
+.icon-picker:has(input[value="rose"]:checked) .icon-option svg { color: var(--color-avatar-rose); }
+.icon-picker:has(input[value="orange"]:checked) .icon-option svg { color: var(--color-avatar-orange); }
+.icon-picker:has(input[value="lime"]:checked) .icon-option svg { color: var(--color-avatar-lime); }
+.icon-picker:has(input[value="slate"]:checked) .icon-option svg { color: var(--color-avatar-slate); }
 
 /* --- Menus (the agent's "⋯", the device menu): native popovers ----------------------------- */
 
@@ -1714,11 +1714,11 @@ svg.avatar.av {
   max-width: min(20rem, calc(100vw - 2rem));
   padding: 0.35rem;
   margin: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 12px 32px var(--shadow-float);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  color: var(--color-text-default);
+  box-shadow: 0 12px 32px var(--color-shadow);
 }
 
 /* With script the menu opens next to its button (melissa.js sets top and left). */
@@ -1751,19 +1751,19 @@ svg.avatar.av {
 }
 
 .menu-item .glyph {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .menu-item.danger,
 .menu-item.danger .glyph {
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 .menu-label {
   padding: 0.35rem 0.6rem 0.2rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+  color: var(--color-text-muted);
 }
 
 .device-row {
@@ -1772,12 +1772,12 @@ svg.avatar.av {
 
 .device-row .name {
   flex: 1;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 .device-row .meta {
-  color: var(--muted);
-  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 details.menu-confirm > summary {
@@ -1790,10 +1790,10 @@ details.menu-confirm > summary::-webkit-details-marker {
 
 .menu-confirm-body {
   display: grid;
-  gap: 0.5rem;
-  padding: 0.25rem 0.6rem 0.6rem;
-  font-size: 0.85rem;
-  color: var(--muted);
+  gap: var(--space-2);
+  padding: var(--space-1) 0.6rem 0.6rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 @media (hover: hover) {
@@ -1868,9 +1868,9 @@ details.menu-confirm > summary::-webkit-details-marker {
   right: -4px;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
-  background: var(--action);
-  box-shadow: 0 0 0 2px var(--surface);
+  border-radius: var(--radius-full);
+  background: var(--color-action-bg);
+  box-shadow: 0 0 0 2px var(--color-bg-surface);
 }
 
 /* Wider than a phone the words are for screen readers only. */
@@ -1913,7 +1913,7 @@ svg.glyph {
 /* A count beside a heading (group heads, the details' sections): the heading's colour. */
 .activity .label a {
   color: inherit;
-  text-decoration-color: var(--honey);
+  text-decoration-color: var(--color-attention-fg);
   text-decoration-thickness: 2px;
 }
 
@@ -1932,11 +1932,11 @@ svg.glyph {
 /* --- Page header and blocks ------------------------------------------------------------- */
 
 .page-header {
-  margin-bottom: 1.5rem;
+  margin-bottom: var(--space-5);
 }
 
 .page-header .lead {
-  color: var(--muted);
+  color: var(--color-text-muted);
   margin-top: 0.35rem;
 }
 
@@ -1951,7 +1951,7 @@ svg.glyph {
 .wide {
   max-width: 980px;
   margin: 0 auto;
-  padding: 2rem 1.5rem 3rem;
+  padding: var(--space-6) var(--space-5) var(--space-7);
 }
 
 /* --- Chat ------------------------------------------------------------------------------- */
@@ -1970,15 +1970,15 @@ svg.glyph {
   max-width: 760px;
   margin-left: auto;
   margin-right: auto;
-  padding-left: 1.5rem;
-  padding-right: 1.5rem;
+  padding-left: var(--space-5);
+  padding-right: var(--space-5);
 }
 
 /* Pages in the main column without the chat's header (Earlier chats, not found). */
 .page-pad {
   max-width: 760px;
   margin: 0 auto;
-  padding: 1.25rem 1.5rem 2rem;
+  padding: 1.25rem var(--space-5) var(--space-6);
 }
 
 .chat.page-pad > .feed-wrap {
@@ -2002,7 +2002,7 @@ svg.glyph {
 }
 
 .chat > .page-header {
-  margin-top: 0.75rem;
+  margin-top: var(--space-3);
 }
 
 /* The chat's header: the agent's icon, "device / name", its status and menu, Details. */
@@ -2012,11 +2012,11 @@ svg.glyph {
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-height: 56px;
-  padding: 0 0.5rem 0 1rem;
-  background: var(--ground);
-  border-bottom: 1px solid var(--border);
+  padding: 0 var(--space-2) 0 var(--space-4);
+  background: var(--color-bg-ground);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .chat-title {
@@ -2025,13 +2025,13 @@ svg.glyph {
   display: flex;
   align-items: baseline;
   gap: 0.4rem;
-  font-size: 0.9rem;
+  font-size: var(--font-size-control-md);
 }
 
 .chat-title h1 {
-  font-family: var(--font);
-  font-size: 0.95rem;
-  font-weight: 650;
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-heading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2039,7 +2039,7 @@ svg.glyph {
 
 .chat-device,
 .chat-sep {
-  color: var(--muted);
+  color: var(--color-text-muted);
   flex: none;
 }
 
@@ -2049,9 +2049,9 @@ svg.glyph {
 
 .device-warn {
   margin: 0;
-  color: var(--caution);
-  font-size: 0.875rem;
-  font-weight: 600;
+  color: var(--color-caution-bg);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-strong);
 }
 
 .feed-wrap {
@@ -2061,7 +2061,7 @@ svg.glyph {
 .feed {
   list-style: none;
   margin: 0;
-  padding: 1.5rem 0 1rem;
+  padding: var(--space-5) 0 var(--space-4);
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
@@ -2075,14 +2075,14 @@ svg.glyph {
 .feed-newer {
   display: flex;
   justify-content: center;
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .feed-older a,
 .feed-newer a {
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--size-target-min);
 }
 
 .reload-hook {
@@ -2148,35 +2148,35 @@ svg.glyph {
 .md .task {
   margin: 0 0.3rem 0 -1.2rem;
   vertical-align: -0.1em;
-  accent-color: var(--ok);
+  accent-color: var(--color-ok-fg);
 }
 
 .md h4,
 .md h5,
 .md h6 {
   margin: 0;
-  font-family: var(--font-head);
-  font-weight: 650;
+  font-family: var(--font-family-head);
+  font-weight: var(--font-weight-heading);
   line-height: 1.3;
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 .md .md-h1 {
-  font-size: 1.15rem;
+  font-size: var(--font-size-lg);
 }
 
 .md .md-h2 {
-  font-size: 1.05rem;
+  font-size: var(--font-size-md);
 }
 
 .md .md-h3 {
-  font-size: 1rem;
+  font-size: var(--font-size-md);
 }
 
 .md > * + h4,
 .md > * + h5,
 .md > * + h6 {
-  margin-top: 1rem;
+  margin-top: var(--space-4);
 }
 
 .md a {
@@ -2187,18 +2187,18 @@ svg.glyph {
 .md blockquote {
   margin: 0;
   padding: 0.1rem 0 0.1rem 0.85rem;
-  border-left: 3px solid var(--border);
-  color: var(--muted);
+  border-left: 3px solid var(--color-border-default);
+  color: var(--color-text-muted);
 }
 
 .md hr {
   border: 0;
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
   margin: 0.9rem 0;
 }
 
 .md del {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .md-code {
@@ -2208,15 +2208,15 @@ svg.glyph {
 .md-code pre {
   margin: 0;
   padding: 0.7rem 0.85rem;
-  background: var(--ground);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: var(--color-bg-ground);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
   overflow-x: auto;
   white-space: pre;
   overflow-wrap: normal;
   line-height: 1.45;
-  color: var(--ink);
-  scrollbar-color: var(--idle) transparent;
+  color: var(--color-text-default);
+  scrollbar-color: var(--color-idle-fg) transparent;
 }
 
 /* Room for the copy button so it doesn't cover the first line. */
@@ -2226,7 +2226,7 @@ svg.glyph {
 
 .msg .md-code code,
 .md-code code {
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
   padding: 0;
   border: 0;
   background: none;
@@ -2248,26 +2248,26 @@ svg.glyph {
 .md-table {
   overflow-x: auto;
   max-width: 100%;
-  scrollbar-color: var(--idle) transparent;
+  scrollbar-color: var(--color-idle-fg) transparent;
 }
 
 .md table {
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: var(--font-size-control-md);
 }
 
 .md th,
 .md td {
   padding: 0.35rem 0.7rem;
-  border: 1px solid var(--border);
+  border: var(--border-width-hairline) solid var(--color-border-default);
   text-align: left;
   vertical-align: top;
   overflow-wrap: normal;
 }
 
 .md th {
-  background: var(--ground);
-  font-weight: 650;
+  background: var(--color-bg-ground);
+  font-weight: var(--font-weight-heading);
 }
 
 .md .align-center {
@@ -2279,7 +2279,7 @@ svg.glyph {
 }
 
 .md-image .image-tag {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .msg-user .bubble a {
@@ -2288,7 +2288,7 @@ svg.glyph {
 }
 
 .activity .detail .md {
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 /* What the user wrote: "You", then a bubble on the right (owner design: a quiet surface). */
@@ -2300,19 +2300,19 @@ svg.glyph {
 }
 
 .msg-who {
-  font-family: var(--font);
-  font-size: 0.8rem;
-  font-weight: 400;
-  color: var(--muted);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
 }
 
 .msg-user .bubble {
   max-width: min(85%, 34rem);
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-default);
+  border: var(--border-width-hairline) solid var(--color-border-default);
   padding: 0.6rem 0.95rem;
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   overflow-wrap: anywhere;
 }
 
@@ -2324,8 +2324,8 @@ svg.glyph {
 
 .msg-tag {
   margin: 0;
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 /* Queued messages (owner design, 2026-11-21): after the chat, the user's bubble with a dashed
@@ -2334,7 +2334,7 @@ svg.glyph {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-  padding-bottom: 1rem;
+  padding-bottom: var(--space-4);
 }
 
 .chat-queue:empty {
@@ -2348,7 +2348,7 @@ svg.glyph {
 .msg-queued .bubble {
   background: none;
   border-style: dashed;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .queue-actions {
@@ -2377,31 +2377,31 @@ svg.glyph {
 
 @media (hover: hover) {
   .queue-actions button:hover {
-    color: var(--ink);
+    color: var(--color-text-default);
   }
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .queue-actions button {
-    transition: color 150ms ease-out;
+    transition: color var(--motion-duration-fast) var(--motion-ease-out);
   }
 }
 
 .msg-relayed {
   margin-left: 28px;
   padding: 0.6rem 0.9rem;
-  border-left: 3px solid var(--honey);
-  background: var(--surface);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  border-left: 3px solid var(--color-attention-fg);
+  background: var(--color-bg-surface);
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
   overflow-wrap: anywhere;
 }
 
 .msg-relayed .from {
-  font-family: var(--font);
-  font-size: 0.85rem;
-  font-weight: 650;
-  color: var(--honey-text);
-  margin-bottom: 0.25rem;
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-heading);
+  color: var(--color-attention-text);
+  margin-bottom: var(--space-1);
 }
 
 /* An agent's message: its icon, name and time on the turn's first item, then the text, the
@@ -2414,14 +2414,14 @@ svg.glyph {
 }
 
 .msg-name {
-  font-family: var(--font);
-  font-size: 0.9rem;
-  font-weight: 650;
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-control-md);
+  font-weight: var(--font-weight-heading);
 }
 
 .msg-time {
-  color: var(--muted);
-  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2455,20 +2455,20 @@ svg.glyph {
 }
 
 .step-detail {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .step-state {
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 .state-done .step-state {
-  color: var(--ok);
+  color: var(--color-ok-fg);
 }
 
 .state-failed .step-state {
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 .step-thought > summary {
@@ -2481,18 +2481,18 @@ svg.glyph {
 }
 
 .step-thought > .detail {
-  margin: 0 0 0.5rem calc(16px + 0.6rem);
-  font-size: 0.85rem;
-  color: var(--muted);
+  margin: 0 0 var(--space-2) calc(16px + 0.6rem);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
   overflow-wrap: anywhere;
 }
 
 .msg code {
   font-size: 0.9em;
   padding: 0.05em 0.3em;
-  border-radius: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .msg-user code {
@@ -2502,28 +2502,28 @@ svg.glyph {
 
 .note {
   margin-left: 28px;
-  font-size: 0.9rem;
-  color: var(--muted);
+  font-size: var(--font-size-control-md);
+  color: var(--color-text-muted);
 }
 
 .activity {
   margin-left: 28px;
-  font-size: 0.9rem;
+  font-size: var(--font-size-control-md);
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
   column-gap: 0.55rem;
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 .activity .detail {
   grid-column: 2;
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .activity .detail,
 .note .detail {
-  color: var(--muted);
+  color: var(--color-text-muted);
   overflow-wrap: anywhere;
 }
 
@@ -2541,24 +2541,24 @@ svg.icon {
 }
 
 svg.icon.ok {
-  stroke: var(--ok);
+  stroke: var(--color-ok-fg);
 }
 
 svg.icon.fail {
-  stroke: var(--caution);
+  stroke: var(--color-caution-bg);
 }
 
 svg.icon.stopped {
-  stroke: var(--muted);
+  stroke: var(--color-text-muted);
 }
 
 .spin {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--border);
-  border-top-color: var(--honey);
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-border-default);
+  border-top-color: var(--color-attention-fg);
   animation: spin 0.9s linear infinite;
 }
 
@@ -2572,13 +2572,13 @@ svg.icon.stopped {
   .spin {
     animation: none;
     border-style: dotted;
-    border-color: var(--honey);
+    border-color: var(--color-attention-fg);
   }
 }
 
 .note.caution > span:first-child {
-  color: var(--caution);
-  font-weight: 600;
+  color: var(--color-caution-bg);
+  font-weight: var(--font-weight-strong);
 }
 
 /* The conversation read text from outside: a calm, honey-tinted line, not an alarm. */
@@ -2590,9 +2590,9 @@ svg.icon.stopped {
 }
 
 .chat-date {
-  margin: 0.5rem 0 0 28px;
-  color: var(--muted);
-  font-size: 0.8rem;
+  margin: var(--space-2) 0 0 28px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2604,9 +2604,9 @@ svg.icon.stopped {
 .divider {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  color: var(--muted);
-  font-size: 0.8rem;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -2615,7 +2615,7 @@ svg.icon.stopped {
 .divider::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 /* --- Approval cards --------------------------------------------------------------------- */
@@ -2644,38 +2644,38 @@ svg.icon.stopped {
 .approval-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  color: var(--honey-text);
+  gap: var(--space-2);
+  color: var(--color-attention-text);
 }
 
 .approval.destructive .approval-head {
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 .approval.decided .approval-head {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .approval-head h3 {
-  font-family: var(--font);
-  font-size: 0.95rem;
-  font-weight: 650;
-  color: var(--ink);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-heading);
+  color: var(--color-text-default);
 }
 
 .approval .consequence {
-  color: var(--ink);
-  font-size: 0.9rem;
+  color: var(--color-text-default);
+  font-size: var(--font-size-control-md);
 }
 
 .approval .permanent {
-  color: var(--caution);
-  font-weight: 650;
+  color: var(--color-caution-bg);
+  font-weight: var(--font-weight-heading);
 }
 
 .approval .reason {
-  color: var(--muted);
-  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 /* "NETWORK ACCESS · TCP 25565": the owner's design asks for the small capitals here. */
@@ -2684,19 +2684,19 @@ svg.icon.stopped {
   flex-wrap: wrap;
   gap: 0.4rem;
   margin-top: 0.15rem;
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--honey-text);
+  color: var(--color-attention-text);
 }
 
 .approval.destructive .approval-tag {
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 .approval.decided .approval-tag {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .tag-detail {
@@ -2719,13 +2719,13 @@ svg.icon.stopped {
 
 .approval .waiting {
   margin-left: auto;
-  color: var(--muted);
-  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .approval .outcome {
-  color: var(--muted);
-  font-weight: 600;
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-strong);
 }
 
 /* The setup password card (owner design 2026-11-21): the permission card's look, with the
@@ -2739,16 +2739,16 @@ svg.icon.stopped {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem 0.5rem;
+  gap: var(--space-1) var(--space-2);
 }
 
 button.secret {
-  font-family: var(--mono);
+  font-family: var(--font-family-mono);
   letter-spacing: 0.1em;
 }
 
 .secret-value {
-  font-family: var(--mono);
+  font-family: var(--font-family-mono);
   overflow-wrap: anywhere;
   user-select: all;
 }
@@ -2757,11 +2757,11 @@ button.secret {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .forget-question {
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 /* Copy needs the clipboard (melissa.js sets `can-copy` in a secure context). */
@@ -2779,12 +2779,12 @@ button.secret {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  color: var(--muted);
-  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .approval .outcome.ok {
-  color: var(--ok);
+  color: var(--color-ok-fg);
 }
 
 #approvals .approval {
@@ -2796,8 +2796,8 @@ button.secret {
 .composer {
   position: sticky;
   bottom: 0;
-  background: var(--ground);
-  padding: 0.5rem 0 0.9rem;
+  background: var(--color-bg-ground);
+  padding: var(--space-2) 0 0.9rem;
   /* A chat opens at its end, from the first frame (2026-11-22): the browser starts the
      scroller (the chat column, the main column or the page) at the composer. */
   scroll-initial-target: nearest;
@@ -2825,8 +2825,8 @@ button.secret {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
   border-radius: 20px;
   padding: 0.35rem 0.45rem 0.45rem 0.9rem;
 }
@@ -2863,8 +2863,8 @@ button.secret {
 }
 
 .composer-box:focus-within {
-  border-color: var(--action);
-  box-shadow: 0 0 0 1px var(--action);
+  border-color: var(--color-action-bg);
+  box-shadow: 0 0 0 1px var(--color-action-bg);
 }
 
 .composer textarea {
@@ -2876,9 +2876,9 @@ button.secret {
   resize: none;
   border: 0;
   background: transparent;
-  color: var(--ink);
+  color: var(--color-text-default);
   font: inherit;
-  padding: 0.5rem 0.45rem 0.2rem 0;
+  padding: var(--space-2) 0.45rem 0.2rem 0;
   field-sizing: content;
 }
 
@@ -2887,7 +2887,7 @@ button.secret {
 }
 
 .composer textarea::placeholder {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 button.send {
@@ -2906,26 +2906,26 @@ button.send svg {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  column-gap: 0.5rem;
+  column-gap: var(--space-2);
   min-height: 2rem;
-  padding: 0.25rem 0.25rem 0;
-  font-size: 0.85rem;
-  color: var(--muted);
+  padding: var(--space-1) var(--space-1) 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 .composer-status .working {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 
 
 .composer-error {
-  color: var(--caution);
-  font-weight: 600;
-  padding: 0 0.25rem 0.4rem;
+  color: var(--color-caution-bg);
+  font-weight: var(--font-weight-strong);
+  padding: 0 var(--space-1) 0.4rem;
 }
 
 .composer-error[hidden] {
@@ -3012,19 +3012,19 @@ button.voice.working {
 .meter-head {
   display: flex;
   justify-content: space-between;
-  font-size: 0.85rem;
-  margin-bottom: 0.25rem;
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-1);
 }
 
 progress {
   width: 100%;
   height: 10px;
-  accent-color: var(--action);
+  accent-color: var(--color-action-bg);
 }
 
 .composer.dropping .composer-box {
   border-style: dashed;
-  border-color: var(--action);
+  border-color: var(--color-action-bg);
 }
 
 .composer-files {
@@ -3045,18 +3045,18 @@ progress {
   align-items: center;
   gap: 0.4rem;
   max-width: 100%;
-  padding: 0.25rem 0.3rem 0.25rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  font-size: 0.85rem;
+  padding: var(--space-1) 0.3rem var(--space-1) var(--space-2);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  font-size: var(--font-size-sm);
 }
 
 .file-chip .thumb {
   width: 36px;
   height: 36px;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .file-chip .name {
@@ -3069,7 +3069,7 @@ progress {
 
 .file-chip .size {
   flex: none;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .file-chip button.remove {
@@ -3081,7 +3081,7 @@ progress {
 /* Files in a sent message (inside the user's bubble). */
 .sent-files {
   list-style: none;
-  margin: 0 0 0.5rem;
+  margin: 0 0 var(--space-2);
   padding: 0;
   display: flex;
   flex-wrap: wrap;
@@ -3096,13 +3096,13 @@ progress {
   display: block;
   max-width: min(100%, 14rem);
   max-height: 14rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .msg-user .file-chip {
   background: transparent;
-  color: var(--bubble-ink);
-  border-color: color-mix(in srgb, var(--bubble-ink) 35%, transparent);
+  color: var(--color-bubble-text);
+  border-color: color-mix(in srgb, var(--color-bubble-text) 35%, transparent);
   text-decoration: none;
   padding-right: 0.6rem;
 }
@@ -3130,7 +3130,7 @@ progress {
 
 .model-chip .pmark span,
 .picker .pmark span {
-  font-size: 0.7rem;
+  font-size: var(--font-size-xs);
 }
 
 .chip-text {
@@ -3142,7 +3142,7 @@ progress {
 .chip-warn {
   flex: none;
   display: inline-grid;
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 svg.warn {
@@ -3153,7 +3153,7 @@ svg.warn {
 
 svg.warn .mark {
   fill: none;
-  stroke: var(--surface);
+  stroke: var(--color-bg-surface);
   stroke-width: 1.6;
   stroke-linecap: round;
 }
@@ -3173,12 +3173,12 @@ svg.warn .mark {
   width: min(40rem, calc(100vw - 32px));
   max-height: min(30rem, calc(100dvh - 32px));
   padding: 0;
-  border: 1px solid var(--border);
+  border: var(--border-width-hairline) solid var(--color-border-default);
   border-radius: 14px;
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 12px 32px var(--shadow-float);
-  font-size: 0.9rem;
+  background: var(--color-bg-surface);
+  color: var(--color-text-default);
+  box-shadow: 0 12px 32px var(--color-shadow);
+  font-size: var(--font-size-control-md);
   overflow: hidden;
 }
 
@@ -3191,7 +3191,7 @@ svg.warn .mark {
     position-anchor: --model-chip;
     position-area: top span-left;
     position-try-fallbacks: flip-block, top, bottom;
-    margin: 0 0 8px;
+    margin: 0 0 var(--space-2);
   }
 
   /* Phones: the whole width above the chip, with the page's gutter. */
@@ -3201,7 +3201,7 @@ svg.warn .mark {
       position-try-fallbacks: none;
       justify-self: stretch;
       width: auto;
-      margin: 0 16px 8px;
+      margin: 0 var(--space-4) var(--space-2);
     }
   }
 }
@@ -3227,23 +3227,23 @@ svg.warn .mark {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 0.5rem 1.5rem;
-  padding: 0.5rem 0.75rem;
-  border-top: 1px solid var(--border);
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-2) var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .picker-option {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .picker-option-head {
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-brand);
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -3256,29 +3256,30 @@ svg.warn .mark {
 .picker-rail {
   display: none;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.5rem 0.35rem;
-  border-right: 1px solid var(--border);
-  background: var(--ground);
+  gap: var(--space-1);
+  padding: var(--space-2) 0.35rem;
+  border-right: var(--border-width-hairline) solid var(--color-border-default);
+  background: var(--color-bg-ground);
   overflow-y: auto;
 }
 
 .picker-rail .rail-item {
-  width: 40px;
-  height: 40px;
-  min-height: 40px;
+  position: relative;
+  width: var(--size-control-md);
+  height: var(--size-control-md);
+  min-height: var(--size-control-md);
   padding: 0;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .picker-rail .rail-item[aria-pressed="true"] {
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--border);
-  color: var(--ink);
+  background: var(--color-bg-surface);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  color: var(--color-text-default);
 }
 
 .picker-main {
@@ -3286,7 +3287,7 @@ svg.warn .mark {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 0.5rem;
+  padding: var(--space-2);
   gap: 0.4rem;
 }
 
@@ -3302,13 +3303,13 @@ svg.warn .mark {
 }
 
 .picker-group-head {
-  font-family: var(--font);
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--muted);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-brand);
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin: 0.5rem 0.4rem 0.25rem;
+  margin: var(--space-2) 0.4rem var(--space-1);
 }
 
 .picker-list {
@@ -3320,7 +3321,7 @@ svg.warn .mark {
 .picker-row {
   display: flex;
   align-items: center;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .picker-row[hidden],
@@ -3359,7 +3360,7 @@ svg.warn .mark {
   width: 16px;
   height: 16px;
   fill: none;
-  stroke: var(--action);
+  stroke: var(--color-action-bg);
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -3367,25 +3368,25 @@ svg.warn .mark {
 
 .picker kbd {
   display: none;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-xs);
   padding: 0 0.3rem;
 }
 
 .picker .fav {
   display: none;
   flex: none;
-  width: 36px;
-  height: 36px;
-  min-height: 36px;
+  width: var(--size-control-sm);
+  height: var(--size-control-sm);
+  min-height: var(--size-control-sm);
   padding: 0;
   place-items: center;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--idle);
+  color: var(--color-idle-fg);
 }
 
 .picker .star {
@@ -3398,7 +3399,7 @@ svg.warn .mark {
 }
 
 .picker .fav[aria-pressed="true"] {
-  color: var(--honey);
+  color: var(--color-attention-fg);
 }
 
 .picker .fav[aria-pressed="true"] .star,
@@ -3407,14 +3408,14 @@ svg.warn .mark {
 }
 
 .rail-item[data-filter="favorites"] {
-  color: var(--honey);
+  color: var(--color-attention-fg);
 }
 
 .picker-empty,
 .picker-note,
 .picker-error {
   margin: 0.4rem;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .picker-empty[hidden],
@@ -3423,8 +3424,8 @@ svg.warn .mark {
 }
 
 .picker-error {
-  color: var(--caution);
-  font-weight: 600;
+  color: var(--color-caution-bg);
+  font-weight: var(--font-weight-strong);
 }
 
 .picker-more {
@@ -3437,43 +3438,43 @@ svg.warn .mark {
   flex-direction: column;
   gap: 0.15rem;
   min-width: 9.5rem;
-  padding: 0.5rem;
-  border-left: 1px solid var(--border);
+  padding: var(--space-2);
+  border-left: var(--border-width-hairline) solid var(--color-border-default);
   overflow-y: auto;
 }
 
 .picker-levels h3 {
-  font-family: var(--font);
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--muted);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-brand);
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin: 0.5rem 0.5rem 0.25rem;
+  margin: var(--space-2) var(--space-2) var(--space-1);
 }
 
 .picker-levels .level {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  min-height: 38px;
-  padding: 0 0.5rem;
-  border-radius: 8px;
+  gap: var(--space-2);
+  min-height: var(--size-control-md);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--ink);
+  color: var(--color-text-default);
   text-align: left;
 }
 
 .picker-levels .level[aria-current="true"] {
-  font-weight: 700;
+  font-weight: var(--font-weight-brand);
 }
 
 .picker .pick:focus-visible,
 .picker .level:focus-visible,
 .picker .fav:focus-visible,
 .picker .rail-item:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: var(--focus-width) solid var(--color-focus-ring);
   outline-offset: -2px;
 }
 
@@ -3485,7 +3486,7 @@ svg.warn .mark {
   }
 
   .picker .fav:hover {
-    color: var(--honey);
+    color: var(--color-attention-fg);
   }
 }
 
@@ -3530,7 +3531,7 @@ svg.warn .mark {
     flex-wrap: wrap;
     min-width: 0;
     border-left: 0;
-    border-top: 1px solid var(--border);
+    border-top: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .picker-levels h3 {
@@ -3539,8 +3540,8 @@ svg.warn .mark {
   }
 
   .picker-levels .level {
-    min-height: 36px;
-    border: 1px solid var(--border);
+    min-height: var(--size-control-md);
+    border: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .picker kbd,
@@ -4037,16 +4038,16 @@ a.app-row-address:hover {
 .devices-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .device {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1rem;
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
   display: grid;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .device header {
@@ -4062,8 +4063,8 @@ a.app-row-address:hover {
 }
 
 .device-status {
-  font-size: 0.85rem;
-  color: var(--muted);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 /* A device card's facts as pills (OS, CPUs, kernel, uptime). The Settings key/value list is dl.facts. */
@@ -4077,28 +4078,28 @@ a.app-row-address:hover {
 }
 
 .device-facts li {
-  font-size: 0.82rem;
+  font-size: var(--font-size-xs);
   padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  background: var(--ground);
-  color: var(--muted);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-ground);
+  color: var(--color-text-muted);
 }
 
 .meter label {
   display: flex;
   justify-content: space-between;
-  font-size: 0.85rem;
-  margin-bottom: 0.25rem;
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-1);
 }
 
 .meter-text {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 meter {
   width: 100%;
   height: 10px;
-  accent-color: var(--ok);
+  accent-color: var(--color-ok-fg);
 }
 
 /* --- Task pages (developer view) --------------------------------------------------------- */
@@ -4106,21 +4107,21 @@ meter {
 .topbar {
   display: flex;
   align-items: center;
-  padding: 0.5rem 1.5rem;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-5);
+  background: var(--color-bg-surface);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 main.plain {
   max-width: 1040px;
   margin: 0 auto;
-  padding: 1.5rem;
+  padding: var(--space-5);
 }
 
 /* Sign in, claim, invite, password again: one narrow card. */
 .auth-card {
   max-width: 34rem;
-  margin: 2rem auto 0;
+  margin: var(--space-6) auto 0;
 }
 
 /* The intro line ("You become the owner.") keeps the form's own gap from the first field. */
@@ -4131,7 +4132,7 @@ main.plain {
 /* "Show password" under a password field: melissa.js switches the field; hidden without it. */
 .field-pw {
   display: grid;
-  gap: 0.25rem;
+  gap: var(--space-1);
 }
 
 .show-password {
@@ -4166,20 +4167,20 @@ main.plain {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.925rem;
+  font-size: var(--font-size-control-md);
 }
 
 th,
 td {
   text-align: left;
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) 0.6rem;
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
   vertical-align: top;
 }
 
 th {
-  font-weight: 650;
-  color: var(--muted);
+  font-weight: var(--font-weight-heading);
+  color: var(--color-text-muted);
 }
 
 /* A notice (COMPONENT-SPEC 2.10, DS-11): a fact about a region, on its tone's soft colour,
@@ -4228,7 +4229,7 @@ th {
 }
 
 .empty {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 /* An inset (DS-10): a sunken box inside a card (logs, services, files). */
@@ -4244,7 +4245,7 @@ th {
 }
 
 .log-err {
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 form.stack {
@@ -4254,13 +4255,13 @@ form.stack {
 
 form.inline {
   display: inline-block;
-  margin-top: 0.75rem;
+  margin-top: var(--space-3);
 }
 
 .field {
   display: grid;
   gap: 0.3rem;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 /* A field's control fills its width. */
@@ -4276,7 +4277,7 @@ form.inline {
 
 .card > a {
   display: inline-block;
-  margin-top: 0.75rem;
+  margin-top: var(--space-3);
 }
 
 /* --- Panels: Settings, Apps, Usage and resources (2026-11-20) ---------------------------- */
@@ -4285,21 +4286,21 @@ form.inline {
 
 .panel {
   min-height: 100%;
-  background: var(--ground);
+  background: var(--color-bg-ground);
 }
 
 .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   min-height: 3.5rem;
-  padding: 0.5rem 0.75rem 0.5rem 1.5rem;
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .panel-head h1 {
-  font-size: 1.15rem;
+  font-size: var(--font-size-lg);
 }
 
 .panel-head .crumbs ol {
@@ -4319,7 +4320,7 @@ form.inline {
 }
 
 .panel-body {
-  padding: 1.5rem;
+  padding: var(--space-5);
 }
 
 .panel-plain .panel-body {
@@ -4328,7 +4329,7 @@ form.inline {
 
 .panel-body > .lead {
   margin: 0 0 1.25rem;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 /* Settings: the section list on the left, the section on the right. */
@@ -4340,18 +4341,18 @@ form.inline {
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 1rem 0.75rem;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-3);
+  background: var(--color-bg-surface);
+  border-right: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .settings-title {
-  margin: 0 0 0.5rem;
+  margin: 0 0 var(--space-2);
   padding: 0 0.6rem;
-  font-family: var(--font-head);
-  font-size: 1.15rem;
-  font-weight: 650;
+  font-family: var(--font-family-head);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-heading);
 }
 
 .settings-search {
@@ -4363,11 +4364,11 @@ form.inline {
 }
 
 .settings-group {
-  margin: 0.75rem 0 0.25rem;
+  margin: var(--space-3) 0 var(--space-1);
   padding: 0 0.6rem;
-  font-size: 0.8rem;
-  font-weight: 650;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-heading);
+  color: var(--color-text-muted);
 }
 
 .settings-nav ul {
@@ -4410,8 +4411,8 @@ form.inline {
 }
 
 .settings-none {
-  padding: 0.5rem 0.6rem;
-  font-size: 0.85rem;
+  padding: var(--space-2) 0.6rem;
+  font-size: var(--font-size-sm);
 }
 
 .settings-main {
@@ -4429,16 +4430,16 @@ dialog.overlay {
   max-width: none;
   max-height: none;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--ground);
-  color: var(--ink);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-ground);
+  color: var(--color-text-default);
   overflow: hidden;
-  box-shadow: 0 24px 64px var(--shadow-float);
+  box-shadow: 0 24px 64px var(--color-shadow);
 }
 
 dialog.overlay::backdrop {
-  background: var(--backdrop);
+  background: var(--color-backdrop);
 }
 
 dialog.overlay:focus {
@@ -4485,7 +4486,7 @@ dialog.overlay:focus {
 
 /* A page that opened as the modal (deep link) leaves its place empty. */
 main:empty {
-  background: var(--ground);
+  background: var(--color-bg-ground);
 }
 
 /* --- Setting rows (2026-11-20): cards of rows, title and description left, control right -- */
@@ -4493,12 +4494,12 @@ main:empty {
 .setting-group + .setting-group,
 .setting-group + .card,
 .card + .setting-group {
-  margin-top: 1.5rem;
+  margin-top: var(--space-5);
 }
 
 .setting-heading {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-md);
 }
 
 .setting-card {
@@ -4508,15 +4509,15 @@ main:empty {
 }
 
 .setting-card > * + * {
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .setting-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.5rem 1.5rem;
-  padding: 0.75rem 1rem;
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-3) var(--space-4);
 }
 
 .setting-row[hidden] {
@@ -4525,14 +4526,14 @@ main:empty {
 
 .setting-title {
   margin: 0;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 .setting-desc {
   margin: 0.15rem 0 0;
   max-width: 60ch;
-  color: var(--muted);
-  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
   text-wrap: pretty;
 }
 
@@ -4541,7 +4542,7 @@ main:empty {
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .setting-control .toggle,
@@ -4564,7 +4565,7 @@ main:empty {
 .inline-form {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .inline-number {
@@ -4581,7 +4582,7 @@ table.usage th.num {
 }
 
 table.usage th[scope="row"] {
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
   text-align: left;
 }
 
@@ -4592,8 +4593,8 @@ table.usage th[scope="row"] {
   gap: 0.4rem;
   margin: 0 0 0.35rem;
   padding: 0;
-  font-size: 0.9rem;
-  color: var(--muted);
+  font-size: var(--font-size-control-md);
+  color: var(--color-text-muted);
 }
 
 .crumbs li + li::before {
@@ -4602,12 +4603,12 @@ table.usage th[scope="row"] {
 }
 
 .crumbs a {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .crumbs [aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
+  color: var(--color-text-default);
+  font-weight: var(--font-weight-strong);
 }
 
 .settings-head {
@@ -4615,21 +4616,21 @@ table.usage th[scope="row"] {
   flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 0.5rem 1.5rem;
+  gap: var(--space-2) var(--space-5);
   margin-bottom: 1.25rem;
 }
 
 .settings-head .lead {
-  color: var(--muted);
+  color: var(--color-text-muted);
   margin: 0.3rem 0 0;
 }
 
 .checked {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-control-md);
 }
 
 .checked span::after {
@@ -4639,21 +4640,21 @@ table.usage th[scope="row"] {
 .split-card {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
 .split-list {
-  border-right: 1px solid var(--border);
-  padding: 0.5rem;
+  border-right: var(--border-width-hairline) solid var(--color-border-default);
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
 }
 
 .split-detail {
-  padding: 1.25rem 1.5rem 1.5rem;
+  padding: 1.25rem var(--space-5) var(--space-5);
   display: grid;
   /* One column that never grows past the pane: long commands scroll inside their block. */
   grid-template-columns: minmax(0, 1fr);
@@ -4722,8 +4723,8 @@ table.usage th[scope="row"] {
 
 .pick-foot {
   margin-top: auto;
-  padding: 0.75rem 0.6rem 0.25rem;
-  font-size: 0.85rem;
+  padding: var(--space-3) 0.6rem var(--space-1);
+  font-size: var(--font-size-sm);
 }
 
 .pick-foot p {
@@ -4744,26 +4745,26 @@ table.usage th[scope="row"] {
   inset: 0;
   width: 100%;
   height: 100%;
-  fill: var(--honey-soft);
-  stroke: var(--honey);
+  fill: var(--color-attention-soft);
+  stroke: var(--color-attention-fg);
   stroke-width: 1.2;
 }
 
 .pmark span {
   position: relative;
-  font-family: var(--font-head);
-  font-weight: 700;
-  font-size: 0.95rem;
-  color: var(--honey-text);
+  font-family: var(--font-family-head);
+  font-weight: var(--font-weight-brand);
+  font-size: var(--font-size-md);
+  color: var(--color-attention-text);
 }
 
 .pmark.muted svg {
-  fill: var(--ground);
-  stroke: var(--idle);
+  fill: var(--color-bg-ground);
+  stroke: var(--color-idle-fg);
 }
 
 .pmark.muted span {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 /* The toggle: a native checkbox drawn as a switch. */
@@ -4802,7 +4803,7 @@ table.usage th[scope="row"] {
 .detail-head {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -4830,11 +4831,11 @@ table.usage th[scope="row"] {
 .facts > div {
   display: grid;
   grid-template-columns: 11rem minmax(0, 1fr);
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .facts dt {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .facts dd {
@@ -4853,16 +4854,16 @@ table.usage th[scope="row"] {
 .group {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.75rem;
+  gap: var(--space-3);
   padding-top: 1.1rem;
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .group > h3 {
-  font-size: 0.8rem;
+  font-size: var(--font-size-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .group > p {
@@ -4874,53 +4875,53 @@ table.usage th[scope="row"] {
 }
 
 .field .hint {
-  font-weight: 400;
-  color: var(--muted);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
 }
 
 .field-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .vars {
   list-style: none;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
 }
 
 .vars li {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem 0.75rem;
-  padding: 0.2rem 0.5rem 0.2rem 0.75rem;
+  gap: var(--space-1) var(--space-3);
+  padding: 0.2rem var(--space-2) 0.2rem var(--space-3);
 }
 
 .vars li + li {
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .var-name {
-  font-family: var(--mono);
-  font-weight: 600;
+  font-family: var(--font-family-mono);
+  font-weight: var(--font-weight-strong);
 }
 
 .var-value {
   flex: 1;
   min-width: 0;
-  font-family: var(--mono);
-  font-size: 0.9rem;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-control-md);
   overflow-wrap: anywhere;
 }
 
 .var-secret {
   flex: 1;
-  color: var(--ok);
-  font-weight: 600;
+  color: var(--color-ok-fg);
+  font-weight: var(--font-weight-strong);
 }
 
 .var-remove {
@@ -4962,8 +4963,8 @@ table.usage th[scope="row"] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
-  margin-top: 0.5rem;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
 }
 
 .confirm-inline-body form {
@@ -4980,12 +4981,12 @@ table.usage th[scope="row"] {
 }
 
 .danger-confirm > summary {
-  color: var(--caution);
-  border-color: var(--caution);
+  color: var(--color-caution-bg);
+  border-color: var(--color-caution-bg);
 }
 
 .danger-confirm > .confirm {
-  margin: 0.75rem 0 0;
+  margin: var(--space-3) 0 0;
 }
 
 .danger-confirm form {
@@ -4993,18 +4994,18 @@ table.usage th[scope="row"] {
 }
 
 .small {
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .settings .card {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .settings-main .panel-body > div > .md-code.command,
 .settings-main .panel-body > div > .action-row {
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-4);
 }
 
 .settings .card > h2 {
@@ -5016,19 +5017,19 @@ table.usage th[scope="row"] {
 }
 
 .settings .card .facts + p {
-  margin-top: 0.25rem;
+  margin-top: var(--space-1);
 }
 
 /* --- Disclosure, sign-in steps, one-field forms (2026-11-19) ----------------------------- */
 
 .disclosure {
-  border-top: 1px solid var(--border);
-  padding-top: 0.75rem;
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+  padding-top: var(--space-3);
 }
 
 .disclosure > summary {
   cursor: pointer;
-  color: var(--muted);
+  color: var(--color-text-muted);
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -5049,8 +5050,8 @@ table.usage th[scope="row"] {
   content: "\203A";
   display: inline-block;
   width: 0.8em;
-  font-weight: 700;
-  transition: transform 0.15s ease;
+  font-weight: var(--font-weight-brand);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out);
 }
 
 .disclosure[open] > summary::before {
@@ -5064,18 +5065,18 @@ table.usage th[scope="row"] {
 }
 
 .disclosure > summary:hover {
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 .disclosure[open] > summary {
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 .disclosure-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
-  padding-top: 0.5rem;
+  gap: var(--space-4);
+  padding-top: var(--space-2);
 }
 
 .one-field {
@@ -5098,19 +5099,19 @@ ol.steps {
   margin: 0;
   padding-left: 1.4rem;
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 ol.steps > li::marker {
-  color: var(--muted);
-  font-weight: 600;
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-strong);
 }
 
 .key-set {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 @media (max-width: 520px) {
@@ -5129,9 +5130,9 @@ ol.steps > li::marker {
   }
 
   .settings-nav {
-    padding: 0.75rem 1rem 0.5rem;
+    padding: var(--space-3) var(--space-4) var(--space-2);
     border-right: 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .settings-title,
@@ -5146,14 +5147,14 @@ ol.steps > li::marker {
     /* Room for a tab's focus ring (3px + 2px offset) inside the scroller, which clips it. */
     padding: 5px;
     margin: -5px;
-    gap: 0.25rem;
+    gap: var(--space-1);
     scrollbar-width: thin;
-    scrollbar-color: var(--idle) transparent;
+    scrollbar-color: var(--color-idle-fg) transparent;
   }
 
   .settings-nav ul {
     display: flex;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .settings-nav a {
@@ -5161,11 +5162,11 @@ ol.steps > li::marker {
   }
 
   .panel-head {
-    padding-left: 1rem;
+    padding-left: var(--space-4);
   }
 
   .panel-body {
-    padding: 1rem;
+    padding: var(--space-4);
   }
 
   /* The panels (Settings, Apps, Usage) fill the phone's screen; keep their bottom clear. */
@@ -5191,11 +5192,11 @@ ol.steps > li::marker {
 
   .split-list {
     border-right: 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .split-detail {
-    padding: 1rem;
+    padding: var(--space-4);
   }
 
   .facts > div {
@@ -5220,8 +5221,8 @@ ol.steps > li::marker {
   .chat > .feed-wrap,
   .page-pad,
   .wide {
-    padding-left: 1rem;
-    padding-right: 1rem;
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
   }
 
   .chat-device,
@@ -5245,7 +5246,7 @@ ol.steps > li::marker {
 }
 
 .sheet-msg.tone-caution {
-  color: var(--caution);
+  color: var(--color-caution-bg);
 }
 
 /* --- Details panel (the agent of a chat: who, apps, schedules, files; 2026-11-20) ------ */
@@ -5263,19 +5264,19 @@ ol.steps > li::marker {
   min-width: 0;
   width: 100%;
   scrollbar-width: thin;
-  scrollbar-color: var(--idle) transparent;
+  scrollbar-color: var(--color-idle-fg) transparent;
 }
 
 .details-toggle[aria-expanded="true"] {
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 .details {
-  background: var(--surface);
+  background: var(--color-bg-surface);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: var(--idle) transparent;
+  scrollbar-color: var(--color-idle-fg) transparent;
 }
 
 .details:focus {
@@ -5289,29 +5290,29 @@ ol.steps > li::marker {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-height: 56px;
-  padding: 0 0.5rem 0 1rem;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  padding: 0 var(--space-2) 0 var(--space-4);
+  background: var(--color-bg-surface);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .details-head h2 {
   margin: 0;
-  font-family: var(--font);
-  font-size: 0.95rem;
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-md);
 }
 
 .details-section {
-  padding: 0.85rem 1rem;
+  padding: 0.85rem var(--space-4);
 }
 
 .details-section + .details-section {
-  padding-top: 0.25rem;
+  padding-top: var(--space-1);
 }
 
 .details .quiet {
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .permission .review {
@@ -5319,11 +5320,11 @@ ol.steps > li::marker {
   align-items: center;
   min-height: 32px;
   padding: 0 0.6rem;
-  border: 1px solid var(--honey);
-  border-radius: 8px;
-  color: var(--honey-text);
-  font-size: 0.8rem;
-  font-weight: 600;
+  border: var(--border-width-hairline) solid var(--color-attention-fg);
+  border-radius: var(--radius-md);
+  color: var(--color-attention-text);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
   text-decoration: none;
 }
 
@@ -5331,17 +5332,17 @@ ol.steps > li::marker {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  margin: 0 0 0.5rem;
-  font-family: var(--font);
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--ink);
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-strong);
+  color: var(--color-text-default);
 }
 
 .details-label .count,
 .services-head .count {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 /* On-device services: one card, the apps then this device, divided by hairlines. */
@@ -5358,10 +5359,10 @@ ol.steps > li::marker {
   min-height: 40px;
   margin: 0;
   padding: 0 0.85rem;
-  font-family: var(--font);
-  font-size: 0.85rem;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-strong);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .service-list {
@@ -5375,7 +5376,7 @@ ol.steps > li::marker {
   align-items: flex-start;
   gap: 0.6rem;
   padding: 0.6rem 0.35rem 0.6rem 0.85rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .service:last-child,
@@ -5385,7 +5386,7 @@ ol.steps > li::marker {
 
 .service > .glyph {
   margin-top: 0.15rem;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .service-text {
@@ -5394,8 +5395,8 @@ ol.steps > li::marker {
 }
 
 .service-name {
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: var(--font-size-control-md);
+  font-weight: var(--font-weight-strong);
   overflow-wrap: anywhere;
 }
 
@@ -5404,8 +5405,8 @@ ol.steps > li::marker {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 .service-status .dot,
@@ -5416,49 +5417,49 @@ ol.steps > li::marker {
 
 .service-state {
   flex: none;
-  padding-right: 0.5rem;
+  padding-right: var(--space-2);
   min-height: 1.4rem;
 }
 
 .service-facts {
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .service-group {
-  padding: 0.5rem 0.85rem 0;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--muted);
+  padding: var(--space-2) 0.85rem 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+  color: var(--color-text-muted);
 }
 
 .service-empty {
   padding: 0.6rem 0.85rem;
-  font-size: 0.85rem;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .device-service {
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 /* Permissions and recent activity: plain rows. */
 .permission-list .glyph {
   flex: none;
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .permission.waiting .glyph {
-  color: var(--honey);
+  color: var(--color-attention-fg);
 }
 
 .activity-list {
   list-style: none;
   margin: 0;
-  padding: 0.5rem 0 0;
-  border-top: 1px solid var(--border);
+  padding: var(--space-2) 0 0;
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
   display: grid;
   gap: 0.35rem;
 }
@@ -5468,17 +5469,17 @@ ol.steps > li::marker {
   grid-template-columns: 6px minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.6rem;
-  font-size: 0.8rem;
+  font-size: var(--font-size-xs);
 }
 
 .activity-line .dot {
   width: 6px;
   height: 6px;
-  background: var(--ok);
+  background: var(--color-ok-fg);
 }
 
 .activity-line.attention .dot {
-  background: var(--honey);
+  background: var(--color-attention-fg);
 }
 
 .activity-line .text {
@@ -5486,7 +5487,7 @@ ol.steps > li::marker {
 }
 
 .activity-line .when {
-  color: var(--muted);
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -5502,7 +5503,7 @@ ol.steps > li::marker {
 .detail-list li {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .detail-main {
@@ -5511,8 +5512,8 @@ ol.steps > li::marker {
   display: flex;
   flex-direction: column;
   padding: 0.3rem 0.4rem;
-  border-radius: 8px;
-  color: var(--ink);
+  border-radius: var(--radius-md);
+  color: var(--color-text-default);
   text-decoration: none;
 }
 
@@ -5521,13 +5522,13 @@ ol.steps > li::marker {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 .detail-main .meta,
 .box-file .meta {
-  color: var(--muted);
-  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .detail-list .dot {
@@ -5538,14 +5539,14 @@ ol.steps > li::marker {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  font-size: 0.9rem;
+  font-size: var(--font-size-control-md);
 }
 
 .file-upload {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.5rem;
+  gap: var(--space-2);
   margin: 0 0 0.6rem;
 }
 
@@ -5553,7 +5554,7 @@ ol.steps > li::marker {
 .file-tools {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   margin: 0 0 0.6rem;
 }
 
@@ -5565,11 +5566,11 @@ ol.steps > li::marker {
    border and radius) with its own chevron, drawn in CSS (no image URLs under the CSP). */
 .box-files {
   list-style: none;
-  margin: 0 0 0.5rem;
+  margin: 0 0 var(--space-2);
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 /* A file: a preview for images (opens full size), its name, kind and size, ⋯, who added it. */
@@ -5583,10 +5584,10 @@ ol.steps > li::marker {
 .file-preview {
   position: relative;
   display: block;
-  margin: 0.5rem 0.5rem 0;
-  border-radius: 6px;
+  margin: var(--space-2) var(--space-2) 0;
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: var(--surface);
+  background: var(--color-bg-surface);
 }
 
 .file-preview img {
@@ -5602,15 +5603,15 @@ ol.steps > li::marker {
   right: 0.35rem;
   display: inline-flex;
   padding: 0.3rem;
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-text-default);
 }
 
 .file-note {
   padding: 0 0.85rem 0.6rem;
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 /* The ⋯ button sits at the row's top right; its menu opens below the file. */
@@ -5623,8 +5624,8 @@ ol.steps > li::marker {
 }
 
 .box-file-row > .glyph {
-  margin-top: 0.75rem;
-  color: var(--muted);
+  margin-top: var(--space-3);
+  color: var(--color-text-muted);
 }
 
 .box-file {
@@ -5633,9 +5634,9 @@ ol.steps > li::marker {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 0.35rem 0.5rem;
-  border-radius: 8px;
-  color: var(--ink);
+  padding: 0.35rem var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-text-default);
   text-decoration: none;
 }
 
@@ -5655,7 +5656,7 @@ ol.steps > li::marker {
 }
 
 .file-more[open] > summary {
-  background: var(--ground);
+  background: var(--color-bg-ground);
 }
 
 .file-more-body {
@@ -5663,16 +5664,16 @@ ol.steps > li::marker {
   flex-direction: column;
   align-items: flex-start;
   gap: 0.6rem;
-  padding: 0.5rem 0.5rem 0.75rem;
-  border-radius: 8px;
-  background: var(--ground);
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-ground);
 }
 
 .file-send {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
 }
 
@@ -5689,12 +5690,12 @@ ol.steps > li::marker {
 @media (hover: hover) {
   .box-file:hover,
   a.detail-main:hover {
-    background: var(--ground);
+    background: var(--color-bg-ground);
   }
 }
 
 .file-chip.expired {
-  color: var(--muted);
+  color: var(--color-text-muted);
   border-style: dashed;
 }
 
@@ -5731,7 +5732,7 @@ ol.steps > li::marker {
     flex: 0 0 18.5rem;
     align-self: stretch;
     height: 100%;
-    border-left: 1px solid var(--border);
+    border-left: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .details[data-closed] {
@@ -5749,8 +5750,8 @@ ol.steps > li::marker {
   .details {
     width: 100%;
     max-width: 760px;
-    margin: 1.5rem auto 0;
-    border-top: 1px solid var(--border);
+    margin: var(--space-5) auto 0;
+    border-top: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   /* With script: a sheet over the chat, opened with Details. */
@@ -5764,8 +5765,8 @@ ol.steps > li::marker {
     max-width: none;
     margin: 0;
     border-top: 0;
-    border-left: 1px solid var(--border);
-    box-shadow: -12px 0 32px var(--shadow-float);
+    border-left: var(--border-width-hairline) solid var(--color-border-default);
+    box-shadow: -12px 0 32px var(--color-shadow);
     transform: translateX(100%);
     visibility: hidden;
   }
@@ -5783,7 +5784,7 @@ ol.steps > li::marker {
   }
 
   .js .details[data-ready][data-open] {
-    transition: transform 0.2s ease;
+    transition: transform var(--motion-duration-medium) var(--motion-ease-out);
   }
 
   .js .details-backdrop:not([hidden]) {
@@ -5791,7 +5792,7 @@ ol.steps > li::marker {
     position: fixed;
     inset: 0;
     z-index: 39;
-    background: var(--backdrop);
+    background: var(--color-backdrop);
   }
 }
 
@@ -5833,7 +5834,7 @@ ol.steps > li::marker {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .add-panel-head h1 {
@@ -5849,7 +5850,7 @@ ol.steps > li::marker {
 
 .add-panel-body h2 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: var(--font-size-lg);
 }
 
 .add-panel-body p {
@@ -5860,12 +5861,12 @@ ol.steps > li::marker {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
+  gap: var(--space-2) var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
-  color: var(--muted);
-  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-control-md);
 }
 
 .stepper li {
@@ -5878,7 +5879,7 @@ ol.steps > li::marker {
   content: "";
   width: 1.5rem;
   height: 1px;
-  background: var(--border);
+  background: var(--color-border-default);
 }
 
 .step-n {
@@ -5886,32 +5887,32 @@ ol.steps > li::marker {
   place-items: center;
   width: 1.6rem;
   height: 1.6rem;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  font-weight: 600;
-  font-size: 0.8rem;
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  font-weight: var(--font-weight-strong);
+  font-size: var(--font-size-xs);
 }
 
 .stepper li[aria-current="step"] {
-  color: var(--ink);
-  font-weight: 600;
+  color: var(--color-text-default);
+  font-weight: var(--font-weight-strong);
 }
 
 .stepper li[aria-current="step"] .step-n {
-  background: var(--action);
-  border-color: var(--action);
-  color: var(--action-ink);
+  background: var(--color-action-bg);
+  border-color: var(--color-action-bg);
+  color: var(--color-action-text);
 }
 
 .stepper li.done .step-n {
-  border-color: var(--ok);
-  color: var(--ok);
+  border-color: var(--color-ok-fg);
+  color: var(--color-ok-fg);
 }
 
 .ptiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
-  gap: 0.75rem;
+  gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -5930,31 +5931,31 @@ ol.steps > li::marker {
   height: 100%;
   min-height: 6.5rem;
   padding: 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--ink);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  color: var(--color-text-default);
   font: inherit;
   text-align: left;
 }
 
 .ptile.added {
-  background: var(--ground);
-  color: var(--muted);
+  background: var(--color-bg-ground);
+  color: var(--color-text-muted);
 }
 
 .ptile-name {
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 .ptile-note {
-  font-size: 0.85rem;
-  color: var(--muted);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 .search-box {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .search-box > .input {
@@ -5965,7 +5966,7 @@ ol.steps > li::marker {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .reg-list {
@@ -5978,9 +5979,9 @@ ol.steps > li::marker {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
-  gap: 0.75rem;
-  padding: 0.75rem 0;
-  border-top: 1px solid var(--border);
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .reg-text p {
@@ -5988,42 +5989,42 @@ ol.steps > li::marker {
 }
 
 .reg-name span:first-child {
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
 .reg-desc {
   margin-top: 0.15rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-control-md);
 }
 
 .reg-act {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0.25rem;
+  gap: var(--space-1);
   text-align: right;
 }
 
 .reg-error {
-  color: var(--caution);
-  font-size: 0.85rem;
+  color: var(--color-caution-bg);
+  font-size: var(--font-size-sm);
 }
 
 .remove-provider {
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 @media (max-width: 560px) {
   .add-panel {
-    padding: 1rem;
+    padding: var(--space-4);
   }
 
   .stepper {
     gap: 0.4rem;
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
   }
 
   .stepper li + li::before {
@@ -6051,18 +6052,18 @@ ol.steps > li::marker {
 
 @media (hover: hover) {
   button.ptile:hover {
-    border-color: var(--action);
+    border-color: var(--color-action-bg);
   }
 }
 
 /* A disclosure at the end of a setting card ("Details" under Updates). */
 .setting-more {
-  padding: 0.25rem 1rem;
+  padding: var(--space-1) var(--space-4);
 }
 
 /* A setting card that holds a form instead of rows (a helper's name and icon). */
 .setting-card.card-pad {
-  padding: 1rem;
+  padding: var(--space-4);
 }
 
 /* === Phone views (2026-11-20, owner design "Melissa — Mobile"; components::mobile) ==========
@@ -6089,8 +6090,8 @@ ol.steps > li::marker {
 
 /* "Review" in the details brought this permission card into view (melissa.js). */
 .approval[data-flash] {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-offset);
 }
 
 @media (max-width: 760px) {
@@ -6107,13 +6108,13 @@ ol.steps > li::marker {
 
   .shell:has([data-phone-view="list"]) > .sidebar {
     padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
-    background: var(--ground);
+    background: var(--color-bg-ground);
     border: 0;
   }
 
   .shell:has([data-phone-view="list"]) .side-head {
     min-height: 64px;
-    padding: 0.5rem 1rem;
+    padding: var(--space-2) var(--space-4);
     border-bottom: 0;
   }
 
@@ -6129,7 +6130,7 @@ ol.steps > li::marker {
   }
 
   .shell:has([data-phone-view="list"]) .brand-word {
-    font-size: 1.75rem;
+    font-size: var(--font-size-xl);
   }
 
   .shell:has([data-phone-view="list"]) .device-button .glyph {
@@ -6159,11 +6160,11 @@ ol.steps > li::marker {
 
   .shell:has([data-phone-view="list"]) .side-main {
     overflow: visible;
-    padding: 0.5rem 1rem 1rem;
+    padding: var(--space-2) var(--space-4) var(--space-4);
   }
 
   .shell:has([data-phone-view="list"]) .agent-groups {
-    gap: 1rem;
+    gap: var(--space-4);
   }
 
   .shell:has([data-phone-view="list"]) .agent-groups > .group-working {
@@ -6172,21 +6173,21 @@ ol.steps > li::marker {
 
   .shell:has([data-phone-view="list"]) .group-head {
     min-height: 44px;
-    padding: 0 0.25rem;
-    font-size: 0.85rem;
+    padding: 0 var(--space-1);
+    font-size: var(--font-size-sm);
   }
 
   .shell:has([data-phone-view="list"]) .agent-list {
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   /* Rows that want a look are cards: the one asking (honey edge) and the ones working. */
   .shell:has([data-phone-view="list"]) .agent-row {
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
   }
 
   .shell:has([data-phone-view="list"]) .group-working .agent-row {
-    background: var(--surface);
+    background: var(--color-bg-surface);
   }
 
   /* Nothing is open on the list. */
@@ -6195,7 +6196,7 @@ ol.steps > li::marker {
   }
 
   .shell:has([data-phone-view="list"]) .group-working .agent-row:has(.agent-link[aria-current="page"]) {
-    background: var(--surface);
+    background: var(--color-bg-surface);
   }
 
   .shell:has([data-phone-view="list"]) .agent-link {
@@ -6204,12 +6205,12 @@ ol.steps > li::marker {
   }
 
   .shell:has([data-phone-view="list"]) .agent-name {
-    font-size: 1rem;
+    font-size: var(--font-size-md);
   }
 
   .shell:has([data-phone-view="list"]) .agent-status,
   .shell:has([data-phone-view="list"]) .agent-sub {
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
   }
 
   /* The tab bar. */
@@ -6225,7 +6226,7 @@ ol.steps > li::marker {
     gap: 0;
     padding: 0.25rem calc(0.5rem + env(safe-area-inset-right)) calc(0.25rem + env(safe-area-inset-bottom))
       calc(0.5rem + env(safe-area-inset-left));
-    background: var(--surface);
+    background: var(--color-bg-surface);
   }
 
   .tab {
@@ -6272,16 +6273,16 @@ ol.steps > li::marker {
     grid-template-areas:
       "back av title details more"
       "back av status details more";
-    column-gap: 0.5rem;
+    column-gap: var(--space-2);
     align-items: center;
     min-height: 64px;
-    padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+    padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
   }
 
   .chat-head > .back-link {
     display: inline-flex;
     grid-area: back;
-    color: var(--ink);
+    color: var(--color-text-default);
   }
 
   .chat-head > .side-expand {
@@ -6303,7 +6304,7 @@ ol.steps > li::marker {
   }
 
   .chat-title h1 {
-    font-size: 1rem;
+    font-size: var(--font-size-md);
   }
 
   .chat-head > .chat-status {
@@ -6353,15 +6354,15 @@ ol.steps > li::marker {
 
   .composer-caption {
     display: block;
-    margin: 0.25rem 0 0;
-    color: var(--muted);
-    font-size: 0.8rem;
+    margin: var(--space-1) 0 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
     text-align: center;
   }
 
   .chat > .composer {
-    padding-left: 1rem;
-    padding-right: 1rem;
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
     padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
   }
 
@@ -6373,21 +6374,21 @@ ol.steps > li::marker {
   .sheet-sub {
     display: block;
     margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
 
   .details-head {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    column-gap: 0.75rem;
+    column-gap: var(--space-3);
     align-items: center;
-    padding: 0.5rem 0.75rem 0.75rem 1rem;
+    padding: var(--space-2) var(--space-3) var(--space-3) var(--space-4);
   }
 
   .details-head h2 {
-    font-family: var(--font-head);
-    font-size: 1.15rem;
+    font-family: var(--font-family-head);
+    font-size: var(--font-size-lg);
   }
 
   .details-close .close-wide {
@@ -6411,9 +6412,9 @@ ol.steps > li::marker {
     max-height: calc(100dvh - 2.5rem);
     padding-bottom: env(safe-area-inset-bottom);
     border-left: 0;
-    border-top: 1px solid var(--border);
-    border-radius: var(--radius) var(--radius) 0 0;
-    box-shadow: 0 -12px 32px var(--shadow-float);
+    border-top: var(--border-width-hairline) solid var(--color-border-default);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    box-shadow: 0 -12px 32px var(--color-shadow);
     transform: translateY(100%);
   }
 
@@ -6432,14 +6433,14 @@ ol.steps > li::marker {
     justify-self: center;
     width: 36px;
     height: 4px;
-    margin-bottom: 0.5rem;
-    border-radius: 999px;
-    background: var(--border);
+    margin-bottom: var(--space-2);
+    border-radius: var(--radius-full);
+    background: var(--color-border-default);
   }
 
   .js .details .details-head {
     touch-action: none;
-    border-radius: var(--radius) var(--radius) 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
 
   /* --- An agent's "⋯": an action sheet at the bottom. --- */
@@ -6456,7 +6457,7 @@ ol.steps > li::marker {
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-2);
     overflow-y: auto;
     background: none;
     border: 0;
@@ -6464,15 +6465,15 @@ ol.steps > li::marker {
   }
 
   .menu.agent-menu::backdrop {
-    background: var(--backdrop);
+    background: var(--color-backdrop);
   }
 
   .agent-menu .menu-sheet,
   .agent-menu .menu-cancel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: 0 12px 32px var(--shadow-float);
+    background: var(--color-bg-surface);
+    border: var(--border-width-hairline) solid var(--color-border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 12px 32px var(--color-shadow);
   }
 
   .agent-menu .menu-sheet {
@@ -6482,9 +6483,9 @@ ol.steps > li::marker {
   .menu-head {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--border);
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .menu-head-text {
@@ -6500,12 +6501,12 @@ ol.steps > li::marker {
   }
 
   .menu-head-name {
-    font-weight: 650;
+    font-weight: var(--font-weight-heading);
   }
 
   .menu-head-sub {
-    color: var(--muted);
-    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
 
   /* On a phone the menu is an action sheet: full-width rows of the large size. */
@@ -6517,7 +6518,7 @@ ol.steps > li::marker {
   }
 
   .agent-menu .menu-sheet > * + * {
-    border-top: 1px solid var(--border);
+    border-top: var(--border-width-hairline) solid var(--color-border-default);
   }
 
   .agent-menu .menu-sheet > .menu-head + * {
@@ -6538,15 +6539,15 @@ ol.steps > li::marker {
     display: block;
     width: 100%;
     min-height: 52px;
-    color: var(--ink);
-    font-weight: 600;
+    color: var(--color-text-default);
+    font-weight: var(--font-weight-strong);
   }
 }
 
 @media (max-width: 760px) and (hover: hover) {
   .tab:hover,
   .menu-cancel:hover {
-    background: var(--ground);
+    background: var(--color-bg-ground);
   }
 }
 /* === End of phone views ===================================================================== */
@@ -6627,7 +6628,7 @@ ol.steps > li::marker {
 
 .setup-wrap {
   max-width: 44rem;
-  margin: 1.5rem auto 0;
+  margin: var(--space-5) auto 0;
 }
 
 .setup-panel h1 {
@@ -6638,7 +6639,7 @@ ol.steps > li::marker {
 
 .setup-panel .add-panel-body {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .setup-panel .card {
@@ -6647,7 +6648,7 @@ ol.steps > li::marker {
 
 #setup-model {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 #setup-model > p {
@@ -6664,29 +6665,29 @@ a.ptile {
 }
 
 a.ptile[aria-current] {
-  border-color: var(--action);
+  border-color: var(--color-action-bg);
 }
 
 .setup-provider {
   display: grid;
-  gap: 0.75rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 #providers:has(> .ptiles) {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .setup-checklist {
   width: 100%;
   max-width: 30rem;
-  margin: 1rem auto 0;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  margin: var(--space-4) auto 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
   text-align: left;
 }
 
@@ -6694,12 +6695,12 @@ a.ptile[aria-current] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .setup-checklist-head h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--font-size-md);
 }
 
 .setup-checklist-items {
@@ -6712,13 +6713,13 @@ a.ptile[aria-current] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: var(--space-3);
   min-height: 44px;
-  border-top: 1px solid var(--border);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .setup-checklist-items .quiet {
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 /* The chat without a usable provider says so above the message box (same edges). */
@@ -6726,8 +6727,8 @@ a.ptile[aria-current] {
   width: calc(100% - 3rem);
   max-width: calc(760px - 3rem);
   margin: 0 auto;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  background: var(--color-bg-surface);
 }
 
 .setup-checklist-head form {
@@ -6738,8 +6739,8 @@ a.ptile[aria-current] {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 0.5rem;
-  margin: 1rem 0 0;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
   padding: 0;
   list-style: none;
 }
@@ -6750,13 +6751,13 @@ a.suggestion {
 
 @media (hover: hover) {
   a.ptile:hover {
-    border-color: var(--action);
+    border-color: var(--color-action-bg);
   }
 }
 
 @media (prefers-reduced-motion: no-preference) {
   a.ptile {
-    transition: border-color 150ms ease;
+    transition: border-color var(--motion-duration-fast) var(--motion-ease-out);
   }
 }
 
@@ -6768,6 +6769,6 @@ a.suggestion {
 
 @media (max-width: 560px) {
   .setup-wrap {
-    margin-top: 0.5rem;
+    margin-top: var(--space-2);
   }
 }
