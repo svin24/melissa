@@ -580,6 +580,13 @@ mod tests {
         // No usable host: the tool's address.
         let v = details_view(&status, None);
         assert!(v.facts.iter().any(|f| f.1 == "203.0.113.10:30001 (TCP)"));
+        // The details keep the full MagicDNS name (the tile shows the short one).
+        let v = details_view(&status, Some("melissa-box.example.ts.net:8080"));
+        let get = |l: &str| v.facts.iter().find(|f| f.0 == l).map(|f| f.1.clone());
+        assert_eq!(
+            get("Game").as_deref(),
+            Some("melissa-box.example.ts.net:30001 (TCP)")
+        );
     }
 
     #[test]
