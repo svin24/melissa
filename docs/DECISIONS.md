@@ -1460,3 +1460,20 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   bodies and the wide chat column keep `scrollbar-gutter: stable`. Alternatives: an inline pre-paint script
   (the CSP forbids it), naming the Settings parts for View Transitions (still motion where none is wanted),
   re-rendering the whole panel without the fade (the list's scroll and search reset).
+- **2026-11-22 — A design system: standard components, design tokens, thinner buttons, current browsers** (owner:
+  "a lot of the UI elements are non-standardised", "your buttons are too thick", themes later). Every UI element
+  becomes one component family with a minimal set of variants, designed first in the local Penpot, then built
+  once as a maud component that all pages call. Values are **design tokens** in three layers (primitives →
+  semantic roles such as `color.bg.surface` → component tokens such as `button.height.md`); a Penpot name
+  `a.b.c` is the CSS variable `--a-b-c`; themes swap only the semantic layer (`data-theme`, rendered by the
+  server from a cookie so nothing flashes). Owner choices: buttons **32 px** (small 28 px, large 40 px) instead
+  of 44 px; on touch-first devices (`pointer: coarse`) controls keep a **44 px** touch target (touch laptops,
+  whose main pointer is a mouse, get thin controls); button corner radius **8 px** (6 px small); a switch that is
+  on is **accent blue** (green stays for status); the Penpot token export is **committed to the repo** and a test
+  fails when the CSS drifts from it; supported browsers are the **latest Chrome and Firefox** (newer platform
+  features may be used; anything Firefox lacks must degrade gracefully). Inputs from a code audit and a
+  component spec (2026-11-22): 10 control heights, 14 radii, 22 font sizes, duplicated rules (`.pill` twice),
+  three status-colour schemes; colours were already tokenised. Migration in small steps, each checked with a
+  screenshot diff harness. Alternatives: polish components one by one without tokens (no themes, drift
+  continues), keep 44 px buttons everywhere (the owner finds them heavy), `any-pointer: coarse` (thick buttons on
+  every touch laptop).
