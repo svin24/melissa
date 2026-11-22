@@ -1167,13 +1167,13 @@ summary.seg::-webkit-details-marker {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  background: var(--honey-soft);
-  color: var(--honey-text);
-  font-size: 0.875rem;
+  gap: var(--space-2);
+  background: var(--color-attention-soft);
+  color: var(--color-attention-text);
+  font-size: var(--font-size-sm);
   text-align: center;
-  padding: 0.35rem 2.75rem;
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-1) calc(var(--button-height-sm) + var(--space-3));
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
   position: relative;
 }
 
@@ -1188,10 +1188,6 @@ summary.seg::-webkit-details-marker {
   transform: translateY(-50%);
   font-size: var(--font-size-lg);
   line-height: 1;
-}
-
-.banner-close:hover {
-  background: rgb(0 0 0 / 0.06);
 }
 
 .shell {
@@ -2096,19 +2092,19 @@ svg.glyph {
 .empty-state {
   display: grid;
   justify-items: center;
-  gap: 0.4rem;
+  gap: var(--space-1);
   text-align: center;
-  color: var(--muted);
-  padding: 3rem 1rem;
+  color: var(--color-text-muted);
+  padding: var(--space-7) var(--space-4);
   max-width: 34rem;
   margin: 0 auto;
 }
 
 .empty-state .title {
-  font-family: var(--font-head);
-  font-weight: 650;
-  font-size: 1.25rem;
-  color: var(--ink);
+  font-family: var(--font-family-head);
+  font-weight: var(--font-weight-heading);
+  font-size: var(--font-size-lg);
+  color: var(--color-text-default);
 }
 
 .msg p + p,
@@ -2439,11 +2435,11 @@ svg.glyph {
 .steps-card {
   list-style: none;
   margin: 0;
-  padding: 0.35rem 0.85rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 0.875rem;
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
 }
 
 .step-row {
@@ -2587,10 +2583,10 @@ svg.icon.stopped {
 
 /* The conversation read text from outside: a calm, honey-tinted line, not an alarm. */
 .note.guard {
-  color: var(--honey-text);
-  background: var(--honey-soft);
-  border-radius: var(--radius);
-  padding: 0.45rem 0.75rem;
+  color: var(--color-attention-text);
+  background: var(--color-attention-soft);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-3);
 }
 
 .chat-date {
@@ -2624,24 +2620,25 @@ svg.icon.stopped {
 
 /* --- Approval cards --------------------------------------------------------------------- */
 
+/* A callout (DS-10): a card in a tone, attention for a question, caution when it destroys. */
 .approval {
   margin-left: 28px;
-  background: var(--honey-soft);
-  border: 1px solid var(--honey);
-  border-radius: 10px;
-  padding: 0.85rem 1rem;
+  background: var(--color-attention-soft);
+  border: var(--border-width-hairline) solid var(--color-attention-fg);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
   display: grid;
-  gap: 0.35rem;
+  gap: var(--space-1);
 }
 
 .approval.destructive {
-  background: var(--caution-soft);
-  border-color: var(--caution);
+  background: var(--color-caution-soft);
+  border-color: var(--color-caution-bg);
 }
 
 .approval.decided {
-  background: var(--surface);
-  border-color: var(--border);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
 }
 
 .approval-head {
@@ -2710,8 +2707,8 @@ svg.icon.stopped {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.4rem;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .approval .actions form {
@@ -4146,19 +4143,20 @@ main.plain {
   display: flex;
 }
 
+/* A card (COMPONENT-SPEC 2.9, DS-10): one region with a heading. */
 .card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1.1rem 1.25rem;
-  margin-bottom: 1.25rem;
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-5);
   /* Long words (paths, tokens) wrap instead of widening the page; unlike `anywhere`, this
      leaves table columns their natural width. */
   overflow-wrap: break-word;
 }
 
 .card > h2 {
-  margin-bottom: 0.75rem;
+  margin-bottom: var(--space-3);
 }
 
 .table-wrap {
@@ -4184,23 +4182,61 @@ th {
   color: var(--muted);
 }
 
+/* A notice (COMPONENT-SPEC 2.10, DS-11): a fact about a region, on its tone's soft colour,
+   led by the tone's glyph. Neutral has no fill. */
 .notice {
-  padding: 0.6rem 0.85rem;
-  border-radius: 10px;
-  background: var(--ground);
-  margin-bottom: 0.75rem;
-  font-weight: 600;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+  color: var(--color-text-default);
+  font-weight: var(--font-weight-regular);
+}
+
+.notice > .glyph {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+  margin-right: var(--space-2);
+  vertical-align: -0.2em;
+}
+
+.notice.tone-info {
+  background: var(--color-action-soft);
+}
+
+.notice.tone-ok {
+  background: var(--color-ok-soft);
+}
+
+.notice.tone-ok > .glyph {
+  color: var(--color-ok-fg);
+}
+
+.notice.tone-attention {
+  background: var(--color-attention-soft);
+}
+
+.notice.tone-attention > .glyph {
+  color: var(--color-attention-fg);
+}
+
+.notice.tone-caution {
+  background: var(--color-caution-soft);
+}
+
+.notice.tone-caution > .glyph {
+  color: var(--color-caution-text);
 }
 
 .empty {
   color: var(--muted);
 }
 
+/* An inset (DS-10): a sunken box inside a card (logs, services, files). */
 .log {
-  background: var(--ground);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.75rem;
+  background: var(--color-bg-sunken);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
   max-height: 28rem;
   overflow: auto;
   white-space: pre-wrap;
@@ -4466,9 +4502,9 @@ main:empty {
 }
 
 .setting-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
 }
 
 .setting-card > * + * {
@@ -5310,9 +5346,9 @@ ol.steps > li::marker {
 
 /* On-device services: one card, the apps then this device, divided by hairlines. */
 .services-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--ground);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-sunken);
 }
 
 .services-head {
@@ -5538,9 +5574,9 @@ ol.steps > li::marker {
 
 /* A file: a preview for images (opens full size), its name, kind and size, ⋯, who added it. */
 .file-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--ground);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-sunken);
   overflow: hidden;
 }
 
@@ -5785,12 +5821,12 @@ ol.steps > li::marker {
 .add-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
+  gap: var(--space-4);
   max-width: 52rem;
-  padding: 1.25rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: var(--space-5);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
 }
 
 .add-panel-head {
@@ -6302,7 +6338,6 @@ ol.steps > li::marker {
 
   .approval .actions button {
     justify-content: center;
-    min-height: 48px;
   }
 
   .approval .actions > form:nth-child(3) {

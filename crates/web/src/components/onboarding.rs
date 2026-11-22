@@ -107,6 +107,7 @@ pub fn suggestion_chips(items: &[Suggestion<'_>]) -> Markup {
 pub fn notice_link(text: &str, link: Option<(&str, &str)>, tone: Tone) -> Markup {
     html! {
         p class={ "notice " (tone.class()) } role="status" {
+            (super::notice_glyph(tone))
             (text)
             @if let Some((href, label)) = link { " " a href=(href) { (label) } }
         }

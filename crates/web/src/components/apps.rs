@@ -275,7 +275,7 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                     }
                 }
                 @if let Some((text, tone)) = d.message {
-                    p class={ "notice " (tone.class()) } role="status" { (text) }
+                    p class={ "notice " (tone.class()) } role="status" { (super::notice_glyph(tone)) (text) }
                 }
                 @if let Some(a) = &d.ask {
                     section.app-ask aria-labelledby="app-ask-q" {

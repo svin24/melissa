@@ -2032,9 +2032,19 @@ pub fn status_badge(label: &str, tone: Tone, mark: Mark) -> Markup {
     }
 }
 
-/// A one-line message box.
+/// A one-line message box (COMPONENT-SPEC 2.10, Penpot DS-11): the text on its tone's soft
+/// colour, led by the tone's glyph (ok: a check; attention and caution: a warning).
 pub fn notice(text: &str, tone: Tone) -> Markup {
-    html! { p class={ "notice " (tone.class()) } role="status" { (text) } }
+    html! { p class={ "notice " (tone.class()) } role="status" { (notice_glyph(tone)) (text) } }
+}
+
+/// The glyph in front of a [`notice`] (none for neutral and info).
+pub(crate) fn notice_glyph(tone: Tone) -> Markup {
+    match tone {
+        Tone::Ok => glyph(Glyph::Check),
+        Tone::Attention | Tone::Caution => glyph(Glyph::Warn),
+        Tone::Neutral | Tone::Info => html! {},
+    }
 }
 
 /// Inline monospaced text (commands, identifiers).
