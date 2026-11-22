@@ -86,14 +86,35 @@ impl App {
     }
 
     /// Where to reach an app without a web link (a game server): `host:port (TCP)` at the
-    /// address the visitor used. `None` for apps with a link or without such a port.
+    /// address the visitor used, with a Tailscale MagicDNS name cut to the device's short name
+    /// ([`short_host`]). `None` for apps with a link or without such a port. The app's details
+    /// keep the full address.
     pub fn address(&self, host: Option<&str>) -> Option<String> {
         if self.port.is_some() {
             return None;
         }
         let (port, proto) = self.other_port?;
-        let h = host.and_then(host_name_of)?;
+        let h = short_host(host.and_then(host_name_of)?);
         Some(format!("{h}:{port} ({proto})"))
+    }
+}
+
+/// The host to show in short views such as the app tiles: a Tailscale MagicDNS name
+/// (`device.tailnet-id.ts.net`) becomes `device`, so the tailnet's name stays off the
+/// screen and the address fits. Tailscale clients with MagicDNS on resolve the short name
+/// through the tailnet's search domain. Any other host (IP address, LAN name, own domain)
+/// is shown as it is.
+pub fn short_host(host: &str) -> &str {
+    let trimmed = host.strip_suffix('.').unwrap_or(host);
+    let labels: Vec<&str> = trimmed.split('.').collect();
+    let is_magic_dns = labels.len() >= 4
+        && labels[labels.len() - 2].eq_ignore_ascii_case("ts")
+        && labels[labels.len() - 1].eq_ignore_ascii_case("net")
+        && labels.iter().all(|l| !l.is_empty());
+    if is_magic_dns {
+        labels[0]
+    } else {
+        host
     }
 }
 
@@ -491,6 +512,62 @@ mod tests {
             Some("http://127.0.0.1:31000")
         );
         assert_eq!(no_port.link(Some("192.0.2.15:8080")), None);
+    }
+
+    #[test]
+    fn short_host_drops_the_tailnet_name_only() {
+        for (host, short) in [
+            ("melissa-box.tail1234.ts.net", "melissa-box"),
+            ("melissa-box.tail1234.ts.net.", "melissa-box"),
+            ("Melissa-Box.Example.TS.NET", "Melissa-Box"),
+            // Not a MagicDNS device name: as it is.
+            ("ts.net", "ts.net"),
+            ("example.ts.net", "example.ts.net"),
+            ("box..ts.net", "box..ts.net"),
+            ("melissa-box.example.com", "melissa-box.example.com"),
+            ("box.ts.net.example.com", "box.ts.net.example.com"),
+            ("melissa-box", "melissa-box"),
+            ("100.64.0.10", "100.64.0.10"),
+            ("192.0.2.15", "192.0.2.15"),
+            ("[2001:db8::1]", "[2001:db8::1]"),
+        ] {
+            assert_eq!(short_host(host), short, "{host}");
+        }
+    }
+
+    #[test]
+    fn tile_addresses_hide_the_tailnet_name() {
+        let game = App {
+            name: "minecraft".into(),
+            phase: "ready".into(),
+            url: None,
+            port: None,
+            keeper: None,
+            other_port: Some((30001, "TCP")),
+        };
+        for (host, address) in [
+            (
+                Some("melissa-box.example.ts.net:8080"),
+                "melissa-box:30001 (TCP)",
+            ),
+            (Some("100.64.0.10:8080"), "100.64.0.10:30001 (TCP)"),
+            (Some("192.0.2.15:8080"), "192.0.2.15:30001 (TCP)"),
+            (Some("melissa-box:8080"), "melissa-box:30001 (TCP)"),
+        ] {
+            assert_eq!(game.address(host).as_deref(), Some(address), "{host:?}");
+        }
+        assert_eq!(game.address(None), None);
+        // The web link must still work from anywhere: the full name stays in it.
+        let web = App {
+            port: Some(30000),
+            other_port: None,
+            ..game
+        };
+        assert_eq!(web.address(Some("melissa-box.example.ts.net:8080")), None);
+        assert_eq!(
+            web.link(Some("melissa-box.example.ts.net:8080")).as_deref(),
+            Some("http://melissa-box.example.ts.net:30000")
+        );
     }
 
     #[test]
