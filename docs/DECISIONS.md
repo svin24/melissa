@@ -1621,3 +1621,27 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   ok, attention, caution; switch 32×18), and component sizes use the `button.height.md` form. Alternatives: the
   Figma dark palette (a bigger visual change on demo day), keeping the spec's invisible hover in dark, the pace
   marker (more to read for a number most people only glance at).
+- **2026-11-22 — Settings on a phone: a list, then one section at a time** (owner design C1/C2 in Penpot,
+  Android style). Under 760px (the phone layout's breakpoint) Settings no longer shows its sections as a row of
+  tabs above the section. `/settings` is level 1: the title, the search field and the groups (Agents, Chat,
+  System, People) as cards of rows; each row is a link in a real list with its icon, name, a short value where
+  one is cheap to know ("3 ready", "2 rules", "Off", "5 days", "Tailnet", "Connected", "Up to date") and a
+  chevron, 44px high; Reset is in the danger colour; the list has its own close control. Any other Settings page
+  is level 2: the section alone under a back link (labelled "Back to Settings", or "Back to Agents" on a page
+  below a section) and its title, which takes focus on entering; the section's own heading is hidden there so
+  the title isn't said twice. Above 760px nothing changes: the same markup carries the phone parts, hidden by CSS,
+  and `/settings` shows the first section this person may open beside the list (it was a redirect to it), so the
+  section swap, the search and live settings work as before on both levels. Back: the section swap is unchanged
+  (only `#settings-main` is replaced, no fades, URL pushed); going back to the list is instant (the list was only
+  hidden), restores its scroll and puts focus on the row just left, while the list's answer replaces the hidden
+  section. Each panel history entry notes the panel page below it (`back`), so the back link calls
+  `history.back()` when that is where it leads (the link and the Back gesture then do the same, no entry is
+  added) and otherwise replaces the current entry. A deep link to a section on a phone gets `/settings` as the
+  entry below it, so Back goes to the list, then out (a reload keeps what was below). Without script the rows
+  and the back link are plain links. The values are worked out only for `/settings` (a task-local, like the
+  panel flags); slow sources are not asked (Tailscale's cached state only). Not taken from the board: the bottom
+  tab bar under the list (the panel covers the phone's screen; the list's close control stands in) and the
+  Providers rows with chevrons instead of Details (a separate change to that section). Alternatives: deciding the
+  level in the server from the user agent (guesswork, breaks on resize), a separate `/settings/list` URL (a
+  second address for the same page and a redirect loop without script), keeping the redirect and building the
+  list in script (no list without script).

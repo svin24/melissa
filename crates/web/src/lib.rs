@@ -1051,9 +1051,11 @@ mod tests {
         async fn settings_pages_render_and_link_from_the_rail() {
             let fx = SettingsFixture::new("render");
             let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
-            let (status, headers, _) = send(&app, get("/settings")).await;
-            assert_eq!(status, StatusCode::SEE_OTHER);
-            assert_eq!(headers[header::LOCATION], "/settings/providers");
+            // `/settings` is the section list (phones) over the first section (Providers).
+            let (status, _, html) = send(&app, get("/settings")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(html.contains("data-section=\"/settings/providers\" data-list"));
+            assert!(html.contains("<title>Settings"));
             let (status, _, html) = send(&app, get("/settings/providers?p=grok")).await;
             assert_eq!(status, StatusCode::OK);
             for want in [
@@ -3222,6 +3224,77 @@ mod tests {
             assert!(alone.contains("href=\"/settings/voice\" aria-current=\"page\""));
         }
 
+        #[tokio::test]
+        async fn settings_shows_the_list_at_its_root_and_a_section_below_it() {
+            // 2026-11-22, phones: `/settings` is level 1 (the list, each row with its value),
+            // any other Settings page is level 2 (a section under a back link one level up).
+            let (app, _) = app();
+            let (status, _, list) = send(&app, get("/settings")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(list.contains(" data-list "), "the list level is marked");
+            // Rows are links in real lists, with a value where there is one and a chevron.
+            assert!(list.contains("<ul aria-labelledby=\"settings-group-0\"><li"));
+            assert!(list.contains("<a href=\"/settings/voice\"><svg class=\"glyph\""));
+            assert!(list.contains(
+                "<span class=\"settings-label\">Files</span><span class=\"settings-value\">"
+            ));
+            assert!(list.contains("<span class=\"settings-label\">Developer</span><span class=\"settings-value\">Off</span>"));
+            assert!(list.contains(
+                "<span class=\"settings-label\">Agents</span><span class=\"settings-value\">"
+            ));
+            assert!(
+                list.contains("class=\"settings-danger\""),
+                "Reset is in the danger colour"
+            );
+            assert!(list.contains("class=\"settings-chevron\""));
+            // The list has its own close control (no section beside it on a phone).
+            assert!(list.contains("settings-list-close"));
+
+            for (uri, title, up, up_label) in [
+                ("/settings/voice", "Voice", "/settings", "Settings"),
+                ("/settings/files", "Files", "/settings", "Settings"),
+                (
+                    "/settings/providers/add",
+                    "Add provider",
+                    "/settings/providers",
+                    "Providers",
+                ),
+            ] {
+                let (status, _, page) = send(&app, get(uri)).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(!page.contains(" data-list"), "{uri} is a section");
+                assert!(
+                    !page.contains("settings-value"),
+                    "{uri}: values only on the list"
+                );
+                assert!(
+                    page.contains(&format!(
+                        "<a class=\"settings-back\" href=\"{up}\" data-settings-back title=\"Back\">"
+                    )),
+                    "{uri}: back link to {up}"
+                );
+                assert!(
+                    page.contains(&format!("Back to {up_label}</span>")),
+                    "{uri}"
+                );
+                assert!(
+                    page.contains(&format!(
+                        "<h1 class=\"settings-here\" tabindex=\"-1\">{title}</h1>"
+                    )),
+                    "{uri}: its title"
+                );
+            }
+            // The section swap gets the same marks: the list is a part like any other section.
+            let req = axum::http::Request::get("/settings")
+                .header("hx-request", "true")
+                .header("hx-target", "settings-main")
+                .body(Body::empty())
+                .unwrap();
+            let (_, _, alone) = send(&app, req).await;
+            assert!(!alone.contains("<html"));
+            assert!(alone.contains("data-section=\"/settings/providers\" data-list"));
+        }
+
         fn get_with_cookie(uri: &str, cookie: &str) -> axum::http::Request<Body> {
             axum::http::Request::get(uri)
                 .header(header::COOKIE, cookie)
@@ -4699,7 +4772,7 @@ mod tests {
             // Every Settings page lists the Developer section.
             let (_, _, body) = get_html(&app, "/settings/updates").await;
             assert!(body.contains("<a href=\"/settings/developer\"><svg class=\"glyph\""));
-            assert!(body.contains("<span>Developer</span>"));
+            assert!(body.contains("<span class=\"settings-label\">Developer</span>"));
 
             // A message goes to her conversation, not the lead agent's.
             let res = app

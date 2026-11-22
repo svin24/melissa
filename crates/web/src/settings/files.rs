@@ -13,6 +13,11 @@ use serde::Deserialize;
 use super::pages::{self, FilesView, Flash, FILES_URL};
 use crate::{components::Tone, is_htmx, ui::Ui};
 
+/// How long file boxes keep files by default, in words ("5 days").
+pub(super) fn default_words(ui: &Ui) -> String {
+    crate::files::keep_label(ui.lead.files().retention().default)
+}
+
 fn view(ui: &Ui, flash: Option<Flash>) -> FilesView {
     let default = ui.lead.files().retention().default;
     FilesView {
