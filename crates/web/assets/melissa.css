@@ -1368,13 +1368,13 @@ main h1[tabindex="-1"]:focus,
 .group-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  min-height: 32px;
-  padding: 0 0.5rem;
-  font-family: var(--font);
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--muted);
+  gap: var(--space-2);
+  min-height: var(--row-height-sm);
+  padding: 0 var(--space-2);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+  color: var(--color-text-muted);
 }
 
 .group-head > :first-child {
@@ -1420,16 +1420,18 @@ details.agent-group:not([open]) > summary .chev {
   gap: 0.15rem;
 }
 
+/* A sidebar row (COMPONENT-SPEC 2.8, DS-09): a navigation row of two lines; hover and the
+   current chat fill it, attention adds the honey edge. */
 .agent-row {
   position: relative;
   display: flex;
   align-items: flex-start;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .agent-row.attention {
-  background: var(--honey-soft);
-  box-shadow: inset 3px 0 0 var(--honey);
+  background: var(--color-attention-soft);
+  box-shadow: inset 3px 0 0 var(--color-attention-fg);
 }
 
 .agent-link {
@@ -1437,20 +1439,20 @@ details.agent-group:not([open]) > summary .chev {
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  gap: 0.6rem;
-  min-height: 44px;
-  padding: 0.5rem 0 0.5rem 0.6rem;
-  border-radius: 10px;
-  color: var(--ink);
+  gap: var(--space-2);
+  min-height: var(--row-height-md);
+  padding: var(--space-2) 0 var(--space-2) var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-text-default);
   text-decoration: none;
 }
 
 .agent-row:has(.agent-link[aria-current="page"]) {
-  background: var(--ground);
+  background: var(--row-bg-current);
 }
 
 .agent-row.attention:has(.agent-link[aria-current="page"]) {
-  background: var(--honey-soft);
+  background: var(--color-attention-soft);
 }
 
 .agent-link .avatar {
@@ -1482,7 +1484,7 @@ details.agent-group:not([open]) > summary .chev {
 }
 
 .agent-link[aria-current="page"] .agent-name {
-  font-weight: 650;
+  font-weight: var(--font-weight-heading);
 }
 
 .star-mark {
@@ -1565,11 +1567,11 @@ progress.agent-progress:indeterminate::-moz-progress-bar {
 
 @media (hover: hover) {
   .agent-row:hover {
-    background: var(--ground);
+    background: var(--row-bg-hover);
   }
 
   .agent-row.attention:hover {
-    background: var(--honey-soft);
+    background: var(--color-attention-soft);
   }
 
   .device-button:hover {
@@ -1737,16 +1739,16 @@ svg.avatar.av {
 .menu-item {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--space-2);
   width: 100%;
-  min-height: 40px;
-  padding: 0 0.6rem;
+  min-height: var(--row-height-md);
+  padding: 0 var(--space-2);
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: none;
-  color: var(--ink);
+  color: var(--color-text-default);
   font: inherit;
-  font-size: 0.9rem;
+  font-size: var(--font-size-control-md);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
@@ -1800,7 +1802,7 @@ details.menu-confirm > summary::-webkit-details-marker {
 
 @media (hover: hover) {
   .menu-item:hover {
-    background: var(--ground);
+    background: var(--row-bg-hover);
   }
 }
 
@@ -3334,12 +3336,12 @@ svg.warn .mark {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  min-height: 40px;
-  padding: 0 0.5rem;
-  border-radius: 8px;
+  gap: var(--space-2);
+  min-height: var(--row-height-md);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--ink);
+  color: var(--color-text-default);
   text-align: left;
 }
 
@@ -3352,7 +3354,7 @@ svg.warn .mark {
 }
 
 .picker-row .pick[aria-current="true"] {
-  font-weight: 700;
+  font-weight: var(--font-weight-heading);
 }
 
 .picker .check {
@@ -3482,7 +3484,7 @@ svg.warn .mark {
   .picker .pick:hover,
   .picker .level:hover,
   .picker .rail-item:hover {
-    background: var(--ground);
+    background: var(--row-bg-hover);
   }
 
   .picker .fav:hover {
@@ -4340,33 +4342,34 @@ form.inline {
   gap: 0.15rem;
 }
 
+/* Section navigation (NavItem, DS-06): 32px links, the current one filled and heavier. */
 .settings-nav a {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  min-height: 40px;
-  padding: 0 0.6rem;
-  border-radius: 10px;
-  color: var(--ink);
+  gap: var(--space-2);
+  min-height: var(--size-control-md);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-text-default);
   text-decoration: none;
 }
 
 .settings-nav a .glyph {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 
 .settings-nav a[aria-current="page"] {
-  background: var(--ground);
-  font-weight: 650;
+  background: var(--row-bg-current);
+  font-weight: var(--font-weight-heading);
 }
 
 .settings-nav a[aria-current="page"] .glyph {
-  color: var(--ink);
+  color: var(--color-text-default);
 }
 
 @media (hover: hover) {
   .settings-nav a:hover {
-    background: var(--ground);
+    background: var(--row-bg-hover);
   }
 }
 
@@ -4634,13 +4637,13 @@ table.usage th[scope="row"] {
 .pick {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding-right: 0.4rem;
-  border-radius: 10px;
+  gap: var(--space-2);
+  padding-right: var(--space-2);
+  border-radius: var(--radius-md);
 }
 
 .pick.current {
-  background: var(--ground);
+  background: var(--row-bg-current);
 }
 
 .pick > a {
@@ -4648,15 +4651,16 @@ table.usage th[scope="row"] {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.55rem 0.6rem;
-  color: var(--ink);
+  gap: var(--space-3);
+  min-height: var(--row-height-md);
+  padding: var(--space-2);
+  color: var(--color-text-default);
   text-decoration: none;
 }
 
 @media (hover: hover) {
   .pick:hover {
-    background: var(--ground);
+    background: var(--row-bg-hover);
   }
 }
 
@@ -4666,18 +4670,18 @@ table.usage th[scope="row"] {
 }
 
 .pick-name {
-  font-weight: 650;
+  font-weight: var(--font-weight-heading);
   overflow-wrap: anywhere;
 }
 
 .pick-version {
-  font-weight: 400;
-  font-size: 0.85rem;
-  color: var(--muted);
+  font-weight: var(--font-weight-regular);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 .pick-status {
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .pick-foot {
@@ -6159,16 +6163,12 @@ ol.steps > li::marker {
   }
 
   .shell:has([data-phone-view="list"]) .agent-link {
-    min-height: 56px;
-    padding: 0.75rem 0 0.75rem 0.75rem;
+    min-height: var(--row-height-lg);
+    padding: var(--space-3) 0 var(--space-3) var(--space-3);
   }
 
   .shell:has([data-phone-view="list"]) .agent-name {
     font-size: 1rem;
-  }
-
-  .shell:has([data-phone-view="list"]) .agent-row > .more-button {
-    width: 44px;
   }
 
   .shell:has([data-phone-view="list"]) .agent-status,
@@ -6473,11 +6473,12 @@ ol.steps > li::marker {
     font-size: 0.85rem;
   }
 
+  /* On a phone the menu is an action sheet: full-width rows of the large size. */
   .agent-menu .menu-item {
-    min-height: 52px;
-    padding: 0 1rem;
+    min-height: var(--row-height-lg);
+    padding: 0 var(--space-4);
     border-radius: 0;
-    font-size: 1rem;
+    font-size: var(--font-size-md);
   }
 
   .agent-menu .menu-sheet > * + * {
