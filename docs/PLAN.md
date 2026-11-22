@@ -1331,6 +1331,7 @@ Roadmap (rough, phases may overlap):
     isolated services built with Nix (one service with only its Nix closure, e.g. as a systemd-nspawn or
     systemd portable service, or a NixOS container) and (b) microVMs, e.g. Unikraft unikernels
     (https://unikraft.com/), microvm.nix, Firecracker or Cloud Hypervisor, or Kata Containers under k3s.
-    To find out: what is feasible on the container install (rootful podman, needs /dev/kvm passed in) and on
-    NixOS; how it fits the app manifest and approval model; isolation, start time and memory versus pods;
-    licences; and whether it can stay offline-capable.
+    Owner: KVM will be required for microVMs. NixOS can host all of these natively (NixOS containers,
+    microvm.nix, Kata), so it is the natural first target; the container install needs /dev/kvm passed in.
+    To find out: how it fits the app manifest and approval model; isolation, start time and memory versus
+    pods; licences; and whether it can stay offline-capable.
