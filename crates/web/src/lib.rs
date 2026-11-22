@@ -245,7 +245,7 @@ async fn create_task(
             Ok(id) => [("hx-redirect", format!("/tasks/{id}"))].into_response(),
             Err(e) => {
                 let message = format!("Couldn't start the task: {e}.");
-                pages::tasks_region(&board.list(), Some((&message, Tone::Error))).into_response()
+                pages::tasks_region(&board.list(), Some((&message, Tone::Caution))).into_response()
             }
         };
     }
@@ -1880,7 +1880,7 @@ mod tests {
             // lead runs on it, so that reason is its tooltip; otherwise "Install it first.").
             let rows: Vec<&str> = html
                 .split("<li")
-                .filter(|li| li.contains("pick-status tone-warn\">Not installed"))
+                .filter(|li| li.contains("pick-status tone-attention\">Not installed"))
                 .collect();
             assert!(!rows.is_empty(), "{html}");
             for row in &rows {
@@ -3005,7 +3005,7 @@ mod tests {
             assert!(body.contains("sse-connect=\"/ui/stream?since=3&amp;epoch="));
             // Melissa waits for the user: the sidebar's first group, and the header says so.
             assert!(body.contains("Needs attention"), "{body}");
-            assert!(body.contains("<span class=\"pill attention\">Needs permission</span>"));
+            assert!(body.contains("<span class=\"badge tone-attention\">Needs permission</span>"));
         }
 
         #[tokio::test]
@@ -3015,8 +3015,8 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             // The Apps list (2026-11-22): rows with status words, grouped by kind.
             assert!(body.contains("<li class=\"app-row\">"), "{body}");
-            assert!(body.contains("class=\"app-status h-ok\""));
-            assert!(body.contains("class=\"app-status h-busy\""));
+            assert!(body.contains("class=\"badge tone-ok\""));
+            assert!(body.contains("class=\"badge tone-attention\"><span class=\"icon spin\""));
             assert!(body.contains("href=\"http://nextcloud.example.com\""));
             assert!(body.contains("Add an app"));
             assert!(body.contains(">Other<"), "no kind: Other");
@@ -5411,7 +5411,7 @@ mod tests {
             let (_, _, body) =
                 send(&app, htmx_post("/ui/backend", "current=echo-b+m1&fast=on")).await;
             assert!(
-                body.contains("<span class=\"chip-tag\">Fast</span>"),
+                body.contains("<span class=\"chip-tag badge tone-attention\">Fast</span>"),
                 "{body}"
             );
             assert!(lead.backend_choice().is_some_and(|c| c.fast));

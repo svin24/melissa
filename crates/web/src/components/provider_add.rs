@@ -93,7 +93,7 @@ pub fn provider_tiles(label: &str, tiles: &[ProviderTile<'_>], target: &str) -> 
                         div.ptile.added {
                             (provider_logo(t.id, t.letter, true))
                             span.ptile-name { (t.label) }
-                            span.ptile-note { (badge("Added", Tone::Muted)) }
+                            span.ptile-note { (badge("Added", Tone::Neutral)) }
                         }
                     }
                 }

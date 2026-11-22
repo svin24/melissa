@@ -69,7 +69,7 @@ pub fn auth_page(f: &AuthForm<'_>) -> Markup {
             div.auth-card {
                 (card(f.title, html! {
                     @if let Some(i) = f.intro { p { (i) } }
-                    @if let Some(e) = f.error { (notice(e, Tone::Error)) }
+                    @if let Some(e) = f.error { (notice(e, Tone::Caution)) }
                     form.stack method="post" action=(f.action) {
                         (csrf_field())
                         @if let Some(n) = f.next { input type="hidden" name="next" value=(n); }
@@ -89,7 +89,7 @@ pub fn auth_dead_end(title: &str, text: &str) -> Markup {
         html! {
             div.auth-card {
                 (card(title, html! {
-                    (notice(text, Tone::Error))
+                    (notice(text, Tone::Caution))
                     a href="/login" { "Go to sign in" }
                 }))
             }

@@ -53,11 +53,11 @@ pub(super) async fn remove(
         },
         Ok(None) => Flash {
             text: "That rule is already gone.".into(),
-            tone: Tone::Muted,
+            tone: Tone::Neutral,
         },
         Err(e) => Flash {
             text: format!("Couldn't remove it: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     if !is_htmx(&headers) {
@@ -87,7 +87,7 @@ pub(super) async fn bypass(
     }
     let flash = ui.registry().set_bypass(false).err().map(|e| Flash {
         text: format!("Couldn't save that: {e}"),
-        tone: Tone::Error,
+        tone: Tone::Caution,
     });
     bypass_reply(&ui, &headers, flash)
 }
@@ -113,7 +113,7 @@ pub(super) async fn bypass_on(
             }),
             Err(e) => Some(Flash {
                 text: format!("Couldn't save that: {e}"),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             }),
         }
     } else {
@@ -144,7 +144,7 @@ pub(super) async fn full_access(
         .err()
         .map(|e| Flash {
             text: format!("Couldn't save that: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         });
     if !is_htmx(&headers) {
         return Redirect::to(DEVELOPER_URL).into_response();

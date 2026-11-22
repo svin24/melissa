@@ -41,9 +41,9 @@ fn outcome_tone(o: Outcome) -> Tone {
     match o {
         Outcome::Done => Tone::Ok,
         Outcome::Running => Tone::Info,
-        Outcome::Skipped | Outcome::Cancelled => Tone::Muted,
-        Outcome::Missed | Outcome::Interrupted | Outcome::TimedOut => Tone::Warn,
-        Outcome::Failed => Tone::Error,
+        Outcome::Skipped | Outcome::Cancelled => Tone::Neutral,
+        Outcome::Missed | Outcome::Interrupted | Outcome::TimedOut => Tone::Attention,
+        Outcome::Failed => Tone::Caution,
     }
 }
 
@@ -186,7 +186,7 @@ async fn reply(
     form: Option<ScheduleForm>,
     flash: Option<Flash>,
 ) -> Response {
-    let failed = flash.as_ref().is_some_and(|f| f.tone == Tone::Error);
+    let failed = flash.as_ref().is_some_and(|f| f.tone == Tone::Caution);
     let v = view(ui, form, flash);
     if is_htmx(headers) {
         return pages::schedules_region(&v).into_response();
@@ -206,14 +206,14 @@ fn error_flash(e: &ScheduleError) -> Flash {
             ScheduleError::NotFound(_) => "That schedule is gone.".into(),
             other => format!("Couldn't save that: {other}"),
         },
-        tone: Tone::Error,
+        tone: Tone::Caution,
     }
 }
 
 fn no_scheduler() -> Flash {
     Flash {
         text: "Schedules don't run on this device.".into(),
-        tone: Tone::Error,
+        tone: Tone::Caution,
     }
 }
 
@@ -360,7 +360,7 @@ async fn save(ui: Ui, headers: HeaderMap, id: Option<u64>, form: FormIn) -> Resp
                 Some(echo),
                 Some(Flash {
                     text,
-                    tone: Tone::Error,
+                    tone: Tone::Caution,
                 }),
             )
             .await
@@ -424,14 +424,14 @@ fn run_words(run: &LastRun) -> Flash {
         },
         Outcome::Skipped => Flash {
             text: format!("Not started: {}.", run.detail.as_deref().unwrap_or("busy")),
-            tone: Tone::Muted,
+            tone: Tone::Neutral,
         },
         _ => Flash {
             text: format!(
                 "Couldn't start it: {}.",
                 run.detail.as_deref().unwrap_or("unknown error")
             ),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     }
 }
@@ -461,7 +461,7 @@ pub(super) async fn remove(
             },
             Ok(None) => Flash {
                 text: "That schedule is already gone.".into(),
-                tone: Tone::Muted,
+                tone: Tone::Neutral,
             },
             Err(e) => error_flash(&e),
         },
@@ -488,7 +488,7 @@ pub(super) async fn wait(
                 text: format!(
                     "Couldn't save that: give a number of minutes, {MIN_APPROVAL_WAIT_MINUTES} to {MAX_APPROVAL_WAIT_MINUTES}"
                 ),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             },
             Ok(m) => match s.schedules().set_approval_wait(m, &OWNER) {
                 Ok(()) => Flash {

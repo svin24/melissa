@@ -96,7 +96,7 @@ pub fn suggestion_chips(items: &[Suggestion<'_>]) -> Markup {
     html! {
         ul.suggestions aria-label="Suggestions" {
             @for s in items {
-                li { a.suggestion href=(s.href) { (s.text) } }
+                li { a.suggestion.(Btn::secondary().sm().chip()) href=(s.href) { (s.text) } }
             }
         }
     }

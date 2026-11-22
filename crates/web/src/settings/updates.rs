@@ -203,7 +203,7 @@ fn last_flash(state: &UpdateState) -> Option<Flash> {
                 Some(m) => format!("{what}: done {when} ({m})."),
                 None => format!("{what}: done {when}."),
             },
-            tone: Tone::Muted,
+            tone: Tone::Neutral,
         }
     } else {
         Flash {
@@ -211,7 +211,7 @@ fn last_flash(state: &UpdateState) -> Option<Flash> {
                 "{what} failed {when}: {}",
                 msg.unwrap_or("see the host's journal (journalctl -u melissa-update)")
             ),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         }
     })
 }
@@ -232,7 +232,7 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
         if let Some(e) = &state.error {
             flash = Some(Flash {
                 text: format!("Couldn't read the update status: {e}"),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             });
         }
     }
@@ -316,7 +316,7 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
         };
         return Outcome::NotHere(Flash {
             text,
-            tone: Tone::Warn,
+            tone: Tone::Attention,
         });
     }
     if action.restarts_melissa() && !confirmed {
@@ -351,7 +351,7 @@ async fn run(ui: &Ui, action: UpdateAction, confirmed: bool, actor: &str) -> Out
         }),
         Err(e) => Outcome::Failed(Flash {
             text: format!("Couldn't start it: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         }),
     }
 }

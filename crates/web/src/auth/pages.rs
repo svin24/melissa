@@ -621,7 +621,7 @@ async fn change_password(
             "Password changed. Other browsers are signed out.".to_string(),
             Tone::Ok,
         ),
-        Err(e) => (e.clone(), Tone::Error),
+        Err(e) => (e.clone(), Tone::Caution),
     };
     let region = account_markup(&ui, &viewer, Some((&text, tone)));
     region_answer(
@@ -746,7 +746,7 @@ async fn people_answer(
     new_link: Option<(String, String)>,
     flash: Option<(&str, Tone)>,
 ) -> Response {
-    let failed = flash.is_some_and(|(_, t)| t == Tone::Error);
+    let failed = flash.is_some_and(|(_, t)| t == Tone::Caution);
     // The link shows once: without script the page is rendered here rather than redirected.
     let shown = new_link.is_some();
     let region = people_markup(&ui.auth, viewer, new_link, flash);
@@ -779,7 +779,16 @@ async fn create_invite(
             )
             .await
         }
-        Err(e) => people_answer(&ui, &viewer, &headers, None, Some((&say(&e), Tone::Error))).await,
+        Err(e) => {
+            people_answer(
+                &ui,
+                &viewer,
+                &headers,
+                None,
+                Some((&say(&e), Tone::Caution)),
+            )
+            .await
+        }
     }
 }
 
@@ -808,7 +817,7 @@ async fn reset_password(
     let person = ui.auth.person(&id);
     if person.as_ref().is_none_or(|p| p.role == Role::Owner) {
         let msg = "Only a member's password can be reset here.";
-        return people_answer(&ui, &viewer, &headers, None, Some((msg, Tone::Error))).await;
+        return people_answer(&ui, &viewer, &headers, None, Some((msg, Tone::Caution))).await;
     }
     match ui.auth.reset_link(&viewer.person.id, &id, &src(&source)) {
         Ok(inv) => {
@@ -819,7 +828,16 @@ async fn reset_password(
             );
             people_answer(&ui, &viewer, &headers, Some((what, link)), None).await
         }
-        Err(e) => people_answer(&ui, &viewer, &headers, None, Some((&say(&e), Tone::Error))).await,
+        Err(e) => {
+            people_answer(
+                &ui,
+                &viewer,
+                &headers,
+                None,
+                Some((&say(&e), Tone::Caution)),
+            )
+            .await
+        }
     }
 }
 
@@ -835,6 +853,15 @@ async fn remove_member(
             let msg = format!("Removed {}.", p.username);
             people_answer(&ui, &viewer, &headers, None, Some((&msg, Tone::Ok))).await
         }
-        Err(e) => people_answer(&ui, &viewer, &headers, None, Some((&say(&e), Tone::Error))).await,
+        Err(e) => {
+            people_answer(
+                &ui,
+                &viewer,
+                &headers,
+                None,
+                Some((&say(&e), Tone::Caution)),
+            )
+            .await
+        }
     }
 }

@@ -418,7 +418,7 @@ fn panel_reply(
 }
 
 fn failed(text: String) -> Option<(String, Tone)> {
-    Some((text, Tone::Error))
+    Some((text, Tone::Caution))
 }
 
 async fn delete(

@@ -57,7 +57,7 @@ pub(crate) fn runs_on(views: &[BackendView], fallback: &str) -> String {
 pub(crate) fn status_words(status: &str) -> (&'static str, Tone) {
     match status {
         "working" => ("Working", Tone::Info),
-        "stopped" => ("Stopped", Tone::Muted),
+        "stopped" => ("Stopped", Tone::Neutral),
         _ => ("Idle", Tone::Ok),
     }
 }
@@ -108,15 +108,15 @@ pub(super) async fn delete(
         },
         Err(LeadError::NoSuchAgent(_)) => Flash {
             text: "That helper is already gone.".into(),
-            tone: Tone::Muted,
+            tone: Tone::Neutral,
         },
         Err(e @ (LeadError::InUse(_) | LeadError::Invalid(_))) => Flash {
             text: e.to_string(),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
         Err(e) => Flash {
             text: format!("Couldn't delete it: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     // From the helper's own page: to Melissa's chat when it is gone, else the page says why.
@@ -126,7 +126,7 @@ pub(super) async fn delete(
         .is_some_and(|t| t == pages::AGENT_ID);
     if from_page {
         return match flash.tone {
-            Tone::Error => after(&ui, &headers, &id, flash).await,
+            Tone::Caution => after(&ui, &headers, &id, flash).await,
             _ => hx("hx-redirect", "/"),
         };
     }
@@ -134,7 +134,7 @@ pub(super) async fn delete(
     if is_htmx(&headers) {
         return pages::agents_region(&rows, Some(&flash)).into_response();
     }
-    if flash.tone == Tone::Error {
+    if flash.tone == Tone::Caution {
         return ui
             .framed(|f| pages::agents_page(f, &rows, Some(&flash)))
             .await
@@ -278,7 +278,7 @@ async fn after(ui: &Ui, headers: &HeaderMap, id: &str, flash: Flash) -> Response
     if is_htmx(headers) {
         return agent_region(ui, &a, Some(&flash), false).await;
     }
-    if flash.tone == Tone::Error {
+    if flash.tone == Tone::Caution {
         return agent_region(ui, &a, Some(&flash), true).await;
     }
     Redirect::to(&agent_settings_href(&a.id)).into_response()
@@ -316,7 +316,7 @@ pub(super) async fn rename(
         },
         Err(e) => Flash {
             text: format!("Couldn't rename it: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     after(&ui, &headers, &id, flash).await
@@ -332,13 +332,13 @@ async fn rename_lead(ui: &Ui, headers: &HeaderMap, name: &str) -> Response {
         },
         Err(e) => Flash {
             text: format!("Couldn't rename it: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     if is_htmx(headers) {
         return lead_region(ui, Some(&flash), false).await;
     }
-    if flash.tone == Tone::Error {
+    if flash.tone == Tone::Caution {
         return lead_region(ui, Some(&flash), true).await;
     }
     Redirect::to(&agent_settings_href(LEAD_KEY)).into_response()
@@ -361,7 +361,7 @@ pub(super) async fn icon(
     let flash = match AgentIcon::new(&form.shape, &form.color) {
         None => Flash {
             text: "Pick a shape and a colour.".into(),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
         // htmx: the page's region again, with the notice by the Icon form (the sidebar's live
         // update shows the new icon there).
@@ -372,7 +372,7 @@ pub(super) async fn icon(
             },
             Err(e) => Flash {
                 text: format!("Couldn't save the icon: {e}"),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             },
         },
     };
@@ -404,7 +404,7 @@ pub(super) async fn pin(
         },
         Err(e) => Flash {
             text: format!("Couldn't change it: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     after(&ui, &headers, &id, flash).await
@@ -425,7 +425,7 @@ pub(super) async fn fresh_start(
         },
         Err(e) => Flash {
             text: format!("Couldn't clear its memory: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     after(&ui, &headers, &id, flash).await
@@ -472,7 +472,7 @@ pub(super) async fn create(
     };
     let flash = Flash {
         text: error,
-        tone: Tone::Error,
+        tone: Tone::Caution,
     };
     let shape = icon.as_ref().map_or("cube", |i| i.shape.as_str());
     let color = icon.as_ref().map_or("green", |i| i.color.as_str());

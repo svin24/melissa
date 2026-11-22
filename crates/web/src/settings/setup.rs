@@ -363,7 +363,7 @@ async fn step(
 fn device_form(ui: &Ui, error: Option<&str>) -> Markup {
     let value = device::field_value(ui);
     html! {
-        @if let Some(e) = error { (notice(e, Tone::Error)) }
+        @if let Some(e) = error { (notice(e, Tone::Caution)) }
         form.stack #setup-device-form method="post" action="/ui/setup/device" {
             (crate::components::csrf_field())
             (text_field("name", "Device name", &value, "", "text",
@@ -517,7 +517,7 @@ fn model_region(ui: &Ui, error: Option<&str>, polls: u32, provider: Option<&str>
     if views.is_empty() {
         return html! {
             (notice_link("No provider is ready yet.",
-                Some((PROVIDER_URL, "Connect a provider")), Tone::Warn))
+                Some((PROVIDER_URL, "Connect a provider")), Tone::Attention))
             (setup_actions(html! {}, Some(&later_url(SetupStep::Model))))
         };
     }
@@ -543,7 +543,7 @@ fn model_region(ui: &Ui, error: Option<&str>, polls: u32, provider: Option<&str>
         3,
         waiting,
         html! {
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
+            @if let Some(e) = error { (notice(e, Tone::Caution)) }
             form.stack #setup-model-form method="post" action="/ui/setup/model" {
                 (crate::components::csrf_field())
                 (select_field_at("choice", "Model", &choices, current.as_deref()))

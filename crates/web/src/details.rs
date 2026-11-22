@@ -468,7 +468,7 @@ async fn schedule_enabled(
     let flash = match ui.lead.scheduler() {
         None => Some((
             "Schedules aren't running on this device.".to_string(),
-            Tone::Error,
+            Tone::Caution,
         )),
         Some(s) => {
             let store = s.schedules();
@@ -481,8 +481,8 @@ async fn schedule_enabled(
                         &melissa_agent::lead::schedules::Creator::Owner,
                     )
                     .err()
-                    .map(|e| (format!("Couldn't change it: {e}"), Tone::Error)),
-                _ => Some(("That schedule is gone.".to_string(), Tone::Muted)),
+                    .map(|e| (format!("Couldn't change it: {e}"), Tone::Caution)),
+                _ => Some(("That schedule is gone.".to_string(), Tone::Neutral)),
             }
         }
     };
@@ -514,17 +514,17 @@ async fn rule_remove(
         .into_iter()
         .any(|r| r.id == id && r.key.principal == owner);
     let flash = if !mine {
-        ("That rule is already gone.".to_string(), Tone::Muted)
+        ("That rule is already gone.".to_string(), Tone::Neutral)
     } else {
         match ui.registry().remove_rule(id) {
             Ok(Some(_)) => (
                 "Removed. It asks you again next time.".to_string(),
                 Tone::Ok,
             ),
-            Ok(None) => ("That rule is already gone.".to_string(), Tone::Muted),
+            Ok(None) => ("That rule is already gone.".to_string(), Tone::Neutral),
             Err(e) => {
                 tracing::warn!("cannot remove rule {id}: {e}");
-                ("Couldn't remove it.".to_string(), Tone::Error)
+                ("Couldn't remove it.".to_string(), Tone::Caution)
             }
         }
     };

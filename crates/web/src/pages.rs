@@ -191,7 +191,7 @@ pub fn helper_gone(f: &Frame<'_>) -> Markup {
         html! {
             div.page-pad {
                 (page_header("Conversation not found", None))
-                (crate::components::notice("This helper isn't on this device any more.", Tone::Warn))
+                (crate::components::notice("This helper isn't on this device any more.", Tone::Attention))
                 (link(MELISSA_CHAT_URL, &format!("Back to {}'s chat", f.lead_name())))
             }
         },
@@ -768,7 +768,7 @@ fn provider_notice_inner(no_provider: bool, owner: bool) -> Option<Markup> {
         notice_link(
             "No provider is ready yet.",
             owner.then_some((crate::settings::setup::PROVIDER_URL, "Connect a provider")),
-            Tone::Warn,
+            Tone::Attention,
         )
     })
 }
@@ -1452,10 +1452,10 @@ pub fn task_region(task: &TaskSnapshot) -> Markup {
                     ("Time", html! { (time) }),
                 ]))
                 @if let Some(error) = &task.error {
-                    (crate::components::notice(&format!("The agent failed: {error}."), Tone::Error))
+                    (crate::components::notice(&format!("The agent failed: {error}."), Tone::Caution))
                 }
                 @if task.truncated {
-                    (crate::components::notice("The output was too long; the end is cut off.", Tone::Warn))
+                    (crate::components::notice("The output was too long; the end is cut off.", Tone::Attention))
                 }
                 @if running {
                     (action_button(&format!("/tasks/{}/cancel", task.id), TASK_ID, "Stop", "Stop this task?"))
@@ -1483,7 +1483,7 @@ pub fn error_page(title: &str, message: &str) -> Markup {
         title,
         card(
             title,
-            html! { (crate::components::notice(message, Tone::Error)) (link("/", "Back to the chat")) },
+            html! { (crate::components::notice(message, Tone::Caution)) (link("/", "Back to the chat")) },
         ),
     )
 }
@@ -1493,7 +1493,7 @@ pub fn not_found() -> Markup {
         "Not found",
         card(
             "Not found",
-            html! { (crate::components::notice("No such page.", Tone::Warn)) (link("/", "Back to the chat")) },
+            html! { (crate::components::notice("No such page.", Tone::Attention)) (link("/", "Back to the chat")) },
         ),
     )
 }
@@ -1502,8 +1502,8 @@ fn status_badge(status: TaskStatus) -> Markup {
     let tone = match status {
         TaskStatus::Running => Tone::Info,
         TaskStatus::Succeeded => Tone::Ok,
-        TaskStatus::Failed => Tone::Error,
-        TaskStatus::Cancelled => Tone::Muted,
+        TaskStatus::Failed => Tone::Caution,
+        TaskStatus::Cancelled => Tone::Neutral,
     };
     let label = match status {
         TaskStatus::Running => "Running",

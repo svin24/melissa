@@ -1066,6 +1066,101 @@ summary.seg::-webkit-details-marker {
   background: var(--color-caution-soft);
 }
 
+/* --- Badge, chip, status dot, count (COMPONENT-SPEC 2.7, DS-08) -------------------------
+   A badge is a static word on its tone's soft colour, 20px high, optionally led by a dot or a
+   spinner (components::status_badge). Tone classes alone colour a word (`tone-caution`).
+   A chip is interactive: Btn::chip() (`.btn-chip`, full radius). A status dot is 8px next to
+   a word; a count is a plain number. */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space-1) * 1.5);
+  min-height: var(--chip-height);
+  padding: 0 var(--space-2);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--chip-neutral-bg);
+  color: var(--chip-neutral-text);
+  font-size: var(--chip-font-size);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--line-height-tight);
+  white-space: nowrap;
+}
+
+.badge.tone-info {
+  background: var(--chip-info-bg);
+  color: var(--chip-info-text);
+}
+
+.badge.tone-ok {
+  background: var(--chip-ok-bg);
+  color: var(--chip-ok-text);
+}
+
+.badge.tone-attention {
+  background: var(--chip-attention-bg);
+  color: var(--chip-attention-text);
+}
+
+.badge.tone-caution {
+  background: var(--chip-caution-bg);
+  color: var(--chip-caution-text);
+}
+
+.badge-dot {
+  flex: none;
+  width: calc(var(--space-1) * 1.5);
+  height: calc(var(--space-1) * 1.5);
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.badge > .spin {
+  width: var(--space-3);
+  height: var(--space-3);
+}
+
+/* A word in a tone's colour (a status line, a hint). */
+.tone-neutral {
+  color: var(--color-text-muted);
+}
+
+.tone-info {
+  color: var(--color-text-link);
+}
+
+.tone-ok {
+  color: var(--color-ok-text);
+}
+
+.tone-attention {
+  color: var(--color-attention-text);
+}
+
+.tone-caution {
+  color: var(--color-caution-text);
+}
+
+.btn-chip {
+  border-radius: var(--radius-full);
+}
+
+.dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--color-idle-fg);
+}
+
+.count {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 /* --- Banner and shell ------------------------------------------------------------------ */
 
 .banner {
@@ -1818,37 +1913,22 @@ svg.glyph {
 }
 
 /* A count beside a heading (group heads, the details' sections): the heading's colour. */
-.count {
-  font-size: 0.8rem;
-  font-weight: 600;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-
 .activity .label a {
   color: inherit;
   text-decoration-color: var(--honey);
   text-decoration-thickness: 2px;
 }
 
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--idle);
-}
-
 .dot.h-ok {
-  background: var(--ok);
+  background: var(--color-ok-fg);
 }
 
 .dot.h-busy {
-  background: var(--honey);
+  background: var(--color-attention-fg);
 }
 
 .dot.h-problem {
-  background: var(--caution);
+  background: var(--color-caution-bg);
 }
 
 /* --- Page header and blocks ------------------------------------------------------------- */
@@ -1967,32 +2047,6 @@ svg.glyph {
 
 .chat-status:empty {
   display: none;
-}
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 28px;
-  padding: 0 0.6rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.pill.attention {
-  color: var(--honey-text);
-  background: var(--honey-soft);
-}
-
-.pill.working {
-  color: var(--muted);
-}
-
-.pill .spin {
-  width: 12px;
-  height: 12px;
 }
 
 .device-warn {
@@ -3064,17 +3118,8 @@ progress {
    current model's reasoning levels. Anchored to the chip where CSS anchor positioning
    exists; melissa.js places it otherwise; without script the browser centres it. */
 .model-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 36px;
   max-width: min(16rem, 46vw);
-  padding: 0 0.6rem 0 0.35rem;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.85rem;
-  font-weight: 600;
+  padding-inline: var(--space-1) var(--space-2);
   anchor-name: --model-chip;
 }
 
@@ -3093,17 +3138,6 @@ progress {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.chip-tag {
-  flex: none;
-  padding: 0 0.4rem;
-  border-radius: 999px;
-  background: var(--honey-soft);
-  color: var(--honey-text);
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1.5;
 }
 
 .chip-warn {
@@ -3132,18 +3166,6 @@ svg.warn .mark {
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
   border-top: 5px solid currentColor;
-}
-
-.model-chip:focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-}
-
-@media (hover: hover) {
-  .model-chip:hover {
-    background: var(--ground);
-    color: var(--ink);
-  }
 }
 
 .model-picker {
@@ -3727,42 +3749,6 @@ a.app-row-address:hover {
 }
 
 /* An app's status: a dot and the word. */
-.app-status {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(var(--space-1) * 1.5);
-  min-height: var(--chip-height);
-  padding: 0 var(--space-2);
-  border: var(--border-width-hairline) solid transparent;
-  border-radius: var(--radius-full);
-  background: var(--chip-neutral-bg);
-  color: var(--chip-neutral-text);
-  font-size: var(--chip-font-size);
-  font-weight: var(--font-weight-strong);
-  white-space: nowrap;
-}
-
-.app-status-dot {
-  width: calc(var(--space-1) * 1.5);
-  height: calc(var(--space-1) * 1.5);
-  border-radius: var(--radius-full);
-  background: currentColor;
-}
-
-.app-status.h-ok {
-  background: var(--chip-ok-bg);
-  color: var(--chip-ok-text);
-}
-
-.app-status.h-busy .app-status-dot {
-  background: var(--color-attention-fg);
-}
-
-.app-status.h-problem {
-  background: var(--chip-attention-bg);
-  color: var(--chip-attention-text);
-}
-
 /* No apps (yet), or the app platform isn't there. */
 .apps-empty {
   display: grid;
@@ -4193,35 +4179,6 @@ td {
 
 th {
   font-weight: 650;
-  color: var(--muted);
-}
-
-.badge {
-  display: inline-block;
-  padding: 0.05rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  background: var(--ground);
-}
-
-.tone-ok {
-  color: var(--ok);
-}
-
-.tone-info {
-  color: var(--action);
-}
-
-.tone-warn {
-  color: var(--honey-text);
-}
-
-.tone-error {
-  color: var(--caution);
-}
-
-.tone-muted {
   color: var(--muted);
 }
 
@@ -5247,7 +5204,7 @@ ol.steps > li::marker {
   margin: 0;
 }
 
-.sheet-msg.tone-error {
+.sheet-msg.tone-caution {
   color: var(--caution);
 }
 
@@ -6319,12 +6276,13 @@ ol.steps > li::marker {
     min-width: 0;
   }
 
-  .chat-status .pill {
+  /* The phone's chat header shows the status as a plain word under the name. */
+  .chat-status .badge {
     min-height: 0;
     padding: 0;
     background: none;
-    font-size: 0.85rem;
-    font-weight: 400;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-regular);
   }
 
   .chat-head > .details-toggle {
@@ -6751,27 +6709,17 @@ a.ptile[aria-current] {
 }
 
 a.suggestion {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ink);
-  text-decoration: none;
+  font-weight: var(--font-weight-regular);
 }
 
 @media (hover: hover) {
-  a.ptile:hover,
-  a.suggestion:hover {
+  a.ptile:hover {
     border-color: var(--action);
   }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  a.ptile,
-  a.suggestion {
+  a.ptile {
     transition: border-color 150ms ease;
   }
 }

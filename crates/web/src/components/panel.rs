@@ -428,7 +428,7 @@ pub fn usage_table(rows: &[UsageRow<'_>], note: &str) -> Markup {
                 tbody {
                     @for r in rows {
                         tr {
-                            th scope="row" { a href=(r.href) { (r.name) } " " (badge(r.role, Tone::Muted)) }
+                            th scope="row" { a href=(r.href) { (r.name) } " " (badge(r.role, Tone::Neutral)) }
                             td.num { (r.turns) }
                             td.num { (r.time) }
                             td.num { (r.approvals) }

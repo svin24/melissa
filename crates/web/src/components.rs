@@ -15,26 +15,36 @@ use crate::markdown::{self, Align, El, Node, Segment};
 use maud::{html, Markup, DOCTYPE};
 use melissa_agent::attachments::{MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES};
 
-/// Visual tone used by badges and notices.
+/// The tone of a badge, a notice or a status word (COMPONENT-SPEC 2.7): neutral, info, ok,
+/// attention (honey, "look here") and caution (errors, danger). Colour only helps; the word
+/// always carries the meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
-    Ok,
+    Neutral,
     Info,
-    Warn,
-    Error,
-    Muted,
+    Ok,
+    Attention,
+    Caution,
 }
 
 impl Tone {
-    fn class(self) -> &'static str {
+    pub(crate) fn class(self) -> &'static str {
         match self {
-            Self::Ok => "tone-ok",
+            Self::Neutral => "tone-neutral",
             Self::Info => "tone-info",
-            Self::Warn => "tone-warn",
-            Self::Error => "tone-error",
-            Self::Muted => "tone-muted",
+            Self::Ok => "tone-ok",
+            Self::Attention => "tone-attention",
+            Self::Caution => "tone-caution",
         }
     }
+}
+
+/// What leads a badge's word: nothing, a dot in the tone's colour, or a spinner (working).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    None,
+    Dot,
+    Spin,
 }
 
 /// What a button looks like (docs/design/COMPONENT-SPEC.md 2.1, Penpot board DS-01).
@@ -82,6 +92,8 @@ enum BtnShape {
     Icon,
     /// Round, a glyph only.
     Round,
+    /// Fully rounded ends around text: a chip (a suggestion, a picker trigger).
+    Chip,
 }
 
 impl Btn {
@@ -133,6 +145,13 @@ impl Btn {
             ..self
         }
     }
+    /// A chip (COMPONENT-SPEC 2.7): an interactive pill, usually small.
+    pub const fn chip(self) -> Self {
+        Self {
+            shape: BtnShape::Chip,
+            ..self
+        }
+    }
 
     fn classes(self) -> String {
         let variant = match self.variant {
@@ -152,6 +171,7 @@ impl Btn {
             BtnShape::Text => "",
             BtnShape::Icon => " btn-icon",
             BtnShape::Round => " btn-round",
+            BtnShape::Chip => " btn-chip",
         };
         format!("btn {variant}{size}{shape}")
     }
@@ -215,12 +235,24 @@ pub enum Health {
 }
 
 impl Health {
-    fn class(self) -> &'static str {
+    /// The status dot's class (`dot h-ok`).
+    pub(crate) fn class(self) -> &'static str {
         match self {
             Self::Ok => "h-ok",
             Self::Busy => "h-busy",
             Self::Problem => "h-problem",
             Self::Idle => "h-idle",
+        }
+    }
+
+    /// How a badge shows it: running is ok with a dot, busy works (a spinner), a problem
+    /// asks for attention, idle is neutral.
+    pub(crate) fn tone_mark(self) -> (Tone, Mark) {
+        match self {
+            Self::Ok => (Tone::Ok, Mark::Dot),
+            Self::Busy => (Tone::Attention, Mark::Spin),
+            Self::Problem => (Tone::Attention, Mark::Dot),
+            Self::Idle => (Tone::Neutral, Mark::Dot),
         }
     }
 }
@@ -365,7 +397,7 @@ pub fn composer_closed(text: &str, back: &str, back_label: &str, oob: bool) -> M
     let swap = oob.then(|| format!("outerHTML:#{COMPOSER_ID}"));
     html! {
         div.composer.composer-closed hx-swap-oob=[swap] {
-            (notice(text, Tone::Warn))
+            (notice(text, Tone::Attention))
             (link(back, back_label))
         }
     }
@@ -1757,14 +1789,14 @@ pub struct ModelPicker {
 /// The chip in the composer bar that opens the picker (Popover API: no script needed).
 pub fn model_chip(p: &ModelPicker) -> Markup {
     html! {
-        button.model-chip type="button" popovertarget=(MODEL_PICKER_ID) aria-haspopup="dialog"
+        button.model-chip.(Btn::ghost().sm().chip()) type="button" popovertarget=(MODEL_PICKER_ID) aria-haspopup="dialog"
             title="Choose the model" {
             @if let Some(l) = &p.letter {
                 (provider_logo(p.current.split(' ').next().unwrap_or_default(), l, false))
             }
             span.visually-hidden { "Model: " }
             span.chip-text { (p.chip) }
-            @if p.fast { span.chip-tag { "Fast" } }
+            @if p.fast { span.chip-tag.badge.tone-attention { "Fast" } }
             @if p.full_access {
                 span.chip-warn title="Full access: this agent's own requests run without asking you" {
                     (warn_icon())
@@ -1980,9 +2012,24 @@ pub fn crumbs(trail: &[(&str, &str)], current: &str) -> Markup {
     }
 }
 
-/// A short coloured status label.
+/// A short status label (COMPONENT-SPEC 2.7, Penpot DS-08): the word on its tone's soft
+/// colour, 20px high. Not a button.
 pub fn badge(label: &str, tone: Tone) -> Markup {
-    html! { span class={ "badge " (tone.class()) } { (label) } }
+    status_badge(label, tone, Mark::None)
+}
+
+/// A badge led by a dot or a spinner ("Running", "Working").
+pub fn status_badge(label: &str, tone: Tone, mark: Mark) -> Markup {
+    html! {
+        span class={ "badge " (tone.class()) } {
+            @match mark {
+                Mark::None => {},
+                Mark::Dot => span.badge-dot aria-hidden="true" {},
+                Mark::Spin => span.icon.spin aria-hidden="true" {},
+            }
+            (label)
+        }
+    }
 }
 
 /// A one-line message box.
@@ -2154,7 +2201,7 @@ pub fn danger_confirm(c: &DangerConfirm<'_>) -> Markup {
                             autocapitalize="off" spellcheck="false" pattern=(c.word)
                             aria-invalid=[c.error.map(|_| "true")];
                     }
-                    @if let Some(e) = c.error { (notice(e, Tone::Error)) }
+                    @if let Some(e) = c.error { (notice(e, Tone::Caution)) }
                     div { button.(Btn::danger()) type="submit" { (c.label) } }
                 }
             }
@@ -2604,7 +2651,11 @@ mod tests {
 
     #[test]
     fn text_is_escaped() {
-        let out = card("<b>x</b>", notice("<script>alert(1)</script>", Tone::Error)).into_string();
+        let out = card(
+            "<b>x</b>",
+            notice("<script>alert(1)</script>", Tone::Caution),
+        )
+        .into_string();
         assert!(!out.contains("<script>"));
         assert!(!out.contains("<b>"));
         assert!(out.contains("&lt;script&gt;"));

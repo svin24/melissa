@@ -14,7 +14,7 @@ use super::{
     activity_icon, approval_state_outcome, markdown,
     mobile::{back_link, menu_cancel, menu_head, new_agent_round, MenuWho},
     panel::{glyph, section_bar, Glyph, UpdateHint},
-    ActivityState, ApprovalState, Btn, Health, Nav,
+    status_badge, ActivityState, ApprovalState, Btn, Health, Mark, Nav, Tone,
 };
 
 // --- Icons --------------------------------------------------------------------------------------
@@ -356,12 +356,7 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
 }
 
 fn health_class(h: Health) -> &'static str {
-    match h {
-        Health::Ok => "h-ok",
-        Health::Busy => "h-busy",
-        Health::Problem => "h-problem",
-        Health::Idle => "h-idle",
-    }
+    h.class()
 }
 
 /// The agent groups (`oob`: as an out-of-band replacement in a live update). Needs attention
@@ -461,13 +456,13 @@ pub enum HeadStatus {
     Working,
 }
 
-/// The status pill (or nothing).
+/// The chat header's status badge (or nothing).
 pub fn status_pill(s: Option<HeadStatus>) -> Markup {
     html! {
         @match s {
-            Some(HeadStatus::NeedsPermission) => span.pill.attention { "Needs permission" },
-            Some(HeadStatus::Failed) => span.pill.attention { "Needs a look" },
-            Some(HeadStatus::Working) => span.pill.working { span.icon.spin aria-hidden="true" {} "Working" },
+            Some(HeadStatus::NeedsPermission) => (status_badge("Needs permission", Tone::Attention, Mark::None)),
+            Some(HeadStatus::Failed) => (status_badge("Needs a look", Tone::Attention, Mark::None)),
+            Some(HeadStatus::Working) => (status_badge("Working", Tone::Neutral, Mark::Spin)),
             None => {},
         }
     }
@@ -695,9 +690,9 @@ pub fn setup_password_card(c: &SetupPasswordCard<'_>) -> Markup {
                         }
                     }
                 }
-                p.setup-warn.tone-warn { (glyph(Glyph::Warn)) span { "Change this password after you first sign in." } }
+                p.setup-warn.tone-attention { (glyph(Glyph::Warn)) span { "Change this password after you first sign in." } }
                 @if state == SetupPasswordState::Failed {
-                    p.sheet-msg.tone-error role="status" { "Couldn't reach the app. Try again." }
+                    p.sheet-msg.tone-caution role="status" { "Couldn't reach the app. Try again." }
                 }
                 div.actions {
                     button.copy-secret.(Btn::secondary().sm()) type="button" data-copy-url=(reveal) { "Copy" }

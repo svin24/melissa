@@ -11,7 +11,7 @@ use maud::{html, Markup};
 
 use super::{
     agent::{avatar, icon_picker, Avatar},
-    glyph, live_region_on, log_view, Btn, Glyph, Health, LogLine, Tone,
+    glyph, live_region_on, log_view, status_badge, Btn, Glyph, Health, LogLine, Tone,
 };
 
 /// The list's region id (its refresh and the filter swap it).
@@ -30,14 +30,10 @@ pub fn app_icon(shape: &str, color: &str, large: bool) -> Markup {
     }
 }
 
-/// An app's status: a dot and the word (the word carries the meaning).
+/// An app's status: a badge with a dot (a spinner while busy) and the word.
 pub fn app_status(health: Health, words: &str) -> Markup {
-    html! {
-        span class={ "app-status " (health.class()) } {
-            span.app-status-dot aria-hidden="true" {}
-            (words)
-        }
-    }
+    let (tone, mark) = health.tone_mark();
+    status_badge(words, tone, mark)
 }
 
 /// Whose an app is, as a chip ("Installed by" for screen readers).

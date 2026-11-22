@@ -273,7 +273,7 @@ async fn permissions_and_recent_activity_of_an_agent() {
     assert!(p.contains(">Review<"), "{p}");
     assert!(p.contains("Checked whose apps are whose"), "{p}");
     // She needs the user: first group of the sidebar, and her header says so.
-    assert!(page.contains("<span class=\"pill attention\">Needs permission</span>"));
+    assert!(page.contains("<span class=\"badge tone-attention\">Needs permission</span>"));
     let side = &page[page.find("group-attention").expect("Needs attention")..];
     assert!(side.contains("<span class=\"name\">Ada</span>"));
     assert!(side.contains("Permission needed"));
@@ -685,7 +685,10 @@ async fn sent_files_and_status_update_the_open_panel() {
     while !frames.contains("innerHTML:#chat-status") {
         frames.push_str(&next_frame(&mut body).await);
     }
-    assert!(frames.contains("<span class=\"pill working\">"), "{frames}");
+    assert!(
+        frames.contains("<span class=\"badge tone-neutral\"><span class=\"icon spin\""),
+        "{frames}"
+    );
 }
 
 #[tokio::test]
