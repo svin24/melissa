@@ -3112,12 +3112,15 @@ mod tests {
                 "<th scope=\"row\"><a href=\"/\">Melissa</a>",
                 "Lead agent",
                 "Approvals asked",
-                // The echo test backend reports neither context nor cost.
-                "<td class=\"num\">Not reported</td>",
                 "Counted since",
+                "Context and cost show only where the provider reports them.",
                 "4.0 GB of 8.0 GB used",
             ] {
                 assert!(body.contains(want), "missing {want}");
+            }
+            // The echo test backend reports neither context nor cost: no such columns.
+            for absent in [">Context</th>", ">Cost</th>", "Not reported"] {
+                assert!(!body.contains(absent), "unexpected {absent}");
             }
         }
 

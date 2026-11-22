@@ -391,14 +391,18 @@ pub struct UsageRow<'a> {
     pub turns: &'a str,
     pub time: &'a str,
     pub approvals: &'a str,
-    /// Tokens in context ("45k of 200k"), or "Not reported".
-    pub context: &'a str,
-    /// Reported cost ("US$0.42"), or "Not reported".
-    pub cost: &'a str,
+    /// Tokens in context ("45k of 200k"), `None` when the provider did not report them.
+    pub context: Option<&'a str>,
+    /// Reported cost ("US$0.42"), `None` when the provider did not report it.
+    pub cost: Option<&'a str>,
 }
 
-/// The agents table of Usage and resources.
-pub fn usage_table(rows: &[UsageRow<'_>], since: &str) -> Markup {
+/// The agents table of Usage and resources. The Context and Cost columns appear only when at
+/// least one row has a value; a row without one shows a muted dash ("Not reported" to screen
+/// readers).
+pub fn usage_table(rows: &[UsageRow<'_>], note: &str) -> Markup {
+    let show_context = rows.iter().any(|r| r.context.is_some());
+    let show_cost = rows.iter().any(|r| r.cost.is_some());
     html! {
         div.table-wrap {
             table.usage {
@@ -408,8 +412,8 @@ pub fn usage_table(rows: &[UsageRow<'_>], since: &str) -> Markup {
                     th.num scope="col" { "Turns" }
                     th.num scope="col" { "Time" }
                     th.num scope="col" { "Approvals asked" }
-                    th.num scope="col" { "Context" }
-                    th.num scope="col" { "Cost" }
+                    @if show_context { th.num scope="col" { "Context" } }
+                    @if show_cost { th.num scope="col" { "Cost" } }
                 } }
                 tbody {
                     @for r in rows {
@@ -418,20 +422,71 @@ pub fn usage_table(rows: &[UsageRow<'_>], since: &str) -> Markup {
                             td.num { (r.turns) }
                             td.num { (r.time) }
                             td.num { (r.approvals) }
-                            td.num { (r.context) }
-                            td.num { (r.cost) }
+                            @if show_context { (reported(r.context)) }
+                            @if show_cost { (reported(r.cost)) }
                         }
                     }
                 }
             }
         }
-        p.quiet { (since) }
+        p.quiet { (note) }
+    }
+}
+
+/// A number cell that may be empty: the value, or a muted dash read as "Not reported".
+fn reported(value: Option<&str>) -> Markup {
+    html! {
+        @match value {
+            Some(v) => td.num { (v) },
+            None => td.num title="Not reported" {
+                span.quiet aria-hidden="true" { "\u{2014}" }
+                span.visually-hidden { "Not reported" }
+            },
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row<'a>(context: Option<&'a str>, cost: Option<&'a str>) -> UsageRow<'a> {
+        UsageRow {
+            name: "Ada",
+            href: "/agents/a1",
+            role: "Helper",
+            turns: "1",
+            time: "1 min",
+            approvals: "0",
+            context,
+            cost,
+        }
+    }
+
+    #[test]
+    fn usage_table_hides_context_and_cost_when_nothing_is_reported() {
+        let html =
+            usage_table(&[row(None, None), row(None, None)], "Counted since 21 Nov.").into_string();
+        assert!(html.contains(">Approvals asked</th>"));
+        for absent in [">Context</th>", ">Cost</th>", "Not reported", "\u{2014}"] {
+            assert!(!html.contains(absent), "unexpected {absent}");
+        }
+        assert_eq!(html.matches("<td").count(), 6);
+        assert!(html.contains("<p class=\"quiet\">Counted since 21 Nov.</p>"));
+    }
+
+    #[test]
+    fn usage_table_shows_a_column_with_a_dash_where_one_row_is_missing() {
+        let html =
+            usage_table(&[row(Some("45k of 200k"), None), row(None, None)], "").into_string();
+        assert!(html.contains(">Context</th>"));
+        assert!(!html.contains(">Cost</th>"));
+        assert!(html.contains("<td class=\"num\">45k of 200k</td>"));
+        assert!(html.contains(
+            "<td class=\"num\" title=\"Not reported\"><span class=\"quiet\" aria-hidden=\"true\">\u{2014}</span><span class=\"visually-hidden\">Not reported</span></td>"
+        ));
+        assert_eq!(html.matches("<td").count(), 8);
+    }
 
     #[test]
     fn the_sections_bar_has_four_labelled_tabs() {
