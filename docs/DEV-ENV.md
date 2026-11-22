@@ -54,6 +54,26 @@ just ui-shots --only settings # only screens whose name contains "settings"
   network use is the browser talking to the throwaway server on localhost.
 - Shots show this machine's UI only (target/ is gitignored); don't commit them.
 
+## Design tokens (Penpot and the stylesheet)
+
+The design library in the local Penpot is the source of the UI's values. Its token file is
+committed as `crates/web/design/tokens.json` (sets `core`, `theme/light`, `theme/dark`); the
+stylesheet's `:root` (`crates/web/assets/melissa.css`) is written by hand. A Penpot token
+`a.b.c` is the CSS variable `--a-b-c`. `cargo nextest run -p melissa-web tokens::` fails when
+the two disagree: a token on one side only, or a different value in the light or dark theme
+(after resolving aliases; `0.25rem` = `4`, `150ms` = `150`, `rgb(…/0.45)` = `#…73`).
+
+- **Changed in Penpot:** export the tokens (Tokens → Export, one file) over
+  `crates/web/design/tokens.json`, run the test, and change `:root` until it passes. Carry the
+  change into `scripts/tokens/tokens_gen.py` too, so the next `just tokens` keeps it.
+- **Changed in code:** edit `scripts/tokens/tokens_gen.py` and `:root` together, then
+  `just tokens` (writes `tokens.json` and runs the test). Import the new `tokens.json` into
+  Penpot (Tokens → Import) so the design library follows.
+- **Many tokens at once:** `just tokens css` prints the whole token block as CSS to paste.
+- Names only the stylesheet has (the old aliases such as `--ink`, the Apps list's layout
+  values) are listed in `crate::tokens::CSS_ONLY`; anything else in `:root` must be in
+  `tokens.json`. Later `:root` blocks (themes, `pointer: coarse`) may only override tokens.
+
 ## Installing Nix (any Linux)
 
 Use the Determinate installer (flakes on by default): https://determinate.systems/nix-installer/, or the

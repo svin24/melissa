@@ -44,6 +44,19 @@ ui-shots *args:
 ui-diff a b *args:
     python3 scripts/ui-shots/ui_shots.py diff {{quote(a)}} {{quote(b)}} {{args}}
 
+# --- design tokens (docs/DEV-ENV.md, Design tokens) ------------------------------------
+# Write crates/web/design/tokens.json (Penpot's token file) from scripts/tokens/tokens_gen.py,
+# then check it against melissa.css's :root. `just tokens css` prints a :root draft instead.
+tokens mode="json":
+    #!/usr/bin/env sh
+    set -eu
+    if [ "{{mode}}" = "json" ]; then
+        python3 scripts/tokens/tokens_gen.py json > crates/web/design/tokens.json
+        cargo nextest run -p melissa-web tokens::
+    else
+        python3 scripts/tokens/tokens_gen.py {{mode}}
+    fi
+
 # --- container image (packaging/container) ---------------------------------------------
 # Build localhost/melissa:dev (rootless). --network=host: rootless pasta may be denied by SELinux.
 container-build version="dev":
