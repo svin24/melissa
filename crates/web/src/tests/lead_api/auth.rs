@@ -111,7 +111,7 @@ async fn claim_needs_the_code_and_works_once() {
     // One password field with "Show password" (2026-11-21: no "Password again").
     assert!(!page.contains("Password again") && !page.contains("name=\"again\""));
     assert!(page.contains("data-show-password") && page.contains("Show password"));
-    assert!(page.contains("Printed at the end of the install."));
+    assert!(page.contains("melissa-server setup-code"));
 
     let (code, _) = auth.setup_code().unwrap().unwrap();
     let body = "code=WRONG-CODE2&username=ana&password=owner-password";

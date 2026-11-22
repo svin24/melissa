@@ -3065,6 +3065,11 @@ main.plain {
   margin: 2rem auto 0;
 }
 
+/* The intro line ("You become the owner.") keeps the form's own gap from the first field. */
+.auth-card .card > p + form.stack {
+  margin-top: 0.9rem;
+}
+
 /* "Show password" under a password field: melissa.js switches the field; hidden without it. */
 .field-pw {
   display: grid;

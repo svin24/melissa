@@ -189,6 +189,9 @@ pub struct Feed {
     reply_break: bool,
     busy: Option<TurnId>,
     backend: Option<String>,
+    /// The backend a "Switched to" line named, until its session opens: the "Connected to"
+    /// line that follows would only say it again.
+    switched_to: Option<String>,
     last_seq: u64,
     /// Prefix of new keys: `e` inside the restored earlier conversation, whose confirmation
     /// ids and agent tool-call ids may repeat after the restart.
@@ -607,6 +610,10 @@ impl Feed {
             }
             LeadEvent::SessionOpened { backend, resumed } => {
                 self.backend = Some(backend_label(backend).to_string());
+                if self.switched_to.take().as_deref() == Some(backend.as_str()) {
+                    // "Switched to …" already said it.
+                    return vec![Change::Status];
+                }
                 let text = if *resumed {
                     format!(
                         "Connected to {}, picking up where we left off",
@@ -645,6 +652,13 @@ impl Feed {
                 } else {
                     format!(" ({})", parts.join(" · "))
                 };
+                if !self.has_messages() {
+                    // Nothing to pick up yet (a model chosen in setup, or before the first
+                    // message): the chat stays empty, with its greeting.
+                    self.switched_to = None;
+                    return vec![Change::Status];
+                }
+                self.switched_to = Some(backend.clone());
                 let name = format!("{}{detail}", backend_label(backend));
                 vec![
                     self.add(
@@ -793,6 +807,16 @@ impl Feed {
     /// A key as stored (with the current prefix).
     fn full(&self, key: &str) -> String {
         format!("{}{key}", self.prefix)
+    }
+
+    /// Whether anything was said or done in the chat yet (system lines don't count).
+    fn has_messages(&self) -> bool {
+        self.entries.iter().any(|e| {
+            !matches!(
+                e.item,
+                Item::Note { .. } | Item::Divider { .. } | Item::Date { .. }
+            )
+        })
     }
 
     fn add(&mut self, key: String, item: Item) -> Change {
@@ -2363,6 +2387,92 @@ mod tests {
             })
             .flatten()
             .collect()
+    }
+
+    fn switched(backend: &str) -> LeadEvent {
+        LeadEvent::BackendSwitched {
+            backend: backend.into(),
+            model: Some("sonnet".into()),
+            model_label: Some("Sonnet".into()),
+            effort_label: None,
+            fast: false,
+        }
+    }
+
+    fn notes(feed: &Feed) -> Vec<String> {
+        feed.entries()
+            .iter()
+            .filter_map(|e| match &e.item {
+                Item::Note { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_model_chosen_before_the_first_message_leaves_the_chat_empty() {
+        let mut feed = Feed::new();
+        fold_all(&mut feed, vec![switched("claude"), switched("grok")]);
+        assert!(feed.entries().is_empty(), "{:?}", feed.entries());
+        // The first message opens the session: it says so once.
+        let mut feed = Feed::new();
+        fold_all(
+            &mut feed,
+            vec![
+                switched("claude"),
+                LeadEvent::UserMessage {
+                    turn: 1,
+                    text: "hi".into(),
+                    attachments: vec![],
+                    scheduled: None,
+                },
+                LeadEvent::SessionOpened {
+                    backend: "claude".into(),
+                    resumed: false,
+                },
+            ],
+        );
+        assert_eq!(notes(&feed), ["Connected to Claude"]);
+    }
+
+    #[test]
+    fn a_switch_mid_chat_is_one_line_not_two() {
+        let mut feed = Feed::new();
+        let user = |turn| LeadEvent::UserMessage {
+            turn,
+            text: "hi".into(),
+            attachments: vec![],
+            scheduled: None,
+        };
+        fold_all(
+            &mut feed,
+            vec![
+                user(1),
+                LeadEvent::SessionOpened {
+                    backend: "grok-acp".into(),
+                    resumed: false,
+                },
+                switched("claude"),
+                user(2),
+                LeadEvent::SessionOpened {
+                    backend: "claude".into(),
+                    resumed: true,
+                },
+                // A later reconnect on its own still says so.
+                LeadEvent::SessionOpened {
+                    backend: "claude".into(),
+                    resumed: true,
+                },
+            ],
+        );
+        assert_eq!(
+            notes(&feed),
+            [
+                "Connected to Grok",
+                "Switched to Claude (Sonnet), picking up where we left off",
+                "Connected to Claude, picking up where we left off",
+            ]
+        );
     }
 
     #[test]
