@@ -32,6 +32,18 @@ chat:
 ask +message:
     cargo run -q -p melissa-server -- ask {{quote(message)}}
 
+# --- UI screenshots (scripts/ui-shots, docs/DEV-ENV.md) ---------------------------------
+# Every screen at 1440/1024/390 px, dark and light, from a throwaway Melissa with fixed
+# content, into target/ui-shots/<revision>/ (index.html is the contact sheet).
+# `just ui-shots --rev <rev>` shoots another revision; `--only <text>` a few screens.
+ui-shots *args:
+    python3 scripts/ui-shots/ui_shots.py shoot {{args}}
+
+# Compare two shot sets (directories or revisions; a revision without shots is shot first):
+# diff images and a summary in target/ui-shots/diff-<a>-vs-<b>/.
+ui-diff a b *args:
+    python3 scripts/ui-shots/ui_shots.py diff {{quote(a)}} {{quote(b)}} {{args}}
+
 # --- container image (packaging/container) ---------------------------------------------
 # Build localhost/melissa:dev (rootless). --network=host: rootless pasta may be denied by SELinux.
 container-build version="dev":

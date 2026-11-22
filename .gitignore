@@ -16,3 +16,4 @@ devenv.local.nix
 result
 # VM disks and test keys
 /vm/
+__pycache__/
