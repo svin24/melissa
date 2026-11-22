@@ -1610,3 +1610,14 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   rename in Settings → Updates reaches open chats at once: header, sidebar and details panel. Alternatives:
   reading the person again on each update (there is no request then), sending live updates only to the owner
   (members' panels would go stale).
+- **2026-11-22 — Design-system answers: today's dark palette, two dark-mode fixes, limits without pace.** The
+  owner chose, after the Penpot design system (boards A1–A8, B1–B4, C1–C3 and specimens DS-00–DS-17) was done:
+  (1) the dark theme keeps today's melissa.css colours (blue primary button), not the bluer, lighter palette of
+  the owner's earlier Figma file; (2) dark mode gets one lighter step for hovered and selected rows, ghost-button
+  hover and similar fills, because the spec mapped them to the page background and they could not be seen, and
+  disabled text gets a dimmer grey than muted text so disabled controls read as disabled; (3) provider usage
+  limits show the share left, a bar and the reset time, with no pace marker ("On pace"/"Ahead of pace").
+  Where the component spec and the audit disagreed, the spec's names stand (`danger-quiet`; tones neutral, info,
+  ok, attention, caution; switch 32×18), and component sizes use the `button.height.md` form. Alternatives: the
+  Figma dark palette (a bigger visual change on demo day), keeping the spec's invisible hover in dark, the pace
+  marker (more to read for a number most people only glance at).
