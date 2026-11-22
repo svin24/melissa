@@ -129,8 +129,10 @@ use std::{
 };
 
 use axum::{
-    extract::DefaultBodyLimit,
-    response::Redirect,
+    extract::{DefaultBodyLimit, Request, State},
+    http::Method,
+    middleware::Next,
+    response::{Redirect, Response},
     routing::{get, post},
     Router,
 };
@@ -206,6 +208,9 @@ struct Inner {
     /// The last failed run audited per job ("Install:claude" → systemd's end time), so a
     /// quick retry doesn't lose or repeat an outcome.
     audited: Mutex<BTreeMap<String, u64>>,
+    /// Counts saves in Settings: open chat pages check what they show against the settings
+    /// when it moves (see [`Settings::changes`]).
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl Settings {
@@ -218,6 +223,7 @@ impl Settings {
                 code_sent: AtomicBool::new(false),
                 watching: Mutex::default(),
                 audited: Mutex::default(),
+                changes: tokio::sync::watch::Sender::new(0),
             }),
         }
     }
@@ -256,6 +262,17 @@ impl Settings {
     /// The owner's display preferences.
     pub(crate) fn prefs(&self) -> Prefs {
         self.inner.parts.prefs.get()
+    }
+
+    /// Wakes when something may have changed in Settings (a save, voice input becoming
+    /// ready). Live pages then compare what they show with the settings now.
+    pub(crate) fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.changes.subscribe()
+    }
+
+    /// Tell live pages that something in Settings may have changed.
+    pub(crate) fn touch(&self) {
+        self.inner.changes.send_modify(|n| *n = n.wrapping_add(1));
     }
 
     /// First-run setup is on (see `setup.rs`).
@@ -344,6 +361,19 @@ impl Settings {
             tracing::error!(path = %log.path().display(), "audit log write failed: {e}");
         }
     }
+}
+
+/// Middleware on the Settings forms: after a save that went through (a POST answered
+/// without an error), open chat pages update what it changed on them (thinking shown, the
+/// composer, the device's name, the model picker; see `ui::ChatLook`), without a reload.
+pub(crate) async fn touch_after_save(State(ui): State<Ui>, req: Request, next: Next) -> Response {
+    let post = req.method() == Method::POST;
+    let res = next.run(req).await;
+    let status = res.status();
+    if post && !status.is_client_error() && !status.is_server_error() {
+        ui.settings.touch();
+    }
+    res
 }
 
 /// The UI routes (state: [`Ui`], which carries the [`Settings`]).

@@ -1597,8 +1597,7 @@ pub fn composer(
         form.composer id=(COMPOSER_ID) method="post" action=(to.send) hx-post=(to.send)
             data-draft=(to.draft_key)
             enctype="multipart/form-data" hx-encoding="multipart/form-data"
-            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML"
-            data-enter=(if to.enter_steers { "steer" } else { "queue" }) {
+            hx-target={ "#" (COMPOSER_ID) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             // While the agent works: `queue` or `steer` (melissa.js sets it for Enter and
             // double Enter); empty follows the owner's setting.
@@ -1632,18 +1631,7 @@ pub fn composer(
                     }
                     span.bar-gap {}
                     span id=(MODEL_CHIP_ID) { (chip) }
-                    @if let Some(url) = to.voice {
-                        // Voice input: melissa.js shows it (recording needs script), records,
-                        // sends the clip to `url` and puts the text in the box to edit; nothing
-                        // is sent by itself. Where the browser can't record (plain http on the
-                        // LAN) a click says why.
-                        button.voice #voice type="button" data-script-only data-url=(url) aria-pressed="false"
-                            title="Speak instead of typing" {
-                            (mic_icon())
-                            span.voice-time aria-hidden="true" {}
-                            span.visually-hidden.voice-label { "Speak instead of typing" }
-                        }
-                    }
+                    (composer_prefs(to.enter_steers, to.voice, false))
                     button.send type="submit" title="Send" {
                         svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" { path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" {} }
                         span.visually-hidden { "Send" }
@@ -1654,9 +1642,47 @@ pub fn composer(
             // turn's events. The response to a send can land after the turn already ended, so
             // `hx-preserve` keeps the status on the page instead of this (stale) copy.
             div.composer-status id=(COMPOSER_STATUS_ID) hx-preserve aria-live="polite" { (status) }
-            @if let Some(c) = to.caption { (composer_caption(c)) }
+            div id=(COMPOSER_CAPTION_ID) { @if let Some(c) = to.caption { (composer_caption(c)) } }
         }
     }
+}
+
+/// DOM id of the composer's settings: what Enter does while the agent works and the mic
+/// (a live update replaces it when they change in Settings).
+pub const COMPOSER_PREFS_ID: &str = "composer-prefs";
+/// DOM id of the slot for the line under the composer ([`composer_caption`]).
+pub const COMPOSER_CAPTION_ID: &str = "composer-caption";
+/// DOM id of the slot for the notice above the composer ([`composer_notice`]).
+pub const COMPOSER_NOTICE_ID: &str = "composer-notice";
+
+/// The composer's settings (in its bar, no box of its own): `data-enter` says what Enter does
+/// while the agent works (`steer` or `queue`; melissa.js reads it on each Enter), and the mic
+/// when voice input is on and ready (`voice`: where recordings go). `oob`: as an out-of-band
+/// replacement in a live update.
+pub fn composer_prefs(enter_steers: bool, voice: Option<&str>, oob: bool) -> Markup {
+    html! {
+        span id=(COMPOSER_PREFS_ID) data-enter=(if enter_steers { "steer" } else { "queue" })
+            hx-swap-oob=[oob.then_some("true")] {
+            @if let Some(url) = voice {
+                // Voice input: melissa.js shows it (recording needs script), records,
+                // sends the clip to `url` and puts the text in the box to edit; nothing
+                // is sent by itself. Where the browser can't record (plain http on the
+                // LAN) a click says why.
+                button.voice #voice type="button" data-script-only data-url=(url) aria-pressed="false"
+                    title="Speak instead of typing" {
+                    (mic_icon())
+                    span.voice-time aria-hidden="true" {}
+                    span.visually-hidden.voice-label { "Speak instead of typing" }
+                }
+            }
+        }
+    }
+}
+
+/// The slot above the composer for a notice about it (no provider ready), empty otherwise.
+/// A live update fills or empties it ([`oob_inner`]).
+pub fn composer_notice(notice: Option<Markup>) -> Markup {
+    html! { div id=(COMPOSER_NOTICE_ID) { @if let Some(n) = notice { (n) } } }
 }
 
 /// The line under the composer: a stop button (posting to `cancel`) while a turn runs, and
@@ -1680,6 +1706,7 @@ pub const MODEL_CHIP_ID: &str = "model-chip";
 pub const MODEL_PICKER_ID: &str = "model-picker";
 
 /// One model in the picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerModel {
     /// Form value (`choice`): `<backend>` or `<backend> <model>`.
     pub value: String,
@@ -1688,6 +1715,7 @@ pub struct PickerModel {
 }
 
 /// One backend (provider) in the picker: its mark on the rail and its models.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerBackend {
     /// The backend's name: the rail's filter key, never shown.
     pub name: String,
@@ -1698,6 +1726,7 @@ pub struct PickerBackend {
 }
 
 /// One reasoning level of the current model.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerLevel {
     /// Form value (`effort`); empty: the agent's default.
     pub value: String,
@@ -1707,6 +1736,7 @@ pub struct PickerLevel {
 
 /// The access level in the picker (shown only with the developer option "Full access per
 /// agent").
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerAccess {
     /// The agent is on Full access (else Ask).
     pub full: bool,
@@ -1720,6 +1750,7 @@ pub struct PickerAccess {
 /// Picking posts the picker's own form (`choice`, or `effort`/`fast` with the hidden
 /// `current`, or `access`) to `action`; a model option applies from the next turn. Built
 /// from the API's `BackendView`s in `agents.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPicker {
     pub action: String,
     /// What the chat runs on, for the chip: "Opus 5.5 · High".
@@ -1795,10 +1826,20 @@ fn check_icon() -> Markup {
 /// groups and each pick is a plain form post; melissa.js adds the rail filter, search,
 /// favorites, Ctrl+1..9 and "Show more".
 pub fn model_picker(p: &ModelPicker) -> Markup {
+    picker_markup(p, false)
+}
+
+/// [`model_picker`] as an out-of-band replacement in a live update (the providers or their
+/// models changed in Settings).
+pub fn model_picker_oob(p: &ModelPicker) -> Markup {
+    picker_markup(p, true)
+}
+
+fn picker_markup(p: &ModelPicker, oob: bool) -> Markup {
     let target = format!("#{MODEL_PICKER_ID}");
     html! {
         div.model-picker id=(MODEL_PICKER_ID) popover="auto" role="dialog" aria-label="Choose a model"
-            data-error[p.error.is_some()] {
+            hx-swap-oob=[oob.then_some("true")] data-error[p.error.is_some()] {
             form.picker method="post" action=(p.action) hx-post=(p.action) hx-target=(target)
                 hx-swap="outerHTML" {
                 (crate::components::csrf_field())
@@ -2218,11 +2259,11 @@ pub fn split_card(id: &str, label: &str, list: Markup, detail: Markup) -> Markup
 
 mod agent;
 pub use agent::{
-    agent_groups, agent_menu, agent_menu_items, agent_message, avatar, chat_head, icon_picker,
-    permission_card, setup_password_card, shape, sidebar, status_pill, steps_card, AgentMenu,
-    Avatar, ChatHead, GroupKind, HeadStatus, MessageHead, PermissionCard, SetupPasswordCard,
-    SetupPasswordState, SideAgent, SideDevice, SideGroup, Sidebar, StepLine, AGENT_GROUPS_ID,
-    CHAT_STATUS_ID, SIDEBAR_ID,
+    agent_groups, agent_menu, agent_menu_items, agent_message, avatar, chat_head, chat_who_update,
+    icon_picker, permission_card, setup_password_card, shape, sidebar, status_pill, steps_card,
+    this_device_update, AgentMenu, Avatar, ChatHead, GroupKind, HeadStatus, MessageHead,
+    PermissionCard, SetupPasswordCard, SetupPasswordState, SideAgent, SideDevice, SideGroup,
+    Sidebar, StepLine, AGENT_GROUPS_ID, CHAT_STATUS_ID, SIDEBAR_ID,
 };
 mod mobile;
 pub use mobile::{

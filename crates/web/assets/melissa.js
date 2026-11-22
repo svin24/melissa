@@ -144,13 +144,20 @@
   // Enter sends, Shift+Enter starts a new line (not while an input method is composing).
   // While the agent works (the Stop button shows) Enter queues the message and a quick
   // second Enter steers it into the running turn instead, or the other way round with
-  // Settings → Developer → "Enter while working: Steers" (the form's `data-enter`). The
+  // Settings → Developer → "Enter while working: Steers" (`data-enter` in the composer). The
   // first Enter waits briefly for a second one, so the message is sent once either way.
   var DOUBLE_ENTER_MS = 400;
   var enterTimer = null;
 
   function working() {
     return !!document.querySelector("#composer-status .working");
+  }
+
+  // Enter steers while the agent works (else it queues): read on each Enter, so a change in
+  // Settings applies at once (a live update replaces the element that says it).
+  function enterSteers(form) {
+    var prefs = form.querySelector("[data-enter]");
+    return !!prefs && prefs.getAttribute("data-enter") === "steer";
   }
 
   function sendAs(form, mode) {
@@ -175,7 +182,7 @@
       // The second Enter: the other way.
       clearTimeout(enterTimer);
       enterTimer = null;
-      sendAs(form, form.dataset.enter === "steer" ? "queue" : "steer");
+      sendAs(form, enterSteers(form) ? "queue" : "steer");
       return;
     }
     if (box.value.trim() === "" && kept.length === 0) {
@@ -187,7 +194,7 @@
     }
     enterTimer = setTimeout(function () {
       enterTimer = null;
-      sendAs(form, form.dataset.enter === "steer" ? "steer" : "queue");
+      sendAs(form, enterSteers(form) ? "steer" : "queue");
     }, DOUBLE_ENTER_MS);
   });
 
@@ -1716,6 +1723,15 @@
     });
     olderSeen.observe(marker);
   }
+
+  // The stream sends the whole feed again when Settings change what it shows (thinking
+  // shown or hidden, the agent renamed): watch its new top.
+  document.addEventListener("htmx:oobAfterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.id === "feed") {
+      watchOlder();
+    }
+  });
 
   // Panels opened at a part of them (`/settings/agents/<id>#agent-icon`): show that part.
   function showPanelPart(url) {

@@ -1988,7 +1988,10 @@ button.secret {
   flex: 1;
 }
 
-#model-chip {
+#model-chip,
+#composer-prefs,
+#composer-caption,
+#composer-notice {
   display: contents;
 }
 

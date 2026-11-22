@@ -3553,6 +3553,159 @@ mod tests {
             );
         }
 
+        /// Opens a chat's stream where its page ends.
+        async fn open_stream(app: &Router, lead: &Lead) -> Body {
+            let since = lead.events().last_seq();
+            let epoch = lead.events().epoch();
+            app.clone()
+                .oneshot(get(&format!("/ui/stream?since={since}&epoch={epoch}")))
+                .await
+                .unwrap()
+                .into_body()
+        }
+
+        /// Settings → Developer → thinking and timings: an open chat shows them (or stops)
+        /// at once, over its stream, with no reload; entries that come later follow it too.
+        #[tokio::test]
+        async fn showing_thinking_applies_to_an_open_chat_at_once() {
+            let (app, lead) = app();
+            for e in [
+                LeadEvent::UserMessage {
+                    turn: 1,
+                    text: "Hi".into(),
+                    attachments: vec![],
+                    scheduled: None,
+                },
+                LeadEvent::Thought {
+                    turn: 1,
+                    text: "Maybe this".into(),
+                    ms: Some(2_500),
+                },
+                LeadEvent::ToolCall {
+                    turn: Some(1),
+                    id: "1".into(),
+                    title: "melissa__device_info".into(),
+                    status: "done".into(),
+                    ms: Some(1_200),
+                },
+            ] {
+                lead.events().push(e);
+            }
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains("Checked this device") && !page.contains("Thought for"));
+            let mut stream = open_stream(&app, &lead).await;
+
+            let (status, _, _) = send(
+                &app,
+                htmx_post("/ui/settings/developer/steps", "enabled=on"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let frame = next_frame(&mut stream).await;
+            assert!(frame.contains("hx-swap-oob=\"innerHTML:#feed\""), "{frame}");
+            assert!(frame.contains("Thought for 2.5s"), "{frame}");
+            assert!(frame.contains("Checked this device · 1.2s"), "{frame}");
+            // The user's message is still there (the whole feed is sent again).
+            assert!(frame.contains("Hi"), "{frame}");
+
+            // A new thought over the same stream shows too.
+            lead.events().push(LeadEvent::Thought {
+                turn: 1,
+                text: "Second idea".into(),
+                ms: Some(300),
+            });
+            let frame = next_frame(&mut stream).await;
+            assert!(frame.contains("Second idea"), "{frame}");
+
+            // Off again: the feed comes without them.
+            send(&app, htmx_post("/ui/settings/developer/steps", "")).await;
+            let frame = next_frame(&mut stream).await;
+            assert!(frame.contains("hx-swap-oob=\"innerHTML:#feed\""), "{frame}");
+            assert!(
+                !frame.contains("Thought for") && !frame.contains("1.2s"),
+                "{frame}"
+            );
+            assert!(frame.contains("Checked this device"), "{frame}");
+        }
+
+        /// Settings → Developer → Enter while working: the composer of an open chat gets the
+        /// new setting over its stream (melissa.js reads it on each Enter); the typed text
+        /// stays, as only the setting's element is replaced.
+        #[tokio::test]
+        async fn enter_while_working_applies_to_an_open_chat_at_once() {
+            let (app, lead) = app();
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(
+                page.contains("<span id=\"composer-prefs\" data-enter=\"queue\">"),
+                "{page}"
+            );
+            let mut stream = open_stream(&app, &lead).await;
+            send(
+                &app,
+                htmx_post("/ui/settings/developer/enter", "enter=steer"),
+            )
+            .await;
+            let frame = next_frame(&mut stream).await;
+            assert!(
+                frame.contains(
+                    "<span id=\"composer-prefs\" data-enter=\"steer\" hx-swap-oob=\"true\">"
+                ),
+                "{frame}"
+            );
+            assert!(!frame.contains("<textarea"), "{frame}");
+            // Nothing else on the page changed.
+            assert!(!frame.contains("innerHTML:#feed"), "{frame}");
+            assert!(!frame.contains("model-picker"), "{frame}");
+            let (_, _, page) = get_html(&app, "/").await;
+            assert!(page.contains("<span id=\"composer-prefs\" data-enter=\"steer\">"));
+        }
+
+        /// The device's name from setup shows in an open chat's header and sidebar at once.
+        #[tokio::test]
+        async fn a_new_device_name_applies_to_an_open_chat_at_once() {
+            let (app, lead) = app();
+            let mut stream = open_stream(&app, &lead).await;
+            let (status, _, _) = send(
+                &app,
+                post("/ui/setup/device")
+                    .header("sec-fetch-site", "same-origin")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("name=Living+%3Cb%3Eroom"))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            let frame = next_frame(&mut stream).await;
+            assert!(
+                frame.contains("innerHTML:#device-menu .device-row[aria-current] .name"),
+                "{frame}"
+            );
+            assert!(
+                frame.contains("innerHTML:.chat-head &gt; .chat-title"),
+                "{frame}"
+            );
+            // Escaped, like everything else.
+            assert!(frame.contains("Living &lt;b&gt;room"), "{frame}");
+            assert!(!frame.contains("<b>room"), "{frame}");
+        }
+
+        /// A Settings save that changes nothing an open chat shows sends it nothing.
+        #[tokio::test]
+        async fn a_save_that_changes_nothing_shown_sends_nothing() {
+            let (app, lead) = app();
+            let mut stream = open_stream(&app, &lead).await;
+            // Already "queue".
+            send(
+                &app,
+                htmx_post("/ui/settings/developer/enter", "enter=queue"),
+            )
+            .await;
+            let quiet = tokio::time::timeout(Duration::from_millis(300), stream.frame()).await;
+            if let Ok(Some(Ok(f))) = quiet {
+                panic!("no update expected: {:?}", f.into_data());
+            }
+        }
+
         /// Settings → Schedules: add (presets), edit, switch off, run now (labelled in the
         /// chat), remove; bad input keeps what was typed.
         #[tokio::test]

@@ -80,12 +80,16 @@ fn start_download(s: &Settings) {
     let spec = *s.voice().spec();
     let later = s.clone();
     let started = s.voice().download(Box::new(move |result| match result {
-        Ok(()) => later.audit(
-            AUDIT,
-            "ui",
-            &format!("speech model {} downloaded, sha256 verified", spec.file),
-            Some(spec.sha256.to_string()),
-        ),
+        Ok(()) => {
+            later.audit(
+                AUDIT,
+                "ui",
+                &format!("speech model {} downloaded, sha256 verified", spec.file),
+                Some(spec.sha256.to_string()),
+            );
+            // Open chats get the mic now.
+            later.touch();
+        }
         Err(e) => later.audit(
             AUDIT,
             "ui",

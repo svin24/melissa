@@ -70,15 +70,21 @@ pub fn shape(name: &str) -> Markup {
 
 /// An agent's icon. `class` sizes it (`av-sm` in lists, `av` in headers).
 pub fn avatar(a: &Avatar<'_>, class: &str) -> Markup {
+    avatar_markup(a, class, None)
+}
+
+/// [`avatar`], with `hx-swap-oob` set to `oob` (a live update) if given.
+fn avatar_markup(a: &Avatar<'_>, class: &str, oob: Option<&str>) -> Markup {
     match a {
         Avatar::Melissa => html! {
-            svg class={ "avatar ic-honey " (class) } viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
+            svg class={ "avatar ic-honey " (class) } viewBox="0 0 16 16" aria-hidden="true" focusable="false"
+                hx-swap-oob=[oob] {
                 path d="M8 1.5 13.63 4.75v6.5L8 14.5l-5.63-3.25v-6.5Z" {}
             }
         },
         Avatar::Agent { shape: s, color } => html! {
             svg class={ "avatar " (color_class(color)) " " (class) } viewBox="0 0 16 16"
-                aria-hidden="true" focusable="false" {
+                aria-hidden="true" focusable="false" hx-swap-oob=[oob] {
                 (shape(s))
             }
         },
@@ -487,15 +493,36 @@ pub fn chat_head(h: &ChatHead<'_>, details: Markup) -> Markup {
                 span.visually-hidden { "Show agents" }
             }
             (avatar(&h.avatar, "av"))
-            div.chat-title {
-                span.chat-device { (h.device) }
-                span.chat-sep aria-hidden="true" { "/" }
-                h1 { (h.name) }
-            }
+            div.chat-title { (chat_title(h.device, h.name)) }
             span.chat-status id=(CHAT_STATUS_ID) role="status" { (status_pill(h.status)) }
             (agent_menu("menu-head", &h.menu))
             (details)
         }
+    }
+}
+
+fn chat_title(device: &str, name: &str) -> Markup {
+    html! {
+        span.chat-device { (device) }
+        span.chat-sep aria-hidden="true" { "/" }
+        h1 { (name) }
+    }
+}
+
+/// A live update of the chat header's icon and "device / name" (the agent got a new name or
+/// icon, or the device a new name, in Settings).
+pub fn chat_who_update(avatar: &Avatar<'_>, device: &str, name: &str) -> Markup {
+    html! {
+        (avatar_markup(avatar, "av", Some("outerHTML:.chat-head > .avatar")))
+        div hx-swap-oob="innerHTML:.chat-head > .chat-title" { (chat_title(device, name)) }
+    }
+}
+
+/// A live update of this device's name in the sidebar's device menu (renamed in setup).
+pub fn this_device_update(name: &str) -> Markup {
+    html! {
+        div hx-swap-oob="innerHTML:#device-menu .device-row[aria-current] .name" { (name) }
+        div hx-swap-oob="innerHTML:.device-button .visually-hidden" { ", on " (name) }
     }
 }
 
