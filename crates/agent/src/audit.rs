@@ -15,6 +15,15 @@ tokio::task_local! {
     /// Who is signed in for the request being handled (the web layer sets it around each
     /// request), so every audit record made while handling it names the person.
     pub static PERSON: String;
+    /// The signed-in person's account id for the same request (the web layer sets it with
+    /// [`PERSON`]; `ToolRegistry::call` sets it again from [`crate::tools::TaskContext::person`]
+    /// for a turn a person started). Apps record it as who they were installed for.
+    pub static PERSON_ID: String;
+}
+
+/// The account id of the person the current request or turn acts for, if known.
+pub fn requester() -> Option<String> {
+    PERSON_ID.try_with(Clone::clone).ok()
 }
 
 /// One audit entry, written as a single JSON line.

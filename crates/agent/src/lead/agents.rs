@@ -157,6 +157,9 @@ pub struct AgentView {
     /// `idle`, `working` or `stopped`.
     pub status: &'static str,
     pub created_by: String,
+    /// The person it was made for (account id), if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
     pub created_at: u64,
     /// The current or last job the lead agent gave it (this daemon run).
     pub job: Option<String>,
@@ -576,6 +579,7 @@ impl AgentPool {
             fast: agent.fast,
             status: self.status_of(agent),
             created_by: agent.created_by.clone(),
+            creator: agent.creator.clone(),
             created_at: agent.created_at,
             job: lock(&self.inner.jobs)
                 .get(&agent.id)

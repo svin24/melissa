@@ -100,6 +100,61 @@ pub struct AppSpec {
     /// The owner's login, shown by `melissa-server app-credentials <app>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<Credentials>,
+    /// What kind of app it is: the web UI groups the app list by it (2026-11-22; specs
+    /// without it are [`AppKind::Other`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AppKind>,
+}
+
+/// The groups of the app list, in the order the UI shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppKind {
+    /// Game servers (Minecraft, Luanti).
+    Games,
+    /// Films, music, photos (Jellyfin, Navidrome, Immich).
+    Media,
+    /// The home itself (Home Assistant, Zigbee bridges).
+    Home,
+    /// Files, sync, documents, office (Nextcloud, Syncthing, Paperless).
+    Files,
+    /// The network (Pi-hole, a VPN, a reverse proxy).
+    Network,
+    /// For developers (Forgejo, CI runners, databases to try things).
+    Developer,
+    /// Anything else, and specs without a kind.
+    Other,
+}
+
+impl AppKind {
+    /// Every kind, in the UI's order.
+    pub const ALL: [AppKind; 7] = [
+        Self::Games,
+        Self::Media,
+        Self::Home,
+        Self::Files,
+        Self::Network,
+        Self::Developer,
+        Self::Other,
+    ];
+
+    /// The name in specs and tool answers (`games`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Games => "games",
+            Self::Media => "media",
+            Self::Home => "home",
+            Self::Files => "files",
+            Self::Network => "network",
+            Self::Developer => "developer",
+            Self::Other => "other",
+        }
+    }
+
+    /// The kind named `name` (as in specs); None for anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -479,6 +534,16 @@ impl AppSpec {
         }
         out
     }
+}
+
+/// A person's account id as an app's `melissa.io/installed-for` annotation may hold it: 1-64 ASCII letters, digits, `-`, `_`
+/// or `.` (anything else is ignored, so an edited annotation can't smuggle text into the UI).
+pub fn valid_person_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 /// Is `name` a well-formed app name?

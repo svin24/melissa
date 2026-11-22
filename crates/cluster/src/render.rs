@@ -88,6 +88,12 @@ pub const LEGACY_OWNER_LABEL: &str = "melissa.io/owner";
 /// from where (`agent spec`; `catalog` for apps from before the catalog was dropped).
 pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
 pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
+/// Annotation on the app's namespace, set at the first install and kept: the signed-in person
+/// (account id) the app was installed for, i.e. whose message started the turn that installed
+/// it, or who called the tool in the UI (2026-11-22). Absent on apps from before, and when
+/// nobody's message started the turn (a scheduled job): the UI then falls back to the person
+/// the looking-after agent was made for, else "unknown".
+pub const INSTALLED_FOR_ANNOTATION: &str = "melissa.io/installed-for";
 pub const ORIGIN_ANNOTATION: &str = "melissa.io/origin";
 /// [`ORIGIN_ANNOTATION`] of apps deployed from an agent's spec, and of old catalog installs.
 pub const ORIGIN_SPEC: &str = "spec";
@@ -314,6 +320,8 @@ pub struct Ownership {
     pub assigned_at: Option<String>,
     pub installed_by: String,
     pub installed_at: String,
+    /// [`INSTALLED_FOR_ANNOTATION`], if set and well formed.
+    pub installed_for: Option<String>,
     pub origin: String,
     /// `melissa.io/owner` from before agents, if still there.
     pub legacy_owner: Option<String>,
@@ -344,6 +352,8 @@ impl Ownership {
             assigned_at: ann(ASSIGNED_AT_ANNOTATION),
             installed_by: unknown(ann(INSTALLED_BY_ANNOTATION)),
             installed_at: unknown(ann(INSTALLED_AT_ANNOTATION)),
+            installed_for: ann(INSTALLED_FOR_ANNOTATION)
+                .filter(|p| melissa_appspec::valid_person_id(p)),
             origin: unknown(ann(ORIGIN_ANNOTATION)),
             legacy_owner: label(LEGACY_OWNER_LABEL),
         }
@@ -367,6 +377,13 @@ impl Ownership {
         }
         annotations.insert(INSTALLED_BY_ANNOTATION.into(), self.installed_by.clone());
         annotations.insert(INSTALLED_AT_ANNOTATION.into(), self.installed_at.clone());
+        if let Some(person) = self
+            .installed_for
+            .as_ref()
+            .filter(|p| melissa_appspec::valid_person_id(p))
+        {
+            annotations.insert(INSTALLED_FOR_ANNOTATION.into(), person.clone());
+        }
         annotations.insert(ORIGIN_ANNOTATION.into(), self.origin.clone());
     }
 }

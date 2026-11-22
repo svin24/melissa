@@ -1584,6 +1584,8 @@ async fn a_agent_owns_the_workspace_it_creates() {
         ns_annotation(&fake, "melissa.io/installed-by").as_deref(),
         Some(by)
     );
+    // Nobody's message started the turn: no person recorded.
+    assert_eq!(ns_annotation(&fake, "melissa.io/installed-for"), None);
     assert_eq!(
         ns_annotation(&fake, "melissa.io/assigned-by").as_deref(),
         Some(by)
@@ -1790,11 +1792,14 @@ async fn every_install_gets_an_owning_agent_and_reinstalls_keep_it() {
         "{r:?}"
     );
     assert!(fake.state().applied.is_empty());
-    // Ada (the helper the job went to) deploys it: hers from the start.
+    // Ada (the helper the job went to) deploys it: hers from the start. Ben's message
+    // started the turn: it is installed for him.
+    let mut ada = agent(ADA);
+    ada.person = Some("p-ben".into());
     let out = approved(
         &reg,
         3,
-        &mut agent(ADA),
+        &mut ada,
         "deploy_app",
         json!({"spec": nc(), "app": "nextcloud"}),
     )
@@ -1811,6 +1816,10 @@ async fn every_install_gets_an_owning_agent_and_reinstalls_keep_it() {
     );
     let at = ns_annotation(&fake, "melissa.io/installed-at").unwrap();
     assert!(at.ends_with('Z') && at.len() == 20, "{at}");
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/installed-for").as_deref(),
+        Some("p-ben")
+    );
 
     // The lead agent keeps its override on the existing app: an update (the user approves),
     // and bringing it back after a keep-data uninstall. Ada stays the owner.
@@ -1854,6 +1863,11 @@ async fn every_install_gets_an_owning_agent_and_reinstalls_keep_it() {
         Some(ADA)
     );
     assert_eq!(ns_annotation(&fake, "melissa.io/installed-at"), Some(at));
+    // Whoever changes it later, it stays installed for Ben.
+    assert_eq!(
+        ns_annotation(&fake, "melissa.io/installed-for").as_deref(),
+        Some("p-ben")
+    );
     // Bringing it back after a keep-data uninstall with another agent: not how workspaces move.
     fake.state().deployment = None;
     let r = approved(

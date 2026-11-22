@@ -76,6 +76,7 @@ pub fn nextcloud(config: &Map<String, Value>) -> AppSpec {
         "volumes": [{"name": "data", "size": "10Gi"}],
         "web": "http",
         "credentials": {"user": user, "password": "admin_password"},
+        "kind": "files",
         "containers": [{
             "name": "nextcloud",
             "image": NEXTCLOUD_IMAGE,

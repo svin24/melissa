@@ -157,6 +157,18 @@ impl McpServer {
         }
     }
 
+    /// The person whose message started the session's running turn (None: nobody's, e.g. a
+    /// scheduled turn). Returns false for an unknown session.
+    pub fn set_person(&self, token: &str, person: Option<String>) -> bool {
+        match lock(&self.sessions).get_mut(token) {
+            Some(s) => {
+                s.ctx.person = person;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// How long a confirmation asked for by this session waits for the owner (None: the
     /// registry's confirmation timeout). Set for scheduled, unattended turns. Returns false
     /// for an unknown session.
