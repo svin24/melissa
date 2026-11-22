@@ -2322,6 +2322,13 @@ pub use provider_add::{
     add_panel, provider_tiles, registry_list, search_box, stepper, ProviderTile, RegistryAction,
     RegistryRow, TileLink,
 };
+mod usage;
+pub use usage::{
+    usage_checked, usage_lines, usage_providers, usage_view, LimitCard, LimitLevel, LineMark,
+    ProviderLimits, ProviderLimitsBody, ProviderTokens, ProvidersPart, TokenRow, UsageBar,
+    UsageLine, UsageView, LOW_AT, NEARLY_GONE_AT, USAGE_CHECKED_ID, USAGE_PROVIDERS_ID,
+    USAGE_VIEW_ID,
+};
 mod onboarding;
 pub use onboarding::{
     notice_link, setup_actions, setup_checklist, setup_page, setup_submit, suggestion_chips,

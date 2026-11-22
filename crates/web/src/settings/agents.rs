@@ -62,6 +62,11 @@ pub(crate) fn status_words(status: &str) -> (&'static str, Tone) {
     }
 }
 
+/// How many agents the Agents section lists (Melissa and her helpers).
+pub(super) fn count(ui: &Ui) -> usize {
+    rows(ui).len()
+}
+
 fn rows(ui: &Ui) -> Vec<AgentRow> {
     let lead_views = ui.lead.backends();
     let mut rows = vec![AgentRow {

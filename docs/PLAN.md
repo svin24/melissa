@@ -1286,8 +1286,11 @@ Roadmap (rough, phases may overlap):
     "Home-assistant"); a spec field for a display name would fix it.
     tries live in memory: a restart clears lockouts. Since 2026-11-21 (Q88) the setup code is kept on disk
     (0600) until used or expired, so a restart keeps it.
-91. Provider plan usage (2026-11-22; DECISIONS "Provider plan usage"). (a) The panel itself (owner designs it;
-    the data is at `GET /api/usage/providers`). (b) Verified only with fixtures and the CLIs' own schemas, not
+91. Provider plan usage (2026-11-22; DECISIONS "Provider plan usage", "Provider limits in Usage and
+    resources"). (a) The panel is built (Limits/Cost/Tokens); still open there: credit pools (Claude's extra
+    usage, Grok's and Codex's credits) are not shown until their units are known (c), and the UI words for
+    unavailable sources match the data layer's reason texts, so a new reason shows as "Couldn't read the
+    limits." until it is added to `usage::reason_words`. (b) Verified only with fixtures and the CLIs' own schemas, not
     live with signed-in accounts (the owner's sign-ins must not be touched from a dev agent): check once each on a
     test box — Claude `get_usage` in a prompt-less session, Grok `_x.ai/billing` (exact answer shape over ACP
     unknown; parsed defensively), Codex session files from `codex-acp` (rate limits present?), Gemini

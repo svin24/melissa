@@ -47,6 +47,11 @@ just ui-shots --only settings # only screens whose name contains "settings"
   (`apps`, `apps-by-person`, `app-details`), as a member (`apps-member`, `app-details-member`,
   `apps-empty`) and without an app platform (`apps-not-set-up`, the file removed). Revisions
   from before the feature are built without it.
+- Provider limits without sign-ins: the same build has the `fake-usage` feature
+  (`crates/web/src/fake_usage.rs`); `MELISSA_FAKE_USAGE` points at `FAKE_USAGE` in `server.py` (windows that
+  are plenty, low and nearly gone, an unavailable provider, one without limits, cost and tokens). Shots:
+  `usage`, `usage-cost`, `usage-tokens` (owner) and `usage-member`. "Resets in …" counts down from the
+  check, so it is replaced like "N min ago".
 - Not covered: stopping an app (the confirmation needs a real `stop_app`), Settings → Reset's
   confirm (container install only), the collapsed sidebar at 390 px (no such state on a phone).
   They are listed as skipped in `index.html`.

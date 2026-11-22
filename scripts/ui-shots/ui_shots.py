@@ -38,6 +38,8 @@ SHOTS = REPO / "target" / "ui-shots"
 WIDTHS = {1440: 900, 1024: 768, 390: 844}
 # The server's fake app tools (crates/web/src/fake_apps.rs): the Apps list without k3s.
 FAKE_APPS = "melissa-server/fake-apps"
+FAKE_USAGE = "melissa-server/fake-usage"
+FAKES = f"{FAKE_APPS},{FAKE_USAGE}"
 SCHEMES = ("dark", "light")
 
 # Software raster on one thread, every compositor stage before a frame is drawn: without
@@ -96,6 +98,8 @@ NORMALIZE_JS = """
   rules.push([/Up( \\d+ (d|h|min|s)\\b)+/g, 'Up 1 h 0 min']);
   // How long ago the run started differs by seconds between runs ("Checked 2 min ago").
   rules.push([/\\b\\d+ (s|sec|seconds?|min|minutes?) ago\\b/g, 'just now']);
+  // Usage limits that reset within a day count down from the check.
+  rules.push([/Resets in( \\d+(\\s|\\u00a0)(h|min))+/g, 'Resets in 2 h 10 min']);
   rules.push([/\\d+(\\.\\d+)? [KMGT]iB of \\d+(\\.\\d+)? [KMGT]iB used/g, '4.0 GiB of 16 GiB used']);
   const fix = (s) => rules.reduce((t, [re, to]) => t.replace(re, to), s);
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -185,11 +189,18 @@ def show_person(name):
     return act
 
 
+def usage_loaded(page):
+    """Usage: wait until the providers' part has loaded (it loads after the page)."""
+    page.locator("#usage-providers:not([aria-busy])").wait_for()
+    page.wait_for_timeout(100)
+
+
 # Screens seen by a member (scripts/ui-shots/server.py MEMBERS): (member, name, path, action).
 MEMBER_SCREENS = [
     ("ben", "apps-member", "/cluster", None),
     ("ben", "app-details-member", "/cluster/apps/minecraft", None),
     ("cy", "apps-empty", "/cluster", None),
+    ("ben", "usage-member", "/usage", None),
 ]
 
 
@@ -226,7 +237,9 @@ def screens(helper, quiet):
         ("apps", "/cluster", None),
         ("apps-by-person", "/cluster", show_person("ben")),
         ("app-details", "/cluster/apps/minecraft", None),
-        ("usage", "/usage", None),
+        ("usage", "/usage", usage_loaded),
+        ("usage-cost", "/usage?view=cost", usage_loaded),
+        ("usage-tokens", "/usage?view=tokens", usage_loaded),
         ("add-provider", "/settings/providers/add", None),
         ("settings-provider", "/settings/providers?p=python3", None),
         ("settings-helper", f"/settings/agents/{helper}", None),
@@ -370,6 +383,8 @@ class Shooter:
                 self.seed_chats(browser, base, state_file)
                 helper, quiet = srv.helper_id("Backup"), srv.helper_id("Updates")
                 plan = screens(helper, quiet)
+                # `/settings` alone is the section list on a phone (level 1).
+                plan += [("settings", "/settings", None)]
                 plan += [(f"settings-{s}", f"/settings/{s}", None) for s in SETTINGS_SECTIONS]
                 members = self.invite_members(browser, base, state_file)
                 self.visit_all(browser, base, str(state_file), plan)
@@ -622,7 +637,7 @@ def main_shoot(args):
     if not args.bin:
         log("building melissa-server")
         subprocess.run(["cargo", "build", "-q", "--bins", "-p", "melissa-server",
-                        "--features", FAKE_APPS], cwd=REPO, check=True)
+                        "--features", FAKES], cwd=REPO, check=True)
     name = args.name or revision_name()
     out = Path(args.out) if args.out else SHOTS / name
     ok = Shooter(out, binary, args.only).run()
@@ -645,9 +660,13 @@ def shoot_revision(args):
         target = REPO / "target"
         env = dict(os.environ, CARGO_TARGET_DIR=str(target))
         build = ["cargo", "build", "-q", "--bins", "-p", "melissa-server"]
-        # Revisions from before the fake apps (2026-11-22) build without the feature.
-        if subprocess.run(build + ["--features", FAKE_APPS], cwd=tree, env=env).returncode:
-            subprocess.run(build, cwd=tree, check=True, env=env)
+        # Revisions from before the fake apps or the fake usage (2026-11-22) build without them.
+        for features in ([FAKES], [FAKE_APPS], []):
+            args = ["--features", *features] if features else []
+            if subprocess.run(build + args, cwd=tree, env=env).returncode == 0:
+                break
+        else:
+            raise RuntimeError(f"building {rev} failed")
         binary = SHOTS / ".worktrees" / f"melissa-server-{rev}"
         shutil.copy2(target / "debug" / "melissa-server", binary)
         ok = Shooter(out, binary, args.only).run()

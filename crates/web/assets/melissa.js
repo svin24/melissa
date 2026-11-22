@@ -1818,8 +1818,10 @@
       o.dialog.showModal();
     }
     initSettingsSearch(o.body);
-    // Focus the section list's current item (Settings) or the panel's first control.
-    var focus = o.body.querySelector(".settings-nav [aria-current='page']") || o.body.querySelector("[data-panel-close]");
+    // Focus the section list's current item (Settings) or the panel's first control; on a
+    // phone Settings' title (the list) or the section's title (a section alone).
+    var focus = settingsLanding(o.body) || o.body.querySelector(".settings-nav [aria-current='page']") ||
+      o.body.querySelector("[data-panel-close]");
     if (focus) {
       focus.focus();
     }
@@ -1828,14 +1830,69 @@
   // Pages shown inside the Settings panel (a section, or a page below one).
   var SETTINGS_PATHS = /^\/(settings(\/|$|\?)|tasks\/\d)/;
 
-  // Record where the panel is now in the history (`push`: a new entry).
+  // Record where the panel is now in the history (`push`: a new entry). `back`: the panel page
+  // of the entry below it (the phone's back link goes there with history.back()).
   function notePanel(url, push) {
     var at = panelState.loaded || url;
+    var st = window.history.state;
+    var below = st && st.panel ? st.panel : null;
     if (push) {
       panelState.depth += 1;
-      window.history.pushState({ panel: at, depth: panelState.depth }, "", at);
+      window.history.pushState({ panel: at, depth: panelState.depth, back: below }, "", at);
     } else {
-      window.history.replaceState({ panel: at, depth: panelState.depth }, "", at);
+      window.history.replaceState({ panel: at, depth: panelState.depth, back: below ? st.back || null : null }, "", at);
+    }
+  }
+
+  // --- Settings on a phone: two levels (2026-11-22, owner design C1/C2). `/settings` is the
+  // section list (`#settings-main[data-list]`, which CSS hides on a phone); any other Settings
+  // page shows its section alone under a back link. Going back to the list is instant (the
+  // list was only hidden): its scroll comes back and focus goes to the row of the section
+  // just left. Entering a section puts focus on its title. The back link goes back in the
+  // history when the entry below is where it leads, so Back and the link do the same and no
+  // entry is added; else it replaces this entry. A section opened by a deep link gets the list
+  // as the entry below it. Above 760px none of this applies: the list stays beside the section.
+  var SETTINGS_LIST = /^\/settings\/?(\?|#|$)/;
+  var listScroll = 0;
+
+  function settingsTitle(root) {
+    var main = root.querySelector("#settings-main");
+    return isPhone() && main && !main.hasAttribute("data-list") ? main.querySelector(".settings-here") : null;
+  }
+
+  // Where focus lands when Settings opens on a phone (null: not a phone, or not Settings).
+  function settingsLanding(root) {
+    var main = root.querySelector("#settings-main");
+    if (!isPhone() || !main) {
+      return null;
+    }
+    return main.hasAttribute("data-list") ? root.querySelector(".settings-title") : settingsTitle(root);
+  }
+
+  // Show the list again (phone): its scroll, and focus on the row of `from`.
+  function showSettingsList(o, main, from) {
+    main.setAttribute("data-list", "");
+    var nav = o.body.querySelector(".settings-nav");
+    if (!nav) {
+      return;
+    }
+    nav.scrollTop = listScroll;
+    var row = null;
+    each(nav.querySelectorAll("a[href]"), function (a) {
+      if (!row && a.getAttribute("href") === from) {
+        row = a;
+      }
+    });
+    (row || nav).focus({ preventScroll: true });
+  }
+
+  // The back link of a Settings section (phone).
+  function settingsUp(up) {
+    var st = window.history.state;
+    if (st && st.panel && st.back === up) {
+      window.history.back();
+    } else {
+      openPanel(up, false);
     }
   }
 
@@ -1845,6 +1902,16 @@
   // the old section, it goes to the new one.
   function openSection(o, url, push) {
     var main = document.getElementById("settings-main");
+    if (isPhone()) {
+      var nav = o.body.querySelector(".settings-nav");
+      var onList = main.hasAttribute("data-list");
+      if (onList && nav) {
+        listScroll = nav.scrollTop;
+      } else if (!onList && SETTINGS_LIST.test(url)) {
+        // Back to the list at once; the answer only replaces the hidden section.
+        showSettingsList(o, main, main.getAttribute("data-section"));
+      }
+    }
     var focusWasIn = main.contains(document.activeElement);
     panelState.loaded = null;
     window.htmx
@@ -1869,7 +1936,10 @@
         if (input && input.value) {
           filterSettings(o.body, input.value);
         }
-        if (focusWasIn || !o.body.contains(document.activeElement)) {
+        var title = settingsTitle(o.body);
+        if (title) {
+          title.focus({ preventScroll: true });
+        } else if (focusWasIn || !o.body.contains(document.activeElement)) {
           now.focus({ preventScroll: true });
         }
         showPanelPart(url);
@@ -1979,7 +2049,18 @@
       panelState.deep = true;
       pageState.shown = null;
       o.body.appendChild(own);
-      window.history.replaceState({ panel: window.location.pathname + window.location.search, depth: 0 }, "");
+      var at = window.location.pathname + window.location.search;
+      var prior = window.history.state;
+      if (settingsTitle(o.body) && !(prior && prior.panel === at && prior.back)) {
+        // A Settings section opened alone on a phone: the list goes below it, so Back (and
+        // its back link) lead there.
+        window.history.replaceState({ panel: "/settings", depth: 0 }, "", "/settings");
+        window.history.pushState({ panel: at, depth: 1, back: "/settings" }, "", at + window.location.hash);
+        panelState.depth = 1;
+      } else {
+        // (A reload keeps what is below it.)
+        window.history.replaceState({ panel: at, depth: 0, back: prior && prior.panel === at ? prior.back || null : null }, "");
+      }
       showPanel(o);
       showPanelPart(window.location.href);
     }
@@ -1996,6 +2077,12 @@
     if (t.closest("[data-panel-close]") && overlayParts() && overlayParts().dialog.open) {
       e.preventDefault();
       closePanel();
+      return;
+    }
+    var up = t.closest("a[data-settings-back]");
+    if (up && overlayParts() && overlayParts().dialog.open) {
+      e.preventDefault();
+      settingsUp(up.getAttribute("href"));
       return;
     }
     var url = panelPath(t.closest("a[href]"));

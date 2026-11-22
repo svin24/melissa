@@ -15,6 +15,9 @@ pub const CSS_ONLY: &[&str] = &[
     // A timing curve (Penpot has no token type for it).
     "--motion-ease-out",
     // Local layout values of one component, not part of the design library.
+    "--limit-card-min-width",
+    "--limit-meter-height",
+    "--limit-mark-size",
     "--app-icon-size",
     "--app-icon-size-lg",
     "--app-icon-bg",

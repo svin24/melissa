@@ -1621,3 +1621,94 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   ok, attention, caution; switch 32×18), and component sizes use the `button.height.md` form. Alternatives: the
   Figma dark palette (a bigger visual change on demo day), keeping the spec's invisible hover in dark, the pace
   marker (more to read for a number most people only glance at).
+- **2026-11-22 — Provider limits in Usage and resources** (owner design "Usage" B1–B4, approved today; no pace
+  marker, today's colours). The panel gets a **Limits / Cost / Tokens** switcher. It is navigation, so per
+  COMPONENT-SPEC 2.6 it is links with `aria-current="page"` in the segmented look (the Apps filter's), never a
+  tablist: plain links `/usage?view=…` without script, with htmx they swap the view region (`#usage-view`).
+  **Limits**: one group per provider that is set up (logo or letter mark as elsewhere; providers not installed
+  or not signed in are hidden), a card per plan window: label ("Session" for a model-wide session window, else
+  the provider's label such as "Weekly · Opus"), the share left in big type with "left", a bar, and the reset
+  ("Resets in 2 h 10 min" within a day, "Resets Mon 09:00" within a week, else a date). The bar is a native
+  `<meter>` (with `aria-valuetext="62% left"`) that fills with the share **used**, like the boards and the
+  devices' meters. **Tones**: ok while more than a third is left; attention at a third or less (about two days
+  of a weekly window, enough notice to plan); caution at a tenth or less (about one long session) or when the
+  provider says the limit is reached (`rejected`; `allowed_warning` makes it at least attention). The meter's
+  native `low`/`high` ranges match these (a test walks every value). A provider with no windows shows one
+  "Unavailable" card with a one-line reason, or a quiet "<provider> doesn't report limits." row; the data
+  layer's reasons are mapped to short UI words ("Sign in again to read the limits.", "Numbers come with the
+  next chat.", …) and anything unrecognised becomes "Couldn't read the limits." (no raw error text). The agents
+  table and the devices stay below the limits. **Cost**: by provider (as reported, else "Not reported") and by
+  agent; **Tokens**: per provider a table of tokens per model, then each agent's context. Credit pools are not
+  shown yet (their units are unknown, PLAN Q91c). **Freshness**: a page never waits for the providers. With a
+  report younger than the collector's 60 s cache (new `Collector::cached`, which neither asks nor waits) the
+  numbers are in the page; else the providers' part loads itself after the page (`hx-trigger="load"`), and
+  without script it says "Not checked yet." next to the Check again form. "Checked N min ago" comes from the
+  report's new `checked_at` (when the round started). **Check again** is a POST form (`/ui/usage/check`;
+  without script it answers with a redirect to the page) whose htmx swap replaces only the providers' part
+  and updates "Checked …" out of band, so the button keeps focus; `hx-sync="this:drop"` drops presses while
+  one runs. The collector's own limits make repeated presses cheap: one round at a time, and a refresh reuses
+  a round younger than 15 s, so at most one round of provider calls per 15 s however often it is pressed; no
+  background polling. **Owner and Member**: the providers' numbers are the owner's only, like
+  `/api/usage/providers` (they are read with the agents' sign-ins): `/ui/usage/*` is an owner path, and a
+  member's `/usage` is the page as before (agents table and devices; the agents table's rules are unchanged),
+  with no switcher and no provider data. Buttons are the 32 px `.btn` (44 px hit area only under
+  `pointer: coarse`). Phones (B3/B4): the cards stack, Check again sits above a full-width switcher with equal
+  segments; the button keeps its label (the board shows an icon only). The screenshot harness has a
+  `fake-usage` feature (`MELISSA_FAKE_USAGE`, like `fake-apps`) and shoots `usage`, `usage-cost`,
+  `usage-tokens` and `usage-member`. Alternatives: a tablist (the spec reserves it; these are views with
+  URLs), a radio group (a value, not navigation), the bar filling with the share left (the boards fill with
+  what is used), rendering the page only after asking the providers (up to 45 s), showing members the
+  providers' limits (the data layer keeps them owner-only).
+
+- **2026-11-22 — Settings on a phone: a list, then one section at a time** (owner design C1/C2 in Penpot,
+  Android style). Under 760px (the phone layout's breakpoint) Settings no longer shows its sections as a row of
+  tabs above the section. `/settings` is level 1: the title, the search field and the groups (Agents, Chat,
+  System, People) as cards of rows; each row is a link in a real list with its icon, name, a short value where
+  one is cheap to know ("3 ready", "2 rules", "Off", "5 days", "Tailnet", "Connected", "Up to date") and a
+  chevron, 44px high; Reset is in the danger colour; the list has its own close control. Any other Settings page
+  is level 2: the section alone under a back link (labelled "Back to Settings", or "Back to Agents" on a page
+  below a section) and its title, which takes focus on entering; the section's own heading is hidden there so
+  the title isn't said twice. Above 760px nothing changes: the same markup carries the phone parts, hidden by CSS,
+  and `/settings` shows the first section this person may open beside the list (it was a redirect to it), so the
+  section swap, the search and live settings work as before on both levels. Back: the section swap is unchanged
+  (only `#settings-main` is replaced, no fades, URL pushed); going back to the list is instant (the list was only
+  hidden), restores its scroll and puts focus on the row just left, while the list's answer replaces the hidden
+  section. Each panel history entry notes the panel page below it (`back`), so the back link calls
+  `history.back()` when that is where it leads (the link and the Back gesture then do the same, no entry is
+  added) and otherwise replaces the current entry. A deep link to a section on a phone gets `/settings` as the
+  entry below it, so Back goes to the list, then out (a reload keeps what was below). Without script the rows
+  and the back link are plain links. The values are worked out only for `/settings` (a task-local, like the
+  panel flags); slow sources are not asked (Tailscale's cached state only). Not taken from the board: the bottom
+  tab bar under the list (the panel covers the phone's screen; the list's close control stands in) and the
+  Providers rows with chevrons instead of Details (a separate change to that section). Alternatives: deciding the
+  level in the server from the user agent (guesswork, breaks on resize), a separate `/settings/list` URL (a
+  second address for the same page and a redirect loop without script), keeping the redirect and building the
+  list in script (no list without script).
+- **2026-11-22 — The design system in code: tokens from Penpot with a drift check, one Button, thin controls**
+  (owner: the Penpot design system DS-00–DS-17 is approved; implement it). `melissa.css`'s `:root` now holds the
+  design library's tokens under their Penpot names (`a.b.c` = `--a-b-c`, primitives renamed to the library's
+  `neutral`/`night`/`blue`/… steps); `crates/web/design/tokens.json` is the export, written by
+  `scripts/tokens/tokens_gen.py` (`just tokens`), and `crate::tokens` fails when the two disagree: a token on one
+  side only, or a different value in either theme after resolving aliases (docs/DEV-ENV.md, Design tokens). The
+  stylesheet stays hand-written (no build step); names only it has are listed in `tokens::CSS_ONLY`. The two
+  dark-mode fixes are semantic tokens: `color.bg.hover`, `color.bg.selected` and the new `color.bg.fill` (neutral
+  badges, disabled filled buttons) are `night.850` in dark, one step lighter than a card; `color.text.disabled`
+  is dimmer than muted text in both themes (`neutral.500` / `night.600`). Components: `components::Btn` is the
+  one button, rendered as classes (`.btn` + variant + size + shape) so the same look fits `<button>`, `<a>`,
+  `<summary>` and `<label>` with their own attributes; every button, link-as-button, icon button and confirm
+  summary uses it (32 px, 28 small, 40 large, radius 8/6, the hit area 44 px only under `pointer: coarse`).
+  Fields (`.input`, `.search-field`, `span.select-wrap`) are as high as the buttons; native checkboxes and radios
+  take the accent colour; the switch is 32×18 and blue when on; one segmented control (`.segmented`/`.seg`) serves
+  the picker, the Apps filter and the Usage views; `Tone` is Neutral/Info/Ok/Attention/Caution and one badge
+  (`badge`, `status_badge` with a dot or spinner) replaces the pills; rows, cards, insets, callouts and notices
+  read the row/radius/space tokens; the remaining size literals and old colour aliases were swept to tokens.
+  Kept as aliases (in `CSS_ONLY`): `--ground`, `--surface`, `--ink`, `--muted`, `--border`, `--honey*`,
+  `--action*`, `--caution*`, `--ok`, `--idle`, `--bubble*`, `--focus`, `--backdrop`, `--shadow-float`,
+  `--icon-*`, `--radius`, `--font`, `--font-head`, `--mono`: no rule here reads them any more, but branches in
+  flight may; remove them once those have landed. Not changed (no behaviour changes): the picker's
+  Speed/Access stay submit buttons with `aria-pressed` (the spec's radios would change how they post),
+  `notice()` keeps `role="status"` at page load, a locked switch keeps its reason in `title`, triggers of
+  destructive confirms keep the secondary look (the spec's `danger-quiet` exists for when the owner wants it).
+  Alternatives: generating `:root` from `tokens.json` (a build step), struct components with every attribute
+  (`Button { does, hx, … }`, a large API for ~80 call sites with different htmx attributes), keeping the old
+  names (two vocabularies).

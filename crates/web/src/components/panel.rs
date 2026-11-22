@@ -191,18 +191,33 @@ pub struct SettingsSection<'a> {
     pub icon: Glyph,
     /// Titles of the settings in it, for the search field (not shown).
     pub keywords: &'a str,
+    /// A short value for its row in the phone's list ("3 ready", "Off"); not shown above 760px.
+    pub value: Option<&'a str>,
+    /// Its row in the phone's list is in the danger colour (Reset).
+    pub danger: bool,
 }
 
 /// The Settings panel: a search field and the grouped section list on the left; a breadcrumb
 /// ("Settings / Providers", or "Settings / Developer / Task #3" for a page below a section),
 /// the close control and the section's content on the right.
+///
+/// Phones (2026-11-22, owner design C1/C2) show one level at a time: `list` (`GET /settings`)
+/// shows the list alone, as rows with a value and a chevron; any other page shows the section
+/// alone under a back link ("Settings", or the section for a page below one) and its title.
+/// The phone-only parts are in the markup at every width and hidden by CSS above 760px.
 pub fn settings_frame_at(
     sections: &[SettingsSection<'_>],
     current: &str,
     page: Option<&str>,
+    list: bool,
     content: Markup,
 ) -> Markup {
     let section_href = sections.iter().find(|s| s.label == current).map(|s| s.href);
+    // Where the phone's back link goes: up one level.
+    let (up, up_label) = match (page, section_href) {
+        (Some(_), Some(href)) => (href, current),
+        _ => ("/settings", "Settings"),
+    };
     let mut groups: Vec<&str> = Vec::new();
     for s in sections {
         if !groups.contains(&s.group) {
@@ -212,7 +227,12 @@ pub fn settings_frame_at(
     html! {
         div.panel.settings data-panel data-title="Settings" {
             nav.settings-nav aria-label="Settings sections" {
-                p.settings-title { "Settings" }
+                p.settings-title tabindex="-1" { "Settings" }
+                // The phone's list has no section beside it: its own close control.
+                a.panel-close.settings-list-close href="/" data-panel-close title="Close" {
+                    (glyph(Glyph::Close))
+                    span.visually-hidden { "Close settings" }
+                }
                 // Filled in by melissa.js; without script every section is listed anyway.
                 div.settings-search.search-field data-settings-search hidden {
                     label.visually-hidden for="settings-q" { "Search settings" }
@@ -227,8 +247,11 @@ pub fn settings_frame_at(
                         ul aria-labelledby={ "settings-group-" (i) } {
                             @for s in sections.iter().filter(|s| s.group == *g) {
                                 li data-keywords=(s.keywords) {
-                                    a href=(s.href) aria-current=[s.current.then_some("page")] {
-                                        (glyph(s.icon)) span { (s.label) }
+                                    a href=(s.href) aria-current=[s.current.then_some("page")]
+                                        class=[s.danger.then_some("settings-danger")] {
+                                        (glyph(s.icon)) span.settings-label { (s.label) }
+                                        @if let Some(v) = s.value { span.settings-value { (v) } }
+                                        span.settings-chevron { (glyph(Glyph::Chevron)) }
                                     }
                                 }
                             }
@@ -238,8 +261,15 @@ pub fn settings_frame_at(
                 }
             }
             // `data-section`: the list entry to mark current when only this part is swapped in.
-            div.settings-main id=(SETTINGS_MAIN_ID) data-section=[section_href] tabindex="-1" {
+            // `data-list`: this is the list level (phones show the list, not this part).
+            div.settings-main id=(SETTINGS_MAIN_ID) data-section=[section_href] data-list[list]
+                tabindex="-1" {
                 header.panel-head {
+                    a.settings-back href=(up) data-settings-back title="Back" {
+                        (glyph(Glyph::Chevron))
+                        span.visually-hidden { "Back to " (up_label) }
+                    }
+                    h1.settings-here tabindex="-1" { (page.unwrap_or(current)) }
                     (crumbs(&match (page, section_href) {
                         (Some(_), Some(href)) => vec![("/settings", "Settings"), (href, current)],
                         _ => vec![("/settings", "Settings")],

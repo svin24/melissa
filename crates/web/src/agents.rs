@@ -45,7 +45,7 @@ fn model_label(view: &BackendView, model: &str) -> Option<String> {
 }
 
 /// The letter in a backend's mark.
-fn letter(label: &str) -> String {
+pub(crate) fn letter(label: &str) -> String {
     label
         .chars()
         .find(|c| c.is_alphanumeric())

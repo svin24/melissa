@@ -1215,44 +1215,52 @@ pub fn cluster(f: &Frame<'_>, cx: &AppsCx) -> Markup {
     )
 }
 
-/// Usage and resources (the rail's chart): what each agent used, then the devices.
-pub fn usage(f: &Frame<'_>, rows: &[UsageRow<'_>], since: &str) -> Markup {
+/// Usage and resources (the rail's chart): `body` is the owner's views
+/// (`components::usage_view`) or, for a member, the agents and the devices.
+pub fn usage(f: &Frame<'_>, body: Markup) -> Markup {
+    panel_shell(
+        f,
+        "Usage and resources",
+        rail_for(Nav::Usage, f, None),
+        panel("Usage and resources", body),
+    )
+}
+
+/// What each agent used, as a section of Usage and resources.
+pub fn usage_agents(rows: &[UsageRow<'_>], note: &str) -> Markup {
+    section("Agents", usage_table(rows, note))
+}
+
+/// The devices with their resources and the number of running apps.
+pub fn usage_devices(f: &Frame<'_>) -> Markup {
     let snap = f.snap;
     let running = match &snap.apps {
         Apps::Known { installed } => Some(installed.iter().filter(|a| a.phase == "ready").count()),
         _ => None,
     };
-    panel_shell(
-        f,
-        "Usage and resources",
-        rail_for(Nav::Usage, f, None),
-        panel(
-            "Usage and resources",
-            html! {
-                (section("Agents", usage_table(rows, since)))
-                (section("Devices", html! {
-                    p.quiet {
-                        @match running {
-                            Some(1) => "1 app running.",
-                            Some(n) => { (n) " apps running." }
-                            None if snap.apps == Apps::NotSetUp => "The app platform isn't set up on this device.",
-                            None => "Couldn't read the app list yet.",
-                        }
+    section(
+        "Devices",
+        html! {
+            p.quiet {
+                @match running {
+                    Some(1) => "1 app running.",
+                    Some(n) => { (n) " apps running." }
+                    None if snap.apps == Apps::NotSetUp => "The app platform isn't set up on this device.",
+                    None => "Couldn't read the app list yet.",
+                }
+            }
+            @if snap.devices.is_empty() {
+                p.quiet { "Couldn't read device details yet." }
+            } @else {
+                div.devices-grid {
+                    @for (i, d) in snap.devices.iter().enumerate() {
+                        // The first is this device: the owner's name for it, if any.
+                        @let name = f.side.this_device.as_deref().filter(|_| i == 0);
+                        (device(d, name.unwrap_or(&d.name)))
                     }
-                    @if snap.devices.is_empty() {
-                        p.quiet { "Couldn't read device details yet." }
-                    } @else {
-                        div.devices-grid {
-                            @for (i, d) in snap.devices.iter().enumerate() {
-                                // The first is this device: the owner's name for it, if any.
-                                @let name = f.side.this_device.as_deref().filter(|_| i == 0);
-                                (device(d, name.unwrap_or(&d.name)))
-                            }
-                        }
-                    }
-                }))
-            },
-        ),
+                }
+            }
+        },
     )
 }
 

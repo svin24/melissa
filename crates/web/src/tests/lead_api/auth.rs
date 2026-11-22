@@ -579,12 +579,18 @@ async fn owner_only_sections_refuse_members() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, headers, _) = send(
+    // `/settings` is the list over the Agents section, with no owner section or value in it.
+    let (status, _, list) = send(
         &app,
         as_(&bob, "GET", "/settings").body(Body::empty()).unwrap(),
     )
     .await;
-    assert_eq!(headers[header::LOCATION], "/settings/agents");
+    assert_eq!(status, StatusCode::OK);
+    assert!(list.contains("data-section=\"/settings/agents\" data-list"));
+    assert!(
+        !list.contains("href=\"/settings/providers\"")
+            && !list.contains("settings-label\">Updates<")
+    );
     let (_, _, page) = send(
         &app,
         as_(&bob, "GET", "/settings/agents")

@@ -86,7 +86,7 @@ fn day_label(n: u32) -> String {
     }
 }
 
-fn keep_label(k: Keep) -> String {
+pub(crate) fn keep_label(k: Keep) -> String {
     match k {
         Keep::Days(n) => day_label(n),
         Keep::Forever => "Forever".into(),

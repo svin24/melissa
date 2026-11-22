@@ -4,7 +4,7 @@
 //!
 //! UI routes (same-origin checked like every POST; htmx gets the section's region back, a
 //! plain form post a redirect):
-//! - `GET /settings` → `/settings/providers`; `GET /settings/providers?p=<id>`,
+//! - `GET /settings`: the section list on a phone, over the first section (`list.rs`); `GET /settings/providers?p=<id>`,
 //!   `GET /settings/updates`.
 //! - `POST /ui/settings/providers/refresh`: forget cached versions, check again.
 //! - `POST /ui/settings/providers/{id}/enabled` (`enabled=on` or nothing),
@@ -111,6 +111,7 @@ mod apps;
 mod developer;
 mod device;
 mod files;
+pub(crate) mod list;
 pub(crate) mod pages;
 mod permissions;
 mod providers;
@@ -135,7 +136,7 @@ use axum::{
     extract::{DefaultBodyLimit, Request, State},
     http::Method,
     middleware::Next,
-    response::{Redirect, Response},
+    response::Response,
     routing::{get, post},
     Router,
 };
@@ -390,16 +391,8 @@ pub(crate) async fn touch_after_save(State(ui): State<Ui>, req: Request, next: N
 /// The UI routes (state: [`Ui`], which carries the [`Settings`]).
 pub(crate) fn ui_routes() -> Router<Ui> {
     Router::new()
-        .route(
-            "/settings",
-            // The first section this person may open (Providers is the owner's).
-            get(|| async {
-                match crate::auth::signed_in() {
-                    Some(p) if !p.is_owner() => Redirect::to(pages::AGENTS_URL),
-                    _ => Redirect::to("/settings/providers"),
-                }
-            }),
-        )
+        // The section list (phones), over the first section this person may open.
+        .route("/settings", get(list::index))
         .route("/settings/providers", get(providers::page))
         .route(add_provider::ADD_URL, get(add_provider::page))
         .route(
