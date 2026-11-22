@@ -83,7 +83,7 @@ async fn each_chat_shows_its_own_agents_details() {
     let p = panel_of(&page);
     assert!(p.contains("<h2 id=\"details-h\">Agent details</h2>"), "{p}");
     assert!(p.contains("On-device services"));
-    assert!(p.contains("hx-get=\"/ui/apps/nextcloud\""), "{p}");
+    assert!(p.contains("href=\"/cluster/apps/nextcloud\""), "{p}");
     assert!(
         p.contains("<p class=\"service-group\">Ada</p>"),
         "every app grouped by who looks after it: {p}"
@@ -102,7 +102,10 @@ async fn each_chat_shows_its_own_agents_details() {
     assert!(page.contains("popovertarget=\"menu-head\""));
     assert!(page.contains("action=\"/ui/fresh-start\""));
     assert!(page.contains("href=\"/settings/agents/lead#agent-name\""));
-    assert!(page.contains("id=\"app-dialog\""));
+    assert!(
+        !page.contains("id=\"app-dialog\""),
+        "details open in the Apps panel"
+    );
 
     // Ada's chat: hers only; her app with its key facts, her menu (rename, icon, pin, delete).
     let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;

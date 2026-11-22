@@ -67,6 +67,10 @@ pub struct TaskContext {
     /// confirmation timeout. Set only for scheduled (unattended) turns (Settings →
     /// Schedules); interactive confirmations keep the registry's timeout.
     pub confirm_wait: Option<std::time::Duration>,
+    /// The signed-in person (account id) whose message started the running turn, if any:
+    /// what the task does, it does for them (an app it installs records them). None for
+    /// scheduled turns, helpers' reports and calls nobody asked for.
+    pub person: Option<String>,
 }
 
 /// The outcome for one tool call.

@@ -50,6 +50,30 @@ impl AgentIcon {
         }
     }
 
+    /// An app's icon until someone picks one (2026-11-22): derived from its name (FNV-1a, then
+    /// MurmurHash3's finalizer, as FNV's low bits vary little across short names), so it is
+    /// the same on every page, after a restart and after a reinstall, without being stored.
+    /// Shape and colour come from different bits, so apps that share a shape mostly differ
+    /// in colour.
+    pub fn for_app(name: &str) -> Self {
+        let mut h: u32 = 0x811c_9dc5;
+        for b in name.bytes() {
+            h ^= u32::from(b);
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x85eb_ca6b);
+        h ^= h >> 13;
+        h = h.wrapping_mul(0xc2b2_ae35);
+        h ^= h >> 16;
+        let shape = (h % SHAPES.len() as u32) as usize;
+        let color = ((h >> 16) % COLORS.len() as u32) as usize;
+        Self {
+            shape: SHAPES[shape].to_string(),
+            color: COLORS[color].to_string(),
+        }
+    }
+
     /// This icon if its names are known, else the default for `id`.
     pub fn or_default(self, id: &str) -> Self {
         Self::new(&self.shape, &self.color).unwrap_or_else(|| Self::default_for(id))
@@ -75,5 +99,28 @@ mod tests {
             color: "y".into(),
         };
         assert_eq!(odd.or_default("d-1234abcd.a2"), b);
+    }
+
+    #[test]
+    fn app_icons_are_stable_known_and_varied() {
+        let a = AgentIcon::for_app("minecraft");
+        assert_eq!(a, AgentIcon::for_app("minecraft"));
+        assert!(AgentIcon::new(&a.shape, &a.color).is_some());
+        let names = [
+            "minecraft",
+            "jellyfin",
+            "navidrome",
+            "forgejo",
+            "syncthing",
+            "luanti",
+        ];
+        let icons: std::collections::BTreeSet<_> = names
+            .iter()
+            .map(|n| {
+                let i = AgentIcon::for_app(n);
+                (i.shape, i.color)
+            })
+            .collect();
+        assert!(icons.len() >= 5, "{icons:?}");
     }
 }

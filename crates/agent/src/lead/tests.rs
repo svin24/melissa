@@ -2965,3 +2965,25 @@ async fn setup_password_cards_land_in_the_installing_chat() {
     );
     s.close().await;
 }
+
+#[tokio::test]
+async fn a_helper_is_made_for_the_person_whose_message_the_lead_answers() {
+    let s = setup("agent-creator", vec![]);
+    let q = s.lead_token();
+    // A turn nobody's message started (a helper's report, a schedule): nobody's.
+    create_agents(&s, &q, &["Ada"]).await;
+    // A turn Ana's message started.
+    assert!(s.server.set_person(&q, Some("p-ana".into())));
+    create_agents(&s, &q, &["Bo"]).await;
+    let by_name = |n: &str| {
+        s.lead
+            .agents()
+            .list()
+            .into_iter()
+            .find(|a| a.name == n)
+            .unwrap()
+    };
+    assert_eq!(by_name("Ada").creator, None);
+    assert_eq!(by_name("Bo").creator.as_deref(), Some("p-ana"));
+    s.close().await;
+}

@@ -36,6 +36,8 @@ REPO = HERE.parent.parent
 SHOTS = REPO / "target" / "ui-shots"
 
 WIDTHS = {1440: 900, 1024: 768, 390: 844}
+# The server's fake app tools (crates/web/src/fake_apps.rs): the Apps list without k3s.
+FAKE_APPS = "melissa-server/fake-apps"
 SCHEMES = ("dark", "light")
 
 # Software raster on one thread, every compositor stage before a frame is drawn: without
@@ -174,6 +176,23 @@ def open_confirm(kind, label):
     return act
 
 
+def show_person(name):
+    """The owner's Apps filter: show `name`'s apps (swaps the list in place)."""
+    def act(page):
+        link = page.locator(".show-filter a", has_text=re.compile(f"^{name}$"))
+        present(page, link, f"filter {name}").click()
+        page.wait_for_timeout(400)
+    return act
+
+
+# Screens seen by a member (scripts/ui-shots/server.py MEMBERS): (member, name, path, action).
+MEMBER_SCREENS = [
+    ("ben", "apps-member", "/cluster", None),
+    ("ben", "app-details-member", "/cluster/apps/minecraft", None),
+    ("cy", "apps-empty", "/cluster", None),
+]
+
+
 def fill(selector, value):
     def act(page):
         page.locator(selector).first.fill(value)
@@ -205,6 +224,8 @@ def screens(helper, quiet):
         ("model-picker", f"/agents/{helper}", click("button.model-chip")),
         ("approvals", "/approvals", None),
         ("apps", "/cluster", None),
+        ("apps-by-person", "/cluster", show_person("ben")),
+        ("app-details", "/cluster/apps/minecraft", None),
         ("usage", "/usage", None),
         ("add-provider", "/settings/providers/add", None),
         ("settings-provider", "/settings/providers?p=python3", None),
@@ -350,7 +371,15 @@ class Shooter:
                 helper, quiet = srv.helper_id("Backup"), srv.helper_id("Updates")
                 plan = screens(helper, quiet)
                 plan += [(f"settings-{s}", f"/settings/{s}", None) for s in SETTINGS_SECTIONS]
+                members = self.invite_members(browser, base, state_file)
                 self.visit_all(browser, base, str(state_file), plan)
+                for who, name, path, action in MEMBER_SCREENS:
+                    self.visit_all(browser, base, str(members[who]), [(name, path, action)])
+                # Without an app platform (k3s not set up): the list says so.
+                server.apps_platform(False)
+                self.visit_all(browser, base, str(state_file),
+                               [("apps-not-set-up", "/cluster", None)])
+                server.apps_platform(True)
                 browser.close()
         finally:
             server.stop()
@@ -394,6 +423,32 @@ class Shooter:
             raise RuntimeError(f"setup did not finish (at {page.url})")
         ctx.storage_state(path=str(state_file))
         ctx.close()
+
+    def invite_members(self, browser, base, state_file):
+        """Invite each of srv.MEMBERS as the owner and join as them; their signed-in browser
+        states, by name."""
+        states = {}
+        for name, password in srv.MEMBERS:
+            ctx = self.context(browser, 1440, "dark", str(state_file))
+            page = ctx.new_page()
+            page.goto(base + "/settings/people")
+            page.get_by_role("button", name="Create invite link").click()
+            page.get_by_text(re.compile(r"https?://\S+/invite/\S")).first.wait_for()
+            url = re.search(r"https?://[^\s<\"]+/invite/[^\s<\"]+", page.content()).group(0)
+            ctx.close()
+            ctx = self.context(browser, 1440, "dark")
+            page = ctx.new_page()
+            page.goto(url)
+            page.fill("input[name=username]", name)
+            page.fill("input[name=password]", password)
+            page.fill("input[name=again]", password)
+            with page.expect_navigation():
+                page.locator("form button[type=submit]").first.click()
+            path = self.server.root / f"storage-{name}.json"
+            ctx.storage_state(path=str(path))
+            ctx.close()
+            states[name] = path
+        return states
 
     def send(self, page, text):
         page.locator("#composer textarea[name=text]").fill(text)
@@ -566,8 +621,8 @@ def main_shoot(args):
     binary = Path(args.bin) if args.bin else REPO / "target" / "debug" / "melissa-server"
     if not args.bin:
         log("building melissa-server")
-        subprocess.run(["cargo", "build", "-q", "--bins", "-p", "melissa-server"], cwd=REPO,
-                       check=True)
+        subprocess.run(["cargo", "build", "-q", "--bins", "-p", "melissa-server",
+                        "--features", FAKE_APPS], cwd=REPO, check=True)
     name = args.name or revision_name()
     out = Path(args.out) if args.out else SHOTS / name
     ok = Shooter(out, binary, args.only).run()
@@ -588,8 +643,11 @@ def shoot_revision(args):
         # This checkout's target dir: the dependencies are already built there, so only
         # Melissa's own crates are compiled (a separate target dir would cost gigabytes).
         target = REPO / "target"
-        subprocess.run(["cargo", "build", "-q", "--bins", "-p", "melissa-server"], cwd=tree,
-                       check=True, env=dict(os.environ, CARGO_TARGET_DIR=str(target)))
+        env = dict(os.environ, CARGO_TARGET_DIR=str(target))
+        build = ["cargo", "build", "-q", "--bins", "-p", "melissa-server"]
+        # Revisions from before the fake apps (2026-11-22) build without the feature.
+        if subprocess.run(build + ["--features", FAKE_APPS], cwd=tree, env=env).returncode:
+            subprocess.run(build, cwd=tree, check=True, env=env)
         binary = SHOTS / ".worktrees" / f"melissa-server-{rev}"
         shutil.copy2(target / "debug" / "melissa-server", binary)
         ok = Shooter(out, binary, args.only).run()

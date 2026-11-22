@@ -323,6 +323,25 @@ impl ToolRegistry {
         name: &str,
         args: Value,
     ) -> Result<Value, ToolError> {
+        // What the call does, it does for the person whose message started the turn: an app
+        // it installs records them, a helper it hands a job to works for them too.
+        match ctx.person.clone() {
+            Some(person) => {
+                crate::audit::PERSON_ID
+                    .scope(person, self.call_as(task, ctx, name, args))
+                    .await
+            }
+            None => self.call_as(task, ctx, name, args).await,
+        }
+    }
+
+    async fn call_as(
+        &self,
+        task: TaskId,
+        ctx: &mut TaskContext,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, ToolError> {
         let tool = self
             .tools
             .get(name)
@@ -904,6 +923,43 @@ mod tests {
         fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
             Box::pin(async move { Ok(json!({"echo": args})) })
         }
+    }
+
+    /// Answers with the person the call acts for.
+    struct Whose;
+    impl Tool for Whose {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "whose",
+                description: "test",
+                labels: Labels::READ_ONLY,
+                params: json!({"type": "object"}),
+            }
+        }
+        fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+            Box::pin(async move { Ok(json!(crate::audit::requester())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_acts_for_the_person_whose_message_started_the_turn() {
+        let reg = ToolRegistry::new(vec![Arc::new(Whose)], None);
+        let mut ctx = TaskContext::default();
+        assert_eq!(
+            reg.call(1, &mut ctx, "whose", json!({})).await.unwrap(),
+            Value::Null
+        );
+        ctx.person = Some("p-ada".into());
+        assert_eq!(
+            reg.call(1, &mut ctx, "whose", json!({})).await.unwrap(),
+            "p-ada"
+        );
+        // A request's own person (the UI calling as the user) passes through.
+        let mut ui = TaskContext::default();
+        let r = crate::audit::PERSON_ID
+            .scope("p-ben".into(), reg.call(0, &mut ui, "whose", json!({})))
+            .await;
+        assert_eq!(r.unwrap(), "p-ben");
     }
 
     fn registry(audit: Option<AuditLog>) -> ToolRegistry {

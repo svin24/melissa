@@ -54,6 +54,11 @@ pub struct AgentRecord {
     pub tools: Option<Vec<String>>,
     /// Who created it (`the lead agent (task 3)`, `the user`).
     pub created_by: String,
+    /// The signed-in person (account id) it was made for: who asked for it in the UI, or whose
+    /// message the lead agent was answering (2026-11-22; None before, and for agents nobody
+    /// asked for). The apps it installs while nobody's message started the turn count as theirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
     /// Unix seconds.
     pub created_at: u64,
     /// Stopped by the lead agent or the user: no session runs until its next job or message.
@@ -431,6 +436,7 @@ impl AgentRegistry {
             fast: false,
             tools,
             created_by: created_by.into(),
+            creator: crate::audit::requester(),
             created_at: now(),
             stopped: false,
             icon: Some(icon),

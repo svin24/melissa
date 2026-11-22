@@ -32,6 +32,18 @@ pub struct Prefs {
     pub device_name: Option<String>,
     /// First-run setup: the steps the owner put off, and whether the checklist is hidden.
     pub setup: SetupPrefs,
+    /// Icons people picked for apps (app name → shape and colour, names as for helpers'
+    /// icons); apps without one get an icon derived from their name.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub app_icons: std::collections::BTreeMap<String, AppIconPref>,
+}
+
+/// An app's icon as picked in the UI (names checked by the UI when read).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppIconPref {
+    pub shape: String,
+    pub color: String,
 }
 
 /// What first-run setup keeps (its progress otherwise comes from the real state).

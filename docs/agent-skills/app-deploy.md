@@ -46,7 +46,9 @@ produces locked-down objects) and the admission policies, never the prompt.
   "volumes": [{"name": "data", "size": "5Gi"}],     // PVC <app>-<name>, local-path (size not enforced)
   "secrets": [{"name": "rcon", "length": 32}],      // generated once, kept on updates
   "web": "http",                                    // port name of the web UI: link + Ingress
-  "credentials": {"user": "admin", "password": "admin_password"}  // what app-credentials prints
+  "credentials": {"user": "admin", "password": "admin_password"}, // what app-credentials prints
+  "kind": "games"                                   // the UI's group: games | media | home | files |
+                                                    // network | developer | other (default)
 }
 ```
 Limits: 6 public ports (web included), 16 ports, 8 volumes, 16 secrets, 128 KiB stored spec,

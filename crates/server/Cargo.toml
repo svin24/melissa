@@ -27,5 +27,9 @@ toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[features]
+# The screenshot harness's fake app tools (melissa-web/src/fake_apps.rs). Never in normal builds.
+fake-apps = ["melissa-web/fake-apps"]
+
 [lints]
 workspace = true

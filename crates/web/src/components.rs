@@ -253,220 +253,6 @@ pub fn empty_state(title: &str, text: &str) -> Markup {
     }
 }
 
-// --- Apps as app_grid workspaces ---------------------------------------------------------
-
-/// One app as a hexagon workspace.
-pub struct AppWorkspace<'a> {
-    pub name: &'a str,
-    pub health: Health,
-    /// Short status, e.g. "Running".
-    pub status: &'a str,
-    /// Second line, e.g. "Looked after by you" or a problem.
-    pub detail: Option<&'a str>,
-    /// Where the app is served, if known.
-    pub url: Option<&'a str>,
-    /// The app's details ([`app_details`]), loaded into the page's [`app_dialog`].
-    pub details: Option<&'a str>,
-}
-
-/// A hexagon workspace for an app.
-pub fn app_tile(workspace: &AppWorkspace<'_>) -> Markup {
-    html! {
-        li class={ "hex " (workspace.health.class()) } {
-            div.hex-inner {
-                @if let Some(url) = workspace.url {
-                    a.hex-name href=(url) rel="noreferrer" { (workspace.name) }
-                } @else {
-                    span.hex-name { (workspace.name) }
-                }
-                span.hex-status { (workspace.status) }
-                @if let Some(detail) = workspace.detail { span.hex-detail { (detail) } }
-                @if let Some(details) = workspace.details {
-                    button.hex-more type="button" hx-get=(details) hx-target="#app-dialog"
-                        hx-swap="innerHTML" aria-haspopup="dialog" aria-label={ "Details: " (workspace.name) } {
-                        "Details"
-                    }
-                }
-            }
-        }
-    }
-}
-
-// --- App details (a modal dialog) -----------------------------------------------------------
-
-/// The page's one app dialog, empty until a Details button loads [`app_details`] into it
-/// (melissa.js then opens it as a modal; Escape and Close shut it, focus goes back).
-pub fn app_dialog() -> Markup {
-    html! { dialog #app-dialog .sheet aria-labelledby="app-dialog-h" {} }
-}
-
-/// One fact in a details list.
-pub struct Fact<'a> {
-    pub label: &'a str,
-    pub value: &'a str,
-    /// Shown as a link (http/https only; the caller checks).
-    pub href: Option<&'a str>,
-}
-
-/// What the app dialog shows.
-pub struct AppDetails<'a> {
-    pub name: &'a str,
-    pub health: Health,
-    pub status: &'a str,
-    pub facts: &'a [Fact<'a>],
-    /// The logs region's URL ([`app_logs`]); loads when the dialog opens.
-    pub logs_url: &'a str,
-    /// Stop or Start: (label, POST url). None while neither applies.
-    pub toggle: Option<(&'a str, &'a str)>,
-    /// The force delete form's POST url.
-    pub delete_url: &'a str,
-    /// The word to type to confirm the force delete (the app's name).
-    pub delete_word: &'a str,
-    /// A short message after an action (e.g. why it failed).
-    pub message: Option<(&'a str, Tone)>,
-}
-
-fn dialog_head(name: &str, status: Option<(Health, &str)>) -> Markup {
-    html! {
-        header.sheet-head {
-            h2 #app-dialog-h { (name) }
-            @if let Some((health, status)) = status {
-                span class={ "pill " (health.class()) } { (status) }
-            }
-            form method="dialog" { button.secondary type="submit" autofocus { "Close" } }
-        }
-    }
-}
-
-/// The inside of the app dialog: status, logs and actions.
-pub fn app_details(d: &AppDetails<'_>) -> Markup {
-    html! {
-        (dialog_head(d.name, Some((d.health, d.status))))
-        @if let Some((text, tone)) = d.message {
-            p class={ "sheet-msg " (tone.class()) } role="status" { (text) }
-        }
-        dl.facts {
-            @for f in d.facts {
-                div {
-                    dt { (f.label) }
-                    dd {
-                        @if let Some(href) = f.href {
-                            a href=(href) rel="noreferrer" target="_blank" { (f.value) }
-                        } @else { (f.value) }
-                    }
-                }
-            }
-        }
-        div.action-row {
-            @if let Some((label, url)) = d.toggle {
-                button.secondary type="button" hx-post=(url) hx-target="#app-dialog"
-                    hx-swap="innerHTML" hx-disabled-elt="this" { (label) }
-            }
-        }
-        details.danger-zone {
-            summary { "Force delete" }
-            form hx-post=(d.delete_url) hx-target="#app-dialog" hx-swap="innerHTML"
-                hx-disabled-elt="find button" {
-                p { "Deletes " (d.name) " and all its data." }
-                label.field {
-                    span { "Type " strong { (d.delete_word) } " to confirm" }
-                    input type="text" name="confirm" required autocomplete="off"
-                        autocapitalize="off" spellcheck="false" pattern=(d.delete_word);
-                }
-                button.primary.danger type="submit" { "Force delete" }
-            }
-        }
-        section.sheet-logs aria-labelledby="app-logs-h" {
-            h3 #app-logs-h { "Logs" }
-            div #app-logs hx-get=(d.logs_url) hx-trigger="load" hx-swap="outerHTML" {
-                p.quiet { "Loading…" }
-            }
-        }
-    }
-}
-
-/// The app dialog while a stop waits for the user's OK (the confirmation the tool asked for).
-pub fn app_confirm(name: &str, question: &str, label: &str, approve: &str, deny: &str) -> Markup {
-    html! {
-        (dialog_head(name, None))
-        section.approval.confirm {
-            p { (question) }
-            div.action-row {
-                button.primary type="button" hx-post=(approve) hx-target="#app-dialog"
-                    hx-swap="innerHTML" hx-disabled-elt="this" { (label) }
-                button.secondary type="button" hx-post=(deny) hx-target="#app-dialog"
-                    hx-swap="innerHTML" autofocus { "Cancel" }
-            }
-        }
-    }
-}
-
-/// The app dialog after a force delete.
-pub fn app_gone(name: &str, text: &str) -> Markup {
-    html! {
-        (dialog_head(name, None))
-        p.sheet-msg role="status" { (text) }
-    }
-}
-
-/// The logs region of the app dialog. Log text is untrusted: it is only ever escaped text.
-pub struct AppLogs<'a> {
-    pub url: &'a str,
-    /// The containers to choose from (shown when there are several) and the current one.
-    pub containers: &'a [String],
-    pub container: Option<&'a str>,
-    pub lines: &'a [&'a str],
-    /// Shown instead of lines (no pods, an error).
-    pub empty: Option<&'a str>,
-}
-
-pub fn app_logs(l: &AppLogs<'_>) -> Markup {
-    html! {
-        div #app-logs {
-            form.action-row hx-get=(l.url) hx-target="#app-logs" hx-swap="outerHTML" {
-                @if l.containers.len() > 1 {
-                    label.inline-field {
-                        span { "Container" }
-                        select name="container" hx-get=(l.url) hx-trigger="change"
-                            hx-target="#app-logs" hx-swap="outerHTML" hx-include="this" {
-                            @for c in l.containers {
-                                option value=(c) selected[l.container == Some(c.as_str())] { (c) }
-                            }
-                        }
-                    }
-                } @else if let Some(c) = l.container {
-                    input type="hidden" name="container" value=(c);
-                }
-                button.secondary type="submit" { "Refresh" }
-            }
-            @if let Some(text) = l.empty {
-                p.quiet { (text) }
-            } @else {
-                div.sheet-log tabindex="0" aria-label="Log lines" {
-                    (log_view(l.lines.iter().map(|t| LogLine { text: t, is_error: false })))
-                }
-            }
-        }
-    }
-}
-
-/// The "Add an app" workspace: a link into the chat.
-pub fn add_app_tile(href: &str) -> Markup {
-    html! {
-        li.hex.hex-add {
-            a.hex-inner href=(href) {
-                span.plus aria-hidden="true" { "+" }
-                span.hex-name { "Add an app" }
-            }
-        }
-    }
-}
-
-/// A app_grid of workspaces (from [`app_tile`] and [`add_app_tile`]).
-pub fn app_grid(label: &str, workspaces: Markup) -> Markup {
-    html! { ul.app_grid aria-label=(label) { (workspaces) } }
-}
-
 // --- Devices ---------------------------------------------------------------------------
 
 /// A usage meter (0.0 to 1.0) with a text label.
@@ -937,7 +723,7 @@ pub const FILE_COUNT_ID: &str = "file-count";
 /// One app in the details panel.
 pub struct DetailApp {
     pub name: String,
-    /// Its details ([`app_details`] into the page's [`app_dialog`]).
+    /// Its details page (`/cluster/apps/{app}`).
     pub details: String,
     pub health: Health,
     /// "Running".
@@ -1126,9 +912,8 @@ pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
                                     }
                                     @if let Some(f) = &a.facts { p.service-facts { (f) } }
                                 }
-                                // Without script: the apps page, where each app has its details.
-                                a.icon-button.more-button href="/cluster" hx-get=(a.details)
-                                    hx-target="#app-dialog" hx-swap="innerHTML" aria-haspopup="dialog"
+                                // The app's details (melissa.js opens them in the Apps modal).
+                                a.icon-button.more-button href=(a.details)
                                     title={ "More for " (a.name) } {
                                     (glyph(Glyph::More))
                                     span.visually-hidden { "More for " (a.name) }
@@ -2234,6 +2019,12 @@ pub use agent::{
     SetupPasswordState, SideAgent, SideDevice, SideGroup, Sidebar, StepLine, AGENT_GROUPS_ID,
     CHAT_STATUS_ID, SIDEBAR_ID,
 };
+mod apps;
+pub use apps::{
+    app_details_panel, app_details_region, app_head_icon_oob, app_icon, app_icon_card, app_list,
+    app_logs_region, app_status, AppAsk, AppDetailsView, AppFact, AppGroup, AppList, AppLogsView,
+    AppRow, AppsEmpty, ShowChoice, APPS_LIST_ID, APP_DETAILS_ID,
+};
 mod mobile;
 pub use mobile::{
     back_link, composer_caption, menu_cancel, menu_head, new_agent_round, phone_view, sheet_avatar,
@@ -2886,22 +2677,71 @@ mod tests {
     }
 
     #[test]
-    fn app_tiles_are_hexagons_with_status() {
-        let out = app_tile(&AppWorkspace {
-            details: None,
-            name: "Nextcloud",
+    fn app_list_rows_are_a_real_list_with_status_words() {
+        let rows = vec![AppRow {
+            name: "Jellyfin",
+            shape: "drop",
+            color: "teal",
+            address: Some("box:8096 (HTTP)"),
+            link: Some("http://box:8096"),
+            person: Some("ada"),
             health: Health::Ok,
             status: "Running",
-            detail: Some("Looked after by you"),
-            url: Some("http://nextcloud.example.com"),
+            details: "/cluster/apps/jellyfin",
+        }];
+        let groups = [AppGroup {
+            title: "Media",
+            rows,
+        }];
+        let filter = [
+            ShowChoice {
+                label: "Everyone",
+                key: "everyone",
+                current: true,
+            },
+            ShowChoice {
+                label: "Me",
+                key: "me",
+                current: false,
+            },
+        ];
+        let out = app_list(&AppList {
+            filter: Some(&filter),
+            count: 1,
+            add: "/?draft=Install%20",
+            groups: &groups,
+            empty: None,
+            url: "/ui/cluster/apps?by=everyone",
         })
         .into_string();
-        assert!(out.starts_with("<li class=\"hex h-ok\">"));
-        assert!(out.contains("href=\"http://nextcloud.example.com\""));
-        assert!(out.contains("Looked after by you"));
-        let add = add_app_tile("/?draft=Install").into_string();
-        assert!(add.contains("hex hex-add"));
-        assert!(add.contains("Add an app"));
+        assert!(
+            out.contains("<ul class=\"app-rows\"><li class=\"app-row\">"),
+            "{out}"
+        );
+        assert!(out.contains("aria-labelledby=\"apps-show-label\""));
+        assert!(out.contains("id=\"apps-by-everyone\" href=\"/cluster?by=everyone\""));
+        assert!(out.contains("aria-current=\"true\""));
+        assert!(out.contains("Installed by </span>ada"));
+        assert!(out.contains("Running"));
+        assert!(out.contains("href=\"http://box:8096\""));
+        assert!(out.contains("1 app<"));
+        assert!(out.contains("hx-get=\"/ui/cluster/apps?by=everyone\""));
+        // A member's list has no filter.
+        let out = app_list(&AppList {
+            filter: None,
+            count: 0,
+            add: "/?draft=Install%20",
+            groups: &[],
+            empty: Some(AppsEmpty {
+                title: Some("No apps yet"),
+                text: "Ask Melissa to install one. It shows up here.",
+            }),
+            url: "/ui/cluster/apps",
+        })
+        .into_string();
+        assert!(!out.contains("show-filter"));
+        assert!(out.contains("No apps yet"));
+        assert!(out.contains("Add an app"));
     }
 
     #[test]

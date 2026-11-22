@@ -192,6 +192,9 @@ struct Pending {
     msg: QueuedMessage,
     actor: String,
     report: Option<Report>,
+    /// The signed-in person who sent it (account id; [`crate::audit::requester`] when it was
+    /// sent): the turn it starts acts for them.
+    person: Option<String>,
 }
 
 #[derive(Default)]
@@ -355,6 +358,8 @@ struct TurnState {
     started: Option<Instant>,
     /// Turns started by helpers' reports since the user's last message.
     auto: u32,
+    /// The person whose message started the running turn.
+    person: Option<String>,
 }
 
 struct Inner {
@@ -1021,6 +1026,7 @@ impl Conversation {
             },
             actor: actor.to_string(),
             report,
+            person: crate::audit::requester(),
         }
     }
 
@@ -1280,8 +1286,14 @@ impl Conversation {
         p: Pending,
         scheduled: Option<(String, Duration)>,
     ) -> (TurnId, u64) {
-        let Pending { msg, actor, report } = p;
+        let Pending {
+            msg,
+            actor,
+            report,
+            person,
+        } = p;
         t.last += 1;
+        t.person = person;
         let turn = t.last;
         t.busy = Some(turn);
         t.started = Some(Instant::now());
@@ -1445,9 +1457,9 @@ impl Conversation {
         // A scheduled turn runs unattended, and its confirmations wait as long as the owner
         // set for scheduled runs, but not past the backend's own tool-call limit (the agent
         // would stop waiting first); the others are as the conversation was set up.
-        let (unattended, wait) = {
+        let (unattended, wait, person) = {
             let t = lock(&self.inner.turn);
-            (t.scheduled, t.confirm_wait)
+            (t.scheduled, t.confirm_wait, t.person.clone())
         };
         let limit = self
             .backend(&live.backend)
@@ -1456,6 +1468,7 @@ impl Conversation {
         self.inner
             .server
             .set_attended(&live.token, self.inner.spec.ctx.attended && !unattended);
+        self.inner.server.set_person(&live.token, person);
         self.inner.server.set_confirm_wait(
             &live.token,
             if unattended {
@@ -1812,6 +1825,11 @@ impl Conversation {
         t.abort = None;
         t.confirm_wait = None;
         let spent = t.started.take().map_or(0, millis);
+        if t.person.take().is_some() {
+            if let Some(token) = lock(&self.inner.live).as_ref().map(|l| l.token.clone()) {
+                self.inner.server.set_person(&token, None);
+            }
+        }
         if std::mem::take(&mut t.scheduled) {
             if let Some(token) = lock(&self.inner.live).as_ref().map(|l| l.token.clone()) {
                 self.inner

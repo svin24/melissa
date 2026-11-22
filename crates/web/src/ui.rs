@@ -104,6 +104,8 @@ impl Ui {
 
     /// Use this login store (the one the sign-in gate checks).
     pub(crate) fn with_auth(mut self, auth: crate::auth::Auth) -> Self {
+        #[cfg(feature = "fake-apps")]
+        crate::fake_apps::set_auth(&auth);
         self.auth = auth;
         self
     }
@@ -268,8 +270,31 @@ impl Ui {
         self.framed_at(None, page).await
     }
 
+    /// Who is looking at the Apps list and what it needs to know (`by`: the owner's filter).
+    pub(crate) fn apps_cx(&self, by: Option<&str>) -> crate::app_list::AppsCx {
+        use crate::app_list::{AppsCx, Looker, Owners, Show};
+        let looker = Looker::current();
+        let people = self.auth.people();
+        let owner = people.iter().find(|p| p.is_owner()).map(|p| p.id.clone());
+        let names = people.into_iter().map(|p| (p.id, p.username)).collect();
+        let creators = self
+            .lead
+            .agents()
+            .list()
+            .into_iter()
+            .filter_map(|a| Some((a.id, a.creator?)))
+            .collect();
+        AppsCx {
+            show: Show::parse(by, &looker),
+            looker,
+            owners: Owners { creators, owner },
+            names,
+            prefs: self.settings.prefs(),
+        }
+    }
+
     /// Render a page with the rail for a visitor who came in at `host` (app links).
-    async fn framed_at(
+    pub(crate) async fn framed_at(
         &self,
         host: Option<&str>,
         page: impl FnOnce(&Frame<'_>) -> Markup,
@@ -464,12 +489,30 @@ pub(crate) fn host(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::HOST).and_then(|h| h.to_str().ok())
 }
 
-async fn cluster_page(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
-    ui.framed_at(host(&headers), pages::cluster).await
+/// `?by=`: whose apps the owner shows (members always see their own).
+#[derive(Deserialize, Default)]
+pub(crate) struct AppsQuery {
+    #[serde(default)]
+    pub(crate) by: Option<String>,
 }
 
-async fn cluster_apps(State(ui): State<Ui>, headers: HeaderMap) -> Markup {
-    pages::cluster_apps(&*ui.cluster.get().await, host(&headers))
+async fn cluster_page(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Query(q): Query<AppsQuery>,
+) -> Markup {
+    let cx = ui.apps_cx(q.by.as_deref());
+    ui.framed_at(host(&headers), |f| pages::cluster(f, &cx))
+        .await
+}
+
+async fn cluster_apps(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Query(q): Query<AppsQuery>,
+) -> Markup {
+    let cx = ui.apps_cx(q.by.as_deref());
+    pages::cluster_apps(&*ui.cluster.get().await, host(&headers), &cx)
 }
 
 async fn approvals_page(State(ui): State<Ui>) -> Markup {

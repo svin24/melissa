@@ -1,5 +1,5 @@
 /* Melissa's styles. Used only by the component library in src/components.rs.
-   Calm by default; the one bold element is apps as app_grid workspaces. */
+   Calm by default. */
 
 @font-face {
   font-family: "Atkinson Hyperlegible Next";
@@ -150,6 +150,8 @@
   --size-icon-sm: 16px;
   --size-icon-md: 20px;
   --size-icon-lg: 24px;
+  /* The least a control takes up under a finger (`pointer: coarse` only; owner, 2026-11-22). */
+  --size-target-touch: 44px;
 
   /* Type. */
   --font-family-body: "Atkinson Hyperlegible Next", system-ui, sans-serif;
@@ -211,6 +213,31 @@
   /* Component: list row. */
   --row-bg-hover: var(--color-bg-hover);
   --row-bg-current: var(--color-bg-selected);
+
+  /* Component: chip (status chips; COMPONENT-SPEC 2.7). The ok tone's soft background is
+     mixed from its foreground until the palette has a soft green. */
+  --chip-height: 22px;
+  --chip-font-size: var(--font-size-xs);
+  --chip-neutral-bg: var(--color-bg-sunken);
+  --chip-neutral-text: var(--color-text-muted);
+  --chip-ok-bg: color-mix(in srgb, var(--color-ok-fg) 14%, transparent);
+  --chip-ok-text: var(--color-ok-text);
+  --chip-attention-bg: var(--color-attention-soft);
+  --chip-attention-text: var(--color-attention-text);
+
+  /* Component: segmented control (COMPONENT-SPEC 2.6). */
+  --segmented-track-bg: var(--color-bg-sunken);
+  --segmented-selected-bg: var(--color-bg-surface);
+  --segmented-selected-border: var(--color-border-default);
+
+  /* Component: the Apps list and an app's details (2026-11-22). */
+  --app-icon-size: calc(var(--size-icon-md) + var(--space-4));
+  --app-icon-size-lg: calc(var(--size-icon-lg) + var(--space-5));
+  --app-icon-bg: var(--color-bg-sunken);
+  --app-row-person-width: 7rem;
+  --app-row-status-width: 9.5rem;
+  --app-fact-label-width: 7.5rem;
+  --app-log-max-height: 18rem;
 
   /* Component: switch (the settings toggle). */
   --switch-track-bg-off: var(--color-idle-fg);
@@ -3015,140 +3042,669 @@ svg.warn .mark {
   }
 }
 
-/* --- App grid -------------------------------------------------------------------------- */
+/* --- Buttons, 32px (2026-11-22, owner: thinner buttons; COMPONENT-SPEC 2.1) -----------------
+   `.btn` on a button or a link. The Apps list and an app's details use it first; other pages
+   move to it step by step. Under a finger (`pointer: coarse`) its hit area grows to 44px
+   without changing its look. */
 
-.app_grid {
-  --n: 4;
-  --w: 150px;
-  --h: calc(var(--w) * 1.1547);
-  --gap: 8px;
-  list-style: none;
-  margin: 0 0 calc(var(--h) * 0.25) 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  width: calc(var(--n) * (var(--w) + var(--gap)) + var(--w) / 2);
-  max-width: 100%;
-}
-
-.hex {
+.btn {
   position: relative;
-  width: var(--w);
-  height: var(--h);
-  margin: 0 calc(var(--gap) / 2) calc(var(--h) * -0.25 + var(--gap));
-  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
-  background: var(--idle);
-}
-
-/* Every second row starts half a workspace in (4 workspaces per row). */
-.hex:nth-child(8n + 5) {
-  margin-left: calc(var(--w) / 2 + var(--gap) / 2);
-}
-
-.hex.h-ok {
-  background: var(--ok);
-}
-
-.hex.h-busy {
-  background: var(--honey);
-}
-
-.hex.h-problem {
-  background: var(--caution);
-}
-
-.hex.hex-add {
-  background: var(--border);
-}
-
-.hex:has(:focus-visible) {
-  background: var(--focus);
-}
-
-.hex-inner {
-  position: absolute;
-  inset: 3px;
-  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
-  background: var(--surface);
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.15rem;
-  padding: 0 0.9rem;
-  text-align: center;
-}
-
-.hex.h-busy .hex-inner {
-  background: var(--honey-soft);
-}
-
-.hex-name {
-  font-family: var(--font-head);
-  font-weight: 650;
-  font-size: 1.02rem;
-  color: var(--ink);
-  overflow-wrap: break-word;
-  hyphens: auto;
-  max-width: 100%;
-}
-
-a.hex-name {
+  gap: var(--space-2);
+  min-height: var(--button-sm-height);
+  padding: 0 var(--button-sm-padding-x);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--button-sm-radius);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--line-height-control);
+  white-space: nowrap;
   text-decoration: none;
+  cursor: pointer;
 }
 
-a.hex-name:hover {
-  text-decoration: underline;
+.btn .glyph {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
 }
 
-.hex :focus-visible {
-  outline: none;
+.btn.primary {
+  background: var(--button-primary-bg-default);
+  color: var(--button-primary-text-default);
 }
 
-.hex-status {
-  font-size: 0.85rem;
-  font-weight: 600;
+.btn.secondary {
+  background: var(--button-secondary-bg-default);
+  color: var(--button-secondary-text-default);
+  border-color: var(--button-secondary-border-default);
 }
 
-.h-ok .hex-status {
-  color: var(--ok);
+.btn.danger {
+  background: var(--button-danger-bg-default);
+  color: var(--button-danger-text-default);
 }
 
-.h-busy .hex-status {
-  color: var(--honey-text);
+.btn:disabled {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
 }
 
-.h-problem .hex-status {
-  color: var(--caution);
-}
-
-.h-idle .hex-status {
-  color: var(--muted);
-}
-
-.hex-detail {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-a.hex-inner {
-  text-decoration: none;
-  color: var(--muted);
-}
-
-.hex-add .hex-inner {
-  background: var(--ground);
-}
-
-.hex-add .plus {
-  font-size: 1.75rem;
-  line-height: 1;
-  color: var(--honey-text);
+.btn:focus-visible {
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-offset);
 }
 
 @media (hover: hover) {
-  .hex-add:hover {
-    background: var(--honey);
+  .btn {
+    transition: background-color var(--motion-duration-fast) var(--motion-ease-out),
+      border-color var(--motion-duration-fast) var(--motion-ease-out);
+  }
+
+  .btn.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--button-primary-bg-default) 88%, var(--color-text-default));
+  }
+
+  .btn.secondary:hover:not(:disabled) {
+    border-color: var(--button-secondary-border-hover);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .btn::after,
+  .show-filter a::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc((100% - var(--size-target-touch)) / 2));
+  }
+}
+
+/* With script these forms save on change; their Save button is for pages without it. */
+@media (scripting: enabled) {
+  [data-no-script-only] {
+    display: none;
+  }
+}
+
+/* --- Apps (2026-11-22, owner design "Apps" A1-A6) -------------------------------------------
+   The list: a bar (the owner's filter or "Your apps", the count, Add an app), then one card of
+   rows per kind. Each row: icon, name and address, whose it is (owner), status, Details. */
+
+.apps-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.apps-bar-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+.apps-count {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.apps-mine {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* The owner's filter: links drawn as a segmented control. */
+.show-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  max-width: 100%;
+}
+
+#apps-show-label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.show-filter ul {
+  display: flex;
+  gap: calc(var(--space-1) / 2);
+  min-width: 0;
+  margin: 0;
+  padding: calc(var(--space-1) / 2);
+  list-style: none;
+  overflow-x: auto;
+  background: var(--segmented-track-bg);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+}
+
+.show-filter a {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: calc(var(--button-sm-height) - var(--space-1));
+  padding: 0 var(--space-3);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-control-sm);
+  font-weight: var(--font-weight-strong);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.show-filter a[aria-current] {
+  background: var(--segmented-selected-bg);
+  border-color: var(--segmented-selected-border);
+  color: var(--color-text-default);
+}
+
+.show-filter a:focus-visible {
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: calc(var(--focus-width) * -1);
+}
+
+@media (hover: hover) {
+  .show-filter a {
+    transition: color var(--motion-duration-fast) var(--motion-ease-out);
+  }
+
+  .show-filter a:hover {
+    color: var(--color-text-default);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .show-filter a {
+    transition: none;
+  }
+}
+
+.app-group + .app-group {
+  margin-top: var(--space-5);
+}
+
+.app-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-1);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+  color: var(--color-text-default);
+}
+
+.app-group-head .count {
+  color: var(--color-text-muted);
+}
+
+.app-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.app-row {
+  display: grid;
+  grid-template-columns:
+    var(--app-icon-size) minmax(0, 1fr) var(--app-row-person-width)
+    var(--app-row-status-width) auto;
+  grid-template-areas: "icon main person status details";
+  align-items: center;
+  column-gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.app-row + .app-row {
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+}
+
+.app-row > .app-icon {
+  grid-area: icon;
+}
+
+.app-row-main {
+  grid-area: main;
+  display: grid;
+  gap: calc(var(--space-1) / 2);
+  min-width: 0;
+}
+
+.app-row-name,
+.app-row-address {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-row-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-strong);
+}
+
+.app-row-address {
+  justify-self: start;
+  max-width: 100%;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-decoration: none;
+}
+
+a.app-row-address:hover {
+  text-decoration: underline;
+}
+
+.app-row-person {
+  grid-area: person;
+  min-width: 0;
+}
+
+.app-row-status {
+  grid-area: status;
+}
+
+.app-row-details {
+  grid-area: details;
+}
+
+/* An app's icon on its tile. */
+.app-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--app-icon-size);
+  height: var(--app-icon-size);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--app-icon-bg);
+}
+
+.app-icon.app-icon-lg {
+  width: var(--app-icon-size-lg);
+  height: var(--app-icon-size-lg);
+  border-radius: var(--radius-md);
+}
+
+.app-icon > .glyph {
+  width: var(--size-icon-md);
+  height: var(--size-icon-md);
+  color: var(--color-text-muted);
+}
+
+/* Whose an app is. */
+.person-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-height: var(--chip-height);
+  padding: 0 var(--space-2);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  color: var(--color-text-muted);
+  font-size: var(--chip-font-size);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.person-chip .glyph {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+/* An app's status: a dot and the word. */
+.app-status {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space-1) * 1.5);
+  min-height: var(--chip-height);
+  padding: 0 var(--space-2);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--chip-neutral-bg);
+  color: var(--chip-neutral-text);
+  font-size: var(--chip-font-size);
+  font-weight: var(--font-weight-strong);
+  white-space: nowrap;
+}
+
+.app-status-dot {
+  width: calc(var(--space-1) * 1.5);
+  height: calc(var(--space-1) * 1.5);
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.app-status.h-ok {
+  background: var(--chip-ok-bg);
+  color: var(--chip-ok-text);
+}
+
+.app-status.h-busy .app-status-dot {
+  background: var(--color-attention-fg);
+}
+
+.app-status.h-problem {
+  background: var(--chip-attention-bg);
+  color: var(--chip-attention-text);
+}
+
+/* No apps (yet), or the app platform isn't there. */
+.apps-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-3);
+  padding: calc(var(--space-7) * 2) var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.apps-empty p {
+  margin: 0;
+}
+
+.apps-empty .apps-empty-title {
+  color: var(--color-text-default);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-heading);
+}
+
+/* An app's details: a breadcrumb back to Apps in the panel's head, then the app on the left
+   (head, facts, icon) and its logs and force delete on the right. */
+.app-crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.crumb-back {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--button-sm-height);
+  height: var(--button-sm-height);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.crumb-back .glyph {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+  transform: rotate(90deg);
+}
+
+@media (hover: hover) {
+  .crumb-back:hover {
+    color: var(--color-text-default);
+    background: var(--color-bg-hover);
+  }
+}
+
+.app-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-5);
+}
+
+.app-details-main,
+.app-details-side {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.app-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.app-head-text {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.app-head h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  overflow-wrap: anywhere;
+}
+
+.app-head-tags,
+.app-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.app-head-actions {
+  justify-content: flex-end;
+}
+
+.app-details .notice {
+  margin: 0;
+}
+
+.app-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.app-ask p {
+  margin: 0;
+}
+
+.app-ask-q {
+  font-weight: var(--font-weight-strong);
+}
+
+.app-ask-detail {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.app-ask-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.app-card {
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  overflow-wrap: break-word;
+}
+
+.app-card > h3 {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-width-hairline) solid var(--color-border-default);
+  font-size: var(--font-size-md);
+}
+
+.app-card > :not(h3, dl) {
+  margin: var(--space-4);
+}
+
+.app-card.app-danger {
+  border-color: var(--color-caution-bg);
+}
+
+.app-card.app-danger > h3 {
+  color: var(--color-caution-text);
+}
+
+.app-card form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.app-card form p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.app-card form > .btn {
+  justify-self: start;
+}
+
+.app-facts {
+  margin: 0;
+}
+
+.app-facts > div {
+  display: grid;
+  grid-template-columns: var(--app-fact-label-width) minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.app-facts > div + div {
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+}
+
+.app-facts dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.app-facts dd {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.app-field {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+}
+
+.app-inline {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.app-inline input,
+.app-inline select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--button-sm-height);
+  padding: 0 var(--field-padding-x);
+  border: var(--border-width-hairline) solid var(--field-border-default);
+  border-radius: var(--button-sm-radius);
+  background: var(--field-bg-default);
+  color: var(--field-text-default);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.app-inline input::placeholder {
+  color: var(--field-placeholder-default);
+}
+
+.app-logs-bar {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.app-logs-bar > .btn {
+  justify-self: start;
+}
+
+#app-logs {
+  display: grid;
+  gap: var(--space-3);
+}
+
+#app-logs p {
+  margin: 0;
+}
+
+.app-log .log {
+  margin: 0;
+  max-height: var(--app-log-max-height);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+}
+
+/* Phones: a row stacks its name over status and person; the details are one column. */
+@media (max-width: 760px) {
+  .app-row {
+    grid-template-columns: var(--app-icon-size) auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon main main details"
+      "icon status person details";
+    row-gap: var(--space-2);
+    column-gap: var(--space-3);
+  }
+
+  .app-row-person {
+    justify-self: start;
+  }
+
+  .apps-bar {
+    align-items: stretch;
+  }
+
+  .show-filter {
+    flex: 1 1 100%;
+  }
+
+  .app-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .app-head-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .app-facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
   }
 }
 
@@ -4527,185 +5083,15 @@ ol.steps > li::marker {
   .msg-steps > .steps-card {
     margin-left: 0;
   }
-
-  .app_grid {
-    --n: 2;
-    --w: 128px;
-  }
-
-  .hex-inner {
-    padding: 0 0.45rem;
-  }
-
-  .hex-name {
-    font-size: 0.92rem;
-  }
-
-  .hex:nth-child(8n + 5) {
-    margin-left: calc(var(--gap) / 2);
-  }
-
-  /* Two workspaces per row: every second row starts half a workspace in. */
-  .hex:nth-child(4n + 3) {
-    margin-left: calc(var(--w) / 2 + var(--gap) / 2);
-  }
 }
 
-/* --- App details dialog ------------------------------------------------------------------ */
-
-.hex-more {
-  margin-top: 0.15rem;
-  padding: 0.1rem 0.55rem;
-  min-height: 28px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--action);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.hex-more:hover {
-  border-color: var(--action);
-}
-
-.hex-more:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-dialog.sheet {
-  width: min(44rem, calc(100vw - 2rem));
-  max-height: calc(100dvh - 2rem);
-  padding: 1.25rem;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: auto;
-}
-
-dialog.sheet[open] {
-  display: grid;
-  gap: 1rem;
-  align-content: start;
-}
-
-/* No page scroll behind the modal (both rules needed). */
-dialog.sheet:modal {
-  overscroll-behavior: contain;
-}
-
-dialog.sheet::backdrop {
-  background: var(--backdrop);
-  overflow: hidden;
-  overscroll-behavior: contain;
-}
-
-.sheet-head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.sheet-head h2 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-
-.sheet-head form {
-  margin-left: auto;
-}
-
-/* The app's health beside its name (the pill itself is defined with the chat header). */
-.sheet-head .pill {
-  font-size: 0.85rem;
-  padding: 0.1rem 0.6rem;
-  background: var(--ground);
-}
-
-.pill.h-ok { color: var(--ok); }
-.pill.h-busy { color: var(--honey-text); background: var(--honey-soft); }
-.pill.h-problem { color: var(--caution); background: var(--caution-soft); }
-.pill.h-idle { color: var(--muted); }
-
+/* A short message under a heading (the services section of the details panel). */
 .sheet-msg {
   margin: 0;
 }
 
 .sheet-msg.tone-error {
   color: var(--caution);
-}
-
-.sheet .facts > div {
-  grid-template-columns: 8rem minmax(0, 1fr);
-}
-
-.sheet-logs h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-
-.sheet-log .log {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  max-height: 18rem;
-  margin: 0.5rem 0 0;
-}
-
-.inline-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.danger-zone {
-  border-top: 1px solid var(--border);
-  padding-top: 0.75rem;
-}
-
-.danger-zone summary {
-  cursor: pointer;
-  color: var(--caution);
-  font-weight: 600;
-}
-
-.danger-zone form {
-  display: grid;
-  gap: 0.6rem;
-  margin-top: 0.6rem;
-  max-width: 24rem;
-}
-
-.danger-zone p {
-  margin: 0;
-}
-
-/* Phone: a full-screen sheet. */
-@media (max-width: 40rem) {
-  dialog.sheet {
-    width: 100vw;
-    max-width: 100vw;
-    height: 100dvh;
-    max-height: 100dvh;
-    margin: 0;
-    border: 0;
-    border-radius: 0;
-    padding: 1rem;
-  }
-
-  .sheet .facts > div {
-    grid-template-columns: 1fr;
-    gap: 0.1rem;
-  }
-}
-
-.sheet .action-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.6rem;
 }
 
 /* --- Details panel (the agent of a chat: who, apps, schedules, files; 2026-11-20) ------ */
