@@ -31,6 +31,21 @@ fn panel_of(page: &str) -> &str {
     &page[start..end]
 }
 
+/// Waits (at most 5 s) until `log` has an event after `since` that `found` matches; for
+/// events another task writes, such as a confirmation's outcome in the asker's log.
+async fn logged(log: &EventLog, mut since: u64, found: impl Fn(&LeadEvent) -> bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(!left.is_zero(), "the event never reached the log");
+        let page = log.wait_since(since, EventLog::CAPACITY, left).await;
+        if page.events.iter().any(|r| found(&r.event)) {
+            return;
+        }
+        since = page.next;
+    }
+}
+
 #[tokio::test]
 async fn each_chat_shows_its_own_agents_details() {
     let store = Arc::new(OwnedBy::default());
@@ -261,6 +276,7 @@ async fn permissions_and_recent_activity_of_an_agent() {
     assert!(side.contains("Permission needed"));
 
     // Always allow saves a rule; it shows in her panel and goes from there.
+    let before = log.last_seq();
     send(
         &app,
         htmx_post(&format!("/ui/confirmations/{}/always", c.id), ""),
@@ -268,6 +284,12 @@ async fn permissions_and_recent_activity_of_an_agent() {
     .await;
     let rules = lead.server().registry().permissions().rules();
     assert_eq!(rules.len(), 1);
+    // The outcome reaches her log from a background task; its line shows once it is there.
+    let id = c.id;
+    logged(&log, before, |e| {
+        matches!(e, LeadEvent::ConfirmationResolved { id: i, outcome } if *i == id && outcome == "approved")
+    })
+    .await;
     let (_, _, page) = get_html(&app, &format!("/agents/{ada}")).await;
     let p = panel_of(&page);
     assert!(
