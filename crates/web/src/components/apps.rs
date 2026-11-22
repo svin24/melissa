@@ -135,10 +135,10 @@ fn show_filter(choices: &[ShowChoice<'_>]) -> Markup {
     html! {
         nav.show-filter aria-labelledby="apps-show-label" {
             span #apps-show-label { "Show" }
-            ul {
+            ul.segmented {
                 @for c in choices {
                     li {
-                        a id={ "apps-by-" (c.key) } href={ "/cluster?by=" (c.key) }
+                        a.seg id={ "apps-by-" (c.key) } href={ "/cluster?by=" (c.key) }
                             hx-get={ "/ui/cluster/apps?by=" (c.key) }
                             hx-target={ "#" (APPS_LIST_ID) } hx-swap="outerHTML"
                             aria-current=[c.current.then_some("true")] {

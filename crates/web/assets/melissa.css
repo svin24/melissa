@@ -957,6 +957,115 @@ input[role="switch"]:focus-visible {
   }
 }
 
+/* --- Segmented control (COMPONENT-SPEC 2.6, DS-05) ------------------------------------------
+   `.segmented` is the sunken track, `.seg` each option: a button with aria-pressed, a link
+   with aria-current (a filter), or a radio's label. The selected option is a raised segment
+   with a control border; the track is as high as a button (32px). */
+
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-half);
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-half);
+  border: var(--border-width-hairline) solid var(--segmented-track-border);
+  border-radius: var(--radius-md);
+  background: var(--segmented-track-bg);
+  list-style: none;
+}
+
+.segmented > li {
+  display: flex;
+}
+
+.seg {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(var(--size-control-md) - 2 * var(--space-half) - 2 * var(--border-width-hairline));
+  margin: 0;
+  padding: 0 var(--space-3);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--segmented-text-default);
+  font: inherit;
+  font-size: var(--font-size-control-sm);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--line-height-control);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.seg::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--size-target-min)) / 2));
+}
+
+summary.seg {
+  list-style: none;
+}
+
+summary.seg::-webkit-details-marker {
+  display: none;
+}
+
+.seg:is([aria-pressed="true"], [aria-current="page"], [aria-current="true"]),
+.seg:has(:checked) {
+  border-color: var(--segmented-selected-border);
+  background: var(--segmented-selected-bg);
+  color: var(--segmented-text-selected);
+}
+
+/* A choice that gives up a safeguard ("Full access"). */
+.seg.danger[aria-pressed="true"],
+.seg-confirm[open] > summary.seg {
+  border-color: var(--color-caution-text);
+  background: var(--color-caution-soft);
+  color: var(--color-caution-text);
+}
+
+.seg:disabled {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+
+.seg:focus-visible,
+.seg:has(:focus-visible) {
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: 0;
+}
+
+@media (hover: hover) {
+  .seg:hover:not(:disabled) {
+    color: var(--segmented-text-selected);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .seg {
+    transition: color var(--motion-duration-fast) var(--motion-ease-out),
+      background-color var(--motion-duration-fast) var(--motion-ease-out);
+  }
+}
+
+.seg-confirm-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  width: min(26rem, calc(100vw - 9rem));
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-caution-soft);
+}
+
 /* --- Banner and shell ------------------------------------------------------------------ */
 
 .banner {
@@ -1607,13 +1716,16 @@ details.menu-confirm > summary::-webkit-details-marker {
 /* The sections bar at the bottom of the sidebar (2026-11-20, owner's reference): small muted
    icons on the left, updates alone on the right. No boxes; hover changes the colour. Flush with
    the sidebar's bottom edge. On the phone's agent list it is the tab bar (Phone views). */
+/* The section bar (COMPONENT-SPEC 2.6, DS-07): icon links with aria-current. Wide: 32px
+   squares like ghost icon buttons; on the phone's agent list: a tab bar, the word under the
+   icon, 48px high, the current tab's icon in honey. */
 .tab-bar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.5rem;
-  border-top: 1px solid var(--border);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
 }
 
 .tab {
@@ -1621,21 +1733,31 @@ details.menu-confirm > summary::-webkit-details-marker {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  color: var(--muted);
+  width: var(--button-height-md);
+  height: var(--button-height-md);
+  border-radius: var(--button-radius-md);
+  color: var(--color-text-muted);
   text-decoration: none;
 }
 
+.tab::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--size-target-min)) / 2));
+}
+
 .tab .glyph {
-  width: 18px;
-  height: 18px;
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
 }
 
 .tab[aria-current="page"],
 .tab.has-update {
-  color: var(--ink);
+  color: var(--color-text-default);
+}
+
+.tab[aria-current="page"] {
+  background: var(--row-bg-current);
 }
 
 .tab-update {
@@ -1672,13 +1794,15 @@ details.menu-confirm > summary::-webkit-details-marker {
 
 @media (min-width: 761px) and (hover: hover) {
   .tab:hover {
-    color: var(--ink);
+    background: var(--row-bg-hover);
+    color: var(--color-text-default);
   }
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .tab {
-    transition: color 0.15s ease-out;
+    transition: color var(--motion-duration-fast) var(--motion-ease-out),
+      background-color var(--motion-duration-fast) var(--motion-ease-out);
   }
 }
 
@@ -3103,72 +3227,9 @@ svg.warn .mark {
   letter-spacing: 0.04em;
 }
 
-.segmented {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 0.25rem;
-}
-
-.segmented .seg {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.segmented .seg[aria-pressed="true"] {
-  border-color: var(--ink);
-  background: var(--ground);
-  font-weight: 700;
-}
-
-.segmented .seg.danger[aria-pressed="true"] {
-  border-color: var(--caution);
-  background: var(--caution-soft);
-  color: var(--caution);
-}
-
-.seg-confirm > summary {
-  list-style: none;
-}
-
-.seg-confirm > summary::-webkit-details-marker {
-  display: none;
-}
-
-.seg-confirm[open] > summary {
-  border-color: var(--caution);
-  color: var(--caution);
-}
-
-.seg-confirm-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-  width: min(26rem, calc(100vw - 9rem));
-  margin-top: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border-radius: 8px;
-  background: var(--caution-soft);
-}
-
 .seg-confirm-body p {
   margin: 0;
-  font-size: 0.85rem;
-}
-
-.picker .seg:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+  font-size: var(--font-size-sm);
 }
 
 .picker-rail {
@@ -3467,13 +3528,6 @@ svg.warn .mark {
   }
 }
 
-/* The filter's links get the same touch hit area as buttons. */
-.show-filter a::after {
-  content: "";
-  position: absolute;
-  inset: min(0px, calc((100% - var(--size-target-min)) / 2));
-}
-
 /* With script these forms save on change; their Save button is for pages without it. */
 @media (scripting: enabled) {
   [data-no-script-only] {
@@ -3527,59 +3581,10 @@ svg.warn .mark {
   font-size: var(--font-size-sm);
 }
 
-.show-filter ul {
-  display: flex;
-  gap: calc(var(--space-1) / 2);
+.show-filter > .segmented {
+  flex-wrap: nowrap;
   min-width: 0;
-  margin: 0;
-  padding: calc(var(--space-1) / 2);
-  list-style: none;
   overflow-x: auto;
-  background: var(--segmented-track-bg);
-  border: var(--border-width-hairline) solid var(--color-border-default);
-  border-radius: var(--radius-md);
-}
-
-.show-filter a {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-height: calc(var(--button-height-md) - var(--space-1));
-  padding: 0 var(--space-3);
-  border: var(--border-width-hairline) solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-control-sm);
-  font-weight: var(--font-weight-strong);
-  white-space: nowrap;
-  text-decoration: none;
-}
-
-.show-filter a[aria-current] {
-  background: var(--segmented-selected-bg);
-  border-color: var(--segmented-selected-border);
-  color: var(--color-text-default);
-}
-
-.show-filter a:focus-visible {
-  outline: var(--focus-width) solid var(--color-focus-ring);
-  outline-offset: calc(var(--focus-width) * -1);
-}
-
-@media (hover: hover) {
-  .show-filter a {
-    transition: color var(--motion-duration-fast) var(--motion-ease-out);
-  }
-
-  .show-filter a:hover {
-    color: var(--color-text-default);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .show-filter a {
-    transition: none;
-  }
 }
 
 .app-group + .app-group {
@@ -6233,11 +6238,20 @@ ol.steps > li::marker {
   .tab {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-1);
     width: auto;
     height: auto;
-    min-height: 56px;
-    font-size: 0.8rem;
+    min-height: 48px;
+    font-size: var(--font-size-xs);
+  }
+
+  .tab[aria-current="page"] {
+    background: none;
+    font-weight: var(--font-weight-strong);
+  }
+
+  .tab[aria-current="page"] .glyph {
+    color: var(--color-attention-fg);
   }
 
   .tab-update {
@@ -6245,8 +6259,8 @@ ol.steps > li::marker {
   }
 
   .tab .glyph {
-    width: 20px;
-    height: 20px;
+    width: var(--size-icon-md);
+    height: var(--size-icon-md);
   }
 
   .tab .update-dot {
