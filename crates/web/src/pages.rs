@@ -816,7 +816,8 @@ pub(crate) fn format_uptime(secs: u64) -> String {
     }
 }
 
-fn device(d: &Device) -> Markup {
+/// One device's card; `name`: what the UI calls it (the owner's name for this device).
+fn device(d: &Device, name: &str) -> Markup {
     let (health, status) = device_health(d);
     let mut facts = Vec::new();
     if let Some(os) = &d.os {
@@ -875,7 +876,7 @@ fn device(d: &Device) -> Markup {
         )
     });
     device_card(&DeviceCard {
-        name: &d.name,
+        name,
         health,
         status,
         facts: &facts,
@@ -1098,7 +1099,13 @@ pub fn usage(f: &Frame<'_>, rows: &[UsageRow<'_>], since: &str) -> Markup {
                     @if snap.devices.is_empty() {
                         p.quiet { "Couldn't read device details yet." }
                     } @else {
-                        div.devices-grid { @for d in &snap.devices { (device(d)) } }
+                        div.devices-grid {
+                            @for (i, d) in snap.devices.iter().enumerate() {
+                                // The first is this device: the owner's name for it, if any.
+                                @let name = f.side.this_device.as_deref().filter(|_| i == 0);
+                                (device(d, name.unwrap_or(&d.name)))
+                            }
+                        }
                     }
                 }))
             },

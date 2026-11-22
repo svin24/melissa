@@ -159,8 +159,8 @@ fn apps_empty(snap: &ClusterSnapshot, owner: &Principal) -> String {
     }
 }
 
-/// This device as the services section shows it.
-fn device_of(snap: &ClusterSnapshot) -> DetailDevice {
+/// This device as the services section shows it; `name`: the owner's name for it, if any.
+fn device_of(snap: &ClusterSnapshot, name: Option<String>) -> DetailDevice {
     match snap.devices.first() {
         Some(d) => {
             let (health, status) = match d.ready {
@@ -174,7 +174,7 @@ fn device_of(snap: &ClusterSnapshot) -> DetailDevice {
                     .filter(|o| !o.is_empty())
                     .unwrap_or_else(|| "Linux".into());
             DetailDevice {
-                name: d.name.clone(),
+                name: name.unwrap_or_else(|| d.name.clone()),
                 sub: format!("{os} · This device"),
                 health,
                 status: status.into(),
@@ -302,7 +302,7 @@ impl Ui {
             apps_url: format!("/ui/details/{key}/apps"),
             apps: apps_of(&snap, owner, Some(&self.apps_cx(None))),
             apps_empty: apps_empty(&snap, owner),
-            device: Some(device_of(&snap)),
+            device: Some(device_of(&snap, self.settings.device_name())),
             waiting,
             rules,
             activity,
@@ -356,7 +356,7 @@ async fn apps(State(ui): State<Ui>, Path(key): Path<String>) -> Response {
     let snap = ui.cluster.get().await;
     let list = apps_of(&snap, &owner, Some(&ui.apps_cx(None)));
     let url = format!("/ui/details/{}/apps", box_key(&owner).unwrap_or_default());
-    let device = device_of(&snap);
+    let device = device_of(&snap, ui.settings.device_name());
     detail_apps(&DetailApps {
         url: &url,
         apps: &list,

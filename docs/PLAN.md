@@ -580,7 +580,7 @@ Minecraft server and lets them make their own agents.
   code is printed at the end of `install.sh`, kept 0600 in `<state>/auth/setup-code.json` until it is used or
   expires (a restart keeps it). Then the owner goes through `/setup`: **Device** (a display name, prefilled
   with the host name, `device_name` in `ui.toml`; shown in the chat header and the sidebar's device line; it
-  does not rename the Tailscale or k3s node), **Provider** (the providers as tiles with their status; the
+  does not rename the Tailscale or k3s node; renamed later under Settings → Updates → This device), **Provider** (the providers as tiles with their status; the
   chosen one's Install / Sign in / API key are the Settings → Providers forms and handlers), **Model**
   (the usable providers' models, Melissa's current one chosen; "Use this model" writes `lead/backend.json`
   through `Lead::use_backend`) and **Extras** (Voice input and Tailscale switches, both off; the Settings
@@ -1223,7 +1223,8 @@ Roadmap (rough, phases may overlap):
     without either keeps nothing, so Extras shows in the checklist only after "Later". (f) The Model step
     asks a provider for its models in the background and refreshes the list every 3 s for up to 30 s; a
     choice made in that time is replaced by the refreshed list's default. (g) The device name is display only
-    (owner, 2026-11-21); the details panel's device card and Usage still show the cluster node's name. (h) The
+    (owner, 2026-11-21); since 2026-11-22 the details panel's device card, Usage and an app's "Device" fact
+    show it too, in place of the k3s node name or the device id. (h) The
     setup code sits in plain text in the 0600 file until used or expired (it was already printed to the console
     and the log). (i) Provider actions in setup need the password within 5 minutes like Settings (the claim
     counts); later than that the owner enters it again and comes back.
@@ -1239,8 +1240,8 @@ Roadmap (rough, phases may overlap):
     as that user (an unsandboxed agent backend, an explicit owner setting) could ask for a reset without the
     password; the same user can already delete Melissa's state. (f) The page and its copy are built from existing
     components without a Figma design (owner review): the System group's last section "Reset", one button that
-    opens a card (Erased / Kept, type `melissa`). (g) A device name setting doesn't exist; when it comes, the word
-    to type becomes the device's name. (h) Not tested on a real container yet (the owner's dev box must not be
+    opens a card (Erased / Kept, type `melissa`). (g) A device name setting exists now (Settings → Updates,
+    2026-11-22); whether the word to type becomes the device's name is still open. (h) Not tested on a real container yet (the owner's dev box must not be
     reset): run once on a throwaway install, including a kill during the wipe and a restart of the container.
 
 90. Apps list by kind and person (2026-11-22; DECISIONS "Apps list"). (a) Members still reach other people's

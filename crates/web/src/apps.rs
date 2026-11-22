@@ -211,6 +211,18 @@ pub(crate) fn details_view(status: &Value, host: Option<&str>) -> DetailsView {
     }
 }
 
+/// The "Device" fact says the owner's name for this device (`this`: its device id), as the
+/// rest of the UI does; other devices keep their ids.
+fn name_this_device(facts: &mut [(String, Vec<String>)], this: &str, name: &str) {
+    let lines = facts
+        .iter_mut()
+        .filter(|(label, _)| label == "Device")
+        .flat_map(|(_, lines)| lines.iter_mut());
+    for line in lines.filter(|l| l.as_str() == this) {
+        *line = name.to_string();
+    }
+}
+
 /// The app's ports on the device other than its web link, as (name, `host:port (TCP, name)`):
 /// the address the visitor reached the UI at when usable, else the tool's address.
 pub(crate) fn port_addresses(status: &Value, host: Option<&str>) -> Vec<(String, String)> {
@@ -265,6 +277,13 @@ async fn render_details(
         }
     };
     let mut view = details_view(&status, host);
+    if let Some(name) = ui.settings.device_name() {
+        name_this_device(
+            &mut view.facts,
+            &ui.lead.agents().registry().device(),
+            &name,
+        );
+    }
     // The app asked for, whatever the answer names.
     view.name = display_app(app);
     let (health, words) = phase_words(&view.phase);
@@ -801,6 +820,18 @@ async fn api_force_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_device_fact_uses_the_owners_name_for_this_device_only() {
+        let fact = |d: &str| vec![("Device".to_string(), vec![d.to_string()])];
+        let mut facts = fact("d-0a1b2c3d");
+        name_this_device(&mut facts, "d-0a1b2c3d", "Living room");
+        assert_eq!(facts, fact("Living room"));
+        // Another device keeps its id.
+        let mut facts = fact("d-ffffffff");
+        name_this_device(&mut facts, "d-0a1b2c3d", "Living room");
+        assert_eq!(facts, fact("d-ffffffff"));
+    }
 
     #[test]
     fn details_read_the_status_and_build_the_link_from_the_host() {
