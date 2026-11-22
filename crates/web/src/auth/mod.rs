@@ -142,8 +142,10 @@ const OWNER_PREFIXES: &[&str] = &[
     "/settings/reset",
     "/ui/settings/reset",
     "/api/settings/reset",
-    // Plan usage reads the providers' usage with the agents' sign-ins.
+    // Plan usage reads the providers' usage with the agents' sign-ins (the JSON and the
+    // Usage panel's views; members see the agents and devices at /usage).
     "/api/usage/providers",
+    "/ui/usage",
 ];
 
 pub(crate) fn need(path: &str) -> Need {

@@ -26,6 +26,8 @@ tracing = { workspace = true }
 [features]
 # The screenshot harness's fake app tools (src/fake_apps.rs). Never in normal builds.
 fake-apps = []
+# The screenshot harness's fake provider usage (src/fake_usage.rs). Never in normal builds.
+fake-usage = []
 
 [dev-dependencies]
 http-body-util = { workspace = true }

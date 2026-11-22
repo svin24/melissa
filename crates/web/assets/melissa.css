@@ -230,6 +230,11 @@
   --segmented-selected-bg: var(--color-bg-surface);
   --segmented-selected-border: var(--color-border-default);
 
+  /* Component: provider limits in Usage and resources (2026-11-22, owner design B1-B4). */
+  --limit-card-min-width: 16rem;
+  --limit-meter-height: 6px;
+  --limit-mark-size: var(--size-icon-lg);
+
   /* Component: the Apps list and an app's details (2026-11-22). */
   --app-icon-size: calc(var(--size-icon-md) + var(--space-4));
   --app-icon-size-lg: calc(var(--size-icon-lg) + var(--space-5));
@@ -3804,6 +3809,284 @@ meter {
   height: 10px;
   accent-color: var(--ok);
 }
+
+/* === Usage: provider limits, cost and tokens (2026-11-22, owner design "Usage" B1-B4) =========
+   components/usage.rs. The bar (the view switcher, "Checked …", Check again), one group per
+   provider with a card per plan window (label, share left, bar, reset), the Cost and Tokens
+   lists. The switcher reuses the Apps filter's segmented look (.show-filter). The bar's tone
+   comes from the server (data-tone: ok, attention, caution; thresholds in components/usage.rs). */
+
+.usage-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.usage-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+.usage-check form {
+  margin: 0;
+}
+
+.usage-checked {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+/* Busy: the spinner takes the refresh glyph's place while the check runs. */
+.usage-check-button .spin {
+  display: none;
+}
+
+.usage-check form.htmx-request .usage-check-button .glyph {
+  display: none;
+}
+
+.usage-check form.htmx-request .usage-check-button .spin {
+  display: inline-block;
+}
+
+.usage-provider + .usage-provider {
+  margin-top: var(--space-5);
+}
+
+.usage-provider-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-strong);
+}
+
+.usage-provider-head .pmark,
+.usage-line .pmark {
+  width: var(--limit-mark-size);
+  height: var(--limit-mark-size);
+}
+
+.usage-provider-head .pmark span,
+.usage-line .pmark span {
+  font-size: var(--font-size-xs);
+}
+
+.limit-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--limit-card-min-width)), 1fr));
+  gap: var(--space-3);
+}
+
+.limit-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.limit-label {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-strong);
+  overflow-wrap: anywhere;
+}
+
+.limit-left {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+}
+
+.limit-num {
+  margin-right: var(--space-1);
+  color: var(--color-text-default);
+  font-family: var(--font-family-head);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-brand);
+  font-variant-numeric: tabular-nums;
+}
+
+.limit-off .limit-left {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-strong);
+}
+
+.limit-reset {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+/* The bar: a native meter, drawn thin. */
+.limit-meter {
+  --limit-fill: var(--color-ok-fg);
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: var(--limit-meter-height);
+  margin: var(--space-1) 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-sunken);
+  overflow: hidden;
+}
+
+.limit-meter[data-tone="attention"] {
+  --limit-fill: var(--color-attention-fg);
+}
+
+.limit-meter[data-tone="caution"] {
+  --limit-fill: var(--color-caution-bg);
+}
+
+.limit-meter::-webkit-meter-bar {
+  height: var(--limit-meter-height);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-sunken);
+}
+
+.limit-meter::-webkit-meter-optimum-value,
+.limit-meter::-webkit-meter-suboptimum-value,
+.limit-meter::-webkit-meter-even-less-good-value {
+  border-radius: var(--radius-full);
+  background: var(--limit-fill);
+}
+
+.limit-meter::-moz-meter-bar {
+  border-radius: var(--radius-full);
+  background: var(--limit-fill);
+}
+
+@media (forced-colors: active) {
+  .limit-meter {
+    --limit-fill: Highlight;
+    forced-color-adjust: none;
+    background: Canvas;
+    outline: var(--border-width-hairline) solid CanvasText;
+  }
+}
+
+/* A provider without numbers ("Grok doesn't report limits.", "Checking providers…"). */
+.limit-none {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+}
+
+/* Below the providers: the agents and devices (Limits) or the agents' lines (Cost, Tokens). */
+.usage-providers + .block,
+.usage-providers + .usage-lines {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+}
+
+.usage-providers > .quiet,
+.usage-lines + .quiet {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-sm);
+}
+
+/* Tokens: one table per provider, with the same columns lined up. */
+.usage-provider table.usage {
+  table-layout: fixed;
+}
+
+.usage-lines + .usage-lines {
+  margin-top: var(--space-5);
+}
+
+.usage-lines-head {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-strong);
+}
+
+.usage-line-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--color-bg-surface);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.usage-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.usage-line + .usage-line {
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+}
+
+.usage-line-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.usage-line-value {
+  font-weight: var(--font-weight-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-line-value.quiet {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-regular);
+}
+
+/* Phones (B3, B4): Check again above, the switcher full width with equal segments. */
+@media (max-width: 760px) {
+  .usage-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .usage-check {
+    order: -1;
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .usage-tabs ul,
+  .usage-tabs li {
+    flex: 1 1 0;
+  }
+
+  .usage-tabs a {
+    justify-content: center;
+    width: 100%;
+  }
+}
+
+/* === End of Usage: provider limits ============================================================ */
 
 /* --- Task pages (developer view) --------------------------------------------------------- */
 

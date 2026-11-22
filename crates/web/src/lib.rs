@@ -13,6 +13,8 @@ pub mod components;
 mod details;
 #[cfg(feature = "fake-apps")]
 mod fake_apps;
+#[cfg(feature = "fake-usage")]
+mod fake_usage;
 mod feed;
 mod files;
 mod logos;
@@ -585,6 +587,7 @@ mod tests {
         mod mobile;
         mod reset;
         mod setup;
+        mod usage;
 
         /// A Lead agent backend whose session never finishes opening.
         /// Melissa's first backend (provider claude in the Settings fixture); `signed_out`:

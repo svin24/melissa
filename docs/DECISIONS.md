@@ -1621,3 +1621,42 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   ok, attention, caution; switch 32×18), and component sizes use the `button.height.md` form. Alternatives: the
   Figma dark palette (a bigger visual change on demo day), keeping the spec's invisible hover in dark, the pace
   marker (more to read for a number most people only glance at).
+- **2026-11-22 — Provider limits in Usage and resources** (owner design "Usage" B1–B4, approved today; no pace
+  marker, today's colours). The panel gets a **Limits / Cost / Tokens** switcher. It is navigation, so per
+  COMPONENT-SPEC 2.6 it is links with `aria-current="page"` in the segmented look (the Apps filter's), never a
+  tablist: plain links `/usage?view=…` without script, with htmx they swap the view region (`#usage-view`).
+  **Limits**: one group per provider that is set up (logo or letter mark as elsewhere; providers not installed
+  or not signed in are hidden), a card per plan window: label ("Session" for a model-wide session window, else
+  the provider's label such as "Weekly · Opus"), the share left in big type with "left", a bar, and the reset
+  ("Resets in 2 h 10 min" within a day, "Resets Mon 09:00" within a week, else a date). The bar is a native
+  `<meter>` (with `aria-valuetext="62% left"`) that fills with the share **used**, like the boards and the
+  devices' meters. **Tones**: ok while more than a third is left; attention at a third or less (about two days
+  of a weekly window, enough notice to plan); caution at a tenth or less (about one long session) or when the
+  provider says the limit is reached (`rejected`; `allowed_warning` makes it at least attention). The meter's
+  native `low`/`high` ranges match these (a test walks every value). A provider with no windows shows one
+  "Unavailable" card with a one-line reason, or a quiet "<provider> doesn't report limits." row; the data
+  layer's reasons are mapped to short UI words ("Sign in again to read the limits.", "Numbers come with the
+  next chat.", …) and anything unrecognised becomes "Couldn't read the limits." (no raw error text). The agents
+  table and the devices stay below the limits. **Cost**: by provider (as reported, else "Not reported") and by
+  agent; **Tokens**: per provider a table of tokens per model, then each agent's context. Credit pools are not
+  shown yet (their units are unknown, PLAN Q91c). **Freshness**: a page never waits for the providers. With a
+  report younger than the collector's 60 s cache (new `Collector::cached`, which neither asks nor waits) the
+  numbers are in the page; else the providers' part loads itself after the page (`hx-trigger="load"`), and
+  without script it says "Not checked yet." next to the Check again form. "Checked N min ago" comes from the
+  report's new `checked_at` (when the round started). **Check again** is a POST form (`/ui/usage/check`;
+  without script it answers with a redirect to the page) whose htmx swap replaces only the providers' part
+  and updates "Checked …" out of band, so the button keeps focus; `hx-sync="this:drop"` drops presses while
+  one runs. The collector's own limits make repeated presses cheap: one round at a time, and a refresh reuses
+  a round younger than 15 s, so at most one round of provider calls per 15 s however often it is pressed; no
+  background polling. **Owner and Member**: the providers' numbers are the owner's only, like
+  `/api/usage/providers` (they are read with the agents' sign-ins): `/ui/usage/*` is an owner path, and a
+  member's `/usage` is the page as before (agents table and devices; the agents table's rules are unchanged),
+  with no switcher and no provider data. Buttons are the 32 px `.btn` (44 px hit area only under
+  `pointer: coarse`). Phones (B3/B4): the cards stack, Check again sits above a full-width switcher with equal
+  segments; the button keeps its label (the board shows an icon only). The screenshot harness has a
+  `fake-usage` feature (`MELISSA_FAKE_USAGE`, like `fake-apps`) and shoots `usage`, `usage-cost`,
+  `usage-tokens` and `usage-member`. Alternatives: a tablist (the spec reserves it; these are views with
+  URLs), a radio group (a value, not navigation), the bar filling with the share left (the boards fill with
+  what is used), rendering the page only after asking the providers (up to 45 s), showing members the
+  providers' limits (the data layer keeps them owner-only).
+
