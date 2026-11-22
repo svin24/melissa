@@ -4,14 +4,12 @@ Status: draft v0. Agents may expand any section; keep decisions and open questio
 
 ## 1. Vision
 
-Melissa is an open source, clustered, agent-run, immutable self-hosting OS. A user installs it on one or more
-machines, and an AI agent runs the infrastructure: setting up any app the user asks for, updating, backing up,
+Melissa is an open source, agent-run self-hosting system (an immutable OS until the host-first change of 2026-11-19;
+see section 2). A user installs it on one or more machines, and an AI agent runs the infrastructure: setting up any app the user asks for, updating, backing up,
 and healing.
 
-Naming:
-- **Agent** — a node running Melissa. Each agent can run its own local agents.
-- **Cluster** — the cluster of agents.
-- **Lead agent** — the master agent that coordinates the cluster (scheduling, upgrades, policy). Agents stay useful without it.
+Naming: **cluster** (every device together), **device** (one machine running Melissa, with one **lead agent**),
+**agents** (workers on a device, "helpers" in the UI). Full terms in section 1b.
 
 Agent backends are pluggable. An agent may be a "dumb box" with no LLM at all, or use external LLM subscriptions
 (Grok, Claude, OpenCode with models such as Gemma). Local models are optional.
@@ -684,12 +682,13 @@ Nix flake + devenv + direnv (`devenv.nix`, `devenv.yaml`, `flake.nix`, `.envrc`)
 
 **Pre-alpha demo (owner, weekend of 2026-11-21/22):** the owner publishes a pre-alpha online for people to try.
 Focus: easy to try, honest about being pre-alpha (notice in README and UI), the chat-first web UI from the concepts,
-two ways in (run from source; or the rootful container on any Linux host: `packaging/container/install.sh`,
-`melissa-setup agent <name>` through `podman exec`, UI over `ssh -L` or `tailscale serve`; verified on the dev laptop
-2026-11-19). The earlier bootc VM image and desktop image (done and VM-verified 2026-11-18) are archived at tag
+three ways in, in this order (owner, 2026-11-22): the rootful container on any Linux host (the main way:
+`packaging/container/install.sh`, then the claim and first-run setup in the web UI, UI over `ssh -L` or `tailscale
+serve`; verified on the dev laptop 2026-11-19), NixOS (experimental, VM-verified) and from source (a development
+preview without apps). The earlier bootc VM image and desktop image (done and VM-verified 2026-11-18) are archived at tag
 `bootc-archive-2026-11-19` (section 2, "Reference distro (paused)"). Further security hardening (throwaway worker agents, taint UX,
 escape test suite) is parked until after the demo; the existing basics stay on.
-Run from source: [QUICKSTART.md](QUICKSTART.md) and `just demo` (startup summary of agents, sandbox, k3s; fresh
+Run from source: [DEV-ENV.md](DEV-ENV.md) ("Run from source") and `just demo` (startup summary of agents, sandbox, k3s; fresh
 clone to running in ~70 s on the dev laptop, 2026-11-18).
 
 

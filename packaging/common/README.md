@@ -20,7 +20,7 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 | `usr/lib/systemd/system/melissa-kubeconfig.service` | Writes the server's two read-only/app-install kubeconfigs after k3s |
 | `usr/lib/sysusers.d/melissa.conf` | User `melissa` (home `/var/lib/melissa/home`), group `melissa-kube` |
 | `usr/lib/tmpfiles.d/melissa-{config,home,kube}.conf` | `/etc/melissa`, `/var/lib/melissa{,/home}`, `/run/melissa-kube` |
-| `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-server.service` (Settings → Restart), nothing else |
+| `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-server.service` (Restart in Settings → Updates), nothing else |
 | `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the server's user (`--yes`, `--no-login`, `--no-restart`) |
 | `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP (`k3s-node-ip`) |
 | `usr/libexec/melissa/k3s-node-ip` | Writes `MELISSA_K3S_ARGS=--node-ip=<default-route IPv4>` to the env file given (k3s-prepare; the NixOS module's k3s) |
@@ -35,7 +35,7 @@ and `melissa-netbridge` (installed as `/usr/bin/…`), k3s itself and its airgap
 agents deploy apps from specs they write.
 
 Packages the host or image needs at runtime: systemd, bubblewrap (agent sandbox), nftables and
-iproute (k3s, egress), polkit (Settings → Restart), ca-certificates, curl (agent installers).
+iproute (k3s, egress), polkit (Restart in Settings → Updates), ca-certificates, curl (agent installers).
 
 Checks: `crates/cluster/tests/rbac_manifests.rs` parses the manifests here.
 
