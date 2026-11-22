@@ -58,8 +58,10 @@ use maud::Markup;
 use melissa_agent::{
     attachments::{self, AttachmentError, Upload, MAX_FILES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES},
     lead::{
-        agents::AgentView, backends::BackendView, events::EventLog, Lead, LeadError, LeadStatus,
-        SendMode,
+        agents::AgentView,
+        backends::BackendView,
+        events::{EventLog, LeadEvent},
+        Lead, LeadError, LeadStatus, SendMode,
     },
     tools::{AlwaysAllowError, PermissionsError, Principal, RuleOffer, ToolRegistry, Verdict},
 };
@@ -572,6 +574,55 @@ struct StreamState {
     look: pages::ChatLook,
     /// The viewer is the owner (the stream runs outside the request's sign-in scope).
     owner: bool,
+    /// Whose details panel the page shows and what it shows, as last sent (chat view).
+    details: Option<(Principal, crate::details::DetailsLive)>,
+    /// Wakes when the cluster was read again (apps, who looks after them).
+    cluster: tokio::sync::watch::Receiver<u64>,
+}
+
+/// What woke a stream.
+enum Woke {
+    /// Events in its conversation (possibly none: the wait timed out).
+    Log(melissa_agent::lead::events::EventPage),
+    /// A save in Settings (a helper renamed, ...).
+    Settings,
+    /// The helpers, Melissa's chat or the cluster changed.
+    Other,
+}
+
+/// Tools that change the apps or who looks after them.
+const APP_TOOLS: [&str; 7] = [
+    "deploy_app",
+    "update_app",
+    "stop_app",
+    "start_app",
+    "uninstall_app",
+    "reassign",
+    "force_delete",
+];
+
+/// `ev` changed the apps or who looks after them (the cluster is read again at once, so the
+/// details panel shows it without waiting for its poll).
+fn moves_apps(ev: &LeadEvent) -> bool {
+    match ev {
+        LeadEvent::WorkspaceReassigned { .. }
+        | LeadEvent::WorkspaceForceDeleted { .. }
+        | LeadEvent::AgentCreated { .. }
+        | LeadEvent::AgentDeleted { .. } => true,
+        LeadEvent::ToolCall { title, status, .. } => {
+            matches!(status.as_str(), "done" | "failed")
+                && APP_TOOLS.iter().any(|t| title.contains(t))
+        }
+        _ => false,
+    }
+}
+
+/// `ev` may change what the details panel shows (anything but the agent's words).
+fn touches_details(ev: &LeadEvent) -> bool {
+    !matches!(
+        ev,
+        LeadEvent::Text { .. } | LeadEvent::AgentMessage { .. } | LeadEvent::Thought { .. }
+    )
 }
 
 impl StreamState {
@@ -669,6 +720,31 @@ impl StreamState {
         out
     }
 
+    /// The details panel's sections that changed since last sent (chat view); empty if none.
+    async fn details_change(&mut self) -> String {
+        let Some((owner, _)) = &self.details else {
+            return String::new();
+        };
+        let owner = owner.clone();
+        // A deleted helper's chat says so in place of the composer; its panel stays.
+        if let Principal::Agent(id) = &owner {
+            if self.ui.agent(id).is_none() {
+                return String::new();
+            }
+        }
+        let snap = self.ui.cluster.get().await;
+        let now = self.ui.details_live(&owner, &snap);
+        let Some((_, old)) = &self.details else {
+            return String::new();
+        };
+        if *old == now {
+            return String::new();
+        }
+        let out = crate::details::details_update(old, &now).into_string();
+        self.details = Some((owner, now));
+        out
+    }
+
     /// The header's new status, if it changed.
     fn head_change(&mut self) -> Option<Option<HeadStatus>> {
         if self.view != View::Chat {
@@ -700,8 +776,8 @@ async fn lead_stream(
     };
     let log = ui.lead.events().clone();
     let at = cursor(&headers, &q, log.epoch());
-    let side = side_at_start(&ui).await;
-    stream(ui, log, None, view, at, side).into_response()
+    let (side, snap) = side_at_start(&ui).await;
+    stream(ui, log, None, view, at, side, &snap).into_response()
 }
 
 async fn agent_stream(
@@ -723,8 +799,8 @@ async fn agent_stream(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let at = cursor(&headers, &q, log.epoch());
-    let side = side_at_start(&ui).await;
-    stream(ui, log, Some(agent.id), View::Chat, at, side).into_response()
+    let (side, snap) = side_at_start(&ui).await;
+    stream(ui, log, Some(agent.id), View::Chat, at, side, &snap).into_response()
 }
 
 /// Where a stream starts: a reconnecting browser says where it got to (`<epoch>-<seq>`).
@@ -748,9 +824,10 @@ fn cursor(headers: &HeaderMap, q: &StreamQuery, epoch: u64) -> Option<u64> {
 }
 
 /// The sidebar when a stream starts (what its page shows, near enough): later changes go out.
-async fn side_at_start(ui: &Ui) -> SideData {
+/// With the cluster as read then (for the details panel).
+async fn side_at_start(ui: &Ui) -> (SideData, std::sync::Arc<crate::state::ClusterSnapshot>) {
     let snap = ui.cluster.get().await;
-    ui.side_data(&snap)
+    (ui.side_data(&snap), snap)
 }
 
 fn stream(
@@ -760,6 +837,7 @@ fn stream(
     view: View,
     cursor: Option<u64>,
     side: SideData,
+    snap: &crate::state::ClusterSnapshot,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     // The page is from another log or newer than this one (the daemon restarted): its DOM
     // can't be updated.
@@ -795,8 +873,20 @@ fn stream(
         ui.head_status(who, &side)
     };
     let settings = ui.settings.changes();
+    // The details panel beside the chat, as its page shows it (near enough).
+    let details = (view == View::Chat).then(|| {
+        let owner = match &agent {
+            Some(id) => Principal::Agent(id.clone()),
+            None => Principal::Lead,
+        };
+        let live = ui.details_live(&owner, snap);
+        (owner, live)
+    });
+    let cluster = ui.cluster.changes();
     let state = StreamState {
         settings,
+        details,
+        cluster,
         look,
         owner,
         roster,
@@ -834,18 +924,28 @@ fn stream(
                     None => std::future::pending::<()>().await,
                 }
             };
-            let page = tokio::select! {
+            let woke = tokio::select! {
                 biased;
-                page = st.log.wait_since(st.cursor, 200, STREAM_WAIT) => Some(page),
-                () = changed(&mut st.roster) => None,
-                () = changed(&mut st.settings) => None,
-                () = lead_wait => None,
+                page = st.log.wait_since(st.cursor, 200, STREAM_WAIT) => Woke::Log(page),
+                () = changed(&mut st.roster) => Woke::Other,
+                () = changed(&mut st.settings) => Woke::Settings,
+                () = changed(&mut st.cluster) => Woke::Other,
+                () = lead_wait => Woke::Other,
             };
             if let Some(l) = &st.lead_log {
-                st.lead_cursor = l.last_seq();
+                // A helper's chat: Melissa may have handed an app over or deleted a helper.
+                let seen = l.since(st.lead_cursor, EventLog::CAPACITY);
+                if seen.events.iter().any(|r| moves_apps(&r.event)) {
+                    st.ui.cluster.refresh_soon();
+                }
+                st.lead_cursor = seen.next.max(st.lead_cursor);
             }
-            let page = match page {
-                Some(page) if !page.events.is_empty() => page,
+            if matches!(woke, Woke::Settings) {
+                // A helper renamed: the services list says who looks after what.
+                st.ui.cluster.refresh_soon();
+            }
+            let page = match woke {
+                Woke::Log(page) if !page.events.is_empty() => page,
                 // The helpers changed, Melissa's chat moved on (approvals, jobs), or it was
                 // quiet (a helper's status may still have changed by turns in its own chat).
                 _ => {
@@ -855,12 +955,17 @@ fn stream(
                         html.push_str(&oob_inner(CHAT_STATUS_ID, status_pill(h)).into_string());
                     }
                     html.push_str(&st.look_change());
+                    html.push_str(&st.details_change().await);
                     if html.is_empty() {
                         continue;
                     }
                     return Some((Ok(st.event(html)), st));
                 }
             };
+            if page.events.iter().any(|r| moves_apps(&r.event)) {
+                st.ui.cluster.refresh_soon();
+            }
+            let details = page.events.iter().any(|r| touches_details(&r.event));
             let mut changes = Vec::new();
             for rec in &page.events {
                 changes.extend(st.feed.apply(rec, &st.ui));
@@ -920,6 +1025,9 @@ fn stream(
                 },
             );
             html.push_str(&roster);
+            if details {
+                html.push_str(&st.details_change().await);
+            }
             if html.is_empty() {
                 continue;
             }

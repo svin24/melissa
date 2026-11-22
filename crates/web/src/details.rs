@@ -7,7 +7,12 @@
 //!
 //! UI (same-origin checked like every POST; htmx gets the changed section, a plain form post
 //! a redirect back to the chat):
-//! - `GET /ui/details/{key}/apps`: the services section (it polls, like the app strip did).
+//! - `GET /ui/details/{key}/apps`: the services section (it polls, for app status).
+//!
+//! Live: the chat's stream sends a section again when what it shows changed
+//! ([`DetailsLive`], [`details_update`]): after the chat's own events, Melissa's (an app
+//! handed over, a helper made or deleted), a save in Settings, or a new read of the cluster,
+//! which those events ask for at once (`ClusterCache::refresh_soon`).
 //! - `POST /ui/details/{key}/schedules/{id}/enabled` (`enabled` = `on`|`off`): the schedules
 //!   section; only a schedule that runs this agent.
 //! - `POST /ui/details/{key}/rules/{id}/remove`: remove one of this agent's "Always allow"
@@ -31,6 +36,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use maud::{html, Markup};
 use melissa_agent::{
     files::box_key,
     lead::{agents::AgentView, schedules::describe, LeadError},
@@ -41,9 +47,11 @@ use serde_json::{json, Value};
 
 use crate::{
     components::{
-        detail_apps, detail_permissions, detail_schedules, ActivityLine, DetailApp, DetailApps,
-        DetailDevice, DetailPermissions, DetailRule, DetailSchedule, DetailSchedules,
-        DetailWaiting, DetailsPanel, FilePanel, Health, Tone,
+        detail_activity_inner, detail_apps, detail_apps_inner, detail_permissions,
+        detail_permissions_inner, detail_schedules, detail_schedules_inner, oob_inner,
+        ActivityLine, DetailApp, DetailApps, DetailDevice, DetailPermissions, DetailRule,
+        DetailSchedule, DetailSchedules, DetailWaiting, DetailsPanel, FilePanel, Health, Tone,
+        DETAILS_ACTIVITY_ID, DETAILS_APPS_ID, DETAILS_PERMISSIONS_ID, DETAILS_SCHEDULES_ID,
     },
     feed::{approval_words, rule_words, Clock},
     files::PanelData,
@@ -57,39 +65,84 @@ use crate::{
 /// Everything the details panel shows (owned; borrow with [`DetailsData::view`]).
 pub(crate) struct DetailsData {
     apps_url: String,
-    apps: Vec<DetailApp>,
-    apps_empty: String,
-    device: Option<DetailDevice>,
-    waiting: Vec<DetailWaiting>,
-    rules: Vec<DetailRule>,
-    activity: Vec<ActivityLine>,
-    schedules: Vec<DetailSchedule>,
-    schedules_on: bool,
+    live: DetailsLive,
     pub(crate) files: PanelData,
 }
 
 impl DetailsData {
     /// The panel, with `files` (from `self.files.view()`).
     pub(crate) fn view<'a>(&'a self, files: &'a FilePanel<'a>) -> DetailsPanel<'a> {
+        let l = &self.live;
         DetailsPanel {
-            apps: DetailApps {
-                url: &self.apps_url,
-                apps: &self.apps,
-                empty: &self.apps_empty,
-                device: self.device.as_ref(),
-            },
+            apps: l.apps_view(&self.apps_url),
             files,
             permissions: DetailPermissions {
-                waiting: &self.waiting,
-                rules: &self.rules,
+                waiting: &l.waiting,
+                rules: &l.rules,
                 flash: None,
             },
-            activity: &self.activity,
+            activity: &l.activity,
             schedules: DetailSchedules {
-                schedules: &self.schedules,
-                available: self.schedules_on,
+                schedules: &l.schedules,
+                available: l.schedules_on,
                 flash: None,
             },
+        }
+    }
+}
+
+/// The parts of the details panel that change while it is open: its services (apps handed
+/// over, helpers gone, app status), permissions, recent activity and schedules. The chat's
+/// stream keeps the one it last sent and sends the sections that changed
+/// ([`details_update`]); the files have their own live update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetailsLive {
+    apps: Vec<DetailApp>,
+    apps_empty: String,
+    device: DetailDevice,
+    waiting: Vec<DetailWaiting>,
+    rules: Vec<DetailRule>,
+    activity: Vec<ActivityLine>,
+    schedules: Vec<DetailSchedule>,
+    schedules_on: bool,
+}
+
+impl DetailsLive {
+    fn apps_view<'a>(&'a self, url: &'a str) -> DetailApps<'a> {
+        DetailApps {
+            url,
+            apps: &self.apps,
+            empty: &self.apps_empty,
+            device: Some(&self.device),
+        }
+    }
+}
+
+/// Out-of-band updates for the sections that changed from `old` to `new`; empty if none.
+pub(crate) fn details_update(old: &DetailsLive, new: &DetailsLive) -> Markup {
+    let apps =
+        (&old.apps, &old.apps_empty, &old.device) != (&new.apps, &new.apps_empty, &new.device);
+    html! {
+        @if apps {
+            // The section's own poll URL stays on the element; only its content changes.
+            (oob_inner(DETAILS_APPS_ID, detail_apps_inner(&new.apps_view(""))))
+        }
+        @if (&old.waiting, &old.rules) != (&new.waiting, &new.rules) {
+            (oob_inner(DETAILS_PERMISSIONS_ID, detail_permissions_inner(&DetailPermissions {
+                waiting: &new.waiting,
+                rules: &new.rules,
+                flash: None,
+            })))
+        }
+        @if old.activity != new.activity {
+            (oob_inner(DETAILS_ACTIVITY_ID, detail_activity_inner(&new.activity)))
+        }
+        @if (&old.schedules, old.schedules_on) != (&new.schedules, new.schedules_on) {
+            (oob_inner(DETAILS_SCHEDULES_ID, detail_schedules_inner(&DetailSchedules {
+                schedules: &new.schedules,
+                available: new.schedules_on,
+                flash: None,
+            })))
         }
     }
 }
@@ -277,6 +330,17 @@ impl Ui {
                 .await
                 .map_err(|e| LeadError::Failed(e.to_string()))?
         };
+        let key = box_key(owner).unwrap_or_default();
+        Ok(DetailsData {
+            apps_url: format!("/ui/details/{key}/apps"),
+            live: self.details_live(owner, &snap),
+            files,
+        })
+    }
+
+    /// What `owner`'s details panel shows now, but its files (`snap`: the cluster as last
+    /// read).
+    pub(crate) fn details_live(&self, owner: &Principal, snap: &ClusterSnapshot) -> DetailsLive {
         let (schedules_on, schedules) = self.schedules_of(owner);
         let (waiting, rules) = self.permissions_of(owner);
         let activity = match owner {
@@ -286,19 +350,16 @@ impl Ui {
                 Err(_) => Vec::new(),
             },
         };
-        let key = box_key(owner).unwrap_or_default();
-        Ok(DetailsData {
-            apps_url: format!("/ui/details/{key}/apps"),
-            apps: apps_of(&snap, owner),
-            apps_empty: apps_empty(&snap, owner),
-            device: Some(device_of(&snap)),
+        DetailsLive {
+            apps: apps_of(snap, owner),
+            apps_empty: apps_empty(snap, owner),
+            device: device_of(snap),
             waiting,
             rules,
             activity,
             schedules,
             schedules_on,
-            files,
-        })
+        }
     }
 
     /// The owner and helper of a details `{key}`.

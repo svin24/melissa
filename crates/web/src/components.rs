@@ -905,14 +905,15 @@ pub fn user_message_with(text: &str, files: &[SentFile]) -> Markup {
 // a column beside the chat (its collapse button hides it, remembered per browser). Narrow
 // screens with script: a sheet over the chat, opened with the Details button (Esc or the
 // collapse button shut it; focus moves in and back). Without script it is always shown: beside
-// the chat, or below it on narrow screens. Live: the stream swaps the file list and count; the
-// services poll like the app strip did.
+// the chat, or below it on narrow screens. Live: the chat's stream swaps the file list and
+// count, and the content of the services, permissions, activity and schedules sections when
+// they change (the services also poll, for app status from the cluster).
 
 /// DOM id of the details panel.
 pub const DETAILS_ID: &str = "details-panel";
-/// DOM id of the services section (it polls).
+/// DOM id of the services section (it polls; the stream replaces its content).
 pub const DETAILS_APPS_ID: &str = "details-apps";
-/// DOM id of the schedules section (on/off swaps it).
+/// DOM id of the schedules section (on/off swaps it; the stream replaces its content).
 pub const DETAILS_SCHEDULES_ID: &str = "details-schedules";
 /// DOM id of the permissions section (removing a rule swaps it; the stream replaces it).
 pub const DETAILS_PERMISSIONS_ID: &str = "details-permissions";
@@ -925,6 +926,7 @@ pub const FILE_BODY_ID: &str = "file-box-body";
 pub const FILE_COUNT_ID: &str = "file-count";
 
 /// One app in the details panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailApp {
     pub name: String,
     /// Its details ([`app_details`] into the page's [`app_dialog`]).
@@ -939,6 +941,7 @@ pub struct DetailApp {
 }
 
 /// This device in the services section.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailDevice {
     pub name: String,
     /// "Linux · This device".
@@ -960,6 +963,7 @@ pub struct DetailApps<'a> {
 }
 
 /// One schedule in the details panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailSchedule {
     pub name: String,
     /// "Every day at 03:00".
@@ -980,6 +984,7 @@ pub struct DetailSchedules<'a> {
 }
 
 /// An approval this agent waits for, in the Permissions section.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailWaiting {
     /// "Network access".
     pub kind: String,
@@ -990,6 +995,7 @@ pub struct DetailWaiting {
 }
 
 /// An "Always allow" rule of this agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailRule {
     /// "Update Minecraft".
     pub what: String,
@@ -1005,6 +1011,7 @@ pub struct DetailPermissions<'a> {
 }
 
 /// One line of recent activity.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityLine {
     pub text: String,
     /// "10:42" (today) or "18 Nov".
@@ -1086,6 +1093,15 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
 /// The services section's content (one card: the apps, then this device), polling for
 /// changes like the app strip.
 pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
+    html! {
+        div id=(DETAILS_APPS_ID) hx-get=(s.url) hx-trigger="every 15s" hx-swap="outerHTML" {
+            (detail_apps_inner(s))
+        }
+    }
+}
+
+/// What [`detail_apps`] holds (a live update replaces it: an app handed over, a helper gone).
+pub fn detail_apps_inner(s: &DetailApps<'_>) -> Markup {
     let mut groups: Vec<Option<&str>> = Vec::new();
     for a in s.apps {
         if !groups.contains(&a.keeper.as_deref()) {
@@ -1093,7 +1109,6 @@ pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
         }
     }
     html! {
-        div id=(DETAILS_APPS_ID) hx-get=(s.url) hx-trigger="every 15s" hx-swap="outerHTML" {
             div.services-card {
                 h3.services-head #details-apps-h {
                     span { "On-device services" }
@@ -1142,15 +1157,18 @@ pub fn detail_apps(s: &DetailApps<'_>) -> Markup {
                     }
                 }
             }
-        }
     }
 }
 
 /// The permissions section's content (the response to removing a rule).
 pub fn detail_permissions(p: &DetailPermissions<'_>) -> Markup {
+    html! { div id=(DETAILS_PERMISSIONS_ID) { (detail_permissions_inner(p)) } }
+}
+
+/// What [`detail_permissions`] holds (a live update replaces it).
+pub fn detail_permissions_inner(p: &DetailPermissions<'_>) -> Markup {
     let target = format!("#{DETAILS_PERMISSIONS_ID}");
     html! {
-        div id=(DETAILS_PERMISSIONS_ID) {
             @if let Some((text, tone)) = p.flash { (notice(text, tone)) }
             @if p.waiting.is_empty() && p.rules.is_empty() {
                 p.quiet { "Nothing asked or allowed ahead." }
@@ -1188,14 +1206,17 @@ pub fn detail_permissions(p: &DetailPermissions<'_>) -> Markup {
                     }
                 }
             }
-        }
     }
 }
 
 /// The recent activity section's content.
 pub fn detail_activity(lines: &[ActivityLine]) -> Markup {
+    html! { div id=(DETAILS_ACTIVITY_ID) { (detail_activity_inner(lines)) } }
+}
+
+/// What [`detail_activity`] holds (a live update replaces it).
+pub fn detail_activity_inner(lines: &[ActivityLine]) -> Markup {
     html! {
-        div id=(DETAILS_ACTIVITY_ID) {
             @if lines.is_empty() {
                 p.quiet { "Nothing yet." }
             } @else {
@@ -1209,15 +1230,18 @@ pub fn detail_activity(lines: &[ActivityLine]) -> Markup {
                     }
                 }
             }
-        }
     }
 }
 
 /// The schedules section's content (the response to on/off).
 pub fn detail_schedules(s: &DetailSchedules<'_>) -> Markup {
+    html! { div id=(DETAILS_SCHEDULES_ID) { (detail_schedules_inner(s)) } }
+}
+
+/// What [`detail_schedules`] holds (a live update replaces it).
+pub fn detail_schedules_inner(s: &DetailSchedules<'_>) -> Markup {
     let target = format!("#{DETAILS_SCHEDULES_ID}");
     html! {
-        div id=(DETAILS_SCHEDULES_ID) {
             @if let Some((text, tone)) = s.flash { (notice(text, tone)) }
             @if !s.available {
                 p.quiet { "Schedules aren't running on this device." }
@@ -1244,7 +1268,6 @@ pub fn detail_schedules(s: &DetailSchedules<'_>) -> Markup {
                 }
             }
             a.detail-more href="/settings/schedules" { "All schedules" }
-        }
     }
 }
 

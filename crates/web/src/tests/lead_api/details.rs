@@ -788,3 +788,120 @@ async fn the_lead_agent_is_renamed_like_a_helper() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(lead.agents().lead_name(), "Melissa");
 }
+
+/// Frames from `stream` until one matches `found` (at most 5 s), all of them joined.
+async fn frames_until(stream: &mut Body, found: impl Fn(&str) -> bool) -> String {
+    let mut all = String::new();
+    loop {
+        all.push_str(&next_frame(stream).await);
+        if found(&all) {
+            return all;
+        }
+    }
+}
+
+/// The services section of a live update (its out-of-band content).
+fn services_of(frames: &str) -> &str {
+    let start = frames
+        .rfind("innerHTML:#details-apps")
+        .expect("a services update");
+    let end = frames[start..]
+        .find("</div></div>")
+        .map_or(frames.len(), |e| start + e);
+    &frames[start..end]
+}
+
+/// The owner's report (2026-11-22): Melissa hands an app from Ada to Jules and deletes Ada;
+/// the open panel follows at once, without waiting for its poll: the services list who looks
+/// after what now, Ada's group goes, and recent activity has both.
+#[tokio::test]
+async fn handing_an_app_over_and_deleting_a_helper_update_the_open_panel() {
+    let store = Arc::new(OwnedBy::default());
+    let (app, lead) = app_full(None, Some(store.clone()), false);
+    let reg = lead.agents().registry().clone();
+    let ada = reg.create("Ada", "stuck", None, "the user").unwrap().id;
+    let jules = reg.create("Jules", "stuck", None, "the user").unwrap().id;
+    *store.0.lock().unwrap() = Some(ada.clone());
+    let (_, _, page) = get_html(&app, "/").await;
+    assert!(panel_of(&page).contains("<p class=\"service-group\">Ada</p>"));
+    let mut melissa = open_stream(&app, &lead).await;
+    let mut jules_chat = {
+        let log = lead.agents().events_of(&jules).unwrap();
+        app.clone()
+            .oneshot(get(&format!(
+                "/ui/agents/{jules}/stream?since={}&epoch={}",
+                log.last_seq(),
+                log.epoch()
+            )))
+            .await
+            .unwrap()
+            .into_body()
+    };
+
+    // Handed over (the store says so, and Melissa's log has the event).
+    *store.0.lock().unwrap() = Some(jules.clone());
+    lead.events().push(LeadEvent::WorkspaceReassigned {
+        workspace: "nextcloud".into(),
+        from: Some(ada.clone()),
+        to: jules.clone(),
+        by: "lead".into(),
+    });
+    let frames = frames_until(&mut melissa, |f| {
+        f.contains("innerHTML:#details-apps") && f.contains("innerHTML:#details-activity")
+    })
+    .await;
+    let services = services_of(&frames);
+    assert!(
+        services.contains("<p class=\"service-group\">Jules</p>"),
+        "{services}"
+    );
+    assert!(!services.contains(">Ada<"), "{services}");
+    assert!(
+        frames.contains("Jules looks after Nextcloud now"),
+        "{frames}"
+    );
+    // Jules's own chat: the app is in his panel now.
+    let frames = frames_until(&mut jules_chat, |f| f.contains("innerHTML:#details-apps")).await;
+    assert!(
+        services_of(&frames).contains("<p class=\"service-name\">Nextcloud</p>"),
+        "{frames}"
+    );
+
+    // Ada deleted in Settings: gone from the activity's newest line too.
+    let mut req = htmx_post(&format!("/ui/settings/agents/{ada}/delete"), "");
+    req.headers_mut()
+        .insert("hx-target", "agent-settings".parse().unwrap());
+    let (status, _, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let frames = frames_until(&mut melissa, |f| f.contains("Deleted helper: Ada")).await;
+    assert!(frames.contains("innerHTML:#details-activity"), "{frames}");
+}
+
+/// A confirmation asked in a chat shows in its panel's permissions at once.
+#[tokio::test]
+async fn a_question_shows_in_the_open_panels_permissions() {
+    let (app, lead) = app();
+    let mut stream = open_stream(&app, &lead).await;
+    let task = lead.task_id();
+    let (c, _verdict) = lead.confirmations().request(
+        task,
+        "melissa__update_app",
+        &serde_json::json!({"app": "minecraft"}),
+        "Changes an app",
+    );
+    lead.events().push(LeadEvent::ConfirmationNeeded {
+        id: c.id,
+        task,
+        tool: "melissa__update_app".into(),
+        reason: "Changes an app".into(),
+        agent: None,
+    });
+    let frames = frames_until(&mut stream, |f| {
+        f.contains("innerHTML:#details-permissions")
+    })
+    .await;
+    assert!(
+        frames.contains("waiting for you") || frames.contains("Waiting for you"),
+        "{frames}"
+    );
+}

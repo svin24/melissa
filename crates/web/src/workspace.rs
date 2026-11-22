@@ -485,14 +485,34 @@ impl Ui {
 /// Lines in the recent activity section.
 const RECENT_LINES: usize = 6;
 
+/// Tools whose outcome has an event of its own in the log (and its own activity line).
+const OWN_LINES: [&str; 2] = ["reassign_workspace", "delete_agent"];
+
 /// The notable events of a conversation as (time, words, attention).
 pub(crate) fn activity_from(events: &[EventRecord], look: &dyn Lookup) -> Vec<(u64, String, bool)> {
     let mut out = Vec::new();
     for r in events {
         let line = match &r.event {
-            LeadEvent::ToolCall { title, status, .. } if status == "done" => {
+            // Handing an app over and deleting a helper have their own lines (below), which
+            // say who and what.
+            LeadEvent::ToolCall { title, status, .. }
+                if status == "done" && !OWN_LINES.iter().any(|t| title.contains(t)) =>
+            {
                 let w = tool_words(title);
                 (!w.hidden && !w.unknown).then(|| (w.done.to_string(), false))
+            }
+            LeadEvent::WorkspaceReassigned { workspace, to, .. } => {
+                let who = look.agent_name(to).unwrap_or_else(|| to.clone());
+                Some((
+                    format!(
+                        "{who} looks after {} now",
+                        crate::feed::display_app(workspace)
+                    ),
+                    false,
+                ))
+            }
+            LeadEvent::AgentDeleted { name, .. } => {
+                Some((format!("Deleted helper: {name}"), false))
             }
             LeadEvent::ConfirmationNeeded {
                 id, tool, reason, ..
