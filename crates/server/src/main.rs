@@ -1326,6 +1326,13 @@ mod tests {
         }
     }
 
+    /// Without k3s the lead passes the tools' `app_platform` words on, never "no helpers".
+    #[test]
+    fn lead_prompt_passes_on_the_app_platform_words() {
+        assert!(LEAD_PROMPT.contains("`app_platform`"));
+        assert!(LEAD_PROMPT.contains("Never give helpers or your own checks as the reason"));
+    }
+
     #[test]
     fn factory_reset_needs_the_word() {
         assert!(

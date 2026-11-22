@@ -38,7 +38,7 @@ pub const APPS_RUNTIME_FILE: &str = "apps.kubeconfig";
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum ClusterError {
     /// No kubeconfig: k3s is not enabled on this device (desktop) or its credentials are missing.
-    #[error("k3s is not running on this device (no cluster credentials)")]
+    #[error("k3s is not set up on this device (no cluster credentials)")]
     NotConfigured,
     /// k3s is enabled here but the lead agent's credentials aren't issued yet (k3s still starting).
     #[error("k3s is starting: the lead's cluster credentials are not issued yet")]
@@ -53,6 +53,51 @@ pub enum ClusterError {
     Api(String),
     #[error("bad kubeconfig {path}: {message}")]
     Config { path: PathBuf, message: String },
+}
+
+/// `app_platform` when k3s isn't on this device at all (from source, or a desktop without it).
+/// Words the lead agent can pass on: why, where the full install is, what still works here.
+pub const NOT_INSTALLED: &str = "not installed on this device: this copy of Melissa runs without \
+    the app platform (k3s), so it can't install or run apps here. Apps need the full install, the \
+    container or NixOS (see docs/QUICKSTART.md). Chat, helpers, schedules, files and describing \
+    this device still work.";
+
+/// `app_platform` when k3s is installed here but its API doesn't answer (starting, restarting).
+pub const NOT_ANSWERING: &str = "installed but not answering right now (starting or restarting). \
+    Melissa keeps trying; try again in a minute.";
+
+impl ClusterError {
+    /// What the error means for apps on this device, in words for the lead agent to pass on
+    /// ([`NOT_INSTALLED`] or [`NOT_ANSWERING`]). `None`: some other failure; the error says what.
+    pub fn app_platform(&self) -> Option<&'static str> {
+        match self {
+            Self::NotConfigured => Some(NOT_INSTALLED),
+            Self::Starting | Self::Unreachable(_) => Some(NOT_ANSWERING),
+            _ => None,
+        }
+    }
+
+    /// The error as a tool's failure text, with [`Self::app_platform`] when it applies.
+    pub fn for_tool(&self) -> String {
+        match self.app_platform() {
+            Some(words) => format!("The app platform is {words} ({self})"),
+            None => self.to_string(),
+        }
+    }
+}
+
+/// A read tool's answer when k3s can't be used: a result, not an error, so the lead agent and
+/// the UI can tell "not installed" (`k3s_set_up: false`) from "not answering".
+pub(crate) fn unavailable(e: &ClusterError) -> serde_json::Value {
+    let mut out = serde_json::json!({"k3s_reachable": false, "reason": e.to_string()});
+    if let Some(words) = e.app_platform() {
+        out["app_platform"] = words.into();
+    }
+    // No cluster credentials at all: k3s isn't set up here (not merely down or starting).
+    if matches!(e, ClusterError::NotConfigured) {
+        out["k3s_set_up"] = false.into();
+    }
+    out
 }
 
 /// Read-only view of the cluster. Kept narrow on purpose: one method per object kind a tool

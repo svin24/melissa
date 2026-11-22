@@ -543,7 +543,7 @@ impl Workspaces {
             return Err(format!("`{workspace}` is not a workspace name"));
         }
         let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
-            return Err(no_cluster().to_string());
+            return Err(ClusterError::NotConfigured.to_string());
         };
         let err = |e: ClusterError| e.to_string();
         let ns = read
@@ -607,11 +607,14 @@ impl Workspaces {
     /// Returns how many were moved. Idempotent; until it has run, the old keys are read as
     /// aliases, so nothing depends on it.
     pub async fn relabel_old(&self) -> Result<usize, String> {
-        let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+        let read = self
+            .read
+            .as_ref()
+            .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
         let deploy = self
             .deploy
             .as_ref()
-            .ok_or_else(|| no_cluster().to_string())?;
+            .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
         let mut moved = 0;
         for name in read.app_names().await.map_err(|e| e.to_string())? {
             let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
@@ -634,11 +637,14 @@ impl Workspaces {
     /// running untouched. Returns how many were converted. Idempotent; until it has run, the
     /// tools rebuild the spec on the fly.
     pub async fn migrate_catalog_apps(&self) -> Result<usize, String> {
-        let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+        let read = self
+            .read
+            .as_ref()
+            .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
         let deploy = self
             .deploy
             .as_ref()
-            .ok_or_else(|| no_cluster().to_string())?;
+            .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
         let mut converted = 0;
         for name in read.app_names().await.map_err(|e| e.to_string())? {
             let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
@@ -674,7 +680,10 @@ impl ResourceOwners for Workspaces {
                 // The tool rejects the name itself; nothing by that name can exist.
                 return Ok(None);
             }
-            let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+            let read = self
+                .read
+                .as_ref()
+                .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
             let ns = read.namespace(name).await.map_err(|e| e.to_string())?;
             Ok(ns.map(|ns| Ownership::of(&ns).owner))
         })
@@ -684,7 +693,10 @@ impl ResourceOwners for Workspaces {
 impl WorkspaceStore for Workspaces {
     fn workspaces(&self) -> BoxFuture<'_, Result<Vec<WorkspaceInfo>, String>> {
         Box::pin(async move {
-            let read = self.read.as_ref().ok_or_else(|| no_cluster().to_string())?;
+            let read = self
+                .read
+                .as_ref()
+                .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
             let mut out = Vec::new();
             for name in read.app_names().await.map_err(|e| e.to_string())? {
                 let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
@@ -715,7 +727,7 @@ impl WorkspaceStore for Workspaces {
                 return Err(format!("`{workspace}` is not a workspace name"));
             }
             let (Some(read), Some(deploy)) = (&self.read, &self.deploy) else {
-                return Err(no_cluster().to_string());
+                return Err(ClusterError::NotConfigured.to_string());
             };
             let ns = read
                 .namespace(workspace)
@@ -747,11 +759,11 @@ impl WorkspaceStore for Workspaces {
 }
 
 fn no_cluster() -> ToolError {
-    ToolError::Failed(ClusterError::NotConfigured.to_string())
+    failed(ClusterError::NotConfigured)
 }
 
 fn failed(e: ClusterError) -> ToolError {
-    ToolError::Failed(e.to_string())
+    ToolError::Failed(e.for_tool())
 }
 
 fn arg_object(args: &Value) -> Result<&Map<String, Value>, ToolError> {
@@ -1493,7 +1505,7 @@ impl AppStatus {
         reject_unknown(args, &["app"])?;
         let app = app_arg(args)?;
         let Some(read) = &self.read else {
-            return Ok(unreachable(&ClusterError::NotConfigured));
+            return Ok(crate::cluster::unavailable(&ClusterError::NotConfigured));
         };
         let ns = match read.namespace(&app).await {
             Ok(ns) => ns,
@@ -1501,7 +1513,7 @@ impl AppStatus {
                 e @ (ClusterError::Unreachable(_)
                 | ClusterError::NotConfigured
                 | ClusterError::Starting),
-            ) => return Ok(unreachable(&e)),
+            ) => return Ok(crate::cluster::unavailable(&e)),
             Err(e) => return Err(failed(e)),
         };
         let Some(ns) = ns else {
@@ -1594,7 +1606,7 @@ impl ListApps {
         reject_unknown(arg_object(&args)?, &[])?;
         let mut apps = Vec::new();
         let Some(read) = &self.0.read else {
-            return Ok(unreachable(&ClusterError::NotConfigured));
+            return Ok(crate::cluster::unavailable(&ClusterError::NotConfigured));
         };
         let names = match read.app_names().await {
             Ok(names) => names,
@@ -1602,7 +1614,7 @@ impl ListApps {
                 e @ (ClusterError::Unreachable(_)
                 | ClusterError::NotConfigured
                 | ClusterError::Starting),
-            ) => return Ok(unreachable(&e)),
+            ) => return Ok(crate::cluster::unavailable(&e)),
             Err(e) => return Err(failed(e)),
         };
         for name in names {
@@ -1769,7 +1781,7 @@ impl MyApps {
     async fn list(&self, args: Value, scope: &Scope) -> Result<Value, ToolError> {
         reject_unknown(arg_object(&args)?, &[])?;
         let Some(read) = &self.0.read else {
-            return Ok(unreachable(&ClusterError::NotConfigured));
+            return Ok(crate::cluster::unavailable(&ClusterError::NotConfigured));
         };
         let names = match read.app_names().await {
             Ok(names) => names,
@@ -1777,7 +1789,7 @@ impl MyApps {
                 e @ (ClusterError::Unreachable(_)
                 | ClusterError::NotConfigured
                 | ClusterError::Starting),
-            ) => return Ok(unreachable(&e)),
+            ) => return Ok(crate::cluster::unavailable(&e)),
             Err(e) => return Err(failed(e)),
         };
         let settings = &self.0.settings;
@@ -1871,15 +1883,6 @@ impl Tool for MyApps {
     ) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(self.list(args, &ctx.scope))
     }
-}
-
-fn unreachable(e: &ClusterError) -> Value {
-    let mut out = json!({"k3s_reachable": false, "reason": e.to_string()});
-    // No cluster credentials at all: k3s isn't set up here (not merely down or starting).
-    if matches!(e, ClusterError::NotConfigured) {
-        out["k3s_set_up"] = json!(false);
-    }
-    out
 }
 
 /// The status answer from the app's objects. Pure, for tests.
