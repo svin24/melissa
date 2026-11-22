@@ -3084,8 +3084,15 @@ main.plain {
 }
 
 .show-password input {
-  width: auto;
+  width: 1.1rem;
+  height: 1.1rem;
   margin: 0;
+  accent-color: var(--action);
+  cursor: pointer;
+}
+
+.show-password span {
+  cursor: pointer;
 }
 
 .card {
