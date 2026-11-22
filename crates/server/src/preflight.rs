@@ -1,7 +1,7 @@
 //! First-run check, printed when the daemon starts: where the UI is, which agent backends
 //! were found (and why the others are not usable), which one the lead agent will use, whether the
 //! sandbox can start and whether k3s is there. Meant for people trying Melissa from source;
-//! every problem line says what to do about it (details in docs/QUICKSTART.md).
+//! every problem line says what to do about it (details in docs/DEV-ENV.md, "Run from source").
 
 use std::{
     net::SocketAddr,
@@ -103,13 +103,13 @@ impl Report {
                 if self.apparmor_userns_restricted {
                     line(
                         "            AppArmor restricts unprivileged user namespaces here \
-                         (Ubuntu 23.10+). See \"Ubuntu and AppArmor\" in docs/QUICKSTART.md."
+                         (Ubuntu 23.10+). See \"Ubuntu and AppArmor\" in docs/DEV-ENV.md."
                             .into(),
                     );
                 } else {
                     line(
                         "            Unprivileged user namespaces may be off. See \
-                         \"Troubleshooting\" in docs/QUICKSTART.md."
+                         \"Troubleshooting\" in docs/DEV-ENV.md."
                             .into(),
                     );
                 }
@@ -133,7 +133,6 @@ impl Report {
                 b.name, b.command, state, role
             ));
         }
-        line("    echo            (built in) always works; it only repeats your message".into());
         match lead {
             Some(_) => line(
                 "  The first chat message starts the lead agent. If that agent is not logged in, \
@@ -143,8 +142,7 @@ impl Report {
             None => {
                 line(String::new());
                 line(
-                    "  No agent CLI is usable, so the lead agent cannot answer yet. The UI still works \
-                     (try the echo backend)."
+                    "  No agent CLI is usable, so the lead agent cannot answer yet. The UI still works."
                         .into(),
                 );
                 line(
@@ -152,7 +150,7 @@ impl Report {
                      OpenCode (opencode),"
                         .into(),
                 );
-                line("  then restart. See docs/QUICKSTART.md.".into());
+                line("  then restart. See docs/DEV-ENV.md.".into());
             }
         }
         if self.k3s {

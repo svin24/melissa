@@ -37,7 +37,7 @@ pub const SECTIONS: [Section; 13] = [
         label: "Providers",
         group: "Agents",
         icon: Glyph::Plug,
-        keywords: "Claude Code Grok OpenCode install sign in API key add provider remove provider version",
+        keywords: "Claude Code Grok OpenCode Gemini Codex Muse install sign in API key add provider remove provider version",
     },
     Section {
         href: AGENTS_URL,
