@@ -26,7 +26,7 @@ Read docs/PLAN.md and docs/DEV-ENV.md before changing anything. These rules are 
 ## Scope and naming
 - The project name is Melissa. Do not rename the project or introduce other working names.
 - Keep this project fully separate from any employer: no code, assets, data, docs or snippets from outside work may be copied in.
-- Immutable OS: do not assume `dnf install` on the host. Use containers, flatpak, Nix/devenv, or the bootc image build.
+- Immutable dev host: do not assume `dnf install` on the host. Use containers, flatpak or Nix/devenv.
 
 ## Reference material (outside this repo)
 - Agents may read `../reference/first-draft` (that is, `~/dev/reference/first-draft`) for ideas. It is an earlier, partial draft of similar concepts and lacks the Kubernetes and Tailscale parts.

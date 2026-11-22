@@ -49,7 +49,7 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 3. New markup only as a reviewed component. Router tests in `crates/web/src/lib.rs` (`SettingsFixture`).
 
 ## The Settings modal and the row pattern (2026-11-20, owner request)
-- **Opening:** the gear at the bottom of the rail (`a href="/settings"`). melissa.js turns any click on a link to
+- **Opening:** Settings in the sections bar at the bottom of the sidebar (`a href="/settings"`, `section_bar`). melissa.js turns any click on a link to
   `/settings…`, `/tasks/<n>`, `/cluster` or `/usage` into `htmx.ajax` into `#overlay-body` and opens
   `dialog#overlay` with `showModal()` (Esc, ×, a click on the backdrop close it; focus moves in and back; the page
   behind is inert). Requests with `HX-Target: overlay-body` get the panel alone (`crate::panel` sets a task-local

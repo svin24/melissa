@@ -20,7 +20,7 @@ build:
 run-web: build
     cargo run -q -p melissa-server
 
-# First run from source (docs/QUICKSTART.md): builds, prints a short summary (URL, agents found,
+# First run from source (docs/DEV-ENV.md, "Run from source"): builds, prints a short summary (URL, agents found,
 # sandbox, k3s) and serves http://127.0.0.1:8080 until Ctrl-C.
 demo: build
     cargo run -q -p melissa-server -- demo
@@ -70,6 +70,7 @@ container-build version="dev":
 # Install it rootful with the Quadlet (sudo): copies localhost/melissa:dev into root's storage as
 # localhost/melissa:latest. Extra settings as env, e.g. `UI_PORT=8090 just container-install`.
 container-install:
+    mkdir -p target
     rm -f target/melissa-image.tar
     podman save -o target/melissa-image.tar localhost/melissa:dev
     sudo --preserve-env=UI_PORT,UI_BIND,APP_PORT_BASE,BIND,APP_ADDRESSES,AUTO_UPDATE,SET_SYSCTLS \

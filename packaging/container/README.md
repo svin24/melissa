@@ -37,8 +37,9 @@ apps"), `APP_ADDRESSES`
 `SET_SYSCTLS` (yes). `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
 
-Then set up an agent in the web UI: Settings → Providers → Install (OpenCode works with free models
-and no account; Claude and Grok then need an API key or token, added on the same page). Or from the host:
+Then open the web UI and claim it (see "Signing in"): the first-run setup installs a provider and signs
+it in on the page (OpenCode works with free models and no account). Later ones: Settings → Providers.
+Or from the host:
 ```
 sudo podman exec -it melissa melissa-setup agent opencode     # free models, no account
 sudo podman exec -it melissa melissa-setup agent claude       # Claude subscription (logs in)
@@ -137,7 +138,8 @@ Apps over Melissa's own Tailscale: tailnet devices reach the app ports on the no
 MagicDNS name (at the NodePort, 30000–30079, whatever `APP_PORT_BASE` is) once Settings → Apps is *Tailnet*
 or wider; under *This device* nothing from `tailscale0` gets in. Everything else tailnet devices send to the
 container (the web UI, k3s's API, the kubelet) is dropped (`melissa_app_access`'s `input` chain), at every
-setting. The web UI is not served on the tailnet yet (`tailscale serve` waits for logins).
+setting. Melissa's own Tailscale doesn't serve the web UI on the tailnet yet (use the host's `tailscale serve`,
+below).
 
 While it is enabled, tailscaled talks to Tailscale's coordination server and DERP relays; no logs are sent to
 Tailscale (`--no-logs-no-support`). Check it with `sudo podman exec melissa tailscale status`.

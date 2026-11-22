@@ -2,7 +2,7 @@
 
 **When:** packaging or changing Melissa for Nix, the NixOS module (`services.melissa`), the NixOS VM
 test, or the non-NixOS "host bundle" (`melissa-host`). Host-first track 2 (DECISIONS 2026-11-19); the
-other track is the rootful container ([container-mode.md](container-mode.md)).
+other track is the rootful container ([container-image.md](container-image.md)).
 
 ## Layout
 - `flake.nix` outputs (besides `devShells`):

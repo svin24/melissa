@@ -348,7 +348,7 @@ impl Printer {
                     _ => String::new(),
                 };
                 self.line(&format!(
-                    "[taint] read untrusted content{from}; changes now need your OK until a new chat"
+                    "[taint] read untrusted content{from}; changes now need your OK until a fresh start"
                 ));
             }
             LeadEvent::HelperReport { name, status, .. } => {

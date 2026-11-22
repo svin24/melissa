@@ -13,7 +13,187 @@ nix develop --no-pure-eval   # flake alternative
 just check            # fmt + clippy + tests
 ```
 
-Just want to try Melissa? See [QUICKSTART.md](QUICKSTART.md) (also covers a rustup setup without Nix).
+Just want to try Melissa? Install it: [QUICKSTART.md](QUICKSTART.md). Running from source (also with rustup
+instead of Nix): [Run from source](#run-from-source-just-demo).
+
+## Repo layout
+
+```
+crates/agent     agent layer: ACP and Claude Code sessions, sandbox, tools, task board, audit log
+crates/server    server: lead agent, web UI and API, CLI
+crates/web       web UI (axum + maud + embedded htmx)
+crates/cluster   k3s client and the app tools
+crates/appspec   the app spec agents write to deploy an app
+crates/auth      accounts, the owner's claim, invites, sessions
+crates/settings  provider settings, agent installs, updates
+crates/voice     speech to text on the device
+crates/device    per-device daemon (stub)
+packaging/       common/ (system files), container/ (image, Quadlet, install.sh), nix/ (flake package, NixOS module)
+scripts/         container-run.sh, ui-shots/ (UI screenshots), tokens/ (design tokens)
+docs/            PLAN.md, DECISIONS.md, QUICKSTART.md, DEV-ENV.md, agent-skills/
+```
+
+## Run from source (`just demo`)
+
+The lead agent, its helpers and the web UI on your own Linux machine, using an AI coding CLI you are already
+signed in to. There is no k3s, so **no app installs** ([Apps and k3s](#apps-and-k3s)). To try apps, install the
+container ([QUICKSTART.md](QUICKSTART.md)).
+
+### What you need
+
+- **Linux on x86_64.** Tested on Fedora 45. Other distributions should work; Ubuntu 23.10+ needs one
+  extra step (see [Ubuntu and AppArmor](#ubuntu-and-apparmor)).
+- **bubblewrap** (`bwrap`): every agent runs inside it. `sudo apt install bubblewrap`,
+  `sudo dnf install bubblewrap` or `sudo pacman -S bubblewrap`. Fedora and most desktops have it already.
+  Unprivileged user namespaces must be allowed (they are by default on Fedora, Debian 11+, Arch).
+- **At least one agent CLI, installed and signed in** (run it once by hand and sign in):
+  - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`, then run `claude` and sign in.
+    Docs: https://code.claude.com/docs/en/setup. Use this native installer: an npm install outside
+    `/usr` is not visible inside the sandbox.
+  - Grok CLI (Grok Build, needs a SuperGrok or X Premium+ subscription): `curl -fsSL https://x.ai/cli/install.sh | bash`,
+    then run `grok` and sign in. Docs: https://docs.x.ai/build/overview.
+  - OpenCode: `curl -fsSL https://opencode.ai/install | bash`. Docs: https://opencode.ai/docs.
+    Works without an account (free default model).
+- **A Rust toolchain**, one of:
+  - **Nix + devenv (recommended, what we use):** install Nix with flakes
+    (https://determinate.systems/nix-installer/ or https://nixos.org/download), then devenv
+    (https://devenv.sh/getting-started/). The first `devenv shell` downloads a lot (the Rust toolchain,
+    and Chromium for the UI screenshots), later starts take seconds.
+  - **rustup:** https://rustup.rs, then `rustup default stable` (tested with Rust 1.100; older releases
+    may fail), a C compiler and linker (`build-essential` / `gcc`) and `just`
+    (`cargo install just`, or your distribution's package). No devenv: run the `just` commands below
+    directly, or the `cargo` lines they print.
+
+### Run it
+
+```
+git clone <repo-url> melissa && cd melissa
+devenv shell          # skip with rustup
+just demo
+```
+
+The first build takes a minute or two (about 50 s on a 16-thread laptop, more on a small machine, plus
+downloading the crates). Then you see something like:
+
+```
+Melissa (pre-alpha) is running.
+  Open:     http://127.0.0.1:8080   (this machine only)
+  State:    /home/you/.local/state/melissa
+  Config:   /home/you/.config/melissa/server.toml  (not present: defaults)
+  Sandbox:  ok (bubblewrap)
+  Agents:
+    claude          claude    found
+    grok-acp        grok      not installed (`grok` not on PATH)
+    claude-session  claude    found   <- the lead agent uses this
+    ...
+  k3s:      not found on this machine. Chat, agents and machine checks work; installing apps needs k3s.
+  Stop with Ctrl-C.
+  Claim:    open http://127.0.0.1:8080/claim and enter the setup code ABCDE-FGHJK
+            (valid 1 hour; a new one: melissa-server setup-code)
+```
+
+Open **http://127.0.0.1:8080**, enter that setup code, a username and a password: you become the owner.
+A short setup asks for a device name, a provider (one of the CLIs you signed in to) and a model. Forgot the
+password: `melissa-server reset-owner` prints a one-hour link to set a new one. The CLI needs no password on
+the same machine: from a second terminal in the same folder, `just chat` or `just ask "describe this machine"`.
+
+### Things to try
+
+1. **"Describe this machine."** The lead agent calls Melissa's `device_info` tool and tells you the OS, kernel,
+   memory and disk space.
+2. **"Create a helper named Ada and have her check this machine, then tell me what she found."** The lead agent
+   creates a helper, gives her a job and reports back (20-30 s). Ada gets her own chat in the sidebar; or
+   `cargo run -q -p melissa-server -- ask --agent Ada "what did you find?"`.
+3. **"Set up a Minecraft server."** There is no fixed app list: a helper picks the image, ports and storage
+   and asks you to approve what will run. Without k3s the answer is that k3s is not running on this machine.
+   Nothing is installed. That is expected from source.
+
+Agents run in a sandbox. They change the system only through Melissa's tools, see only their own file box,
+and reach the internet only through Melissa's proxy (their AI service, and public web pages read-only).
+Anything risky waits for your approval in the chat (or `cargo run -q -p melissa-server -- confirm list`).
+
+### Apps and k3s
+
+App installs need a k3s cluster. A source checkout looks for cluster credentials in
+`/run/melissa-kube/` (written in the Melissa container) or at `kubeconfig = "..."` in
+`~/.config/melissa/server.toml`, and app installs need a second, write-only identity
+(`[apps] kubeconfig`) with Melissa's admission policies. Setting that up by hand is not documented for
+strangers yet; use the container to try apps.
+
+### Where it keeps things
+
+- **Stop:** Ctrl-C in the terminal running `just demo`. Agents stop with it.
+- **State** (audit log, the lead agent's and helpers' chats, the agent registry, file boxes, people and
+  sign-ins): `~/.local/state/melissa/`. **Config** (optional): `~/.config/melissa/` (`server.toml`, and
+  what Settings saves). **Downloads** (the voice model): `~/.local/share/melissa/`. Sockets and short-lived
+  files: `$XDG_RUNTIME_DIR/melissa/`. Nothing is written into the repo except the build in `target/`.
+- **Start over:** stop Melissa, then `rm -rf ~/.local/state/melissa` (forgets people, chats, helpers and the
+  audit log). Your agent CLIs' own sign-ins are not touched.
+- **Try it without touching your normal dirs:**
+  `XDG_STATE_HOME=/tmp/m/state XDG_CONFIG_HOME=/tmp/m/config just demo`.
+
+### Ubuntu and AppArmor
+
+Ubuntu 23.10 and later (including 24.04) block unprivileged user namespaces for programs without an
+AppArmor profile that allows them. `just demo` then shows
+`Sandbox: PROBLEM: bubblewrap cannot create namespaces: bwrap: setting up uid map: Permission denied`.
+Pick one (not yet tested by us on Ubuntu; please tell us what worked):
+
+- Allow it for `bwrap` only, with a small AppArmor profile:
+  ```
+  sudo tee /etc/apparmor.d/bwrap <<'EOF'
+  abi <abi/4.0>,
+  include <tunables/global>
+
+  profile bwrap /usr/bin/bwrap flags=(unconfined) {
+    userns,
+    include if exists <local/bwrap>
+  }
+  EOF
+  sudo apparmor_parser -r /etc/apparmor.d/bwrap
+  ```
+  Ubuntu's `apparmor-profiles` package also ships a `bwrap-userns-restrict` profile in
+  `/usr/share/apparmor/extra-profiles/`; it is stricter and may stop the agents from working.
+  Either way, any program can then use `bwrap` to create user namespaces, which is what the restriction was
+  meant to prevent.
+- Or switch the restriction off until the next reboot:
+  `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` (system-wide; less safe).
+
+### Troubleshooting
+
+- **An agent shows "not installed".** Its command is not on the `PATH` of the shell you started
+  `just demo` from. Check with `which claude grok opencode`. The installers put them in `~/.local/bin`,
+  `~/.grok/bin` and `~/.opencode/bin`; open a new terminal after installing.
+- **"sandbox: bwrap not found".** Install bubblewrap (see [What you need](#what-you-need)) and restart.
+- **"bubblewrap cannot create namespaces".** On Ubuntu see above. Elsewhere check
+  `sysctl user.max_user_namespaces` (must be > 0) and, on older Debian,
+  `sysctl kernel.unprivileged_userns_clone` (must be 1).
+- **"cannot listen on 127.0.0.1:8080".** Something else uses the port, perhaps another Melissa (the
+  container holds 127.0.0.1:8080). Stop it, or create `~/.config/melissa/server.toml` with
+  `listen = "127.0.0.1:8090"` and open that port instead (`just chat`/`ask` read the same file).
+- **The lead agent answers "not logged in" or every backend fails.** Run the CLI once by hand (`claude`,
+  `grok`, `opencode`) and sign in, then send the message again. To pin one agent, put this in
+  `~/.config/melissa/server.toml`:
+  ```toml
+  [lead]
+  backends = ["claude-session"]   # or "grok-acp", "opencode-acp"
+  ```
+- **Something else.** Run with the full log: `RUST_LOG=info just demo`, and look at the audit log in
+  `~/.local/state/melissa/audit.jsonl`.
+
+### Uninstall (from source)
+
+Stop it with Ctrl-C, then delete what it kept:
+
+```
+rm -rf ~/.local/state/melissa ~/.config/melissa ~/.local/share/melissa "$XDG_RUNTIME_DIR/melissa"
+rm -rf ~/.local/share/melissa-agents   # only if you added a provider from the registry in Settings
+rm -rf melissa                         # the clone, with target/ and .devenv/
+nix-collect-garbage                    # optional: the dev shell's store paths
+```
+
+`$XDG_RUNTIME_DIR/melissa` is also cleared when you log out. Your agent CLIs (Claude Code, Grok, OpenCode)
+and their sign-ins are your own and are not touched.
 
 ## UI screenshots (before/after)
 
@@ -84,7 +264,8 @@ the two disagree: a token on one side only, or a different value in the light or
 Use the Determinate installer (flakes on by default): https://determinate.systems/nix-installer/, or the
 official one (https://nixos.org/download) with `experimental-features = nix-command flakes` in
 `~/.config/nix/nix.conf`. Fedora Atomic (Kinoite, Silverblue, bootc) needs the extra steps further down.
-The first `devenv shell` downloads the Rust toolchain plus QEMU/OVMF for the VM tooling; later starts are fast.
+The first `devenv shell` downloads the Rust toolchain plus Playwright's Chromium for the UI screenshots; later
+starts are fast.
 
 ## Installing devenv and direnv
 

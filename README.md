@@ -4,64 +4,46 @@
 > changes and missing pieces. Don't run it on a machine or with data you care about, and don't expose it to the
 > internet. Agents act on your behalf through AI subscriptions you log in to; review what they ask to do.
 
-**A clustered, agent-run, immutable self-hosting OS.**
+**A self-hosting server that AI agents run for you.**
 
-Melissa turns a handful of ordinary machines (a laptop, a mini PC, a NAS, a VPS) into one self-hosting
-cluster that AI agents run for you. You chat with the lead agent; it and its agents install apps like Nextcloud,
-keep them healthy and tidy up, asking you before anything risky.
+Melissa runs on a Linux machine you already have. You chat with Melissa, the lead agent; she and her
+helper agents install apps like Nextcloud, keep them healthy and tidy up, asking you before anything risky.
+Agents use the AI subscriptions you sign in to: Claude, Grok, OpenCode, Gemini, Codex or Muse Code.
 
-- **Cluster**: all your devices together. **Device**: one machine, with one **lead agent** in charge.
-- **Agents**: workers; each looks after its own **workspaces** (apps and their services).
-- You can talk to any lead agent or agent. Only a lead agent, or you, can hand a workspace to another agent.
+- **Device**: one machine, with one **lead agent** in charge. **Cluster**: all your devices together
+  (one device today).
+- **Agents** (helpers in the UI): each has its own chat and looks after its own apps.
+- You can talk to any agent. Only the lead agent, or you, can hand an app to another agent.
   Full model: [docs/AGENT-MODEL.md](docs/AGENT-MODEL.md).
 
-Principles: runs on an existing Linux host (a rootful podman container started by systemd; a Nix service is
-in progress), **Rust** almost everywhere (agents work better with a safe,
-strongly typed language), a boring server-rendered web UI with no AI-generated UI, a UI that works on a LAN
-without internet, and open source so others can build on top.
+Principles: runs on an existing Linux host, **Rust** almost everywhere (agents work better with a safe,
+strongly typed language), a boring server-rendered web UI with no AI-generated UI, works on a LAN without
+internet, and open source so others can build on top.
 
-## Layout
+## Install
 
-```
-crates/agent   agent layer: backend trait, echo + CLI backends, task board, audit log
-crates/server  server: lead agent, web UI and API, coordinator
-crates/device  per-device daemon (stub)
-crates/cluster k3s client and the app tools
-crates/web     web UI (axum + maud + embedded htmx)
-packaging/     common/ (system files every packaging installs), container/ (image, Quadlet, install.sh),
-               nix/ (Nix flake/module)
-scripts/       container-run.sh (dev/test driver for the container)
-docs/          PLAN.md (full plan), DEV-ENV.md (Nix + devenv setup)
-```
+1. **Container** (the main way): rootful podman started by systemd, with k3s for apps. Any Linux with
+   podman 5+.
+2. **NixOS** (experimental): the `services.melissa` module, with k3s. Tested in a NixOS VM, not yet on real
+   hardware.
 
-## Try it
+Steps for each: [docs/QUICKSTART.md](docs/QUICKSTART.md). To remove it:
+[Uninstall](docs/QUICKSTART.md#uninstall).
 
-- **From source** on any Linux (x86_64): [docs/QUICKSTART.md](docs/QUICKSTART.md). In short: install
-  bubblewrap and one agent CLI (Claude Code, Grok CLI or OpenCode) and log in, then
-  `devenv shell -- just demo` and open http://127.0.0.1:8080. No k3s, so no app installs.
-- **Full system in a container** (rootful podman, started by systemd; k3s and apps included):
-  [packaging/container/README.md](packaging/container/README.md), short version in
-  [docs/QUICKSTART.md](docs/QUICKSTART.md).
+## Develop
 
-## Quick start (dev)
+> Melissa was developed using AI. Due to the nature of AI, a lot of code is moved around daily. If you want to help co-develop it, I expect that you use AI. It is also in extremely early development, with a lot of unfinished features.
 
-With Nix + devenv + direnv available (see [docs/DEV-ENV.md](docs/DEV-ENV.md)):
+With Nix + devenv + direnv (setup, the repo layout and running from source: [docs/DEV-ENV.md](docs/DEV-ENV.md)):
 
 ```
 direnv allow      # or: devenv shell
 just check        # fmt, clippy, tests
+just demo         # run from source at http://127.0.0.1:8080 (no app platform, so no apps)
 ```
 
-Run the lead agent and open http://127.0.0.1:8080: `devenv shell -- just run-web` (full log) or `just demo` (short summary). Agents found on `PATH`
-(`claude`, `grok`, `opencode`) show up as backends; a built-in `echo` backend always works.
-
-Full system (k3s, apps) as a container: `just container-build && just container-install`, then
-`just container-smoke` (see [packaging/container/README.md](packaging/container/README.md)). The earlier bootc OS
+`just --list` shows the rest. Start with [docs/PLAN.md](docs/PLAN.md); decisions and their reasons are in
+[docs/DECISIONS.md](docs/DECISIONS.md). Agents must read [AGENTS.md](AGENTS.md) first. The earlier bootc OS
 images are archived at git tag `bootc-archive-2026-11-19`.
 
-Status: early. The multi-agent demo works locally; the full system runs as a rootful container (milestone M0).
-Start with [docs/PLAN.md](docs/PLAN.md). Agents must read [AGENTS.md](AGENTS.md) first.
-
-Credits and third-party notices: [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
-
-License: [MIT](LICENSE).
+Credits and third-party notices: [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md). License: [MIT](LICENSE).

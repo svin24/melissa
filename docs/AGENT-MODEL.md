@@ -67,11 +67,11 @@ whatever they like, and a lead agent names the agents and workspaces it creates.
 - The user can rename anything; a lead agent names what it creates (agents, workspaces) and may suggest names for new devices.
 - Ids include the device, so the model works unchanged when a cluster grows from one device to many.
 
-## Mapping to today's code (2026-11-18; stop/start, ports and the generic role names 2026-11-19)
+## Mapping to today's code (2026-11-18; stop/start, ports and the generic role names 2026-11-19; device names 2026-11-22)
 
 | Model | Code today | Still to do |
 |---|---|---|
-| Device | `crates/device` (`melissa-device`, per-device daemon stub); device id `d-<8 hex>` made once in `$XDG_STATE_HOME/melissa/device.json` (`melissa_agent::device`); `melissa-server` runs per device | the device daemon itself; user-chosen device names |
+| Device | `crates/device` (`melissa-device`, per-device daemon stub); device id `d-<8 hex>` made once in `$XDG_STATE_HOME/melissa/device.json` (`melissa_agent::device`); `melissa-server` runs per device; a display name the owner picks in setup or Settings → Updates (`device_name` in `ui.toml`, 2026-11-22) | the device daemon itself |
 | Lead agent | the lead agent conversation in `melissa-server` (`melissa_agent::lead`), `Scope::Lead { device }`: any workspace of its device, destructive actions name the owning agent | primary-device lead agent coordination (M3) |
 | Agent | persistent, named agent (`lead::registry`, `lead::agents`): id `<device>.a<n>` (never reused), name (the lead agent chooses, the user renames), backend, tools; its own resumable agent session, sandbox, MCP session (`Scope::Agent`), transcript; lead agent tools `create_agent` (optionally with its first `job`, 2026-11-20), `give_agent_job`, `agent_status`, `list_agents`, `stop_agent`; one chat per agent (2026-11-20: "Fresh start" clears its memory, silent compaction keeps its context small), an icon (shape and colour, `lead::icon`) and a pin in the registry, grouped by state in the UI's sidebar | budgets per agent |
 | Workspace | `my_apps` (an agent: its own apps with phase, image, addresses, assignment; the others by name and owner; the lead agent: all by owner; 2026-11-20); an installed app (`app-<name>` namespace) with `melissa.io/workspace`, `melissa.io/device`, `melissa.io/owner-agent` (+ `assigned-by/at`); an agent's install is its own, the lead agent's `deploy_app` of a new app is refused (`Access::Create`, rule 10; 2026-11-20); old `melissa.io/owner` labels count as unassigned; the pre-rename keys `melissa.io/cell`, `melissa.io/comb`, `melissa.io/owner-bee` are read as aliases and moved once (2026-11-19) | more workspace kinds (agent-built apps, backups) |
