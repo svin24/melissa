@@ -662,8 +662,8 @@ def shoot_revision(args):
         build = ["cargo", "build", "-q", "--bins", "-p", "melissa-server"]
         # Revisions from before the fake apps or the fake usage (2026-11-22) build without them.
         for features in ([FAKES], [FAKE_APPS], []):
-            args = ["--features", *features] if features else []
-            if subprocess.run(build + args, cwd=tree, env=env).returncode == 0:
+            extra = ["--features", *features] if features else []
+            if subprocess.run(build + extra, cwd=tree, env=env).returncode == 0:
                 break
         else:
             raise RuntimeError(f"building {rev} failed")
