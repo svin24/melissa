@@ -336,9 +336,11 @@ pub fn sidebar(s: &Sidebar<'_>) -> Markup {
             }
             div.side-search role="search" {
                 label.visually-hidden for="agent-search" { "Search agents" }
-                (glyph(Glyph::Search))
-                input #agent-search type="search" placeholder="Search agents" autocomplete="off"
-                    spellcheck="false" data-agent-search aria-controls=(AGENT_GROUPS_ID);
+                span.search-field {
+                    (glyph(Glyph::Search))
+                    input #agent-search type="search" placeholder="Search agents" autocomplete="off"
+                        spellcheck="false" data-agent-search aria-controls=(AGENT_GROUPS_ID);
+                }
                 a.side-new.(Btn::ghost().icon()) href=(s.new_agent) title="New helper" {
                     (glyph(Glyph::Plus))
                     span.visually-hidden { "New helper" }

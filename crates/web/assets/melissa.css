@@ -723,6 +723,150 @@ summary.btn {
   }
 }
 
+/* --- Fields: text input, search, textarea, select (COMPONENT-SPEC 2.2-2.3, DS-02) ---------
+   `.input` on an <input>, <textarea> or <select> (a select sits in `span.select-wrap`, which
+   draws its chevron); `.search-field` is the same box around a search glyph and a bare input
+   (and a kbd hint). As high as the buttons next to them (32px; `.input-sm` 28px); text stays
+   1rem so phones don't zoom. States: hover, focus ring, invalid (aria-invalid or after the
+   person typed: :user-invalid), disabled, readonly. */
+
+.input,
+.search-field {
+  min-height: var(--field-height);
+  border: var(--border-width-hairline) solid var(--field-border-default);
+  border-radius: var(--field-radius);
+  background: var(--field-bg-default);
+  color: var(--field-text-default);
+}
+
+.input {
+  min-width: 0;
+  margin: 0;
+  padding: 0 var(--field-padding-x);
+  font: inherit;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-control);
+}
+
+textarea.input {
+  display: block;
+  padding-block: var(--space-2);
+  line-height: var(--line-height-body);
+  resize: vertical;
+}
+
+.input-mono {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+}
+
+.input-sm {
+  min-height: var(--button-height-sm);
+  padding-inline: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+select.input {
+  appearance: none;
+  padding-inline-end: calc(var(--field-padding-x) + var(--size-icon-sm));
+  cursor: pointer;
+}
+
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.select-wrap > select.input {
+  flex: 1 1 auto;
+}
+
+/* The chevron: borders, not an image, so it shows in forced colours too. */
+.select-wrap::after {
+  content: "";
+  position: absolute;
+  right: calc(var(--field-padding-x) + var(--space-half));
+  top: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid var(--color-text-muted);
+  border-bottom: 1.5px solid var(--color-text-muted);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+.input::placeholder,
+.search-field > input::placeholder {
+  color: var(--field-placeholder-default);
+  opacity: 1;
+}
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--field-padding-x);
+  color: var(--color-text-muted);
+}
+
+.search-field > .glyph {
+  flex: none;
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+}
+
+.search-field > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: calc(var(--field-height) - 2 * var(--border-width-hairline));
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--field-text-default);
+  font: inherit;
+  font-size: var(--font-size-md);
+  outline: none;
+}
+
+.search-field > kbd {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+}
+
+@media (hover: hover) {
+  .input:hover:not(:disabled, :focus-visible),
+  .search-field:hover:not(:focus-within) {
+    border-color: var(--field-border-hover);
+  }
+}
+
+.input:focus-visible,
+.search-field:focus-within {
+  outline: var(--focus-width) solid var(--color-focus-ring);
+  outline-offset: 0;
+}
+
+.input[aria-invalid="true"],
+.input:user-invalid {
+  border-color: var(--field-border-invalid);
+}
+
+.input:disabled {
+  background: var(--field-bg-disabled);
+  color: var(--field-text-disabled);
+  cursor: not-allowed;
+}
+
+.input[readonly] {
+  background: var(--field-bg-disabled);
+}
+
 /* --- Banner and shell ------------------------------------------------------------------ */
 
 .banner {
@@ -887,25 +1031,13 @@ main h1[tabindex="-1"]:focus,
   flex: none;
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.5rem 0.5rem 0.25rem 1rem;
-  color: var(--muted);
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) var(--space-1) var(--space-4);
 }
 
-.side-search input {
+.side-search > .search-field {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 44px;
-  padding: 0 0.5rem;
-  border: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 0.9rem;
-}
-
-.side-search input:focus-visible {
-  outline-offset: 0;
 }
 
 .side-main {
@@ -2987,19 +3119,6 @@ svg.warn .mark {
 .picker-search {
   display: none;
   width: 100%;
-  min-height: 40px;
-  padding: 0 0.7rem;
-  font: inherit;
-  color: var(--ink);
-  background: var(--ground);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.picker-search:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 0;
-  border-color: var(--focus);
 }
 
 .picker-scroll {
@@ -3759,22 +3878,9 @@ a.app-row-address:hover {
   gap: var(--space-2);
 }
 
-.app-inline input,
-.app-inline select {
+.app-inline > .input,
+.app-inline > .select-wrap {
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: var(--button-height-md);
-  padding: 0 var(--field-padding-x);
-  border: var(--border-width-hairline) solid var(--field-border-default);
-  border-radius: var(--button-radius-md);
-  background: var(--field-bg-default);
-  color: var(--field-text-default);
-  font: inherit;
-  font-size: var(--font-size-sm);
-}
-
-.app-inline input::placeholder {
-  color: var(--field-placeholder-default);
 }
 
 .app-logs-bar {
@@ -4081,21 +4187,10 @@ form.inline {
   font-weight: 600;
 }
 
-.field select,
-.field textarea {
-  font: inherit;
-  font-weight: 400;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.55rem 0.7rem;
-  min-height: 44px;
-}
-
-.field textarea {
-  font-family: var(--mono);
-  font-size: 0.9rem;
+/* A field's control fills its width. */
+.field > .input,
+.field > .select-wrap {
+  width: 100%;
 }
 
 /* A task's error or "cut off" note under its facts. */
@@ -4184,45 +4279,11 @@ form.inline {
 }
 
 .settings-search {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.5rem;
-  padding: 0 0.6rem;
-  min-height: 40px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--ground);
-  color: var(--muted);
+  margin: 0 0 var(--space-2);
 }
 
 .settings-search[hidden] {
   display: none;
-}
-
-.settings-search:focus-within {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.settings-search input {
-  flex: 1;
-  min-width: 0;
-  min-height: 38px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--ink);
-  font: inherit;
-  outline: none;
-}
-
-.settings-search kbd {
-  padding: 0 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 0.8rem;
 }
 
 .settings-group {
@@ -4427,11 +4488,6 @@ main:empty {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-}
-
-.inline-form select,
-.inline-form input {
-  min-height: 40px;
 }
 
 .inline-number {
@@ -4779,18 +4835,6 @@ table.usage th[scope="row"] {
 
 .settings-form {
   gap: 1.1rem;
-}
-
-.field input {
-  font: inherit;
-  font-weight: 400;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.55rem 0.7rem;
-  min-height: 44px;
-  width: 100%;
 }
 
 .field .hint {
@@ -5483,49 +5527,6 @@ ol.steps > li::marker {
 
 /* Compact select (Files "Keep for", settings rows): matches the upload button (same height,
    border and radius) with its own chevron, drawn in CSS (no image URLs under the CSP). */
-.select-wrap {
-  position: relative;
-  display: inline-flex;
-}
-
-.select-wrap::after {
-  content: "";
-  position: absolute;
-  right: 0.8rem;
-  top: 50%;
-  width: 0.4rem;
-  height: 0.4rem;
-  border-right: 1.5px solid var(--muted);
-  border-bottom: 1.5px solid var(--muted);
-  transform: translateY(-70%) rotate(45deg);
-  pointer-events: none;
-}
-
-.select-wrap select {
-  appearance: none;
-  -webkit-appearance: none;
-  min-height: 40px;
-  padding: 0 2.1rem 0 0.75rem;
-  font: inherit;
-  font-size: 0.85rem;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  cursor: pointer;
-}
-
-@media (hover: hover) {
-  .select-wrap select:hover {
-    border-color: var(--muted);
-  }
-}
-
-.select-wrap select:focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-}
-
 .box-files {
   list-style: none;
   margin: 0 0 0.5rem;
@@ -5934,16 +5935,8 @@ ol.steps > li::marker {
   gap: 0.5rem;
 }
 
-.search-box input {
+.search-box > .input {
   flex: 1;
-  min-width: 0;
-  min-height: 44px;
-  padding: 0.55rem 0.7rem;
-  font: inherit;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
 }
 
 .reg-head {
@@ -6131,8 +6124,7 @@ ol.steps > li::marker {
     margin-left: auto;
   }
 
-  /* The header's round "⋯": a smaller disc inside the same 44px tap target, so it sits with
-     the plain icons beside it instead of standing out as a large white circle. */
+  /* The header's round "⋯": a disc, so it sits with the plain icons beside it. */
   .chat-head > .more-button {
     grid-area: more;
     border-radius: var(--radius-full);
@@ -6140,15 +6132,7 @@ ol.steps > li::marker {
   }
 
   .shell:has([data-phone-view="list"]) .side-search {
-    margin: 0 1rem 0.5rem;
-    padding: 0 0.5rem 0 0.75rem;
-    gap: 0.5rem;
-    background: var(--surface);
-    border-radius: 10px;
-  }
-
-  .shell:has([data-phone-view="list"]) .side-search input {
-    font-size: 1rem;
+    padding: 0 var(--space-4) var(--space-2);
   }
 
   .shell:has([data-phone-view="list"]) .side-main {

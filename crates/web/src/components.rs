@@ -1320,7 +1320,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                 (crate::components::csrf_field())
                 label.select-wrap {
                     span.visually-hidden { "Keep files for" }
-                    select name="keep" data-autosubmit {
+                    select.input name="keep" data-autosubmit {
                         @for (value, label) in p.keep_choices {
                             option value=(value) selected[value == p.keep_selected] { (label) }
                         }
@@ -1365,9 +1365,11 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                                             (crate::components::csrf_field())
                                             label.field {
                                                 span { "Send to" }
-                                                select name="to" {
-                                                    @for (key, name) in p.send_to {
-                                                        option value=(key) { (name) }
+                                                span.select-wrap {
+                                                    select.input name="to" {
+                                                        @for (key, name) in p.send_to {
+                                                            option value=(key) { (name) }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1846,7 +1848,7 @@ fn picker_markup(p: &ModelPicker, oob: bool) -> Markup {
                         }
                     } @else {
                         label.visually-hidden for="picker-search" { "Search models" }
-                        input.picker-search #picker-search type="search" placeholder="Search models…"
+                        input.picker-search.input #picker-search type="search" placeholder="Search models…"
                             autocomplete="off" spellcheck="false";
                         div.picker-scroll {
                             @for b in &p.backends {
@@ -2070,10 +2072,12 @@ pub fn select_field_at(
     html! {
         label.field {
             span { (label) }
-            select name=(name) required {
-                @for c in choices {
-                    option value=(c.value) disabled[!c.enabled]
-                        selected[selected == Some(c.value)] { (c.label) }
+            span.select-wrap {
+                select.input name=(name) required {
+                    @for c in choices {
+                        option value=(c.value) disabled[!c.enabled]
+                            selected[selected == Some(c.value)] { (c.label) }
+                    }
                 }
             }
         }
@@ -2085,7 +2089,7 @@ pub fn textarea_field(name: &str, label: &str, placeholder: &str, max_len: usize
     html! {
         label.field {
             span { (label) }
-            textarea name=(name) rows="4" placeholder=(placeholder) maxlength=(max_len) required {}
+            textarea.input name=(name) rows="4" placeholder=(placeholder) maxlength=(max_len) required {}
         }
     }
 }
@@ -2146,7 +2150,7 @@ pub fn danger_confirm(c: &DangerConfirm<'_>) -> Markup {
                     (crate::components::csrf_field())
                     label.field {
                         span { "Type " strong { (c.word) } " to confirm" }
-                        input type="text" name="confirm" required autocomplete="off"
+                        input.input type="text" name="confirm" required autocomplete="off"
                             autocapitalize="off" spellcheck="false" pattern=(c.word)
                             aria-invalid=[c.error.map(|_| "true")];
                     }
@@ -2405,7 +2409,7 @@ pub fn text_field(
     html! {
         label.field {
             span { (label) }
-            input type=(kind) name=(name) value=(value) placeholder=(placeholder)
+            input.input type=(kind) name=(name) value=(value) placeholder=(placeholder)
                 autocomplete="off" spellcheck="false" maxlength="4096";
             @if let Some(h) = hint { small.hint { (h) } }
         }
@@ -2417,7 +2421,7 @@ pub fn lines_field(name: &str, label: &str, value: &str, hint: Option<&str>) -> 
     html! {
         label.field {
             span { (label) }
-            textarea name=(name) rows="3" spellcheck="false" autocomplete="off" { (value) }
+            textarea.input.input-mono name=(name) rows="3" spellcheck="false" autocomplete="off" { (value) }
             @if let Some(h) = hint { small.hint { (h) } }
         }
     }

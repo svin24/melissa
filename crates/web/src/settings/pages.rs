@@ -1367,7 +1367,7 @@ pub fn new_agent_region(
                 (crate::components::csrf_field())
                 label.field {
                     span { "Name" }
-                    input type="text" name="name" value=(name) required maxlength="40"
+                    input.input type="text" name="name" value=(name) required maxlength="40"
                         autocomplete="off" spellcheck="false" autofocus;
                 }
                 (icon_picker(shapes, colors, icon.0, icon.1))

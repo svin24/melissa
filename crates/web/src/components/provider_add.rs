@@ -201,7 +201,7 @@ pub fn search_box(
     html! {
         form.search-box method="get" action=(page_url) role="search" {
             label.visually-hidden for="registry-search" { (label) }
-            input #registry-search type="search" name="q" value=(value) placeholder=(label)
+            input.input #registry-search type="search" name="q" value=(value) placeholder=(label)
                 autocomplete="off" spellcheck="false" maxlength="100"
                 hx-get=(live_url) hx-trigger="input changed delay:300ms, search"
                 hx-target={ "#" (target) } hx-swap="outerHTML";

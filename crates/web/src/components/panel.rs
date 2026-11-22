@@ -214,7 +214,7 @@ pub fn settings_frame_at(
             nav.settings-nav aria-label="Settings sections" {
                 p.settings-title { "Settings" }
                 // Filled in by melissa.js; without script every section is listed anyway.
-                div.settings-search data-settings-search hidden {
+                div.settings-search.search-field data-settings-search hidden {
                     label.visually-hidden for="settings-q" { "Search settings" }
                     (glyph(Glyph::Search))
                     input #settings-q type="search" placeholder="Search" autocomplete="off"
@@ -319,7 +319,7 @@ pub fn inline_select(
     html! {
         label.visually-hidden for=(id) { (label) }
         span.select-wrap {
-            select id=(id) name=(name) {
+            select.input id=(id) name=(name) {
                 @for (value, text) in choices {
                     option value=(value) selected[value == selected] { (text) }
                 }
@@ -333,7 +333,7 @@ pub fn inline_number(name: &str, label: &str, value: &str, min: u32, max: u32) -
     let id = format!("f-{name}");
     html! {
         label.visually-hidden for=(id) { (label) }
-        input.inline-number id=(id) name=(name) type="number" inputmode="numeric"
+        input.inline-number.input id=(id) name=(name) type="number" inputmode="numeric"
             min=(min) max=(max) value=(value) required;
     }
 }

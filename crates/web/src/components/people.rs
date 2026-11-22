@@ -31,7 +31,7 @@ pub fn credential_field(
     let field = html! {
         label.field {
             span { (label) }
-            input type=(kind) name=(name) value=(value) autocomplete=(autocomplete)
+            input.input type=(kind) name=(name) value=(value) autocomplete=(autocomplete)
                 autocapitalize="none" spellcheck="false" required maxlength="256";
             @if let Some(h) = hint { small.hint { (h) } }
         }

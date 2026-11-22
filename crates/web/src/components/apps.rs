@@ -333,7 +333,7 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                                     "Type " strong { (d.app) } " to confirm"
                                 }
                                 div.app-inline {
-                                    input #app-delete-confirm type="text" name="confirm" required
+                                    input.input #app-delete-confirm type="text" name="confirm" required
                                         autocomplete="off" autocapitalize="off" spellcheck="false"
                                         pattern=(d.app) placeholder=(d.app);
                                     button.(Btn::danger()) type="submit" { "Force delete" }
@@ -419,11 +419,13 @@ pub fn app_logs_region(l: &AppLogsView<'_>) -> Markup {
                 @if l.containers.len() > 1 {
                     label.app-field for="app-logs-container" { "Container" }
                     div.app-inline {
-                        select #app-logs-container name="container" hx-get=(l.url)
-                            hx-trigger="change" hx-target="#app-logs" hx-swap="outerHTML"
-                            hx-include="this" {
-                            @for c in l.containers {
-                                option value=(c) selected[l.container == Some(c.as_str())] { (c) }
+                        span.select-wrap {
+                            select.input #app-logs-container name="container" hx-get=(l.url)
+                                hx-trigger="change" hx-target="#app-logs" hx-swap="outerHTML"
+                                hx-include="this" {
+                                @for c in l.containers {
+                                    option value=(c) selected[l.container == Some(c.as_str())] { (c) }
+                                }
                             }
                         }
                         button.(Btn::secondary()) type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
