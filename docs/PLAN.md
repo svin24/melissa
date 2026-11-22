@@ -538,6 +538,10 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   to those two hosts only (enforced in the client), no redirects, 10 s timeout, 1 MiB answer cap, User-Agent
   `melissa`. Tokens are sent only to their provider's host, never logged, stored, shown to agents or the UI, and
   never renewed by Melissa (an expired Google token reads as unavailable until Gemini's next run renews it).
+  (3) Container install network check (owner-approved 2026-11-22): after the container starts, install.sh
+  resolves `example.com` once from inside it (`getent`, up to two tries, 5 s each). That is a DNS query to the
+  host's own resolver only; nothing connects to example.com. `NET_CHECK=no` skips it. melissa-setup likewise
+  resolves the installer host it is about to download from before downloading.
   These endpoints are undocumented and may change or break; the owner accepted that risk and the providers' terms.
 
 ## 6b. Clients (later)
