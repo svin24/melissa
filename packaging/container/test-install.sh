@@ -12,6 +12,7 @@ eq() { # description, want, got
     if [ "$2" = "$3" ]; then echo "ok: $1"; else echo "FAIL: $1"$'\n'"  want: $2"$'\n'"  got:  $3"; fails=$((fails + 1)); fi
 }
 yes_no() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }
+yes_if() { if eval "$1" >/dev/null 2>&1; then echo yes; else echo no; fi; }  # a compound check
 
 # --- BIND coverage (the incident: loopback BIND, Tailscale address in the links) ------------
 BIND=127.0.0.1
@@ -196,6 +197,167 @@ case "$(claim_line '')" in
     *"melissa-server setup-code"*) eq "no answer yet: the fallback command" ok ok ;;
     *) eq "no answer yet: the fallback command" ok bad ;;
 esac
+
+# --- Docker on the same host (its FORWARD policy drops podman's traffic) ----------------------
+# Stubs: iptables answers from FAKE_POLICY/FAKE_CHAIN and logs changes; systemctl from
+# FAKE_DOCKER (active|enabled|no) and logs the rest; podman answers the network inspect.
+dk=$(mktemp -d)
+STATE="$dk/state"; UNITDIR="$dk/units"; mkdir -p "$STATE" "$UNITDIR"
+calls="$dk/calls"
+iptables() {
+    case "$*" in
+    "-S DOCKER-USER") [ "${FAKE_CHAIN:-yes}" = yes ] && echo "-N DOCKER-USER" ;;
+    "-S FORWARD") printf '%s\n' "-P FORWARD ${FAKE_POLICY:-DROP}" "-A FORWARD -j DOCKER-USER" ;;
+    *) echo "iptables $*" >> "$calls" ;;
+    esac
+}
+systemctl() {
+    case "$*" in
+    "is-active -q docker.service") [ "${FAKE_DOCKER:-no}" = active ] ;;
+    "is-enabled -q docker.socket") [ "${FAKE_DOCKER:-no}" = enabled ] ;;
+    is-*) return 1 ;;
+    *) echo "systemctl $*" >> "$calls" ;;
+    esac
+}
+podman() {
+    case "$*" in
+    "network inspect podman --format {{range .Subnets}}{{.Subnet}} {{end}}") echo "${FAKE_SUBNETS-10.88.0.0/16 fd00:0:0:1::/64 }" ;;
+    *) echo "podman $*" >> "$calls" ;;
+    esac
+}
+reset_dk() { rm -f "$calls" "$UNITDIR"/*; printf 'IMAGE=x\nDOCKER_FORWARD_SUBNETS=""\n' > "$STATE/install.env"; }
+unit="$UNITDIR/melissa-docker-forward.service"
+
+eq "subnets: IPv4 only, from podman network inspect" 10.88.0.0/16 "$(podman_subnets)"
+eq "Docker's drop policy is seen" yes "$(yes_no docker_drops_forward)"
+eq "an ACCEPT policy is not Docker's drop" no "$(FAKE_POLICY=ACCEPT yes_no docker_drops_forward)"
+eq "no DOCKER-USER chain: not Docker's" no "$(FAKE_CHAIN=no yes_no docker_drops_forward)"
+eq "docker.service active: Docker is here" yes "$(FAKE_DOCKER=active yes_no docker_installed)"
+eq "docker.socket enabled: Docker is here" yes "$(FAKE_DOCKER=enabled yes_no docker_installed)"
+eq "no Docker" no "$(yes_no docker_installed)"
+
+# The unit (subnet from the stubbed inspect, 10.88.0.0/16 is podman's documented default).
+FAKE_SUBNETS="172.30.0.0/16 "
+docker_forward_unit "$(podman_subnets)" > "$dk/u"
+eq "unit: after Docker, restarted with it" yes \
+    "$(yes_if 'grep -qx After=docker.service "$dk/u" && grep -qx PartOf=docker.service "$dk/u"')"
+eq "unit: started whenever Docker starts" yes "$(yes_no grep -qx 'WantedBy=docker.service' "$dk/u")"
+eq "unit: skipped, not failed, without Docker's chain" yes \
+    "$(yes_no grep -qx "ExecCondition=/bin/sh -c 'iptables -S DOCKER-USER >/dev/null 2>&1'" "$dk/u")"
+eq "unit: source rule, idempotent, the inspected subnet" yes \
+    "$(yes_no grep -qxF "ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -s 172.30.0.0/16 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -s 172.30.0.0/16 -j ACCEPT'" "$dk/u")"
+eq "unit: destination rule (replies and published app ports)" yes \
+    "$(yes_no grep -qxF "ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -d 172.30.0.0/16 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -d 172.30.0.0/16 -j ACCEPT'" "$dk/u")"
+eq "unit: two rules, nothing else" 2 "$(grep -c '^ExecStart=' "$dk/u")"
+eq "unit: not podman's default hard-coded" no "$(yes_no grep -q 10.88 "$dk/u")"
+unset FAKE_SUBNETS
+
+# Install on a Docker host: unit written, enabled, applied, recorded, one line said.
+reset_dk; DOCKER_FORWARD=auto
+out=$(docker_forward); rc=$?
+eq "Docker host: docker_forward says Docker is here" 0 "$rc"
+eq "Docker host: one line says what and why" \
+    "melissa-install: Docker's firewall drops podman traffic; added DOCKER-USER rules for 10.88.0.0/16 (melissa-docker-forward.service)" "$out"
+eq "Docker host: the unit is written" yes "$(yes_no grep -q 'DOCKER-USER -s 10.88.0.0/16' "$unit")"
+eq "Docker host: enabled and applied now" yes \
+    "$(yes_if 'grep -qx "systemctl enable -q melissa-docker-forward.service" "$calls" && grep -qx "systemctl restart melissa-docker-forward.service" "$calls"')"
+eq "Docker host: recorded for uninstall" 10.88.0.0/16 "$(env_get DOCKER_FORWARD_SUBNETS)"
+eq "Docker host: install.env stays sourceable" 10.88.0.0/16 "$(. "$STATE/install.env"; echo "$DOCKER_FORWARD_SUBNETS")"
+eq "Docker host: no rule deleted" no "$(yes_no grep -q 'iptables -D' "$calls")"
+
+# Docker installed but not running yet: the unit waits for it.
+reset_dk
+out=$(FAKE_CHAIN=no FAKE_DOCKER=enabled docker_forward)
+eq "Docker not started: unit installed for later" yes "$(yes_no test -e "$unit")"
+eq "Docker not started: says so" yes "$(yes_no grep -q 'when it starts' <<<"$out")"
+
+# A normal host: nothing written, nothing run.
+reset_dk
+out=$(FAKE_CHAIN=no docker_forward); rc=$?
+eq "no Docker: docker_forward says so" 1 "$rc"
+eq "no Docker: silent" "" "$out"
+eq "no Docker: no unit" no "$(yes_no test -e "$unit")"
+eq "no Docker: no systemctl or iptables changes" no "$(yes_no test -s "$calls")"
+eq "no Docker: nothing recorded" "" "$(env_get DOCKER_FORWARD_SUBNETS)"
+
+# DOCKER_FORWARD=no: the commands, nothing changed.
+reset_dk; DOCKER_FORWARD=no
+out=$(docker_forward)
+eq "DOCKER_FORWARD=no: no unit" no "$(yes_no test -e "$unit")"
+eq "DOCKER_FORWARD=no: nothing run" no "$(yes_no test -s "$calls")"
+eq "DOCKER_FORWARD=no: prints both commands" yes \
+    "$(yes_if 'grep -qxF "  sudo iptables -I DOCKER-USER -s 10.88.0.0/16 -j ACCEPT" <<<"$out" && grep -qxF "  sudo iptables -I DOCKER-USER -d 10.88.0.0/16 -j ACCEPT" <<<"$out"')"
+# ...and on a reinstall it takes out what an earlier install added.
+reset_dk; DOCKER_FORWARD=auto; docker_forward >/dev/null; rm -f "$calls"; DOCKER_FORWARD=no
+docker_forward >/dev/null
+eq "DOCKER_FORWARD=no after auto: unit removed" no "$(yes_no test -e "$unit")"
+eq "DOCKER_FORWARD=no after auto: its rules deleted" 2 "$(grep -c '^iptables -D DOCKER-USER' "$calls")"
+eq "DOCKER_FORWARD=no after auto: record cleared" "" "$(env_get DOCKER_FORWARD_SUBNETS)"
+DOCKER_FORWARD=auto
+
+# A reinstall after podman's subnet changed: the old rules go.
+reset_dk; env_set DOCKER_FORWARD_SUBNETS 10.99.0.0/16
+docker_forward >/dev/null
+eq "subnet changed: old rules deleted" yes "$(yes_no grep -qx 'iptables -D DOCKER-USER -s 10.99.0.0/16 -j ACCEPT' "$calls")"
+eq "subnet changed: new one recorded" 10.88.0.0/16 "$(env_get DOCKER_FORWARD_SUBNETS)"
+
+# install_files keeps the record when it rewrites install.env.
+eq "install_files keeps DOCKER_FORWARD_SUBNETS" yes \
+    "$(yes_no grep -q 'docker_subnets=$(env_get DOCKER_FORWARD_SUBNETS)' "$here/install.sh")"
+
+# Uninstall: removes the unit and the rules only when install.sh added them.
+(
+    # shellcheck source=packaging/container/uninstall.sh
+    . "$here/uninstall.sh"
+    set +e
+    fails=0
+    STATE="$dk/state"; UNITDIR="$dk/units"
+    reset_dk; : > "$unit"
+    out=$(remove_docker_forward "")
+    eq "uninstall, not ours: nothing said" "" "$out"
+    eq "uninstall, not ours: no rule deleted" no "$(yes_no test -s "$calls")"
+    eq "uninstall, not ours: nothing removed" yes "$(yes_no test -e "$unit")"
+    reset_dk; DOCKER_FORWARD=auto; docker_forward >/dev/null; rm -f "$calls"
+    out=$(remove_docker_forward "$(env_get DOCKER_FORWARD_SUBNETS)")
+    eq "uninstall: unit disabled and stopped" yes \
+        "$(yes_no grep -qx 'systemctl disable -q --now melissa-docker-forward.service' "$calls")"
+    eq "uninstall: unit file removed" no "$(yes_no test -e "$unit")"
+    eq "uninstall: both rules deleted" "iptables -D DOCKER-USER -s 10.88.0.0/16 -j ACCEPT
+iptables -D DOCKER-USER -d 10.88.0.0/16 -j ACCEPT" "$(grep '^iptables' "$calls")"
+    eq "uninstall: record cleared" "" "$(env_get DOCKER_FORWARD_SUBNETS)"
+    eq "uninstall: says so" yes "$(yes_no grep -q 'removed melissa-docker-forward.service' <<<"$out")"
+    exit "$fails"
+) || fails=$((fails + $?))
+eq "uninstall.sh reads the record" yes \
+    "$(yes_no grep -qx 'remove_docker_forward "$DOCKER_FORWARD_SUBNETS"' "$here/uninstall.sh")"
+
+# --- the network check after the start (never fails the install, never hangs) -----------------
+NET_CHECK=yes
+podman() {
+    case "$*" in
+    "exec melissa timeout 5 getent ahosts example.com") [ "${FAKE_ONLINE:-yes}" = yes ] ;;
+    network*) echo "10.88.0.0/16" ;;
+    esac
+}
+timeout() { shift; "$@"; }
+sysctl() { echo "${FAKE_FORWARD:-1}"; }
+eq "online: no warning" "" "$(network_check no)"
+out=$(FAKE_ONLINE=no network_check no); rc=$?
+eq "offline: the install goes on" 0 "$rc"
+eq "offline: says the container has no network" yes "$(yes_no grep -q 'the container has no network access' <<<"$out")"
+eq "offline: names the likely causes" yes "$(yes_no grep -q "another firewall's forward policy" <<<"$out")"
+eq "offline: points to the README" yes "$(yes_no grep -q 'No network in the container' <<<"$out")"
+eq "offline, forwarding off: says it" yes \
+    "$(yes_if 'FAKE_ONLINE=no FAKE_FORWARD=0 network_check no | grep "net.ipv4.ip_forward = 0 here"')"
+eq "offline on a Docker host: the rules to check" yes \
+    "$(yes_if 'FAKE_ONLINE=no network_check yes | grep "iptables -I DOCKER-USER -d 10.88.0.0/16"')"
+eq "NET_CHECK=no: skipped" "" "$(NET_CHECK=no FAKE_ONLINE=no network_check no)"
+eq "the check is a lookup with short timeouts" yes \
+    "$(yes_no grep -q 'timeout 15 podman exec melissa timeout 5 getent ahosts' "$here/install.sh")"
+eq "the README has the sections the messages name" yes \
+    "$(yes_if 'grep -q "^### Docker on the same host" "$here/README.md" && grep -q "^### No network in the container" "$here/README.md"')"
+unset -f iptables systemctl podman timeout sysctl
+rm -rf "$dk"
 
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"

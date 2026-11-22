@@ -31,6 +31,11 @@
 #                                   Settings → Tailscale says so; no: the owner may enable Melissa's
 #                                   own (off by default).
 #   TAILSCALE_NAME=melissa-<host>   the node name of Melissa's own Tailscale on the tailnet
+#   DOCKER_FORWARD=auto             Docker on this host drops podman's forwarded traffic: auto adds
+#                                   two DOCKER-USER rules (melissa-docker-forward.service); no only
+#                                   prints them (README, "Docker on the same host")
+#   NET_CHECK=yes                   after the start, check that the container can look up
+#                                   NET_CHECK_HOST=example.com (a DNS lookup; no: skip it)
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -42,6 +47,9 @@ BIND=${BIND:-0.0.0.0}
 SET_SYSCTLS=${SET_SYSCTLS:-yes}
 ALLOW_ADDRESS_MISMATCH=${ALLOW_ADDRESS_MISMATCH:-no}
 HOST_TAILSCALE=${HOST_TAILSCALE:-auto}
+DOCKER_FORWARD=${DOCKER_FORWARD:-auto}
+NET_CHECK=${NET_CHECK:-yes}
+NET_CHECK_HOST=${NET_CHECK_HOST:-example.com}
 SYS_NET=${SYS_NET:-/sys/class/net}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
@@ -53,6 +61,7 @@ LIBEXEC=/usr/local/libexec/melissa
 SHARE=/usr/local/share/melissa
 SYSCTL_FILE=/etc/sysctl.d/90-melissa-kubelet.conf
 MODULES_FILE=/etc/modules-load.d/melissa.conf
+DOCKER_FORWARD_UNIT=melissa-docker-forward.service
 # k3s's pod and service networks inside the container; the podman network must not overlap them.
 K3S_CIDRS="10.42.0.0/16 10.43.0.0/16"
 # The kubelet inside sets these host-wide (they are not namespaced). Values as the kubelet wants them.
@@ -290,8 +299,11 @@ install_files() {
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
     install -m 0644 "$here/README.md" "$SHARE/README.md"
-    local timer_ours=${TIMER_OURS:-no}
-    [ -r "$STATE/install.env" ] && timer_ours=$(sed -n 's/^TIMER_OURS=//p' "$STATE/install.env")
+    local timer_ours=${TIMER_OURS:-no} docker_subnets=''
+    if [ -r "$STATE/install.env" ]; then
+        timer_ours=$(sed -n 's/^TIMER_OURS=//p' "$STATE/install.env")
+        docker_subnets=$(env_get DOCKER_FORWARD_SUBNETS)
+    fi
     if [ "$AUTO_UPDATE" != off ] && ! systemctl is-enabled -q podman-auto-update.timer 2>/dev/null; then
         systemctl enable -q --now podman-auto-update.timer
         timer_ours=yes
@@ -306,6 +318,7 @@ UI_BIND=$UI_BIND
 BIND=$BIND
 APP_PORT_BASE=$APP_PORT_BASE
 TIMER_OURS=${timer_ours:-no}
+DOCKER_FORWARD_SUBNETS="$docker_subnets"
 EOF
     systemctl daemon-reload
     [ -e /run/systemd/generator/melissa.service ] \
@@ -424,6 +437,182 @@ setup_code_output() {
     printf '%s' "$out"
 }
 
+# --- Docker on the same host ---------------------------------------------------------------
+# Docker sets the iptables FORWARD policy to DROP and accepts only its own bridges. An nftables
+# accept ends only its own hook, so a packet netavark's table accepts is still dropped by Docker's
+# chain: containers on podman's network get no network at all. Docker's place for other rules is
+# its DOCKER-USER chain; a small unit puts ours there whenever Docker starts.
+
+# podman_subnets: the IPv4 subnets of podman's network `podman` (iptables is IPv4), one per line.
+podman_subnets() {
+    local s
+    for s in $(podman network inspect podman --format '{{range .Subnets}}{{.Subnet}} {{end}}' 2>/dev/null); do
+        case "$s" in *:*) ;; */*) echo "$s" ;; esac
+    done
+}
+
+# docker_drops_forward: Docker's chain is there and the FORWARD policy drops (now).
+docker_drops_forward() {
+    command -v iptables >/dev/null 2>&1 || return 1
+    iptables -S DOCKER-USER >/dev/null 2>&1 || return 1
+    iptables -S FORWARD 2>/dev/null | grep -qx -- '-P FORWARD DROP'
+}
+
+# docker_installed: Docker runs or starts on its own (it sets that policy when it starts).
+docker_installed() {
+    local u
+    for u in docker.service docker.socket; do
+        systemctl is-active -q "$u" 2>/dev/null && return 0
+        systemctl is-enabled -q "$u" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# docker_forward_rule SUBNET: the two rules (iptables arguments after the chain) for SUBNET.
+docker_forward_rules() {
+    echo "-s $1 -j ACCEPT"
+    echo "-d $1 -j ACCEPT"
+}
+
+# docker_forward_unit SUBNETS: the unit that keeps those rules in DOCKER-USER (on stdout).
+docker_forward_unit() {
+    local s r
+    cat <<EOF
+# Written by packaging/container/install.sh; uninstall.sh removes it and its rules.
+# Docker's iptables FORWARD policy (DROP) also drops podman's network ($*),
+# so Melissa's container has no network. These rules in Docker's DOCKER-USER chain let it
+# through. See $SHARE/README.md, "Docker on the same host".
+[Unit]
+Description=Melissa: let podman's network through Docker's firewall
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# No Docker chain (Docker not running or gone): nothing to do, not a failure.
+ExecCondition=/bin/sh -c 'iptables -S DOCKER-USER >/dev/null 2>&1'
+EOF
+    for s in "$@"; do
+        while read -r r; do
+            echo "ExecStart=/bin/sh -c 'iptables -C DOCKER-USER $r 2>/dev/null || iptables -I DOCKER-USER $r'"
+        done < <(docker_forward_rules "$s")
+    done
+    cat <<EOF
+
+[Install]
+WantedBy=docker.service
+EOF
+}
+
+# docker_forward_manual SUBNETS: the commands for doing it by hand.
+docker_forward_manual() {
+    local s r
+    for s in "$@"; do
+        while read -r r; do echo "  sudo iptables -I DOCKER-USER $r"; done < <(docker_forward_rules "$s")
+    done
+}
+
+# docker_forward_delete SUBNETS: delete one copy of each rule (the one the unit inserted).
+docker_forward_delete() {
+    local s r
+    for s in "$@"; do
+        while read -r r; do
+            # shellcheck disable=SC2086 # split the rule into arguments
+            iptables -D DOCKER-USER $r 2>/dev/null || true
+        done < <(docker_forward_rules "$s")
+    done
+}
+
+# env_get KEY / env_set KEY VALUE: install.env (sourced by uninstall.sh: values are quoted, and
+# hold no quotes). uninstall.sh reads there what install.sh changed on the host.
+env_get() {
+    [ -r "$STATE/install.env" ] || return 0
+    sed -n "s/^$1=//p" "$STATE/install.env" | tr -d '"' | tail -n 1
+}
+env_set() {
+    local f=$STATE/install.env
+    [ -e "$f" ] || : > "$f"
+    { grep -v "^$1=" "$f" || true; echo "$1=\"$2\""; } > "$f.new" && mv "$f.new" "$f"
+}
+
+# docker_forward: on a host where Docker's firewall drops podman's traffic, install and start
+# melissa-docker-forward.service (DOCKER_FORWARD=no: print the commands instead). Returns 0 when
+# Docker is on this host (whatever was done), 1 when it isn't.
+docker_forward() {
+    local unit=$UNITDIR/$DOCKER_FORWARD_UNIT old subnets drops=no
+    old=$(env_get DOCKER_FORWARD_SUBNETS)
+    docker_drops_forward && drops=yes
+    [ "$drops" = yes ] || docker_installed || return 1
+    mapfile -t subnets < <(podman_subnets)
+    if [ "${#subnets[@]}" = 0 ]; then
+        say "WARNING: Docker runs here, but podman's network 'podman' has no IPv4 subnet to let through"
+        return 0
+    fi
+    if [ "$DOCKER_FORWARD" = no ]; then
+        if [ -n "$old" ] || [ -e "$unit" ]; then
+            systemctl disable -q --now "$DOCKER_FORWARD_UNIT" 2>/dev/null || true
+            rm -f "$unit"
+            # shellcheck disable=SC2086 # a list of subnets
+            docker_forward_delete $old
+            env_set DOCKER_FORWARD_SUBNETS ''
+            systemctl daemon-reload
+            say "DOCKER_FORWARD=no: removed $DOCKER_FORWARD_UNIT and its rules from an earlier install"
+        fi
+        if [ "$drops" = yes ]; then
+            say "Docker's firewall drops podman traffic (DOCKER_FORWARD=no: not changed). To let Melissa out:"
+            docker_forward_manual "${subnets[@]}"
+        fi
+        return 0
+    fi
+    # A subnet from an earlier install that's gone now: take its rules out.
+    if [ -n "$old" ] && [ "$old" != "${subnets[*]}" ]; then
+        # shellcheck disable=SC2086 # a list of subnets
+        docker_forward_delete $old
+    fi
+    docker_forward_unit "${subnets[@]}" > "$unit"
+    env_set DOCKER_FORWARD_SUBNETS "${subnets[*]}"
+    systemctl daemon-reload
+    systemctl enable -q "$DOCKER_FORWARD_UNIT"
+    systemctl restart "$DOCKER_FORWARD_UNIT" || true
+    if [ "$drops" = yes ]; then
+        say "Docker's firewall drops podman traffic; added DOCKER-USER rules for ${subnets[*]} ($DOCKER_FORWARD_UNIT)"
+    else
+        say "Docker is installed; $DOCKER_FORWARD_UNIT lets ${subnets[*]} through its firewall when it starts"
+    fi
+    return 0
+}
+
+# container_online: can the container look up a well-known name? Short timeouts, two tries.
+container_online() {
+    local _
+    for _ in 1 2; do
+        timeout 15 podman exec melissa timeout 5 getent ahosts "$NET_CHECK_HOST" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# network_check DOCKER(yes|no): warn when the container has no network. Never fails the install.
+network_check() {
+    [ "$NET_CHECK" != no ] || return 0
+    container_online && return 0
+    say "WARNING: the container has no network access (looking up $NET_CHECK_HOST failed)."
+    say "  Agents can't be installed and apps can't download anything until this is fixed."
+    if [ "$1" = yes ]; then
+        say "  Docker runs on this host; its FORWARD chain may still drop podman traffic. These rules let it out:"
+        # shellcheck disable=SC2046 # a list of subnets
+        docker_forward_manual $(podman_subnets)
+    else
+        say "  Likely causes: another firewall's forward policy drops podman's network ($(podman_subnets | paste -sd ' ' -)),"
+        if [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" = 0 ]; then
+            say "  or IP forwarding is off (net.ipv4.ip_forward = 0 here)."
+        else
+            say "  or IP forwarding is off (sysctl net.ipv4.ip_forward)."
+        fi
+    fi
+    say "  See $SHARE/README.md, \"No network in the container\" (packaging/container/README.md)."
+}
+
 wait_for() { # seconds, description, command...
     local end=$(( $(date +%s) + $1 )) what=$2; shift 2
     until "$@" >/dev/null 2>&1; do
@@ -438,7 +627,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,33p' "$0"; exit 2 ;;
+*) sed -n '2,38p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
@@ -449,6 +638,9 @@ install_files
 say "starting melissa.service"
 systemctl restart melissa.service
 wait_for 120 "systemd in the container" podman exec melissa test -d /var/lib/melissa-container/etc-melissa
+docker=no
+docker_forward && docker=yes
+network_check "$docker"
 configure
 wait_for 120 "the web UI" curl -fsS -o /dev/null "http://127.0.0.1:$UI_PORT/"
 claim=$(claim_line "$(setup_code_output)")

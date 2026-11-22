@@ -1723,3 +1723,19 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   device", "isn't answering right now. Melissa keeps trying."). Why: the lead (Grok from source) said only "not set
   up, no helpers", a dead end. Alternatives: long prompt prose (every provider must read it; a tool result is
   where the fact lives), a new `ClusterError` Display (also shown in the UI's workspace errors).
+- **2026-11-22 — The container installer lets podman's network through Docker's firewall (`DOCKER-USER`).** On a host
+  that also runs Docker, its iptables `FORWARD` policy is DROP and only its bridges are accepted; netavark's nftables
+  accept ends only its own hook, so Docker's chain still dropped every packet of Melissa's container (no DNS, agent
+  installs failed with "Could not resolve host"). install.sh detects Docker (its `DOCKER-USER` chain with a DROP
+  policy, or `docker.service`/`docker.socket` running or enabled) and installs `melissa-docker-forward.service`:
+  `WantedBy=`/`After=`/`PartOf=docker.service`, an `ExecCondition` on the chain (no Docker: skipped, boot is
+  fine), and two idempotent rules (`-s` and `-d` podman's subnet, read from `podman network inspect` at install
+  time, `-d` also for the published app ports). `install.env` records the subnets; uninstall.sh removes the unit
+  and those rules only then. `DOCKER_FORWARD=no` prints the commands instead. After the start install.sh looks up
+  `example.com` inside the container (short timeouts, `NET_CHECK=no` skips it: one DNS lookup, nothing sent) and
+  warns with likely causes; melissa-setup checks the download host's name (5 s) before downloading and stops at
+  once ("This container can't reach the internet") instead of curl retrying a lookup four times. Why: Docker's
+  documented place for user rules is `DOCKER-USER` and it never flushes it; firewalld zones (`trusted`) don't help
+  because the drop is in Docker's own chain. Alternatives: Docker's `"ip-forward-no-drop"` / `"iptables": false`
+  (changes Docker for everyone), nftables rules of our own (an accept can't override another base chain's drop),
+  a hard-coded 10.88.0.0/16 (wrong for a changed podman network).
