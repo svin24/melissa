@@ -167,6 +167,8 @@ pub struct Feed {
     open_reply: Option<(TurnId, usize)>,
     turns_with_reply: HashSet<TurnId>,
     errored_turns: HashSet<TurnId>,
+    /// Turns stopped because the user steered (their `cancelled` end says so).
+    steered_turns: HashSet<TurnId>,
     /// Agent tool-call ids → (steps card, line) (agent ids never reach DOM ids or selectors).
     tool_steps: HashMap<String, (usize, usize)>,
     /// The steps card the current turn adds to (while it is the newest entry).
@@ -712,6 +714,7 @@ impl Feed {
                 out.push(Change::Status);
                 let text = match stop_reason.as_str() {
                     "end_turn" => None,
+                    "cancelled" if self.steered_turns.remove(turn) => Some("Conversation steered."),
                     "cancelled" => Some("Stopped."),
                     "refusal" => Some("The assistant declined to do that."),
                     "max_tokens" => Some("The reply hit its length limit."),
@@ -774,6 +777,10 @@ impl Feed {
                 out
             }
             LeadEvent::ContextCompacted { .. } => Vec::new(),
+            LeadEvent::TurnSteered { turn } => {
+                self.steered_turns.insert(*turn);
+                Vec::new()
+            }
             LeadEvent::SetupPassword { app, login } => vec![self.add(
                 format!("p{}", rec.seq),
                 Item::SetupPassword {
@@ -861,6 +868,7 @@ impl Feed {
         self.reply_break = false;
         self.turns_with_reply.clear();
         self.errored_turns.clear();
+        self.steered_turns.clear();
         self.tool_steps.clear();
         self.open_steps = None;
         self.hidden_tools.clear();
@@ -2347,6 +2355,67 @@ mod tests {
             &NoLookup,
         );
         assert!(matches!(&feed.entries()[3].item, Item::Note { text, .. } if text == "Stopped."));
+    }
+
+    #[test]
+    fn a_steered_turn_says_so_and_a_plain_stop_says_stopped() {
+        let user = |turn, text: &str| LeadEvent::UserMessage {
+            turn,
+            text: text.into(),
+            attachments: vec![],
+            scheduled: None,
+        };
+        let cancelled = |turn| LeadEvent::TurnFinished {
+            turn,
+            stop_reason: "cancelled".into(),
+        };
+        let notes = |feed: &Feed| -> Vec<String> {
+            feed.entries()
+                .iter()
+                .filter_map(|e| match &e.item {
+                    Item::Note { text, tone, .. } => {
+                        assert!(matches!(tone, NoteTone::Quiet), "{text}");
+                        Some(text.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let events = || {
+            vec![
+                user(1, "get immich working too"),
+                // The steer is recorded before the stop and the next message.
+                LeadEvent::TurnSteered { turn: 1 },
+                user(2, "and jellyfin"),
+                cancelled(1),
+                // The user presses Stop on the next turn.
+                cancelled(2),
+            ]
+        };
+        let mut feed = Feed::default();
+        fold_all(&mut feed, events());
+        assert_eq!(notes(&feed), ["Conversation steered.", "Stopped."]);
+
+        // After a restart the same events come back from the transcript as the earlier
+        // conversation: the note is the same.
+        let mut restored = vec![LeadEvent::EarlierStart];
+        restored.extend(events());
+        restored.push(LeadEvent::EarlierEnd);
+        let mut feed = Feed::default();
+        fold_all(&mut feed, restored);
+        let notes = notes(&feed);
+        assert!(
+            notes.starts_with(&["Conversation steered.".into(), "Stopped.".into()]),
+            "{notes:?}"
+        );
+
+        // A transcript from before the event existed keeps "Stopped.".
+        let mut feed = Feed::default();
+        fold_all(&mut feed, vec![user(1, "a"), user(2, "b"), cancelled(1)]);
+        assert!(feed
+            .entries()
+            .iter()
+            .any(|e| matches!(&e.item, Item::Note { text, .. } if text == "Stopped.")));
     }
 
     /// Folds `events` (numbered from 1) into `feed`; returns each event's changes.

@@ -169,6 +169,11 @@ pub enum LeadEvent {
     /// A turn ended. `stop_reason`: `end_turn`, `cancelled`, `refusal`, `max_tokens`,
     /// `max_turn_requests` or `error`.
     TurnFinished { turn: TurnId, stop_reason: String },
+    /// The user steered the conversation: their message could not go into the running
+    /// turn, so Melissa stops that turn (its `TurnFinished`, `cancelled`, follows) and the
+    /// message starts the next one. The chat says "Conversation steered." instead of
+    /// "Stopped." for it. Older readers skip this event (unknown lines are ignored).
+    TurnSteered { turn: TurnId },
     /// Something went wrong (shown to the user).
     Error {
         turn: Option<TurnId>,
@@ -221,7 +226,8 @@ impl LeadEvent {
             | Self::Text { turn, .. }
             | Self::AgentMessage { turn, .. }
             | Self::Thought { turn, .. }
-            | Self::TurnFinished { turn, .. } => Some(*turn),
+            | Self::TurnFinished { turn, .. }
+            | Self::TurnSteered { turn } => Some(*turn),
             Self::ToolCall { turn, .. }
             | Self::Permission { turn, .. }
             | Self::Error { turn, .. } => *turn,
@@ -239,7 +245,8 @@ impl LeadEvent {
             | Self::Text { turn, .. }
             | Self::AgentMessage { turn, .. }
             | Self::Thought { turn, .. }
-            | Self::TurnFinished { turn, .. } => *turn = f(*turn).unwrap_or(0),
+            | Self::TurnFinished { turn, .. }
+            | Self::TurnSteered { turn } => *turn = f(*turn).unwrap_or(0),
             Self::ToolCall { turn, .. }
             | Self::Permission { turn, .. }
             | Self::Error { turn, .. } => *turn = turn.and_then(f),
