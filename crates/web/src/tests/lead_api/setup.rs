@@ -101,10 +101,11 @@ async fn the_owner_goes_through_setup_and_members_never_see_it() {
     let (status, _, page) = go(&b, &b.owner, "/ui/setup/device", "name=+++").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(page.contains("Give the device a name."));
-    // Saved: the provider works already (the lead agent's), so Model is next.
+    // Saved: Provider is next, even though one works already (the lead agent's): the owner
+    // picks which one there.
     let (status, h, _) = go(&b, &b.owner, "/ui/setup/device", "name=+Living+room+").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(location(&h), "/setup/model");
+    assert_eq!(location(&h), "/setup/provider");
     let ui_toml = std::fs::read_to_string(b.fx.dir.join("config/ui.toml")).unwrap();
     assert!(
         ui_toml.contains("device_name = \"Living room\""),
@@ -132,18 +133,35 @@ async fn the_owner_goes_through_setup_and_members_never_see_it() {
     let (_, _, page) = send(&b.app, as_get(&b.member, "/chat")).await;
     assert!(!page.contains("setup-checklist"));
 
-    // The model chosen: nothing left, no checklist.
+    // The Model step with a provider that doesn't work lists every working one.
+    let (_, _, page) = send(&b.app, as_get(&b.owner, "/setup/model?p=gemini")).await;
+    assert!(page.contains("value=\"stuck\""), "{page}");
+    // An unknown provider doesn't narrow the list or reach the poll's URL.
+    let (_, _, page) = send(&b.app, as_get(&b.owner, "/setup/model?p=x%26y")).await;
+    assert!(page.contains("value=\"stuck\"") && !page.contains("x&amp;y"));
+
+    // The model chosen: nothing left, no checklist, and the chat is still empty (its
+    // greeting and suggestions, no "Switched to" line).
     let (status, h, _) = go(&b, &b.owner, "/ui/setup/model", "choice=stuck").await;
     assert_eq!(status, StatusCode::SEE_OTHER, "{h:?}");
     assert_eq!(location(&h), "/setup/extras");
     let (status, _, page) = send(&b.app, as_get(&b.owner, "/chat")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!page.contains("setup-checklist"));
+    assert!(
+        page.contains("Hi, I&#39;m") || page.contains("Hi, I'm"),
+        "{page}"
+    );
+    assert!(page.contains("class=\"suggestions\""));
+    assert!(!page.contains("Switched to"), "{page}");
 
-    // Extras: the voice and Tailscale settings and "Finish setup" into the chat.
+    // Extras: neither voice input nor Tailscale is possible in this box: one line and
+    // "Finish setup" into the chat, no switches and no "Later".
     let (status, _, page) = send(&b.app, as_get(&b.owner, "/setup/extras")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(page.contains("voice-settings") && page.contains("tailscale-settings"));
+    assert!(page.contains("Voice input and Tailscale aren"));
+    assert!(!page.contains("voice-settings") && !page.contains("tailscale-settings"));
+    assert!(!page.contains("/ui/setup/extras/later"));
     assert!(page.contains("Finish setup") && page.contains("href=\"/chat\""));
 }
 

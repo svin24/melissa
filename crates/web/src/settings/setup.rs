@@ -168,7 +168,10 @@ impl Progress {
             .unwrap_or(SetupStep::Extras)
     }
 
-    /// The page after `step`: the next open step, else Extras, and the chat after Extras.
+    /// The page after `step`: the next step in order, and the chat after Extras. Steps
+    /// already done are still shown (the owner sees and confirms them: Provider is "done" as
+    /// soon as any provider works, but the owner picks which one there); only Model is passed
+    /// over while no provider works, since it can't be done then.
     fn after(&self, step: SetupStep) -> String {
         if step == SetupStep::Extras {
             return crate::pages::MELISSA_CHAT_URL.into();
@@ -176,7 +179,7 @@ impl Progress {
         STEPS
             .into_iter()
             .skip(step.index() + 1)
-            .find(|s| self.open(*s))
+            .find(|s| *s != SetupStep::Model || self.provider_ready)
             .unwrap_or(SetupStep::Extras)
             .href()
     }
@@ -358,7 +361,7 @@ async fn step(
             let v = providers::view(&ui, pick.as_deref(), None).await;
             provider_region(&ui, &v)
         }
-        SetupStep::Model => model_region(&ui, None, 0),
+        SetupStep::Model => model_region(&ui, None, 0, q.p.as_deref()),
         SetupStep::Extras => extras(&ui).await,
     };
     step_page(step, content).into_response()
@@ -382,6 +385,15 @@ fn device_form(ui: &Ui, error: Option<&str>) -> Markup {
 /// The provider to show first: one that works, else the first.
 fn first_ready(ui: &Ui) -> Option<String> {
     usable(ui).first().map(|b| provider_of(ui, &b.name))
+}
+
+/// The Model step's link from the Provider step: with the chosen provider when it works, so
+/// the Model step lists its models and starts on its default.
+fn model_href(selected: Option<&str>, working: &[String]) -> String {
+    match selected {
+        Some(p) if working.iter().any(|w| w == p) => format!("{}?p={p}", SetupStep::Model.href()),
+        _ => SetupStep::Model.href(),
+    }
 }
 
 /// The Provider step's region: the providers as tiles with their status, the chosen one's
@@ -424,9 +436,14 @@ pub(crate) fn provider_region(ui: &Ui, v: &ProvidersView) -> Markup {
     // One filled button: the chosen provider's own step, else "Choose a model".
     let busy =
         selected.is_some_and(|c| !matches!(c.step, ProviderStep::Nothing | ProviderStep::Note(_)));
+    let working: Vec<String> = usable(ui)
+        .iter()
+        .map(|b| provider_of(ui, &b.name))
+        .collect();
+    let model_href = model_href(selected.map(|c| c.id.as_str()), &working);
     let footer = setup_actions(
         html! {
-            @if ready { (link_button(&SetupStep::Model.href(), "Choose a model", !busy)) }
+            @if ready { (link_button(&model_href, "Choose a model", !busy)) }
         },
         Some(&later_url(SetupStep::Provider)),
     );
@@ -438,9 +455,73 @@ pub(crate) fn provider_region(ui: &Ui, v: &ProvidersView) -> Markup {
     )
 }
 
-/// The Model step's region: the usable providers' models, Melissa's current one chosen.
-fn model_region(ui: &Ui, error: Option<&str>, polls: u32) -> Markup {
-    let views = usable(ui);
+/// A model's name without a repeat of its provider ("opencode/big-pickle" on OpenCode reads
+/// "big-pickle"); the id sent stays whole.
+fn model_name<'a>(backend: &str, label: &'a str) -> &'a str {
+    let Some((head, rest)) = label.split_once('/') else {
+        return label;
+    };
+    let base = backend.split('-').next().unwrap_or(backend);
+    let same = head.eq_ignore_ascii_case(base) || head.eq_ignore_ascii_case(backend_label(backend));
+    if same && !rest.is_empty() {
+        rest
+    } else {
+        label
+    }
+}
+
+/// The Model step's options (form value, label) for `views`, and the value chosen now
+/// (Melissa's current model, else the first backend's default). One default entry per
+/// backend: the agent's own `default` model (Claude's "Default (recommended)") is that entry,
+/// not a second one. The provider's name leads the label only when several are listed.
+fn model_options(views: &[BackendView]) -> (Vec<(String, String)>, Option<String>) {
+    let several = views.len() > 1;
+    let mut values: Vec<(String, String)> = Vec::new();
+    for b in views {
+        let name = backend_label(&b.name);
+        let labelled = |label: &str| {
+            if several {
+                format!("{name} · {label}")
+            } else {
+                label.to_string()
+            }
+        };
+        let models = b.models.iter().flatten();
+        let default = models
+            .clone()
+            .find(|m| m.id == "default" && !m.label.is_empty())
+            .map_or("Default model", |m| m.label.as_str());
+        values.push((b.name.clone(), labelled(default)));
+        for m in models.filter(|m| m.id != "default") {
+            let label = if m.label.is_empty() { &m.id } else { &m.label };
+            values.push((
+                format!("{} {}", b.name, m.id),
+                labelled(model_name(&b.name, label)),
+            ));
+        }
+    }
+    let current = views
+        .iter()
+        .find(|b| b.current)
+        .or_else(|| views.first())
+        .map(|b| match &b.model {
+            Some(m) if m != "default" && b.models.iter().flatten().any(|o| &o.id == m) => {
+                format!("{} {m}", b.name)
+            }
+            _ => b.name.clone(),
+        });
+    (values, current)
+}
+
+/// The Model step's region: the models of the provider chosen in the Provider step
+/// (`provider`), else of every usable one, Melissa's current one chosen.
+fn model_region(ui: &Ui, error: Option<&str>, polls: u32, provider: Option<&str>) -> Markup {
+    let mut views = usable(ui);
+    // Only a provider that works now narrows the list (and goes into the poll's URL).
+    let provider = provider.filter(|p| views.iter().any(|b| provider_of(ui, &b.name) == *p));
+    if let Some(p) = provider {
+        views.retain(|b| provider_of(ui, &b.name) == p);
+    }
     if views.is_empty() {
         return html! {
             (notice_link("No provider is ready yet.",
@@ -450,23 +531,7 @@ fn model_region(ui: &Ui, error: Option<&str>, polls: u32) -> Markup {
     }
     // Learn the models of providers that never had a chat (no prompt; rate-limited).
     ui.lead.refresh_models_soon();
-    let mut values: Vec<(String, String)> = Vec::new();
-    for b in &views {
-        let name = backend_label(&b.name);
-        values.push((b.name.clone(), format!("{name} · Default model")));
-        for m in b.models.iter().flatten() {
-            let label = if m.label.is_empty() { &m.id } else { &m.label };
-            values.push((format!("{} {}", b.name, m.id), format!("{name} · {label}")));
-        }
-    }
-    let current = views
-        .iter()
-        .find(|b| b.current)
-        .or_else(|| views.first())
-        .map(|b| match &b.model {
-            Some(m) if b.models.iter().flatten().any(|o| &o.id == m) => format!("{} {m}", b.name),
-            _ => b.name.clone(),
-        });
+    let (values, current) = model_options(&views);
     let choices: Vec<Choice<'_>> = values
         .iter()
         .map(|(value, label)| Choice {
@@ -476,9 +541,13 @@ fn model_region(ui: &Ui, error: Option<&str>, polls: u32) -> Markup {
         })
         .collect();
     let waiting = views.iter().any(|b| b.models.is_none()) && polls < MODEL_POLLS;
+    let poll = match provider {
+        Some(p) => format!("/ui/setup/model?n={}&p={p}", polls + 1),
+        None => format!("/ui/setup/model?n={}", polls + 1),
+    };
     live_region(
         MODEL_REGION_ID,
-        &format!("/ui/setup/model?n={}", polls + 1),
+        &poll,
         3,
         waiting,
         html! {
@@ -498,16 +567,27 @@ async fn model_poll(State(ui): State<Ui>, Query(q): Query<StepQuery>) -> Respons
     if let Some(r) = owner_only() {
         return r;
     }
-    model_region(&ui, None, q.n.unwrap_or(MODEL_POLLS)).into_response()
+    model_region(&ui, None, q.n.unwrap_or(MODEL_POLLS), q.p.as_deref()).into_response()
 }
 
+/// The Extras step. With neither extra possible here it says so in one line, and "Finish
+/// setup" is the only button; "Later" (which lists the step in the chat's checklist) shows
+/// only while there is something left to turn on.
 async fn extras(ui: &Ui) -> Markup {
+    let voice = voice::view(&ui.settings, None);
+    let finish = link_button(crate::pages::MELISSA_CHAT_URL, "Finish setup", true);
+    if !voice.available && !voice.on && !tailscale::managed(ui).await {
+        return html! {
+            (notice("Voice input and Tailscale aren't available on this install.", Tone::Info))
+            (setup_actions(finish, None))
+        };
+    }
     let ts = tailscale::setup_view(ui).await;
+    let later = (!voice.on && !tailscale::is_on(ui).await).then(|| later_url(SetupStep::Extras));
     html! {
-        (pages::voice_region(&voice::view(&ui.settings, None)))
+        (pages::voice_region(&voice))
         (pages::tailscale_region(&ts))
-        (setup_actions(link_button(crate::pages::MELISSA_CHAT_URL, "Finish setup", true),
-            Some(&later_url(SetupStep::Extras))))
+        (setup_actions(finish, later.as_deref()))
     }
 }
 
@@ -580,6 +660,7 @@ async fn save_model(State(ui): State<Ui>, Form(form): Form<ModelForm>) -> Respon
                     &ui,
                     Some("That model can't be used now. Choose another one."),
                     MODEL_POLLS,
+                    Some(&provider_of(&ui, &backend)),
                 ),
             );
             (StatusCode::CONFLICT, page).into_response()
@@ -698,18 +779,119 @@ mod tests {
     }
 
     #[test]
-    fn the_next_page_skips_steps_already_done() {
+    fn the_steps_go_in_order_and_model_waits_for_a_provider() {
         let mut p = p();
+        // A provider already works (signed in on this machine): Provider still comes next,
+        // where the owner picks which one.
         p.provider_ready = true;
-        assert_eq!(p.after(SetupStep::Device), "/setup/model");
+        assert_eq!(p.after(SetupStep::Device), "/setup/provider");
+        assert_eq!(p.after(SetupStep::Provider), "/setup/model");
+        assert_eq!(p.after(SetupStep::Model), "/setup/extras");
         p.model_chosen = true;
-        assert_eq!(p.after(SetupStep::Device), "/setup/extras");
+        assert_eq!(p.after(SetupStep::Device), "/setup/provider");
         assert_eq!(p.after(SetupStep::Extras), "/chat");
+        // No provider works: Model can't be done, so "Later" on Provider goes to Extras.
         let p = Progress {
             device_named: true,
             ..Progress::default()
         };
         assert_eq!(p.after(SetupStep::Device), "/setup/provider");
+        assert_eq!(p.after(SetupStep::Provider), "/setup/extras");
+    }
+
+    #[test]
+    fn choose_a_model_carries_the_chosen_provider() {
+        let working = ["claude".to_string(), "grok".to_string()];
+        assert_eq!(
+            model_href(Some("claude"), &working),
+            "/setup/model?p=claude"
+        );
+        // Chosen but not working yet, or nothing chosen: every working provider's models.
+        assert_eq!(model_href(Some("gemini"), &working), "/setup/model");
+        assert_eq!(model_href(None, &working), "/setup/model");
+    }
+
+    fn backend(name: &str, current: bool, models: &[(&str, &str)]) -> BackendView {
+        BackendView {
+            name: name.into(),
+            available: true,
+            reason: None,
+            current,
+            model: None,
+            effort: None,
+            fast: false,
+            models: Some(
+                models
+                    .iter()
+                    .map(|(id, label)| melissa_agent::session::ModelOption::new(*id, *label))
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn one_default_per_provider_and_no_repeated_prefix() {
+        let claude = backend(
+            "claude-session",
+            false,
+            &[("default", "Default (recommended)"), ("sonnet", "Sonnet")],
+        );
+        let (values, current) = model_options(std::slice::from_ref(&claude));
+        assert_eq!(
+            values,
+            [
+                (
+                    "claude-session".to_string(),
+                    "Default (recommended)".to_string()
+                ),
+                ("claude-session sonnet".into(), "Sonnet".into()),
+            ]
+        );
+        assert_eq!(current.as_deref(), Some("claude-session"));
+
+        let opencode = backend(
+            "opencode-acp",
+            true,
+            &[("opencode/big-pickle", ""), ("anthropic/x", "Anthropic/X")],
+        );
+        let (values, current) = model_options(&[claude, opencode]);
+        assert_eq!(
+            values,
+            [
+                (
+                    "claude-session".to_string(),
+                    "Claude · Default (recommended)".to_string()
+                ),
+                ("claude-session sonnet".into(), "Claude · Sonnet".into()),
+                ("opencode-acp".into(), "OpenCode · Default model".into()),
+                // The id stays whole; only the label loses the provider's own name.
+                (
+                    "opencode-acp opencode/big-pickle".into(),
+                    "OpenCode · big-pickle".into()
+                ),
+                (
+                    "opencode-acp anthropic/x".into(),
+                    "OpenCode · Anthropic/X".into()
+                ),
+            ]
+        );
+        // Melissa's current backend is chosen.
+        assert_eq!(current.as_deref(), Some("opencode-acp"));
+    }
+
+    #[test]
+    fn the_current_model_is_preselected_and_default_means_the_default_entry() {
+        let mut claude = backend(
+            "claude-session",
+            true,
+            &[("default", "Default (recommended)"), ("sonnet", "Sonnet")],
+        );
+        claude.model = Some("sonnet".into());
+        let (_, current) = model_options(std::slice::from_ref(&claude));
+        assert_eq!(current.as_deref(), Some("claude-session sonnet"));
+        claude.model = Some("default".into());
+        let (_, current) = model_options(&[claude]);
+        assert_eq!(current.as_deref(), Some("claude-session"));
     }
 
     #[test]

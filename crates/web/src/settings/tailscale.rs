@@ -112,6 +112,12 @@ pub(super) async fn setup_view(ui: &Ui) -> TailscaleView {
     v
 }
 
+/// Whether Melissa manages Tailscale on this system at all (setup's Extras leaves it out
+/// when not).
+pub(super) async fn managed(ui: &Ui) -> bool {
+    !matches!(state(ui).await, TsState::NotManaged)
+}
+
 /// Whether Melissa's own Tailscale is on (setup's Extras counts as done then).
 pub(super) async fn is_on(ui: &Ui) -> bool {
     !matches!(state(ui).await, TsState::NotManaged | TsState::Off)

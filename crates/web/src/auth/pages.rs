@@ -198,7 +198,7 @@ fn claim_form(username: &str, error: Option<&str>) -> Markup {
         next: None,
         fields: html! {
             (credential_field("code", "Setup code", "text", "one-time-code", "",
-                Some("Printed at the end of the install.")))
+                Some("In the install output or Melissa's log. Or run melissa-server setup-code.")))
             (credential_field("username", "Username", "text", "username", username, None))
             (credential_field("password", "Password", "password", "new-password", "", Some("At least 8 characters.")))
         },

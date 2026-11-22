@@ -1432,6 +1432,16 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   first visit), a wizard only (no way back to skipped steps), storing step completion flags (drift from the
   real state), renaming the node from the device name (owner: display only), keeping the code in memory
   (a restart after install invalidated the printed code).
+- **2026-11-22 — Setup fixes from the demo rehearsal.** The wizard walks Device → Provider → Model → Extras in
+  order, also when a step is already done (a signed-in provider made Provider "done" and setup jumped from Device
+  to Model; the owner picks the provider there); only Model is passed over while no provider works. The `/` and
+  `/chat` redirects still go only to open steps. "Choose a model" carries the chosen provider (`/setup/model?p=`):
+  the list shows its models only, starting on its default; one default entry per provider (the agent's own
+  `default` model is that entry), the provider's own name is dropped from model labels (ids unchanged). Extras
+  with neither voice input nor Tailscale possible is one line and "Finish setup"; "Later" shows only while
+  something is left to turn on. A model chosen before the chat's first message posts no "Switched to" line (the
+  chat keeps its greeting, suggestions and checklist), and the "Connected to" line right after a switch to the
+  same backend is left out. The claim page's hint names `melissa-server setup-code` (container and source).
 - **2026-11-22 — No page fades; Settings swaps only the section; remembered looks come from the server**
   (owner request: "Every time I tap a category I get a fade-in", "a lot of the UI just jumps", "the pre-alpha
   banner pops in"). Replaces the cross-fade and the "a form's answer fades in" parts of the 2026-11-21 motion
