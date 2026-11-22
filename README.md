@@ -6,6 +6,8 @@
 
 **A self-hosting server that AI agents run for you.**
 
+[![Sponsor svin24](https://img.shields.io/badge/Sponsor-svin24-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/svin24)
+
 Melissa runs on a Linux machine you already have. You chat with Melissa, the lead agent; she and her
 helper agents install apps like Nextcloud, keep them healthy and tidy up, asking you before anything risky.
 Agents use the AI subscriptions you sign in to: Claude, Grok, OpenCode, Gemini, Codex or Muse Code.
