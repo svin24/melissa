@@ -118,7 +118,8 @@ fn head(title: &str) -> Markup {
     html! {
         meta charset="utf-8";
         meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
-        meta name="color-scheme" content="light dark";
+        // The light/dark choice (`looks`), else both: the browser follows the system.
+        meta name="color-scheme" content=(crate::looks::current().theme.map_or("light dark", |t| t.as_str()));
         // Keep htmx from injecting inline styles, so the CSP can forbid them.
         meta name="htmx-config" content=r#"{"includeIndicatorStyles":false,"allowEval":false}"#;
         // melissa.js sends it with every htmx and fetch request (X-CSRF-Token).
@@ -133,12 +134,21 @@ fn head(title: &str) -> Markup {
     }
 }
 
+/// `data-theme` on `<html>`: the light/dark choice, absent to follow the system.
+fn theme_attr() -> Option<&'static str> {
+    crate::looks::current()
+        .theme
+        .map(crate::looks::Theme::as_str)
+}
+
 /// A full page with the side rail: banner, rail, main column.
 pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
     html! {
         (DOCTYPE)
-        // The sidebar's collapsed state comes with the page (`looks`), so it doesn't move.
-        html lang="en" data-sidebar=[crate::looks::current().sidebar_collapsed.then_some("collapsed")] {
+        // The sidebar's collapsed state and the light/dark choice come with the page
+        // (`looks`), so nothing moves or flashes.
+        html lang="en" data-theme=[theme_attr()]
+            data-sidebar=[crate::looks::current().sidebar_collapsed.then_some("collapsed")] {
             head { (head(title)) }
             body {
                 a.skip href="#main" { "Skip to content" }
@@ -157,7 +167,7 @@ pub fn app_page(title: &str, rail: Markup, main: Markup) -> Markup {
 pub fn page(title: &str, content: Markup) -> Markup {
     html! {
         (DOCTYPE)
-        html lang="en" {
+        html lang="en" data-theme=[theme_attr()] {
             head { (head(title)) }
             body {
                 (banner())

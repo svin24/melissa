@@ -17,77 +17,252 @@
   font-display: swap;
 }
 
-/* --- Tokens ------------------------------------------------------------------------- */
+/* --- Tokens ------------------------------------------------------------------------- *
+   Three layers (docs/design/COMPONENT-SPEC.md section 1, 2026-11-22):
+   1. Primitives `--ref-*`: the raw palette. Read only by the semantic layer below.
+   2. Semantic `--color-*`, `--space-*`, `--radius-*`, `--font-*`, … : what rules read.
+   3. Component `--button-*`, `--field-*`, `--row-*`, `--switch-*`: one family's knobs, as
+      aliases of semantic tokens.
+   Values are what the app uses today; the spec's new sizes (32px controls, 8px radius) come
+   in a later, deliberate step. Each colour is written once with light-dark(): `color-scheme`
+   picks the side, from `data-theme` on <html> (rendered by the server from a cookie) or,
+   without it, from the system. The old names at the end stay as aliases until every rule
+   reads the new ones. crate::tokens lists every name; a test checks they are all here. */
 
 :root {
   color-scheme: light dark;
-  --ground: #f2f4f6;
-  --surface: #ffffff;
-  --ink: #1b2533;
-  --muted: #566273;
-  --border: #dce1e7;
-  --honey: #c98a0b;
-  --honey-text: #7a5200;
-  --honey-soft: #f7edd8;
-  --action: #1f55c2;
-  --action-ink: #ffffff;
-  --caution: #a8430f;
-  --caution-soft: #fbece4;
-  --caution-ink: #ffffff;
-  --ok: #2e7d4f;
-  --idle: #9aa5b4;
-  --bubble: #1b2533;
-  --bubble-ink: #ffffff;
-  --focus: #1f55c2;
+
+  /* Primitives. Steps are by lightness, 0 lightest. */
+  --ref-white: #ffffff;
+  --ref-black: #000000;
+  --ref-neutral-50: #f2f4f6;
+  --ref-neutral-100: #eef1f5;
+  --ref-neutral-150: #e6eaf0;
+  --ref-neutral-200: #dce1e7;
+  --ref-neutral-350: #a3adbb;
+  --ref-neutral-400: #9aa5b4;
+  --ref-neutral-550: #5d6878;
+  --ref-neutral-600: #566273;
+  --ref-neutral-750: #2e3846;
+  --ref-neutral-850: #1b2533;
+  --ref-neutral-900: #1a212b;
+  --ref-neutral-950: #12171e;
+  --ref-neutral-975: #0b1220;
+  --ref-slate-500: #5b6b80;
+  --ref-slate-800: #2d3a4e;
+  --ref-blue-300: #8db0f5;
+  --ref-blue-600: #2a5bd7;
+  --ref-blue-700: #1f55c2;
+  --ref-honey-50: #f7edd8;
+  --ref-honey-300: #e9b956;
+  --ref-honey-500: #d99a1e;
+  --ref-honey-600: #c98a0b;
+  --ref-honey-800: #7a5200;
+  --ref-honey-950: #2b2416;
+  --ref-rust-50: #fbece4;
+  --ref-rust-300: #f39a70;
+  --ref-rust-700: #a8430f;
+  --ref-rust-950: #2d1d16;
+  --ref-rust-975: #1f0e05;
+  --ref-green-300: #6cc893;
+  --ref-green-700: #2e7d4f;
+  /* Nearly the same as green-700 (helper icon); merge when the palette is redrawn. */
+  --ref-green-750: #2f7d4a;
+  --ref-teal-300: #4fc6c0;
+  --ref-teal-700: #0f7676;
+  --ref-violet-300: #b49cf2;
+  --ref-violet-600: #6b4bc4;
+  --ref-rose-300: #f08aab;
+  --ref-rose-600: #b8395f;
+  --ref-orange-300: #f2a25c;
+  --ref-orange-700: #b4540f;
+  --ref-lime-300: #b5d55a;
+  --ref-lime-700: #5a7a0c;
+  --ref-shade-a45: rgb(10 14 20 / 0.45);
+  --ref-shade-a60: rgb(10 14 20 / 0.6);
+  --ref-black-a18: rgb(0 0 0 / 0.18);
+  --ref-black-a45: rgb(0 0 0 / 0.45);
+
+  /* Semantic colours: light-dark(light, dark). */
+  --color-bg-ground: light-dark(var(--ref-neutral-50), var(--ref-neutral-950));
+  --color-bg-surface: light-dark(var(--ref-white), var(--ref-neutral-900));
+  --color-bg-raised: light-dark(var(--ref-white), var(--ref-neutral-900));
+  --color-bg-sunken: light-dark(var(--ref-neutral-50), var(--ref-neutral-950));
+  --color-bg-hover: light-dark(var(--ref-neutral-50), var(--ref-neutral-950));
+  --color-bg-selected: light-dark(var(--ref-neutral-50), var(--ref-neutral-950));
+  --color-text-default: light-dark(var(--ref-neutral-850), var(--ref-neutral-150));
+  --color-text-muted: light-dark(var(--ref-neutral-600), var(--ref-neutral-350));
+  --color-text-disabled: light-dark(var(--ref-neutral-600), var(--ref-neutral-350));
+  --color-text-link: light-dark(var(--ref-blue-700), var(--ref-blue-300));
+  --color-border-default: light-dark(var(--ref-neutral-200), var(--ref-neutral-750));
+  --color-border-strong: light-dark(var(--ref-neutral-600), var(--ref-neutral-350));
+  --color-action-bg: light-dark(var(--ref-blue-700), var(--ref-blue-300));
+  --color-action-text: light-dark(var(--ref-white), var(--ref-neutral-975));
+  --color-focus-ring: light-dark(var(--ref-blue-700), var(--ref-blue-300));
+  --color-caution-bg: light-dark(var(--ref-rust-700), var(--ref-rust-300));
+  --color-caution-text: light-dark(var(--ref-rust-700), var(--ref-rust-300));
+  --color-caution-soft: light-dark(var(--ref-rust-50), var(--ref-rust-950));
+  --color-caution-on: light-dark(var(--ref-white), var(--ref-rust-975));
+  --color-ok-fg: light-dark(var(--ref-green-700), var(--ref-green-300));
+  --color-ok-text: light-dark(var(--ref-green-700), var(--ref-green-300));
+  --color-attention-fg: light-dark(var(--ref-honey-600), var(--ref-honey-500));
+  --color-attention-text: light-dark(var(--ref-honey-800), var(--ref-honey-300));
+  --color-attention-soft: light-dark(var(--ref-honey-50), var(--ref-honey-950));
+  --color-idle-fg: light-dark(var(--ref-neutral-400), var(--ref-neutral-550));
+  --color-bubble-bg: light-dark(var(--ref-neutral-850), var(--ref-slate-800));
+  --color-bubble-text: light-dark(var(--ref-white), var(--ref-neutral-100));
   /* Behind a modal or a sheet, and the shadow of things that float over the page. */
-  --backdrop: rgb(10 14 20 / 0.45);
-  --shadow-float: rgb(0 0 0 / 0.18);
+  --color-backdrop: light-dark(var(--ref-shade-a45), var(--ref-shade-a60));
+  --color-shadow: light-dark(var(--ref-black-a18), var(--ref-black-a45));
   /* Helpers' icon colours (2026-11-20; names in melissa_agent::lead::icon). */
-  --icon-green: #2f7d4a;
-  --icon-teal: #0f7676;
-  --icon-blue: #2a5bd7;
-  --icon-violet: #6b4bc4;
-  --icon-rose: #b8395f;
-  --icon-orange: #b4540f;
-  --icon-lime: #5a7a0c;
-  --icon-slate: #5b6b80;
-  --radius: 12px;
-  --font: "Atkinson Hyperlegible Next", system-ui, sans-serif;
-  --font-head: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
-  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --color-avatar-green: light-dark(var(--ref-green-750), var(--ref-green-300));
+  --color-avatar-teal: light-dark(var(--ref-teal-700), var(--ref-teal-300));
+  --color-avatar-blue: light-dark(var(--ref-blue-600), var(--ref-blue-300));
+  --color-avatar-violet: light-dark(var(--ref-violet-600), var(--ref-violet-300));
+  --color-avatar-rose: light-dark(var(--ref-rose-600), var(--ref-rose-300));
+  --color-avatar-orange: light-dark(var(--ref-orange-700), var(--ref-orange-300));
+  --color-avatar-lime: light-dark(var(--ref-lime-700), var(--ref-lime-300));
+  --color-avatar-slate: light-dark(var(--ref-slate-500), var(--ref-neutral-350));
+  /* Providers' one-colour marks (brand rule): black, white in dark mode. */
+  --color-logo: light-dark(var(--ref-black), var(--ref-white));
+
+  /* Space, 4px steps. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* Radius. md is today's control radius (spec target 8px, owner decision). */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* Sizes. Controls are today's 32 / 44 / 40px (lg: the composer's round buttons).
+     Spec target 28 / 32 / 40, owner decision. */
+  --size-control-sm: 32px;
+  --size-control-md: 44px;
+  --size-control-lg: 40px;
+  --size-icon-sm: 16px;
+  --size-icon-md: 20px;
+  --size-icon-lg: 24px;
+
+  /* Type. */
+  --font-family-body: "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  --font-family-head: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  --font-family-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-size-xs: 0.8rem;
+  --font-size-sm: 0.85rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.15rem;
+  --font-size-xl: 1.75rem;
+  --font-size-control-sm: 0.8rem;
+  --font-size-control-md: 1rem;
+  --font-size-control-lg: 1rem;
+  --font-weight-regular: 400;
+  --font-weight-strong: 600;
+  --font-weight-heading: 650;
+  --font-weight-brand: 700;
+  --line-height-tight: 1.2;
+  --line-height-control: 1.25;
+  --line-height-body: 1.5;
+
+  /* Lines, focus, motion. */
+  --border-width-hairline: 1px;
+  --focus-width: 3px;
+  --focus-offset: 2px;
+  --motion-duration-fast: 150ms;
+  --motion-duration-medium: 200ms;
+  --motion-duration-enter: 180ms;
+  --motion-ease-out: ease-out;
+
+  /* Component: button (md is the base `button`, sm the 32px small buttons). */
+  --button-primary-bg-default: var(--color-action-bg);
+  --button-primary-text-default: var(--color-action-text);
+  --button-secondary-bg-default: var(--color-bg-surface);
+  --button-secondary-text-default: var(--color-text-default);
+  --button-secondary-border-default: var(--color-border-default);
+  --button-secondary-border-hover: var(--color-border-strong);
+  --button-danger-bg-default: var(--color-caution-bg);
+  --button-danger-text-default: var(--color-caution-on);
+  --button-link-text-default: var(--color-text-link);
+  --button-md-height: var(--size-control-md);
+  --button-md-padding-x: 1.1rem;
+  --button-md-font-size: var(--font-size-control-md);
+  --button-md-radius: var(--radius-md);
+  --button-sm-height: var(--size-control-sm);
+  --button-sm-padding-x: 0.65rem;
+  --button-sm-font-size: var(--font-size-control-sm);
+  --button-sm-radius: 8px;
+
+  /* Component: text field. */
+  --field-bg-default: var(--color-bg-surface);
+  --field-text-default: var(--color-text-default);
+  --field-border-default: var(--color-border-default);
+  --field-placeholder-default: var(--color-text-muted);
+  --field-height: var(--size-control-md);
+  --field-padding-x: 0.7rem;
+  --field-radius: var(--radius-md);
+
+  /* Component: list row. */
+  --row-bg-hover: var(--color-bg-hover);
+  --row-bg-current: var(--color-bg-selected);
+
+  /* Component: switch (the settings toggle). */
+  --switch-track-bg-off: var(--color-idle-fg);
+  --switch-track-bg-on: var(--color-ok-fg);
+  --switch-knob-off: var(--color-bg-surface);
+  --switch-knob-on: var(--color-bg-surface);
+  --switch-md-width: 38px;
+  --switch-md-height: 22px;
+
+  /* Old names, kept as aliases until every rule reads the tokens above. */
+  --ground: var(--color-bg-ground);
+  --surface: var(--color-bg-surface);
+  --ink: var(--color-text-default);
+  --muted: var(--color-text-muted);
+  --border: var(--color-border-default);
+  --honey: var(--color-attention-fg);
+  --honey-text: var(--color-attention-text);
+  --honey-soft: var(--color-attention-soft);
+  --action: var(--color-action-bg);
+  --action-ink: var(--color-action-text);
+  --caution: var(--color-caution-bg);
+  --caution-soft: var(--color-caution-soft);
+  --caution-ink: var(--color-caution-on);
+  --ok: var(--color-ok-fg);
+  --idle: var(--color-idle-fg);
+  --bubble: var(--color-bubble-bg);
+  --bubble-ink: var(--color-bubble-text);
+  --focus: var(--color-focus-ring);
+  --backdrop: var(--color-backdrop);
+  /* A colour, not a box-shadow (the spec's `shadow.float` takes this name once rules move). */
+  --shadow-float: var(--color-shadow);
+  --icon-green: var(--color-avatar-green);
+  --icon-teal: var(--color-avatar-teal);
+  --icon-blue: var(--color-avatar-blue);
+  --icon-violet: var(--color-avatar-violet);
+  --icon-rose: var(--color-avatar-rose);
+  --icon-orange: var(--color-avatar-orange);
+  --icon-lime: var(--color-avatar-lime);
+  --icon-slate: var(--color-avatar-slate);
+  --radius: var(--radius-lg);
+  --font: var(--font-family-body);
+  --font-head: var(--font-family-head);
+  --mono: var(--font-family-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ground: #12171e;
-    --surface: #1a212b;
-    --ink: #e6eaf0;
-    --muted: #a3adbb;
-    --border: #2e3846;
-    --honey: #d99a1e;
-    --honey-text: #e9b956;
-    --honey-soft: #2b2416;
-    --action: #8db0f5;
-    --action-ink: #0b1220;
-    --caution: #f39a70;
-    --caution-soft: #2d1d16;
-    --caution-ink: #1f0e05;
-    --ok: #6cc893;
-    --idle: #5d6878;
-    --bubble: #2d3a4e;
-    --bubble-ink: #eef1f5;
-    --focus: #8db0f5;
-    --backdrop: rgb(10 14 20 / 0.6);
-    --shadow-float: rgb(0 0 0 / 0.45);
-    --icon-green: #6cc893;
-    --icon-teal: #4fc6c0;
-    --icon-blue: #8db0f5;
-    --icon-violet: #b49cf2;
-    --icon-rose: #f08aab;
-    --icon-orange: #f2a25c;
-    --icon-lime: #b5d55a;
-    --icon-slate: #a3adbb;
-  }
+/* A choice made in Melissa (the `melissa_theme` cookie) wins over the system's. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 /* --- Base ------------------------------------------------------------------------- */
@@ -5190,20 +5365,13 @@ label.attach.upload {
   inset: 15%;
   width: 70%;
   height: 70%;
-  fill: #000;
+  fill: var(--color-logo);
   stroke: none;
 }
 
 .pmark.plogo.muted svg {
-  fill: #000;
+  fill: var(--color-logo);
   opacity: 0.4;
-}
-
-@media (prefers-color-scheme: dark) {
-  .pmark.plogo svg,
-  .pmark.plogo.muted svg {
-    fill: #fff;
-  }
 }
 
 /* --- Add provider panel, Remove provider (2026-11-20) ------------------------------------ */

@@ -20,6 +20,7 @@ mod panel;
 mod settings;
 mod setup_password;
 mod state;
+pub mod tokens;
 mod ui;
 mod usage;
 mod workspace;
@@ -3119,6 +3120,35 @@ mod tests {
             assert!(page.contains("tabindex=\"-1\" data-closed>"));
             assert!(!page.contains("data-sidebar-expand hidden"));
             assert!(page.contains("Pre-alpha."));
+        }
+
+        #[tokio::test]
+        async fn the_light_dark_choice_comes_with_the_page() {
+            // 2026-11-22: `data-theme` is rendered from the cookie, so the page never paints
+            // in the other scheme first. No cookie (or an unknown value): follow the system.
+            let (app, _) = app();
+            for uri in ["/chat", "/settings/voice", "/no-such-page"] {
+                let (_, _, page) = get_html(&app, uri).await;
+                assert!(!page.contains("data-theme"), "{uri}");
+                assert!(
+                    page.contains("name=\"color-scheme\" content=\"light dark\""),
+                    "{uri}"
+                );
+                for theme in ["light", "dark"] {
+                    let cookie = format!("melissa_theme={theme}");
+                    let (_, _, page) = send(&app, get_with_cookie(uri, &cookie)).await;
+                    assert!(
+                        page.contains(&format!("<html lang=\"en\" data-theme=\"{theme}\"")),
+                        "{uri} {theme}"
+                    );
+                    assert!(
+                        page.contains(&format!("name=\"color-scheme\" content=\"{theme}\"")),
+                        "{uri} {theme}"
+                    );
+                }
+                let (_, _, page) = send(&app, get_with_cookie(uri, "melissa_theme=blue")).await;
+                assert!(!page.contains("data-theme"), "{uri}");
+            }
         }
 
         #[tokio::test]
