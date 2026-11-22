@@ -1242,5 +1242,22 @@ Roadmap (rough, phases may overlap):
     opens a card (Erased / Kept, type `melissa`). (g) A device name setting doesn't exist; when it comes, the word
     to type becomes the device's name. (h) Not tested on a real container yet (the owner's dev box must not be
     reset): run once on a throwaway install, including a kill during the wipe and a restart of the container.
+
+90. Apps list by kind and person (2026-11-22; DECISIONS "Apps list"). (a) Members still reach other people's
+    apps through routes outside Apps: `/api/workspaces`, `/api/tools/{name}` (any read tool as the user, e.g.
+    `list_apps`, `app_status`), the approvals of other people's turns, and Melissa's chat (one shared chat: a
+    member can ask Melissa about any app). Apps, its JSON and the chat's details panel are filtered; the rest
+    needs a per-person policy (6c step 2). (b) `melissa.io/installed-for` is written once at the first install
+    and kept, but no admission rule pins it: Melissa's own service account could change it (nothing does).
+    Add a CEL rule like the port's once members' apps matter for security, not only for the list. (c) Apps
+    installed before 2026-11-22 have no person: the owner sees them as "Unknown" (filter "Unknown"), members
+    don't see them. No way yet to give such an app to a person (the owner could ask in the chat once a tool
+    for it exists). (d) A scheduled turn or a helper's report has no person: an app installed then counts as
+    the person the looking-after helper was made for, else unknown. (e) An app's kind comes from its spec
+    (`kind`); older specs and agents that leave it out land in "Other". No way to change it from the UI.
+    (f) The phone boards (A7, A8) and the light details board (A6) were not ready when this was built; the
+    phone layout stacks each row (name over status and person) and the details into one column in the same
+    style. Check against the boards. (g) Display names come from the app name (`home-assistant` shows as
+    "Home-assistant"); a spec field for a display name would fix it.
     tries live in memory: a restart clears lockouts. Since 2026-11-21 (Q88) the setup code is kept on disk
     (0600) until used or expired, so a restart keeps it.

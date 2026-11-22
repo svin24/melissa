@@ -30,7 +30,7 @@ nearest one that is. Don't add a one-off. A new token is a reviewed change to `m
 | `--ink` | text, strong glyphs |
 | `--muted` | labels, dates, meta, help lines, inactive states (never body text people must read) |
 | `--border` | 1px hairlines, card and field borders |
-| `--honey`, `--honey-text`, `--honey-soft` | Melissa's mark and attention: the banner, approval cards, the "read text from outside" guard note, add-app tile. Not for buttons or links |
+| `--honey`, `--honey-text`, `--honey-soft` | Melissa's mark and attention: the banner, approval cards, the "read text from outside" guard note, an app that needs attention. Not for buttons or links |
 | `--action`, `--action-ink` | the one accent: primary buttons, links, Send, selected states |
 | `--focus` | the focus ring (same hue as `--action`) |
 | `--caution`, `--caution-soft`, `--caution-ink` | destructive buttons, failures, "can't be undone", warnings |
@@ -44,7 +44,7 @@ nearest one that is. Don't add a one-off. A new token is a reviewed change to `m
 | `--font-head` | Bricolage Grotesque: h1-h3, the brand word |
 | `--mono` | code, logs, commands |
 
-Local custom properties (`--w`, `--h`, `--gap`, `--n`) are per-component geometry (hexagons, meters). They
+Local custom properties (`--w`, `--h`, `--gap`, `--n`) are per-component geometry (meters). They
 are not tokens.
 
 **Every colour is a token.** [I] No hex or `rgb()` outside `:root` and its dark block. Known drift to fix when

@@ -97,8 +97,12 @@ reports a fast mode (`ModelOption::fast`; a fast model itself reports none), Acc
 the developer option "Full access per agent"; Full access asks in place (`details.seg-confirm`, no browser dialog).
 The chip adds `span.chip-tag` "Fast" and `span.chip-warn` (warning icon) on Full access. Never add a group a
 backend doesn't report.
-Apps (the Apps panel, `/cluster`) and devices (in Usage and resources, `/usage`): `app_tile` (hexagon), `add_app_tile`, `app_grid`,
-`device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
+Apps (the Apps panel, `/cluster`; 2026-11-22, `components/apps.rs`): `app_list` (the live region `#cluster-apps`: the
+owner's `show_filter` links that swap it in place, the count, "Add an app", one `ul.app-rows` per kind of `app_row`s),
+`app_icon` (a shape and colour on a tile), `app_status` (dot and word), and an app's details as a panel page
+(`/cluster/apps/{app}`): `app_details_panel` (breadcrumb back to Apps), `app_details_region` (`#app-details`, swapped
+by its actions), `app_icon_card`, `app_logs_region`. Buttons there are `.btn` (32px). Devices (in Usage and
+resources, `/usage`): `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; a modal since 2026-11-20; details in [settings-ui.md](settings-ui.md)):
 `settings_frame_at` (a page below a section: Settings / Section / page), `setting_card`, `setting_row(_with)`,
 `inline_form`, `inline_select`, `inline_number`,

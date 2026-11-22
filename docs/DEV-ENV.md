@@ -32,7 +32,7 @@ just ui-shots --only settings # only screens whose name contains "settings"
   through `fake_agent.py`, a scripted ACP agent (steps, a permission card, a queued message,
   a model switch, models for the picker), then shoots each screen at 1440, 1024 and 390 px in
   dark and light. Panels that scroll get extra pages (`settings-agents~2`). About 3 minutes,
-  about 270 PNGs (~30 MB). The temp dir is removed at the end.
+  about 310 PNGs (~35 MB). The temp dir is removed at the end.
 - Same pixels every run: the server runs under libfaketime from a fixed date, in UTC;
   animations, transitions and the caret are off; Chromium rasterizes in software on one
   thread; fonts come from Nix. Host facts (host name, OS, kernel, uptime, memory) and "N min
@@ -40,7 +40,14 @@ just ui-shots --only settings # only screens whose name contains "settings"
 - `ui-diff` writes before | after | changed-pixels-in-red images, `summary.txt` and
   `index.html`. `--threshold <percent>` lists only shots above it, `--tolerance <0-255>` ignores
   small per-pixel differences, `--fail` exits 1 when something changed.
-- Not covered: the app list with real apps and the app dialog (need k3s), Settings → Reset's
+- Apps without k3s: the harness builds `melissa-server` with the `fake-apps` feature
+  (`crates/web/src/fake_apps.rs`, never in normal builds) and points `MELISSA_FAKE_APPS` at a
+  JSON file of `list_apps`/`app_status`/`app_logs` answers (`FAKE_APPS` in `server.py`). It
+  invites three members (ada, ben with apps, cy without) and shoots Apps as the owner
+  (`apps`, `apps-by-person`, `app-details`), as a member (`apps-member`, `app-details-member`,
+  `apps-empty`) and without an app platform (`apps-not-set-up`, the file removed). Revisions
+  from before the feature are built without it.
+- Not covered: stopping an app (the confirmation needs a real `stop_app`), Settings → Reset's
   confirm (container install only), the collapsed sidebar at 390 px (no such state on a phone).
   They are listed as skipped in `index.html`.
 - Offline: Chromium, Playwright and Pillow come from the dev shell (`devenv.nix`); the only

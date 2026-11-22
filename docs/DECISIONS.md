@@ -1477,3 +1477,32 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   screenshot diff harness. Alternatives: polish components one by one without tokens (no themes, drift
   continues), keep 44 px buttons everywhere (the owner finds them heavy), `any-pointer: coarse` (thick buttons on
   every touch laptop).
+- **2026-11-22 — Apps list: grouped by kind, by person; who an app was installed for** (owner design "Apps" A1-A5 in
+  the local Penpot; replaces the hexagon tiles). The Apps panel lists apps as rows (icon, name and address, whose it
+  is, status, Details) in one card per kind: Games, Media, Home, Files, Network, Developer, Other, from a new optional
+  spec field `kind` (`deploy_app` asks agents for it; specs without it are Other). **Icons**: the helpers' shapes
+  and colours, **derived** from the app name (FNV-1a plus MurmurHash3's finalizer) so every app has one at once,
+  the same on every page and after a reinstall, with nothing stored and no migration; an icon picked in the app's
+  details is kept in `ui.toml` (`[app_icons.<app>]`), because people asked to change them (board A5) and a
+  derived icon can't be changed. **Who an app is for**: the signed-in person's account id travels with the
+  request (`melissa_agent::PERSON_ID`, set by the sign-in gate next to the audit's person), is captured with each
+  chat message, becomes the turn's `TaskContext::person` on the agent's MCP session, and is set again around every
+  tool call, so `deploy_app` writes it to the new namespace as `melissa.io/installed-for` (first install only,
+  kept on updates) and a helper the lead agent creates for that message remembers it (`creator`). For the shared
+  lead Melissa this is the person whose message started the turn. The list resolves "installed by" as: the
+  annotation; else the person the looking-after helper was made for (installs in scheduled jobs); else the owner
+  for workspaces from before agents (`melissa.io/owner=owner`, when the owner was the only person); else
+  **unknown**. **Visibility**: the owner sees every app, with a person chip on each row and a filter (Everyone, Me,
+  each other person with apps, Unknown) that swaps the list in place (`hx-get` into `#cluster-apps`; plain links
+  `/cluster?by=` without script); a member sees only apps that are theirs, and **unknown apps stay with the owner**
+  (nothing says they are the member's; the owner can see and sort them out). Enforced on the server: the list,
+  `GET /api/apps` (new), the chat's details panel and `/api/details`, and every app route (`/cluster/apps/{app}`,
+  `/ui/apps/{app}/…`, `/api/apps/{app}/…`) answer 404 for an app the person may not see; force delete stays
+  owner-only. **Details** (board A5) are a page of the Apps panel (`/cluster/apps/{app}`, breadcrumb back) instead of
+  a second dialog: head (icon, status, person, Open, Stop/Start), the stop question in the page, Facts, Icon, Logs,
+  Force delete. Buttons there are the first `.btn` (32px, 8px radius; 44px hit area only under `pointer: coarse`);
+  new component tokens (`--chip-*`, `--segmented-*`, `--app-*`) and `--size-target-touch`. Alternatives: storing an
+  icon per app at install (needs a migration for every existing app and a k3s write to change it), deriving the
+  person from the looking-after agent's creator only (wrong for the shared lead Melissa and for anyone chatting
+  with someone else's helper), showing unknown apps to everyone (leaks apps between members), kind guessed from the
+  app name (a list that is never complete). Open items: PLAN Q90.
