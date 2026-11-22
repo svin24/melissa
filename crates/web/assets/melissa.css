@@ -4250,6 +4250,9 @@ ol.steps > li::marker {
   #settings-sections {
     display: flex;
     overflow-x: auto;
+    /* Room for a tab's focus ring (3px + 2px offset) inside the scroller, which clips it. */
+    padding: 5px;
+    margin: -5px;
     gap: 0.25rem;
     scrollbar-width: thin;
     scrollbar-color: var(--idle) transparent;
@@ -5569,6 +5572,13 @@ label.attach.upload {
     border-radius: 50%;
     background: var(--surface);
     color: var(--ink);
+  }
+
+  /* The header's round "⋯": a smaller disc inside the same 44px tap target, so it sits with
+     the plain icons beside it instead of standing out as a large white circle. */
+  .chat-head > .more-button {
+    padding: 6px;
+    background-clip: content-box;
   }
 
   .shell:has([data-phone-view="list"]) .side-search {

@@ -533,7 +533,11 @@ impl Feed {
             LeadEvent::AgentCreated { agent, name, .. } => vec![self.add(
                 format!("n{}", rec.seq),
                 Item::Activity {
-                    label: format!("New helper: {name}"),
+                    // The current name (resolved by id): the helper may have been renamed since.
+                    label: format!(
+                        "New helper: {}",
+                        look.agent_name(agent).unwrap_or_else(|| name.clone())
+                    ),
                     detail: None,
                     state: ActivityState::Done,
                     agent: Some(agent.clone()),
@@ -2858,5 +2862,29 @@ mod tests {
             tool_words("transfer_file").done,
             "Passed a file to another file box"
         );
+    }
+
+    #[test]
+    fn new_helper_note_shows_the_current_name() {
+        let created = rec(
+            1,
+            LeadEvent::AgentCreated {
+                agent: "d.a1".into(),
+                name: "Old name".into(),
+                backend: "claude".into(),
+            },
+        );
+        let label = |look: &dyn Lookup| {
+            let mut feed = Feed::new();
+            feed.apply(&created, look);
+            match &feed.entries()[0].item {
+                Item::Activity { label, .. } => label.clone(),
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        // Renamed since (Known says d.a1 is Ada now).
+        assert_eq!(label(&Known), "New helper: Ada");
+        // Deleted or unknown: the name it had.
+        assert_eq!(label(&NoLookup), "New helper: Old name");
     }
 }

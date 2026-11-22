@@ -51,6 +51,8 @@ impl DeviceInfo {
             "path": format!("/{rel}"),
             "total_bytes": total,
             "available_bytes": available,
+            "total": crate::attachments::gib_size(total),
+            "available": crate::attachments::gib_size(available),
             "used_percent": used_percent(total, free, available),
         }))
     }
@@ -76,7 +78,7 @@ impl Tool for DeviceInfo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "device_info",
-            description: "Describe this device (the device Melissa runs on): OS, kernel, Melissa release, uptime, memory and disk space (`disks`: total/available bytes and percent used of /, /var and the k3s data directory).",
+            description: "Describe this device (the device Melissa runs on): OS, kernel, Melissa release, uptime, memory and disk space (`disks`: total/available bytes and percent used of /, /var and the k3s data directory). Quote sizes as `total`, `available` and `mem_total` give them (GiB, as Melissa's pages show them).",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         }
@@ -108,6 +110,8 @@ impl Tool for DeviceInfo {
                 "melissa_variant": release.as_deref().and_then(|t| key_value(t, "MELISSA_VARIANT")),
                 "uptime_secs": uptime_secs,
                 "mem_total_kib": meminfo_kib(&meminfo, "MemTotal"),
+                "mem_total": meminfo_kib(&meminfo, "MemTotal").map(|k| crate::attachments::gib_size(k.saturating_mul(1024))),
+                "mem_available": meminfo_kib(&meminfo, "MemAvailable").map(|k| crate::attachments::gib_size(k.saturating_mul(1024))),
                 "mem_available_kib": meminfo_kib(&meminfo, "MemAvailable"),
                 "disks": disks,
             }))

@@ -155,6 +155,8 @@ pub enum Apps {
     Unknown,
     /// The app platform (k3s) did not answer.
     Unreachable,
+    /// There is no app platform (k3s) on this device: no cluster credentials at all.
+    NotSetUp,
     Known {
         installed: Vec<App>,
     },
@@ -246,6 +248,7 @@ impl ClusterSnapshot {
     ) -> Self {
         let apps = match list_apps {
             None => Apps::Unknown,
+            Some(v) if v["k3s_set_up"] == false => Apps::NotSetUp,
             Some(v) if v["k3s_reachable"] == false => Apps::Unreachable,
             Some(v) => Apps::Known {
                 installed: v["apps"]
@@ -598,6 +601,10 @@ mod tests {
         let s =
             ClusterSnapshot::from_tools(Some(&json!({"k3s_reachable": false})), None, Some(&agent));
         assert_eq!(s.apps, Apps::Unreachable);
+        // No cluster credentials at all: not set up here (rather than down).
+        let gone = json!({"k3s_reachable": false, "k3s_set_up": false});
+        let none = ClusterSnapshot::from_tools(Some(&gone), None, Some(&agent));
+        assert_eq!(none.apps, Apps::NotSetUp);
         assert_eq!(s.devices[0].name, "This device");
         assert_eq!(
             ClusterSnapshot::from_tools(None, None, None),

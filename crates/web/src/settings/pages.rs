@@ -329,6 +329,8 @@ pub struct ProviderCard {
     pub version: Option<String>,
     /// The saved setting.
     pub enabled: bool,
+    /// The program is on this device (an enabled provider that isn't shows its switch off).
+    pub installed: bool,
     /// One word or short phrase: Ready, Sign in needed, Not installed, Installing…, ...
     pub status: String,
     pub tone: Tone,
@@ -378,6 +380,25 @@ pub fn providers_page(f: &Frame<'_>, v: &ProvidersView) -> Markup {
     frame(f, "Providers", providers_region(v))
 }
 
+/// A provider's switch shows on only when it is enabled and its program is here:
+/// an enabled built-in that isn't installed yet must not look in use.
+fn switch_on(c: &ProviderCard) -> bool {
+    c.enabled && c.installed
+}
+
+/// Why the switch can't be used now: in use, or waiting for its install (the detail shows how).
+fn switch_lock(c: &ProviderCard) -> Option<&str> {
+    if !c.enabled {
+        None
+    } else if let Some(why) = c.lock.as_deref() {
+        Some(why)
+    } else if !c.installed {
+        Some("Install it first.")
+    } else {
+        None
+    }
+}
+
 pub fn providers_region(v: &ProvidersView) -> Markup {
     let hrefs: Vec<String> = v
         .cards
@@ -406,7 +427,7 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
         .enumerate()
         .map(|(i, c)| PickRow {
             href: &hrefs[i],
-            mark: provider_logo(&c.id, &letter(&c.label), !c.enabled),
+            mark: provider_logo(&c.id, &letter(&c.label), !switch_on(c)),
             name: &c.label,
             version: &versions[i],
             status: &c.status,
@@ -416,8 +437,8 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
                 action: &toggle_urls[i],
                 target: PROVIDERS_ID,
                 label: &toggle_labels[i],
-                on: c.enabled,
-                locked: if c.enabled { c.lock.as_deref() } else { None },
+                on: switch_on(c),
+                locked: switch_lock(c),
             })),
         })
         .collect();
@@ -505,7 +526,7 @@ fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
         .map(|v| format!("Version {v}"))
         .unwrap_or_default();
     html! {
-        (detail_head(provider_logo(&c.id, &letter(&c.label), !c.enabled), &c.label, &sub,
+        (detail_head(provider_logo(&c.id, &letter(&c.label), !switch_on(c)), &c.label, &sub,
             html! { (badge(&c.status, c.tone)) }))
         (step_view(c, &url))
         @if let Some(set) = c.key { (key_view(set, c.key_open, &url)) }
@@ -1183,6 +1204,8 @@ pub struct AgentPage<'a> {
     /// Why it can't be deleted now ("Looks after Minecraft. …"), if so.
     pub kept: Option<&'a str>,
     pub flash: Option<&'a Flash>,
+    /// Show `flash` in the Icon section (its form's answer) instead of at the top.
+    pub flash_at_icon: bool,
 }
 
 pub fn agent_settings_page(f: &Frame<'_>, a: &AgentPage<'_>) -> Markup {
@@ -1206,7 +1229,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
     region(
         AGENT_ID,
         html! {
-            @if let Some(f) = a.flash { (notice(&f.text, f.tone)) }
+            @if let Some(f) = a.flash.filter(|_| !a.flash_at_icon) { (notice(&f.text, f.tone)) }
             (setting_card(None, html! {
                 (setting_row_with(
                     html! { (avatar(&face, "av")) " " (a.name) },
@@ -1249,6 +1272,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
             @if !a.lead {
             section.setting-group {
                 h2.setting-heading { "Icon" }
+                @if let Some(f) = a.flash.filter(|_| a.flash_at_icon) { (notice(&f.text, f.tone)) }
                 div.setting-card.card-pad {
                     (settings_form(&format!("{base}/icon"), AGENT_ID, "Save icon",
                         icon_picker(a.shapes, a.colors, a.shape, a.color)))

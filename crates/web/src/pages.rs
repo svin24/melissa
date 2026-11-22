@@ -805,12 +805,7 @@ pub fn past_chats(f: &Frame<'_>) -> Markup {
 // --- The cluster: apps and devices ---------------------------------------------------------
 
 fn format_kib(kib: u64) -> String {
-    let gib = kib as f64 / (1024.0 * 1024.0);
-    if gib >= 10.0 {
-        format!("{gib:.0} GB")
-    } else {
-        format!("{gib:.1} GB")
-    }
+    melissa_agent::attachments::gib_size(kib.saturating_mul(1024))
 }
 
 pub(crate) fn format_uptime(secs: u64) -> String {
@@ -902,6 +897,10 @@ pub fn cluster_apps(snap: &ClusterSnapshot, host: Option<&str>) -> Markup {
             (app_grid("Apps", add_app_tile("/?draft=Install%20")))
             p.quiet { "The app platform isn't answering right now. Melissa keeps trying." }
         },
+        Apps::NotSetUp => html! {
+            (app_grid("Apps", add_app_tile("/?draft=Install%20")))
+            p.quiet { "The app platform isn't set up on this device." }
+        },
         Apps::Known { installed } => {
             let names: Vec<String> = installed.iter().map(|a| a.display_name()).collect();
             let details: Vec<String> = installed
@@ -979,6 +978,7 @@ pub fn usage(f: &Frame<'_>, rows: &[UsageRow<'_>], since: &str) -> Markup {
                         @match running {
                             Some(1) => "1 app running.",
                             Some(n) => { (n) " apps running." }
+                            None if snap.apps == Apps::NotSetUp => "The app platform isn't set up on this device.",
                             None => "Couldn't read the app list yet.",
                         }
                     }
@@ -1272,6 +1272,6 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_millis(1500)), "1.5 s");
         assert_eq!(format_elapsed(Duration::from_secs(125)), "2 min 05 s");
         assert_eq!(format_uptime(3 * 86_400 + 7200), "Up 3 d 2 h");
-        assert_eq!(format_kib(8 * 1024 * 1024), "8.0 GB");
+        assert_eq!(format_kib(8 * 1024 * 1024), "8.0 GiB");
     }
 }

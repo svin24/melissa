@@ -148,7 +148,7 @@ fn creator_words(created_by: &str, lead: &str) -> String {
     if created_by.starts_with("the lead agent") {
         lead.into()
     } else if created_by == "the user" || created_by == "ui" {
-        "You".into()
+        "you".into()
     } else {
         created_by.to_string()
     }
@@ -156,6 +156,18 @@ fn creator_words(created_by: &str, lead: &str) -> String {
 
 /// A helper's page, with `flash` after an action.
 async fn agent_region(ui: &Ui, a: &AgentView, flash: Option<&Flash>, whole: bool) -> Response {
+    agent_region_at(ui, a, flash, false, whole).await
+}
+
+/// [`agent_region`], with `flash` in the Icon section when `at_icon`; that answer (an icon
+/// change) also updates the sidebar out of band, since the Settings page has no live stream.
+async fn agent_region_at(
+    ui: &Ui,
+    a: &AgentView,
+    flash: Option<&Flash>,
+    at_icon: bool,
+    whole: bool,
+) -> Response {
     let snap = ui.cluster.get().await;
     let keeps: Vec<String> = match &snap.apps {
         Apps::Known { installed } => installed
@@ -192,11 +204,19 @@ async fn agent_region(ui: &Ui, a: &AgentView, flash: Option<&Flash>, whole: bool
         pinned: a.pinned,
         kept: kept.as_deref(),
         flash,
+        flash_at_icon: at_icon,
     };
     if whole {
         ui.framed(|f| pages::agent_settings_page(f, &page))
             .await
             .into_response()
+    } else if at_icon {
+        let side = ui.side_data(&snap);
+        maud::html! {
+            (pages::agent_settings_region(&page))
+            (crate::pages::sidebar_update(&side, None))
+        }
+        .into_response()
     } else {
         pages::agent_settings_region(&page).into_response()
     }
@@ -224,6 +244,7 @@ async fn lead_region(ui: &Ui, flash: Option<&Flash>, whole: bool) -> Response {
         pinned: true,
         kept: None,
         flash,
+        flash_at_icon: false,
     };
     if whole {
         ui.framed(|f| pages::agent_settings_page(f, &page))
@@ -342,8 +363,9 @@ pub(super) async fn icon(
             text: "Pick a shape and a colour.".into(),
             tone: Tone::Error,
         },
+        // htmx: the page's region again, with the notice by the Icon form (the sidebar's live
+        // update shows the new icon there).
         Some(icon) => match ui.lead.agents().set_icon(&id, icon) {
-            Ok(_) if is_htmx(&headers) => return hx("hx-refresh", "true"),
             Ok(_) => Flash {
                 text: "Icon saved.".into(),
                 tone: Tone::Ok,
@@ -354,6 +376,11 @@ pub(super) async fn icon(
             },
         },
     };
+    if is_htmx(&headers) {
+        if let Some(a) = ui.lead.agents().get(&id) {
+            return agent_region_at(&ui, &a, Some(&flash), true, false).await;
+        }
+    }
     after(&ui, &headers, &id, flash).await
 }
 

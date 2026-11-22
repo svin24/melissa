@@ -1856,6 +1856,17 @@ mod tests {
                     || html.contains("Anthropic&#39;s official installer")
             );
             assert!(html.contains("Not installed"));
+            // Enabled but not installed: its switch shows off and can't be used yet (here the
+            // lead runs on it, so that reason is its tooltip; otherwise "Install it first.").
+            let rows: Vec<&str> = html
+                .split("<li")
+                .filter(|li| li.contains("pick-status tone-warn\">Not installed"))
+                .collect();
+            assert!(!rows.is_empty(), "{html}");
+            for row in &rows {
+                assert!(!row.contains("checked"), "{row}");
+                assert!(row.contains("role=\"switch\" disabled"), "{row}");
+            }
             // Less text: no internals in the default view, no host commands, no restart banner.
             for unwanted in [
                 "melissa-setup",
@@ -2983,15 +2994,15 @@ mod tests {
             let (status, _, body) = get_html(&app, "/usage").await;
             assert_eq!(status, StatusCode::OK);
             assert!(body.contains("Fedora Linux 45"));
-            assert!(body.contains("4.0 GB of 8.0 GB used"));
+            assert!(body.contains("4.0 GiB of 8.0 GiB used"));
             // device_info's /var is 91% used: a storage meter and a warning on the card.
             assert!(body.contains("<span>Storage</span>"));
             assert!(body.contains("value=\"91\""));
-            assert!(body.contains("Storage is almost full: 1.7 GB left."));
+            assert!(body.contains("Storage is almost full: 1.7 GiB left."));
             // The chat's details panel warns on this device's row.
             let (status, _, body) = get_html(&app, "/chat").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("Storage almost full (1.7 GB left)"));
+            assert!(body.contains("Storage almost full (1.7 GiB left)"));
             // The app strip is gone (2026-11-20): its fragment no longer exists.
             let (status, _, _) = get_html(&app, "/ui/strip").await;
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -3176,7 +3187,7 @@ mod tests {
                 "Approvals asked",
                 "Counted since",
                 "Context and cost show only where the provider reports them.",
-                "4.0 GB of 8.0 GB used",
+                "4.0 GiB of 8.0 GiB used",
             ] {
                 assert!(body.contains(want), "missing {want}");
             }
