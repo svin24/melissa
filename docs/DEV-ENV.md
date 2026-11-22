@@ -3,7 +3,8 @@
 The repo ships a `devenv.nix` / `devenv.yaml` (primary), a `flake.nix` (alternative entry point),
 and an `.envrc`. The shell provides Rust (stable via rust-overlay: rustc, cargo, clippy, rustfmt,
 rust-analyzer, rust-src), cargo-nextest, cargo-watch, just, pkg-config, and pre-commit hooks
-(rustfmt + clippy). Container tooling (podman) comes from the host, not Nix; `just container-*` uses it.
+(rustfmt + clippy), plus Python with Playwright, Playwright's Chromium, Pillow and libfaketime
+for the UI screenshots (`just ui-shots`, below). Container tooling (podman) comes from the host, not Nix; `just container-*` uses it.
 
 ```
 direnv allow          # auto-loads the shell via .envrc (`use devenv`)
@@ -13,6 +14,38 @@ just check            # fmt + clippy + tests
 ```
 
 Just want to try Melissa? See [QUICKSTART.md](QUICKSTART.md) (also covers a rustup setup without Nix).
+
+## UI screenshots (before/after)
+
+For UI changes: shoot every screen before and after, then diff.
+
+```
+just ui-shots                 # this checkout -> target/ui-shots/<rev>[-dirty]/index.html
+just ui-diff <before> <after> # two shot dirs or revisions, e.g. `just ui-diff master abc1234-dirty`
+just ui-shots --rev master    # shoot another revision (temporary git worktree, built there)
+just ui-shots --only settings # only screens whose name contains "settings"
+```
+
+- What it does (`scripts/ui-shots/`): builds `melissa-server`, starts it on a free `localhost`
+  port with HOME and every XDG directory in a fresh temp dir (never `~/.config/melissa`, never
+  the Melissa on port 8080), claims it as `owner`, seeds three helpers with icons and chats
+  through `fake_agent.py`, a scripted ACP agent (steps, a permission card, a queued message,
+  a model switch, models for the picker), then shoots each screen at 1440, 1024 and 390 px in
+  dark and light. Panels that scroll get extra pages (`settings-agents~2`). About 3 minutes,
+  about 270 PNGs (~30 MB). The temp dir is removed at the end.
+- Same pixels every run: the server runs under libfaketime from a fixed date, in UTC;
+  animations, transitions and the caret are off; Chromium rasterizes in software on one
+  thread; fonts come from Nix. Host facts (host name, OS, kernel, uptime, memory) and "N min
+  ago" are replaced in the page before each shot. Two runs of the same code diff to 0.
+- `ui-diff` writes before | after | changed-pixels-in-red images, `summary.txt` and
+  `index.html`. `--threshold <percent>` lists only shots above it, `--tolerance <0-255>` ignores
+  small per-pixel differences, `--fail` exits 1 when something changed.
+- Not covered: the app list with real apps and the app dialog (need k3s), Settings → Reset's
+  confirm (container install only), the collapsed sidebar at 390 px (no such state on a phone).
+  They are listed as skipped in `index.html`.
+- Offline: Chromium, Playwright and Pillow come from the dev shell (`devenv.nix`); the only
+  network use is the browser talking to the throwaway server on localhost.
+- Shots show this machine's UI only (target/ is gitignored); don't commit them.
 
 ## Installing Nix (any Linux)
 
