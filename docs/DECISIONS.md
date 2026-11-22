@@ -1506,3 +1506,15 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   person from the looking-after agent's creator only (wrong for the shared lead Melissa and for anyone chatting
   with someone else's helper), showing unknown apps to everyone (leaks apps between members), kind guessed from the
   app name (a list that is never complete). Open items: PLAN Q90.
+- **2026-11-22 — Rename this device in Settings** (owner request). The device's name could only be set in
+  first-run setup. It is now a "Device name" field with "Save name" on Settings → Updates, below the "This
+  device" card: that page is already about Melissa on this device and owner only, so no new section and no new
+  gate. Owner only on the server too (`/ui/settings/device-name` is an owner path, and the handler checks
+  again). Setup's Device step and the Settings field share one save (`settings/device.rs`: the same
+  `clean_device_name`, the same "Give the device a name." message, audited `settings.device_name`) and the
+  same prefill (the saved name, else the host name). The form swaps only its own region with a "Name saved."
+  notice; other pages read the name when they render, and now every place that names this device uses it:
+  chat header, sidebar, the details panel's device card, Usage and an app's "Device" fact (in place of the k3s
+  node name or the device id). Live updates of other open panels are left to the live-settings work.
+  Alternatives: a new "Device" section (one field does not need a section of its own yet), Settings → Apps
+  (about who opens apps, not the device).

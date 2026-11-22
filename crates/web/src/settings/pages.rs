@@ -89,11 +89,11 @@ pub const SECTIONS: [Section; 13] = [
         keywords: "Tailscale tailnet enable sign in disable connected",
     },
     Section {
-        href: "/settings/updates",
+        href: UPDATES_URL,
         label: "Updates",
         group: "System",
         icon: Glyph::Refresh,
-        keywords: "Melissa version check for updates update roll back restart automatic updates",
+        keywords: "Melissa version check for updates update roll back restart automatic updates This device Device name rename",
     },
     Section {
         href: DEVELOPER_URL,
@@ -173,6 +173,11 @@ pub const VOICE_ID: &str = "voice-settings";
 
 /// The Developer section: Agent tasks (`/tasks` redirects here when the lead agent is present).
 pub const DEVELOPER_URL: &str = "/settings/developer";
+
+/// The Updates section: Melissa's version and this device's name.
+pub const UPDATES_URL: &str = "/settings/updates";
+/// DOM id of the device name's region on the Updates page (its form swaps it).
+pub const DEVICE_NAME_ID: &str = "device-name";
 
 /// DOM id of the Providers region (forms swap it).
 pub const PROVIDERS_ID: &str = "providers";
@@ -720,6 +725,32 @@ pub struct UpdatesView {
     pub commands_open: bool,
     pub pending: Option<Pending>,
     pub manual_restart: Option<String>,
+    /// This device's name (owner only, like the page).
+    pub device: DeviceNameView,
+}
+
+/// The device name's field: the saved name (else the host's) and the last save's answer.
+pub struct DeviceNameView {
+    pub value: String,
+    pub flash: Option<Flash>,
+}
+
+/// The device's name as a field and a Save button; its form swaps only this region.
+pub fn device_name_region(v: &DeviceNameView) -> Markup {
+    let url = super::device::SAVE_URL;
+    html! {
+        section.setting-group id=(DEVICE_NAME_ID) {
+            div.setting-card.card-pad {
+                form.stack.settings-form method="post" action=(url) hx-post=(url)
+                    hx-target={ "#" (DEVICE_NAME_ID) } hx-swap="outerHTML" {
+                    (crate::components::csrf_field())
+                    (text_field("name", "Device name", &v.value, "", "text", Some("Shown in Melissa only.")))
+                    @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
+                    div { button.btn.secondary type="submit" { "Save name" } }
+                }
+            }
+        }
+    }
 }
 
 pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
@@ -772,7 +803,7 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                         action: "/ui/settings/updates/apply",
                         target: UPDATES_ID,
                         confirm: "Update",
-                        cancel_href: "/settings/updates",
+                        cancel_href: UPDATES_URL,
                     }))
                 } @else {
                     (confirm_card(&ConfirmCard {
@@ -781,7 +812,7 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                         action: "/ui/settings/updates/rollback",
                         target: UPDATES_ID,
                         confirm: "Roll back",
-                        cancel_href: "/settings/updates",
+                        cancel_href: UPDATES_URL,
                     }))
                 }
             }
@@ -806,6 +837,7 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                     }))
                 }
             }))
+            (device_name_region(&v.device))
         }
     }
 }

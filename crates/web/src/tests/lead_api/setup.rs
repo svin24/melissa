@@ -251,3 +251,93 @@ async fn the_chat_says_when_no_provider_works() {
     let (status, _, _) = send(&b.app, as_get(&b.owner, "/")).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// Settings → Updates → "This device": the owner renames the device after setup, with the
+/// setup step's rules; members can't.
+#[tokio::test]
+async fn the_owner_renames_the_device_in_settings() {
+    let b = setup_box("device-rename", false, false);
+    let hx = |s: &NewSession, body: &str| {
+        as_post(s, "/ui/settings/device-name")
+            .header("hx-request", "true")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let saved = || std::fs::read_to_string(b.fx.dir.join("config/ui.toml")).unwrap_or_default();
+
+    // Never named: the field holds what setup would offer, the host's name.
+    let (status, _, page) = send(&b.app, as_get(&b.owner, "/settings/updates")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        page.contains("Device name") && page.contains("Save name"),
+        "{page}"
+    );
+    assert!(page.contains("action=\"/ui/settings/device-name\""));
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .and_then(|h| melissa_settings::prefs::clean_device_name(h.lines().next().unwrap_or("")));
+    if let Some(h) = host.filter(|h| h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+        assert!(page.contains(&format!("value=\"{h}\"")), "{page}");
+    }
+
+    // Members: no Updates page, and the server refuses the form.
+    let (status, _, _) = send(&b.app, as_get(&b.member, "/settings/updates")).await;
+    assert_ne!(status, StatusCode::OK);
+    let (status, _, _) = send(&b.app, hx(&b.member, "name=Mine")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = go(&b, &b.member, "/ui/settings/device-name", "name=Mine").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!saved().contains("device_name"), "{}", saved());
+
+    // Empty after cleaning: setup's message, in place (the region only), nothing saved.
+    let (status, _, body) = send(&b.app, hx(&b.owner, "name=+%07+")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Give the device a name.") && body.contains("id=\"device-name\""));
+    assert!(!body.contains("<html"), "{body}");
+    assert!(!saved().contains("device_name"));
+
+    // Saved, cleaned like setup's: a short confirmation in place.
+    let (status, _, body) = send(&b.app, hx(&b.owner, "name=+Den%07+box+")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("Name saved.") && body.contains("value=\"Den box\""),
+        "{body}"
+    );
+    assert!(!body.contains("<html"));
+    assert!(saved().contains("device_name = \"Den box\""), "{}", saved());
+
+    // Without script: a redirect, or the page with the error.
+    let (status, _, page) = go(&b, &b.owner, "/ui/settings/device-name", "name=").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains("Give the device a name.") && page.contains("<html"));
+    let (status, h, _) = go(&b, &b.owner, "/ui/settings/device-name", "name=Attic").await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location(&h), "/settings/updates");
+
+    // The new name shows the next time a page renders: the field, and wherever the UI names
+    // the device, for members too.
+    let (_, _, page) = send(&b.app, as_get(&b.owner, "/settings/updates")).await;
+    assert!(page.contains("value=\"Attic\""), "{page}");
+    // The chat (header, sidebar, details panel) and Usage name it instead of the k3s node
+    // (`device-1`); an app's details instead of the device id.
+    for s in [&b.owner, &b.member] {
+        for uri in ["/chat", "/usage"] {
+            let (status, _, page) = send(&b.app, as_get(s, uri)).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert!(
+                page.contains("Attic") && !page.contains("Den box"),
+                "{uri}: {page}"
+            );
+            assert!(!page.contains("device-1"), "{uri}: {page}");
+        }
+    }
+    let (status, _, page) = send(&b.app, as_get(&b.owner, "/cluster/apps/nextcloud")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        page.contains("Attic") && !page.contains("d-0a1b2c3d<"),
+        "{page}"
+    );
+    // Setup's Device step offers the saved name.
+    let (_, _, page) = send(&b.app, as_get(&b.owner, "/setup/device")).await;
+    assert!(page.contains("value=\"Attic\""), "{page}");
+}

@@ -260,6 +260,7 @@ async fn view(ui: &Ui, flash: Option<Flash>, confirm: Option<&'static str>) -> U
         commands_open: env.kind == HostKind::Other,
         pending: apply::pending(ui).await,
         manual_restart: manual_restart(s),
+        device: super::device::view(ui, None),
     }
 }
 
@@ -268,6 +269,13 @@ pub(super) async fn page(State(ui): State<Ui>) -> Response {
     ui.framed(|f| pages::updates_page(f, &v))
         .await
         .into_response()
+}
+
+/// The page with the device name's field as given (its form's answer without script).
+pub(super) async fn page_with_device(ui: &Ui, device: pages::DeviceNameView) -> maud::Markup {
+    let mut v = view(ui, None, None).await;
+    v.device = device;
+    ui.framed(|f| pages::updates_page(f, &v)).await
 }
 
 #[derive(Deserialize, Default)]

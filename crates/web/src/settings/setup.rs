@@ -31,10 +31,10 @@ use axum::{
 };
 use maud::{html, Markup};
 use melissa_agent::lead::backends::BackendView;
-use melissa_settings::prefs::clean_device_name;
 use serde::Deserialize;
 
 use super::{
+    device,
     pages::{self, ProvidersView, Step as ProviderStep},
     providers, tailscale, voice,
 };
@@ -296,17 +296,9 @@ pub(crate) fn checklist_line(step: SetupStep, later: bool) -> (&'static str, Str
     )
 }
 
-/// The host's name, for the Device step's field.
-fn host_name() -> Option<String> {
-    ["/proc/sys/kernel/hostname", "/etc/hostname"]
-        .iter()
-        .find_map(|p| std::fs::read_to_string(p).ok())
-        .and_then(|n| clean_device_name(n.lines().next().unwrap_or("")))
-}
-
 // --- Pages ----------------------------------------------------------------------------------
 
-fn owner_only() -> Option<Response> {
+pub(super) fn owner_only() -> Option<Response> {
     match crate::auth::signed_in() {
         Some(p) if p.is_owner() => None,
         _ => Some((StatusCode::FORBIDDEN, "Only the owner can do this.").into_response()),
@@ -368,8 +360,7 @@ async fn step(
 }
 
 fn device_form(ui: &Ui, error: Option<&str>) -> Markup {
-    let prefs = ui.settings.prefs();
-    let value = prefs.device_name.or_else(host_name).unwrap_or_default();
+    let value = device::field_value(ui);
     html! {
         @if let Some(e) = error { (notice(e, Tone::Error)) }
         form.stack #setup-device-form method="post" action="/ui/setup/device" {
@@ -593,42 +584,14 @@ async fn extras(ui: &Ui) -> Markup {
 
 // --- Forms ----------------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-pub(super) struct DeviceForm {
-    #[serde(default)]
-    name: String,
-}
-
-async fn save_device(State(ui): State<Ui>, Form(form): Form<DeviceForm>) -> Response {
+async fn save_device(State(ui): State<Ui>, Form(form): Form<device::NameForm>) -> Response {
     if let Some(r) = owner_only() {
         return r;
     }
-    let Some(name) = clean_device_name(&form.name) else {
-        let page = step_page(
-            SetupStep::Device,
-            device_form(&ui, Some("Give the device a name.")),
-        );
-        return (StatusCode::UNPROCESSABLE_ENTITY, page).into_response();
-    };
-    if let Err(e) = ui
-        .settings
-        .parts()
-        .prefs
-        .update(|p| p.device_name = Some(name.clone()))
-    {
-        tracing::error!("saving the device name: {e}");
-        let page = step_page(
-            SetupStep::Device,
-            device_form(&ui, Some("Couldn't save the name. Try again.")),
-        );
-        return (StatusCode::INTERNAL_SERVER_ERROR, page).into_response();
+    if let Err(e) = device::save_name(&ui, &form.name) {
+        let page = step_page(SetupStep::Device, device_form(&ui, Some(e.text())));
+        return (e.status(), page).into_response();
     }
-    ui.settings.audit(
-        "settings.device_name",
-        "ui",
-        &format!("device name: {name}"),
-        None,
-    );
     let next = progress(&ui).await.after(SetupStep::Device);
     Redirect::to(&next).into_response()
 }

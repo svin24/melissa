@@ -23,6 +23,8 @@
 //!   pasted code at `POST .../login/code` (`code`) or stops at `POST .../login/cancel`.
 //! - `POST /ui/settings/updates/{check|apply|rollback}`: apply and rollback first return a
 //!   confirmation card; only a post with `confirm=yes` starts them.
+//! - `POST /ui/settings/device-name` (`name`): this device's name, shown on the Updates page
+//!   under "This device" (`device.rs`; owner only; the same rules as setup's Device step).
 //! - `POST /ui/settings/restart`: restart Melissa now (saved settings also apply by
 //!   themselves once she is idle, see `apply.rs`).
 //! - `GET /settings/reset`, `POST /ui/settings/reset` (`confirm`), `POST /api/settings/reset`
@@ -107,6 +109,7 @@ pub(crate) mod agents;
 mod apply;
 mod apps;
 mod developer;
+mod device;
 mod files;
 pub(crate) mod pages;
 mod permissions;
@@ -479,6 +482,7 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             post(voice::transcribe).layer(DefaultBodyLimit::max(voice::MAX_UPLOAD)),
         )
         .route("/settings/updates", get(updates::page))
+        .route(device::SAVE_URL, post(device::save))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
         .route(pages::RESET_URL, get(reset::page))
