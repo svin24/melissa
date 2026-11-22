@@ -107,6 +107,8 @@ pub(crate) struct Attached {
     pub workroot: std::path::PathBuf,
     /// Every agent's file box (each conversation uses its own).
     pub files: crate::files::FileBoxes,
+    /// Plan usage reported mid-session (shared with the lead agent).
+    pub provider_usage: crate::provider_usage::UsageHub,
 }
 
 /// A job the lead agent gave an agent.
@@ -532,6 +534,7 @@ impl AgentPool {
             },
             allow: Some(allow),
             compact: self.inner.limits.compact,
+            provider_usage: a.provider_usage.clone(),
         };
         let conv = Conversation::new(
             spec,

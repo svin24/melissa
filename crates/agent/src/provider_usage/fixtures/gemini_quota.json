@@ -1,0 +1,1 @@
+{"buckets":[{"modelId":"example-pro","tokenType":"REQUESTS","remainingFraction":0.25,"remainingAmount":"25","resetTime":"2027-01-15T08:00:00Z"},{"modelId":"example-flash","tokenType":"REQUESTS","remainingFraction":1,"resetTime":"2027-01-15T08:00:00Z"},{"modelId":"example-pro","tokenType":"REQUESTS","remainingFraction":0.5},{"remainingFraction":0.1}]}

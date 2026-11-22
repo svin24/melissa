@@ -1432,3 +1432,30 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   first visit), a wizard only (no way back to skipped steps), storing step completion flags (drift from the
   real state), renaming the node from the device name (owner: display only), keeping the code in memory
   (a restart after install invalidated the printed code).
+- **2026-11-22 — Provider plan usage like T3 Code, Melissa calling the providers' usage endpoints itself**
+  (owner decision: "everything like T3", accepting that the endpoints are undocumented and may break, and the
+  providers' terms). A data layer (`melissa_agent::provider_usage`) and an owner-only JSON endpoint
+  (`GET /api/usage/providers`); the panel is designed later. One provider-agnostic model: plan, windows (used %,
+  reset, length, model scope, pace = elapsed share of the window), credits, cost, tokens per model, and a status
+  per source. **Where numbers come from** (researched from T3 Code, MIT, and the installed CLIs; no code
+  copied): Claude's `rate_limit_event` and `result.modelUsage` from running chats (until now dropped), and the
+  `get_usage` control request (`skip_behaviors: true`; experimental in Claude Code's SDK schema, read
+  defensively) in a short prompt-less session like the model probe; Codex's own session files (`token_count`
+  with `rate_limits`), since its ACP adapter passes no rate limits; Grok's ACP extension `_x.ai/billing` (checked
+  against Grok CLI 1.0.92: it exists and wants a sign-in) instead of T3's direct call with the sign-in token,
+  so Melissa never reads Grok's token; Gemini CLI's Code Assist `loadCodeAssist` + `retrieveUserQuota`, and
+  OpenCode Go's `zen/go/v1/usage`, called by Melissa with the agents' sign-in (Google access token, Go key). In
+  the first three the agent makes the call inside its sandbox. **Rules:** counted, never estimated (no LiteLLM
+  price download, no cost from tokens); each source fails alone ("unavailable" with a reason) and hangs or
+  panics are contained (own task, 45 s limit); providers not installed or not signed in are "off" and nothing
+  is asked; calls only when the data is asked for, reused for 60 s (a forced refresh for 15 s), never in the
+  background; Melissa's HTTPS client refuses every host but `cloudcode-pa.googleapis.com` and `opencode.ai`,
+  follows no redirects, times out after 10 s; tokens are redacted types, sent only as a bearer header to their
+  provider, never logged, stored, renewed or shown. Hosts and timing are in PLAN (6. Web UI, "Provider plan
+  usage"). **Not built:** Muse (its numbers come only over its own protocol, not `muse acp`); OpenCode 2's local
+  server (unreachable inside the sandbox) and credential database (SQLite); ACP's draft end-of-turn token usage
+  (the schema contradicts itself on per-turn vs. per-session); renewing Google tokens (would mean shipping Gemini
+  CLI's OAuth client); Claude's reset credits and Codex's credit grants (T3 extras). Alternatives: Melissa
+  reading Grok's and Claude's tokens and calling their hosts directly (T3's way; more token handling for the
+  same numbers), background polling (owner: on open/refresh only), estimating cost from token counts (invented
+  numbers).

@@ -10,6 +10,9 @@ description = "Melissa agent layer: pluggable backends, task dispatch, audit log
 agent-client-protocol = { workspace = true }
 # Files sent to the model as base64 content blocks (already in the build via kube-rs).
 base64 = { workspace = true }
+# Provider usage: the HTTPS client for the few usage endpoints Melissa calls itself
+# (`provider_usage::https`). Already in the build through kube-rs and melissa-voice.
+bytes = { workspace = true }
 # Scheduled jobs: cron expressions evaluated in the box's local time zone.
 croner = { workspace = true }
 futures = { workspace = true }
@@ -17,7 +20,8 @@ futures = { workspace = true }
 # build through axum and kube-rs; no new crates).
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
-hyper-util = { workspace = true }
+hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
+hyper-rustls = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

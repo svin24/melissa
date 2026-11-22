@@ -517,6 +517,30 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   are the provider's own running totals per session, summed across sessions), plus the device cards and how many
   apps run. Counters: `usage.json` in each conversation's state directory, written once per turn.
   Details: [settings-ui.md](agent-skills/settings-ui.md).
+- **Provider plan usage (2026-11-22, owner decision "everything like T3"; DECISIONS; data layer only, the panel
+  is designed later):** per provider the plan's windows (5-hour, weekly, per-model, monthly: used %, reset time,
+  length, and a pace marker = where an even pace would be now), credits (Claude's extra usage, Grok's credits,
+  Codex credits), cost and tokens per model, **only as the providers report them** (no price table, no estimated
+  cost; T3 Code's LiteLLM price download is not used). `melissa_agent::provider_usage`; owner-only JSON at
+  `GET /api/usage/providers[?refresh=1]` (shape in `crates/web/src/api.rs`). Each source fails on its own
+  ("unavailable" with a reason); providers not installed or not signed in are "off" and nothing is asked.
+  Sources: Claude `rate_limit_event`s and `result.modelUsage` from running chats (kept in
+  `<state>/lead/provider-usage.json`), plus Claude's `get_usage` control request in a short session with no
+  prompt; Codex's session files (`token_count` events with `rate_limits`) under each conversation's
+  `agent-sessions/codex-acp`; Grok's ACP extension `_x.ai/billing` in a short session with no prompt. In those
+  three the agent CLI makes any network call itself, inside its sandbox, to hosts already on its allowlist.
+  **Third-party network calls by Melissa's own process (documented per AGENTS.md):**
+  (1) Gemini CLI with a Google sign-in: `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` and
+  `…/v1internal:retrieveUserQuota` (tier, project, per-model quota buckets) with the access token from the agents'
+  `~/.gemini/oauth_creds.json`; (2) OpenCode with a Go key: `GET https://opencode.ai/zen/go/v1/usage` with the
+  `opencode-go` key from the agents' `~/.local/share/opencode/auth.json`. Both hosts are the ones those agents
+  already use (on their sandbox allowlists). Called **only** when the usage data is asked for (the panel opens or
+  refreshes; `GET /api/usage/providers`), at most once a minute (a refresh at most every 15 s), never in the
+  background; skipped when the provider is not installed or not signed in (no sign-in file, no Go key). HTTPS only,
+  to those two hosts only (enforced in the client), no redirects, 10 s timeout, 1 MiB answer cap, User-Agent
+  `melissa`. Tokens are sent only to their provider's host, never logged, stored, shown to agents or the UI, and
+  never renewed by Melissa (an expired Google token reads as unavailable until Gemini's next run renews it).
+  These endpoints are undocumented and may change or break; the owner accepted that risk and the providers' terms.
 
 ## 6b. Clients (later)
 
@@ -1244,3 +1268,16 @@ Roadmap (rough, phases may overlap):
     reset): run once on a throwaway install, including a kill during the wipe and a restart of the container.
     tries live in memory: a restart clears lockouts. Since 2026-11-21 (Q88) the setup code is kept on disk
     (0600) until used or expired, so a restart keeps it.
+90. Provider plan usage (2026-11-22; DECISIONS "Provider plan usage"). (a) The panel itself (owner designs it;
+    the data is at `GET /api/usage/providers`). (b) Verified only with fixtures and the CLIs' own schemas, not
+    live with signed-in accounts (the owner's sign-ins must not be touched from a dev agent): check once each on a
+    test box — Claude `get_usage` in a prompt-less session, Grok `_x.ai/billing` (exact answer shape over ACP
+    unknown; parsed defensively), Codex session files from `codex-acp` (rate limits present?), Gemini
+    `loadCodeAssist`/`retrieveUserQuota` with a Google sign-in (project field, bucket shape), OpenCode Go's
+    usage with a Go key. (c) Units of Claude's `extra_usage.used_credits`/`monthly_limit` and Grok's
+    `monthlyLimit`/`onDemand*`/`prepaidBalance` are passed through as reported (cents vs. dollars unknown);
+    the percentages are unit-free. (d) Gemini's quota buckets carry no window length, so they have no pace;
+    OpenCode Go's 5-hour/weekly lengths follow T3 Code (not sent by OpenCode). (e) Muse: nothing until `muse acp`
+    reports usage. (f) Each Claude/Grok refresh starts a short sandboxed agent process (a few seconds; no
+    prompt, no tokens); reuse an open idle session instead if that proves slow.
+

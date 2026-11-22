@@ -121,7 +121,7 @@ fn public(path: &str) -> bool {
 }
 
 /// Owner-only for now (PLAN 6c step 1): People, providers, app access, Tailscale, updates, force
-/// delete, factory reset.
+/// delete, factory reset, providers' plan usage.
 const OWNER_PREFIXES: &[&str] = &[
     "/settings/people",
     "/ui/people",
@@ -141,6 +141,8 @@ const OWNER_PREFIXES: &[&str] = &[
     "/settings/reset",
     "/ui/settings/reset",
     "/api/settings/reset",
+    // Plan usage reads the providers' usage with the agents' sign-ins.
+    "/api/usage/providers",
 ];
 
 pub(crate) fn need(path: &str) -> Need {

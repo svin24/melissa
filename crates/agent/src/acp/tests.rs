@@ -72,7 +72,7 @@ async fn open_replay(
     let (agent_out, client_in) = tokio::io::duplex(64 * 1024);
     let agent = tokio::spawn(agent::run(steps, agent_in, agent_out));
     let transport = transport::lines(client_in, client_out, recorder);
-    let opened = client::start(transport, open, None, StderrTail::default())
+    let opened = client::start(transport, open, None, StderrTail::default(), None)
         .await
         .unwrap();
     (opened, agent)
@@ -681,7 +681,7 @@ async fn a_mode_the_agent_lacks_fails_the_session_and_unknown_sign_ins_are_skipp
     let mut open = open_with(Arc::new(perms), false);
     open.authenticate = Some("api-key".into());
     open.mode = Some("read-only".into());
-    let err = client::start(transport, open, None, StderrTail::default())
+    let err = client::start(transport, open, None, StderrTail::default(), None)
         .await
         .err()
         .expect("no `read-only` mode: the session must not open");
@@ -805,4 +805,52 @@ fn new_flavors_set_their_variables_and_codex_keeps_its_sign_in_file_out_with_a_k
             ["NO_BROWSER"]
         );
     }
+}
+
+#[tokio::test]
+async fn grok_answers_its_billing_extension_request() {
+    use crate::provider_usage::grok;
+    use serde_json::json;
+    let billing: serde_json::Value =
+        serde_json::from_str(include_str!("../provider_usage/fixtures/grok_billing.json")).unwrap();
+    let steps = vec![
+        agent::Step::send(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize"})),
+        agent::Step::recv(
+            json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1,
+            "agentCapabilities": {}, "authMethods": []}}),
+        ),
+        agent::Step::send(json!({"jsonrpc": "2.0", "id": 1, "method": "session/new"})),
+        agent::Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1"}})),
+        agent::Step::send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": grok::BILLING_METHOD,
+            "params": {}}),
+        ),
+        agent::Step::recv(json!({"jsonrpc": "2.0", "id": 2, "result": billing})),
+    ];
+    let (client_out, agent_in) = tokio::io::duplex(64 * 1024);
+    let (agent_out, client_in) = tokio::io::duplex(64 * 1024);
+    let agent = tokio::spawn(agent::run(steps, agent_in, agent_out));
+    let (perms, _) = policy(None);
+    let opened = client::start(
+        transport::lines(client_in, client_out, None),
+        open_with(Arc::new(perms), false),
+        None,
+        StderrTail::default(),
+        Some(grok::BILLING_METHOD),
+    )
+    .await
+    .unwrap();
+    let answer = opened.session.plan_usage().await.unwrap().unwrap();
+    let fetched = grok::billing(&answer, 1).unwrap();
+    assert_eq!(fetched.plan.as_deref(), Some("example-tier"));
+    opened.session.close().await.unwrap();
+    agent.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn agents_without_a_usage_request_answer_none() {
+    let steps = agent::parse(&fixture("fake_tool_turn.jsonl"));
+    let (perms, _) = policy(None);
+    let (opened, _agent) = open_replay(steps, open_with(Arc::new(perms), true), None).await;
+    assert_eq!(opened.session.plan_usage().await.unwrap(), None);
 }

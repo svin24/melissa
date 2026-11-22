@@ -35,6 +35,7 @@ use crate::{
         transport::read_line,
         OPEN_TIMEOUT,
     },
+    provider_usage::Observation,
     session::{
         AgentSession, EffortOption, ModelList, ModelOption, OpenedSession, PermissionDecision,
         PermissionHandler, PermissionRequest, PromptBlock, SessionCapabilities, SessionEvent,
@@ -48,6 +49,10 @@ const CLOSE_WAIT: Duration = Duration::from_secs(6);
 
 /// Request id of the handshake.
 pub(crate) const INIT_ID: &str = "melissa-init";
+/// Prefix of the request ids of `get_usage` control requests.
+const USAGE_ID: &str = "melissa-usage-";
+/// How long a `get_usage` answer may take (Claude asks its host for the plan's numbers).
+const USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Everything [`start`] needs besides the pipes.
 pub(crate) struct Start {
@@ -82,6 +87,10 @@ enum Command {
     },
     Cancel {
         reply: oneshot::Sender<()>,
+    },
+    /// The `get_usage` control request; the answer's `response` object.
+    Usage {
+        reply: oneshot::Sender<Result<Value, AgentError>>,
     },
     Close,
 }
@@ -120,6 +129,7 @@ where
         pending: HashMap::new(),
         tools: HashMap::new(),
         init: Some(init_tx),
+        usage: HashMap::new(),
         next_id: 0,
         session_id: s.session_id.clone(),
     };
@@ -236,6 +246,8 @@ struct Actor {
     /// Tool name per `tool_use` id seen in this session.
     tools: HashMap<String, String>,
     init: Option<oneshot::Sender<Result<InitInfo, String>>>,
+    /// Pending `get_usage` requests by request id.
+    usage: HashMap<String, oneshot::Sender<Result<Value, AgentError>>>,
     next_id: u64,
     session_id: String,
 }
@@ -284,6 +296,7 @@ impl Actor {
                         self.cancel();
                         let _ = reply.send(());
                     }
+                    Some(Command::Usage { reply }) => self.ask_usage(reply),
                     Some(Command::Close) | None => break,
                 },
                 Some(id) = perm_done.recv() => {
@@ -409,14 +422,52 @@ impl Actor {
                 }
             }
             "result" => self.on_result(&msg),
+            "rate_limit_event" => {
+                let windows = crate::provider_usage::claude::rate_limit_event(
+                    &msg,
+                    crate::provider_usage::now_secs(),
+                );
+                if !windows.is_empty() {
+                    self.emit(SessionEvent::ProviderUsage(Observation::Windows(windows)));
+                }
+            }
             // Known chatter Melissa does not use.
-            "stream_event" | "assistant" | "user" | "rate_limit_event" | "keep_alive"
-            | "command_lifecycle" | "prompt_suggestion" => {}
+            "stream_event" | "assistant" | "user" | "keep_alive" | "command_lifecycle"
+            | "prompt_suggestion" => {}
             other => self.emit(SessionEvent::Other(other.to_string())),
         }
     }
 
+    /// Send a `get_usage` control request; the answer goes to `reply`.
+    fn ask_usage(&mut self, reply: oneshot::Sender<Result<Value, AgentError>>) {
+        self.next_id += 1;
+        let id = format!("{USAGE_ID}{}", self.next_id);
+        self.send(json!({"type": "control_request", "request_id": id,
+                         "request": crate::provider_usage::claude::get_usage_request()}));
+        self.usage.insert(id, reply);
+    }
+
     fn on_control_response(&mut self, response: &Value) {
+        if let Some(reply) = response["request_id"]
+            .as_str()
+            .and_then(|id| self.usage.remove(id))
+        {
+            let answer = if response["subtype"] == "success" {
+                Ok(response["response"].clone())
+            } else {
+                Err(AgentError::Protocol(format!(
+                    "get_usage refused: {}",
+                    response["error"]
+                        .as_str()
+                        .unwrap_or("unknown error")
+                        .chars()
+                        .take(200)
+                        .collect::<String>()
+                )))
+            };
+            let _ = reply.send(answer);
+            return;
+        }
         if response["request_id"] != INIT_ID {
             return;
         }
@@ -540,6 +591,12 @@ impl Actor {
         let Some(turn) = self.turn.take() else {
             return;
         };
+        let models = crate::provider_usage::claude::model_usage(msg);
+        if !models.is_empty() {
+            self.emit(SessionEvent::ProviderUsage(Observation::ProcessTotals(
+                models,
+            )));
+        }
         if let Some((used, size)) = usage(msg) {
             self.emit(SessionEvent::Usage { used, size });
         }
@@ -814,6 +871,23 @@ impl AgentSession for ClaudeSession {
                 .send(Command::Cancel { reply })
                 .map_err(|_| self.closed())?;
             rx.await.map_err(|_| self.closed())
+        })
+    }
+
+    fn plan_usage(&self) -> BoxFuture<'_, Result<Option<Value>, AgentError>> {
+        Box::pin(async move {
+            let (reply, rx) = oneshot::channel();
+            self.cmd_tx
+                .send(Command::Usage { reply })
+                .map_err(|_| self.closed())?;
+            match tokio::time::timeout(USAGE_TIMEOUT, rx).await {
+                Ok(Ok(answer)) => answer.map(Some),
+                Ok(Err(_)) => Err(self.closed()),
+                Err(_) => Err(AgentError::Protocol(format!(
+                    "no usage answer within {} s",
+                    USAGE_TIMEOUT.as_secs()
+                ))),
+            }
         })
     }
 

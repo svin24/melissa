@@ -78,6 +78,16 @@
 //!   - `POST /api/schedules/{id}/remove` → the removed schedule; 404 unknown.
 //! - `GET /api/apps/{app}`, `GET /api/apps/{app}/logs`, `POST /api/apps/{app}/force-delete`: see
 //!   [`crate::apps`].
+//! - `GET /api/usage/providers[?refresh=1]` (owner only) → `{"generated_at", "providers":
+//!   [{provider, label, ready, not_ready?, plan?, windows: [{id, label, kind, used_pct,
+//!   resets_at?, window_secs?, model_scope?, status?, source, observed_at, pace?: {expected_pct,
+//!   delta_pct, verdict}}], credits: [...], cost: [{micros, currency, period, since, source}],
+//!   tokens?: {since, models: [{model, tokens: {input, output, cache_read, cache_write,
+//!   reasoning}, cost_micros?, currency?}], source}, sources: [{id, state ("ok",
+//!   "unavailable", "off"), reason?, host?, fetched_at?}]}]}`: each provider's plan windows,
+//!   credits, cost and tokens as the providers report them (`melissa_agent::provider_usage`).
+//!   Asking may make the providers' usage calls (at most once a minute; `refresh` at most every
+//!   15 s); never estimated.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -138,6 +148,7 @@ pub(crate) fn routes(lead: Lead) -> Router {
         .route("/api/agents/{agent}/backend", post(agent_use_backend))
         .route("/api/workspaces", get(workspaces))
         .route("/api/workspaces/{workspace}/reassign", post(reassign))
+        .route("/api/usage/providers", get(provider_usage))
         .route("/api/confirmations", get(confirmations))
         .route("/api/confirmations/{id}/{verdict}", post(resolve))
         .with_state(lead)
@@ -329,6 +340,20 @@ struct UseBackend {
 async fn backends(State(lead): State<Lead>) -> Response {
     lead.refresh_models_soon();
     backend_list(lead.backends())
+}
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    #[serde(default)]
+    refresh: Option<String>,
+}
+
+async fn provider_usage(State(lead): State<Lead>, Query(q): Query<UsageQuery>) -> Response {
+    let refresh = q
+        .refresh
+        .as_deref()
+        .is_some_and(|v| v == "1" || v == "true");
+    Json(lead.provider_usage().report(refresh).await).into_response()
 }
 
 async fn refresh_models(State(lead): State<Lead>) -> Response {

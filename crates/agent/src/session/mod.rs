@@ -379,6 +379,8 @@ pub enum SessionEvent {
     /// The session's running cost as the provider reports it (a total since the session
     /// started, not per turn), in millionths of `unit` (`USD`, `credits`, ...).
     Cost { unit: String, micros: u64 },
+    /// Plan usage reported mid-session (plan windows, running token totals per model).
+    ProviderUsage(crate::provider_usage::Observation),
     /// Melissa answered a permission request.
     Permission {
         tool_call_id: String,
@@ -483,6 +485,13 @@ pub trait AgentSession: Send + Sync {
     /// End the session and stop the agent process. Later calls fail with
     /// [`AgentError::SessionClosed`]. Dropping the session also stops the agent (by force).
     fn close(&self) -> BoxFuture<'_, Result<(), AgentError>>;
+
+    /// Ask the agent for its plan usage (Claude's `get_usage` control request, Grok's
+    /// `_x.ai/billing`): its answer as it sent it, read by [`crate::provider_usage`].
+    /// `Ok(None)`: this agent has no such request. Default: none.
+    fn plan_usage(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, AgentError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Something that can open agent sessions (e.g. an ACP agent command).
@@ -507,5 +516,12 @@ pub trait SessionBackend: Send + Sync {
     /// Melissa leaves its sessions alone (see `lead::conversation::CompactPolicy`). Default: no.
     fn compacts_itself(&self) -> bool {
         false
+    }
+
+    /// The provider this backend runs (its command's file name, as Settings → Providers
+    /// names providers: `claude`, `grok`, `codex-acp`, ...), for usage numbers. Default: none
+    /// (test and echo backends).
+    fn provider_id(&self) -> Option<String> {
+        None
     }
 }

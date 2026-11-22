@@ -478,7 +478,10 @@ impl AcpBackend {
                 drop(lease);
             })
         });
-        client::start(transport, open, Some(shutdown), tail).await
+        // Grok answers its billing summary over ACP (`_x.ai/billing`, see `provider_usage::grok`).
+        let usage = (crate::provider_usage::provider_for_command(&self.spec.command) == "grok")
+            .then_some(crate::provider_usage::grok::BILLING_METHOD);
+        client::start(transport, open, Some(shutdown), tail, usage).await
     }
 }
 
@@ -500,6 +503,12 @@ impl SessionBackend for AcpBackend {
 
     fn open(&self, req: OpenSession) -> BoxFuture<'_, Result<OpenedSession, AgentError>> {
         Box::pin(self.spawn(req))
+    }
+
+    fn provider_id(&self) -> Option<String> {
+        Some(crate::provider_usage::provider_for_command(
+            &self.spec.command,
+        ))
     }
 }
 
@@ -715,6 +724,7 @@ impl<'a> Render<'a> {
             | SessionEvent::Thought(_)
             | SessionEvent::Usage { .. }
             | SessionEvent::Cost { .. }
+            | SessionEvent::ProviderUsage(_)
             | SessionEvent::TurnFinished(_)
             | SessionEvent::Other(_) => {}
         }

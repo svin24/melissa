@@ -1,0 +1,11 @@
+{
+  "subscription_tier": "example-tier",
+  "config": {
+    "creditUsagePercent": 37.5,
+    "currentPeriod": {"type": "USAGE_PERIOD_TYPE_MONTHLY", "start": "2026-12-15T08:00:00Z", "end": "2027-01-15T08:00:00Z"},
+    "monthlyLimit": 100,
+    "onDemandCap": "20",
+    "onDemandUsed": {"val": 2.5},
+    "prepaidBalance": 10
+  }
+}
