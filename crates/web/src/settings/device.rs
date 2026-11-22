@@ -113,7 +113,7 @@ pub(super) async fn save(
         },
         Err(e) => Flash {
             text: e.text().into(),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
     if is_htmx(&headers) {

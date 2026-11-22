@@ -11,7 +11,7 @@
 
 use maud::{html, Markup};
 
-use super::{badge, crumbs, Nav, Tone};
+use super::{badge, crumbs, Btn, Nav, Tone};
 
 /// DOM id of the modal that holds a panel.
 pub const OVERLAY_ID: &str = "overlay";
@@ -154,7 +154,7 @@ pub fn overlay_dialog() -> Markup {
 /// closes the modal instead.
 fn panel_close(what: &str) -> Markup {
     html! {
-        a.panel-close href="/" data-panel-close title="Close" {
+        a.panel-close.(Btn::ghost().icon()) href="/" data-panel-close title="Close" {
             (glyph(Glyph::Close))
             span.visually-hidden { "Close " (what) }
         }
@@ -234,7 +234,7 @@ pub fn settings_frame_at(
                     span.visually-hidden { "Close settings" }
                 }
                 // Filled in by melissa.js; without script every section is listed anyway.
-                div.settings-search data-settings-search hidden {
+                div.settings-search.search-field data-settings-search hidden {
                     label.visually-hidden for="settings-q" { "Search settings" }
                     (glyph(Glyph::Search))
                     input #settings-q type="search" placeholder="Search" autocomplete="off"
@@ -333,7 +333,7 @@ pub fn inline_form(action: &str, target: &str, field: Markup) -> Markup {
             hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             (field)
-            button.toggle-save.secondary type="submit" { "Save" }
+            button.toggle-save.(Btn::secondary().sm()) type="submit" { "Save" }
         }
     }
 }
@@ -349,7 +349,7 @@ pub fn inline_select(
     html! {
         label.visually-hidden for=(id) { (label) }
         span.select-wrap {
-            select id=(id) name=(name) {
+            select.input id=(id) name=(name) {
                 @for (value, text) in choices {
                     option value=(value) selected[value == selected] { (text) }
                 }
@@ -363,7 +363,7 @@ pub fn inline_number(name: &str, label: &str, value: &str, min: u32, max: u32) -
     let id = format!("f-{name}");
     html! {
         label.visually-hidden for=(id) { (label) }
-        input.inline-number id=(id) name=(name) type="number" inputmode="numeric"
+        input.inline-number.input id=(id) name=(name) type="number" inputmode="numeric"
             min=(min) max=(max) value=(value) required;
     }
 }
@@ -458,7 +458,7 @@ pub fn usage_table(rows: &[UsageRow<'_>], note: &str) -> Markup {
                 tbody {
                     @for r in rows {
                         tr {
-                            th scope="row" { a href=(r.href) { (r.name) } " " (badge(r.role, Tone::Muted)) }
+                            th scope="row" { a href=(r.href) { (r.name) } " " (badge(r.role, Tone::Neutral)) }
                             td.num { (r.turns) }
                             td.num { (r.time) }
                             td.num { (r.approvals) }

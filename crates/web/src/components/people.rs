@@ -5,7 +5,7 @@ use maud::{html, Markup};
 
 use super::{
     action_button, card, command_block, notice, page, page_header, plain_action, region,
-    setting_card, setting_row, setting_row_with, Tone,
+    setting_card, setting_row, setting_row_with, Btn, Tone,
 };
 
 /// The CSRF token as a hidden form field: the first field of every POST form (multipart
@@ -31,7 +31,7 @@ pub fn credential_field(
     let field = html! {
         label.field {
             span { (label) }
-            input type=(kind) name=(name) value=(value) autocomplete=(autocomplete)
+            input.input type=(kind) name=(name) value=(value) autocomplete=(autocomplete)
                 autocapitalize="none" spellcheck="false" required maxlength="256";
             @if let Some(h) = hint { small.hint { (h) } }
         }
@@ -42,7 +42,7 @@ pub fn credential_field(
     html! {
         div.field-pw {
             (field)
-            label.show-password {
+            label.check.show-password {
                 input type="checkbox" data-show-password;
                 span { "Show password" }
             }
@@ -69,12 +69,12 @@ pub fn auth_page(f: &AuthForm<'_>) -> Markup {
             div.auth-card {
                 (card(f.title, html! {
                     @if let Some(i) = f.intro { p { (i) } }
-                    @if let Some(e) = f.error { (notice(e, Tone::Error)) }
+                    @if let Some(e) = f.error { (notice(e, Tone::Caution)) }
                     form.stack method="post" action=(f.action) {
                         (csrf_field())
                         @if let Some(n) = f.next { input type="hidden" name="next" value=(n); }
                         (f.fields)
-                        div { button.primary type="submit" { (f.submit) } }
+                        div { button.(Btn::primary()) type="submit" { (f.submit) } }
                     }
                 }))
             }
@@ -89,7 +89,7 @@ pub fn auth_dead_end(title: &str, text: &str) -> Markup {
         html! {
             div.auth-card {
                 (card(title, html! {
-                    (notice(text, Tone::Error))
+                    (notice(text, Tone::Caution))
                     a href="/login" { "Go to sign in" }
                 }))
             }
@@ -146,7 +146,7 @@ pub fn account_region(v: &AccountView<'_>) -> Markup {
                         (credential_field("current", "Current password", "password", "current-password", "", None))
                         (credential_field("password", "New password", "password", "new-password", "", Some("At least 8 characters.")))
                         (credential_field("again", "New password again", "password", "new-password", "", None))
-                        div { button.secondary type="submit" { "Change password" } }
+                        div { button.(Btn::secondary()) type="submit" { "Change password" } }
                     }
                 }
             }))

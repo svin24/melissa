@@ -321,24 +321,24 @@ async fn info(
     let waiting =
         pending.filter(|_| saved.is_enabled() && (!running || (needs_login && secret_set)));
     let (status, tone, ready) = if !saved.is_enabled() {
-        ("Disabled", Tone::Muted, false)
+        ("Disabled", Tone::Neutral, false)
     } else if install_state == Some(InstallState::Running) {
         ("Installing…", Tone::Info, false)
     } else if let Some(p) = waiting {
         (p.word(), Tone::Info, false)
     } else if !installed && install_state == Some(InstallState::Failed) {
-        ("Failed", Tone::Error, false)
+        ("Failed", Tone::Caution, false)
     } else if !installed {
-        ("Not installed", Tone::Warn, false)
+        ("Not installed", Tone::Attention, false)
     } else if reasons.contains(&"not_installed") {
         // Found here, but not on the lead agent's own PATH (e.g. a custom path).
-        ("Not installed", Tone::Warn, false)
+        ("Not installed", Tone::Attention, false)
     } else if login_state == Some(InstallState::Running) {
         ("Signing in…", Tone::Info, false)
     } else if needs_login {
-        ("Sign in needed", Tone::Warn, false)
+        ("Sign in needed", Tone::Attention, false)
     } else if reasons.contains(&"sandbox") {
-        ("Failed", Tone::Error, false)
+        ("Failed", Tone::Caution, false)
     } else {
         ("Ready", Tone::Ok, true)
     };
@@ -590,7 +590,7 @@ async fn reply(
         Err(e) => (
             Some(Flash {
                 text: e.text(),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             }),
             e.status(),
         ),

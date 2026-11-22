@@ -54,10 +54,10 @@ pub(super) async fn save(
         },
         Err(e) => Flash {
             text: format!("Couldn't save that: {e}"),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
     };
-    let failed = flash.tone == Tone::Error;
+    let failed = flash.tone == Tone::Caution;
     let v = view(&ui, Some(flash));
     if is_htmx(&headers) {
         return pages::files_region(&v).into_response();

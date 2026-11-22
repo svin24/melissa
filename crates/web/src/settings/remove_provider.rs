@@ -270,7 +270,7 @@ pub(super) async fn ui_remove(
         Err(e) => (
             Flash {
                 text: e.text(),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             },
             e.status(),
             Some(id.as_str()),

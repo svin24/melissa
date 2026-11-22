@@ -56,7 +56,7 @@ pub(super) async fn save(
     let flash = match AppAccess::parse(&form.open_to) {
         None => Flash {
             text: "Choose who can open apps.".into(),
-            tone: Tone::Error,
+            tone: Tone::Caution,
         },
         Some(a) => match control.set(a, "ui").await {
             Ok(_) => Flash {
@@ -65,18 +65,18 @@ pub(super) async fn save(
             },
             Err(AppAccessError::Apply(problem)) => Flash {
                 text: problem,
-                tone: Tone::Error,
+                tone: Tone::Caution,
             },
             Err(AppAccessError::Save(e)) => {
                 tracing::warn!("cannot save the app access setting: {e}");
                 Flash {
                     text: "Couldn't save that.".into(),
-                    tone: Tone::Error,
+                    tone: Tone::Caution,
                 }
             }
         },
     };
-    let failed = flash.tone == Tone::Error;
+    let failed = flash.tone == Tone::Caution;
     let v = view(&ui, Some(flash));
     if is_htmx(&headers) {
         return pages::apps_region(&v).into_response();

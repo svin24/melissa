@@ -11,9 +11,9 @@ use crate::{
         inline_number, inline_select, lines_field, link, link_button, live_region, log_view,
         notice, one_field_form, page_header, pick_list, plain_action, progress_bar, provider_logo,
         region, select_field_at, setting_card, setting_row, setting_row_with, settings_form,
-        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list, Choice,
-        ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone,
-        VarRow,
+        settings_frame_at, settings_head, split_card, table, text_field, toggle, var_list, Btn,
+        Choice, ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle,
+        Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -216,7 +216,7 @@ pub fn chat_prefs_region(prefs: melissa_settings::prefs::Prefs, error: Option<&s
                 html! { "Enter while working" },
                 Some(html! { "Double Enter does the other." }),
                 inline_form(ENTER_URL, CHAT_PREFS_ID, inline_select("enter", "Enter while working", &enter, selected)),
-                error.map(|e| notice(e, Tone::Error)),
+                error.map(|e| notice(e, Tone::Caution)),
             ))
         },
     )
@@ -479,7 +479,7 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
             ))
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
             @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
-            (actions(link_button("/settings/providers/add", "Add provider", false)))
+            (actions(link_button(Btn::secondary(), "/settings/providers/add", "Add provider")))
             (split_card("provider-card", "Providers", pick_list("Providers", &rows, None), detail))
         },
     )
@@ -568,7 +568,7 @@ fn step_view(c: &ProviderCard, url: &str) -> Markup {
             failed,
             log,
         } => html! {
-            @if let Some(f) = failed { (notice(f, Tone::Error)) }
+            @if let Some(f) = failed { (notice(f, Tone::Caution)) }
             (actions(plain_action(&format!("{url}/install"), PROVIDERS_ID,
                 if failed.is_some() { "Try again" } else { "Install" }, true)))
             @if failed.is_none() {
@@ -583,7 +583,7 @@ fn step_view(c: &ProviderCard, url: &str) -> Markup {
         },
         Step::Installing => notice("Installing… This takes about a minute.", Tone::Info),
         Step::SignIn { again } => html! {
-            @if let Some(a) = again { (notice(a, Tone::Error)) }
+            @if let Some(a) = again { (notice(a, Tone::Caution)) }
             (actions(plain_action(&login, PROVIDERS_ID, "Sign in", true)))
         },
         Step::Starting => notice("Starting the sign-in…", Tone::Info),
@@ -651,7 +651,7 @@ fn details_view(c: &ProviderCard, v: &ProvidersView, url: &str) -> Markup {
     if !d.models.is_empty() {
         rows.push((
             "Models",
-            html! { span.badges { @for m in &d.models { (badge(m, Tone::Muted)) " " } } },
+            html! { span.badges { @for m in &d.models { (badge(m, Tone::Neutral)) " " } } },
         ));
     }
     rows.push((
@@ -758,7 +758,7 @@ pub fn device_name_region(v: &DeviceNameView) -> Markup {
                     (crate::components::csrf_field())
                     (text_field("name", "Device name", &v.value, "", "text", Some("Shown in Melissa only.")))
                     @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
-                    div { button.btn.secondary type="submit" { "Save name" } }
+                    div { button.(Btn::secondary()) type="submit" { "Save name" } }
                 }
             }
         }
@@ -926,7 +926,7 @@ pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Marku
             Some(html! {
                 (notice(
                     "Risky: helpers can change, stop and delete apps without your yes.",
-                    Tone::Warn,
+                    Tone::Attention,
                 ))
                 @if let Some(f) = flash { (notice(&f.text, f.tone)) }
                 @if confirming {
@@ -1095,10 +1095,10 @@ pub fn schedules_region(v: &SchedulesView) -> Markup {
                         1,
                         1440,
                     )),
-                    v.wait_note.as_deref().map(|n| notice(n, Tone::Muted)),
+                    v.wait_note.as_deref().map(|n| notice(n, Tone::Neutral)),
                 )))
             } @else {
-                (notice("Schedules don't run on this device.", Tone::Muted))
+                (notice("Schedules don't run on this device.", Tone::Neutral))
             }
         },
     )
@@ -1291,7 +1291,7 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
                             hx-target={ "#" (AGENT_ID) } hx-swap="outerHTML" {
                             (crate::components::csrf_field())
                             input type="hidden" name="pinned" value=(if a.pinned { "off" } else { "on" });
-                            button.secondary type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
+                            button.(Btn::secondary()) type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
                         }
                     },
                 ))
@@ -1379,11 +1379,11 @@ pub fn new_agent_region(
                 (crate::components::csrf_field())
                 label.field {
                     span { "Name" }
-                    input type="text" name="name" value=(name) required maxlength="40"
+                    input.input type="text" name="name" value=(name) required maxlength="40"
                         autocomplete="off" spellcheck="false" autofocus;
                 }
                 (icon_picker(shapes, colors, icon.0, icon.1))
-                div { button.primary type="submit" { "Create helper" } }
+                div { button.(Btn::primary()) type="submit" { "Create helper" } }
             }
         },
     )
@@ -1457,7 +1457,7 @@ pub fn apps_region(v: &AppsView) -> Markup {
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
             @match &v.state {
                 Some(s) => {
-                    @if let (Some(p), None) = (&s.problem, &v.flash) { (notice(p, Tone::Error)) }
+                    @if let (Some(p), None) = (&s.problem, &v.flash) { (notice(p, Tone::Caution)) }
                     (setting_card(None, setting_row(
                         "Apps open to",
                         Some(s.sentence),
@@ -1693,7 +1693,7 @@ pub fn voice_region(v: &VoiceView) -> Markup {
             (VoiceModel::Failed(why), true) => (
                 None,
                 html! {
-                    (notice(why, Tone::Error))
+                    (notice(why, Tone::Caution))
                     (actions(plain_action("/ui/settings/voice/retry", VOICE_ID, "Try again", true)))
                 },
             ),
@@ -1717,7 +1717,7 @@ pub fn voice_region(v: &VoiceView) -> Markup {
     };
     let extra = html! {
         (extra)
-        @if let Some(e) = &v.error { (notice(e, Tone::Error)) }
+        @if let Some(e) = &v.error { (notice(e, Tone::Caution)) }
     };
     let body = setting_card(
         None,

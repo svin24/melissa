@@ -17,6 +17,7 @@ use maud::{html, Markup};
 use super::{
     agent::{avatar, Avatar},
     panel::{glyph, Glyph},
+    Btn,
 };
 
 /// Which screen a page is on a phone. Above 760px both show the same page.
@@ -49,7 +50,7 @@ fn back_glyph() -> Markup {
 /// The chat header's back button on phones: to the agent list.
 pub fn back_link(href: &str, label: &str) -> Markup {
     html! {
-        a.icon-button.back-link href=(href) title=(label) {
+        a.back-link.(Btn::ghost().icon()) href=(href) title=(label) {
             (back_glyph())
             span.visually-hidden { (label) }
         }
@@ -60,7 +61,7 @@ pub fn back_link(href: &str, label: &str) -> Markup {
 /// screens).
 pub fn new_agent_round(href: &str) -> Markup {
     html! {
-        a.icon-button.round-button.phone-new href=(href) title="New helper" {
+        a.phone-new.(Btn::secondary().round()) href=(href) title="New helper" {
             (glyph(Glyph::Plus))
             span.visually-hidden { "New helper" }
         }

@@ -132,7 +132,7 @@ fn flash_for(e: &TailscaleError) -> Flash {
     };
     Flash {
         text: text.into(),
-        tone: Tone::Error,
+        tone: Tone::Caution,
     }
 }
 

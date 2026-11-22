@@ -1,187 +1,20 @@
-//! The design tokens defined in `assets/melissa.css` (`:root`), by layer (docs/design/
-//! COMPONENT-SPEC.md section 1, 2026-11-22). The stylesheet is hand-written; this list is what a
-//! parity check reads: the test below keeps it and the stylesheet in step, and a later test can
-//! compare it with the tokens exported from the design library.
+//! Design tokens: `design/tokens.json` (the export of the Penpot design library) and the
+//! hand-written `:root` of `assets/melissa.css` must agree (docs/design/COMPONENT-SPEC.md
+//! section 1, docs/DEV-ENV.md "Design tokens").
+//!
+//! A Penpot token `a.b.c` is the CSS variable `--a-b-c`. The test below fails when a token is
+//! missing on either side or resolves to a different value in either theme. The stylesheet
+//! may define a few names the design library doesn't have: the old names kept as aliases and
+//! some local layout values ([`CSS_ONLY`]).
 
-/// Layer 1, primitives (`--ref-*`): the raw palette. Only the semantic layer reads them.
-pub const PRIMITIVES: &[&str] = &[
-    "--ref-white",
-    "--ref-black",
-    "--ref-neutral-50",
-    "--ref-neutral-100",
-    "--ref-neutral-150",
-    "--ref-neutral-200",
-    "--ref-neutral-350",
-    "--ref-neutral-400",
-    "--ref-neutral-550",
-    "--ref-neutral-600",
-    "--ref-neutral-750",
-    "--ref-neutral-850",
-    "--ref-neutral-900",
-    "--ref-neutral-950",
-    "--ref-neutral-975",
-    "--ref-slate-500",
-    "--ref-slate-800",
-    "--ref-blue-300",
-    "--ref-blue-600",
-    "--ref-blue-700",
-    "--ref-honey-50",
-    "--ref-honey-300",
-    "--ref-honey-500",
-    "--ref-honey-600",
-    "--ref-honey-800",
-    "--ref-honey-950",
-    "--ref-rust-50",
-    "--ref-rust-300",
-    "--ref-rust-700",
-    "--ref-rust-950",
-    "--ref-rust-975",
-    "--ref-green-300",
-    "--ref-green-700",
-    "--ref-green-750",
-    "--ref-teal-300",
-    "--ref-teal-700",
-    "--ref-violet-300",
-    "--ref-violet-600",
-    "--ref-rose-300",
-    "--ref-rose-600",
-    "--ref-orange-300",
-    "--ref-orange-700",
-    "--ref-lime-300",
-    "--ref-lime-700",
-    "--ref-shade-a45",
-    "--ref-shade-a60",
-    "--ref-black-a18",
-    "--ref-black-a45",
-];
+/// The token file, as exported from Penpot (or written by `scripts/tokens/tokens_gen.py`).
+pub const TOKENS_JSON: &str = include_str!("../design/tokens.json");
 
-/// Layer 2, semantic: colours (written once with `light-dark()`), space, radius, sizes, type,
-/// lines, focus and motion. What rules read.
-pub const SEMANTIC: &[&str] = &[
-    "--color-bg-ground",
-    "--color-bg-surface",
-    "--color-bg-raised",
-    "--color-bg-sunken",
-    "--color-bg-hover",
-    "--color-bg-selected",
-    "--color-text-default",
-    "--color-text-muted",
-    "--color-text-disabled",
-    "--color-text-link",
-    "--color-border-default",
-    "--color-border-strong",
-    "--color-action-bg",
-    "--color-action-text",
-    "--color-focus-ring",
-    "--color-caution-bg",
-    "--color-caution-text",
-    "--color-caution-soft",
-    "--color-caution-on",
-    "--color-ok-fg",
-    "--color-ok-text",
-    "--color-attention-fg",
-    "--color-attention-text",
-    "--color-attention-soft",
-    "--color-idle-fg",
-    "--color-bubble-bg",
-    "--color-bubble-text",
-    "--color-backdrop",
-    "--color-shadow",
-    "--color-avatar-green",
-    "--color-avatar-teal",
-    "--color-avatar-blue",
-    "--color-avatar-violet",
-    "--color-avatar-rose",
-    "--color-avatar-orange",
-    "--color-avatar-lime",
-    "--color-avatar-slate",
-    "--color-logo",
-    "--space-1",
-    "--space-2",
-    "--space-3",
-    "--space-4",
-    "--space-5",
-    "--space-6",
-    "--space-7",
-    "--radius-xs",
-    "--radius-sm",
-    "--radius-md",
-    "--radius-lg",
-    "--radius-full",
-    "--size-control-sm",
-    "--size-control-md",
-    "--size-control-lg",
-    "--size-icon-sm",
-    "--size-icon-md",
-    "--size-icon-lg",
-    "--size-target-touch",
-    "--font-family-body",
-    "--font-family-head",
-    "--font-family-mono",
-    "--font-size-xs",
-    "--font-size-sm",
-    "--font-size-md",
-    "--font-size-lg",
-    "--font-size-xl",
-    "--font-size-control-sm",
-    "--font-size-control-md",
-    "--font-size-control-lg",
-    "--font-weight-regular",
-    "--font-weight-strong",
-    "--font-weight-heading",
-    "--font-weight-brand",
-    "--line-height-tight",
-    "--line-height-control",
-    "--line-height-body",
-    "--border-width-hairline",
-    "--focus-width",
-    "--focus-offset",
-    "--motion-duration-fast",
-    "--motion-duration-medium",
-    "--motion-duration-enter",
+/// Names in the stylesheet's `:root` that the design library doesn't have.
+pub const CSS_ONLY: &[&str] = &[
+    // A timing curve (Penpot has no token type for it).
     "--motion-ease-out",
-];
-
-/// Layer 3, component: one family's knobs (button, field, row, switch), as aliases of semantic
-/// tokens.
-pub const COMPONENT: &[&str] = &[
-    "--button-primary-bg-default",
-    "--button-primary-text-default",
-    "--button-secondary-bg-default",
-    "--button-secondary-text-default",
-    "--button-secondary-border-default",
-    "--button-secondary-border-hover",
-    "--button-danger-bg-default",
-    "--button-danger-text-default",
-    "--button-link-text-default",
-    "--button-md-height",
-    "--button-md-padding-x",
-    "--button-md-font-size",
-    "--button-md-radius",
-    "--button-sm-height",
-    "--button-sm-padding-x",
-    "--button-sm-font-size",
-    "--button-sm-radius",
-    "--field-bg-default",
-    "--field-text-default",
-    "--field-border-default",
-    "--field-placeholder-default",
-    "--field-height",
-    "--field-padding-x",
-    "--field-radius",
-    "--row-bg-hover",
-    "--row-bg-current",
-    "--chip-height",
-    "--chip-font-size",
-    "--chip-neutral-bg",
-    "--chip-neutral-text",
-    "--chip-ok-bg",
-    "--chip-ok-text",
-    "--chip-attention-bg",
-    "--chip-attention-text",
-    "--segmented-track-bg",
-    "--segmented-selected-bg",
-    "--segmented-selected-border",
+    // Local layout values of one component, not part of the design library.
     "--limit-card-min-width",
     "--limit-meter-height",
     "--limit-mark-size",
@@ -192,17 +25,8 @@ pub const COMPONENT: &[&str] = &[
     "--app-row-status-width",
     "--app-fact-label-width",
     "--app-log-max-height",
-    "--switch-track-bg-off",
-    "--switch-track-bg-on",
-    "--switch-knob-off",
-    "--switch-knob-on",
-    "--switch-md-width",
-    "--switch-md-height",
-];
-
-/// The names rules used before the layers (`--ground`, `--ink`, …), kept as aliases of the
-/// semantic tokens until every rule reads those; then removed.
-pub const ALIASES: &[&str] = &[
+    // The names rules used before the layers, kept as aliases of the semantic tokens until
+    // every rule reads those (2026-11-22; listed in docs/DECISIONS.md).
     "--ground",
     "--surface",
     "--ink",
@@ -237,94 +61,383 @@ pub const ALIASES: &[&str] = &[
     "--mono",
 ];
 
-/// Every token, all layers.
-pub fn all() -> impl Iterator<Item = &'static str> {
-    PRIMITIVES
-        .iter()
-        .chain(SEMANTIC)
-        .chain(COMPONENT)
-        .chain(ALIASES)
-        .copied()
+/// First segments of the semantic layer (everything else outside `ref.*` is a component).
+const SEMANTIC_ROOTS: &[&str] = &[
+    "color", "space", "radius", "size", "font", "line", "border", "focus", "motion",
+];
+
+/// The layer a token belongs to, from its CSS name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    Primitive,
+    Semantic,
+    Component,
+}
+
+pub fn layer(css_name: &str) -> Layer {
+    let first = css_name
+        .trim_start_matches("--")
+        .split('-')
+        .next()
+        .unwrap_or("");
+    if first == "ref" {
+        Layer::Primitive
+    } else if SEMANTIC_ROOTS.contains(&first) {
+        Layer::Semantic
+    } else {
+        Layer::Component
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     const CSS: &str = include_str!("../assets/melissa.css");
 
-    /// The custom properties declared in the stylesheet's `:root` rules, with their values.
-    fn root_declarations() -> Vec<(&'static str, &'static str)> {
-        let mut out = Vec::new();
-        let mut rest = CSS;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Theme {
+        Light,
+        Dark,
+    }
+    const THEMES: [Theme; 2] = [Theme::Light, Theme::Dark];
+
+    fn strip_comments(css: &str) -> String {
+        let mut out = String::with_capacity(css.len());
+        let mut rest = css;
+        while let Some(at) = rest.find("/*") {
+            out.push_str(&rest[..at]);
+            rest = rest[at..]
+                .find("*/")
+                .map_or("", |end| &rest[at + end + 2..]);
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The custom properties of each `:root` block (the first is the token block; later ones
+    /// are themes and media overrides), in order.
+    fn root_blocks() -> Vec<Vec<(String, String)>> {
+        let css = strip_comments(CSS);
+        let mut blocks = Vec::new();
+        let mut rest = css.as_str();
         while let Some(at) = rest.find(":root") {
             let after = &rest[at..];
             let (Some(open), Some(close)) = (after.find('{'), after.find('}')) else {
                 break;
             };
+            let mut decls = Vec::new();
             for decl in after[open + 1..close].split(';') {
-                // Drop the comments in front of a declaration.
-                let decl = decl.rsplit("*/").next().unwrap_or(decl).trim();
                 if let Some((name, value)) = decl.split_once(':') {
+                    let name = name.trim();
                     if name.starts_with("--") {
-                        out.push((name.trim(), value.trim()));
+                        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+                        decls.push((name.to_owned(), value));
                     }
                 }
             }
+            blocks.push(decls);
             rest = &after[close..];
+        }
+        blocks
+    }
+
+    fn css_tokens() -> BTreeMap<String, String> {
+        let blocks = root_blocks();
+        let first = blocks.first().expect("melissa.css has a :root block");
+        let mut out = BTreeMap::new();
+        for (n, v) in first {
+            assert!(
+                out.insert(n.clone(), v.clone()).is_none(),
+                "{n} is declared twice in :root"
+            );
         }
         out
     }
 
+    /// `(type, value)` of every token in a set, by CSS name.
+    type Set = BTreeMap<String, (String, String)>;
+
+    fn json_sets() -> BTreeMap<String, Set> {
+        fn walk(node: &serde_json::Value, path: &mut Vec<String>, out: &mut Set) {
+            let Some(obj) = node.as_object() else { return };
+            if let Some(v) = obj.get("$value") {
+                let typ = obj.get("$type").and_then(|t| t.as_str()).unwrap_or("");
+                let value = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                out.insert(format!("--{}", path.join("-")), (typ.to_owned(), value));
+                return;
+            }
+            for (k, child) in obj {
+                path.push(k.clone());
+                walk(child, path, out);
+                path.pop();
+            }
+        }
+        let doc: serde_json::Value = serde_json::from_str(TOKENS_JSON).expect("tokens.json");
+        let mut sets = BTreeMap::new();
+        for name in ["core", "theme/light", "theme/dark"] {
+            let mut set = Set::new();
+            walk(&doc[name], &mut Vec::new(), &mut set);
+            assert!(!set.is_empty(), "tokens.json has no set {name}");
+            sets.insert(name.to_owned(), set);
+        }
+        sets
+    }
+
+    /// Every token of one theme: `core` plus that theme's set.
+    fn json_theme(sets: &BTreeMap<String, Set>, theme: Theme) -> Set {
+        let mut all = sets["core"].clone();
+        let name = match theme {
+            Theme::Light => "theme/light",
+            Theme::Dark => "theme/dark",
+        };
+        for (k, v) in &sets[name] {
+            assert!(
+                all.insert(k.clone(), v.clone()).is_none(),
+                "{k} is in core and {name}"
+            );
+        }
+        all
+    }
+
+    fn resolve_json(tokens: &Set, name: &str, depth: u8) -> Option<String> {
+        let (_, value) = tokens.get(name)?;
+        let value = value.trim();
+        if depth < 16 && value.starts_with('{') && value.ends_with('}') {
+            return resolve_json(
+                tokens,
+                &format!("--{}", value[1..value.len() - 1].replace('.', "-")),
+                depth + 1,
+            );
+        }
+        Some(value.to_owned())
+    }
+
+    /// The arguments of `fn(…)` split at top-level commas.
+    fn args<'a>(value: &'a str, func: &str) -> Option<Vec<&'a str>> {
+        let inner = value
+            .strip_prefix(func)?
+            .strip_prefix('(')?
+            .strip_suffix(')')?;
+        let (mut depth, mut start, mut out) = (0i32, 0, Vec::new());
+        for (i, ch) in inner.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(inner[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        out.push(inner[start..].trim());
+        Some(out)
+    }
+
+    fn resolve_css(
+        tokens: &BTreeMap<String, String>,
+        value: &str,
+        theme: Theme,
+        depth: u8,
+    ) -> String {
+        let value = value.trim();
+        if depth > 16 {
+            return value.to_owned();
+        }
+        if let Some(a) = args(value, "light-dark").filter(|a| a.len() == 2) {
+            let side = if theme == Theme::Light { a[0] } else { a[1] };
+            return resolve_css(tokens, side, theme, depth + 1);
+        }
+        if let Some(a) = args(value, "var").filter(|a| a.len() == 1) {
+            if let Some(v) = tokens.get(a[0]) {
+                return resolve_css(tokens, v, theme, depth + 1);
+            }
+        }
+        value.to_owned()
+    }
+
+    fn hex(s: &str) -> Option<[u8; 4]> {
+        let h = s.strip_prefix('#')?;
+        let byte = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
+        let nib = |i: usize| u8::from_str_radix(h.get(i..=i)?, 16).ok().map(|n| n * 17);
+        match h.len() {
+            3 => Some([nib(0)?, nib(1)?, nib(2)?, 255]),
+            6 => Some([byte(0)?, byte(2)?, byte(4)?, 255]),
+            8 => Some([byte(0)?, byte(2)?, byte(4)?, byte(6)?]),
+            _ => None,
+        }
+    }
+
+    /// `rgb(10 14 20 / 0.45)`.
+    fn rgb(s: &str) -> Option<[u8; 4]> {
+        let a = args(s, "rgb")?;
+        let (chan, alpha) = match a[..] {
+            [one] => one
+                .split_once('/')
+                .map_or((one, None), |(c, a)| (c, Some(a))),
+            _ => return None,
+        };
+        let c: Vec<u8> = chan
+            .split_whitespace()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        let alpha = alpha.map_or(Some(1.0), |a| a.trim().parse::<f64>().ok())?;
+        let [r, g, b] = c[..] else { return None };
+        Some([r, g, b, (alpha * 255.0).round() as u8])
+    }
+
+    /// One comparable spelling: colours as `#rrggbbaa`, lengths and times as px/ms numbers,
+    /// font stacks as their first family.
+    fn normal(typ: &str, value: &str) -> String {
+        let v = value.trim();
+        if typ == "color" {
+            if let Some([r, g, b, a]) = hex(v).or_else(|| rgb(v)) {
+                return format!("#{r:02x}{g:02x}{b:02x}{a:02x}");
+            }
+            return v.to_lowercase();
+        }
+        if typ == "fontFamilies" {
+            return v
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches('"')
+                .to_owned();
+        }
+        let num = |s: &str, unit: &str, scale: f64| {
+            s.strip_suffix(unit)
+                .and_then(|n| n.trim().parse::<f64>().ok())
+                .map(|n| n * scale)
+        };
+        let n = num(v, "rem", 16.0)
+            .or_else(|| num(v, "px", 1.0))
+            .or_else(|| num(v, "ms", 1.0))
+            .or_else(|| v.parse::<f64>().ok());
+        match n {
+            Some(n) => format!("{:.2}", n),
+            None => v.to_owned(),
+        }
+    }
+
     #[test]
-    fn every_listed_token_is_defined_and_every_defined_token_listed() {
-        let defined: BTreeSet<&str> = root_declarations().iter().map(|(n, _)| *n).collect();
-        let listed: BTreeSet<&str> = all().collect();
-        assert_eq!(listed.len(), all().count(), "a token is listed twice");
-        let missing: Vec<_> = listed.difference(&defined).collect();
+    fn tokens_json_and_the_stylesheet_agree() {
+        let css = css_tokens();
+        let sets = json_sets();
+        let mut problems = Vec::new();
+
+        let in_json: BTreeSet<&String> = sets.values().flat_map(|s| s.keys()).collect();
+        for name in &in_json {
+            if !css.contains_key(*name) {
+                problems.push(format!(
+                    "{name}: in tokens.json, missing in melissa.css :root"
+                ));
+            }
+        }
+        for name in css.keys() {
+            let only_css = CSS_ONLY.contains(&name.as_str());
+            if !in_json.contains(name) && !only_css {
+                problems.push(format!(
+                    "{name}: in melissa.css :root, missing in tokens.json (add it to the design \
+                     library, or to tokens::CSS_ONLY if it is a local value)"
+                ));
+            }
+            if in_json.contains(name) && only_css {
+                problems.push(format!("{name}: in tokens.json and in tokens::CSS_ONLY"));
+            }
+        }
+        for name in CSS_ONLY {
+            if !css.contains_key(*name) {
+                problems.push(format!(
+                    "{name}: in tokens::CSS_ONLY, missing in melissa.css"
+                ));
+            }
+        }
+
+        for theme in THEMES {
+            let tokens = json_theme(&sets, theme);
+            for (name, (typ, _)) in &tokens {
+                let Some(css_value) = css.get(name) else {
+                    continue;
+                };
+                let want = resolve_json(&tokens, name, 0).unwrap_or_default();
+                let got = resolve_css(&css, css_value, theme, 0);
+                if normal(typ, &want) != normal(typ, &got) {
+                    problems.push(format!(
+                        "{name} ({theme:?}): tokens.json {want}, melissa.css {got}"
+                    ));
+                }
+            }
+        }
         assert!(
-            missing.is_empty(),
-            "listed, not in melissa.css :root: {missing:?}"
-        );
-        let unlisted: Vec<_> = defined.difference(&listed).collect();
-        assert!(
-            unlisted.is_empty(),
-            "in melissa.css :root, not listed: {unlisted:?}"
+            problems.is_empty(),
+            "tokens.json and melissa.css disagree (docs/DEV-ENV.md, Design tokens):\n  {}",
+            problems.join("\n  ")
         );
     }
 
     #[test]
+    fn later_root_blocks_only_override_tokens() {
+        let blocks = root_blocks();
+        let first: BTreeSet<&String> = blocks[0].iter().map(|(n, _)| n).collect();
+        for block in &blocks[1..] {
+            for (name, _) in block {
+                assert!(
+                    first.contains(name),
+                    "{name} is only set in a later :root block"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn layers_read_only_the_layer_below() {
-        let decls = root_declarations();
+        let css = css_tokens();
         let refs = |value: &str| -> Vec<String> {
             value
                 .split("var(")
                 .skip(1)
-                .filter_map(|v| v.split(')').next())
+                .filter_map(|v| v.split([')', ',']).next())
                 .map(|v| v.trim().to_owned())
                 .collect()
         };
-        for (name, value) in &decls {
-            let used = refs(value);
-            let ok = |r: &String| {
-                if PRIMITIVES.contains(name) {
-                    false
-                } else if SEMANTIC.contains(name) {
-                    PRIMITIVES.contains(&r.as_str())
-                } else {
-                    SEMANTIC.contains(&r.as_str())
-                }
-            };
-            for r in &used {
-                assert!(ok(r), "{name} reads {r}");
+        for (name, value) in &css {
+            for r in refs(value) {
+                let ok = match (layer(name), layer(&r)) {
+                    _ if !css.contains_key(&r) => false,
+                    (Layer::Primitive, _) => false,
+                    (Layer::Semantic, Layer::Primitive | Layer::Semantic) => true,
+                    (Layer::Component, Layer::Semantic | Layer::Component) => true,
+                    _ => false,
+                };
+                assert!(ok, "{name} reads {r}");
             }
         }
         // Colours are written once, for both schemes.
-        for (name, value) in &decls {
+        for (name, value) in &css {
             if name.starts_with("--color-") {
                 assert!(value.starts_with("light-dark("), "{name}: {value}");
             }
         }
+    }
+
+    #[test]
+    fn the_checker_reads_both_spellings() {
+        assert_eq!(
+            normal("color", "#0a0e1473"),
+            normal("color", "rgb(10 14 20 / 0.45)")
+        );
+        assert_eq!(normal("spacing", "4"), normal("spacing", "0.25rem"));
+        assert_eq!(normal("number", "150"), normal("number", "150ms"));
+        assert_eq!(
+            normal("fontFamilies", "Bricolage Grotesque"),
+            normal("fontFamilies", "\"Bricolage Grotesque\", system-ui")
+        );
+        assert_ne!(normal("color", "#ffffff"), normal("color", "#fffffe"));
     }
 }

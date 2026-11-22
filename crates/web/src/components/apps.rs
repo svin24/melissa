@@ -11,7 +11,7 @@ use maud::{html, Markup};
 
 use super::{
     agent::{avatar, icon_picker, Avatar},
-    glyph, live_region_on, log_view, Glyph, Health, LogLine, Tone,
+    glyph, live_region_on, log_view, status_badge, Btn, Glyph, Health, LogLine, Tone,
 };
 
 /// The list's region id (its refresh and the filter swap it).
@@ -30,14 +30,10 @@ pub fn app_icon(shape: &str, color: &str, large: bool) -> Markup {
     }
 }
 
-/// An app's status: a dot and the word (the word carries the meaning).
+/// An app's status: a badge with a dot (a spinner while busy) and the word.
 pub fn app_status(health: Health, words: &str) -> Markup {
-    html! {
-        span class={ "app-status " (health.class()) } {
-            span.app-status-dot aria-hidden="true" {}
-            (words)
-        }
-    }
+    let (tone, mark) = health.tone_mark();
+    status_badge(words, tone, mark)
 }
 
 /// Whose an app is, as a chip ("Installed by" for screen readers).
@@ -123,7 +119,7 @@ fn app_row(r: &AppRow<'_>) -> Markup {
                 span.app-row-person { (person_chip(p)) }
             }
             span.app-row-status { (app_status(r.health, r.status)) }
-            a.btn.secondary.app-row-details href=(r.details) {
+            a.app-row-details.(Btn::secondary()) href=(r.details) {
                 "Details" span.visually-hidden { ": " (r.name) }
             }
         }
@@ -135,10 +131,10 @@ fn show_filter(choices: &[ShowChoice<'_>]) -> Markup {
     html! {
         nav.show-filter aria-labelledby="apps-show-label" {
             span #apps-show-label { "Show" }
-            ul {
+            ul.segmented {
                 @for c in choices {
                     li {
-                        a id={ "apps-by-" (c.key) } href={ "/cluster?by=" (c.key) }
+                        a.seg id={ "apps-by-" (c.key) } href={ "/cluster?by=" (c.key) }
                             hx-get={ "/ui/cluster/apps?by=" (c.key) }
                             hx-target={ "#" (APPS_LIST_ID) } hx-swap="outerHTML"
                             aria-current=[c.current.then_some("true")] {
@@ -153,7 +149,7 @@ fn show_filter(choices: &[ShowChoice<'_>]) -> Markup {
 
 fn add_button(href: &str) -> Markup {
     html! {
-        a.btn.primary href=(href) { (glyph(Glyph::Plus)) "Add an app" }
+        a.(Btn::primary()) href=(href) { (glyph(Glyph::Plus)) "Add an app" }
     }
 }
 
@@ -264,13 +260,13 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                     @if !d.gone {
                         div.app-head-actions {
                             @if let Some(open) = d.open {
-                                a.btn.secondary href=(open) rel="noreferrer" target="_blank" {
+                                a.(Btn::secondary()) href=(open) rel="noreferrer" target="_blank" {
                                     (glyph(Glyph::Expand)) "Open"
                                 }
                             }
                             @if let Some((label, url)) = d.toggle {
                                 @if d.ask.is_none() {
-                                    button.btn.secondary type="button" hx-post=(url)
+                                    button.(Btn::secondary()) type="button" hx-post=(url)
                                         hx-target={ "#" (APP_DETAILS_ID) } hx-swap="outerHTML"
                                         hx-disabled-elt="this" { (label) }
                                 }
@@ -279,7 +275,7 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                     }
                 }
                 @if let Some((text, tone)) = d.message {
-                    p class={ "notice " (tone.class()) } role="status" { (text) }
+                    p class={ "notice " (tone.class()) } role="status" { (super::notice_glyph(tone)) (text) }
                 }
                 @if let Some(a) = &d.ask {
                     section.app-ask aria-labelledby="app-ask-q" {
@@ -288,11 +284,11 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                             p.app-ask-detail { (a.detail) }
                         }
                         div.app-ask-actions {
-                            button.btn.secondary type="button" hx-post=(a.deny)
+                            button.(Btn::secondary()) type="button" hx-post=(a.deny)
                                 hx-target={ "#" (APP_DETAILS_ID) } hx-swap="outerHTML" autofocus {
                                 "Cancel"
                             }
-                            button.btn.primary type="button" hx-post=(a.approve)
+                            button.(Btn::primary()) type="button" hx-post=(a.approve)
                                 hx-target={ "#" (APP_DETAILS_ID) } hx-swap="outerHTML"
                                 hx-disabled-elt="this" { (a.label) }
                         }
@@ -333,10 +329,10 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                                     "Type " strong { (d.app) } " to confirm"
                                 }
                                 div.app-inline {
-                                    input #app-delete-confirm type="text" name="confirm" required
+                                    input.input #app-delete-confirm type="text" name="confirm" required
                                         autocomplete="off" autocapitalize="off" spellcheck="false"
                                         pattern=(d.app) placeholder=(d.app);
-                                    button.btn.danger type="submit" { "Force delete" }
+                                    button.(Btn::danger()) type="submit" { "Force delete" }
                                 }
                             }
                         }
@@ -364,7 +360,7 @@ pub fn app_icon_card(
                 hx-target="#app-icon-card" hx-swap="outerHTML" {
                 (super::csrf_field())
                 (icon_picker(shapes, colors, shape, color))
-                button.btn.secondary type="submit" data-no-script-only { "Save icon" }
+                button.(Btn::secondary()) type="submit" data-no-script-only { "Save icon" }
                 @if let Some(s) = saved { p.quiet role="status" { (s) } }
             }
         }
@@ -419,20 +415,22 @@ pub fn app_logs_region(l: &AppLogsView<'_>) -> Markup {
                 @if l.containers.len() > 1 {
                     label.app-field for="app-logs-container" { "Container" }
                     div.app-inline {
-                        select #app-logs-container name="container" hx-get=(l.url)
-                            hx-trigger="change" hx-target="#app-logs" hx-swap="outerHTML"
-                            hx-include="this" {
-                            @for c in l.containers {
-                                option value=(c) selected[l.container == Some(c.as_str())] { (c) }
+                        span.select-wrap {
+                            select.input #app-logs-container name="container" hx-get=(l.url)
+                                hx-trigger="change" hx-target="#app-logs" hx-swap="outerHTML"
+                                hx-include="this" {
+                                @for c in l.containers {
+                                    option value=(c) selected[l.container == Some(c.as_str())] { (c) }
+                                }
                             }
                         }
-                        button.btn.secondary type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
+                        button.(Btn::secondary()) type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
                     }
                 } @else {
                     @if let Some(c) = l.container {
                         input type="hidden" name="container" value=(c);
                     }
-                    button.btn.secondary type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
+                    button.(Btn::secondary()) type="submit" { (glyph(Glyph::Refresh)) "Refresh" }
                 }
             }
             @if let Some(text) = l.empty {

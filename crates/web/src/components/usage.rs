@@ -13,7 +13,7 @@ use maud::{html, Markup};
 
 use super::{
     agent::{avatar, Avatar},
-    csrf_field, glyph, provider_logo, Glyph,
+    csrf_field, glyph, provider_logo, Btn, Glyph,
 };
 
 /// The view region (the switcher swaps it).
@@ -198,10 +198,10 @@ pub struct UsageBar<'a> {
 fn usage_tabs(current: UsageView) -> Markup {
     html! {
         nav.show-filter.usage-tabs aria-label="Usage views" {
-            ul {
+            ul.segmented {
                 @for v in UsageView::ALL {
                     li {
-                        a href={ "/usage?view=" (v.key()) }
+                        a.seg href={ "/usage?view=" (v.key()) }
                             hx-get={ "/ui/usage/view?view=" (v.key()) }
                             hx-target={ "#" (USAGE_VIEW_ID) } hx-swap="outerHTML"
                             aria-current=[(v == current).then_some("page")] {
@@ -237,7 +237,7 @@ fn usage_bar(b: &UsageBar<'_>) -> Markup {
                 form method="post" action=(b.check_url) hx-post=(b.check_url)
                     hx-target={ "#" (USAGE_PROVIDERS_ID) } hx-swap="outerHTML" hx-sync="this:drop" {
                     (csrf_field())
-                    button.btn.secondary.usage-check-button type="submit" {
+                    button.usage-check-button.(Btn::secondary()) type="submit" {
                         (glyph(Glyph::Refresh))
                         span.spin aria-hidden="true" {}
                         "Check again"

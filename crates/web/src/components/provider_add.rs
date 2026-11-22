@@ -1,21 +1,12 @@
 //! Components of Settings → Providers → Add provider (2026-11-20, owner-requested): an
 //! in-page panel with three steps (Provider, Identity, Config), a grid of the providers
-//! Melissa runs itself, the ACP registry list with its search, and a link styled as a button.
+//! Melissa runs itself, and the ACP registry list with its search.
 //! Part of the fixed component library (`components.rs`); a separate file only to keep the
 //! diff apart from other work there.
 
 use maud::{html, Markup};
 
-use super::{badge, provider_logo, Tone};
-
-/// A link that looks like a button (`primary`: the main one).
-pub fn link_button(href: &str, label: &str, primary: bool) -> Markup {
-    html! {
-        a class={ "button-like " @if primary { "primary" } @else { "secondary" } } href=(href) {
-            (label)
-        }
-    }
-}
+use super::{badge, provider_logo, Btn, Tone};
 
 /// The step list at the top of the panel; `current` counts from 0.
 pub fn stepper(steps: &[&str], current: usize) -> Markup {
@@ -39,7 +30,7 @@ pub fn add_panel(id: &str, title: &str, close: &str, steps: Markup, content: Mar
         section.add-panel id=(id) aria-labelledby={ (id) "-h" } {
             header.add-panel-head {
                 h1 id={ (id) "-h" } { (title) }
-                a.panel-close href=(close) aria-label="Close" title="Close" {
+                a.panel-close.(Btn::ghost().icon()) href=(close) aria-label="Close" title="Close" {
                     svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
                         path d="M4 4l8 8M12 4l-8 8" {}
                     }
@@ -102,7 +93,7 @@ pub fn provider_tiles(label: &str, tiles: &[ProviderTile<'_>], target: &str) -> 
                         div.ptile.added {
                             (provider_logo(t.id, t.letter, true))
                             span.ptile-name { (t.label) }
-                            span.ptile-note { (badge("Added", Tone::Muted)) }
+                            span.ptile-note { (badge("Added", Tone::Neutral)) }
                         }
                     }
                 }
@@ -165,7 +156,7 @@ pub fn registry_list(rows: &[RegistryRow<'_>], target: &str, empty: &str) -> Mar
                                     form method="post" action=(action) hx-post=(action)
                                         hx-target={ "#" (target) } hx-swap="outerHTML" {
                                         (crate::components::csrf_field())
-                                        button.secondary type="submit" {
+                                        button.(Btn::secondary()) type="submit" {
                                             "Add" span.visually-hidden { " " (r.name) }
                                         }
                                     }
@@ -186,7 +177,7 @@ pub fn registry_list(rows: &[RegistryRow<'_>], target: &str, empty: &str) -> Mar
                                     form method="post" action=(action) hx-post=(action)
                                         hx-target={ "#" (target) } hx-swap="outerHTML" {
                                         (crate::components::csrf_field())
-                                        button.secondary type="submit" { "Try again" }
+                                        button.(Btn::secondary()) type="submit" { "Try again" }
                                     }
                                 }
                             }
@@ -210,11 +201,11 @@ pub fn search_box(
     html! {
         form.search-box method="get" action=(page_url) role="search" {
             label.visually-hidden for="registry-search" { (label) }
-            input #registry-search type="search" name="q" value=(value) placeholder=(label)
+            input.input #registry-search type="search" name="q" value=(value) placeholder=(label)
                 autocomplete="off" spellcheck="false" maxlength="100"
                 hx-get=(live_url) hx-trigger="input changed delay:300ms, search"
                 hx-target={ "#" (target) } hx-swap="outerHTML";
-            button.secondary type="submit" { "Search" }
+            button.(Btn::secondary()) type="submit" { "Search" }
         }
     }
 }

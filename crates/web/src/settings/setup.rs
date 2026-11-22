@@ -41,7 +41,8 @@ use super::{
 use crate::{
     components::{
         link_button, live_region, notice, notice_link, provider_tiles, select_field_at,
-        setup_actions, setup_page, setup_submit, text_field, Choice, ProviderTile, TileLink, Tone,
+        setup_actions, setup_page, setup_submit, text_field, Btn, Choice, ProviderTile, TileLink,
+        Tone,
     },
     feed::backend_label,
     ui::Ui,
@@ -362,7 +363,7 @@ async fn step(
 fn device_form(ui: &Ui, error: Option<&str>) -> Markup {
     let value = device::field_value(ui);
     html! {
-        @if let Some(e) = error { (notice(e, Tone::Error)) }
+        @if let Some(e) = error { (notice(e, Tone::Caution)) }
         form.stack #setup-device-form method="post" action="/ui/setup/device" {
             (crate::components::csrf_field())
             (text_field("name", "Device name", &value, "", "text",
@@ -434,7 +435,7 @@ pub(crate) fn provider_region(ui: &Ui, v: &ProvidersView) -> Markup {
     let model_href = model_href(selected.map(|c| c.id.as_str()), &working);
     let footer = setup_actions(
         html! {
-            @if ready { (link_button(&model_href, "Choose a model", !busy)) }
+            @if ready { (link_button(if busy { Btn::secondary() } else { Btn::primary() }, &model_href, "Choose a model")) }
         },
         Some(&later_url(SetupStep::Provider)),
     );
@@ -516,7 +517,7 @@ fn model_region(ui: &Ui, error: Option<&str>, polls: u32, provider: Option<&str>
     if views.is_empty() {
         return html! {
             (notice_link("No provider is ready yet.",
-                Some((PROVIDER_URL, "Connect a provider")), Tone::Warn))
+                Some((PROVIDER_URL, "Connect a provider")), Tone::Attention))
             (setup_actions(html! {}, Some(&later_url(SetupStep::Model))))
         };
     }
@@ -542,7 +543,7 @@ fn model_region(ui: &Ui, error: Option<&str>, polls: u32, provider: Option<&str>
         3,
         waiting,
         html! {
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
+            @if let Some(e) = error { (notice(e, Tone::Caution)) }
             form.stack #setup-model-form method="post" action="/ui/setup/model" {
                 (crate::components::csrf_field())
                 (select_field_at("choice", "Model", &choices, current.as_deref()))
@@ -566,7 +567,11 @@ async fn model_poll(State(ui): State<Ui>, Query(q): Query<StepQuery>) -> Respons
 /// only while there is something left to turn on.
 async fn extras(ui: &Ui) -> Markup {
     let voice = voice::view(&ui.settings, None);
-    let finish = link_button(crate::pages::MELISSA_CHAT_URL, "Finish setup", true);
+    let finish = link_button(
+        Btn::primary(),
+        crate::pages::MELISSA_CHAT_URL,
+        "Finish setup",
+    );
     if !voice.available && !voice.on && !tailscale::managed(ui).await {
         return html! {
             (notice("Voice input and Tailscale aren't available on this install.", Tone::Info))

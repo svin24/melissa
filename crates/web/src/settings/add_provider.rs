@@ -57,7 +57,7 @@ use super::{apply, pages::Flash};
 use crate::{
     components::{
         actions, add_panel, disclosure, group, lines_field, link, link_button, live_region, notice,
-        provider_tiles, registry_list, search_box, settings_form, stepper, text_field,
+        provider_tiles, registry_list, search_box, settings_form, stepper, text_field, Btn,
         ProviderTile, RegistryAction, RegistryRow, Tone,
     },
     is_htmx,
@@ -601,12 +601,12 @@ fn registry_region(ui: &Ui, q: &str, error: Option<&str>) -> Markup {
     };
     let content = match &cached {
         None => html! {
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
+            @if let Some(e) = error { (notice(e, Tone::Caution)) }
             p.quiet { "Melissa asks the ACP registry only when you load it." }
             form method="post" action=(REGISTRY_URL) hx-post=(REGISTRY_URL)
                 hx-target={ "#" (REGISTRY_ID) } hx-swap="outerHTML" {
                 (crate::components::csrf_field())
-                button.secondary type="submit" { "Load the list" }
+                button.(Btn::secondary()) type="submit" { "Load the list" }
             }
         },
         Some((reg, at)) => {
@@ -666,10 +666,10 @@ fn registry_region(ui: &Ui, q: &str, error: Option<&str>) -> Markup {
                     form.inline method="post" action=(REGISTRY_URL) hx-post=(REGISTRY_URL)
                         hx-target={ "#" (REGISTRY_ID) } hx-swap="outerHTML" {
                         (crate::components::csrf_field())
-                        button.link type="submit" { "Refresh" }
+                        button.(Btn::link()) type="submit" { "Refresh" }
                     }
                 }
-                @if let Some(e) = error { (notice(e, Tone::Error)) }
+                @if let Some(e) = error { (notice(e, Tone::Caution)) }
                 (registry_list(&rows, REGISTRY_ID, "No agents match."))
             }
         }
@@ -737,7 +737,7 @@ fn manual_view(name: &str, command: &str, error: Option<&str>) -> Markup {
     panel(
         0,
         html! {
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
+            @if let Some(e) = error { (notice(e, Tone::Caution)) }
             (settings_form("/ui/settings/providers/manual", PANEL_ID, "Check and add", html! {
                 (text_field("name", "Name", name, "My agent", "text", None))
                 (text_field("command", "Command", command, "/usr/local/bin/my-agent acp", "text",
@@ -777,7 +777,7 @@ fn identity_view(id: &str, a: &AddedProvider, key_set: bool, error: Option<&str>
         1,
         html! {
             h2 { (a.label) }
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
+            @if let Some(e) = error { (notice(e, Tone::Caution)) }
             @if key_set { (notice("API key saved.", Tone::Ok)) }
             p.quiet { "Most agents sign in with an API key from their maker." }
             (settings_form(&action, PANEL_ID, "Save key", html! {
@@ -785,7 +785,7 @@ fn identity_view(id: &str, a: &AddedProvider, key_set: bool, error: Option<&str>
                     Some("Where the agent looks for its key.")))
                 (text_field("value", "API key", "", "", "password", None))
             }))
-            (actions(link_button(&next, if key_set { "Next" } else { "Skip" }, key_set)))
+            (actions(link_button(if key_set { Btn::primary() } else { Btn::secondary() }, &next, if key_set { "Next" } else { "Skip" })))
         },
     )
 }
@@ -796,7 +796,7 @@ fn config_view(id: &str, a: &AddedProvider, error: Option<&str>) -> Markup {
         2,
         html! {
             h2 { (a.label) }
-            @if let Some(e) = error { (notice(e, Tone::Error)) }
+            @if let Some(e) = error { (notice(e, Tone::Caution)) }
             (settings_form(&action, PANEL_ID, "Finish", html! {
                 (lines_field("hosts", "Hosts it may reach", &a.allow.join("\n"),
                     Some("Its AI service, one per line (api.example.com). Melissa blocks every other host.")))
@@ -929,7 +929,7 @@ pub(super) async fn add_known(
         if let Err(e) = s.parts().store.change(&id, &Change::Restore) {
             let flash = Flash {
                 text: e.to_string(),
-                tone: Tone::Error,
+                tone: Tone::Caution,
             };
             let body = choose_view(&ui, "", Some(&flash));
             return (

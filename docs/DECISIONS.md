@@ -1684,3 +1684,31 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   level in the server from the user agent (guesswork, breaks on resize), a separate `/settings/list` URL (a
   second address for the same page and a redirect loop without script), keeping the redirect and building the
   list in script (no list without script).
+- **2026-11-22 — The design system in code: tokens from Penpot with a drift check, one Button, thin controls**
+  (owner: the Penpot design system DS-00–DS-17 is approved; implement it). `melissa.css`'s `:root` now holds the
+  design library's tokens under their Penpot names (`a.b.c` = `--a-b-c`, primitives renamed to the library's
+  `neutral`/`night`/`blue`/… steps); `crates/web/design/tokens.json` is the export, written by
+  `scripts/tokens/tokens_gen.py` (`just tokens`), and `crate::tokens` fails when the two disagree: a token on one
+  side only, or a different value in either theme after resolving aliases (docs/DEV-ENV.md, Design tokens). The
+  stylesheet stays hand-written (no build step); names only it has are listed in `tokens::CSS_ONLY`. The two
+  dark-mode fixes are semantic tokens: `color.bg.hover`, `color.bg.selected` and the new `color.bg.fill` (neutral
+  badges, disabled filled buttons) are `night.850` in dark, one step lighter than a card; `color.text.disabled`
+  is dimmer than muted text in both themes (`neutral.500` / `night.600`). Components: `components::Btn` is the
+  one button, rendered as classes (`.btn` + variant + size + shape) so the same look fits `<button>`, `<a>`,
+  `<summary>` and `<label>` with their own attributes; every button, link-as-button, icon button and confirm
+  summary uses it (32 px, 28 small, 40 large, radius 8/6, the hit area 44 px only under `pointer: coarse`).
+  Fields (`.input`, `.search-field`, `span.select-wrap`) are as high as the buttons; native checkboxes and radios
+  take the accent colour; the switch is 32×18 and blue when on; one segmented control (`.segmented`/`.seg`) serves
+  the picker, the Apps filter and the Usage views; `Tone` is Neutral/Info/Ok/Attention/Caution and one badge
+  (`badge`, `status_badge` with a dot or spinner) replaces the pills; rows, cards, insets, callouts and notices
+  read the row/radius/space tokens; the remaining size literals and old colour aliases were swept to tokens.
+  Kept as aliases (in `CSS_ONLY`): `--ground`, `--surface`, `--ink`, `--muted`, `--border`, `--honey*`,
+  `--action*`, `--caution*`, `--ok`, `--idle`, `--bubble*`, `--focus`, `--backdrop`, `--shadow-float`,
+  `--icon-*`, `--radius`, `--font`, `--font-head`, `--mono`: no rule here reads them any more, but branches in
+  flight may; remove them once those have landed. Not changed (no behaviour changes): the picker's
+  Speed/Access stay submit buttons with `aria-pressed` (the spec's radios would change how they post),
+  `notice()` keeps `role="status"` at page load, a locked switch keeps its reason in `title`, triggers of
+  destructive confirms keep the secondary look (the spec's `danger-quiet` exists for when the owner wants it).
+  Alternatives: generating `:root` from `tokens.json` (a build step), struct components with every attribute
+  (`Button { does, hx, … }`, a large API for ~80 call sites with different htmx attributes), keeping the old
+  names (two vocabularies).

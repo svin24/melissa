@@ -309,7 +309,7 @@ async fn render_details(
     };
     let message = extra.message.or_else(|| {
         (status["phase"] == "unknown" && !extra.gone)
-            .then_some(("Couldn't read the status.", Tone::Error))
+            .then_some(("Couldn't read the status.", Tone::Caution))
     });
     let icon = icon_of(app, &cx.prefs);
     let person_name = person
@@ -581,7 +581,7 @@ async fn toggle(ui: Ui, app: String, tool: &'static str, headers: HeaderMap) -> 
             };
             ui.cluster.refresh_now().await;
             let extra = Extra {
-                message: message.as_deref().map(|m| (m, Tone::Error)),
+                message: message.as_deref().map(|m| (m, Tone::Caution)),
                 ..Extra::default()
             };
             return changed(render_details(&ui, &app, host, &who, extra).await);
@@ -675,7 +675,7 @@ async fn force_delete(
     if !confirmed(&app, &form.confirm) {
         let msg = format!("Type {app} to confirm.");
         let extra = Extra {
-            message: Some((&msg, Tone::Error)),
+            message: Some((&msg, Tone::Caution)),
             ..Extra::default()
         };
         return render_details(&ui, &app, host, &who, extra)
@@ -698,7 +698,7 @@ async fn force_delete(
             ui.cluster.refresh_now().await;
             let msg = format!("Couldn't delete it: {e}");
             let extra = Extra {
-                message: Some((&msg, Tone::Error)),
+                message: Some((&msg, Tone::Caution)),
                 ..Extra::default()
             };
             changed(render_details(&ui, &app, host, &who, extra).await)

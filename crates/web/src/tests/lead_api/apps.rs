@@ -244,7 +244,7 @@ async fn without_k3s_the_list_says_it_isnt_set_up() {
         body.contains("The app platform isn't set up on this device."),
         "{body}"
     );
-    assert!(!body.contains("Couldn't") && !body.contains("tone-error"));
+    assert!(!body.contains("Couldn't") && !body.contains("tone-caution"));
     let (_, v) = api(&app, &owner, "/api/apps").await;
     assert_eq!(v["k3s"], "not_set_up");
 }
