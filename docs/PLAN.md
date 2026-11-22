@@ -869,7 +869,9 @@ Roadmap (rough, phases may overlap):
     `ghcr.io/svin24/melissa` (nightly from master, stable from `v*` tags as `:<version>` and `:latest`, signed
     with cosign keyless), and a new install defaults to the prebuilt `:latest` (a local build stays an option).
     Switch it on once the repo is public (free Actions minutes); make the package public; check that the
-    image carries the third-party license notices.
+    image carries the third-party license notices. The same images serve updates: `AutoUpdate=registry` and
+    Settings → Updates (check, apply, roll back) already handle registry images; `:latest` is the stable channel,
+    `:nightly` the daily one. NixOS keeps updating through the flake.
 51. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
     services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
     Consumer Terms. Is "the user installs the official CLI and logs in with their own account on their own box"
