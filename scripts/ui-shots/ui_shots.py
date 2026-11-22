@@ -383,6 +383,8 @@ class Shooter:
                 self.seed_chats(browser, base, state_file)
                 helper, quiet = srv.helper_id("Backup"), srv.helper_id("Updates")
                 plan = screens(helper, quiet)
+                # `/settings` alone is the section list on a phone (level 1).
+                plan += [("settings", "/settings", None)]
                 plan += [(f"settings-{s}", f"/settings/{s}", None) for s in SETTINGS_SECTIONS]
                 members = self.invite_members(browser, base, state_file)
                 self.visit_all(browser, base, str(state_file), plan)

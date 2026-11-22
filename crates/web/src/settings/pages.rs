@@ -235,6 +235,8 @@ pub(crate) fn frame_at(
 ) -> Markup {
     // Members don't see the owner's sections (the gate refuses them anyway).
     let owner = crate::auth::signed_in().is_none_or(|p| p.is_owner());
+    // `GET /settings`: the list level, with each row's value.
+    let list = super::list::current();
     let sections: Vec<SettingsSection<'_>> = SECTIONS
         .iter()
         .filter(|s| owner || crate::auth::need(s.href) != crate::auth::Need::Owner)
@@ -245,9 +247,12 @@ pub(crate) fn frame_at(
             group: s.group,
             icon: s.icon,
             keywords: s.keywords,
+            value: list.as_ref().and_then(|l| l.value(s.href)),
+            danger: s.href == RESET_URL,
         })
         .collect();
     let title = match page {
+        _ if list.is_some() => "Settings".to_string(),
         Some(p) => format!("{p} · {current} · Settings"),
         None => format!("{current} · Settings"),
     };
@@ -255,7 +260,7 @@ pub(crate) fn frame_at(
         f,
         &title,
         rail_for(Nav::Settings, f, None),
-        settings_frame_at(&sections, current, page, content),
+        settings_frame_at(&sections, current, page, list.is_some(), content),
     )
 }
 
@@ -349,6 +354,13 @@ pub struct ProviderCard {
     /// The in-page question before Remove provider.
     pub remove_confirm: String,
     pub details: ProviderDetails,
+}
+
+impl ProviderCard {
+    /// Installed and ready to use (whether or not it is switched on).
+    pub fn ready(&self) -> bool {
+        self.installed && self.tone == Tone::Ok
+    }
 }
 
 pub struct ProvidersView {

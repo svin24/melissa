@@ -120,6 +120,12 @@ fn hint_for(status: Option<&ImageStatus>) -> UpdateHint {
 }
 
 /// The image state in a word or two (container with the helper only).
+/// The update status in words ("Up to date"), where Melissa knows it.
+pub(super) fn status_word(ui: &Ui) -> Option<&'static str> {
+    let env = &ui.settings.parts().updates;
+    status_words(env, &env.state()).map(|(w, _)| w)
+}
+
 fn status_words(env: &UpdateEnv, state: &UpdateState) -> Option<(&'static str, Tone)> {
     if env.kind != HostKind::Container || !env.helper_installed() {
         return None;
