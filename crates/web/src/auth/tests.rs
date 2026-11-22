@@ -21,6 +21,8 @@ fn paths_are_public_member_or_owner() {
         "/settings/agents",
         "/settings/account",
         "/settings/developer",
+        "/settings/about",
+        "/settings/about/rust-crates",
         "/reauth",
         "/logout",
         "/api/host/setup-code",

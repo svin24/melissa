@@ -201,6 +201,7 @@ MEMBER_SCREENS = [
     ("ben", "app-details-member", "/cluster/apps/minecraft", None),
     ("cy", "apps-empty", "/cluster", None),
     ("ben", "usage-member", "/usage", None),
+    ("ben", "settings-about-member", "/settings/about", None),
 ]
 
 
@@ -208,6 +209,14 @@ def fill(selector, value):
     def act(page):
         page.locator(selector).first.fill(value)
     return act
+
+
+def open_all_details(page):
+    """Open every disclosure in the open Settings section (About's license texts)."""
+    page.evaluate("""() => {
+      for (const d of document.querySelectorAll('#settings-main details')) d.open = true;
+    }""")
+    page.wait_for_timeout(100)
 
 
 def scroll_chat_top(page):
@@ -247,12 +256,14 @@ def screens(helper, quiet):
         ("dialog-delete-helper", f"/settings/agents/{quiet}",
          open_confirm("confirm-inline", "Delete")),
         ("dialog-reset", "/settings/reset", open_confirm("danger-confirm", "Reset")),
+        ("settings-about-open", "/settings/about", open_all_details),
     ]
     return s
 
 
 SETTINGS_SECTIONS = ("account", "people", "agents", "providers", "permissions", "schedules",
-                     "apps", "files", "voice", "tailscale", "updates", "developer", "reset")
+                     "apps", "files", "voice", "tailscale", "updates", "developer", "reset",
+                     "about")
 
 
 # --- running ------------------------------------------------------------------------------

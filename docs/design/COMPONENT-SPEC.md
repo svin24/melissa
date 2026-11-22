@@ -142,7 +142,7 @@ Anatomy: [icon 16] label [trailing icon (chevron for a menu trigger)]. Padding-i
 | disabled | text `text.disabled`, bg unchanged for secondary/ghost, primary/danger bg `bg.sunken`; no hover; reason shown beside |
 | busy | spinner replaces the icon slot (or precedes label), label kept, `aria-disabled="true"`; reduced motion: still dotted ring |
 
-Keyboard/SR: native `button` (Enter/Space). Navigation is always `<a class="btn">` (same look), never a button. Menu trigger: `popovertarget` gives `aria-expanded` natively. Icon-only: `aria-label`; glyph `aria-hidden`.
+Keyboard/SR: native `button` (Enter/Space). Navigation is always `<a class="btn">` (same look), never a button. Menu trigger: `popovertarget` gives `aria-expanded` natively. Icon-only: `aria-label`; glyph `aria-hidden`. A link that opens a new tab (`new_tab_button`, 2026-11-22) has `target="_blank" rel="noopener noreferrer"` and says "(opens in a new tab)" in visually hidden text.
 
 No JS: `type="submit"` in a real `<form method="post">` (+CSRF), or `<a href>`. htmx attributes added on top.
 

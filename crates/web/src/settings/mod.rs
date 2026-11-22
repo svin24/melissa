@@ -64,6 +64,9 @@
 //!   `POST /ui/settings/tailscale/switch` (`enabled=on` or nothing) is Enable/Disable as one
 //!   switch for its Extras step. The Providers, Voice and Tailscale handlers answer with the
 //!   setup step's region (or redirect back to it) when the request comes from `/setup`.
+//! - `GET /settings/about` (`about.rs`): version, Melissa's public pages, Sponsor, her license and
+//!   the credits, for everyone signed in; `GET /settings/about/rust-crates` the Rust crates'
+//!   license report as plain text where the image ships one (else 404).
 //! - `GET /settings/permissions`: the "Always allow" rules; `POST
 //!   /ui/settings/permissions/{id}/remove` removes one.
 //! - `POST /ui/settings/developer/bypass` (`enabled=on` or nothing): No permission prompts.
@@ -104,6 +107,7 @@
 //! for and again with their outcome (`settings.provider.install`, `settings.provider.login`);
 //! sign-in codes never reach the audit log.
 
+mod about;
 mod add_provider;
 pub(crate) mod agents;
 mod apply;
@@ -508,6 +512,8 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route(device::SAVE_URL, post(device::save))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
+        .route(pages::ABOUT_URL, get(about::page))
+        .route(pages::RUST_LICENSES_URL, get(about::rust_licenses))
         .route(pages::RESET_URL, get(reset::page))
         .route("/ui/settings/reset", post(reset::ui_reset))
         .route(pages::RESET_STATUS_URL, get(reset::status))

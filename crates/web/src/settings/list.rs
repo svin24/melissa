@@ -15,7 +15,7 @@ use axum::{
 };
 use melissa_settings::tailscale::State as TsState;
 
-use super::{agents, files, pages, providers, updates, voice};
+use super::{about, agents, files, pages, providers, updates, voice};
 use crate::ui::Ui;
 
 /// The list level: each section's short value, by its URL.
@@ -94,6 +94,7 @@ async fn values(ui: &Ui, providers: Option<&pages::ProvidersView>) -> ListLevel 
         let developer = perms.bypass() || perms.full_access_allowed();
         values.push((pages::DEVELOPER_URL, on_off(developer).into()));
     }
+    values.push((pages::ABOUT_URL, about::version(ui)));
     ListLevel { values }
 }
 

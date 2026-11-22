@@ -56,6 +56,9 @@ pub enum Glyph {
     Server,
     Expand,
     Image,
+    // Settings → About (2026-11-22).
+    Info,
+    Heart,
 }
 
 pub fn glyph(g: Glyph) -> Markup {
@@ -133,6 +136,14 @@ pub fn glyph(g: Glyph) -> Markup {
                     rect x="2" y="2.5" width="12" height="11" rx="1.5" {}
                     circle cx="5.75" cy="6.25" r="1.25" {}
                     path d="m2.5 12 3.75-3.75 2.5 2.5 1.75-1.75L13.5 12" {}
+                }
+                Glyph::Info => {
+                    circle cx="8" cy="8" r="6.25" {}
+                    path d="M8 7.25v3.75M8 4.75v.01" {}
+                }
+                // Stroked in the rose identity colour wherever it shows (`.glyph .heart`).
+                Glyph::Heart => {
+                    path.heart d="M8 13.25C4.25 10.75 2 8.5 2 6.1a3 3 0 0 1 6-1.35 3 3 0 0 1 6 1.35c0 2.4-2.25 4.65-6 7.15Z" {}
                 }
             }
         }
