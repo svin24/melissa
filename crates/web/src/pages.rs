@@ -231,6 +231,19 @@ impl Who<'_> {
         }
     }
 
+    /// The chat's page of the [`PAGE_ENTRIES`] entries before entry `before` (without script).
+    pub fn page_url(self, before: usize) -> String {
+        format!("{}?before={before}", self.chat_page())
+    }
+
+    /// The chat's own page (Melissa's: `/chat`, as `/` is the agent list on phones).
+    fn chat_page(self) -> String {
+        match self {
+            Self::Lead => MELISSA_CHAT_URL.to_string(),
+            Self::Agent(id) => agent_href(id),
+        }
+    }
+
     /// Where older entries load from (lazy loading).
     pub fn older_url(self, before: usize, epoch: u64) -> String {
         match self {
@@ -448,31 +461,37 @@ fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>, x: &EntryCtx<'_>) -> M
 pub const PAGE_ENTRIES: usize = 60;
 
 /// The newest [`PAGE_ENTRIES`] entries before `before` (all entries: `entries().len()`),
-/// with a marker at the top that loads the ones before them, if any. `all`: every entry (the
-/// marker's link without script).
+/// with a marker at the top that loads the ones before them, if any: with script into this
+/// list, without it as the page of those entries (`?before=`, never more than
+/// [`PAGE_ENTRIES`] at once, 2026-11-22). `newer`: this is such a page (not the newest
+/// entries): a link at the bottom leads to the next newer one.
 pub fn feed_page(
     feed: &Feed,
     before: usize,
     who: Who<'_>,
     epoch: u64,
-    all: bool,
+    newer: bool,
     x: &EntryCtx<'_>,
 ) -> Markup {
     let list = feed.entries();
     let end = before.min(list.len());
-    let start = if all {
-        0
-    } else {
-        end.saturating_sub(PAGE_ENTRIES)
-    };
+    let start = end.saturating_sub(PAGE_ENTRIES);
     html! {
         @if start > 0 {
             (crate::components::older_marker(
                 &who.older_url(start, epoch),
-                &format!("{}?all=1", who.chat_url()),
+                &who.page_url(start),
             ))
         }
         (entries(&list[start..end], x))
+        @if newer && end < list.len() {
+            @let next = end + PAGE_ENTRIES;
+            (crate::components::newer_marker(&if next >= list.len() {
+                who.chat_page()
+            } else {
+                who.page_url(next)
+            }))
+        }
     }
 }
 
@@ -607,7 +626,8 @@ pub struct ChatView<'a> {
     /// The conversation's details panel (None: only the composer is rendered).
     pub details: Option<&'a DetailsPanel<'a>>,
     /// Render every entry (no lazy loading; the older marker's link without script).
-    pub all: bool,
+    /// A page of earlier entries (`?before=`, without script): the entries before this one.
+    pub before: Option<usize>,
     /// Say under the composer (phones) that device changes need the user's OK: false when
     /// No permission prompts is on.
     pub caption: bool,
@@ -689,7 +709,15 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
                         FEED_ID,
                         &label,
                         &v.who.stream_url(v.feed.last_seq(), v.epoch),
-                        feed_page(v.feed, v.feed.entries().len(), v.who, v.epoch, v.all, &x),
+                        feed_page(
+                            v.feed,
+                            // A page of earlier entries has at least a page's worth.
+                            v.before.map_or(usize::MAX, |b| b.max(PAGE_ENTRIES)),
+                            v.who,
+                            v.epoch,
+                            v.before.is_some(),
+                            &x,
+                        ),
                         empty,
                         Some(queue(v.feed, v.who)),
                     ))

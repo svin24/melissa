@@ -1243,4 +1243,15 @@ Roadmap (rough, phases may overlap):
     to type becomes the device's name. (h) Not tested on a real container yet (the owner's dev box must not be
     reset): run once on a throwaway install, including a kill during the wipe and a restart of the container.
     tries live in memory: a restart clears lockouts. Since 2026-11-21 (Q88) the setup code is kept on disk
-    (0600) until used or expired, so a restart keeps it.
+    (0600) until used or expired, so a restart keeps it.90. Long chats (2026-11-22; DECISIONS "A chat opens at its end"). (a) A conversation keeps its newest 2000 events
+    in memory; in a long live session the oldest entries drop out of the chat, and the transcript only gives back
+    the last 100 turns after a restart. Should the chat page older entries from the transcript on disk instead?
+    (b) Older loads count by entry index (`before=<n>`); when events are dropped at the front the indices shift
+    and a load can skip or repeat entries. An entry key as the cursor would fix it. (c) The browser keeps every
+    loaded entry (all 219 of a 100-turn test chat: 11,450 elements, 10 MB, a full relayout 32ms).
+    `content-visibility: auto` on entries made that 1.3ms but clips focus rings at an entry's edge and needs
+    scroll anchoring (Safari has none); alternatives: drop entries far above the view and reload them on the
+    way back. (d) Archived chats (`/chats/<id>`) are read from disk and rendered whole on each request; page
+    them like the chat. (e) Each page or older-page request clones and folds the whole in-memory log (52ms /
+    32ms in a debug build for a 2100-event chat); a folded feed cached per conversation by its last event would
+    make that one render.

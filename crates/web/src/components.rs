@@ -568,6 +568,16 @@ pub fn older_marker(fetch: &str, page: &str) -> Markup {
     }
 }
 
+/// The bottom of a page of earlier messages (the older marker's link, without script): a link
+/// to the next newer page.
+pub fn newer_marker(page: &str) -> Markup {
+    html! {
+        li.feed-newer {
+            a href=(page) { "Load newer messages" }
+        }
+    }
+}
+
 /// One of Melissa's earlier (archived) chats.
 pub struct PastChatRow {
     pub href: String,

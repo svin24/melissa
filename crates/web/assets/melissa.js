@@ -2265,9 +2265,13 @@
     if (to) {
       to.scrollIntoView({ block: "center" });
     } else if (feed && feed.getClientRects().length) {
-      // (Not on the phone's agent list, which hides the chat.)
+      // (Not on the phone's agent list, which hides the chat.) Browsers with CSS
+      // scroll-initial-target are there already on a page load.
       scrollToBottom();
     }
+    // The chat may show now (melissa.css keeps it invisible until it is at its end where the
+    // browser can't start it there by itself).
+    document.documentElement.setAttribute("data-chat-ready", "");
     // After the first scroll, so the top of the feed isn't "in view" while the page loads.
     window.requestAnimationFrame(watchOlder);
   }

@@ -1490,3 +1490,30 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   storage) and restores them stale with a dead stream, its Back/Forward would fight the panels' own history
   entries, and boosting a container also boosts its forms. A small controller over `htmx.ajax`, like the
   panels', keeps links plain `<a href>` (no per-link attributes, agent-written same-origin links included).
+- **2026-11-22 — A chat opens at its end from the first frame; earlier messages page by 60 without script**
+  (owner: "for a moment it flashes the top of the conversation and then scrolls down"; "I hope we're not
+  rendering the entire conversation"). **Opening at the end:** the composer has `scroll-initial-target:
+  nearest`, so the browser starts the chat's scroller (the chat column above 1200px, the main column above
+  760px, the page on phones) at the composer during the first layout, before any script (Chromium 133+).
+  Where the property is missing (Firefox and Safari today) the chat's messages stay invisible
+  (`@supports not` + `@media (scripting: enabled)`) until melissa.js has scrolled once the page is parsed and
+  set `data-chat-ready`; a 1.5s CSS fallback shows them if the script never runs. In-page navigation scrolls
+  in the same task as the swap, so the first frame after it is already at the end. Checked in the browser at
+  1440, 1024 and 390px: the scroller was at its end before the script ran (full loads) and at the next frame
+  (swaps); with the property disabled, the chat was at its top but invisible until the scroll. Rejected:
+  `flex-direction: column-reverse` (phones scroll the page, which can't be reversed; scroll positions turn
+  negative under the lazy loading and auto-scroll code), a parser-blocking script after the chat (an extra
+  request, and the first paint can still come before it), a `#end` fragment (in every URL).
+  **Paging without script:** `?all=1` (every entry at once) is gone; the older marker's plain link is
+  `?before=<n>`, a page of at most 60 entries with a "Load newer messages" link at its bottom (to the next page,
+  or the chat itself). With script the marker still loads 60 at a time into the chat. **Audit** (synthetic
+  100-turn chat, 2100 events, debug build): the server keeps at most 2000 events per conversation in memory
+  (`EventLog::CAPACITY`; after a restart the last 100 turns, read once from a transcript capped at 4 MiB) and
+  folds them per page or older-page request (page 52ms / 178 KiB, older chunk 32ms / 132 KiB, both for 60
+  entries); the stream folds once when it opens and resumes from `Last-Event-ID` without replaying; Markdown is
+  rendered only for the entries sent (60 per page, changed ones over the stream). In the browser, all 219
+  entries loaded: 11,450 elements, 10 MB heap, a full relayout 32ms (9.5ms for the first 60). Open items in
+  PLAN/Open questions: entries beyond 2000 events drop out of a long live session and older loads count by
+  index (a key would survive eviction); `content-visibility: auto` on entries made a relayout 1.3ms but clips
+  focus rings at an entry's edge and needs scroll anchoring (not in Safari); archived chats (`/chats/<id>`)
+  still render whole.

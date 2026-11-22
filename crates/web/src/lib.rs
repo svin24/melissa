@@ -4643,7 +4643,6 @@ mod tests {
             assert!(!home.contains("message number 30."), "not the oldest");
             let marker = "data-older=\"/ui/older?before=".to_string();
             assert!(home.contains(&marker), "{home}");
-            assert!(home.contains("<a href=\"/?all=1\">Load earlier messages</a>"));
             let start = home.find(&marker).unwrap() + marker.len();
             let before: usize = home[start..].split('&').next().unwrap().parse().unwrap();
             let (status, _, older) =
@@ -4655,10 +4654,53 @@ mod tests {
             // A page from before a restart gets nothing (its stream reloads it).
             let (_, _, stale) = get_html(&app, &format!("/ui/older?before={before}&epoch=1")).await;
             assert!(stale.is_empty());
-            // Without script: everything at once.
-            let (_, _, all) = get_html(&app, "/?all=1").await;
-            assert!(all.contains("message number 0.") && all.contains("message number 99."));
-            assert!(!all.contains("data-older"));
+            // Without script: a page of the entries before, never more than a page's worth,
+            // and a link to the newer ones (here the chat itself).
+            assert!(home.contains(&format!(
+                "<a href=\"/chat?before={before}\">Load earlier messages</a>"
+            )));
+            assert!(!home.contains("Load newer messages"), "the newest page");
+            let (_, _, page) = get_html(&app, &format!("/chat?before={before}")).await;
+            let count = |p: &str| p.matches("message number ").count();
+            assert!(count(&page) <= crate::pages::PAGE_ENTRIES && count(&page) > before);
+            assert!(page.contains("message number 0."));
+            assert!(!page.contains("message number 99."));
+            assert!(!page.contains("data-older"));
+            assert!(
+                page.contains("<a href=\"/chat\">Load newer messages</a>"),
+                "{page}"
+            );
+            // A longer chat: pages in the middle link both ways, a page at most PAGE_ENTRIES.
+            for i in 100..300 {
+                lead.events().push(LeadEvent::UserMessage {
+                    turn: i + 1,
+                    text: format!("message number {i}."),
+                    attachments: vec![],
+                    scheduled: None,
+                });
+            }
+            let (_, _, home) = get_html(&app, "/").await;
+            let start = home.find(&marker).unwrap() + marker.len();
+            let newest: usize = home[start..].split('&').next().unwrap().parse().unwrap();
+            let middle_at = newest - crate::pages::PAGE_ENTRIES;
+            let (_, _, middle) = get_html(&app, &format!("/chat?before={middle_at}")).await;
+            assert_eq!(count(&middle), crate::pages::PAGE_ENTRIES);
+            assert!(middle.contains(&format!(
+                "<a href=\"/chat?before={}\">Load earlier messages</a>",
+                middle_at - crate::pages::PAGE_ENTRIES
+            )));
+            assert!(
+                middle.contains(&format!(
+                    "<a href=\"/chat?before={newest}\">Load newer messages</a>"
+                )),
+                "{middle}"
+            );
+            let (_, _, deep) = get_html(&app, "/chat?before=100").await;
+            assert_eq!(count(&deep), crate::pages::PAGE_ENTRIES);
+            assert!(
+                deep.contains("<a href=\"/chat?before=160\">Load newer messages</a>"),
+                "{deep}"
+            );
         }
 
         #[tokio::test]
