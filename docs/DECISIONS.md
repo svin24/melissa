@@ -1545,3 +1545,60 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   reading Grok's and Claude's tokens and calling their hosts directly (T3's way; more token handling for the
   same numbers), background polling (owner: on open/refresh only), estimating cost from token counts (invented
   numbers).
+- **2026-11-22 — Moving between pages swaps only the main column** (owner: "we should not need full page loads
+  in general if we can avoid that"). A link to a page with the sidebar (`/`, `/chat`, `/agents/<id>`, `/chats`,
+  `/chats/<id>`, `/approvals`, with or without a query) loads with htmx into `#main` and pushes its address:
+  wherever the link is (the sidebar, the phone's agent list and back button, a chat card, the details panel, a
+  panel in the modal). The request carries `HX-Target: main`; `crate::panel` notes it and `pages::shell`
+  answers with the page's `<title>`, the main column's content and the sidebar's agent groups as an
+  out-of-band update (the selected agent and the latest states, as the live stream sends them), with `Vary:
+  HX-Target`. Every other request (a load, a reload, no script) gets the whole page, so deep links, reloads and
+  pages without script are unchanged. The sidebar is not re-rendered: its scroll, collapse, search and open
+  groups stay. melissa.js (`openPage`, one controller beside the panels' own) keeps one history model with the
+  panels: page entries `{page}`, panel entries `{panel, depth}`; Back and Forward between pages swap again
+  (the phone's agent list comes back where it was scrolled); a page link inside a panel closes the panel and
+  its history entries first; closing a panel opened by a deep link opens `/` the same way (was a full load).
+  The chat's stream goes with the old content (htmx's cleanup closes its EventSource) and the new chat opens
+  its own; page swaps settle at once (`settle:0ms`) because htmx processes new content as it settles, and
+  with the default 20ms a quicker next click could replace a chat before its stream opened, which then opened
+  for a chat already gone. A newer click aborts the request in flight. After a swap: the composer, its draft
+  and files, voice button and details panel are set up again (the width listener is bound once), the chat
+  scrolls to its end, the older-messages watcher restarts, and focus goes to the page's heading (no ring),
+  to the details sheet when it is open over the chat, or on the phone's agent list to the agent just left.
+  Anything that does not come back as part of a page (an error status, a whole document such as the sign-in
+  page or the task pages, a network failure) loads as a whole page instead. Still whole loads: form posts
+  that redirect (creating a helper, Fresh start, onboarding steps, the provider pages), the sign-in pages,
+  task pages, and any link while a voice message is being recorded (the load ends the recording, as before).
+  Fixed on the way (also on master before): the phone's agent list no longer opens scrolled to its end (the
+  chat it hides was scrolled), and a details sheet remembered open no longer makes that list inert. Why not
+  `hx-boost`/`hx-push-url`: htmx's history keeps snapshots of the swapped part in localStorage (chat text in
+  storage) and restores them stale with a dead stream, its Back/Forward would fight the panels' own history
+  entries, and boosting a container also boosts its forms. A small controller over `htmx.ajax`, like the
+  panels', keeps links plain `<a href>` (no per-link attributes, agent-written same-origin links included).
+- **2026-11-22 — A chat opens at its end from the first frame; earlier messages page by 60 without script**
+  (owner: "for a moment it flashes the top of the conversation and then scrolls down"; "I hope we're not
+  rendering the entire conversation"). **Opening at the end:** the composer has `scroll-initial-target:
+  nearest`, so the browser starts the chat's scroller (the chat column above 1200px, the main column above
+  760px, the page on phones) at the composer during the first layout, before any script (Chromium 133+).
+  Where the property is missing (Firefox and Safari today) the chat's messages stay invisible
+  (`@supports not` + `@media (scripting: enabled)`) until melissa.js has scrolled once the page is parsed and
+  set `data-chat-ready`; a 1.5s CSS fallback shows them if the script never runs. In-page navigation scrolls
+  in the same task as the swap, so the first frame after it is already at the end. Checked in the browser at
+  1440, 1024 and 390px: the scroller was at its end before the script ran (full loads) and at the next frame
+  (swaps); with the property disabled, the chat was at its top but invisible until the scroll. Rejected:
+  `flex-direction: column-reverse` (phones scroll the page, which can't be reversed; scroll positions turn
+  negative under the lazy loading and auto-scroll code), a parser-blocking script after the chat (an extra
+  request, and the first paint can still come before it), a `#end` fragment (in every URL).
+  **Paging without script:** `?all=1` (every entry at once) is gone; the older marker's plain link is
+  `?before=<n>`, a page of at most 60 entries with a "Load newer messages" link at its bottom (to the next page,
+  or the chat itself). With script the marker still loads 60 at a time into the chat. **Audit** (synthetic
+  100-turn chat, 2100 events, debug build): the server keeps at most 2000 events per conversation in memory
+  (`EventLog::CAPACITY`; after a restart the last 100 turns, read once from a transcript capped at 4 MiB) and
+  folds them per page or older-page request (page 52ms / 178 KiB, older chunk 32ms / 132 KiB, both for 60
+  entries); the stream folds once when it opens and resumes from `Last-Event-ID` without replaying; Markdown is
+  rendered only for the entries sent (60 per page, changed ones over the stream). In the browser, all 219
+  entries loaded: 11,450 elements, 10 MB heap, a full relayout 32ms (9.5ms for the first 60). Open items in
+  PLAN/Open questions: entries beyond 2000 events drop out of a long live session and older loads count by
+  index (a key would survive eviction); `content-visibility: auto` on entries made a relayout 1.3ms but clips
+  focus rings at an entry's edge and needs scroll anchoring (not in Safari); archived chats (`/chats/<id>`)
+  still render whole.

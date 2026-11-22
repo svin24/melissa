@@ -1298,4 +1298,15 @@ Roadmap (rough, phases may overlap):
     OpenCode Go's 5-hour/weekly lengths follow T3 Code (not sent by OpenCode). (e) Muse: nothing until `muse acp`
     reports usage. (f) Each Claude/Grok refresh starts a short sandboxed agent process (a few seconds; no
     prompt, no tokens); reuse an open idle session instead if that proves slow.
-
+90. Long chats (2026-11-22; DECISIONS "A chat opens at its end"). (a) A conversation keeps its newest 2000 events
+    in memory; in a long live session the oldest entries drop out of the chat, and the transcript only gives back
+    the last 100 turns after a restart. Should the chat page older entries from the transcript on disk instead?
+    (b) Older loads count by entry index (`before=<n>`); when events are dropped at the front the indices shift
+    and a load can skip or repeat entries. An entry key as the cursor would fix it. (c) The browser keeps every
+    loaded entry (all 219 of a 100-turn test chat: 11,450 elements, 10 MB, a full relayout 32ms).
+    `content-visibility: auto` on entries made that 1.3ms but clips focus rings at an entry's edge and needs
+    scroll anchoring (Safari has none); alternatives: drop entries far above the view and reload them on the
+    way back. (d) Archived chats (`/chats/<id>`) are read from disk and rendered whole on each request; page
+    them like the chat. (e) Each page or older-page request clones and folds the whole in-memory log (52ms /
+    32ms in a debug build for a 2100-event chat); a folded feed cached per conversation by its last event would
+    make that one render.

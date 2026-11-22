@@ -3086,6 +3086,122 @@ mod tests {
             assert!(body.starts_with("<!DOCTYPE html>"));
         }
 
+        fn main_get(uri: &str) -> axum::http::Request<Body> {
+            axum::http::Request::get(uri)
+                .header("hx-request", "true")
+                .header("hx-target", "main")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        /// The page's `<title>…</title>`.
+        fn title_tag(page: &str) -> &str {
+            let start = page.find("<title>").expect("a title");
+            let end = page[start..].find("</title>").expect("a closed title") + start;
+            &page[start..end + "</title>".len()]
+        }
+
+        #[tokio::test]
+        async fn pages_answer_with_the_main_column_alone_for_in_page_navigation() {
+            let (app, lead) = app();
+            let ada = lead
+                .agents()
+                .registry()
+                .create("Ada", "stuck", None, "the lead agent (task 1)")
+                .unwrap();
+            let ada_page = format!("/agents/{}", ada.id);
+            let ada_stream = format!("sse-connect=\"/ui/agents/{}/stream", ada.id);
+            for (uri, selected, stream) in [
+                ("/", Some("/chat"), Some("sse-connect=\"/ui/stream")),
+                ("/chat", Some("/chat"), Some("sse-connect=\"/ui/stream")),
+                (
+                    ada_page.as_str(),
+                    Some(ada_page.as_str()),
+                    Some(ada_stream.as_str()),
+                ),
+                ("/chats", None, None),
+                ("/approvals", None, Some("&amp;view=approvals\"")),
+            ] {
+                // A load, a reload, no script: the whole page.
+                let (status, headers, page) = get_html(&app, uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(page.starts_with("<!DOCTYPE html>"), "{uri}");
+                assert!(page.contains("<nav class=\"sidebar\""), "{uri}");
+                assert!(
+                    headers[header::VARY]
+                        .to_str()
+                        .unwrap()
+                        .contains("HX-Target"),
+                    "{uri}"
+                );
+                // In-page navigation: the title, the main column's content and the agent
+                // groups out of band; no sidebar, no document around it.
+                let (status, headers, part) = send(&app, main_get(uri)).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert!(
+                    headers[header::VARY]
+                        .to_str()
+                        .unwrap()
+                        .contains("HX-Target"),
+                    "{uri}"
+                );
+                assert!(
+                    part.starts_with(title_tag(&page)),
+                    "{uri}: {}",
+                    &part[..part.len().min(120)]
+                );
+                assert!(!part.contains("<html"), "{uri}");
+                assert!(!part.contains("<nav class=\"sidebar\""), "{uri}");
+                assert!(!part.contains("id=\"main\""), "{uri}");
+                assert!(!part.contains("class=\"banner"), "{uri}");
+                assert_eq!(
+                    part.matches(
+                        "<div class=\"agent-groups\" id=\"agent-groups\" hx-swap-oob=\"true\">"
+                    )
+                    .count(),
+                    1,
+                    "{uri}"
+                );
+                // The open chat is the selected agent (none on the other pages). The groups
+                // come last.
+                let groups = &part[part.find("<div class=\"agent-groups\"").unwrap()..];
+                assert_eq!(
+                    groups.matches("aria-current=\"page\"").count(),
+                    usize::from(selected.is_some()),
+                    "{uri}"
+                );
+                if let Some(href) = selected {
+                    assert!(
+                        part.contains(&format!(
+                            "class=\"agent-link\" href=\"{href}\" aria-current=\"page\""
+                        )),
+                        "{uri}"
+                    );
+                }
+                // A chat (and Waiting for you) brings its own live stream, only its own.
+                assert_eq!(
+                    part.matches("sse-connect=").count(),
+                    usize::from(stream.is_some()),
+                    "{uri}"
+                );
+                if let Some(stream) = stream {
+                    assert!(part.contains(stream), "{uri}");
+                }
+            }
+            // Phones show the agent list at `/`: the marker comes along with the swap.
+            let (_, _, home) = send(&app, main_get("/")).await;
+            assert!(home.contains("data-phone-view=\"list\""));
+            let (_, _, chat) = send(&app, main_get("/chat")).await;
+            assert!(!chat.contains("data-phone-view"));
+            // A page without the sidebar answers as a whole page (melissa.js then loads it so).
+            let (status, _, missing) = send(&app, main_get("/no-such-page")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert!(!missing.contains("hx-swap-oob"));
+            // A panel asked for as a page part is still a part, never a whole document.
+            let (_, _, usage) = send(&app, main_get("/usage")).await;
+            assert!(!usage.contains("<html"));
+        }
+
         #[tokio::test]
         async fn another_settings_section_answers_alone_for_the_section_swap() {
             // melissa.js swaps only `#settings-main` when Settings is already open
@@ -4620,7 +4736,6 @@ mod tests {
             assert!(!home.contains("message number 30."), "not the oldest");
             let marker = "data-older=\"/ui/older?before=".to_string();
             assert!(home.contains(&marker), "{home}");
-            assert!(home.contains("<a href=\"/?all=1\">Load earlier messages</a>"));
             let start = home.find(&marker).unwrap() + marker.len();
             let before: usize = home[start..].split('&').next().unwrap().parse().unwrap();
             let (status, _, older) =
@@ -4632,10 +4747,53 @@ mod tests {
             // A page from before a restart gets nothing (its stream reloads it).
             let (_, _, stale) = get_html(&app, &format!("/ui/older?before={before}&epoch=1")).await;
             assert!(stale.is_empty());
-            // Without script: everything at once.
-            let (_, _, all) = get_html(&app, "/?all=1").await;
-            assert!(all.contains("message number 0.") && all.contains("message number 99."));
-            assert!(!all.contains("data-older"));
+            // Without script: a page of the entries before, never more than a page's worth,
+            // and a link to the newer ones (here the chat itself).
+            assert!(home.contains(&format!(
+                "<a href=\"/chat?before={before}\">Load earlier messages</a>"
+            )));
+            assert!(!home.contains("Load newer messages"), "the newest page");
+            let (_, _, page) = get_html(&app, &format!("/chat?before={before}")).await;
+            let count = |p: &str| p.matches("message number ").count();
+            assert!(count(&page) <= crate::pages::PAGE_ENTRIES && count(&page) > before);
+            assert!(page.contains("message number 0."));
+            assert!(!page.contains("message number 99."));
+            assert!(!page.contains("data-older"));
+            assert!(
+                page.contains("<a href=\"/chat\">Load newer messages</a>"),
+                "{page}"
+            );
+            // A longer chat: pages in the middle link both ways, a page at most PAGE_ENTRIES.
+            for i in 100..300 {
+                lead.events().push(LeadEvent::UserMessage {
+                    turn: i + 1,
+                    text: format!("message number {i}."),
+                    attachments: vec![],
+                    scheduled: None,
+                });
+            }
+            let (_, _, home) = get_html(&app, "/").await;
+            let start = home.find(&marker).unwrap() + marker.len();
+            let newest: usize = home[start..].split('&').next().unwrap().parse().unwrap();
+            let middle_at = newest - crate::pages::PAGE_ENTRIES;
+            let (_, _, middle) = get_html(&app, &format!("/chat?before={middle_at}")).await;
+            assert_eq!(count(&middle), crate::pages::PAGE_ENTRIES);
+            assert!(middle.contains(&format!(
+                "<a href=\"/chat?before={}\">Load earlier messages</a>",
+                middle_at - crate::pages::PAGE_ENTRIES
+            )));
+            assert!(
+                middle.contains(&format!(
+                    "<a href=\"/chat?before={newest}\">Load newer messages</a>"
+                )),
+                "{middle}"
+            );
+            let (_, _, deep) = get_html(&app, "/chat?before=100").await;
+            assert_eq!(count(&deep), crate::pages::PAGE_ENTRIES);
+            assert!(
+                deep.contains("<a href=\"/chat?before=160\">Load newer messages</a>"),
+                "{deep}"
+            );
         }
 
         #[tokio::test]

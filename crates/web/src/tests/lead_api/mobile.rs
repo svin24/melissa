@@ -15,7 +15,7 @@ async fn home_is_the_agent_list_on_phones_and_chat_is_melissas_chat() {
     // The same page underneath (wide screens show Melissa's chat at `/`).
     assert!(home.contains("id=\"composer\""));
 
-    for uri in ["/chat", "/?draft=Install%20", "/?all=1"] {
+    for uri in ["/chat", "/?draft=Install%20", "/?before=40"] {
         let (status, _, page) = get_html(&app, uri).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(!page.contains(LIST_MARKER), "{uri} is the chat");

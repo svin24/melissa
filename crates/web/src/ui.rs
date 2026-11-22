@@ -320,7 +320,7 @@ impl Ui {
         agent: Option<&AgentView>,
         draft: &str,
         error: Option<&str>,
-        all: bool,
+        before: Option<usize>,
     ) -> Result<Markup, LeadError> {
         let log = self.log(who)?;
         let feed = self.feed(who, &log);
@@ -360,7 +360,7 @@ impl Ui {
             voice: self.settings.voice_url(),
             links: &links,
             details: Some(&panel),
-            all,
+            before,
             caption: !self.registry().permissions().bypass(),
             enter_steers: self.settings.prefs().enter_steers,
             no_provider: !setup::provider_ready(self),
@@ -418,15 +418,16 @@ pub(crate) fn speaker_of<'a>(agent: Option<&'a AgentView>, lead: &'a str) -> Spe
 struct HomeQuery {
     #[serde(default)]
     draft: String,
-    /// Every entry at once (the older marker's link without script).
+    /// A page of earlier entries: the ones before this entry (the older marker's link without
+    /// script).
     #[serde(default)]
-    all: Option<String>,
+    before: Option<usize>,
 }
 
-/// The home page: Melissa's chat; on phones the agent list (a draft or `all` asks for the
+/// The home page: Melissa's chat; on phones the agent list (a draft or `before` asks for the
 /// chat itself, so those links still land in it).
 async fn home(state: State<Ui>, q: Query<HomeQuery>) -> Response {
-    if q.draft.is_empty() && q.all.is_none() {
+    if q.draft.is_empty() && q.before.is_none() {
         pages::as_phone_home(melissa_chat(state, q)).await
     } else {
         melissa_chat(state, q).await
@@ -441,10 +442,7 @@ async fn melissa_chat(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Respo
     }
     // A draft is only a suggestion for the box; it is never sent by itself.
     let draft: String = q.draft.chars().take(300).collect();
-    match ui
-        .chat_page(Who::Lead, None, &draft, None, q.all.is_some())
-        .await
-    {
+    match ui.chat_page(Who::Lead, None, &draft, None, q.before).await {
         Ok(page) => page.into_response(),
         Err(e) => error_page(e),
     }
@@ -462,13 +460,7 @@ async fn agent_page(
     // A draft is only a suggestion for the box ("Reference in chat" without script).
     let draft: String = q.draft.chars().take(300).collect();
     match ui
-        .chat_page(
-            Who::Agent(&agent.id),
-            Some(&agent),
-            &draft,
-            None,
-            q.all.is_some(),
-        )
+        .chat_page(Who::Agent(&agent.id), Some(&agent), &draft, None, q.before)
         .await
     {
         Ok(page) => page.into_response(),
@@ -1108,7 +1100,7 @@ async fn message_reply(
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, agent, draft, Some(&e), false).await {
+        Some(e) => match ui.chat_page(who, agent, draft, Some(&e), None).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -1146,7 +1138,7 @@ fn composer_reply(
         voice: ui.settings.voice_url(),
         links: &links,
         details: None,
-        all: false,
+        before: None,
         caption: !ui.registry().permissions().bypass(),
         enter_steers: ui.settings.prefs().enter_steers,
         no_provider: !setup::provider_ready(ui),
@@ -1343,7 +1335,7 @@ async fn picker_reply(
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, agent, "", Some(&e), false).await {
+        Some(e) => match ui.chat_page(who, agent, "", Some(&e), None).await {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -1436,7 +1428,7 @@ async fn queue_action(
             if is_htmx(headers) {
                 return composer_reply(ui, who, agent, &m.text, None);
             }
-            match ui.chat_page(who, agent, &m.text, None, false).await {
+            match ui.chat_page(who, agent, &m.text, None, None).await {
                 Ok(page) => page.into_response(),
                 Err(e) => error_page(e),
             }

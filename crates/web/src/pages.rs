@@ -10,11 +10,12 @@ use crate::{
     components::{
         action_button, activity_row, agent_message, app_list, app_page, badge, card, chat_divider,
         composer, composer_status, crumbs, device_card, empty_state, facts, feed, feed_entry, link,
-        live_region, log_view, markdown, note, oob_inner, page, page_header, permission_card,
-        plain_text, post_form, relayed_message, scheduled_message, section, select_field,
-        steps_card, table, textarea_field, truncated, user_message_with, AppGroup, AppList, AppRow,
-        AppsEmpty, Avatar, Choice, DeviceCard, Health, LogLine, MessageHead, Meter, Nav,
-        PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID, COMPOSER_STATUS_ID, FEED_ID,
+        live_region, log_view, main_part, markdown, note, oob_inner, page, page_header,
+        permission_card, plain_text, post_form, relayed_message, scheduled_message, section,
+        select_field, steps_card, table, textarea_field, truncated, user_message_with, AppGroup,
+        AppList, AppRow, AppsEmpty, Avatar, Choice, DeviceCard, Health, LogLine, MessageHead,
+        Meter, Nav, PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
+        FEED_ID,
     },
     components::{
         chat_head, composer_closed, details_panel, details_toggle, feed_archive, file_count,
@@ -72,8 +73,15 @@ impl Frame<'_> {
 
 /// A page with the sidebar. (No permission prompts shows no banner: the owner turned it on
 /// knowingly; Settings → Developer shows it.)
+///
+/// In-page navigation (`crate::panel::main_only`) gets the main column alone; `rail` is then
+/// the sidebar's live update ([`rail_for`] gives it).
 pub fn shell(_f: &Frame<'_>, title: &str, rail: Markup, main: Markup) -> Markup {
-    app_page(title, rail, main)
+    if crate::panel::main_only() {
+        main_part(title, rail, main)
+    } else {
+        app_page(title, rail, main)
+    }
 }
 
 /// A page that is a panel (Settings, Apps, Usage and resources): the panel alone when the
@@ -138,14 +146,19 @@ pub fn agent_href(id: &str) -> String {
 }
 
 /// The sidebar. `current_agent`: the helper whose conversation is open (Melissa's: `nav` is
-/// [`Nav::Chat`]).
+/// [`Nav::Chat`]). For in-page navigation only its agent groups, as an out-of-band update
+/// (the sidebar stays; the groups show the new selection and the latest states).
 pub fn rail_for(nav: Nav, f: &Frame<'_>, current_agent: Option<&str>) -> Markup {
     let current = match (nav, current_agent) {
         (_, Some(id)) => Some(id),
         (Nav::Chat, None) => Some("lead"),
         _ => None,
     };
-    sidebar_markup(nav, f.side, current, &f.update)
+    if crate::panel::main_only() {
+        sidebar_update(f.side, current)
+    } else {
+        sidebar_markup(nav, f.side, current, &f.update)
+    }
 }
 
 /// A live update of the sidebar's agent groups (agents came, went, moved between groups or
@@ -216,6 +229,19 @@ impl Who<'_> {
         match self {
             Self::Lead => format!("/ui/stream?since={since}&epoch={epoch}"),
             Self::Agent(id) => format!("/ui/agents/{id}/stream?since={since}&epoch={epoch}"),
+        }
+    }
+
+    /// The chat's page of the [`PAGE_ENTRIES`] entries before entry `before` (without script).
+    pub fn page_url(self, before: usize) -> String {
+        format!("{}?before={before}", self.chat_page())
+    }
+
+    /// The chat's own page (Melissa's: `/chat`, as `/` is the agent list on phones).
+    fn chat_page(self) -> String {
+        match self {
+            Self::Lead => MELISSA_CHAT_URL.to_string(),
+            Self::Agent(id) => agent_href(id),
         }
     }
 
@@ -436,31 +462,37 @@ fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>, x: &EntryCtx<'_>) -> M
 pub const PAGE_ENTRIES: usize = 60;
 
 /// The newest [`PAGE_ENTRIES`] entries before `before` (all entries: `entries().len()`),
-/// with a marker at the top that loads the ones before them, if any. `all`: every entry (the
-/// marker's link without script).
+/// with a marker at the top that loads the ones before them, if any: with script into this
+/// list, without it as the page of those entries (`?before=`, never more than
+/// [`PAGE_ENTRIES`] at once, 2026-11-22). `newer`: this is such a page (not the newest
+/// entries): a link at the bottom leads to the next newer one.
 pub fn feed_page(
     feed: &Feed,
     before: usize,
     who: Who<'_>,
     epoch: u64,
-    all: bool,
+    newer: bool,
     x: &EntryCtx<'_>,
 ) -> Markup {
     let list = feed.entries();
     let end = before.min(list.len());
-    let start = if all {
-        0
-    } else {
-        end.saturating_sub(PAGE_ENTRIES)
-    };
+    let start = end.saturating_sub(PAGE_ENTRIES);
     html! {
         @if start > 0 {
             (crate::components::older_marker(
                 &who.older_url(start, epoch),
-                &format!("{}?all=1", who.chat_url()),
+                &who.page_url(start),
             ))
         }
         (entries(&list[start..end], x))
+        @if newer && end < list.len() {
+            @let next = end + PAGE_ENTRIES;
+            (crate::components::newer_marker(&if next >= list.len() {
+                who.chat_page()
+            } else {
+                who.page_url(next)
+            }))
+        }
     }
 }
 
@@ -595,7 +627,8 @@ pub struct ChatView<'a> {
     /// The conversation's details panel (None: only the composer is rendered).
     pub details: Option<&'a DetailsPanel<'a>>,
     /// Render every entry (no lazy loading; the older marker's link without script).
-    pub all: bool,
+    /// A page of earlier entries (`?before=`, without script): the entries before this one.
+    pub before: Option<usize>,
     /// Say under the composer (phones) that device changes need the user's OK: false when
     /// No permission prompts is on.
     pub caption: bool,
@@ -677,7 +710,15 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
                         FEED_ID,
                         &label,
                         &v.who.stream_url(v.feed.last_seq(), v.epoch),
-                        feed_page(v.feed, v.feed.entries().len(), v.who, v.epoch, v.all, &x),
+                        feed_page(
+                            v.feed,
+                            // A page of earlier entries has at least a page's worth.
+                            v.before.map_or(usize::MAX, |b| b.max(PAGE_ENTRIES)),
+                            v.who,
+                            v.epoch,
+                            v.before.is_some(),
+                            &x,
+                        ),
                         empty,
                         Some(queue(v.feed, v.who)),
                     ))

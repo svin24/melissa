@@ -533,7 +533,9 @@ main {
   }
 }
 
+/* Where focus lands after moving to another page or section (not a control): no ring. */
 main:focus,
+main h1[tabindex="-1"]:focus,
 .settings-main:focus {
   outline: none;
 }
@@ -1401,13 +1403,15 @@ svg.glyph {
   display: none;
 }
 
-.feed-older {
+.feed-older,
+.feed-newer {
   display: flex;
   justify-content: center;
   font-size: 0.85rem;
 }
 
-.feed-older a {
+.feed-older a,
+.feed-newer a {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
@@ -2157,6 +2161,27 @@ button.secret {
   bottom: 0;
   background: var(--ground);
   padding: 0.5rem 0 0.9rem;
+  /* A chat opens at its end, from the first frame (2026-11-22): the browser starts the
+     scroller (the chat column, the main column or the page) at the composer. */
+  scroll-initial-target: nearest;
+}
+
+/* Browsers without scroll-initial-target: melissa.js scrolls the chat to its end once the
+   page is parsed; until then its messages stay invisible, so the top of the chat never shows
+   first. Should the script not run, they show after 1.5s anyway. */
+@supports not (scroll-initial-target: nearest) {
+  @media (scripting: enabled) {
+    html:not([data-chat-ready]) .chat:has(> .composer) #feed {
+      opacity: 0;
+      animation: chat-late 0s 1.5s forwards;
+    }
+  }
+}
+
+@keyframes chat-late {
+  to {
+    opacity: 1;
+  }
 }
 
 .composer-box {
