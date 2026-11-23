@@ -738,7 +738,7 @@ fn manual_view(name: &str, command: &str, error: Option<&str>) -> Markup {
         0,
         html! {
             @if let Some(e) = error { (notice(e, Tone::Caution)) }
-            (settings_form("/ui/settings/providers/manual", PANEL_ID, "Check and add", html! {
+            (settings_form("/ui/settings/providers/manual", PANEL_ID, "Check and add", None, html! {
                 (text_field("name", "Name", name, "My agent", "text", None))
                 (text_field("command", "Command", command, "/usr/local/bin/my-agent acp", "text",
                     Some("The command that starts it as an ACP agent. Melissa checks it answers.")))
@@ -780,7 +780,7 @@ fn identity_view(id: &str, a: &AddedProvider, key_set: bool, error: Option<&str>
             @if let Some(e) = error { (notice(e, Tone::Caution)) }
             @if key_set { (notice("API key saved.", Tone::Ok)) }
             p.quiet { "Most agents sign in with an API key from their maker." }
-            (settings_form(&action, PANEL_ID, "Save key", html! {
+            (settings_form(&action, PANEL_ID, "Save key", None, html! {
                 (text_field("var", "Variable", &key_guess(id), "", "text",
                     Some("Where the agent looks for its key.")))
                 (text_field("value", "API key", "", "", "password", None))
@@ -797,7 +797,7 @@ fn config_view(id: &str, a: &AddedProvider, error: Option<&str>) -> Markup {
         html! {
             h2 { (a.label) }
             @if let Some(e) = error { (notice(e, Tone::Caution)) }
-            (settings_form(&action, PANEL_ID, "Finish", html! {
+            (settings_form(&action, PANEL_ID, "Finish", None, html! {
                 (lines_field("hosts", "Hosts it may reach", &a.allow.join("\n"),
                     Some("Its AI service, one per line (api.example.com). Melissa blocks every other host.")))
             }))

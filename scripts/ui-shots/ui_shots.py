@@ -458,7 +458,7 @@ class Shooter:
             ctx = self.context(browser, 1440, "dark", str(state_file))
             page = ctx.new_page()
             page.goto(base + "/settings/people")
-            page.get_by_role("button", name="Create invite link").click()
+            page.get_by_role("button", name="Create link").click()
             page.get_by_text(re.compile(r"https?://\S+/invite/\S")).first.wait_for()
             url = re.search(r"https?://[^\s<\"]+/invite/[^\s<\"]+", page.content()).group(0)
             ctx.close()

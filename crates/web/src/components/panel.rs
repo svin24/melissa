@@ -11,7 +11,7 @@
 
 use maud::{html, Markup};
 
-use super::{badge, crumbs, Btn, Nav, Tone};
+use super::{badge, Btn, Nav, Tone};
 
 /// DOM id of the modal that holds a panel.
 pub const OVERLAY_ID: &str = "overlay";
@@ -208,9 +208,28 @@ pub struct SettingsSection<'a> {
     pub danger: bool,
 }
 
-/// The Settings panel: a search field and the grouped section list on the left; a breadcrumb
-/// ("Settings / Providers", or "Settings / Developer / Task #3" for a page below a section),
-/// the close control and the section's content on the right.
+/// What a Settings page puts in its head bar and above its content (2026-11-23, owner
+/// decisions 1 and 2): one optional short line that says what the section is for (hidden on
+/// phones), and the section's tools on the right of the head bar ("Checked just now · Check
+/// again", "Add provider"; [`settings_tools_oob`] replaces them after a swap).
+#[derive(Default)]
+pub struct SettingsHead<'a> {
+    pub lead: Option<&'a str>,
+    pub tools: Option<Markup>,
+}
+
+/// DOM id of the head bar's tools.
+pub const SETTINGS_TOOLS_ID: &str = "settings-tools";
+
+/// The head bar's tools as an out-of-band swap: added to a section's htmx answer, so a region
+/// swap also updates them ("Checked just now").
+pub fn settings_tools_oob(tools: Markup) -> Markup {
+    html! { div.settings-tools id=(SETTINGS_TOOLS_ID) hx-swap-oob="true" { (tools) } }
+}
+
+/// The Settings panel: a search field and the grouped section list on the left; on the right
+/// the head bar (the section's title, or "Developer / Task #3" for a page below a section,
+/// its tools and the close control) and the section's content.
 ///
 /// Phones (2026-11-22, owner design C1/C2) show one level at a time: `list` (`GET /settings`)
 /// shows the list alone, as rows with a value and a chevron; any other page shows the section
@@ -221,6 +240,7 @@ pub fn settings_frame_at(
     current: &str,
     page: Option<&str>,
     list: bool,
+    head: SettingsHead<'_>,
     content: Markup,
 ) -> Markup {
     let section_href = sections.iter().find(|s| s.label == current).map(|s| s.href);
@@ -280,14 +300,24 @@ pub fn settings_frame_at(
                         (glyph(Glyph::Chevron))
                         span.visually-hidden { "Back to " (up_label) }
                     }
-                    h1.settings-here tabindex="-1" { (page.unwrap_or(current)) }
-                    (crumbs(&match (page, section_href) {
-                        (Some(_), Some(href)) => vec![("/settings", "Settings"), (href, current)],
-                        _ => vec![("/settings", "Settings")],
-                    }, page.unwrap_or(current)))
+                    div.settings-heading {
+                        // A page below a section: the section first ("Agents / Backup"), above
+                        // 760px only (on a phone the back link leads there).
+                        @if let (Some(_), Some(href)) = (page, section_href) {
+                            a.settings-parent href=(href) { (current) }
+                            span.settings-sep aria-hidden="true" { "/" }
+                        }
+                        h1.settings-here tabindex="-1" { (page.unwrap_or(current)) }
+                    }
+                    div.settings-tools id=(SETTINGS_TOOLS_ID) {
+                        @if let Some(t) = head.tools { (t) }
+                    }
                     (panel_close("settings"))
                 }
-                div.panel-body { (content) }
+                div.panel-body {
+                    @if let Some(l) = head.lead { p.settings-lead { (l) } }
+                    (content)
+                }
             }
         }
     }
@@ -325,6 +355,48 @@ pub fn setting_row(title: &str, desc: Option<&str>, control: Markup) -> Markup {
     )
 }
 
+/// A row that spans the card: a form opened in place of a row's button ("Change password",
+/// "New schedule"; owner decision 3, 2026-11-23), under an optional title. The form caps its
+/// fields at 24rem (CSS).
+pub fn setting_row_full(title: Option<&str>, body: Markup) -> Markup {
+    html! {
+        div.setting-row.setting-row-full data-setting {
+            @if let Some(t) = title { h3.setting-title { (t) } }
+            (body)
+        }
+    }
+}
+
+/// A row that opens below itself (Settings → About's licenses, a helper's Change icon): the
+/// whole row is the `<summary>`, with an optional value (the current icon) and `show`
+/// ("Show", "Change"; "Hide" while open) on the right; `body` spans the card below it.
+/// Native `<details>`: keyboard and screen readers work, no script.
+pub fn setting_row_details(
+    title: &str,
+    desc: Option<&str>,
+    value: Option<Markup>,
+    show: &str,
+    open: bool,
+    body: Markup,
+) -> Markup {
+    html! {
+        details.setting-row.setting-details data-setting open[open] {
+            summary {
+                span.setting-text {
+                    span.setting-title { (title) }
+                    @if let Some(d) = desc { span.setting-desc { (d) } }
+                }
+                span.setting-show {
+                    @if let Some(v) = value { (v) }
+                    span.show-closed { (show) }
+                    span.show-open { "Hide" }
+                }
+            }
+            div.setting-extra { (body) }
+        }
+    }
+}
+
 /// A card of setting rows with an optional heading above it.
 pub fn setting_card(heading: Option<&str>, rows: Markup) -> Markup {
     html! {
@@ -345,6 +417,29 @@ pub fn inline_form(action: &str, target: &str, field: Markup) -> Markup {
             (crate::components::csrf_field())
             (field)
             button.toggle-save.(Btn::secondary().sm()) type="submit" { "Save" }
+        }
+    }
+}
+
+/// A text field and a visible Save button for a row's control (a name): unlike
+/// [`inline_form`] it saves only on Save or Enter, not while typing.
+pub fn inline_text_form(
+    action: &str,
+    target: &str,
+    name: &str,
+    label: &str,
+    value: &str,
+    max: u32,
+) -> Markup {
+    let id = format!("f-{name}");
+    html! {
+        form.inline-form method="post" action=(action) hx-post=(action)
+            hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
+            label.visually-hidden for=(id) { (label) }
+            input.inline-text.input id=(id) type="text" name=(name) value=(value)
+                maxlength=(max) autocomplete="off" spellcheck="false";
+            button.(Btn::secondary().sm()) type="submit" { "Save" }
         }
     }
 }
