@@ -611,7 +611,66 @@ exit 0"#
         ),
     )
     .seccomp(),
+    // ---- Resource limits (cgroup v2). Only where limits are active: never run without them.
+    // The suite's sandboxes get small limits (`suite_limits` in escape.rs); the cgroup's own
+    // counters, read from the host, decide (a script's verdict alone could be a coincidence).
+    Probe::new(
+        "limits.fork-bomb",
+        "start 1000 processes (a bounded fork bomb)",
+        "forks refused at pids.max; the host can still start processes",
+        r#"need timeout sleep
+# Fork until refused (dash gives up at once, bash retries for ~15 s: cut it off at 3 s).
+timeout -s KILL 3 sh -c 'i=0; while [ $i -lt 1000 ]; do sleep 60 & echo $! >> pids; i=$((i+1)); done' 2>/dev/null
+# Builtins only from here: no fork needed to clean up.
+n=0
+while read -r p; do kill -9 "$p" 2>/dev/null; n=$((n+1)); done < pids
+[ "$n" -ge 1000 ] && escaped "started $n processes"
+blocked "forks refused after $n processes""#,
+    )
+    .limits(|e| {
+        if e.pids_max == 0 {
+            return Err("pids.events shows no refused fork".into());
+        }
+        host_can_fork()
+    }),
+    Probe::new(
+        "limits.memory-hog",
+        "hold 1 GiB in memory (tail buffering an endless line)",
+        "killed by the OOM killer at memory.max",
+        r#"need head tail
+# The OOM killer may take more than one process: make the hog its first choice, not this shell.
+(echo 1000 > /proc/self/oom_score_adj; head -c 1073741824 /dev/zero | tail > /dev/null 2>&1)
+rc=$?
+[ "$rc" -eq 0 ] && escaped "held 1 GiB"
+[ "$rc" -eq 137 ] && blocked "killed at the memory limit (SIGKILL)"
+blocked "stopped with status $rc""#,
+    )
+    .limits(|e| match e.oom_kills {
+        0 => Err("memory.events shows no OOM kill".into()),
+        _ => Ok(()),
+    }),
+    Probe::new(
+        "limits.cpu-hog",
+        "busy-loop on 3 CPUs for 2 s",
+        "throttled at cpu.max",
+        r#"need timeout
+for i in 1 2 3; do timeout 2 sh -c 'while :; do :; done' & done
+wait
+blocked "busy loops ended (throttling checked from the host)""#,
+    )
+    .limits(|e| match e.cpu_throttled {
+        0 => Err("cpu.stat shows no throttled period".into()),
+        _ => Ok(()),
+    }),
 ];
+
+/// After a limit probe: the host itself still starts processes.
+fn host_can_fork() -> Result<(), String> {
+    match std::process::Command::new("true").status() {
+        Ok(s) if s.success() => Ok(()),
+        other => Err(format!("the host cannot start a process: {other:?}")),
+    }
+}
 
 // ---- Host-side checks: the effect an attempt would have had, seen from outside. ----
 

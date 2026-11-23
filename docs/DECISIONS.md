@@ -1762,3 +1762,17 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   no agent CLI needs these calls, and they are where kernel escapes start. Alternatives: `seccompiler` (one arch
   per program, a crate for ~150 lines), libseccomp (C library), clearing `FD_CLOEXEC` with rustix (leaks the fd
   into every process spawned at the same time), an allow-list (breaks CLIs when they update).
+- **2026-11-23 — Agent sandboxes get resource limits through systemd cgroup delegation, placed before they run.**
+  `melissa-server.service` has `Delegate=memory pids cpu io`; at startup the server moves itself into a `server`
+  leaf (cgroup v2: no processes in a cgroup whose controllers are enabled for children), enables the controllers
+  and creates `sandboxes/`. Each sandbox gets its own child with `memory.max` 2 GiB, `memory.swap.max` 0,
+  `pids.max` 512, `cpu.max` 2 CPUs (per backend: `[backend.sandbox.limits]`), written as plain files in safe
+  Rust. bwrap runs with `--block-fd`: it makes its namespaces and waits before it forks or executes anything
+  inside; the server writes bwrap and its one child to `cgroup.procs`, then lets it go on. On exit:
+  `cgroup.kill`, `rmdir`, and a log line if the OOM killer or `pids.max` struck. No delegation (from source,
+  cgroup v1): agents run unlimited, logged once and shown in the startup summary. Why: one runaway or hostile
+  agent must not starve the box; Node CLIs need ~0.5-1.5 GB, so 2 GiB leaves room for their tools. Alternatives:
+  `systemd-run --scope -p MemoryMax=` per sandbox (needs the user bus or root and a systemd per deployment, a
+  process per spawn, and still races the first fork), `clone3(CLONE_INTO_CGROUP)` (needs unsafe), moving bwrap
+  after it starts without a gate (its child may already be outside), `setrlimit` (per-user, not per-sandbox,
+  no memory accounting for children).

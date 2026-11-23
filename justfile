@@ -15,8 +15,22 @@ check: fmt lint test
 # Sandbox escape suite (docs/agent-skills/sandbox-escape-tests.md): real escape attempts inside the real agent
 # sandbox, printed as a table; fails on any escape. The gate for image updates: required here, so a host without
 # bwrap or user namespaces fails instead of skipping.
+# The resource-limit probes need a delegated cgroup: where systemd's user manager runs, the suite runs in a
+# transient scope with Delegate=yes (the shell moves into a `runner` leaf so the scope itself holds no
+# process); elsewhere they skip.
 escape-test:
-    MELISSA_ESCAPE_REQUIRED=1 cargo nextest run -p melissa-agent --test escape --no-capture sandbox_escape_suite
+    #!/usr/bin/env bash
+    set -eu
+    # `printf 0` (the builtin: 0 is the writing process) moves this shell; systemd-run would turn `$$` into `$`.
+    suite='cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)
+        if mkdir -p "$cg/runner" 2>/dev/null && printf 0 > "$cg/runner/cgroup.procs" 2>/dev/null; then
+            export MELISSA_TEST_CGROUP="$cg"
+        fi
+        MELISSA_ESCAPE_REQUIRED=1 exec cargo nextest run -p melissa-agent --test escape --no-capture sandbox_escape_suite'
+    if systemd-run --user --scope --quiet -p Delegate=yes true >/dev/null 2>&1; then
+        exec systemd-run --user --scope --quiet -p Delegate=yes -- bash -c "$suite"
+    fi
+    exec bash -c "$suite"
 
 # The server plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
 # `cargo run -p melissa-server` alone does not build it, and sandboxed agents then have no network).

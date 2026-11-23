@@ -390,10 +390,12 @@ impl AcpBackend {
         )?;
         if !self.sandbox.enabled {
             // Provider settings first, so Melissa's own variables win.
-            command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
-            command.envs(env.iter().map(|(k, v)| (k, v)));
+            let c = command.command_mut();
+            c.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+            c.envs(env.iter().map(|(k, v)| (k, v)));
         }
-        let mut child = command
+        command
+            .command_mut()
             .current_dir(&cwd)
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -402,9 +404,9 @@ impl AcpBackend {
             .stderr(Stdio::piped())
             // Dropping the session (task cancelled, timed out) kills the agent; under bwrap
             // that takes the whole sandbox (PID namespace) with it.
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| AgentError::Spawn {
+            .kill_on_drop(true);
+        let crate::sandbox::SandboxChild { mut child, cgroup } =
+            command.spawn().map_err(|source| AgentError::Spawn {
                 command: self.spec.command.clone(),
                 source,
             })?;
@@ -473,6 +475,8 @@ impl AcpBackend {
         let shutdown: client::Shutdown = Box::new(move || {
             Box::pin(async move {
                 stop().await;
+                // Kills anything left in the sandbox's cgroup and removes it.
+                drop(cgroup);
                 drop(lease);
             })
         });

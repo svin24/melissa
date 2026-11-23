@@ -28,6 +28,10 @@ Environment=PATH=/var/lib/melissa/home/.local/bin:/var/lib/melissa/home/.grok/bi
 # Read access to the read-only k3s kubeconfig (root:melissa-kube 0640 in /run/melissa-kube).
 SupplementaryGroups=melissa-kube
 ExecStart=/usr/bin/melissa-server
+# Resource limits per agent sandbox (crates/agent/src/sandbox/limits.rs): the service's cgroup is
+# handed to the melissa user; the server moves itself into server/ and gives each sandbox its own
+# child of sandboxes/ with memory, process and CPU limits. Without this, agents run unlimited.
+Delegate=memory pids cpu io
 Restart=on-failure
 NoNewPrivileges=yes
 ProtectSystem=strict
