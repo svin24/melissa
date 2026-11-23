@@ -12,6 +12,12 @@ test:
 
 check: fmt lint test
 
+# Sandbox escape suite (docs/agent-skills/sandbox-escape-tests.md): real escape attempts inside the real agent
+# sandbox, printed as a table; fails on any escape. The gate for image updates: required here, so a host without
+# bwrap or user namespaces fails instead of skipping.
+escape-test:
+    MELISSA_ESCAPE_REQUIRED=1 cargo nextest run -p melissa-agent --test escape --no-capture sandbox_escape_suite
+
 # The server plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
 # `cargo run -p melissa-server` alone does not build it, and sandboxed agents then have no network).
 build:

@@ -194,6 +194,23 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   libc falls back to `clone`; other ABIs (i386, x32, arm32) get nothing. Node, Bun, Go and the CLIs run
   unchanged (verified). On by default; `[backend.sandbox] seccomp = false` turns it off for one backend. Next:
   Melissa-owned CLI logins.
+- **Escape suite (2026-11-23):** `just escape-test` runs real escape attempts inside the real sandbox (bwrap +
+  egress namespace + bridge, built with `SandboxPlan` and spawned through `sandbox::spawn_command()`, the backends' one spawn path;
+  `crates/agent/tests/escape.rs`, probes in `tests/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
+  `$HOME`, outside the workdir, the state dir and other file boxes; reads of host canaries, `permissions.json`,
+  the files index, other boxes; symlinks, `..` and `/proc/<pid>/root` out; root-owned setuid files), processes
+  (host PIDs, signals, `/proc/*/environ`, dying with the parent), privileges (capabilities, `no_new_privs`,
+  setuid binaries), network (interfaces/routes, direct TCP to the host's loopback and LAN and 203.0.113.1, DNS,
+  the proxy refusing non-allowlisted and private targets, the MCP bridge), IPC (abstract sockets, host service
+  sockets), devices, and kernel surface (`unshare -U`, `mount`, `ptrace`, `keyctl`, `bpf`, `perf_event_open`).
+  Controls prove the denials are not vacuous; a probe that cannot run says "skip", one with no verdict fails.
+  Kernel-surface probes would be skipped if the argv had no `--seccomp`; with the filter they are hard checks.
+  **It is the gate for image updates:** an image (or bwrap/kernel change) ships only when it passes with no
+  failures (`MELISSA_ESCAPE_REQUIRED=1`, so a missing bwrap fails rather than skips). Its first run found
+  bwrap's own environment (the server's, inherited) readable through `/proc/1/environ`; fixed by spawning bwrap
+  with an empty environment (`sandbox::spawn_command`). The sandbox also keeps the launcher's session keyring;
+  seccomp's keyring block (`keyctl` refused) closes that. How to add probes:
+  `docs/agent-skills/sandbox-escape-tests.md`. Not yet wired into CI or packaging (open question 95).
 - **Egress (2026-11-18):** deny-by-default network for every sandboxed agent (`crates/agent/src/egress`): own
   network namespace with loopback only and no resolver; `melissa-netbridge` inside forwards to per-sandbox Unix
   sockets served by the lead agent: an HTTPS `CONNECT` proxy with a per-backend host allowlist (DNS by the lead agent,
@@ -385,7 +402,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   (NetworkPolicy); agent to app only through tools; app internet access by per-manifest allowlist. Honest claim:
   "strong, layered and tested", never "unbreakable" (shared kernel). Hardening milestone: seccomp + cgroup limits +
   per-agent UIDs for sandboxes; default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
-  apps; gVisor/microVM runtime for agent-built apps; an adversarial escape test suite gating image updates.
+  apps; gVisor/microVM runtime for agent-built apps; an adversarial escape test suite gating image updates
+  (exists for agent sandboxes since 2026-11-23: see "Escape suite" above; automation is open question 95).
 - **Reference:** T3 Code (github.com/pingdotgg/t3code) is a useful reference for multi-agent, many-backend UX. It is currently published under the MIT license — re-verify the license and notice requirements before reusing any code; otherwise treat it as inspiration only.
 
 ## 6. Web UI
@@ -1342,3 +1360,10 @@ Roadmap (rough, phases may overlap):
     microvm.nix, Kata), so it is the natural first target; the container install needs /dev/kvm passed in.
     To find out: how it fits the app manifest and approval model; isolation, start time and memory versus
     pods; licences; and whether it can stay offline-capable.
+95. Sandbox escape suite as a real gate (2026-11-23). `just escape-test` exists and passes on the dev host, but
+    nothing runs it automatically yet. To do: run it in CI and inside the built container image before an image
+    is published (the image has no python3, so the ptrace/keyctl/bpf/perf probes skip there: ship a small
+    probe helper, or accept the skips?), and on NixOS. The sandbox still inherits the launcher's session
+    keyring (bwrap gives no new one), but seccomp now blocks `keyctl`/`add_key`/`request_key`, so it is
+    unreachable (`kern.keyctl` passes: EPERM). A fresh keyring per sandbox would only matter if seccomp were
+    turned off for a backend (`seccomp = false`).
