@@ -86,7 +86,7 @@ the body padding (24px top) come on top of that.
 | New helper (`/settings/agents/new`) | pages.rs:1378–1403 | `page_header`, hand-written `form.stack` + `label.field` + `icon_picker` + primary button | 365 | 443 |
 | Permissions | pages.rs:890–916 | `page_header`, `card` + `table` (empty: `p.empty`) | 179 | 164 |
 | Schedules | pages.rs:1051–1185 | `page_header` (2-line lead), `card` + `table`, `card` + `settings_form` (6 fields + `disclosure` Advanced), `setting_card` + `inline_form`/`inline_number` | 1090 (1285 with Advanced open) | 1139 |
-| Voice | voice.rs page + pages.rs:1676–1757 | `settings_head` (from voice.rs), `live_region` with `setting_card` + `toggle` (+ `progress_bar`, `notice`) | 155 | 178 |
+| Voice | pages.rs:1660–1757 | hand-written `header.settings-head` (pages.rs:1667), `live_region` with `setting_card` + `toggle` (+ `progress_bar`, `notice`) | 155 | 178 |
 | Files | pages.rs:1419–1441 | `page_header` (3-line lead), `setting_card` + `inline_select`, `setting_card` "Boxes with their own setting" | 328 | 406 |
 | Apps | pages.rs:1465–1486 | `page_header`, `setting_card` + `inline_select` | 160 | 153 |
 | Tailscale | pages.rs:1508–1538 | `page_header`, `setting_card` + `actions` | 160 | 153 |
