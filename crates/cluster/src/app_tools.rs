@@ -52,7 +52,7 @@ use melissa_agent::{
     },
     BoxFuture, TaskId,
 };
-use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec, Isolation, Protocol};
+use melissa_appspec::{namespace_of, valid_app_name, AppSpec, Isolation, Protocol};
 use melissa_settings::{
     app_access::{self, AppAccessControl, View as AccessView},
     tailscale::TailscaleControl,
@@ -66,9 +66,9 @@ use crate::{
     reach::{self, CheckedPort, ReachCheck},
     render::{
         assign_patch, files_name, parse_ports_annotation, port_service_name, render, secret_object,
-        AppObjects, Ownership, Placement, APP_PORTS, CONFIG_ANNOTATION, GVISOR_HANDLER,
-        GVISOR_RUNTIME_CLASS, ORIGIN_SPEC, PORTS_ANNOTATION, PORT_ANNOTATION,
-        REPLICAS_BEFORE_STOP_ANNOTATION, SHARED_SECRETS_ANNOTATION, SPEC_ANNOTATION,
+        AppObjects, Ownership, Placement, APP_PORTS, GVISOR_HANDLER, GVISOR_RUNTIME_CLASS,
+        ORIGIN_SPEC, PORTS_ANNOTATION, PORT_ANNOTATION, REPLICAS_BEFORE_STOP_ANNOTATION,
+        SPEC_ANNOTATION,
     },
     ClusterError,
 };
@@ -168,52 +168,9 @@ fn annotation<'a>(ns: &'a Namespace, key: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-/// Secret fields an old catalog install keeps in its shared `<app>-secrets`.
-pub(crate) fn shared_secrets_of(ns: &Namespace) -> BTreeSet<String> {
-    annotation(ns, SHARED_SECRETS_ANNOTATION)
-        .map(|v| v.split_whitespace().map(str::to_string).collect())
-        .unwrap_or_default()
-}
-
-/// The spec stored on the namespace, or for an app from the old catalog (no spec stored
-/// yet), the spec rebuilt from its name and install config.
-pub(crate) fn stored_spec(
-    app: &str,
-    ns: &Namespace,
-    deployment: Option<&Deployment>,
-) -> Option<AppSpec> {
-    if let Some(text) = annotation(ns, SPEC_ANNOTATION) {
-        return AppSpec::from_text(text).ok();
-    }
-    legacy::from_catalog(app, &legacy_config(deployment))
-}
-
-/// The config a catalog install recorded on its Deployment (empty if none).
-fn legacy_config(deployment: Option<&Deployment>) -> Map<String, Value> {
-    deployment
-        .and_then(|d| d.metadata.annotations.as_ref())
-        .and_then(|a| a.get(CONFIG_ANNOTATION))
-        .and_then(|c| serde_json::from_str::<Map<String, Value>>(c).ok())
-        .unwrap_or_default()
-}
-
-/// The patch that stores a catalog install's rebuilt spec on its namespace, with the record
-/// that its secrets live in the shared `<app>-secrets`. `None`: nothing to do (a spec is
-/// stored already, or the app is not one the catalog shipped).
-pub fn legacy_spec_patch(
-    app: &str,
-    ns: &Namespace,
-    deployment: Option<&Deployment>,
-) -> Option<Value> {
-    if annotation(ns, SPEC_ANNOTATION).is_some() {
-        return None;
-    }
-    let spec = legacy::from_catalog(app, &legacy_config(deployment))?;
-    let shared: Vec<String> = spec.secrets.iter().map(|s| s.name.clone()).collect();
-    Some(json!({"metadata": {"annotations": {
-        SPEC_ANNOTATION: spec.to_text(),
-        SHARED_SECRETS_ANNOTATION: shared.join(" "),
-    }}}))
+/// The spec stored on the namespace (`None`: none, or one that no longer parses).
+pub(crate) fn stored_spec(ns: &Namespace) -> Option<AppSpec> {
+    AppSpec::from_text(annotation(ns, SPEC_ANNOTATION)?).ok()
 }
 
 /// One port of an app on the device.
@@ -230,7 +187,7 @@ fn device_ports(ns: &Namespace, spec: Option<&AppSpec>) -> Vec<DevicePort> {
     let web_name = spec.and_then(|s| s.web.clone());
     let mut out: Vec<DevicePort> = Vec::new();
     // A recorded web port counts only while the spec still has a web port (or there is no
-    // spec to say otherwise: a catalog install).
+    // spec to say otherwise).
     if let Some(p) = port_of(ns).filter(|_| spec.is_none() || web_name.is_some()) {
         out.push(DevicePort {
             name: web_name.unwrap_or_else(|| "http".into()),
@@ -630,40 +587,6 @@ impl Workspaces {
         }
         Ok(moved)
     }
-
-    /// Store a spec on every app installed from the old catalog (dropped 2026-11-19), rebuilt
-    /// from its name and install config ([`legacy_spec_patch`]), so `update_app` and
-    /// `app_status` work on it like on any other app. Nothing is re-applied: the app keeps
-    /// running untouched. Returns how many were converted. Idempotent; until it has run, the
-    /// tools rebuild the spec on the fly.
-    pub async fn migrate_catalog_apps(&self) -> Result<usize, String> {
-        let read = self
-            .read
-            .as_ref()
-            .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
-        let deploy = self
-            .deploy
-            .as_ref()
-            .ok_or_else(|| ClusterError::NotConfigured.to_string())?;
-        let mut converted = 0;
-        for name in read.app_names().await.map_err(|e| e.to_string())? {
-            let Some(ns) = read.namespace(&name).await.map_err(|e| e.to_string())? else {
-                continue;
-            };
-            if is_terminating(&ns) {
-                continue;
-            }
-            let deployment = read.deployment(&name).await.map_err(|e| e.to_string())?;
-            if let Some(patch) = legacy_spec_patch(&name, &ns, deployment.as_ref()) {
-                deploy
-                    .patch_namespace(&name, &patch)
-                    .await
-                    .map_err(|e| format!("{name}: {e}"))?;
-                converted += 1;
-            }
-        }
-        Ok(converted)
-    }
 }
 
 impl ResourceOwners for Workspaces {
@@ -997,14 +920,11 @@ impl Deployer {
         }
         let mut spec = match given {
             Some(spec) => spec,
-            None => existing
-                .as_ref()
-                .and_then(|ns| stored_spec(&app, ns, current.as_ref()))
-                .ok_or_else(|| {
-                    ToolError::BadArgs(format!(
-                        "`spec` is required: `{app}` has no earlier spec to bring back"
-                    ))
-                })?,
+            None => existing.as_ref().and_then(stored_spec).ok_or_else(|| {
+                ToolError::BadArgs(format!(
+                    "`spec` is required: `{app}` has no earlier spec to bring back"
+                ))
+            })?,
         };
         // The level the user confirmed (the spec's, else the default) is stored with the spec,
         // so a later change of the default never moves this app.
@@ -1089,7 +1009,6 @@ impl Deployer {
             &mut node_ports,
         )
         .await?;
-        let shared = existing.as_ref().map(shared_secrets_of).unwrap_or_default();
         let hosts = self.settings.device_hosts();
         let domain = self.settings.domain.clone();
         let place = |node_ports: &BTreeMap<String, u16>| -> AppObjects {
@@ -1101,7 +1020,6 @@ impl Deployer {
                     recorded_web_port: recorded_web,
                     stopped_from,
                     hosts: &hosts,
-                    shared_secrets: &shared,
                     ..Placement::domain(&domain)
                 },
             )
@@ -1574,7 +1492,7 @@ impl AppStatus {
         );
         // Links only while the app is installed (stopped included: start_app brings the
         // same links back).
-        let spec = stored_spec(&app, &ns, deployment.as_ref());
+        let spec = stored_spec(&ns);
         let ports = match &deployment {
             Some(_) => device_ports(&ns, spec.as_ref()),
             None => Vec::new(),
@@ -2747,7 +2665,7 @@ impl StartApp {
         let ns = read.namespace(&app).await.map_err(failed)?;
         let ports = ns
             .as_ref()
-            .map(|ns| device_ports(ns, stored_spec(&app, ns, Some(&deployment)).as_ref()))
+            .map(|ns| device_ports(ns, stored_spec(ns).as_ref()))
             .unwrap_or_default();
         let replicas = deployment.spec.replicas.unwrap_or(1);
         let mut out = if replicas > 0 {

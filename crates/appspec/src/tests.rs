@@ -198,7 +198,6 @@ fn app_names_and_namespaces() {
     assert!(!valid_app_name("Minecraft"));
     assert!(!valid_app_name(&"a".repeat(41)));
     assert_eq!(namespace_of("minecraft"), "app-minecraft");
-    assert_eq!(secret_name("nextcloud"), "nextcloud-secrets");
 }
 
 #[test]

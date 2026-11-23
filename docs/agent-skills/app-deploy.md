@@ -3,8 +3,8 @@
 **When:** touching the app tools (`my_apps`, `deploy_app`, `update_app`, `list_apps`, `app_status`,
 `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`), the app spec format, rendering, app ports
 and links, the write identity `melissa-apps` or its admission policies, the owner's
-`app-credentials` command, or the migration of apps installed from the old catalog.
-Code: `crates/appspec` (spec, validation, `legacy`), `crates/cluster/src/{render,apps,app_tools}.rs`,
+`app-credentials` command.
+Code: `crates/appspec` (spec, validation), `crates/cluster/src/{render,apps,app_tools}.rs`,
 `crates/server/src/credentials.rs`, `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`.
 
 There is **no catalog** (dropped 2026-11-19, docs/DECISIONS.md): agents choose images and settings
@@ -62,7 +62,7 @@ reliably (one shape, no Kubernetes boilerplate, no `securityContext` to forget),
 to strip (no privileged/hostPath/hostNetwork knobs exist in it), the confirmation summary is
 exact, and updates diff cleanly. Unknown keys are refused, not ignored.
 
-Example: the Nextcloud spec in `crates/appspec/src/legacy.rs` (generated admin password,
+Example: the Nextcloud spec in `crates/cluster/tests/fixtures/nextcloud.json` (test-only; generated admin password,
 `device_hosts` for its trusted domains, an entrypoint hook as a `files` entry, HTTP probe with
 the ingress host).
 
@@ -78,7 +78,8 @@ docs/design/ISOLATION-RESEARCH-2026-11-23.md):
   RuntimeClass adds `overhead` 48Mi / 50m to the pod's limits (64Mi limit → 112Mi pod cgroup).
 - `standard`: an ordinary container (runc), sharing the device's kernel. For apps that need host
   devices (USB sticks, GPUs) or kernel features gVisor lacks (io_uring, raw sockets, some `/proc`
-  files), and apps that fail under gVisor. The old catalog's Nextcloud says `standard`.
+  files), and apps that fail under gVisor. Only a spec can ask for it: there is no per-app or
+  per-image exception.
 - `kata` (a VM per pod) is reserved for later; unknown values are refused.
 
 There is no list of trusted images or registries, so the default doesn't depend on the image. The
@@ -117,8 +118,7 @@ NixOS VM test does the same on NixOS.
 ## Rendering (`render.rs`, pure)
 Namespace `app-<name>` (labels `melissa.io/app`, `melissa.io/managed`, Pod Security
 `enforce=baseline`; annotations spec, ports, workspace record) → RoleBinding → one Secret per
-generated secret `<app>-secret-<name>` (POST, 409 = keep; catalog installs keep the shared
-`<app>-secrets`, see below) → PVCs → ConfigMap `<app>-files` → Deployment `<app>` (1 replica, or
+generated secret `<app>-secret-<name>` (POST, 409 = keep) → PVCs → ConfigMap `<app>-files` → Deployment `<app>` (1 replica, or
 0 when stopped; `Recreate`; `runtimeClassName: gvisor` and the pod and namespace label
 `melissa.io/isolation` per the spec's level; no SA token, no service links, seccomp RuntimeDefault, every container
 `privileged: false`, `allowPrivilegeEscalation: false`, limits always) → ClusterIP Service (all
@@ -212,14 +212,6 @@ Admission (`apps-rbac.yaml`, fail closed, matched on `melissa-apps`):
 Root inside a container is allowed (many images need it), privileges never. Images from any
 public registry are allowed (pre-alpha; supply-chain risk noted in DECISIONS).
 
-## Apps from the old catalog (migration)
-A catalog install has no `melissa.io/spec`. At startup the server stores one
-(`Workspaces::migrate_catalog_apps`, after the relabel): `legacy::from_catalog(app, config)` from
-the Deployment's `melissa.io/config`, plus `melissa.io/shared-secrets: admin_password` so its
-password stays in the shared `nextcloud-secrets`. Nothing is re-applied: the app keeps running.
-Until then the tools rebuild the spec on the fly. The spec renders the same volume, Secret, files
-(same hash) and port; the first `update_app` adds `allowPrivilegeEscalation: false` (one restart).
-
 ## Test in a container
 ```
 q='sudo podman exec melissa-test melissa-server'
@@ -232,13 +224,6 @@ Admission checks as the apps identity: `kubectl --kubeconfig /run/melissa-kube/a
 apply -f <privileged deployment>` → denied with the policy message.
 
 ## Verified (2026-11-19, rootful test container, APP_PORT_BASE 35000, k3s v1.37)
-- **Upgrade from the catalog:** master (3c9879b) installed Nextcloud with `install_app` (ready, a WebDAV file
-  uploaded). The branch image on the same volume logged "stored specs for apps from the old catalog apps=1";
-  the same pod kept running; `app_status` showed the rebuilt spec (user `admin`), link `127.0.0.1:35000`.
-  `stop_app`/`start_app` passed the new workloads policy on the old Deployment. `update_app` (upload limit 2G)
-  kept `nextcloud-secrets` (`kept`), the volume, the port and the password (`app-credentials` unchanged, file
-  still there) and added `allowPrivilegeEscalation: false`. Keep-data uninstall, then `deploy_app {"app":
-  "nextcloud"}` without a spec brought it back with its data.
 - **Minecraft** (`itzg/minecraft-server`, EULA, 1536Mi, 5Gi volume, game 25565/tcp + query 25565/udp public):
   NodePorts 30001/30002 (35001/35002 on the host). Java 21 tag crash-looped (Minecraft 26.3 needs Java 25;
   `app_logs` said so); `update_app` to the java25 tag kept both ports. From the host: `nc -z` open, a status
