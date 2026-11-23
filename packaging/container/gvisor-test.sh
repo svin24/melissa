@@ -50,8 +50,9 @@ wait_for() { # seconds, description, command...
 cleanup() {
     sudo podman rm -f -t 10 "$NAME" >/dev/null 2>&1 || true
     sudo podman volume rm -f "$VOLUME" >/dev/null 2>&1 || true
-    sudo podman rmi -f "$TEST_IMAGE" >/dev/null 2>&1 || true
-    podman untag "$TEST_IMAGE" >/dev/null 2>&1 || true
+    sudo podman rmi "$TEST_IMAGE" >/dev/null 2>&1 || true # untags only, if root has the image under other names
+    # Only this name: `podman untag IMAGE` without names would drop every tag of the image ($IMAGE too).
+    podman untag "$TEST_IMAGE" "$TEST_IMAGE" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
