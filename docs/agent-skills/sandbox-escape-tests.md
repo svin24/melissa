@@ -159,6 +159,9 @@ Probe::new(
   denied"). Fixed in `command()`: `--dir` for each bind's parent, `--perms` on writable tmpfs mounts. A scene
   bug showed too: the boxes were 0755 (`create_dir_all`), not 0700 as `FileBoxes::ensure_dir` makes them, so
   `users.other-box-bound` read the other box until the scene matched.
+- 2026-11-23, image: agent users came up off in the built image ("newuidmap: write to uid_map failed:
+  Operation not permitted"): a rootless `podman build` drops newuidmap's file capabilities (`rpm -V
+  shadow-utils` shows `P`). The Containerfile makes both helpers setuid root and lints it; then 62 pass.
 - 2026-11-23, NixOS VM: the memory probe panicked the VM's kernel. The test driver sets `vm.panic_on_oom = 2`, which
   panics on any OOM, also one inside a memory cgroup. The VM test now sets 0; the suite skips
   `limits.memory-hog` with the reason wherever it is 2 (PLAN open question 96).

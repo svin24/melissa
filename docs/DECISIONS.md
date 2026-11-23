@@ -1843,4 +1843,7 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
     <why>` in the startup summary. `melissa-server.service` no longer sets `NoNewPrivileges=`: no_new_privs
     disables newuidmap's file capabilities. The server runs no other setuid program, `melissa` has no sudo or
     su rights, and every agent still has no_new_privs from bwrap. Both images give `melissa`
-    `1879048192:65536` (0x70000000, a block systemd's id layout leaves unused).
+    `1879048192:65536` (0x70000000, a block systemd's id layout leaves unused). In the container image
+    `newuidmap`/`newgidmap` are setuid root (shadow's classic install mode): Fedora's file capabilities do not
+    survive a rootless image build (found by `just escape-test-image`: "write to uid_map failed"); NixOS uses
+    its own capability wrappers.

@@ -1426,9 +1426,10 @@ Roadmap (rough, phases may overlap):
     belong to the old ids); no migration. (c) A CLI that creates a file with a strict mode (0600, `install -m`,
     tar extraction) leaves it unreadable to the server: the file box shows it but cannot serve it; deletion
     still works (through the agent's namespace). (d) Directories bound from `$HOME` (`ro`/`rw` lists) get no
-    grant: they must be readable by others; presets bind only files `rw`. (e) Not verified on the built image
-    or NixOS yet in this change's own run if the report says so; a signed-in agent turn (real API call) under
-    agent users was not run, only `--version` and a not-signed-in `claude -p`. (f) `NoNewPrivileges=` is gone
+    grant: they must be readable by others; presets bind only files `rw`. (e) Verified 2026-11-23 on Fedora
+    (escape suite, claude/grok/opencode `--version`, git, a credential refresh) and in the NixOS VM test (escape
+    suite and a server-spawned sandbox) and in the built image (`just escape-test-image`: 62 pass with agent
+    users on); a signed-in agent turn (real API call) under agent users was not run. (f) `NoNewPrivileges=` is gone
     from the server unit (newuidmap needs its file capabilities); the server could now run setuid programs
     (melissa has no sudo/su rights). (g) From source on a desktop the owner's own CLI credential files get an
     ACL entry per agent id; `MELISSA_AGENT_USERS=off` keeps them untouched. (h) The escape suite keeps its own
