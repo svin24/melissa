@@ -49,6 +49,7 @@ other track is the rootful container ([container-image.md](container-image.md)).
 | `k3s.enable` | true | nixpkgs `services.k3s` (server) |
 | `k3s.package` | `pkgs.k3s_1_37` | the API version Melissa's client is built for |
 | `k3s.airgapImages` | false | `services.k3s.images` += k3s's airgap tarball (needed offline) |
+| `k3s.gvisor.enable` | true | gVisor for apps (default isolation): `k3s.gvisor.package` (`pkgs.gvisor`) on k3s's and the server's PATH, containerd's `runsc` entry as `/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl` (tmpfiles `L+`; nixpkgs' `containerdConfigTemplate` writes the v2 name), the `gvisor` RuntimeClass manifest. Off: gVisor apps are refused, never run on runc |
 | `k3s.images` | `[]` | more image archives (the VM test's app) |
 | `k3s.nodeIp` | null | null: default-route IPv4 pinned at each start by the shared `k3s-node-ip` (as `k3s-prepare` does) |
 | `agents.nixLd` | true | `programs.nix-ld.enable` |

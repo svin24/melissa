@@ -280,6 +280,31 @@ pkgs.testers.runNixOSTest {
         status = tool("app_status", {"app": "hello"})
         assert "http://${serverIp}:" + port in json.dumps(status), status
 
+    with subtest("gVisor: the default isolation runs apps in their own kernel; standard doesn't"):
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'gVisor:   on (runsc '")
+        assert kubectl("get runtimeclass gvisor -o jsonpath='{.handler}'").strip() == "runsc"
+        # `hello` has no `isolation`: gVisor, stored explicitly; its kernel is gVisor's.
+        assert kubectl("-n app-hello get deploy hello -o jsonpath='{.spec.template.spec.runtimeClassName}'").strip() == "gvisor"
+        assert kubectl("get ns app-hello -o jsonpath='{.metadata.labels.melissa\\.io/isolation}'").strip() == "gvisor"
+        out = tool("app_exec", {"app": "hello", "command": ["cat", "/proc/version"]}, confirm=True)
+        assert "gvisor" in json.dumps(out), out
+        server.succeed("! grep -q gvisor /proc/version")
+        # The same image as `standard`: the device's kernel.
+        std = dict(spec, isolation="standard")
+        res = tool("deploy_app", {"app": "plain", "spec": std}, confirm=True)
+        if "error" in res:
+            raise Exception(res)
+        server.wait_until_succeeds("k3s kubectl -n app-plain rollout status deploy --timeout=10s", timeout=240)
+        out = tool("app_exec", {"app": "plain", "command": ["cat", "/proc/version"]}, confirm=True)
+        assert "gvisor" not in json.dumps(out), out
+        # Fail closed: a pod labelled gvisor without the RuntimeClass is refused by admission.
+        out = server.fail(
+            "k3s kubectl -n app-plain run probe --image=docker.io/melissa-test/hello:1 "
+            "--labels=melissa.io/isolation=gvisor --restart=Never 2>&1"
+        )
+        assert "only under the gvisor RuntimeClass" in out, out
+        tool("uninstall_app", {"app": "plain", "delete_data": True}, confirm=True)
+
     with subtest("stop and start the app"):
         tool("stop_app", {"app": "hello"}, confirm=True)
         client.wait_until_fails(f"curl -sSf --max-time 3 http://${serverIp}:{port}/", timeout=120)
