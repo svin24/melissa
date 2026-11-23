@@ -31,7 +31,7 @@ mod usage;
 mod workspace;
 
 use axum::{
-    extract::{Form, FromRef, Path, Request, State},
+    extract::{Form, FromRef, Path, Query, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
@@ -213,15 +213,22 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::R
     .await
 }
 
-async fn dashboard(State(t): State<Tasks>) -> Markup {
+/// `?task=new` on Settings → Developer: the New task form shows (opened in place).
+#[derive(serde::Deserialize, Default)]
+struct DashboardQuery {
+    task: Option<String>,
+}
+
+async fn dashboard(State(t): State<Tasks>, Query(q): Query<DashboardQuery>) -> Markup {
     let (backends, tasks) = (t.board.backends(), t.board.list());
+    let new_task = q.task.as_deref() == Some("new");
     match &t.ui {
         Some(ui) => {
             let prefs = ui.settings.prefs();
-            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, prefs))
+            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, prefs, new_task))
                 .await
         }
-        None => pages::dashboard(None, &backends, &tasks, Default::default()),
+        None => pages::dashboard(None, &backends, &tasks, Default::default(), true),
     }
 }
 
@@ -3383,8 +3390,8 @@ mod tests {
             assert!(agents < chat && chat < system);
             assert!(body.contains("data-keywords=\"Keep files for file boxes expired\""));
             assert!(body.matches("<svg class=\"glyph\"").count() >= 8);
-            // Breadcrumb and the current section.
-            assert!(body.contains("<li aria-current=\"page\">Files</li>"));
+            // The title in the head bar and the current section.
+            assert!(body.contains("<h1 class=\"settings-here\" tabindex=\"-1\">Files</h1>"));
             assert!(body.contains("href=\"/settings/files\" aria-current=\"page\""));
             // The row pattern: title, description, control.
             assert!(body.contains("<div class=\"setting-row\" data-setting>"));
@@ -3762,7 +3769,7 @@ mod tests {
             let remove = format!("/ui/settings/permissions/{}/remove", rules[0].id);
             let (status, _, html) = send(&app, htmx_post(&remove, "")).await;
             assert_eq!(status, StatusCode::OK);
-            assert!(html.contains("Nothing yet."));
+            assert!(html.contains("Nothing yet"));
             assert!(lead.server().registry().permissions().rules().is_empty());
         }
 
@@ -4003,8 +4010,12 @@ mod tests {
             let sched = lead.start_schedules(Schedules::in_memory(TimeZone::UTC));
             let (status, _, body) = get_html(&app, "/settings/schedules").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("Nothing scheduled yet."));
+            assert!(body.contains("Nothing scheduled yet"));
             assert!(body.contains("href=\"/settings/schedules\""));
+            // The form opens behind Add schedule (2026-11-23).
+            assert!(!body.contains("action=\"/ui/settings/schedules\""));
+            assert!(body.contains("href=\"/settings/schedules?add=1\""));
+            let (_, _, body) = get_html(&app, "/settings/schedules?add=1").await;
             assert!(body.contains("action=\"/ui/settings/schedules\""));
 
             let form = "name=Nightly+updates&agent=lead&instruction=Update+all+apps.\
@@ -4040,7 +4051,7 @@ mod tests {
             assert_eq!((s.cron.as_str(), s.max_minutes), ("30 4 * * 1", 90));
 
             let (_, _, html) = send(&app, htmx_post(&format!("{edit}/enabled"), "")).await;
-            assert!(html.contains(">Off<"), "{html}");
+            assert!(html.contains("Next: Off"), "{html}");
             assert!(!sched.schedules().get(made.id).unwrap().enabled);
 
             // Run now works while off; the chat shows the instruction with its label.
@@ -4770,8 +4781,10 @@ mod tests {
                 );
             }
             let (_, _, body) = get_html(&app, task.as_str()).await;
-            // Breadcrumb: Settings / Developer (a link) / Task #n.
-            assert!(body.contains("<a href=\"/settings/developer\">Developer</a>"));
+            // The head bar: Developer (a link) / Task #n.
+            assert!(body.contains(
+                "<a class=\"settings-parent\" href=\"/settings/developer\">Developer</a>"
+            ));
             assert!(body.contains("<title>Task #") && body.contains("Developer · Settings"));
             // Every Settings page lists the Developer section.
             let (_, _, body) = get_html(&app, "/settings/updates").await;

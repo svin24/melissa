@@ -55,9 +55,8 @@ async fn the_owner_and_a_member_both_open_it() {
         let (status, page) = get_as(&t.app, s, "/settings/about", None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(page.contains("<h1 class=\"settings-here\" tabindex=\"-1\">About</h1>"));
-        assert!(page.contains("<h1>Melissa</h1>"));
+        assert!(page.contains("<p class=\"setting-title\">Melissa</p>"));
         assert!(page.contains(&format!("Version {version}")));
-        assert!(page.contains("Pre-alpha."));
         assert!(page.contains("href=\"/settings/about\" aria-current=\"page\""));
         // No tagline (owner, 2026-11-22).
         assert!(!page.contains("AI agents run for you"));
@@ -129,7 +128,7 @@ async fn the_license_and_the_credits_are_built_in() {
     assert!(page.contains("MIT License"));
     assert!(page.contains("Permission is hereby granted, free of charge"));
     // The credits: all of ACKNOWLEDGMENTS.md, T3 Code included, links in a new tab.
-    let credits = &page[page.find("Show credits").unwrap()..];
+    let credits = &page[page.find(">Credits<").unwrap()..];
     assert!(credits.contains("T3 Code"));
     assert!(credits.contains(
         "<a href=\"https://github.com/pingdotgg/t3code\" target=\"_blank\" rel=\"noopener noreferrer nofollow\">"
@@ -165,5 +164,5 @@ async fn it_swaps_in_place() {
     assert_eq!(status, StatusCode::OK);
     assert!(!part.contains("<html"));
     assert!(part.contains("data-section=\"/settings/about\""));
-    assert!(part.contains("<h1>Melissa</h1>"));
+    assert!(part.contains("<p class=\"setting-title\">Melissa</p>"));
 }

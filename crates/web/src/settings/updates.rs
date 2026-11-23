@@ -126,6 +126,16 @@ pub(super) fn status_word(ui: &Ui) -> Option<&'static str> {
     status_words(env, &env.state()).map(|(w, _)| w)
 }
 
+/// The Settings list's value for Updates: the status, else how Melissa is installed.
+pub(super) fn list_word(ui: &Ui) -> &'static str {
+    let env = &ui.settings.parts().updates;
+    status_word(ui).unwrap_or(match env.kind {
+        HostKind::Container => "Not set up",
+        HostKind::Nix => "Nix",
+        HostKind::Other => "From source",
+    })
+}
+
 fn status_words(env: &UpdateEnv, state: &UpdateState) -> Option<(&'static str, Tone)> {
     if env.kind != HostKind::Container || !env.helper_installed() {
         return None;

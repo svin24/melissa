@@ -27,6 +27,7 @@ use crate::{
         chat_who_update, composer_caption, composer_prefs, model_picker_oob, this_device_update,
         COMPOSER_CAPTION_ID, COMPOSER_NOTICE_ID,
     },
+    components::{link_button, setting_row, setting_row_full, settings_form, Btn},
     components::{notice_link, setup_checklist, suggestion_chips, ChecklistItem, Suggestion},
     components::{phone_view, queued_messages, PhoneView, QueuedView, SheetWho, QUEUE_ID},
     feed::{Approval, Change, Clock, Entry, Feed, Item},
@@ -1317,31 +1318,42 @@ pub fn dashboard(
     backends: &[BackendInfo],
     tasks: &[TaskSnapshot],
     prefs: melissa_settings::prefs::Prefs,
+    new_task: bool,
 ) -> Markup {
     let offered: Vec<&BackendInfo> = backends.iter().filter(|b| offered(b)).collect();
     let lead = "Try one agent with one prompt, outside the chat.";
+    let developer = crate::settings::pages::DEVELOPER_URL;
     let content = if f.is_some() {
+        // One card style (2026-11-23); the task form opens in place of "New task" (owner
+        // decision 3).
         html! {
-            (page_header("Developer", Some(lead)))
             (setting_card(Some("Developer mode"), html! {
                 (crate::settings::pages::bypass_region(f.is_some_and(|f| f.bypass), false, None))
                 (crate::settings::pages::full_access_region(f.is_some_and(|f| f.full_access), None))
             }))
             (setting_card(Some("Chat"), crate::settings::pages::chat_prefs_region(prefs, None)))
-            (card("New agent task", new_task_form(&offered)))
-            (card("Agent tasks", tasks_region(tasks, None)))
+            (setting_card(Some("Agent tasks"), html! {
+                @if new_task {
+                    (setting_row_full(Some("New task"), new_task_form(&offered, Some(developer))))
+                } @else {
+                    (setting_row("Try an agent", Some("One prompt, outside the chat."),
+                        link_button(Btn::secondary().sm(), &format!("{developer}?task=new"), "New task")))
+                }
+                (setting_row_full(None, tasks_region(tasks, None)))
+            }))
         }
     } else {
         html! {
             (page_header("Agent tasks", Some(lead)))
-            (card("New task", new_task_form(&offered)))
+            (card("New task", new_task_form(&offered, None)))
             (card("Tasks", tasks_region(tasks, None)))
         }
     };
     tasks_page(f, "Agent tasks", false, content)
 }
 
-fn new_task_form(backends: &[&BackendInfo]) -> Markup {
+/// `cancel`: in Settings → Developer the form is opened in place, and Cancel closes it.
+fn new_task_form(backends: &[&BackendInfo], cancel: Option<&str>) -> Markup {
     if !backends.iter().any(|b| b.available) {
         return html! {
             (empty_state("No agent to try yet.", "Set one up in Providers."))
@@ -1369,15 +1381,14 @@ fn new_task_form(backends: &[&BackendInfo]) -> Markup {
             enabled: backends[i].available,
         })
         .collect();
-    post_form(
-        "/tasks",
-        TASKS_ID,
-        "Run",
-        html! {
-            (select_field("backend", "Agent", &choices))
-            (textarea_field("prompt", "Prompt", "What should the agent do?", MAX_PROMPT_BYTES))
-        },
-    )
+    let fields = html! {
+        (select_field("backend", "Agent", &choices))
+        (textarea_field("prompt", "Prompt", "What should the agent do?", MAX_PROMPT_BYTES))
+    };
+    match cancel {
+        Some(href) => settings_form("/tasks", TASKS_ID, "Run task", Some(href), fields),
+        None => post_form("/tasks", TASKS_ID, "Run", fields),
+    }
 }
 
 /// The task list. Polls itself while a task runs. `message` is shown above it (e.g. why a
@@ -1415,8 +1426,11 @@ pub fn tasks_region(tasks: &[TaskSnapshot], message: Option<(&str, Tone)>) -> Ma
 pub fn task_page(f: Option<&Frame<'_>>, task: &TaskSnapshot) -> Markup {
     let title = format!("Task #{}", task.id);
     let content = html! {
-        @if f.is_none() { (crumbs(&[("/tasks", "Agent tasks")], &title)) }
-        (page_header(&title, None))
+        // In Settings the head bar says "Developer / Task #3".
+        @if f.is_none() {
+            (crumbs(&[("/tasks", "Agent tasks")], &title))
+            (page_header(&title, None))
+        }
         (task_region(task))
     };
     tasks_page(f, &title, true, content)
@@ -1466,7 +1480,7 @@ pub fn task_region(task: &TaskSnapshot) -> Markup {
                     (crate::components::notice("The output was too long; the end is cut off.", Tone::Attention))
                 }
                 @if running {
-                    (action_button(&format!("/tasks/{}/cancel", task.id), TASK_ID, "Stop", "Stop this task?"))
+                    (action_button(Btn::secondary(), &format!("/tasks/{}/cancel", task.id), TASK_ID, "Stop", "Stop this task?"))
                 }
             }))
             (card("Prompt", plain_text(&task.prompt)))

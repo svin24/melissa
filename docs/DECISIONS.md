@@ -1847,3 +1847,30 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
     `newuidmap`/`newgidmap` are setuid root (shadow's classic install mode): Fedora's file capabilities do not
     survive a rootless image build (found by `just escape-test-image`: "write to uid_map failed"); NixOS uses
     its own capability wrappers.
+
+- **2026-11-23 — Settings slimmed: five owner decisions (owner, all as recommended).** Brief:
+  [design/SETTINGS-AUDIT-2026-11-23.md](design/SETTINGS-AUDIT-2026-11-23.md); boards: Penpot "Settings v3" (exports
+  `settings-v3/`, D1–D7, P1, P2). (1) **The section's title is only in the head bar** on every width: no
+  breadcrumb, no big h1, no repeated lead (`settings_frame_at`'s `h1.settings-here`; a page below a section reads
+  "Agents / Backup"). The head bar's right side holds the section's tools ("Checked just now · Check again", Add
+  provider, Add schedule, New helper, Check for updates; `SettingsHead`, refreshed after a swap by
+  `settings_tools_oob`). (2) **A section's description is at most one short line** above the first card
+  (`SettingsHead.lead`, hidden on phones), and only where it adds something. (3) **Big forms open behind a
+  button, in place**: Add schedule, Change password and Developer → New task are links to the same page with the
+  form open (`?add=1`, `?password=1`, `?task=new`; Cancel links back), so they work without script and never use
+  a browser dialog; a refused save keeps the form open. The form is a full-width row (`setting_row_full`), fields
+  at most 24rem, its submit the card's one primary button. (4) **A helper's settings are one card**: Name (inline
+  field + Save), Icon (a row that opens the picker), Pinned (a switch), Fresh start, Delete helper; when it was made
+  and what it runs on go in a quiet line below. (5) **Rows are 40px with one line and 56px with a description**
+  on desktop, controls 32px, disclosures 32px (44px under a finger); the phone's Settings list rows are 56px and
+  every row has a value. With them, the audit's fixes: one line per boundary (no disclosure line inside a card,
+  an extra part or a detail pane; rows inside a region get their divider), one card style (`setting_card`
+  everywhere in Settings, tables and forms inside it), the split card stacks by its own width (a container query,
+  below 640px: Providers at 768px), People's row actions behind one "⋯" (`row_menu`, the agent menu's native
+  popover), Delete/Remove/Sign out all in the quiet caution style (`action_button` takes the look), About in two
+  cards with "Show" rows (`setting_row_details`), inline code in Markdown wraps (About's credits scrolled sideways
+  at 390/320), and Settings opens with focus on the title, so the nav shows no ring. Why: the owner found Settings
+  "way too fat" with "double lines"; sections are 40–90% shorter (e.g. Account 826→260px, Schedules 1090→134px,
+  a helper 861→285px at 1440). Alternatives: a modal `dialog` for the forms (needs script; the owner asked for
+  the form in place), keeping the h1 and dropping only the breadcrumb (the title twice, 80px more above the
+  first card), buttons beside each person on desktop and "⋯" only on phones (two markups for one row).

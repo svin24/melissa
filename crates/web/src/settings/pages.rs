@@ -6,14 +6,15 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        about_head, action_button, actions, away_card, badge, card, code, command_block,
-        confirm_card, danger_confirm, detail_head, disclosure, external_button, facts, group,
-        inline_form, inline_number, inline_select, license_text, lines_field, link, link_button,
-        live_region, log_view, markdown_document, new_tab_button, notice, one_field_form,
-        page_header, pick_list, plain_action, progress_bar, provider_logo, region, select_field_at,
-        setting_card, setting_row, setting_row_with, settings_form, settings_frame_at,
-        settings_head, split_card, table, text_field, toggle, var_list, Btn, Choice, ConfirmCard,
-        DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsSection, Toggle, Tone, VarRow,
+        about_head, action_button, actions, away_card, badge, code, command_block, confirm_card,
+        danger_confirm, detail_head, disclosure, external_button, facts, group, inline_form,
+        inline_number, inline_select, inline_text_form, license_text, lines_field, link,
+        link_button, live_region, log_view, markdown_document, new_tab_button, notice,
+        one_field_form, pick_list, plain_action, progress_bar, provider_logo, region,
+        select_field_at, setting_card, setting_row, setting_row_details, setting_row_full,
+        setting_row_with, settings_form, settings_frame_at, settings_head, settings_tools_oob,
+        split_card, text_field, toggle, var_list, Btn, Choice, ConfirmCard, DangerConfirm, Glyph,
+        LogLine, Nav, PickRow, SettingsHead, SettingsSection, Toggle, Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -215,7 +216,7 @@ pub fn chat_prefs_region(prefs: melissa_settings::prefs::Prefs, error: Option<&s
         html! {
             (setting_row_with(
                 html! { (label) },
-                Some(html! { "Each thought opens in the chat, and steps show how long they took." }),
+                Some(html! { "Thoughts open in the chat; steps show their time." }),
                 toggle(&Toggle {
                     action: STEPS_URL,
                     target: CHAT_PREFS_ID,
@@ -235,8 +236,9 @@ pub fn chat_prefs_region(prefs: melissa_settings::prefs::Prefs, error: Option<&s
     )
 }
 
-fn frame(f: &Frame<'_>, current: &str, content: Markup) -> Markup {
-    frame_at(f, current, None, content)
+/// A section's page with its one-line lead and head bar tools.
+fn frame(f: &Frame<'_>, current: &str, head: SettingsHead<'_>, content: Markup) -> Markup {
+    frame_head(f, current, None, head, content)
 }
 
 /// A Settings page: `current` is the section, `page` a page below it (its breadcrumb).
@@ -244,6 +246,17 @@ pub(crate) fn frame_at(
     f: &Frame<'_>,
     current: &str,
     page: Option<&str>,
+    content: Markup,
+) -> Markup {
+    frame_head(f, current, page, SettingsHead::default(), content)
+}
+
+/// [`frame_at`] with a lead line and head bar tools.
+pub(crate) fn frame_head(
+    f: &Frame<'_>,
+    current: &str,
+    page: Option<&str>,
+    head: SettingsHead<'_>,
     content: Markup,
 ) -> Markup {
     // Members don't see the owner's sections (the gate refuses them anyway).
@@ -273,7 +286,7 @@ pub(crate) fn frame_at(
         f,
         &title,
         rail_for(Nav::Settings, f, None),
-        settings_frame_at(&sections, current, page, list.is_some(), content),
+        settings_frame_at(&sections, current, page, list.is_some(), head, content),
     )
 }
 
@@ -407,7 +420,27 @@ fn provider_url(id: &str) -> String {
 }
 
 pub fn providers_page(f: &Frame<'_>, v: &ProvidersView) -> Markup {
-    frame(f, "Providers", providers_region(v))
+    let head = SettingsHead {
+        lead: None,
+        tools: Some(providers_tools(v)),
+    };
+    frame(f, "Providers", head, providers_body(v))
+}
+
+/// The head bar's tools: when the list was checked, Check again, Add provider.
+fn providers_tools(v: &ProvidersView) -> Markup {
+    html! {
+        (settings_head(&v.checked, "/ui/settings/providers/refresh", PROVIDERS_ID, "Check again", Btn::link()))
+        (link_button(Btn::secondary().sm(), "/settings/providers/add", "Add provider"))
+    }
+}
+
+/// The region for htmx answers: the section and, out of band, the head bar's tools.
+pub fn providers_region(v: &ProvidersView) -> Markup {
+    html! {
+        (providers_body(v))
+        (settings_tools_oob(providers_tools(v)))
+    }
 }
 
 /// A provider's switch shows on only when it is enabled and its program is here:
@@ -429,7 +462,7 @@ fn switch_lock(c: &ProviderCard) -> Option<&str> {
     }
 }
 
-pub fn providers_region(v: &ProvidersView) -> Markup {
+fn providers_body(v: &ProvidersView) -> Markup {
     let hrefs: Vec<String> = v
         .cards
         .iter()
@@ -482,17 +515,8 @@ pub fn providers_region(v: &ProvidersView) -> Markup {
         2,
         v.poll.is_some(),
         html! {
-            (settings_head(
-                "Providers",
-                "The agents Melissa can use.",
-                &v.checked,
-                "/ui/settings/providers/refresh",
-                PROVIDERS_ID,
-                "Check again",
-            ))
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
             @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
-            (actions(link_button(Btn::secondary(), "/settings/providers/add", "Add provider")))
             (split_card("provider-card", "Providers", pick_list("Providers", &rows, None), detail))
         },
     )
@@ -562,7 +586,7 @@ fn provider_detail(c: &ProviderCard, v: &ProvidersView) -> Markup {
         @if let Some(set) = c.key { (key_view(set, c.key_open, &url)) }
         (details_view(c, v, &url))
         div.remove-provider {
-            (action_button(&format!("{url}/remove"), PROVIDERS_ID, "Remove provider", &c.remove_confirm))
+            (action_button(Btn::danger_quiet(), &format!("{url}/remove"), PROVIDERS_ID, "Remove provider", &c.remove_confirm))
         }
     }
 }
@@ -692,7 +716,7 @@ fn details_view(c: &ProviderCard, v: &ProvidersView, url: &str) -> Markup {
         false,
         html! {
             (facts(&rows))
-            (settings_form(url, PROVIDERS_ID, "Save", html! {
+            (settings_form(url, PROVIDERS_ID, "Save", None, html! {
                 (text_field("display_name", "Display name", &d.display_name, melissa_settings::providers::default_label(&c.id), "text", None))
                 (text_field("command", "Program path", &d.command, &d.default_command, "text",
                     Some("Empty: the installed one.")))
@@ -701,7 +725,7 @@ fn details_view(c: &ProviderCard, v: &ProvidersView, url: &str) -> Markup {
             }))
             (group("Environment", Some("Secret values are never shown again."), html! {
                 (var_list(&var_rows, PROVIDERS_ID, "None."))
-                (settings_form(&format!("{url}/env"), PROVIDERS_ID, "Add", html! {
+                (settings_form(&format!("{url}/env"), PROVIDERS_ID, "Add", None, html! {
                     div.field-row {
                         (text_field("name", "Name", "", "", "text", None))
                         (text_field("value", "Value", "", "", "password", None))
@@ -762,31 +786,59 @@ pub struct DeviceNameView {
 
 /// The device's name as a field and a Save button; its form swaps only this region.
 pub fn device_name_region(v: &DeviceNameView) -> Markup {
-    let url = super::device::SAVE_URL;
-    html! {
-        section.setting-group id=(DEVICE_NAME_ID) {
-            div.setting-card.card-pad {
-                form.stack.settings-form method="post" action=(url) hx-post=(url)
-                    hx-target={ "#" (DEVICE_NAME_ID) } hx-swap="outerHTML" {
-                    (crate::components::csrf_field())
-                    (text_field("name", "Device name", &v.value, "", "text", Some("Shown in Melissa only.")))
-                    @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
-                    div { button.(Btn::secondary()) type="submit" { "Save name" } }
-                }
-            }
-        }
-    }
+    region(
+        DEVICE_NAME_ID,
+        setting_row_with(
+            html! { "Device name" },
+            Some(html! { "Shown in Melissa only." }),
+            inline_text_form(
+                super::device::SAVE_URL,
+                DEVICE_NAME_ID,
+                "name",
+                "Device name",
+                &v.value,
+                64,
+            ),
+            v.flash.as_ref().map(|f| notice(&f.text, f.tone)),
+        ),
+    )
 }
 
 pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
-    frame(f, "Updates", updates_region(v))
+    let head = SettingsHead {
+        lead: None,
+        tools: updates_tools(v),
+    };
+    frame(f, "Updates", head, updates_body(v))
 }
 
+/// The head bar's tools: when Melissa last looked, and Check for updates.
+fn updates_tools(v: &UpdatesView) -> Option<Markup> {
+    (!v.checked.is_empty()).then(|| {
+        settings_head(
+            &v.checked,
+            "/ui/settings/updates/check",
+            UPDATES_ID,
+            if v.can_check {
+                "Check for updates"
+            } else {
+                "Look again"
+            },
+            Btn::secondary().sm(),
+        )
+    })
+}
+
+/// The region for htmx answers: the section and, out of band, the head bar's tools.
 pub fn updates_region(v: &UpdatesView) -> Markup {
-    let melissa = html! {
-        "Version " (v.version)
-        @if let Some((word, tone)) = v.status { " " (badge(word, tone)) }
-    };
+    html! {
+        (updates_body(v))
+        (settings_tools_oob(updates_tools(v).unwrap_or_default()))
+    }
+}
+
+fn updates_body(v: &UpdatesView) -> Markup {
+    let melissa = html! { "Version " (v.version) };
     let mut detail_rows: Vec<(&str, Markup)> = v
         .details
         .iter()
@@ -806,18 +858,6 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
     };
     html! {
         div id=(UPDATES_ID) {
-            @if v.checked.is_empty() {
-                header.settings-head { div { h1 { "Updates" } p.lead { "Melissa on this device." } } }
-            } @else {
-                (settings_head(
-                    "Updates",
-                    "Melissa on this device.",
-                    &v.checked,
-                    "/ui/settings/updates/check",
-                    UPDATES_ID,
-                    if v.can_check { "Check for updates" } else { "Look again" },
-                ))
-            }
             @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
             @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
             @if let Some(action) = v.confirm {
@@ -841,28 +881,28 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
                     }))
                 }
             }
-            (setting_card(Some("This device"), html! {
+            // One card (2026-11-23): Melissa with her details, then the device's name.
+            (setting_card(None, html! {
                 (setting_row_with(
                     html! { "Melissa" },
                     Some(melissa),
                     html! {
+                        @if let Some((word, tone)) = v.status { (badge(word, tone)) }
                         @if v.can_rollback { (plain_action("/ui/settings/updates/rollback", UPDATES_ID, "Roll back", false)) }
                         @if v.can_apply { (plain_action("/ui/settings/updates/apply", UPDATES_ID, "Update", true)) }
                     },
-                    (v.note.is_some() || v.last.is_some() || v.commands_open).then(|| html! {
+                    Some(html! {
                         @if let Some(n) = v.note { p.quiet { (n) } }
                         @if let Some(l) = &v.last { (notice(&l.text, l.tone)) }
                         @if v.commands_open { (commands) }
+                        (disclosure("Details", false, html! {
+                            (facts(&detail_rows))
+                            @if !v.commands_open { (commands) }
+                        }))
                     }),
                 ))
-                div.setting-more {
-                    (disclosure("Details", false, html! {
-                        (facts(&detail_rows))
-                        @if !v.commands_open { (commands) }
-                    }))
-                }
+                (device_name_region(&v.device))
             }))
-            (device_name_region(&v.device))
         }
     }
 }
@@ -883,34 +923,33 @@ pub struct RuleRow {
 }
 
 pub fn permissions_page(f: &Frame<'_>, rules: &[RuleRow], flash: Option<&Flash>) -> Markup {
-    frame(f, "Permissions", permissions_region(rules, flash))
+    let head = SettingsHead {
+        lead: Some("What helpers may do without asking you."),
+        tools: None,
+    };
+    frame(f, "Permissions", head, permissions_region(rules, flash))
 }
 
-/// The rule list (swapped whole by Remove).
+/// The rule list (swapped whole by Remove): one row per rule.
 pub fn permissions_region(rules: &[RuleRow], flash: Option<&Flash>) -> Markup {
-    let rows: Vec<Vec<Markup>> = rules
-        .iter()
-        .map(|r| {
-            let remove = format!("/ui/settings/permissions/{}/remove", r.id);
-            vec![
-                html! { (r.who) },
-                html! { (r.what) " " (code(&r.tool)) },
-                html! { (crate::pages::short_date(r.created)) },
-                // No second step: removing a rule only means Melissa asks again.
-                plain_action(&remove, PERMISSIONS_ID, "Remove", false),
-            ]
-        })
-        .collect();
     region(
         PERMISSIONS_ID,
         html! {
-            (page_header("Permissions", Some("What helpers may do without asking you. Add one with Always allow on a request.")))
             @if let Some(f) = flash { (notice(&f.text, f.tone)) }
-            (card("Always allowed", table(
-                &["Who", "May", "Since", ""],
-                rows,
-                "Nothing yet. Every request asks you first.",
-            )))
+            (setting_card(None, html! {
+                @if rules.is_empty() {
+                    (setting_row("Nothing yet", Some("Every request asks you first. Add a rule with Always allow on a request."), html! {}))
+                }
+                @for r in rules {
+                    (setting_row_with(
+                        html! { (r.who) " may " (r.what) },
+                        Some(html! { (code(&r.tool)) " · since " (crate::pages::short_date(r.created)) }),
+                        // No second step: removing a rule only means Melissa asks again.
+                        plain_action(&format!("/ui/settings/permissions/{}/remove", r.id), PERMISSIONS_ID, "Remove", false),
+                        None,
+                    ))
+                }
+            }))
         },
     )
 }
@@ -922,9 +961,7 @@ pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Marku
         BYPASS_ID,
         setting_row_with(
             html! { "No permission prompts" },
-            Some(
-                html! { "Every request is allowed without asking you, except what Melissa refuses outright. Each one is logged." },
-            ),
+            Some(html! { "Every request is allowed without asking you. Each one is logged." }),
             html! {
                 @if !confirming {
                     (toggle(&Toggle {
@@ -936,11 +973,14 @@ pub fn bypass_region(on: bool, confirming: bool, flash: Option<&Flash>) -> Marku
                     }))
                 }
             },
-            Some(html! {
-                (notice(
-                    "Risky: helpers can change, stop and delete apps without your yes.",
-                    Tone::Attention,
-                ))
+            // The warning only while it is on or about to be (2026-11-23).
+            (on || confirming || flash.is_some()).then(|| html! {
+                @if on || confirming {
+                    (notice(
+                        "Risky: helpers can change, stop and delete apps without your yes.",
+                        Tone::Attention,
+                    ))
+                }
                 @if let Some(f) = flash { (notice(&f.text, f.tone)) }
                 @if confirming {
                     (confirm_card(&ConfirmCard {
@@ -965,9 +1005,7 @@ pub fn full_access_region(on: bool, flash: Option<&Flash>) -> Markup {
         FULL_ACCESS_ID,
         setting_row_with(
             html! { "Full access per agent" },
-            Some(
-                html! { "Adds Access to each chat's model picker. An agent on Full access does what it asks for itself without asking you; other agents' apps, schedules and moves still ask. Each one is logged." },
-            ),
+            Some(html! { "Adds Access to each chat's model picker. Each use is logged." }),
             toggle(&Toggle {
                 action: "/ui/settings/developer/full-access",
                 target: FULL_ACCESS_ID,
@@ -1041,66 +1079,57 @@ pub struct SchedulesView {
     pub wait: String,
     /// When some agents stop waiting sooner (their backend's own limit), saying so.
     pub wait_note: Option<String>,
+    /// The add/edit form shows (Add schedule, Edit, or a save that was refused).
+    pub open: bool,
 }
 
 pub fn schedules_page(f: &Frame<'_>, v: &SchedulesView) -> Markup {
-    frame(f, "Schedules", schedules_region(v))
+    let head = SettingsHead {
+        lead: None,
+        tools: Some(schedules_tools(v)),
+    };
+    frame(f, "Schedules", head, schedules_body(v))
 }
 
-/// The whole section (every action swaps it).
+/// The head bar's tool: Add schedule, while the form is closed.
+fn schedules_tools(v: &SchedulesView) -> Markup {
+    html! {
+        @if v.available && !v.open {
+            (link_button(Btn::secondary().sm(), &format!("{SCHEDULES_URL}?add=1"), "Add schedule"))
+        }
+    }
+}
+
+/// The region for htmx answers: the section and, out of band, the head bar's tool.
 pub fn schedules_region(v: &SchedulesView) -> Markup {
-    let rows: Vec<Vec<Markup>> = v
-        .rows
-        .iter()
-        .map(|r| {
-            let base = format!("/ui/settings/schedules/{}", r.id);
-            vec![
-                toggle(&Toggle {
-                    action: &format!("{base}/enabled"),
-                    target: SCHEDULES_ID,
-                    label: &format!("Run {} on its schedule", r.name),
-                    on: r.enabled,
-                    locked: None,
-                }),
-                html! { (r.name) },
-                link(&r.chat, &r.who),
-                html! { (r.when) },
-                html! { (r.next) },
-                match &r.last {
-                    None => html! { "Not yet" },
-                    Some(l) => html! {
-                        (badge(&l.words, l.tone)) " " (l.at)
-                        @if let Some(d) = &l.detail { " · " (d) }
-                    },
-                },
-                actions(html! {
-                    (plain_action(&format!("{base}/run"), SCHEDULES_ID, "Run now", false))
-                    (link(&format!("{SCHEDULES_URL}?edit={}", r.id), "Edit"))
-                    (action_button(
-                        &format!("{base}/remove"),
-                        SCHEDULES_ID,
-                        "Remove",
-                        &format!("Remove \u{201c}{}\u{201d}? It won't run again.", r.name),
-                    ))
-                }),
-            ]
-        })
-        .collect();
+    html! {
+        (schedules_body(v))
+        (settings_tools_oob(schedules_tools(v)))
+    }
+}
+
+/// The whole section (every action swaps it): the add/edit form when open (owner decision 3,
+/// 2026-11-23: behind "Add schedule" or a row's Edit), the schedules as rows, the wait.
+fn schedules_body(v: &SchedulesView) -> Markup {
     region(
         SCHEDULES_ID,
         html! {
-            (page_header("Schedules", Some("Jobs your helpers do on their own, on a timetable. Nobody watches them: what needs your yes waits for you, unless you allowed it in Permissions.")))
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
             @if v.available {
-                (card("Scheduled jobs", table(
-                    &["On", "Name", "Who", "When", "Next run", "Last run", ""],
-                    rows,
-                    "Nothing scheduled yet.",
-                )))
-                (schedule_form(&v.form, &v.zone))
-                (setting_card(Some("When a run needs your OK"), setting_row_with(
-                    html! { "Wait for your answer (minutes)" },
-                    Some(html! { "Then the request is turned down and the run goes on without it. 1 to 1440 minutes (a day)." }),
+                @if v.open {
+                    (setting_card(None, schedule_form(&v.form, &v.zone)))
+                }
+                (setting_card(None, html! {
+                    @if v.rows.is_empty() {
+                        (setting_row("Nothing scheduled yet", Some("Jobs your helpers do on their own, on a timetable."), html! {}))
+                    }
+                    @for r in &v.rows {
+                        (schedule_row(r))
+                    }
+                }))
+                (setting_card(None, setting_row_with(
+                    html! { "When a run needs your OK" },
+                    Some(html! { "Minutes to wait, then the run goes on without it." }),
                     inline_form("/ui/settings/schedules/wait", SCHEDULES_ID, inline_number(
                         "minutes",
                         "Wait for your answer (minutes)",
@@ -1114,6 +1143,32 @@ pub fn schedules_region(v: &SchedulesView) -> Markup {
                 (notice("Schedules don't run on this device.", Tone::Neutral))
             }
         },
+    )
+}
+
+/// One schedule: its name, who and when (and how the last run went), its switch and Edit.
+fn schedule_row(r: &ScheduleRow) -> Markup {
+    let base = format!("/ui/settings/schedules/{}", r.id);
+    setting_row_with(
+        html! { (r.name) },
+        Some(html! {
+            (link(&r.chat, &r.who)) " · " (r.when) " · Next: " (r.next)
+            @if let Some(l) = &r.last {
+                " · Last: " (l.at) @if let Some(d) = &l.detail { " (" (d) ")" }
+            }
+        }),
+        html! {
+            @if let Some(l) = &r.last { (badge(&l.words, l.tone)) }
+            (toggle(&Toggle {
+                action: &format!("{base}/enabled"),
+                target: SCHEDULES_ID,
+                label: &format!("Run {} on its schedule", r.name),
+                on: r.enabled,
+                locked: None,
+            }))
+            (link_button(Btn::ghost().sm(), &format!("{SCHEDULES_URL}?edit={}", r.id), "Edit"))
+        },
+        None,
     )
 }
 
@@ -1155,31 +1210,46 @@ fn schedule_form(f: &ScheduleForm, zone: &str) -> Markup {
         Some(id) => (
             format!("Edit \u{201c}{}\u{201d}", f.name),
             format!("/ui/settings/schedules/{id}"),
-            "Save",
+            "Save schedule",
         ),
         None => (
-            "Add a schedule".to_string(),
+            "New schedule".to_string(),
             "/ui/settings/schedules".to_string(),
-            "Add",
+            "Add schedule",
         ),
     };
     let cron_hint = format!("minute hour day month weekday, {zone} time. Used with Custom.");
-    card(
-        &title,
+    setting_row_full(
+        Some(&title),
         html! {
-            (settings_form(&action, SCHEDULES_ID, submit, html! {
+            (settings_form(&action, SCHEDULES_ID, submit, Some(SCHEDULES_URL), html! {
                 (text_field("name", "Name", &f.name, "Nightly updates", "text", None))
                 (select_field_at("agent", "Who", &agents, Some(&f.agent)))
                 (lines_field("instruction", "What to do", &f.instruction, Some("Sent as a message on every run.")))
-                (select_field_at("repeat", "Repeats", &repeats, Some(&f.repeat)))
-                (select_field_at("day", "Day (every week)", &days, Some(&f.day)))
-                (text_field("time", "Time", &f.time, "03:00", "time", Some("Every hour uses only the minutes.")))
+                div.field-row {
+                    (select_field_at("repeat", "Repeats", &repeats, Some(&f.repeat)))
+                    (text_field("time", "Time", &f.time, "03:00", "time", None))
+                }
+                // Shown for "Every week" only (CSS).
+                div.field-day { (select_field_at("day", "Day", &days, Some(&f.day))) }
                 (disclosure("Advanced", f.repeat == "custom", html! {
                     (text_field("cron", "Cron expression", &f.cron, "0 3 * * *", "text", Some(&cron_hint)))
                     (text_field("max_minutes", "Time limit (minutes)", &f.max_minutes, "60", "number", Some("A run still going after this is stopped.")))
                 }))
             }))
-            @if f.id.is_some() { (link(SCHEDULES_URL, "Cancel")) }
+            @if let Some(id) = f.id {
+                @let base = format!("/ui/settings/schedules/{id}");
+                (actions(html! {
+                    (plain_action(&format!("{base}/run"), SCHEDULES_ID, "Run now", false))
+                    (action_button(
+                        Btn::danger_quiet(),
+                        &format!("{base}/remove"),
+                        SCHEDULES_ID,
+                        "Remove schedule",
+                        &format!("Remove \u{201c}{}\u{201d}? It won't run again.", f.name),
+                    ))
+                }))
+            }
         },
     )
 }
@@ -1196,7 +1266,15 @@ pub struct AgentRow {
 }
 
 pub fn agents_page(f: &Frame<'_>, rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
-    frame(f, "Agents", agents_region(rows, flash))
+    let head = SettingsHead {
+        lead: Some("Melissa and her helpers. Change what one runs on under its chat."),
+        tools: Some(link_button(
+            Btn::secondary().sm(),
+            NEW_AGENT_URL,
+            "New helper",
+        )),
+    };
+    frame(f, "Agents", head, agents_region(rows, flash))
 }
 
 /// The agent list (swapped whole by Delete).
@@ -1204,7 +1282,6 @@ pub fn agents_region(rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
     region(
         AGENTS_ID,
         html! {
-            (page_header("Agents", Some("Melissa and her helpers. A helper that looks after apps can't be deleted until you reassign or remove them.")))
             @if let Some(f) = flash { (notice(&f.text, f.tone)) }
             (setting_card(None, html! {
                 @for r in rows {
@@ -1216,6 +1293,7 @@ pub fn agents_region(rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
                             @match &r.id {
                                 None => span.quiet { "Lead agent" },
                                 Some(id) => (action_button(
+                                    Btn::danger_quiet(),
                                     &format!("/ui/settings/agents/{id}/delete"),
                                     AGENTS_ID,
                                     "Delete",
@@ -1230,8 +1308,6 @@ pub fn agents_region(rows: &[AgentRow], flash: Option<&Flash>) -> Markup {
                     ))
                 }
             }))
-            p.quiet { "Change what an agent runs on with the model button under its chat." }
-            p { (link(NEW_AGENT_URL, "New helper")) }
         },
     )
 }
@@ -1269,7 +1345,9 @@ pub fn agent_settings_page(f: &Frame<'_>, a: &AgentPage<'_>) -> Markup {
     frame_at(f, "Agents", Some(a.name), agent_settings_region(a))
 }
 
-/// A helper's settings (swapped whole by its forms); the lead agent's has its name only.
+/// A helper's settings in one card (owner decision 4, 2026-11-23): Name, Icon, Pinned, Fresh
+/// start, Delete helper, and when it was made below. Swapped whole by its forms; the lead
+/// agent's has its name only.
 pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
     let base = format!("/ui/settings/agents/{}", a.id);
     let (chat, face) = if a.lead {
@@ -1283,72 +1361,69 @@ pub fn agent_settings_region(a: &AgentPage<'_>) -> Markup {
             },
         )
     };
+    let delete_ask = format!(
+        "Delete {}? Its chat, file box and schedules go with it. This can't be undone.",
+        a.name
+    );
     region(
         AGENT_ID,
         html! {
             @if let Some(f) = a.flash.filter(|_| !a.flash_at_icon) { (notice(&f.text, f.tone)) }
             (setting_card(None, html! {
-                (setting_row_with(
-                    html! { (avatar(&face, "av")) " " (a.name) },
-                    Some(html! { (a.runs_on) }),
-                    html! { (badge(a.status.0, a.status.1)) " " (link(&chat, "Open chat")) },
+                (region("agent-name", setting_row(
+                    "Name",
                     None,
-                ))
+                    inline_text_form(&format!("{base}/rename"), AGENT_ID, "name", "Name", a.name, 40),
+                )))
                 @if !a.lead {
-                (setting_row("Made", None, html! { span { (a.made) } }))
-                (setting_row(
-                    "Pinned",
-                    Some("Pinned helpers stay at the top of the sidebar."),
-                    html! {
-                        form method="post" action={ (base) "/pin" } hx-post={ (base) "/pin" }
-                            hx-target={ "#" (AGENT_ID) } hx-swap="outerHTML" {
-                            (crate::components::csrf_field())
-                            input type="hidden" name="pinned" value=(if a.pinned { "off" } else { "on" });
-                            button.(Btn::secondary()) type="submit" { (if a.pinned { "Unpin" } else { "Pin" }) }
-                        }
-                    },
-                ))
-                (setting_row(
-                    "Fresh start",
-                    Some("Clears its memory: the next message starts without the earlier conversation. The chat stays."),
-                    action_button(
-                        &format!("{base}/fresh-start"),
-                        AGENT_ID,
-                        "Clear memory",
-                        &format!("Clear {}'s memory? It can't be brought back.", a.name),
-                    ),
-                ))
+                    (setting_row_details(
+                        "Icon",
+                        None,
+                        Some(avatar(&face, "av")),
+                        "Change",
+                        a.flash_at_icon,
+                        html! {
+                            // The icon form's answer stays by the form.
+                            @if let Some(f) = a.flash.filter(|_| a.flash_at_icon) { (notice(&f.text, f.tone)) }
+                            (settings_form(&format!("{base}/icon"), AGENT_ID, "Save icon", None,
+                                icon_picker(a.shapes, a.colors, a.shape, a.color)))
+                        },
+                    ))
+                    (setting_row(
+                        "Pinned",
+                        Some("Pinned helpers stay at the top of the sidebar."),
+                        toggle(&Toggle {
+                            action: &format!("{base}/pin"),
+                            target: AGENT_ID,
+                            label: "Pinned",
+                            on: a.pinned,
+                            locked: None,
+                        }),
+                    ))
+                    (setting_row(
+                        "Fresh start",
+                        Some("Clears its memory. The chat stays."),
+                        action_button(
+                            Btn::secondary(),
+                            &format!("{base}/fresh-start"),
+                            AGENT_ID,
+                            "Clear memory",
+                            &format!("Clear {}'s memory? It can't be brought back.", a.name),
+                        ),
+                    ))
+                    (region("agent-delete", match a.kept {
+                        Some(why) => setting_row("Delete helper", Some(why), html! {}),
+                        None => setting_row(
+                            "Delete helper",
+                            Some("Its chat, file box and schedules go too."),
+                            action_button(Btn::danger_quiet(), &format!("{base}/delete"), AGENT_ID, "Delete helper", &delete_ask),
+                        ),
+                    }))
                 }
             }))
-            section.setting-group #agent-name {
-                div.setting-card.card-pad {
-                    (settings_form(&format!("{base}/rename"), AGENT_ID, "Save name",
-                        text_field("name", "Name", a.name, "", "text", None)))
-                }
-            }
-            @if !a.lead {
-            section.setting-group {
-                h2.setting-heading { "Icon" }
-                @if let Some(f) = a.flash.filter(|_| a.flash_at_icon) { (notice(&f.text, f.tone)) }
-                div.setting-card.card-pad {
-                    (settings_form(&format!("{base}/icon"), AGENT_ID, "Save icon",
-                        icon_picker(a.shapes, a.colors, a.shape, a.color)))
-                }
-            }
-            section.setting-group #agent-delete {
-                h2.setting-heading { "Delete" }
-                div.setting-card.card-pad {
-                    @match a.kept {
-                        Some(why) => p.quiet { (why) },
-                        None => (action_button(
-                            &format!("{base}/delete"),
-                            AGENT_ID,
-                            "Delete helper",
-                            &format!("Delete {}? Its chat, file box and schedules go with it. This can't be undone.", a.name),
-                        )),
-                    }
-                }
-            }
+            p.settings-foot {
+                @if !a.lead { (a.made) " · " }
+                (a.runs_on) " · " (a.status.0) " · " (link(&chat, "Open chat"))
             }
         },
     )
@@ -1364,10 +1439,15 @@ pub fn new_agent_page(
     icon: (&str, &str),
     flash: Option<&Flash>,
 ) -> Markup {
-    frame_at(
+    let head = SettingsHead {
+        lead: Some("A helper works on its own, in its own sandbox."),
+        tools: None,
+    };
+    frame_head(
         f,
         "Agents",
         Some("New helper"),
+        head,
         new_agent_region(shapes, colors, name, icon, flash),
     )
 }
@@ -1385,19 +1465,20 @@ pub fn new_agent_region(
     region(
         NEW_AGENT_ID,
         html! {
-            (page_header("New helper", Some("A helper works on its own, in its own sandbox, and looks after the apps it sets up.")))
             @if let Some(f) = flash { (notice(&f.text, f.tone)) }
-            form.stack.settings-form method="post" action="/ui/settings/agents/new"
-                hx-post="/ui/settings/agents/new" hx-target={ "#" (NEW_AGENT_ID) } hx-swap="outerHTML" {
-                (crate::components::csrf_field())
-                label.field {
-                    span { "Name" }
-                    input.input type="text" name="name" value=(name) required maxlength="40"
-                        autocomplete="off" spellcheck="false" autofocus;
+            (setting_card(None, setting_row_full(None, html! {
+                form.stack.settings-form method="post" action="/ui/settings/agents/new"
+                    hx-post="/ui/settings/agents/new" hx-target={ "#" (NEW_AGENT_ID) } hx-swap="outerHTML" {
+                    (crate::components::csrf_field())
+                    label.field {
+                        span { "Name" }
+                        input.input type="text" name="name" value=(name) required maxlength="40"
+                            autocomplete="off" spellcheck="false" autofocus;
+                    }
+                    (icon_picker(shapes, colors, icon.0, icon.1))
+                    div { button.(Btn::primary()) type="submit" { "Create helper" } }
                 }
-                (icon_picker(shapes, colors, icon.0, icon.1))
-                div { button.(Btn::primary()) type="submit" { "Create helper" } }
-            }
+            })))
         },
     )
 }
@@ -1413,29 +1494,34 @@ pub struct FilesView {
 }
 
 pub fn files_page(f: &Frame<'_>, v: &FilesView) -> Markup {
-    frame(f, "Files", files_region(v))
+    let head = SettingsHead {
+        lead: Some("Each helper's file box: the files people share in its chat."),
+        tools: None,
+    };
+    frame(f, "Files", head, files_region(v))
 }
 
 pub fn files_region(v: &FilesView) -> Markup {
     region(
         FILES_ID,
         html! {
-            (page_header("Files", Some("Melissa and each helper keep the files you send them, and the files they save, in their own file box. Only that helper can see its box; you see it next to its chat.")))
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
             (setting_card(None, setting_row(
                 "Keep files for",
-                Some("Older files are removed, counted from when they were added. Messages that sent them then show the file as expired."),
+                Some("Older files leave the chat. Messages show them as expired."),
                 inline_form("/ui/settings/files", FILES_ID, inline_select("keep", "Keep files for", &v.choices, &v.selected)),
             )))
-            (setting_card(Some("Boxes with their own setting"), html! {
-                @if v.overrides.is_empty() {
-                    (setting_row("Every box uses the setting above", Some("Change one in the Files panel next to a chat."), html! {}))
-                }
-                @for (who, chat, keep) in &v.overrides {
-                    (setting_row_with(link(chat, who), None, html! { (keep) }, None))
-                }
-            }))
-            @if !v.overrides.is_empty() { p.quiet { "Change it in the Files panel next to a chat." } }
+            // Boxes with their own setting: a card only when there are some (2026-11-23).
+            @if v.overrides.is_empty() {
+                p.settings-foot { "No file box has its own setting." }
+            } @else {
+                (setting_card(Some("Boxes with their own setting"), html! {
+                    @for (who, chat, keep) in &v.overrides {
+                        (setting_row_with(link(chat, who), None, html! { (keep) }, None))
+                    }
+                }))
+                p.settings-foot { "Change one in the Files panel next to its chat." }
+            }
         },
     )
 }
@@ -1459,14 +1545,17 @@ pub struct AppsState {
 }
 
 pub fn apps_page(f: &Frame<'_>, v: &AppsView) -> Markup {
-    frame(f, "Apps", apps_region(v))
+    let head = SettingsHead {
+        lead: Some("Helpers ask you before they open apps to more devices."),
+        tools: None,
+    };
+    frame(f, "Apps", head, apps_region(v))
 }
 
 pub fn apps_region(v: &AppsView) -> Markup {
     region(
         APPS_ID,
         html! {
-            (page_header("Apps", Some("Who can open the apps on this device. Helpers ask you before they open apps to more devices.")))
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
             @match &v.state {
                 Some(s) => {
@@ -1502,7 +1591,11 @@ pub struct TailscaleView {
 }
 
 pub fn tailscale_page(f: &Frame<'_>, v: &TailscaleView) -> Markup {
-    frame(f, "Tailscale", tailscale_region(v))
+    let head = SettingsHead {
+        lead: Some("Puts this device on your tailnet. Off until you enable it."),
+        tools: None,
+    };
+    frame(f, "Tailscale", head, tailscale_region(v))
 }
 
 pub fn tailscale_region(v: &TailscaleView) -> Markup {
@@ -1518,7 +1611,7 @@ pub fn tailscale_region(v: &TailscaleView) -> Markup {
             (plain_action("/ui/settings/tailscale/enable", TAILSCALE_ID, label, true))
         }
         @if v.disable {
-            (action_button("/ui/settings/tailscale/disable", TAILSCALE_ID, "Disable", DISABLE_ASK))
+            (action_button(Btn::secondary(), "/ui/settings/tailscale/disable", TAILSCALE_ID, "Disable", DISABLE_ASK))
         }
     };
     if v.compact {
@@ -1530,7 +1623,6 @@ pub fn tailscale_region(v: &TailscaleView) -> Markup {
         3,
         v.poll.is_some(),
         html! {
-            (page_header("Tailscale", Some("Puts this device on your tailnet. Off until you enable it.")))
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
             (setting_card(None, setting_row("Tailscale", Some(&v.sentence), actions(controls))))
         },
@@ -1552,7 +1644,7 @@ pub struct ResetView {
 }
 
 pub fn reset_page(f: &Frame<'_>, v: &ResetView) -> Markup {
-    frame(f, "Reset", reset_region(v))
+    frame(f, "Reset", SettingsHead::default(), reset_region(v))
 }
 
 pub fn reset_region(v: &ResetView) -> Markup {
@@ -1560,7 +1652,6 @@ pub fn reset_region(v: &ResetView) -> Markup {
     region(
         RESET_ID,
         html! {
-            (page_header("Reset", Some("Start over with an empty Melissa.")))
             @if v.resetting {
                 (away_card(
                     "Resetting Melissa…",
@@ -1660,17 +1751,11 @@ impl VoiceModel {
 }
 
 pub fn voice_page(f: &Frame<'_>, v: &VoiceView) -> Markup {
-    frame(
-        f,
-        "Voice",
-        html! {
-            header.settings-head { div {
-                h1 { "Voice" }
-                p.lead { "Speak instead of typing. Speech becomes text on this device." }
-            } }
-            (voice_region(v))
-        },
-    )
+    let head = SettingsHead {
+        lead: Some("Speak instead of typing. Speech becomes text on this device."),
+        tools: None,
+    };
+    frame(f, "Voice", head, voice_region(v))
 }
 
 pub fn voice_region(v: &VoiceView) -> Markup {
@@ -1793,7 +1878,7 @@ pub struct AboutView {
 }
 
 pub fn about_page(f: &Frame<'_>, v: &AboutView) -> Markup {
-    frame(f, "About", about_region(v))
+    frame(f, "About", SettingsHead::default(), about_region(v))
 }
 
 pub fn about_region(v: &AboutView) -> Markup {
@@ -1810,34 +1895,47 @@ pub fn about_region(v: &AboutView) -> Markup {
     region(
         ABOUT_ID,
         html! {
-            (about_head("Melissa", &detail))
-            p.quiet { strong { "Pre-alpha." } " Things will break. Don't trust Melissa with data you can't lose yet." }
-            (actions(html! {
-                (new_tab_button(Btn::secondary(), SPONSOR_URL, "Sponsor", Some(Glyph::Heart)))
-                (new_tab_button(Btn::secondary(), SOURCE_URL, "Source code", None))
-                (new_tab_button(Btn::secondary(), ISSUES_URL, "Report a problem", None))
+            // One card for Melissa and her links, one for the licenses (2026-11-23). The
+            // pre-alpha warning is the banner's.
+            (setting_card(None, html! {
+                (about_head("Melissa", &detail))
+                (setting_row(
+                    "Links",
+                    Some("Open in a new tab."),
+                    html! {
+                        (new_tab_button(Btn::secondary().sm(), SOURCE_URL, "Source code", None))
+                        (new_tab_button(Btn::secondary().sm(), ISSUES_URL, "Report a problem", None))
+                        (new_tab_button(Btn::secondary().sm(), SPONSOR_URL, "Sponsor", Some(Glyph::Heart)))
+                    },
+                ))
             }))
             (setting_card(Some("Licenses"), html! {
-                (setting_row_with(
-                    html! { "Melissa" },
-                    Some(html! { "MIT License" }),
-                    html! {},
-                    Some(disclosure("License text", false, license_text("Melissa's license", v.license))),
+                (setting_row_details(
+                    "Melissa\u{2019}s license",
+                    Some("MIT License"),
+                    None,
+                    "Show",
+                    false,
+                    license_text("Melissa's license", v.license),
                 ))
-                (setting_row_with(
-                    html! { "Credits" },
-                    Some(html! { "Projects Melissa learned from or includes." }),
-                    html! {},
-                    Some(disclosure("Show credits", false, html! {
+                (setting_row_details(
+                    "Fonts, scripts and logos",
+                    Some("Built into Melissa\u{2019}s pages."),
+                    None,
+                    "Show",
+                    false,
+                    notices,
+                ))
+                (setting_row_details(
+                    "Credits",
+                    Some("Projects Melissa learned from or includes."),
+                    None,
+                    "Show",
+                    false,
+                    html! {
                         p.visually-hidden { "Links open in a new tab." }
                         (markdown_document(v.credits))
-                    })),
-                ))
-                (setting_row_with(
-                    html! { "Fonts, scripts and logos" },
-                    Some(html! { "Built into Melissa's pages." }),
-                    html! {},
-                    Some(disclosure("Show licenses", false, notices)),
+                    },
                 ))
                 @if v.rust_report {
                     (setting_row_with(

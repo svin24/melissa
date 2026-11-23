@@ -123,7 +123,7 @@ fn form(ui: &Ui, edit: Option<&Schedule>) -> ScheduleForm {
     f
 }
 
-fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesView {
+fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>, open: bool) -> SchedulesView {
     let zone = |s: &Scheduler| {
         s.schedules()
             .time_zone()
@@ -140,6 +140,7 @@ fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesV
             zone: zone(s),
             wait: s.schedules().approval_wait_minutes().to_string(),
             wait_note: wait_note(s.schedules().approval_wait(), ui.lead.scheduled_wait_cap()),
+            open,
         },
         None => SchedulesView {
             rows: Vec::new(),
@@ -149,6 +150,7 @@ fn view(ui: &Ui, form: Option<ScheduleForm>, flash: Option<Flash>) -> SchedulesV
             zone: String::new(),
             wait: DEFAULT_APPROVAL_WAIT_MINUTES.to_string(),
             wait_note: None,
+            open: false,
         },
     }
 }
@@ -167,13 +169,16 @@ fn wait_note(setting: std::time::Duration, cap: Option<std::time::Duration>) -> 
 #[derive(Deserialize, Default)]
 pub(super) struct PageQuery {
     edit: Option<u64>,
+    /// `?add=1`: the empty form shows (Add schedule).
+    add: Option<u8>,
 }
 
 pub(super) async fn page(State(ui): State<Ui>, Query(q): Query<PageQuery>) -> Response {
     let edit = q
         .edit
         .and_then(|id| ui.lead.scheduler()?.schedules().get(id));
-    let v = view(&ui, Some(form(&ui, edit.as_ref())), None);
+    let open = q.add.is_some() || edit.is_some();
+    let v = view(&ui, Some(form(&ui, edit.as_ref())), None, open);
     ui.framed(|f| pages::schedules_page(f, &v))
         .await
         .into_response()
@@ -187,7 +192,8 @@ async fn reply(
     flash: Option<Flash>,
 ) -> Response {
     let failed = flash.as_ref().is_some_and(|f| f.tone == Tone::Caution);
-    let v = view(ui, form, flash);
+    let open = form.is_some();
+    let v = view(ui, form, flash, open);
     if is_htmx(headers) {
         return pages::schedules_region(&v).into_response();
     }

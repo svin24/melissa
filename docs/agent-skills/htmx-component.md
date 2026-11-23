@@ -104,8 +104,8 @@ owner's `show_filter` links that swap it in place, the count, "Add an app", one 
 by its actions), `app_icon_card`, `app_logs_region`. Buttons there are `.btn` (32px). Devices (in Usage and
 resources, `/usage`): `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; a modal since 2026-11-20; details in [settings-ui.md](settings-ui.md)):
-`settings_frame_at` (a page below a section: Settings / Section / page), `setting_card`, `setting_row(_with)`,
-`inline_form`, `inline_select`, `inline_number`,
+`settings_frame_at` (title and tools in the head bar; a page below a section: Section / page), `setting_card`, `setting_row(_with)`, `setting_row_full`, `setting_row_details`, `row_menu`,
+`inline_form`, `inline_select`, `inline_number`, `inline_text_form`,
 `settings_head`, `split_card`, `pick_list`, `provider_mark`, `toggle`, `detail_head`, `facts` (`dl.facts`), `group`,
 `text_field`, `lines_field`, `settings_form`, `var_list`, `command_block`, `confirm_card`, `plain_action`,
 `actions`, `region`; the sections bar's gear (`Nav::Settings`).
