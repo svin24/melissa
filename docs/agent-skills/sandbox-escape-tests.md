@@ -52,6 +52,18 @@ systemd's user manager is there; the shell moves itself into a `runner` leaf and
 limits (`suite_limits()`: 256 MiB, 128 processes, 0.5 CPUs) and the header says `resource limits: on`. Elsewhere
 (a container build, plain `cargo nextest run`) the `limits.*` probes skip and never run: one is a fork bomb.
 
+Agent users (`users.*` probes, `.users()`): the suite calls `sandbox::users::init` with its own id table in
+`<scene base>/melissa-escape-users` (kept across runs, so the suite's two agents keep their ids) and every probe
+sandbox runs as agent `d-0a1b2c3d.a1` (`with_user`). Where the user running the suite has no subordinate ids or
+newuidmap (or `MELISSA_AGENT_USERS=off`), the header says `Agent users: off (<why>)` and the `users.*` probes
+skip with that reason; the other probes run as before. On: `users.own-host-uid` (its host uid, from
+`/proc/self/uid_map`, is neither the suite's nor the other agent's), `users.file-owner` (files it makes in the
+workdir and its box are its host uid's, checked on the host), `users.server-groups` (no supplementary groups:
+the server's `melissa-kube` would read the kubeconfig) and `users.other-box-bound` (the other agent's box bound
+read-write by hand, as a bug would, without a grant: its 0700 mode and ACL still keep this agent out; host
+check: nothing planted, the secret unchanged). The suite's table is separate from a dev server's, so on one
+host the two can hand out the same ids (PLAN open question 97).
+
 ## How it works
 
 - `crates/agent/tests/escape.rs` is the runner; `crates/agent/tests/escape/probes.rs` is the data.
@@ -59,8 +71,10 @@ limits (`suite_limits()`: 256 MiB, 128 processes, 0.5 CPUs) and the header says 
   sinkhole, MCP through the bridge), `SandboxPlan::resolve` from a `SandboxSpec` with `network = proxy`,
   `with_rw_dirs` (the agent's own file box), `with_env`, `with_bridge`, then `sandbox::spawn_command()`: the one
   spawn path the backends use too (through `cli::sandboxed_command`): bwrap argv, the seccomp program at fd 3
-  (`--seccomp 3`), the cgroup gate at fd 4 (`--block-fd 4`, when limits are on), empty environment. `proc.die-with-parent` needs an intermediate parent it can kill, so it
-  builds the same argv, fd and empty environment around an `sh`. Change how agents spawn the sandbox only in
+  (`--seccomp 3`), the cgroup gate at fd 4 (`--block-fd 4`, when limits are on), with agent users `nsenter`
+  into the agent's user namespace in front of bwrap and `setpriv` first inside, empty environment.
+  `proc.die-with-parent` needs an intermediate parent it can kill, so it builds the same argv, fd and empty
+  environment around an `sh` (without an agent user: bwrap makes its own user namespace there). Change how agents spawn the sandbox only in
   `spawn_command`, or the suite tests something agents do not run.
 - The scene (`scene()`): a host home with a canary, Melissa's state dir in it (`permissions.json`,
   `files/boxes/<a1|a2>`, `files/index/<a2>.json`), an unbound "outside" dir, a host process with a marked argv,
@@ -111,6 +125,10 @@ Probe::new(
   `#![forbid(unsafe_code)]`). Never let a missing tool pass: use `need`.
 - Kernel surface that only seccomp closes: add `.seccomp()`. With `--seccomp` (the default) blocked passes and
   an escape fails; without it the probe is a skip whatever it saw.
+- Agent users: add `.users()` (skipped with the reason while agent users are off). `.bind_other_box()` binds
+  the other agent's box read-write into the probe's sandbox with no grant. The preamble's `host_uid N` prints the
+  host uid of inside uid N from `/proc/self/uid_map`; `$ESC_SERVER_UID` and `$ESC_OTHER_UID` are the suite's and
+  the other agent's host uids; host checks get `Ctx::own_uid`.
 - Resource limits: add `.limits(|events| ...)`. The probe runs only when the sandbox has a cgroup; afterwards
   the check gets the cgroup's counters (`LimitEvents`: `oom_kills`, `memory_max`, `pids_max`, `cpu_throttled`)
   and decides, since a script's own verdict could be a coincidence. Keep such scripts bounded anyway (a loop
@@ -135,6 +153,12 @@ Probe::new(
 - 2026-11-23, probe fix (not an escape): the first NixOS VM run failed `fs.chown-root` as "broken": it copied
   `/usr/bin/id`, which NixOS does not have. It now copies `$(command -v id)`. Prefer tools from `PATH` over
   `/usr/bin` paths in probes.
+- 2026-11-23, agent users: bwrap makes the missing parents of a bind 0700 and owns its tmpfs mounts; harmless
+  while bwrap and the agent were the same user, but with agent users the agent could not reach
+  `melissa-netbridge` or write `/tmp` (every probe failed: "setpriv: failed to execute ... Permission
+  denied"). Fixed in `command()`: `--dir` for each bind's parent, `--perms` on writable tmpfs mounts. A scene
+  bug showed too: the boxes were 0755 (`create_dir_all`), not 0700 as `FileBoxes::ensure_dir` makes them, so
+  `users.other-box-bound` read the other box until the scene matched.
 - 2026-11-23, NixOS VM: the memory probe panicked the VM's kernel. The test driver sets `vm.panic_on_oom = 2`, which
   panics on any OOM, also one inside a memory cgroup. The VM test now sets 0; the suite skips
   `limits.memory-hog` with the reason wherever it is 2 (PLAN open question 96).

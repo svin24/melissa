@@ -249,6 +249,21 @@ in
           description = "Melissa server and its agents";
           inherit home;
           shell = "${pkgs.shadow}/bin/nologin";
+          # Agent users (crates/agent/src/sandbox/users.rs): each agent sandbox runs as its own host ids
+          # from this range, mapped by NixOS's newuidmap/newgidmap wrappers. 0x70000000: a block systemd's
+          # id layout leaves unused, clear of the automatic ranges of normal users.
+          subUidRanges = [
+            {
+              startUid = 1879048192;
+              count = 65536;
+            }
+          ];
+          subGidRanges = [
+            {
+              startGid = 1879048192;
+              count = 65536;
+            }
+          ];
         };
         users.groups.melissa = { };
         # May read the server's k3s kubeconfigs in /run/melissa-kube; only the server's unit has it.

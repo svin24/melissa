@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Run the sandbox escape suite (crates/agent/tests/escape.rs) inside a built Melissa image, the way the
 # installed container runs: rootful podman, --privileged, systemd as PID 1, and the suite as the
-# `melissa` user under the server unit's hardening (NoNewPrivileges, ProtectSystem=strict, ProtectHome,
-# PrivateTmp). So bwrap, melissa-netbridge, /usr and the kernel view are the shipped image's.
+# `melissa` user under the server unit's hardening (ProtectSystem=strict, ProtectHome, PrivateTmp; no
+# NoNewPrivileges, as in the unit: agent users need newuidmap). So bwrap, melissa-netbridge, newuidmap,
+# the agent-user range, /usr and the kernel view are the shipped image's.
 #
 #   packaging/container/escape-test.sh [IMAGE]      (default localhost/melissa:dev; `just escape-test-image`)
 #
@@ -91,7 +92,7 @@ fi
 exec /opt/melissa-escape/escape --nocapture --test-threads=1 \
     sandbox_escape_suite seccomp_off_backend_is_reported_not_passed'
 sudo podman exec "$NAME" systemd-run --quiet --wait --pipe --collect --service-type=exec \
-    -p User=melissa -p Group=melissa -p NoNewPrivileges=yes -p ProtectSystem=strict \
+    -p User=melissa -p Group=melissa -p ProtectSystem=strict \
     -p ProtectHome=yes -p PrivateTmp=yes -p StateDirectory=melissa-escape \
     -p "Delegate=memory pids cpu io" \
     -E HOME=/var/lib/melissa-escape -E TMPDIR=/tmp -E PATH=/usr/bin \
@@ -101,7 +102,7 @@ sudo podman exec "$NAME" systemd-run --quiet --wait --pipe --collect --service-t
     /usr/bin/bash -c "$suite" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
 set -e
-grep -E '^Resource limits:' "$LOG" | head -n1 || true
+grep -E '^(Resource limits|Agent users):' "$LOG" | head -n2 || true
 
 if [ "$rc" -ne 0 ] || ! grep -q '^test result: ok. 2 passed' "$LOG"; then
     echo "FAIL: escape suite failed in $IMAGE (log: $LOG); not tagged $TESTED_TAG"

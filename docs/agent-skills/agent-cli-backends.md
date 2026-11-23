@@ -86,6 +86,14 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   enabled = false # this backend runs without limits
   ```
   Without delegation: no limits, one warning, `Limits: off` in the startup summary.
+- **Agent users (since 2026-11-23):** where the server's user has subordinate ids, every sandbox runs as its
+  agent's own host uid/gid (`crates/agent/src/sandbox/users.rs`; DECISIONS "Agent users"): `nsenter` starts
+  bwrap in a user namespace Melissa mapped with `newuidmap`, and `setpriv` (first program inside) becomes uid
+  1000 `agent`. Pass the owner with `OpenSession::sandbox_user` (the file box key) or `sandboxed_command`'s
+  `user`; `None` is the shared user. What a sandbox binds must be readable by that id: workdir, file box and
+  session store get ACLs automatically, files from `ro`/`rw` get a grant on the file, **directories** from
+  `ro`/`rw` are bound as they are (readable by others or not at all). A CLI that needs a writable
+  directory in `$HOME` should get it as `tmpfs` (0777 inside, the agent's) rather than `rw`.
 - **Network (since 2026-11-18): own namespace, deny-by-default.** `melissa-netbridge` runs first and gives the
   CLI an HTTPS proxy on 127.0.0.1:3128 (allowlisted hosts only) and Melissa's MCP endpoint at the lead agent's own
   address; no resolver inside. Per-backend `network = "proxy"|"learn"|"none"|"host"` and `allow = [...]`.

@@ -114,6 +114,10 @@ pub struct OpenSession {
     /// ACP session mode to switch to when the session opens (the agent's strictest asking
     /// mode); the session fails if the agent doesn't offer it. None: the agent's default.
     pub mode: Option<String>,
+    /// Whose host user the sandbox runs as when agent users are on
+    /// ([`crate::sandbox::users`]): the file box key (`lead` or the agent's id). None: the
+    /// shared user of sandboxes that belong to no agent.
+    pub sandbox_user: Option<String>,
 }
 
 impl OpenSession {
@@ -136,6 +140,7 @@ impl OpenSession {
             files_dir: None,
             authenticate: None,
             mode: None,
+            sandbox_user: None,
         }
     }
 }

@@ -170,6 +170,10 @@ RUN set -eu; \
     # /etc/.updated (seen 2026-11-20: melissa-server failed with "Unknown user 'melissa'"), so drop it:
     # the container is new at every start anyway.
     rm -f /etc/.updated; \
+    # Agent users (crates/agent/src/sandbox/users.rs): every agent sandbox runs as its own host ids from
+    # melissa's subordinate range, mapped by newuidmap/newgidmap. 0x70000000: a block systemd's id layout
+    # leaves unused, far from useradd's ranges (by name: the user itself comes from sysusers.d at start).
+    for f in /etc/subuid /etc/subgid; do echo 'melissa:1879048192:65536' >> "$f"; done; \
     ln -s /var/lib/melissa-container/rancher-node /etc/rancher/node; \
     ln -s /var/lib/melissa-container/etc-melissa /etc/melissa
 
@@ -186,8 +190,11 @@ RUN set -eu; \
     for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
         /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
         /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled \
-        /usr/libexec/melissa/factory-reset; do \
+        /usr/libexec/melissa/factory-reset /usr/bin/newuidmap /usr/bin/newgidmap /usr/bin/nsenter \
+        /usr/bin/unshare /usr/bin/setpriv; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
+    for f in /etc/subuid /etc/subgid; do \
+        grep -qx 'melissa:1879048192:65536' "$f" || { echo "lint: no agent-user range in $f"; exit 1; }; done; \
     # Test-only binaries (escape-build stage) never ship.
     for f in /usr/bin/melissa-escape-probe /opt/melissa-escape; do \
         test ! -e "$f" || { echo "lint: test-only $f must not be in the image"; exit 1; }; done; \

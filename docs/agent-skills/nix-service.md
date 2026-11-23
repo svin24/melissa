@@ -85,8 +85,14 @@ nixpkgs wrapper on Fedora) gets `/nix/store` too. The store is world-readable on
 secrets by Nix convention. Fedora's argv is unchanged (unit tests pin it).
 
 Unprivileged user namespaces: on by default on NixOS (`security.allowUserNamespaces`, asserted).
-bubblewrap is used **non-setuid** (the unit has `NoNewPrivileges=yes`, as on the images). Hardened
+bubblewrap is used **non-setuid** (from `pkgs.bubblewrap` on the unit's PATH). Hardened
 kernels need `security.unprivilegedUsernsClone = true`.
+
+Agent users (each sandbox its own host ids, `crates/agent/src/sandbox/users.rs`): the module gives
+`melissa` `subUidRanges`/`subGidRanges` (1879048192, 65536 ids); NixOS's own
+`/run/wrappers/bin/newuidmap`/`newgidmap` (file capabilities) map them, and util-linux's `unshare`,
+`nsenter` and `setpriv` come from the system profile. The unit has no `NoNewPrivileges=` for that.
+The startup summary says `Agent users: on` or why not.
 
 ## Agent CLIs on NixOS
 **The documented way: `services.melissa.agents.packages`**, e.g.

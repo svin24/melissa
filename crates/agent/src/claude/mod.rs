@@ -425,6 +425,7 @@ impl ClaudeBackend {
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
         let mut command = sandboxed_command(
             &self.sandbox,
+            open.sandbox_user.as_deref(),
             self.bwrap.as_deref(),
             self.home.as_deref(),
             &program,
