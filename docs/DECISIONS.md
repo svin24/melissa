@@ -1874,3 +1874,14 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   a helper 861→285px at 1440). Alternatives: a modal `dialog` for the forms (needs script; the owner asked for
   the form in place), keeping the h1 and dropping only the breadcrumb (the title twice, 80px more above the
   first card), buttons beside each person on desktop and "⋯" only on phones (two markups for one row).
+
+- **2026-11-23 — Modern Linux hosts only (owner).** Melissa supports Linux hosts with systemd as init, cgroup v2,
+  a current kernel (user namespaces, seccomp) and nftables; nothing else. Why: "modern Linux devices with modern
+  Linux protocols and init systems like systemd tend to be the most secure systems", and the sandbox layers
+  (seccomp, cgroup delegation, agent users, gVisor) depend on them. Consequence: fallbacks kept only for older
+  hosts may become hard requirements in the container and NixOS installs; the from-source run keeps its warnings.
+  Alternatives: best-effort support for other init systems or cgroup v1 (more code paths, weaker defaults).
+
+- **2026-11-23 — gVisor is the first extra isolation for apps (owner: "let's try gvisor").** Prototype gVisor
+  (`runsc`) as a k3s RuntimeClass chosen per app, per docs/design/ISOLATION-RESEARCH-2026-11-23.md. Kata (needs
+  KVM) second; Nix-built services and bare microVMs parked.
