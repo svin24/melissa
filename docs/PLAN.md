@@ -1395,6 +1395,10 @@ Roadmap (rough, phases may overlap):
     microvm.nix, Kata), so it is the natural first target; the container install needs /dev/kvm passed in.
     To find out: how it fits the app manifest and approval model; isolation, start time and memory versus
     pods; licences; and whether it can stay offline-capable.
+    Researched 2026-11-23: [design/ISOLATION-RESEARCH-2026-11-23.md](design/ISOLATION-RESEARCH-2026-11-23.md).
+    Recommendation: prototype gVisor (`runsc`) as a k3s RuntimeClass behind a new spec field `isolation`
+    (no KVM, same manifest/approval/NetworkPolicy), Kata second; park Nix app services, bare microVMs (maybe
+    later for agent sandboxes) and Unikraft. Owner decisions are listed there.
 95. Sandbox escape suite as a real gate (2026-11-23). Mostly done: the python3 probes became a test-only helper
     (`melissa-escape-probe`), the suite runs inside the built image (`just escape-test-image`, which tags
     `localhost/melissa:escape-tested` only on a pass from the image's own revision) and in the NixOS VM test,
