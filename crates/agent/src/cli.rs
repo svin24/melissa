@@ -370,11 +370,7 @@ pub(crate) fn sandboxed_command(
         .with_env(&sandbox.vars)?
         .with_env(env)?
         .with_bridge(bridge);
-    let (bwrap, argv) = sandbox::command(&plan, workdir, extra_ro, &args);
-    let mut command = tokio::process::Command::new(bwrap);
-    command.args(argv);
-    sandbox::pass_seccomp(&mut command, &plan)?;
-    Ok(command)
+    Ok(sandbox::spawn_command(&plan, workdir, extra_ro, &args)?)
 }
 
 impl Backend for CliBackend {

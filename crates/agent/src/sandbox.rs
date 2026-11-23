@@ -820,6 +820,27 @@ pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io
     Ok(())
 }
 
+/// The one way to spawn a sandbox: the `bwrap` process for `plan` running `args` in `workdir`
+/// ([`command`]), with the seccomp program at [`SECCOMP_FD`] ([`pass_seccomp`]) and an
+/// **empty environment**. `--clearenv` only clears what the CLI gets; bwrap's own initial
+/// environment stays readable inside the sandbox through `/proc/1/environ` (bwrap is PID 1
+/// there), so inheriting the lead agent's environment would hand every variable of
+/// `melissa-server` (tokens, keys) to the agent. Found by the escape suite
+/// (`crates/agent/tests/escape.rs`, `proc.environ-leak`). Everything the sandbox needs is in
+/// the argv (`--setenv`). Callers may add variables for bwrap itself (they are visible inside).
+pub fn spawn_command(
+    plan: &SandboxPlan,
+    workdir: &Path,
+    extra_ro: &[PathBuf],
+    args: &[String],
+) -> std::io::Result<tokio::process::Command> {
+    let (bwrap, argv) = command(plan, workdir, extra_ro, args);
+    let mut cmd = tokio::process::Command::new(bwrap);
+    cmd.env_clear().args(argv);
+    pass_seccomp(&mut cmd, plan)?;
+    Ok(cmd)
+}
+
 /// Find bubblewrap: the Fedora location first, then `PATH`.
 pub fn find_bwrap() -> Option<PathBuf> {
     let fixed = Path::new(BWRAP_PATH);
