@@ -1,0 +1,13 @@
+# gVisor pinned for apps with isolation `gvisor` (the default for agent specs; docs/DECISIONS.md
+# 2026-11-23). Sourced as shell by the image build, which ships Google's official static release
+# binaries (Apache-2.0) from storage.googleapis.com/gvisor: runsc, containerd-shim-runsc-v1 and the
+# runsc sidecars it needs next to it (gvisor-bin/: the Sentry and three small helpers; not the
+# checkpoint, network-gofer or metrics binaries). Update: bump the version (a release-YYYYMMDD.N
+# tag), then
+#   curl -fsSL https://storage.googleapis.com/gvisor/releases/release/<version>/x86_64/gvisor.tar.bz2.sha512
+# (and check it against `curl -fsSL <tarball> | sha512sum`), and the license at the release tag:
+#   curl -fsSL https://raw.githubusercontent.com/google/gvisor/release-<version>/LICENSE | sha256sum
+# If a hash differs, read the diff before updating it. Then `just gvisor-test-image`.
+GVISOR_VERSION=20261116.0
+GVISOR_SHA512=c87d792d5842efb70c38ee822124cfe0821a547715e7abcf3f2b14997cd02784edaa0b91e238ec5c27a25a1b9e00bf98113398eb62a0778d8d20d4e222f8b0e0
+GVISOR_LICENSE_SHA256=0fbab5c58efbdf6d31e8085214f2dd821659c03d73cff3ed2b08e98826ea1cd9

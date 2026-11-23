@@ -60,6 +60,7 @@ licenses under `/usr/share/licenses`):
 | k3s-selinux | Apache License 2.0 | <https://github.com/k3s-io/k3s-selinux> |
 | Tailscale 1.104.7 (`tailscale`, `tailscaled`: Melissa's own Tailscale, off by default) | BSD-3-Clause, Copyright (c) 2020 Tailscale Inc & contributors; the Go modules built in are listed with their licenses in `THIRD-PARTY.md` | <https://github.com/tailscale/tailscale>, the official static binaries from pkgs.tailscale.com (sha256 in `packaging/container/tailscale.lock`); `LICENSE` and `THIRD-PARTY.md` (the tag's `licenses/tailscale.md`) ship in `/usr/share/licenses/tailscale/` |
 | bubblewrap | LGPL-2.1-or-later | Fedora package |
+| gVisor release-20261116.0 (`runsc`, `containerd-shim-runsc-v1` and runsc's `gvisor-bin/` sidecars: apps with isolation `gvisor`) | Apache License 2.0, Copyright The gVisor Authors | <https://github.com/google/gvisor>, Google's official static release binaries from storage.googleapis.com/gvisor (sha512 and the LICENSE's sha256 in `packaging/container/gvisor.lock`); `LICENSE` ships in `/usr/share/licenses/gvisor/`; on Nix nixpkgs' `gvisor` |
 | whisper.cpp 1.9.5 (`whisper-cli` and its ggml libraries, voice input) | MIT, Copyright (c) 2023-2026 The ggml authors | <https://github.com/ggml-org/whisper.cpp>, built from the tag's tarball (sha256 in `packaging/container/whisper.lock`); on Nix from nixpkgs |
 
 Downloaded **at runtime, only when the owner turns voice input on** (Settings → Voice), not redistributed:
@@ -86,6 +87,9 @@ Agent names from the ACP registry are shown as the registry lists them; its remo
 - `/usr/share/licenses/k3s/LICENSE`: the k3s Apache-2.0 LICENSE from the pinned release tag, verified by sha256
   (`K3S_LICENSE_SHA256` in `packaging/common/usr/lib/melissa/k3s.lock`). k3s has no NOTICE file (checked at v1.37.2+k3s1).
 - `/usr/share/licenses/whisper.cpp/LICENSE`: whisper.cpp's MIT license from the pinned tarball.
+- `/usr/share/licenses/gvisor/LICENSE`: gVisor's Apache-2.0 LICENSE from the pinned release tag, verified by sha256
+  (`GVISOR_LICENSE_SHA256` in `packaging/container/gvisor.lock`). gVisor has no NOTICE file (checked at
+  release-20261116.0). Like k3s, its binaries statically link Go modules under their own licenses (same to-do below).
 - Fedora packages, k3s-selinux, Tailscale and bubblewrap: their RPMs install their own files under
   `/usr/share/licenses/<package>/`.
 
@@ -125,3 +129,5 @@ Notable:
   (CoreDNS, Traefik, metrics-server, local-path-provisioner, klipper, pause, ...). k3s itself ships no notice
   bundle for these; check whether the images carry their own license files and decide whether Melissa should add
   a notice list for them.
+- [ ] The same for gVisor's static binaries (runsc and its sidecars link Go modules such as gRPC and
+  containerd's; upstream ships no notice bundle with the release tarball).
