@@ -155,6 +155,14 @@ pkgs.testers.runNixOSTest {
         server.succeed("systemctl show -p User --value melissa-server | grep -qx melissa")
         server.succeed("stat -c '%U %a' /etc/melissa | grep -qx 'melissa 750'")
 
+    with subtest("agent sandboxes get resource limits (delegated cgroup)"):
+        cg = "/sys/fs/cgroup/system.slice/melissa-server.service"
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'agent sandboxes get resource limits'")
+        # The server moved itself into server/; the unit's own cgroup holds no process.
+        server.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
+        server.succeed(f"grep -qx \"$(systemctl show -p MainPID --value melissa-server)\" {cg}/server/cgroup.procs")
+        server.succeed(f"grep -qw memory {cg}/sandboxes/cgroup.subtree_control")
+
     with subtest("chat turn on the echo backend"):
         rc, out = server.execute("melissa-server ask 'hello from nixos' 2>&1")
         print(out)
@@ -166,16 +174,34 @@ pkgs.testers.runNixOSTest {
         env = (
             "env PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin HOME=/var/lib/melissa/home TMPDIR=/tmp "
             "MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
-            # The escape suite (crates/agent/tests/escape.rs): required, so a missing bwrap or probe
-            # helper fails; its scene in the melissa user's own state directory.
-            "MELISSA_ESCAPE_REQUIRED=1 MELISSA_ESCAPE_PROBE=${tests}/bin/melissa-escape-probe "
-            "MELISSA_ESCAPE_DIR=/var/lib/melissa/escape-test "
         )
-        for t in ["sandbox", "egress", "escape"]:
+        for t in ["sandbox", "egress"]:
             out = server.succeed(f"cd /tmp && runuser -u melissa -- {env} melissa-it-{t} --nocapture --test-threads=1 2>&1")
             print(out)
             assert "test result: ok" in out and "SKIP" not in out, out
+        # The escape suite (crates/agent/tests/escape.rs): required, so a missing bwrap or probe helper
+        # fails; its scene in the melissa user's state directory. Like the server unit it runs with
+        # cgroup delegation; the shell moves into a `runner` leaf and hands the delegated cgroup to the
+        # suite (MELISSA_TEST_CGROUP), as `just escape-test` does, so the `limits.*` probes run.
+        suite = (
+            'cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup); '
+            'mkdir -p "$cg/runner" && printf 0 > "$cg/runner/cgroup.procs" && export MELISSA_TEST_CGROUP="$cg"; '
+            "exec ${tests}/bin/melissa-it-escape --nocapture --test-threads=1"
+        )
+        out = server.succeed(
+            "systemd-run --quiet --wait --pipe --collect --service-type=exec "
+            "-p User=melissa -p Group=melissa -p 'Delegate=memory pids cpu io' "
+            "-p WorkingDirectory=/tmp "
+            "-E PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin -E HOME=/var/lib/melissa/home -E TMPDIR=/tmp "
+            "-E MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
+            "-E MELISSA_ESCAPE_REQUIRED=1 -E MELISSA_ESCAPE_PROBE=${tests}/bin/melissa-escape-probe "
+            "-E MELISSA_ESCAPE_DIR=/var/lib/melissa/escape-test "
+            f"/run/current-system/sw/bin/bash -c '{suite}' 2>&1"
+        )
+        print(out)
+        assert "test result: ok" in out and "SKIP" not in out, out
         assert "probes:" in out and " 0 fail," in out, out
+        assert "Resource limits: on" in out, out
 
     with subtest("vendor-style binary in the sandbox through nix-ld"):
         server.succeed(

@@ -360,6 +360,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Serve { .. } | Command::Tool { .. } => {}
     }
+    // Resource limits for agent sandboxes: take over the delegated cgroup (Delegate= in
+    // melissa-server.service) before any other process starts; logs once if that is not possible.
+    if matches!(command, Command::Serve { .. }) {
+        melissa_agent::sandbox::limits::init();
+    }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
     // This device's device id (made once) and its agents.

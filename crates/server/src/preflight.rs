@@ -43,6 +43,8 @@ pub struct Report {
     pub config_exists: bool,
     pub sandbox: Sandbox,
     pub netbridge: bool,
+    /// Resource limits per agent sandbox: `Ok(the defaults)` when applied, `Err(why not)`.
+    pub limits: Result<String, String>,
     pub backends: Vec<BackendLine>,
     /// `[lead] backends`, in order.
     pub lead_order: Vec<String>,
@@ -129,6 +131,12 @@ impl Report {
                  events and nested namespaces.",
                 names.join(", ")
             ));
+        }
+        match &self.limits {
+            Ok(defaults) => line(format!("  Limits:   on (each agent: {defaults})")),
+            Err(why) => line(format!(
+                "  Limits:   off: {why}. Agents run without memory, process and CPU limits."
+            )),
         }
         line("  Agents:".into());
         let lead = self.lead_backend();
@@ -255,6 +263,7 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         config_exists: config_path.is_file(),
         sandbox,
         netbridge,
+        limits: limits_line(),
         backends,
         lead_order: lead_order.to_vec(),
         k3s: kubeconfigs.iter().any(|p| p.is_file()),
@@ -315,6 +324,17 @@ async fn probe_bwrap(bwrap: &Path) -> Sandbox {
     }
 }
 
+/// Whether agent sandboxes get resource limits ([`melissa_agent::sandbox::limits::init`] ran at
+/// startup); the default limits when they do.
+fn limits_line() -> Result<String, String> {
+    use melissa_agent::sandbox::limits::{status, Limits, Status};
+    match status() {
+        Some(Status::Active(_)) => Ok(Limits::default().to_string()),
+        Some(Status::Off(why)) => Err(why.clone()),
+        None => Err("not set up".into()),
+    }
+}
+
 fn first_line(s: &str) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     if line.is_empty() {
@@ -349,6 +369,7 @@ mod tests {
             config_exists: false,
             sandbox: Sandbox::Ok,
             netbridge: true,
+            limits: Ok("2 GiB memory, 512 processes, 2 CPUs".into()),
             backends: vec![
                 BackendLine {
                     name: "grok-acp".into(),
@@ -425,6 +446,18 @@ mod tests {
         r.sandbox = Sandbox::Blocked("setting up uid map: Permission denied".into());
         r.apparmor_userns_restricted = true;
         assert!(r.render().contains("Ubuntu and AppArmor"));
+    }
+
+    #[test]
+    fn limits_line_says_whether_agents_are_limited() {
+        let mut r = report();
+        assert!(r
+            .render()
+            .contains("Limits:   on (each agent: 2 GiB memory, 512 processes, 2 CPUs)"));
+        r.limits = Err("no cgroup v2 (unified hierarchy) on this host".into());
+        assert!(r.render().contains(
+            "Limits:   off: no cgroup v2 (unified hierarchy) on this host. Agents run without"
+        ));
     }
 
     #[test]

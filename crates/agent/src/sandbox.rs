@@ -20,13 +20,19 @@
 //! mounts, new namespaces, kernel modules, bpf, io_uring, keyrings, ...) fail with `EPERM`.
 //! bwrap reads the program from fd [`SECCOMP_FD`] ([`pass_seccomp`] puts it there).
 //!
+//! Resources ([`limits`]): where the host delegates cgroups to Melissa, every sandbox runs in its
+//! own cgroup with memory, process and CPU limits. bwrap then waits on [`BLOCK_FD`] until
+//! [`SandboxCommand::spawn`] has moved it into that cgroup.
+//!
 //! The command line is built by the pure [`command`] function from a [`SandboxPlan`];
 //! [`SandboxPlan::resolve`] does the host lookups (HOME, binary path, which files exist).
 
+pub mod limits;
 pub mod seccomp;
 
 use std::{
     ffi::OsString,
+    io::Write as _,
     os::fd::RawFd,
     path::{Component, Path, PathBuf},
 };
@@ -84,6 +90,10 @@ pub struct SandboxSpec {
     /// only for a CLI that verifiably needs a denied syscall.
     #[serde(default = "enabled_by_default")]
     pub seccomp: bool,
+    /// Memory, process and CPU limits (`[backend.sandbox.limits]`); defaults in
+    /// [`limits::Limits::default`]. Applied where the host delegates cgroups ([`limits::init`]).
+    #[serde(default)]
+    pub limits: limits::Limits,
     /// Empty, writable, throw-away directories (tmpfs), e.g. a CLI's state directory.
     #[serde(default)]
     pub tmpfs: Vec<String>,
@@ -118,6 +128,7 @@ impl Default for SandboxSpec {
         Self {
             enabled: true,
             seccomp: true,
+            limits: limits::Limits::default(),
             tmpfs: Vec::new(),
             ro: Vec::new(),
             rw: Vec::new(),
@@ -373,6 +384,10 @@ pub struct SandboxPlan {
     pub rw_dirs: Vec<PathBuf>,
     /// Install the seccomp filter (`--seccomp`); the spawner must then [`pass_seccomp`].
     pub seccomp: bool,
+    /// Run in a cgroup with these limits: bwrap waits on [`BLOCK_FD`] (`--block-fd`) until
+    /// [`SandboxCommand::spawn`] has placed it. `None`: no limits (turned off for the backend,
+    /// or the host does not delegate cgroups).
+    pub limits: Option<limits::Limits>,
 }
 
 /// A top-level system directory (`/bin`, `/lib64`, ...) inside the sandbox.
@@ -556,6 +571,8 @@ impl SandboxPlan {
                  agent sandboxes run without it"
             );
         }
+        // Only where the host delegates cgroups ([`limits::init`] logged why not, once).
+        let limits = (spec.limits.enabled && limits::tree().is_some()).then(|| spec.limits.clone());
         Ok(Self {
             bwrap: bwrap.to_path_buf(),
             home,
@@ -566,6 +583,7 @@ impl SandboxPlan {
             system,
             rw_dirs: Vec::new(),
             seccomp,
+            limits,
         })
     }
 
@@ -659,6 +677,11 @@ pub fn command(
     // right before executing the first program inside.
     if plan.seccomp {
         push(&[&"--seccomp", &SECCOMP_FD.to_string()]);
+    }
+    // Wait (namespaces made, nothing forked or executed inside yet) until the spawner has moved
+    // bwrap into the sandbox's cgroup ([`SandboxCommand::spawn`]).
+    if plan.limits.is_some() {
+        push(&[&"--block-fd", &BLOCK_FD.to_string()]);
     }
 
     // Environment: nothing from the host unless allowed.
@@ -803,42 +826,159 @@ pub fn command(
 /// The fd number bwrap reads the seccomp program from (`--seccomp 3`): the first after stdio.
 pub const SECCOMP_FD: RawFd = 3;
 
+/// The fd number bwrap waits on before it starts anything inside (`--block-fd 4`), when the
+/// sandbox has [`limits`].
+pub const BLOCK_FD: RawFd = 4;
+
+/// The seccomp program's fd mapping, if the plan uses one: a sealed memfd at [`SECCOMP_FD`].
+fn seccomp_mapping(plan: &SandboxPlan) -> std::io::Result<Option<FdMapping>> {
+    if !plan.seccomp {
+        return Ok(None);
+    }
+    Ok(Some(FdMapping {
+        parent_fd: seccomp::memfd()?,
+        child_fd: SECCOMP_FD,
+    }))
+}
+
 /// Give `cmd` (the `bwrap` command built from `plan`) the seccomp program at [`SECCOMP_FD`],
 /// if the plan uses one. The program is a sealed memfd; only the child gets it (the parent's
 /// copy is close-on-exec and closes when `cmd` is dropped), so no other process spawned
-/// meanwhile inherits it. Call once per command.
+/// meanwhile inherits it. Call once per command ([`spawn_command`] does this itself).
 pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io::Result<()> {
-    if !plan.seccomp {
-        return Ok(());
+    if let Some(mapping) = seccomp_mapping(plan)? {
+        cmd.fd_mappings(vec![mapping])
+            .map_err(std::io::Error::other)?;
     }
-    let mapping = FdMapping {
-        parent_fd: seccomp::memfd()?,
-        child_fd: SECCOMP_FD,
-    };
-    cmd.fd_mappings(vec![mapping])
-        .map_err(std::io::Error::other)?;
     Ok(())
 }
 
 /// The one way to spawn a sandbox: the `bwrap` process for `plan` running `args` in `workdir`
-/// ([`command`]), with the seccomp program at [`SECCOMP_FD`] ([`pass_seccomp`]) and an
-/// **empty environment**. `--clearenv` only clears what the CLI gets; bwrap's own initial
-/// environment stays readable inside the sandbox through `/proc/1/environ` (bwrap is PID 1
-/// there), so inheriting the lead agent's environment would hand every variable of
-/// `melissa-server` (tokens, keys) to the agent. Found by the escape suite
-/// (`crates/agent/tests/escape.rs`, `proc.environ-leak`). Everything the sandbox needs is in
-/// the argv (`--setenv`). Callers may add variables for bwrap itself (they are visible inside).
+/// ([`command`]), with the seccomp program at [`SECCOMP_FD`] ([`pass_seccomp`]), the cgroup gate
+/// at [`BLOCK_FD`] when the plan has [`limits`], and an **empty environment**. `--clearenv`
+/// only clears what the CLI gets; bwrap's own initial environment stays readable inside the
+/// sandbox through `/proc/1/environ` (bwrap is PID 1 there), so inheriting the lead agent's
+/// environment would hand every variable of `melissa-server` (tokens, keys) to the agent. Found
+/// by the escape suite (`crates/agent/tests/escape.rs`, `proc.environ-leak`). Everything the
+/// sandbox needs is in the argv (`--setenv`). Callers may add variables for bwrap itself (they
+/// are visible inside) and set stdio through [`SandboxCommand::command_mut`], then start it
+/// with [`SandboxCommand::spawn`].
 pub fn spawn_command(
     plan: &SandboxPlan,
     workdir: &Path,
     extra_ro: &[PathBuf],
     args: &[String],
-) -> std::io::Result<tokio::process::Command> {
+) -> std::io::Result<SandboxCommand> {
     let (bwrap, argv) = command(plan, workdir, extra_ro, args);
     let mut cmd = tokio::process::Command::new(bwrap);
     cmd.env_clear().args(argv);
-    pass_seccomp(&mut cmd, plan)?;
-    Ok(cmd)
+    let mut fds: Vec<FdMapping> = seccomp_mapping(plan)?.into_iter().collect();
+    let gate = match &plan.limits {
+        None => None,
+        Some(l) => {
+            // Both ends are close-on-exec; only bwrap gets the read end, at BLOCK_FD.
+            let (read, write) = std::io::pipe()?;
+            fds.push(FdMapping {
+                parent_fd: read.into(),
+                child_fd: BLOCK_FD,
+            });
+            let label = plan
+                .program
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let cgroup = limits::tree().and_then(|tree| match tree.create(l, &label) {
+                Ok(cg) => Some(cg),
+                Err(e) => {
+                    tracing::warn!(
+                        sandbox = %label,
+                        "cannot create the sandbox's cgroup; it runs without limits: {e}"
+                    );
+                    None
+                }
+            });
+            Some(Gate {
+                release: write,
+                cgroup,
+            })
+        }
+    };
+    // One call: each call adds its own pre-exec step, and a later one could clobber the fd an
+    // earlier one placed.
+    if !fds.is_empty() {
+        cmd.fd_mappings(fds).map_err(std::io::Error::other)?;
+    }
+    Ok(SandboxCommand { command: cmd, gate })
+}
+
+/// The cgroup a sandbox goes into, and the pipe that lets bwrap go on.
+#[derive(Debug)]
+struct Gate {
+    release: std::io::PipeWriter,
+    cgroup: Option<limits::SandboxCgroup>,
+}
+
+impl Gate {
+    /// Place `pid` (bwrap) in the cgroup, then let it go on. A failed move is logged and the
+    /// sandbox runs anyway: limits guard against exhaustion; the sandbox itself still holds.
+    fn open(mut self, pid: Option<u32>) -> Option<limits::SandboxCgroup> {
+        if let (Some(cg), Some(pid)) = (&self.cgroup, pid) {
+            if let Err(e) = cg.adopt(pid) {
+                tracing::warn!(
+                    "cannot move the agent sandbox into its cgroup; limits may not apply: {e}"
+                );
+            }
+        }
+        // bwrap reads one byte. EPIPE: it is gone already, which the caller's `wait` shows.
+        let _ = self.release.write_all(b"1");
+        self.cgroup
+    }
+}
+
+/// A sandboxed (or, with the sandbox off, plain) agent CLI command, ready to spawn.
+#[derive(Debug)]
+pub struct SandboxCommand {
+    command: tokio::process::Command,
+    gate: Option<Gate>,
+}
+
+impl SandboxCommand {
+    /// A command without a sandbox (the backend's sandbox is turned off).
+    pub fn plain(command: tokio::process::Command) -> Self {
+        Self {
+            command,
+            gate: None,
+        }
+    }
+
+    pub fn command(&self) -> &tokio::process::Command {
+        &self.command
+    }
+
+    /// For stdio, working directory and the like. Start it with [`SandboxCommand::spawn`], never
+    /// with the inner command's own `spawn` (bwrap would wait until this value is dropped and
+    /// then run outside its cgroup).
+    pub fn command_mut(&mut self) -> &mut tokio::process::Command {
+        &mut self.command
+    }
+
+    /// Start the process; with limits, move it into its cgroup and only then let it go on.
+    pub fn spawn(self) -> std::io::Result<SandboxChild> {
+        let Self { mut command, gate } = self;
+        let child = command.spawn()?;
+        // Closes the parent's copy of the gate's read end.
+        drop(command);
+        let cgroup = gate.and_then(|g| g.open(child.id()));
+        Ok(SandboxChild { child, cgroup })
+    }
+}
+
+/// A running sandbox. Keep `cgroup` until the process has exited: dropping it kills whatever is
+/// left in the sandbox and removes the cgroup.
+#[derive(Debug)]
+pub struct SandboxChild {
+    pub child: tokio::process::Child,
+    pub cgroup: Option<limits::SandboxCgroup>,
 }
 
 /// Find bubblewrap: the Fedora location first, then `PATH`.
@@ -869,6 +1009,7 @@ mod tests {
             system: SystemRoot::default(),
             rw_dirs: Vec::new(),
             seccomp: true,
+            limits: None,
         }
     }
 
@@ -884,6 +1025,36 @@ mod tests {
         p.seccomp = false;
         let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
         assert!(!strs(&argv).contains(&"--seccomp"));
+    }
+
+    #[test]
+    fn argv_waits_on_the_cgroup_gate_only_with_limits() {
+        let mut p = plan(Vec::new(), "/usr/bin/cli");
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        assert!(!strs(&argv).contains(&"--block-fd"));
+        p.limits = Some(limits::Limits::default());
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(has(&a, &["--block-fd", "4"]), "{a:?}");
+        let sep = a.iter().position(|x| *x == "--").unwrap();
+        assert!(a.iter().position(|x| *x == "--block-fd").unwrap() < sep);
+    }
+
+    #[test]
+    fn limits_default_on_and_come_from_the_sandbox_table() {
+        assert_eq!(SandboxSpec::default().limits, limits::Limits::default());
+        assert_eq!(
+            SandboxSpec::preset("claude").limits,
+            limits::Limits::default()
+        );
+        let spec: SandboxSpec =
+            serde_json::from_str(r#"{"limits": {"memory": "1G", "pids": 64}}"#).unwrap();
+        assert_eq!(spec.limits.memory, limits::Bytes(Some(1 << 30)));
+        assert_eq!(spec.limits.pids, limits::Pids(Some(64)));
+        assert_eq!(spec.limits.cpus, limits::Limits::default().cpus);
+        assert!(serde_json::from_str::<SandboxSpec>(r#"{"limits": {"pids": 0}}"#).is_err());
+        // Not set up in unit tests: a resolved plan has no limits (and no gate).
+        assert!(limits::tree().is_none());
     }
 
     #[test]

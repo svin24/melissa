@@ -16,7 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::{
     egress::{EgressLease, EgressProxy, EgressRequest, NetworkMode},
-    sandbox::{self, Bridge, SandboxError, SandboxPlan, SandboxSpec},
+    sandbox::{self, Bridge, SandboxChild, SandboxCommand, SandboxError, SandboxPlan, SandboxSpec},
     AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream, TaskId,
 };
 
@@ -191,7 +191,7 @@ impl CliBackend {
         req: &RunRequest,
         bridge: Option<Bridge>,
         args: Vec<String>,
-    ) -> Result<tokio::process::Command, AgentError> {
+    ) -> Result<SandboxCommand, AgentError> {
         let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
         sandboxed_command(
             &self.sandbox,
@@ -354,11 +354,11 @@ pub(crate) fn sandboxed_command(
     env: &[(String, String)],
     bridge: Option<Bridge>,
     args: Vec<String>,
-) -> Result<tokio::process::Command, AgentError> {
+) -> Result<SandboxCommand, AgentError> {
     if !sandbox.enabled {
         let mut command = tokio::process::Command::new(program);
         command.args(args);
-        return Ok(command);
+        return Ok(SandboxCommand::plain(command));
     }
     let bwrap = bwrap.ok_or_else(|| {
         AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
@@ -432,9 +432,12 @@ impl Backend for CliBackend {
             let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
             let mut command = self.command_line(&program, &workdir, req, bridge, args)?;
             if !self.sandbox.enabled {
-                command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+                command
+                    .command_mut()
+                    .envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
             }
-            let mut child = command
+            command
+                .command_mut()
                 .current_dir(&workdir)
                 // Ask CLIs for plain text; any remaining escape codes are stripped in `pump`.
                 .env("NO_COLOR", "1")
@@ -444,12 +447,15 @@ impl Backend for CliBackend {
                 .stderr(Stdio::piped())
                 // Cancellation and timeouts drop this future; make sure the child dies too.
                 // Under bwrap that takes the whole sandbox (PID namespace) with it.
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|source| AgentError::Spawn {
-                    command: self.spec.command.clone(),
-                    source,
-                })?;
+                .kill_on_drop(true);
+            // `_cgroup` lives until the CLI has exited (dropping it removes the cgroup).
+            let SandboxChild {
+                mut child,
+                cgroup: _cgroup,
+            } = command.spawn().map_err(|source| AgentError::Spawn {
+                command: self.spec.command.clone(),
+                source,
+            })?;
 
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();

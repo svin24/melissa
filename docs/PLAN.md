@@ -192,8 +192,16 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   namespace flags (no nested user namespaces), kernel modules, kexec, bpf, perf events, io_uring, userfaultfd,
   keyrings, file-handle lookups, clock and host administration calls fail with `EPERM`; `clone3` gets `ENOSYS` so
   libc falls back to `clone`; other ABIs (i386, x32, arm32) get nothing. Node, Bun, Go and the CLIs run
-  unchanged (verified). On by default; `[backend.sandbox] seccomp = false` turns it off for one backend. Next:
-  Melissa-owned CLI logins.
+  unchanged (verified). On by default; `[backend.sandbox] seccomp = false` turns it off for one backend.
+  **Resource limits (2026-11-23):** every sandbox runs in its own cgroup v2 (`sandbox/limits.rs`) with
+  `memory.max` 2 GiB, `memory.swap.max` 0, `pids.max` 512 and `cpu.max` 2 CPUs by default (optional `io.weight`),
+  per backend in `[backend.sandbox.limits]`. `melissa-server.service` has `Delegate=memory pids cpu io`; the
+  server moves itself into `server/`, each sandbox gets `sandboxes/agent-<pid>-<n>/`; bwrap waits on
+  `--block-fd` until it and its child are inside, so nothing in the sandbox ever runs outside its cgroup. On
+  exit the cgroup is killed (`cgroup.kill`) and removed; OOM kills and refused forks are logged. Without
+  delegation (from source, cgroup v1) agents run unlimited, with one warning and a `Limits: off` line in the
+  startup summary. Verified with the real server in a delegated user scope; the escape suite's `limits.*`
+  probes (fork bomb, memory hog, CPU hog) check the cgroup counters. Next: Melissa-owned CLI logins.
 - **Escape suite (2026-11-23):** `just escape-test` runs real escape attempts inside the real sandbox (bwrap +
   egress namespace + bridge, built with `SandboxPlan` and spawned through `sandbox::spawn_command()`, the backends' one spawn path;
   `crates/agent/tests/escape.rs`, probes in `tests/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
@@ -410,7 +418,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   data); app to app blocked by default, links declared in manifests and opened by the lead agent after approval
   (NetworkPolicy); agent to app only through tools; app internet access by per-manifest allowlist. Honest claim:
   "strong, layered and tested", never "unbreakable" (shared kernel). Hardening milestone: seccomp + cgroup limits +
-  per-agent UIDs for sandboxes; default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
+  per-agent UIDs for sandboxes (seccomp and cgroup limits done 2026-11-23); default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
   apps; gVisor/microVM runtime for agent-built apps; an adversarial escape test suite gating image updates
   (exists for agent sandboxes since 2026-11-23: see "Escape suite" above; automation is open question 95).
 - **Reference:** T3 Code (github.com/pingdotgg/t3code) is a useful reference for multi-agent, many-backend UX. It is currently published under the MIT license — re-verify the license and notice requirements before reusing any code; otherwise treat it as inspiration only.
@@ -1381,3 +1389,10 @@ Roadmap (rough, phases may overlap):
     the launcher's session keyring (bwrap gives no new one); seccomp blocks `keyctl`/`add_key`/`request_key`, so
     it is unreachable (`kern.keyctl` passes: EPERM). A fresh keyring per sandbox would only matter with
     `seccomp = false`, where the suite now shows it open (`kern.keyctl` skip: "session keyring reachable").
+96. Agent resource limits, what is left (2026-11-23). Per-sandbox cgroups work under systemd delegation (verified
+    with the real server in a `systemd-run --user --scope -p Delegate=yes` scope and the escape suite). Not yet
+    verified: the rootful container (systemd inside podman `--systemd=always`; it should get the controllers, but
+    the server reports `Limits: off` with a reason if not) and the NixOS VM test (a subtest checks it). Open: a
+    cap on all sandboxes together (`sandboxes/memory.max`, e.g. a share of RAM) so many agents at once cannot
+    starve k3s; per-agent limits in Settings (today only `[backend.sandbox.limits]` in server.toml); whether a
+    hit limit should reach the audit log and the agent's chat, not only the server log.

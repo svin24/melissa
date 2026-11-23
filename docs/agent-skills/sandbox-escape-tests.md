@@ -15,7 +15,8 @@ nix build .#checks.x86_64-linux.melissa-nixos -L   # on NixOS, in the VM test (K
 It prints a table (probe, result, detail) and a count line, and fails on any `FAIL`. `just escape-test` sets
 `MELISSA_ESCAPE_REQUIRED=1`, so a host without bwrap, without unprivileged user namespaces or without the probe
 helper **fails**; under plain `just check` / `cargo nextest run` the suite skips there like the other sandbox
-tests. `just escape-test` also runs `seccomp_off_backend_is_reported_not_passed` (below).
+tests. Takes about 3 seconds (about 8 with the resource-limit probes). `just escape-test` also runs
+`seccomp_off_backend_is_reported_not_passed` (below).
 
 - **Image** (`packaging/container/escape-test.sh`): builds the Containerfile's `escape-build` stage (the test
   binary and `melissa-escape-probe`, same builder and sources as the image's binaries), adds them under
@@ -27,6 +28,11 @@ tests. `just escape-test` also runs `seccomp_off_backend_is_reported_not_passed`
   from (and `crates/` has no local changes); any run on that image first removes the tag. Publish only that tag.
 - **NixOS**: the VM test (`packaging/nix/tests/vm.nix`) runs `melissa-it-escape` as `melissa` with
   `MELISSA_ESCAPE_REQUIRED=1`; the helper comes from `melissa-integration-tests` (`bin/melissa-escape-probe`).
+- **Resource limits in the image**: the transient unit gets `Delegate=yes` and the suite gets
+  `MELISSA_TEST_CGROUP`, as in `just escape-test`, so the `limits.*` probes run there; if the container's
+  systemd cannot delegate, they skip with the reason and the header says `Resource limits: off (...)`.
+  The NixOS VM test does the same (a `systemd-run` unit with the server's `Delegate=`) and requires
+  `Resource limits: on`.
 
 Results:
 
@@ -40,6 +46,12 @@ Results:
   `seccomp off: not judged` and says what the probe saw (`without the filter: ESCAPED: ...`). They never pass
   without the filter.
 
+Resource limits: `just escape-test` runs the suite inside `systemd-run --user --scope -p Delegate=yes` when
+systemd's user manager is there; the shell moves itself into a `runner` leaf and passes the scope's cgroup in
+`MELISSA_TEST_CGROUP`, which the suite hands to `sandbox::limits::init_at`. Every suite sandbox then gets small
+limits (`suite_limits()`: 256 MiB, 128 processes, 0.5 CPUs) and the header says `resource limits: on`. Elsewhere
+(a container build, plain `cargo nextest run`) the `limits.*` probes skip and never run: one is a fork bomb.
+
 ## How it works
 
 - `crates/agent/tests/escape.rs` is the runner; `crates/agent/tests/escape/probes.rs` is the data.
@@ -47,7 +59,7 @@ Results:
   sinkhole, MCP through the bridge), `SandboxPlan::resolve` from a `SandboxSpec` with `network = proxy`,
   `with_rw_dirs` (the agent's own file box), `with_env`, `with_bridge`, then `sandbox::spawn_command()`: the one
   spawn path the backends use too (through `cli::sandboxed_command`): bwrap argv, the seccomp program at fd 3
-  (`--seccomp 3`), empty environment. `proc.die-with-parent` needs an intermediate parent it can kill, so it
+  (`--seccomp 3`), the cgroup gate at fd 4 (`--block-fd 4`, when limits are on), empty environment. `proc.die-with-parent` needs an intermediate parent it can kill, so it
   builds the same argv, fd and empty environment around an `sh`. Change how agents spawn the sandbox only in
   `spawn_command`, or the suite tests something agents do not run.
 - The scene (`scene()`): a host home with a canary, Melissa's state dir in it (`permissions.json`,
@@ -99,6 +111,11 @@ Probe::new(
   `#![forbid(unsafe_code)]`). Never let a missing tool pass: use `need`.
 - Kernel surface that only seccomp closes: add `.seccomp()`. With `--seccomp` (the default) blocked passes and
   an escape fails; without it the probe is a skip whatever it saw.
+- Resource limits: add `.limits(|events| ...)`. The probe runs only when the sandbox has a cgroup; afterwards
+  the check gets the cgroup's counters (`LimitEvents`: `oom_kills`, `memory_max`, `pids_max`, `cpu_throttled`)
+  and decides, since a script's own verdict could be a coincidence. Keep such scripts bounded anyway (a loop
+  count, `timeout`). The OOM killer may take more than one process: put the hog in a subshell with
+  `oom_score_adj` 1000 so the verdict-printing shell survives.
 - Something that would only look blocked because nothing works (dead proxy, read-only workdir) needs a control:
   the `control.*` probes run first.
 - Never print secrets: report names, counts or paths, not values (see `proc.environ-leak`).

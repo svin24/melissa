@@ -27,16 +27,30 @@ check: fmt lint test
 # sandbox, printed as a table; fails on any escape. The gate for image updates: required here, so a host without
 # bwrap or user namespaces, or without the probe helper (melissa-escape-probe, test-only), fails instead of
 # skipping. Also runs the `seccomp = false` check (kernel probes reported as skipped, never passed).
+# The resource-limit probes need a delegated cgroup: where systemd's user manager runs, the suite runs in a
+# transient scope with Delegate=yes (the shell moves into a `runner` leaf so the scope itself holds no
+# process); elsewhere they skip.
 escape-test: escape-probe
-    MELISSA_ESCAPE_REQUIRED=1 cargo nextest run -p melissa-agent --test escape --no-capture \
-        sandbox_escape_suite seccomp_off_backend_is_reported_not_passed
+    #!/usr/bin/env bash
+    set -eu
+    # `printf 0` (the builtin: 0 is the writing process) moves this shell; systemd-run would turn `$$` into `$`.
+    suite='cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)
+        if mkdir -p "$cg/runner" 2>/dev/null && printf 0 > "$cg/runner/cgroup.procs" 2>/dev/null; then
+            export MELISSA_TEST_CGROUP="$cg"
+        fi
+        MELISSA_ESCAPE_REQUIRED=1 exec cargo nextest run -p melissa-agent --test escape --no-capture \
+            sandbox_escape_suite seccomp_off_backend_is_reported_not_passed'
+    if systemd-run --user --scope --quiet -p Delegate=yes true >/dev/null 2>&1; then
+        exec systemd-run --user --scope --quiet -p Delegate=yes -- bash -c "$suite"
+    fi
+    exec bash -c "$suite"
 
 # The same suite inside a built container image (default localhost/melissa:dev), run the way the installed
 # container runs: rootful, --privileged, systemd as PID 1, the suite as the `melissa` user with the server
-# unit's hardening. The test binary and probe helper come from the Containerfile's `escape-build` stage and
-# are added to a throwaway copy of the image (never to the image itself). Needs sudo (rootful podman). Only a
-# pass, built from the image's own revision, tags the image `localhost/melissa:escape-tested`: the one tag a
-# release may push (packaging/container/README.md, "Release gate").
+# unit's hardening, in a delegated cgroup so the limit probes run. The test binary and probe helper come from
+# the Containerfile's `escape-build` stage and are added to a throwaway copy of the image (never to the image
+# itself). Needs sudo (rootful podman). Only a pass, built from the image's own revision, tags the image
+# `localhost/melissa:escape-tested`: the one tag a release may push (packaging/container/README.md, "Release gate").
 escape-test-image image="localhost/melissa:dev":
     packaging/container/escape-test.sh {{quote(image)}}
 
