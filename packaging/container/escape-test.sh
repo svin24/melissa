@@ -62,9 +62,19 @@ echo "== booting $IMAGE ($NAME: rootful, --privileged, systemd)"
 # As the Quadlet (melissa.container): --privileged --systemd=always, podman's network. No ports.
 sudo podman run -d --name "$NAME" --hostname melissa --privileged --systemd=always \
     --network podman "$TEST_IMAGE" >/dev/null
-# "degraded" is fine (masked units, no k3s); only the boot has to be over.
-state=$(sudo podman exec "$NAME" systemctl is-system-running --wait 2>/dev/null || true)
-echo "   systemd: $state"
+# "degraded" is fine (masked units, no k3s); only the boot has to be over. systemctl answers nothing
+# until systemd inside is up, so poll (2 minutes at most).
+state=
+for _ in $(seq 120); do
+    state=$(sudo podman exec "$NAME" systemctl is-system-running 2>/dev/null || true)
+    case "$state" in running | degraded) break ;; esac
+    sleep 1
+done
+echo "   systemd: ${state:-no answer}"
+case "$state" in
+    running | degraded) ;;
+    *) echo "FAIL: the image did not boot (systemd: ${state:-no answer})"; exit 1 ;;
+esac
 sudo podman exec "$NAME" id melissa >/dev/null
 
 echo "== running the escape suite as melissa"

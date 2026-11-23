@@ -191,7 +191,7 @@ pub const PROBES: &[Probe] = &[
         "fs.chown-root",
         "make a root-owned setuid file in the workdir",
         "blocked (host root is not mapped)",
-        r#"cp /usr/bin/id ./suid 2>/dev/null || broken "cannot copy a binary into the workdir"
+        r#"cp "$(command -v id)" ./suid 2>/dev/null || broken "cannot copy a binary into the workdir"
            chown 0:0 ./suid 2>/dev/null && chmod 4755 ./suid 2>/dev/null \
              && escaped "created a root-owned setuid file"
            blocked "chown to root refused""#,
