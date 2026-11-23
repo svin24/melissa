@@ -297,8 +297,8 @@ impl BackendSpec {
         }
     }
 
-    #[cfg(test)]
-    fn effective_sandbox(&self) -> melissa_agent::SandboxSpec {
+    /// The sandbox this backend runs in (its `[backend.sandbox]`, or the preset).
+    pub fn effective_sandbox(&self) -> melissa_agent::SandboxSpec {
         match self {
             Self::Cli(s) => s.effective_sandbox(),
             Self::Acp(s) => s.effective_sandbox(),

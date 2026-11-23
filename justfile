@@ -1,22 +1,44 @@
 default:
     @just --list
 
+# crates/escape-probe is its own workspace (test-only helper, kept out of Cargo.lock and the license report).
+probe := "--manifest-path crates/escape-probe/Cargo.toml"
+
 fmt:
     cargo fmt --all
+    cargo fmt {{probe}}
 
 lint:
     cargo clippy --all-targets -- -D warnings
+    cargo clippy {{probe}} --target-dir target --all-targets -- -D warnings
 
-test:
+# Builds the escape suite's probe helper first, so the suite's kernel probes run here too.
+test: escape-probe
     cargo nextest run
+    cargo test -q {{probe}} --target-dir target
+
+# The escape suite's probe helper (test-only) at target/debug/melissa-escape-probe, where the suite finds it.
+escape-probe:
+    cargo build -q {{probe}} --target-dir target
 
 check: fmt lint test
 
 # Sandbox escape suite (docs/agent-skills/sandbox-escape-tests.md): real escape attempts inside the real agent
 # sandbox, printed as a table; fails on any escape. The gate for image updates: required here, so a host without
-# bwrap or user namespaces fails instead of skipping.
-escape-test:
-    MELISSA_ESCAPE_REQUIRED=1 cargo nextest run -p melissa-agent --test escape --no-capture sandbox_escape_suite
+# bwrap or user namespaces, or without the probe helper (melissa-escape-probe, test-only), fails instead of
+# skipping. Also runs the `seccomp = false` check (kernel probes reported as skipped, never passed).
+escape-test: escape-probe
+    MELISSA_ESCAPE_REQUIRED=1 cargo nextest run -p melissa-agent --test escape --no-capture \
+        sandbox_escape_suite seccomp_off_backend_is_reported_not_passed
+
+# The same suite inside a built container image (default localhost/melissa:dev), run the way the installed
+# container runs: rootful, --privileged, systemd as PID 1, the suite as the `melissa` user with the server
+# unit's hardening. The test binary and probe helper come from the Containerfile's `escape-build` stage and
+# are added to a throwaway copy of the image (never to the image itself). Needs sudo (rootful podman). Only a
+# pass, built from the image's own revision, tags the image `localhost/melissa:escape-tested`: the one tag a
+# release may push (packaging/container/README.md, "Release gate").
+escape-test-image image="localhost/melissa:dev":
+    packaging/container/escape-test.sh {{quote(image)}}
 
 # The server plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
 # `cargo run -p melissa-server` alone does not build it, and sandboxed agents then have no network).

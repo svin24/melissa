@@ -1,0 +1,16 @@
+# Throwaway test image for the sandbox escape suite (packaging/container/escape-test.sh,
+# `just escape-test-image`): the image under test plus the suite's test binary and probe helper in
+# /opt/melissa-escape. Never tagged as the Melissa image, never shipped.
+#
+# k3s, the server and the other long-running services are masked so systemd boots quickly; the
+# agent sandbox (bwrap, melissa-netbridge, the kernel inside the container) is what is tested, and
+# the suite runs as a transient unit with the server unit's user and hardening.
+ARG IMAGE=localhost/melissa:dev
+ARG TESTS=localhost/melissa-escape-build:dev
+FROM ${TESTS} AS tests
+
+FROM ${IMAGE}
+COPY --from=tests /out/escape/ /opt/melissa-escape/
+RUN systemctl mask k3s.service melissa-server.service melissa-kubeconfig.service \
+        melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
+        melissa-factory-reset.path melissa-factory-reset.service

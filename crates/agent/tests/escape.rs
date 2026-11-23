@@ -7,9 +7,15 @@
 //! pass vacuously). Results: pass, fail or skip, printed as a table; any fail fails the test.
 //!
 //! `just escape-test` runs this with `MELISSA_ESCAPE_REQUIRED=1`, which turns a missing
-//! bwrap (or user namespaces being off) into a failure instead of a skip: it is the gate for
-//! image updates. Plain `cargo nextest run` skips it on hosts without bwrap, like the other
-//! sandbox tests. How to add probes: docs/agent-skills/sandbox-escape-tests.md.
+//! bwrap (or user namespaces being off, or a missing probe helper) into a failure instead of
+//! a skip: it is the gate for image updates. `just escape-test-image` runs the same suite inside
+//! the built container image, the NixOS VM test runs it on NixOS. Plain `cargo nextest run`
+//! skips it on hosts without bwrap, like the other sandbox tests.
+//!
+//! The kernel-surface probes (ptrace, keyctl, bpf, perf_event_open) call
+//! `melissa-escape-probe` (crates/escape-probe, test-only, never installed), found next to
+//! this test binary or at `MELISSA_ESCAPE_PROBE`, and bound read-only into each probe's
+//! sandbox. How to add probes: docs/agent-skills/sandbox-escape-tests.md.
 
 // Test-only file: panicking on setup failure is the intended behaviour.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -116,6 +122,15 @@ works() { echo "WORKS: $*"; exit 0; }
 broken() { echo "BROKEN: $*"; exit 0; }
 skip() { echo "SKIP: $*"; exit 0; }
 need() { for t in "$@"; do command -v "$t" >/dev/null 2>&1 || skip "tool missing: $t"; done; }
+# Run the probe helper (melissa-escape-probe <probe>), which prints the verdict itself.
+helper() {
+  if [ -z "${ESC_PROBE:-}" ] || [ ! -x "$ESC_PROBE" ]; then
+    [ "${ESC_REQUIRED:-0}" = 1 ] && broken "probe helper missing (melissa-escape-probe)"
+    skip "probe helper missing (build it: just escape-probe)"
+  fi
+  "$ESC_PROBE" "$@" || broken "probe helper exited with status $?"
+  exit 0
+}
 leaked() { [ "$(cat "$1" 2>/dev/null)" = "$ESC_TOKEN" ]; }
 direct() { curl -sS -o /dev/null --noproxy '*' --connect-timeout 3 --max-time 5 "$1" 2>/dev/null; }
 viaproxy() { curl -sS -o /dev/null --max-time 5 -x "$HTTPS_PROXY" --noproxy '' -w '%{http_connect}' "$@" 2>/dev/null; }
@@ -147,6 +162,10 @@ pub struct Ctx {
     abstract_name: String,
     mcp_addr: SocketAddr,
     mcp_token: String,
+    /// `melissa-escape-probe`, bound read-only into every probe's sandbox.
+    probe_helper: Option<PathBuf>,
+    /// `MELISSA_ESCAPE_REQUIRED=1`: nothing may be skipped for a missing tool of ours.
+    required: bool,
 }
 
 impl Ctx {
@@ -182,6 +201,11 @@ impl Ctx {
             ("ESC_MCP", format!("http://{}", self.mcp_addr)),
             ("ESC_MCP_TOKEN", self.mcp_token.clone()),
             ("ESC_TMP_NAME", self.tmp_name.clone()),
+            (
+                "ESC_PROBE",
+                self.probe_helper.as_deref().map(s).unwrap_or_default(),
+            ),
+            ("ESC_REQUIRED", u8::from(self.required).to_string()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -197,20 +221,26 @@ pub enum Outcome {
     Skip(String),
 }
 
-/// Read the verdict from a probe's stdout. No verdict is a failure, never a pass.
+/// Read the verdict from a probe's stdout. No verdict is a failure, never a pass. A probe of
+/// kernel surface only seccomp closes, run without the filter (`sandbox.seccomp = false`, or an
+/// architecture without one), is skipped with what it saw: it neither passes nor fails.
 fn verdict(stdout: &str, requires_seccomp: bool, seccomp: bool) -> Outcome {
     let line = stdout.lines().find_map(|l| {
         ["ESCAPED", "BLOCKED", "WORKS", "BROKEN", "SKIP"]
             .iter()
             .find_map(|w| l.strip_prefix(&format!("{w}: ")).map(|rest| (*w, rest)))
     });
+    let unfiltered = requires_seccomp && !seccomp;
     match line {
+        Some(("BLOCKED", why)) if unfiltered => Outcome::Skip(format!(
+            "seccomp off: not judged (without the filter: blocked: {why})"
+        )),
+        Some(("ESCAPED", what)) if unfiltered => Outcome::Skip(format!(
+            "seccomp off: not judged (without the filter: ESCAPED: {what})"
+        )),
         Some(("BLOCKED", why)) => Outcome::Pass(format!("blocked: {why}")),
         Some(("WORKS", what)) => Outcome::Pass(format!("works: {what}")),
         Some(("SKIP", why)) => Outcome::Skip(why.to_string()),
-        Some(("ESCAPED", what)) if requires_seccomp && !seccomp => {
-            Outcome::Skip(format!("seccomp not yet in argv (today: {what})"))
-        }
         Some(("ESCAPED", what)) => Outcome::Fail(format!("ESCAPED: {what}")),
         Some((_, why)) => Outcome::Fail(format!("broken: {why}")),
         None => Outcome::Fail("no verdict (probe did not run to the end)".into()),
@@ -246,6 +276,37 @@ fn host_program(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The suite's own run: `MELISSA_ESCAPE_REQUIRED=1` (the image gate).
+fn required() -> bool {
+    std::env::var_os("MELISSA_ESCAPE_REQUIRED").is_some_and(|v| v == "1")
+}
+
+/// `melissa-escape-probe`: `MELISSA_ESCAPE_PROBE`, else where `cargo build -p
+/// melissa-escape-probe` puts it: `target/<profile>/` (found from `CARGO_TARGET_TMPDIR`,
+/// `target/tmp`, since test binaries may live in a separate build dir), or beside the
+/// test binary's `deps/` directory.
+fn probe_helper() -> Option<PathBuf> {
+    const NAME: &str = "melissa-escape-probe";
+    if let Some(p) = std::env::var_os("MELISSA_ESCAPE_PROBE") {
+        return Some(PathBuf::from(p)).filter(|p| p.is_file());
+    }
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let from_target = option_env!("CARGO_TARGET_TMPDIR")
+        .and_then(|t| Path::new(t).parent())
+        .map(|target| target.join(profile).join(NAME));
+    let from_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join(NAME)));
+    from_target
+        .into_iter()
+        .chain(from_exe)
+        .find(|p| p.is_file())
+}
+
 fn netbridge() -> PathBuf {
     std::env::var_os("MELISSA_NETBRIDGE")
         .map(PathBuf::from)
@@ -255,7 +316,7 @@ fn netbridge() -> PathBuf {
 /// bwrap and namespaces available? `MELISSA_ESCAPE_REQUIRED=1` (the image gate) makes
 /// "no" a failure rather than a skip.
 fn sandbox_available() -> Option<(PathBuf, PathBuf)> {
-    let required = std::env::var_os("MELISSA_ESCAPE_REQUIRED").is_some_and(|v| v == "1");
+    let required = required();
     let bwrap = sandbox::find_bwrap();
     let sh = host_program("sh");
     let ok = match (&bwrap, &sh) {
@@ -273,6 +334,11 @@ fn sandbox_available() -> Option<(PathBuf, PathBuf)> {
         eprintln!("SKIP: {why}");
         return None;
     }
+    assert!(
+        !required || probe_helper().is_some(),
+        "escape suite required but the probe helper is missing: \
+         `just escape-probe`, or set MELISSA_ESCAPE_PROBE"
+    );
     Some((bwrap?, sh?))
 }
 
@@ -424,6 +490,8 @@ async fn scene(bwrap: PathBuf, sh: PathBuf) -> Scene {
             abstract_name,
             mcp_addr,
             mcp_token,
+            probe_helper: probe_helper(),
+            required: required(),
         },
         proxy,
         allow,
@@ -434,8 +502,9 @@ async fn scene(bwrap: PathBuf, sh: PathBuf) -> Scene {
     }
 }
 
-/// Run one probe in its own sandbox; returns the outcome and whether the argv had seccomp.
-async fn run(scene: &Scene, probe: &Probe) -> (Outcome, bool) {
+/// Run one probe in its own sandbox, with the backend setting `sandbox.seccomp = seccomp_on`;
+/// returns the outcome and whether the argv really had the filter.
+async fn run(scene: &Scene, probe: &Probe, seccomp_on: bool) -> (Outcome, bool) {
     let ctx = &scene.ctx;
     let work = ctx.work_of(probe.name);
     std::fs::create_dir_all(&work).unwrap();
@@ -455,6 +524,7 @@ async fn run(scene: &Scene, probe: &Probe) -> (Outcome, bool) {
         .unwrap();
     let spec = SandboxSpec {
         network: NetworkMode::Proxy,
+        seccomp: seccomp_on,
         ..SandboxSpec::default()
     };
     let plan = SandboxPlan::resolve(&spec, &scene.bwrap, Some(&ctx.home), &scene.sh)
@@ -466,7 +536,9 @@ async fn run(scene: &Scene, probe: &Probe) -> (Outcome, bool) {
         .with_bridge(lease.bridge().cloned());
     let script = format!("{PREAMBLE}\n{}\n", probe.script);
     let args = ["-c".to_string(), script];
-    let cmd = sandbox::spawn_command(&plan, &work, &[], &args).unwrap();
+    // The probe helper, bound read-only (`extra_ro`, like a backend's extra files).
+    let helper: Vec<PathBuf> = ctx.probe_helper.iter().cloned().collect();
+    let cmd = sandbox::spawn_command(&plan, &work, &helper, &args).unwrap();
     let seccomp = cmd
         .as_std()
         .get_args()
@@ -578,13 +650,21 @@ async fn run_parent_dies(sh: &Path, plan: &SandboxPlan, args: &[String], work: &
     Outcome::Pass("blocked: sandbox died with its parent".into())
 }
 
+/// The table's first line: says plainly when the run had no seccomp filter.
+fn header(seccomp: bool) -> String {
+    if seccomp {
+        "Sandbox escape suite (seccomp: on, filter in the bwrap argv)".into()
+    } else {
+        "Sandbox escape suite (seccomp: OFF, sandbox.seccomp = false or no filter for this \
+         architecture; kernel probes are skipped, not passed)"
+            .into()
+    }
+}
+
 fn print_table(rows: &[(&Probe, Outcome)], seccomp: bool) {
     let width = rows.iter().map(|(p, _)| p.name.len()).max().unwrap_or(5);
     println!();
-    println!(
-        "Sandbox escape suite (seccomp in argv: {})",
-        if seccomp { "yes" } else { "no" }
-    );
+    println!("{}", header(seccomp));
     println!("{:width$}  {:6}  DETAIL", "PROBE", "RESULT");
     for (probe, outcome) in rows {
         let (word, detail) = match outcome {
@@ -613,7 +693,7 @@ async fn sandbox_escape_suite() {
     let mut rows = Vec::new();
     let mut seccomp = false;
     for probe in probes::PROBES {
-        let (outcome, s) = run(&scene, probe).await;
+        let (outcome, s) = run(&scene, probe, true).await;
         seccomp |= s;
         rows.push((probe, outcome));
     }
@@ -631,6 +711,44 @@ async fn sandbox_escape_suite() {
     let _ = std::fs::remove_dir_all(&scene.ctx.root);
     let _ = std::fs::remove_dir_all(&scene.ctx.sockets);
     assert!(failed.is_empty(), "sandbox escapes:\n{}", failed.join("\n"));
+}
+
+/// A backend configured with `sandbox.seccomp = false`: the kernel-surface probes run without
+/// the filter and are reported as skipped (never passed), and the header says seccomp is off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seccomp_off_backend_is_reported_not_passed() {
+    let Some((bwrap, sh)) = sandbox_available() else {
+        return;
+    };
+    let scene = scene(bwrap, sh).await;
+    let mut rows = Vec::new();
+    for probe in probes::PROBES.iter().filter(|p| p.requires_seccomp) {
+        let (outcome, in_argv) = run(&scene, probe, false).await;
+        assert!(
+            !in_argv,
+            "{}: seccomp = false still put a filter in the argv",
+            probe.name
+        );
+        rows.push((probe, outcome));
+    }
+    print_table(&rows, false);
+    let _ = std::fs::remove_dir_all(&scene.ctx.root);
+    let _ = std::fs::remove_dir_all(&scene.ctx.sockets);
+    assert!(header(false).contains("seccomp: OFF"));
+    assert!(!rows.is_empty());
+    for (probe, outcome) in &rows {
+        match outcome {
+            Outcome::Skip(why) => assert!(
+                why.starts_with("seccomp off") || why.starts_with("tool missing"),
+                "{}: skipped without saying why: {why}",
+                probe.name
+            ),
+            other => panic!(
+                "{}: expected a skip with seccomp off, got {other:?}",
+                probe.name
+            ),
+        }
+    }
 }
 
 #[test]
@@ -658,11 +776,26 @@ fn a_probe_without_a_verdict_never_passes() {
         verdict("SKIP: tool missing: x", false, false),
         Outcome::Skip(_)
     ));
-    // Kernel surface: skipped until seccomp is in the argv, then a real failure.
+    // Kernel surface without the filter (seccomp = false): skipped with the reason, whatever
+    // it saw; with the filter, an escape is a real failure.
     assert!(matches!(
         verdict("ESCAPED: x", true, false),
-        Outcome::Skip(_)
+        Outcome::Skip(why) if why.starts_with("seccomp off")
     ));
+    assert!(matches!(
+        verdict("BLOCKED: x", true, false),
+        Outcome::Skip(why) if why.starts_with("seccomp off")
+    ));
+    assert!(matches!(
+        verdict("BLOCKED: x", true, true),
+        Outcome::Pass(_)
+    ));
+    // A broken kernel probe fails even without the filter.
+    assert!(matches!(
+        verdict("BROKEN: x", true, false),
+        Outcome::Fail(_)
+    ));
+    assert!(matches!(verdict("", true, false), Outcome::Fail(_)));
     assert!(matches!(
         verdict("ESCAPED: x", true, true),
         Outcome::Fail(_)

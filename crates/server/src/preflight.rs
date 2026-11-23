@@ -50,6 +50,9 @@ pub struct Report {
     pub k3s: bool,
     /// `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 23.10+).
     pub apparmor_userns_restricted: bool,
+    /// Sandboxed backends that run without Melissa's seccomp filter, with why
+    /// (`sandbox.seccomp = false`, or no filter for this architecture).
+    pub seccomp_off: Vec<(String, &'static str)>,
 }
 
 impl Report {
@@ -114,6 +117,18 @@ impl Report {
                     );
                 }
             }
+        }
+        if !self.seccomp_off.is_empty() {
+            let names: Vec<String> = self
+                .seccomp_off
+                .iter()
+                .map(|(name, why)| format!("{name} ({why})"))
+                .collect();
+            line(format!(
+                "  Seccomp:  OFF for {}. Those agents can reach ptrace, keyrings, bpf, perf \
+                 events and nested namespaces.",
+                names.join(", ")
+            ));
         }
         line("  Agents:".into());
         let lead = self.lead_backend();
@@ -195,6 +210,15 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         Some(bwrap) => probe_bwrap(bwrap).await,
     };
     let netbridge = melissa_agent::egress::find_netbridge().is_some();
+    let seccomp_off = seccomp_off(specs, melissa_agent::sandbox::seccomp::host_supported());
+    for (name, why) in &seccomp_off {
+        tracing::warn!(
+            backend = %name,
+            reason = *why,
+            "agent sandbox runs WITHOUT the seccomp filter: ptrace, keyrings, bpf, perf events \
+             and nested namespaces are reachable from it"
+        );
+    }
     let backends = specs
         .iter()
         .map(|spec| {
@@ -238,7 +262,29 @@ pub async fn gather(i: Inputs<'_>) -> Report {
             "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
         )
         .is_ok_and(|s| s.trim() == "1"),
+        seccomp_off,
     }
+}
+
+/// Sandboxed backends without the seccomp filter, and why. `arch_supported`: Melissa has a
+/// filter for this architecture (`seccomp::host_supported`).
+fn seccomp_off(specs: &[BackendSpec], arch_supported: bool) -> Vec<(String, &'static str)> {
+    specs
+        .iter()
+        .filter_map(|spec| {
+            let sb = spec.effective_sandbox();
+            if !sb.enabled {
+                return None;
+            }
+            if !sb.seccomp {
+                Some((spec.name().to_string(), "sandbox.seccomp = false"))
+            } else if !arch_supported {
+                Some((spec.name().to_string(), "no filter for this architecture"))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Start bwrap the way the sandbox does (all namespaces, loopback brought up) and run `true`.
@@ -320,7 +366,39 @@ mod tests {
             lead_order: vec!["grok-acp".into(), "claude-session".into()],
             k3s: false,
             apparmor_userns_restricted: false,
+            seccomp_off: Vec::new(),
         }
+    }
+
+    #[test]
+    fn seccomp_off_backends_are_named_in_the_summary() {
+        let mut r = report();
+        assert!(!r.render().contains("Seccomp:"));
+        r.seccomp_off = vec![("grok-acp".into(), "sandbox.seccomp = false")];
+        let text = r.render();
+        assert!(
+            text.contains("Seccomp:  OFF for grok-acp (sandbox.seccomp = false)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn seccomp_off_comes_from_the_backend_config() {
+        let config: crate::config::ServerConfig = toml::from_str(
+            "[[backend]]\nname = \"on\"\ncommand = \"x\"\n\
+             [[backend]]\nname = \"off\"\ncommand = \"x\"\nsandbox = { seccomp = false }\n\
+             [[backend]]\nname = \"bare\"\ncommand = \"x\"\nsandbox = { enabled = false }",
+        )
+        .unwrap();
+        assert_eq!(
+            seccomp_off(&config.backends, true),
+            [("off".to_string(), "sandbox.seccomp = false")]
+        );
+        let all: Vec<String> = seccomp_off(&config.backends, false)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(all, ["on", "off"]);
     }
 
     #[test]

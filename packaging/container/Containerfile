@@ -35,6 +35,21 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 # Melissa's own license (LICENSE, MIT) and the acknowledgments ship with the report.
 COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 
+# ---- test-only: the sandbox escape suite and its probe helper ----------------------------
+# Built only with `--target escape-build` (packaging/container/escape-test.sh, `just escape-test-image`),
+# from the same sources and toolchain as the binaries above; the image below never contains them.
+FROM build AS escape-build
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target,id=melissa-target \
+    find crates -type f -exec touch {} + \
+ && cargo build --release --locked --manifest-path crates/escape-probe/Cargo.toml --target-dir target \
+ && cargo test --release --locked --no-run -p melissa-agent --test escape --message-format=json \
+        > /tmp/escape-build.json \
+ && exe=$(grep '"name":"escape"' /tmp/escape-build.json | grep -o '"executable":"[^"]*"' | cut -d'"' -f4) \
+ && test -n "$exe" \
+ && install -D -m 0755 "$exe" /out/escape/escape \
+ && install -D -m 0755 target/release/melissa-escape-probe /out/escape/melissa-escape-probe
+
 # ---- stage 2: fetch and verify k3s (versions and hashes pinned in k3s.lock) ----------
 # No k3s-selinux: SELinux reads as disabled inside a container; the host confines the container.
 FROM ${BUILDER} AS k3s
@@ -173,6 +188,9 @@ RUN set -eu; \
         /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled \
         /usr/libexec/melissa/factory-reset; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
+    # Test-only binaries (escape-build stage) never ship.
+    for f in /usr/bin/melissa-escape-probe /opt/melissa-escape; do \
+        test ! -e "$f" || { echo "lint: test-only $f must not be in the image"; exit 1; }; done; \
     . /usr/lib/melissa/tailscale.lock; \
     [ "$(/usr/bin/tailscale version | head -1)" = "$TAILSCALE_VERSION" ] \
         || { echo "lint: tailscale is not $TAILSCALE_VERSION"; exit 1; }; \

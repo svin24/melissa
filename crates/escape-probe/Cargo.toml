@@ -1,0 +1,32 @@
+# Test-only helper of the sandbox escape suite (crates/agent/tests/escape.rs). Its own workspace and
+# Cargo.lock on purpose: its dependencies are never compiled into a shipped binary, so they stay out
+# of the main lockfile, the license report (`just licenses`, cargo-about --workspace) and the
+# packages (the image and the Nix package build only `-p melissa-server -p melissa-device
+# -p melissa-agent`). Build: `cargo build --manifest-path crates/escape-probe/Cargo.toml
+# --target-dir target` (`just escape-test` does it).
+[workspace]
+
+[package]
+name = "melissa-escape-probe"
+version = "0.0.1"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Test-only helper for the sandbox escape suite: raw kernel calls without python3. Never installed."
+
+[dependencies]
+# ptrace attach (safe wrapper). Same major as the main workspace's (transitive) nix.
+nix = { version = "0.31", default-features = false, features = ["ptrace", "process"] }
+# keyctl: safe keyring API (Apache-2.0 OR MIT; deps: bitflags, libc).
+linux-keyutils = "0.2"
+# perf_event_open: safe counter builder (Apache-2.0 OR MIT; maintained fork of `perf-event`).
+perf-event2 = "0.7"
+# bpf(BPF_MAP_CREATE): Aya, the pure-Rust eBPF library (MIT OR Apache-2.0); no C toolchain.
+aya = { version = "0.16", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

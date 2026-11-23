@@ -24,39 +24,6 @@
 
 use super::{Kind, Probe};
 
-/// Python prelude for the kernel-surface probes: raw syscalls through ctypes (python3 is
-/// on Fedora hosts; the container image has none, so these probes skip there).
-macro_rules! py_prelude {
-    () => {
-        r#"need python3
-python3 -I - <<'PY'
-import ctypes, errno, os, platform, struct, sys
-libc = ctypes.CDLL(None, use_errno=True)
-libc.syscall.restype = ctypes.c_long
-NR = {
-    "x86_64": {"keyctl": 250, "bpf": 321, "perf_event_open": 298},
-    "aarch64": {"keyctl": 219, "bpf": 280, "perf_event_open": 241},
-}.get(platform.machine())
-def verdict(word, msg):
-    print(word + ": " + msg)
-    sys.exit(0)
-def call(name, *args):
-    if NR is None:
-        verdict("SKIP", "no syscall numbers for " + platform.machine())
-    conv = [ctypes.c_long(a) if isinstance(a, int) else a for a in args]
-    ctypes.set_errno(0)
-    r = libc.syscall(ctypes.c_long(NR[name]), *conv)
-    return r, ctypes.get_errno()
-def judge(name, r, e):
-    if r >= 0:
-        verdict("ESCAPED", name + " succeeded")
-    if e in (errno.EPERM, errno.EACCES, errno.ENOSYS):
-        verdict("BLOCKED", name + ": " + errno.errorcode[e])
-    verdict("ESCAPED", name + " reachable (" + errno.errorcode.get(e, str(e)) + ")")
-"#
-    };
-}
-
 /// The probes, in report order. Adding one: a `Probe::new(name, tries, expect, script)`
 /// entry (plus `.seccomp()` for kernel surface only seccomp will close, `.host(check)` for a
 /// host-side check of the effect). Keep scripts POSIX sh + coreutils where possible.
@@ -442,20 +409,7 @@ pub const PROBES: &[Probe] = &[
         "ipc.abstract-socket",
         "connect to a host abstract Unix socket (the X11/D-Bus escape class)",
         "blocked (abstract sockets are per network namespace)",
-        r#"if command -v python3 >/dev/null 2>&1; then
-             python3 -I -c 'import socket, sys
-s = socket.socket(socket.AF_UNIX)
-try:
-    s.connect("\0" + sys.argv[1])
-    print("ESCAPED: connected to the host abstract socket")
-except OSError as e:
-    print("BLOCKED: " + (e.strerror or str(e)))' "$ESC_ABSTRACT"
-             exit 0
-           fi
-           need socat
-           socat -u OPEN:/dev/null "ABSTRACT-CONNECT:$ESC_ABSTRACT" 2>/dev/null \
-             && escaped "connected to the host abstract socket"
-           blocked "connect refused""#,
+        r#"helper abstract-connect "$ESC_ABSTRACT""#,
     ),
     Probe::new(
         "ipc.host-sockets",
@@ -502,7 +456,8 @@ except OSError as e:
         r#"[ -n "$(ls -A /sys 2>/dev/null)" ] && escaped "/sys is mounted"
            blocked "/sys absent or empty""#,
     ),
-    // ---- Kernel surface: seccomp will close these (another branch); skipped until then. ----
+    // ---- Kernel surface: only seccomp closes these; skipped (never passed) without it. ----
+    // `helper <probe>` runs melissa-escape-probe (crates/escape-probe), bound read-only.
     Probe::new(
         "kern.unshare-user",
         "create a nested user namespace (unshare -U)",
@@ -537,78 +492,28 @@ except OSError as e:
         "kern.ptrace",
         "PTRACE_ATTACH to a child process",
         "blocked by seccomp",
-        concat!(
-            py_prelude!(),
-            r#"pid = os.fork()
-if pid == 0:
-    import time
-    time.sleep(5)
-    os._exit(0)
-libc.ptrace.restype = ctypes.c_long
-ctypes.set_errno(0)
-r = libc.ptrace(ctypes.c_long(16), ctypes.c_long(pid), None, None)
-e = ctypes.get_errno()
-if r == 0:
-    libc.ptrace(ctypes.c_long(17), ctypes.c_long(pid), None, None)
-os.kill(pid, 9)
-os.waitpid(pid, 0)
-judge("ptrace(PTRACE_ATTACH)", r, e)
-PY
-exit 0"#
-        ),
+        r#"helper ptrace"#,
     )
     .seccomp(),
     Probe::new(
         "kern.keyctl",
         "reach the launcher's session keyring (bwrap keeps it: keys readable and writable)",
         "blocked by seccomp",
-        concat!(
-            py_prelude!(),
-            r#"r, e = call("keyctl", 0, -3, 0)
-if r >= 0:
-    desc = ctypes.create_string_buffer(256)
-    n, _ = call("keyctl", 6, r, desc, 256)
-    name = desc.value.decode(errors="replace").rsplit(";", 1)[-1] if n > 0 else "?"
-    ids = ctypes.create_string_buffer(4096)
-    n, _ = call("keyctl", 11, r, ids, 4096)
-    verdict("ESCAPED", "session keyring '" + name + "' reachable, " + str(max(n, 0) // 4) + " keys linked")
-judge("keyctl", r, e)
-PY
-exit 0"#
-        ),
+        r#"helper keyctl"#,
     )
     .seccomp(),
     Probe::new(
         "kern.bpf",
         "create a BPF map (bpf BPF_MAP_CREATE)",
         "blocked (unprivileged bpf off; seccomp later)",
-        concat!(
-            py_prelude!(),
-            r#"attr = ctypes.create_string_buffer(72)
-struct.pack_into("IIII", attr, 0, 2, 4, 4, 1)
-r, e = call("bpf", 0, attr, 72)
-judge("bpf(BPF_MAP_CREATE)", r, e)
-PY
-exit 0"#
-        ),
+        r#"helper bpf"#,
     )
     .seccomp(),
     Probe::new(
         "kern.perf-event-open",
         "open a software perf event on itself (perf_event_open)",
         "blocked by seccomp",
-        concat!(
-            py_prelude!(),
-            r#"attr = ctypes.create_string_buffer(112)
-struct.pack_into("IIQ", attr, 0, 1, 112, 0)
-struct.pack_into("Q", attr, 40, (1 << 5) | (1 << 6))
-r, e = call("perf_event_open", attr, 0, -1, -1, 0)
-if r >= 0:
-    os.close(r)
-judge("perf_event_open", r, e)
-PY
-exit 0"#
-        ),
+        r#"helper perf-event-open"#,
     )
     .seccomp(),
 ];

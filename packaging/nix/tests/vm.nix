@@ -6,7 +6,8 @@
 #   nix run .#checks.x86_64-linux.melissa-nixos.driverInteractive   (debug: start_all(), ...)
 #
 # Checked: the server starts, the UI answers on loopback only, an echo chat turn, the sandbox and
-# egress integration tests as the `melissa` user (bwrap, own netns, netbridge, proxy), a
+# egress integration tests and the escape suite (required) as the `melissa` user (bwrap, own netns,
+# netbridge, proxy, seccomp; kernel probes through melissa-escape-probe), a
 # vendor-style binary (/lib64 loader) running in the sandbox through nix-ld, k3s Ready, Melissa's
 # RBAC and admission policies applied, an app deployed from a spec (deploy_app) whose NodePort
 # answers from the LAN, stop/start of the app, Settings → Providers writing providers.toml, Settings'
@@ -161,15 +162,20 @@ pkgs.testers.runNixOSTest {
             print(server.execute("journalctl -u melissa-server --no-pager | tail -40")[1])
             raise Exception("no echo reply")
 
-    with subtest("sandbox and egress integration tests as the melissa user"):
+    with subtest("sandbox, egress and escape integration tests as the melissa user"):
         env = (
             "env PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin HOME=/var/lib/melissa/home TMPDIR=/tmp "
             "MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
+            # The escape suite (crates/agent/tests/escape.rs): required, so a missing bwrap or probe
+            # helper fails; its scene in the melissa user's own state directory.
+            "MELISSA_ESCAPE_REQUIRED=1 MELISSA_ESCAPE_PROBE=${tests}/bin/melissa-escape-probe "
+            "MELISSA_ESCAPE_DIR=/var/lib/melissa/escape-test "
         )
-        for t in ["sandbox", "egress"]:
+        for t in ["sandbox", "egress", "escape"]:
             out = server.succeed(f"cd /tmp && runuser -u melissa -- {env} melissa-it-{t} --nocapture --test-threads=1 2>&1")
             print(out)
             assert "test result: ok" in out and "SKIP" not in out, out
+        assert "probes:" in out and " 0 fail," in out, out
 
     with subtest("vendor-style binary in the sandbox through nix-ld"):
         server.succeed(
