@@ -346,3 +346,41 @@ print(subprocess.run([\"echo\", \"child ok\"], capture_output=True, text=True).s
         eprintln!("NOTE: nested user namespaces are off on this host");
     }
 }
+
+/// The cgroup gate (`--block-fd`): `SandboxCommand::spawn` lets bwrap go on even when no
+/// cgroup could be made for it (here: limits planned, but this process set up no cgroup tree),
+/// so the sandbox runs instead of waiting forever.
+#[tokio::test]
+async fn the_cgroup_gate_always_opens() {
+    if !bwrap_works() {
+        return;
+    }
+    let dir = scratch("gate");
+    let home = dir.join("home");
+    let work = dir.join("work");
+    for d in [&home, &work] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let bwrap = sandbox::find_bwrap().unwrap();
+    let sh = host_program("sh").unwrap();
+    let spec = SandboxSpec {
+        network: NetworkMode::None,
+        ..SandboxSpec::default()
+    };
+    let mut plan = sandbox::SandboxPlan::resolve(&spec, &bwrap, Some(&home), &sh).unwrap();
+    plan.limits = Some(sandbox::limits::Limits::default());
+    let mut cmd =
+        sandbox::spawn_command(&plan, &work, &[], &["-c".into(), "echo gate-open".into()]).unwrap();
+    assert!(cmd.command().as_std().get_args().any(|a| a == "--block-fd"));
+    cmd.command_mut()
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let sandbox::SandboxChild { child, cgroup } = cmd.spawn().unwrap();
+    assert!(cgroup.is_none());
+    let out = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
+        .await
+        .expect("bwrap waited on its gate")
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "gate-open");
+}

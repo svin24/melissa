@@ -434,10 +434,12 @@ impl ClaudeBackend {
         )?;
         if !self.sandbox.enabled {
             // Provider settings first, so Melissa's own variables win.
-            command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
-            command.envs(env.iter().map(|(k, v)| (k, v)));
+            let c = command.command_mut();
+            c.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+            c.envs(env.iter().map(|(k, v)| (k, v)));
         }
-        let mut child = command
+        command
+            .command_mut()
             .current_dir(cwd)
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -445,9 +447,9 @@ impl ClaudeBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // Dropping the session kills the agent (and under bwrap the whole sandbox).
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| AgentError::Spawn {
+            .kill_on_drop(true);
+        let crate::sandbox::SandboxChild { mut child, cgroup } =
+            command.spawn().map_err(|source| AgentError::Spawn {
                 command: self.spec.command.clone(),
                 source,
             })?;
@@ -473,7 +475,9 @@ impl ClaudeBackend {
         let shutdown: crate::acp::client::Shutdown = Box::new(move || {
             Box::pin(async move {
                 stop().await;
-                // The sockets close after the agent has stopped; the MCP file goes with it.
+                // The sockets close after the agent has stopped; the MCP file goes with it, and
+                // the sandbox's cgroup (killing anything left inside).
+                drop(cgroup);
                 drop(lease);
                 drop(mcp_file);
             })

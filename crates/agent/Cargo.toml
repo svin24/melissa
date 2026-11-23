@@ -39,6 +39,7 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 # Checks the seccomp syscall tables against libc's numbers (already in the build).
 libc = "0.2"
+toml = { workspace = true }
 
 # Runs inside each agent sandbox: forwards loopback ports to the lead agent's egress sockets.
 [[bin]]

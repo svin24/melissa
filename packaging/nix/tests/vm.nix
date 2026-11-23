@@ -154,6 +154,14 @@ pkgs.testers.runNixOSTest {
         server.succeed("systemctl show -p User --value melissa-server | grep -qx melissa")
         server.succeed("stat -c '%U %a' /etc/melissa | grep -qx 'melissa 750'")
 
+    with subtest("agent sandboxes get resource limits (delegated cgroup)"):
+        cg = "/sys/fs/cgroup/system.slice/melissa-server.service"
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'agent sandboxes get resource limits'")
+        # The server moved itself into server/; the unit's own cgroup holds no process.
+        server.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
+        server.succeed(f"grep -qx \"$(systemctl show -p MainPID --value melissa-server)\" {cg}/server/cgroup.procs")
+        server.succeed(f"grep -qw memory {cg}/sandboxes/cgroup.subtree_control")
+
     with subtest("chat turn on the echo backend"):
         rc, out = server.execute("melissa-server ask 'hello from nixos' 2>&1")
         print(out)

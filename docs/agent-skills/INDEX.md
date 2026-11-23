@@ -14,7 +14,8 @@ Read this at the start of every session. One file per skill; update the skill wh
 - [agent-egress.md](agent-egress.md) — deny-by-default network for sandboxed agents: netns + `melissa-netbridge`,
   CONNECT proxy with per-backend allowlists, MCP-only socket, `network = proxy|learn|none|host`, what each CLI contacts.
 - [sandbox-escape-tests.md](sandbox-escape-tests.md) — the adversarial escape suite (`just escape-test`, the gate for
-  image updates): how probes run, verdict words, controls, seccomp-gated probes, adding a probe in a few lines.
+  image updates): how probes run, verdict words, controls, seccomp-gated and resource-limit probes, adding a probe
+  in a few lines.
 - [lead-loop.md](lead-loop.md) — the lead agent and its persistent, named agents: the shared
   conversation machinery, agent registry, agent tools and guards, event stream + transcript, resume via a
   Melissa-owned session store, `/api/lead`, `/api/agents`, `melissa-server chat|ask [--agent]`, `agent`, `workspace`;

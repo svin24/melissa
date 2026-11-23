@@ -10,6 +10,10 @@
 //! bwrap (or user namespaces being off) into a failure instead of a skip: it is the gate for
 //! image updates. Plain `cargo nextest run` skips it on hosts without bwrap, like the other
 //! sandbox tests. How to add probes: docs/agent-skills/sandbox-escape-tests.md.
+//!
+//! Resource limits (`limits.*` probes) need a delegated cgroup: `just escape-test` runs the suite
+//! in a `systemd-run --user --scope -p Delegate=yes` scope and names it in `MELISSA_TEST_CGROUP`.
+//! Without one those probes skip (they never run without limits: one is a fork bomb).
 
 // Test-only file: panicking on setup failure is the intended behaviour.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -35,7 +39,11 @@ use std::{
 use melissa_agent::{
     egress::{EgressProxy, EgressRequest, HostRule, WebRead},
     mcp::McpServer,
-    sandbox::{self, SandboxPlan},
+    sandbox::{
+        self,
+        limits::{self, LimitEvents, Limits},
+        SandboxChild, SandboxCommand, SandboxPlan,
+    },
     tools::{DeviceInfo, TaskContext, Tool, ToolRegistry},
     NetworkMode, SandboxSpec,
 };
@@ -46,6 +54,9 @@ use tokio::{
 
 /// A host-side check of what an attempt would have changed; `Err` = it escaped.
 pub type HostCheck = fn(&Ctx) -> Result<(), String>;
+
+/// A check of the sandbox's cgroup counters after a limit probe; `Err` = the limit did not hold.
+pub type LimitCheck = fn(&LimitEvents) -> Result<(), String>;
 
 /// How a probe runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +82,9 @@ pub struct Probe {
     /// filter, an escape is reported as skipped; once it has one, an escape fails.
     pub requires_seccomp: bool,
     pub host: Option<HostCheck>,
+    /// A resource-limit probe: runs only when the sandbox has a cgroup with limits, then this
+    /// checks its counters.
+    pub limits: Option<LimitCheck>,
     pub kind: Kind,
 }
 
@@ -88,12 +102,18 @@ impl Probe {
             script,
             requires_seccomp: false,
             host: None,
+            limits: None,
             kind: Kind::Script,
         }
     }
 
     pub const fn seccomp(mut self) -> Self {
         self.requires_seccomp = true;
+        self
+    }
+
+    pub const fn limits(mut self, check: LimitCheck) -> Self {
+        self.limits = Some(check);
         self
     }
 
@@ -455,6 +475,7 @@ async fn run(scene: &Scene, probe: &Probe) -> (Outcome, bool) {
         .unwrap();
     let spec = SandboxSpec {
         network: NetworkMode::Proxy,
+        limits: suite_limits(),
         ..SandboxSpec::default()
     };
     let plan = SandboxPlan::resolve(&spec, &scene.bwrap, Some(&ctx.home), &scene.sh)
@@ -468,14 +489,37 @@ async fn run(scene: &Scene, probe: &Probe) -> (Outcome, bool) {
     let args = ["-c".to_string(), script];
     let cmd = sandbox::spawn_command(&plan, &work, &[], &args).unwrap();
     let seccomp = cmd
+        .command()
         .as_std()
         .get_args()
         .any(|a| a == "--seccomp" || a == "--add-seccomp-fd");
 
     let outcome = match probe.kind {
-        Kind::Script => run_script(cmd, &work, probe, seccomp).await,
+        // A limit probe never runs without limits (one is a fork bomb).
+        Kind::Script if probe.limits.is_some() && plan.limits.is_none() => {
+            drop(cmd);
+            Outcome::Skip(format!("resource limits off: {}", limits_off_reason()))
+        }
+        Kind::Script => {
+            let (outcome, events) = run_script(cmd, &work, probe, seccomp).await;
+            match (outcome, probe.limits, events) {
+                (Outcome::Pass(p), Some(check), Some(events)) => match check(&events) {
+                    Ok(()) => Outcome::Pass(p),
+                    Err(e) => Outcome::Fail(format!("ESCAPED (cgroup check): {e}")),
+                },
+                (Outcome::Pass(_), Some(_), None) => {
+                    Outcome::Fail("broken: the sandbox got no cgroup".into())
+                }
+                (o, _, _) => o,
+            }
+        }
         Kind::ParentDies => {
             drop(cmd);
+            // Built by hand around an `sh` parent, without the cgroup gate.
+            let plan = SandboxPlan {
+                limits: None,
+                ..plan.clone()
+            };
             run_parent_dies(&scene.sh, &plan, &args, &work).await
         }
     };
@@ -491,24 +535,37 @@ async fn run(scene: &Scene, probe: &Probe) -> (Outcome, bool) {
     (outcome, seccomp)
 }
 
-/// `cmd` is from `sandbox::spawn_command`; the rest as the backends set it (cli.rs).
+/// `cmd` is from `sandbox::spawn_command`; the rest as the backends set it (cli.rs). Also
+/// returns the sandbox cgroup's counters, when it had one.
 async fn run_script(
-    mut cmd: tokio::process::Command,
+    mut cmd: SandboxCommand,
     work: &Path,
     probe: &Probe,
     seccomp: bool,
-) -> Outcome {
-    cmd.current_dir(work)
+) -> (Outcome, Option<LimitEvents>) {
+    cmd.command_mut()
+        .current_dir(work)
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let out = match tokio::time::timeout(Duration::from_secs(30), cmd.output()).await {
+    let SandboxChild { child, cgroup } = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                Outcome::Fail(format!("cannot start the sandbox: {e}")),
+                None,
+            )
+        }
+    };
+    let out = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await;
+    let events = cgroup.as_ref().map(|c| c.events());
+    let out = match out {
         Ok(Ok(out)) => out,
-        Ok(Err(e)) => return Outcome::Fail(format!("cannot start the sandbox: {e}")),
-        Err(_) => return Outcome::Fail("timed out after 30 s".into()),
+        Ok(Err(e)) => return (Outcome::Fail(format!("sandbox failed: {e}")), events),
+        Err(_) => return (Outcome::Fail("timed out after 30 s".into()), events),
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let outcome = verdict(&stdout, probe.requires_seccomp, seccomp);
@@ -516,10 +573,40 @@ async fn run_script(
         if why.starts_with("no verdict") {
             let err = String::from_utf8_lossy(&out.stderr);
             let tail: String = err.lines().rev().take(3).collect::<Vec<_>>().join(" | ");
-            return Outcome::Fail(format!("{why}; {}; stderr: {tail}", out.status));
+            return (
+                Outcome::Fail(format!("{why}; {}; stderr: {tail}", out.status)),
+                events,
+            );
         }
     }
-    outcome
+    (outcome, events)
+}
+
+/// The limits every suite sandbox gets: small, so the limit probes are quick and light on the
+/// host, and enough for the other probes (sh, curl).
+fn suite_limits() -> Limits {
+    Limits {
+        memory: limits::Bytes(Some(256 << 20)),
+        pids: limits::Pids(Some(128)),
+        cpus: limits::Cpus::from_cpus(0.5).unwrap(),
+        ..Limits::default()
+    }
+}
+
+/// Set up limits when the suite runs in a delegated cgroup (`just escape-test`).
+fn init_limits() {
+    if let Some(base) = std::env::var_os("MELISSA_TEST_CGROUP") {
+        limits::init_at(Path::new(&base));
+    }
+}
+
+fn limits_off_reason() -> String {
+    match limits::status() {
+        Some(limits::Status::Off(why)) => why.clone(),
+        Some(limits::Status::Active(_)) => "turned off for this sandbox".into(),
+        None => "not in a delegated cgroup (MELISSA_TEST_CGROUP unset; `just escape-test` sets it)"
+            .into(),
+    }
 }
 
 /// Kill the sandbox's parent; the detached heartbeat inside must stop. The parent is an
@@ -580,9 +667,13 @@ async fn run_parent_dies(sh: &Path, plan: &SandboxPlan, args: &[String], work: &
 
 fn print_table(rows: &[(&Probe, Outcome)], seccomp: bool) {
     let width = rows.iter().map(|(p, _)| p.name.len()).max().unwrap_or(5);
+    let limits = match limits::tree() {
+        Some(t) => format!("on, {} ({})", suite_limits(), t.path().display()),
+        None => format!("off ({})", limits_off_reason()),
+    };
     println!();
     println!(
-        "Sandbox escape suite (seccomp in argv: {})",
+        "Sandbox escape suite (seccomp in argv: {}; resource limits: {limits})",
         if seccomp { "yes" } else { "no" }
     );
     println!("{:width$}  {:6}  DETAIL", "PROBE", "RESULT");
@@ -609,6 +700,7 @@ async fn sandbox_escape_suite() {
     let Some((bwrap, sh)) = sandbox_available() else {
         return;
     };
+    init_limits();
     let scene = scene(bwrap, sh).await;
     let mut rows = Vec::new();
     let mut seccomp = false;
