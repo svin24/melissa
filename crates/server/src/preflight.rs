@@ -45,6 +45,8 @@ pub struct Report {
     pub netbridge: bool,
     /// Resource limits per agent sandbox: `Ok(the defaults)` when applied, `Err(why not)`.
     pub limits: Result<String, String>,
+    /// Why an agent's memory use could panic the host (`vm.panic_on_oom`), if it could.
+    pub oom_panic: Option<&'static str>,
     pub backends: Vec<BackendLine>,
     /// `[lead] backends`, in order.
     pub lead_order: Vec<String>,
@@ -132,10 +134,16 @@ impl Report {
                 names.join(", ")
             ));
         }
+        let oom = self.oom_panic.map_or_else(String::new, |risk| {
+            format!(
+                " PROBLEM: {risk}. Fix: {}.",
+                melissa_agent::sandbox::limits::OOM_PANIC_FIX
+            )
+        });
         match &self.limits {
-            Ok(defaults) => line(format!("  Limits:   on (each agent: {defaults})")),
+            Ok(defaults) => line(format!("  Limits:   on (each agent: {defaults}).{oom}")),
             Err(why) => line(format!(
-                "  Limits:   off: {why}. Agents run without memory, process and CPU limits."
+                "  Limits:   off: {why}. Agents run without memory, process and CPU limits.{oom}"
             )),
         }
         line("  Agents:".into());
@@ -264,6 +272,7 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         sandbox,
         netbridge,
         limits: limits_line(),
+        oom_panic: oom_panic(),
         backends,
         lead_order: lead_order.to_vec(),
         k3s: kubeconfigs.iter().any(|p| p.is_file()),
@@ -335,6 +344,14 @@ fn limits_line() -> Result<String, String> {
     }
 }
 
+/// Whether `vm.panic_on_oom` turns an agent's out-of-memory into a host panic, given whether
+/// agents get their own memory cgroup. The memory limit stays on either way
+/// ([`melissa_agent::sandbox::limits::oom_panic_risk`]); the startup log already warned.
+fn oom_panic() -> Option<&'static str> {
+    use melissa_agent::sandbox::limits::{oom_panic_risk, read_panic_on_oom, tree};
+    oom_panic_risk(read_panic_on_oom(), tree().is_some())
+}
+
 fn first_line(s: &str) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     if line.is_empty() {
@@ -370,6 +387,7 @@ mod tests {
             sandbox: Sandbox::Ok,
             netbridge: true,
             limits: Ok("2 GiB memory, 512 processes, 2 CPUs".into()),
+            oom_panic: None,
             backends: vec![
                 BackendLine {
                     name: "grok-acp".into(),
@@ -458,6 +476,24 @@ mod tests {
         assert!(r.render().contains(
             "Limits:   off: no cgroup v2 (unified hierarchy) on this host. Agents run without"
         ));
+    }
+
+    #[test]
+    fn limits_line_reports_a_dangerous_panic_on_oom() {
+        use melissa_agent::sandbox::limits::{oom_panic_risk, OomPanic};
+        let mut r = report();
+        assert!(!r.render().contains("panic_on_oom"));
+        r.oom_panic = oom_panic_risk(Some(OomPanic::Always), true);
+        let text = r.render();
+        let limits = text.lines().find(|l| l.contains("Limits:")).unwrap();
+        assert!(limits.contains("on (each agent: 2 GiB memory"));
+        assert!(limits.contains(
+            "PROBLEM: vm.panic_on_oom = 2: an agent that hits its memory limit panics the whole host"
+        ));
+        assert!(limits.contains("sysctl -w vm.panic_on_oom=0"));
+        // 1 is safe while agents have their own memory cgroup.
+        r.oom_panic = oom_panic_risk(Some(OomPanic::SystemWide), true);
+        assert!(!r.render().contains("panic_on_oom"));
     }
 
     #[test]

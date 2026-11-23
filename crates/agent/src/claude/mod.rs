@@ -66,9 +66,12 @@ pub struct ClaudeSpec {
     /// Give the agent Melissa's tools (an MCP config file per session).
     #[serde(default = "yes")]
     pub tools: bool,
-    /// Sandbox settings. Absent: the built-in preset for this command.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A whole sandbox set by code ([`ClaudeSpec::with_sandbox`]); never from the config file.
+    #[serde(skip)]
     pub sandbox: Option<SandboxSpec>,
+    /// `[backend.sandbox]`: changes to the built-in preset ([`sandbox::SandboxConfig`]).
+    #[serde(rename = "sandbox", default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_table: Option<sandbox::SandboxConfig>,
     /// Network access of the sandboxed agent (see [`crate::AcpSpec::network`]).
     #[serde(default)]
     pub network: crate::egress::NetworkMode,
@@ -97,6 +100,7 @@ impl ClaudeSpec {
             args: Vec::new(),
             tools: true,
             sandbox: None,
+            sandbox_table: None,
             network: crate::egress::NetworkMode::default(),
             allow: None,
             record_dir: None,
@@ -124,13 +128,13 @@ impl ClaudeSpec {
     }
 
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        let mut spec = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
-        spec.network = self.network;
-        spec.allow = self.allow.clone();
-        spec
+        sandbox::effective(
+            self.sandbox.as_ref(),
+            self.sandbox_table.as_ref(),
+            || SandboxSpec::preset(&self.command),
+            self.network,
+            self.allow.clone(),
+        )
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {

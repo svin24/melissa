@@ -107,6 +107,39 @@ impl Limits {
     }
 }
 
+/// `[backend.sandbox.limits]` as written in the config: only the keys given change the
+/// backend's limits ([`LimitsOverride::apply`]); the others keep their preset values.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitsOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<Bytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap: Option<Bytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pids: Option<Pids>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<Cpus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_weight: Option<IoWeight>,
+}
+
+impl LimitsOverride {
+    /// `base` with the keys this override sets replaced.
+    pub fn apply(&self, base: Limits) -> Limits {
+        Limits {
+            enabled: self.enabled.unwrap_or(base.enabled),
+            memory: self.memory.unwrap_or(base.memory),
+            swap: self.swap.unwrap_or(base.swap),
+            pids: self.pids.unwrap_or(base.pids),
+            cpus: self.cpus.unwrap_or(base.cpus),
+            io_weight: self.io_weight.or(base.io_weight),
+        }
+    }
+}
+
 impl fmt::Display for Limits {
     /// Short form for the startup summary: `2 GiB memory, 512 processes, 2 CPUs`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -429,7 +462,70 @@ fn log(status: Status) -> Status {
              alone in `systemd-run --user --scope -p Delegate=yes` (docs/DEV-ENV.md)"
         ),
     }
+    let active = matches!(status, Status::Active(_));
+    if let Some(risk) = oom_panic_risk(read_panic_on_oom(), active) {
+        tracing::warn!("{risk}. Fix: {OOM_PANIC_FIX}");
+    }
     status
+}
+
+/// The kernel's OOM panic setting.
+pub const PANIC_ON_OOM: &str = "/proc/sys/vm/panic_on_oom";
+
+/// How to make the host safe again (startup log and summary).
+pub const OOM_PANIC_FIX: &str =
+    "`sysctl -w vm.panic_on_oom=0`, and `vm.panic_on_oom = 0` in /etc/sysctl.d/ to keep it";
+
+/// `vm.panic_on_oom` (Documentation/admin-guide/sysctl/vm.rst).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OomPanic {
+    /// 0: the OOM killer kills a process; no panic.
+    Never,
+    /// 1: panic on a system-wide OOM only. An OOM confined by a memory cgroup, mempolicy or
+    /// cpuset still just kills a process, so an agent at its own limit is safe.
+    SystemWide,
+    /// 2: panic on every OOM, a memory cgroup's included.
+    Always,
+}
+
+/// Parse `/proc/sys/vm/panic_on_oom`. Unknown values count as [`OomPanic::Always`] (the
+/// cautious reading); unreadable text is `None`.
+pub fn parse_panic_on_oom(text: &str) -> Option<OomPanic> {
+    match text.trim().parse::<i64>().ok()? {
+        0 => Some(OomPanic::Never),
+        1 => Some(OomPanic::SystemWide),
+        _ => Some(OomPanic::Always),
+    }
+}
+
+/// This host's setting, if readable.
+pub fn read_panic_on_oom() -> Option<OomPanic> {
+    fs::read_to_string(PANIC_ON_OOM)
+        .ok()
+        .and_then(|t| parse_panic_on_oom(&t))
+}
+
+/// Why an agent's memory use could panic the whole host, or `None` when it cannot.
+/// `limits_active`: agent sandboxes get their own memory cgroup ([`Status::Active`]).
+///
+/// With 2 every OOM panics, so an agent that reaches its `memory.max` takes the host down.
+/// With 1 a cgroup OOM is safe, but without per-agent limits an agent that eats all memory
+/// causes a system-wide OOM, which panics. The memory limit stays on in both cases: without
+/// it an agent could still exhaust the host's memory (a panic under 1 and 2 alike, or the OOM
+/// killer hitting k3s or the server under 0), and the process and CPU limits are unaffected.
+pub fn oom_panic_risk(setting: Option<OomPanic>, limits_active: bool) -> Option<&'static str> {
+    match (setting?, limits_active) {
+        (OomPanic::Always, true) => Some(
+            "vm.panic_on_oom = 2: an agent that hits its memory limit panics the whole host",
+        ),
+        (OomPanic::Always, false) => {
+            Some("vm.panic_on_oom = 2: any out-of-memory, also one caused by an agent, panics the whole host")
+        }
+        (OomPanic::SystemWide, false) => Some(
+            "vm.panic_on_oom = 1 and no per-agent memory limit: an agent that uses up the memory panics the whole host",
+        ),
+        (OomPanic::SystemWide, true) | (OomPanic::Never, _) => None,
+    }
 }
 
 /// [`init`]: the server's own cgroup must hold only this process (a systemd service with
@@ -774,6 +870,57 @@ mod tests {
         let off: Limits = toml::from_str("enabled = false").unwrap();
         assert!(!off.enabled);
         assert_eq!(off.memory, Limits::default().memory);
+    }
+
+    #[test]
+    fn limits_override_changes_only_given_keys() {
+        let base = Limits {
+            memory: Bytes(Some(3 * GIB)),
+            io_weight: Some(IoWeight(50)),
+            ..Limits::default()
+        };
+        let o: LimitsOverride = toml::from_str("pids = 64").unwrap();
+        let l = o.apply(base.clone());
+        assert_eq!(l.pids, Pids(Some(64)));
+        assert_eq!(
+            l,
+            Limits {
+                pids: Pids(Some(64)),
+                ..base.clone()
+            }
+        );
+        assert_eq!(LimitsOverride::default().apply(base.clone()), base);
+        let o: LimitsOverride = toml::from_str("memory = \"max\"\nenabled = false").unwrap();
+        let l = o.apply(base.clone());
+        assert_eq!(
+            (l.enabled, l.memory, l.cpus),
+            (false, Bytes(None), base.cpus)
+        );
+        assert!(toml::from_str::<LimitsOverride>("memroy = \"1G\"").is_err());
+        assert!(toml::from_str::<LimitsOverride>("pids = 0").is_err());
+    }
+
+    #[test]
+    fn panic_on_oom_is_read_and_judged() {
+        assert_eq!(parse_panic_on_oom("0\n"), Some(OomPanic::Never));
+        assert_eq!(parse_panic_on_oom("1\n"), Some(OomPanic::SystemWide));
+        assert_eq!(parse_panic_on_oom("2\n"), Some(OomPanic::Always));
+        assert_eq!(parse_panic_on_oom("7"), Some(OomPanic::Always));
+        assert_eq!(parse_panic_on_oom(""), None);
+        assert_eq!(parse_panic_on_oom("x"), None);
+
+        // 2: every OOM panics, the memory cgroup's included, with or without limits.
+        assert!(oom_panic_risk(Some(OomPanic::Always), true)
+            .unwrap()
+            .contains("hits its memory limit"));
+        assert!(oom_panic_risk(Some(OomPanic::Always), false).is_some());
+        // 1: a cgroup OOM only kills; without limits an agent can cause a system-wide OOM.
+        assert_eq!(oom_panic_risk(Some(OomPanic::SystemWide), true), None);
+        assert!(oom_panic_risk(Some(OomPanic::SystemWide), false).is_some());
+        assert_eq!(oom_panic_risk(Some(OomPanic::Never), true), None);
+        assert_eq!(oom_panic_risk(Some(OomPanic::Never), false), None);
+        // Unreadable (no /proc): nothing to report.
+        assert_eq!(oom_panic_risk(None, true), None);
     }
 
     #[test]

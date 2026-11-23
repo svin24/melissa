@@ -200,8 +200,11 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `--block-fd` until it and its child are inside, so nothing in the sandbox ever runs outside its cgroup. On
   exit the cgroup is killed (`cgroup.kill`) and removed; OOM kills and refused forks are logged. Without
   delegation (from source, cgroup v1) agents run unlimited, with one warning and a `Limits: off` line in the
-  startup summary. Verified with the real server in a delegated user scope; the escape suite's `limits.*`
-  probes (fork bomb, memory hog, CPU hog) check the cgroup counters. Next: Melissa-owned CLI logins.
+  startup summary. `vm.panic_on_oom = 2` (or 1 with limits off) is reported there as a PROBLEM and logged: an
+  agent's OOM would panic the host; the limit stays on. Verified with the real server in a delegated user scope;
+  the escape suite's `limits.*` probes (fork bomb, memory hog, CPU hog) check the cgroup counters.
+  **Config (2026-11-23):** `[backend.sandbox]` changes the CLI's preset key by key (`limits` too) and its lists
+  add to the preset's; `preset = false` starts from an empty home. Next: Melissa-owned CLI logins.
 - **Escape suite (2026-11-23):** `just escape-test` runs real escape attempts inside the real sandbox (bwrap +
   egress namespace + bridge, built with `SandboxPlan` and spawned through `sandbox::spawn_command()`, the backends' one spawn path;
   `crates/agent/tests/escape.rs`, probes in `tests/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
@@ -1396,7 +1399,9 @@ Roadmap (rough, phases may overlap):
     the NixOS VM test: `Resource limits: on`, fork bomb, memory hog and CPU hog all contained. Finding: with
     `vm.panic_on_oom = 2` (the NixOS test driver's default; some hardened hosts set it) a cgroup OOM panics the
     whole kernel, so an agent hitting its memory limit would take the box down. The VM test sets 0 and the
-    suite skips its memory probe under 2; should the server check it and report `Limits:` accordingly? Open: a
+    suite skips its memory probe under 2. Done (2026-11-23): the server reads it at startup; under 2 (or 1 with
+    limits off) the `Limits:` line says PROBLEM with the fix and the log warns; the memory limit stays on
+    (DECISIONS). Not done: nothing re-checks it if it changes while the server runs. Open: a
     cap on all sandboxes together (`sandboxes/memory.max`, e.g. a share of RAM) so many agents at once cannot
     starve k3s; per-agent limits in Settings (today only `[backend.sandbox.limits]` in server.toml); whether a
     hit limit should reach the audit log and the agent's chat, not only the server log.

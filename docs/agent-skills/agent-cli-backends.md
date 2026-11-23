@@ -102,9 +102,13 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 | OpenCode | `~/.opencode/bin/opencode`                         | ro `~/.config/opencode/opencode.json{,c}` (since 2026-11-18 not the whole dir: it also holds `service.json`, a local server password, and plugins; tmpfs `~/.config/opencode` around them); tmpfs `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode`; rw `~/.local/share/opencode/auth.json` if present (not present on the laptop: free default model). `opencode-acp`: same without the user's config files (Melissa writes the config). |
 
 - Config: `[backend.sandbox]` with `enabled`, `seccomp` (default true), `limits` (table, above), `tmpfs`, `ro`, `rw` (paths relative to `$HOME`, no `..`), `env`
-  (names to pass through). Absent table = preset for the command's file name; a given table replaces the preset
-  (so `[backend.sandbox.limits]` alone also drops the preset's paths: repeat them).
-  `sandbox = { enabled = false }` runs the CLI unsandboxed.
+  (names to pass through), `preset` (default true). Since 2026-11-23 the table changes the preset for the
+  command's file name instead of replacing it (`SandboxConfig`): `enabled`/`seccomp` replace the preset's value,
+  `limits` key by key, and the lists **add** to the preset's (no duplicates), so `[backend.sandbox.limits]` or
+  `seccomp = false` alone keeps the credential binds. An empty list (`rw = []`) is refused: it would change
+  nothing. To drop preset paths (e.g. use an API key instead of the OAuth file) set `preset = false`; the lists
+  are then exactly what the table says. `network`/`allow` stay backend keys (`allow` replaces the built-in host
+  list). `sandbox = { enabled = false }` runs the CLI unsandboxed.
 - Integration test `crates/agent/tests/sandbox.rs`: fake HOME secret unreadable, writes outside the workdir fail,
   inside succeed, host env not leaked, cancel kills a `setsid` background grandchild. Skips if bwrap is missing.
 
