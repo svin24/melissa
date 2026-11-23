@@ -1886,3 +1886,41 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
 - **2026-11-23 — gVisor is the first extra isolation for apps (owner: "let's try gvisor").** Prototype gVisor
   (`runsc`) as a k3s RuntimeClass chosen per app, per docs/design/ISOLATION-RESEARCH-2026-11-23.md. Kata (needs
   KVM) second; Nix-built services and bare microVMs parked.
+
+- **2026-11-23 — Apps run under gVisor by default; `isolation` in the app spec (built; the default is
+  provisional, owner to confirm).** Following "let's try gvisor": the spec's optional `isolation` is `gvisor`
+  or `standard` (`kata` reserved, unknown values refused). *Default:* every spec without the field gets
+  `gvisor`. The brief was "agent-built apps and images outside the trusted registries: gvisor; catalog/trusted
+  apps: standard", but Melissa has no catalog and no trusted-image or registry list any more (agents pick any
+  image), so the rule reduces to "gvisor unless the spec says standard"; the old catalog's Nextcloud
+  (`appspec::legacy`) says `standard`. The confirmation summary names the level in words
+  (`isolation: gVisor sandbox (its own kernel)` / `isolation: standard (shares the device's kernel)`; no new UI
+  component), the deployer stores the level it used with the spec (a later default change never moves a
+  running app; specs from before have no field and move to gVisor at their next confirmed update or
+  bring-back). *Fail closed:* a gVisor deploy reads the `gvisor` RuntimeClass first (melissa-apps may `get`
+  only that one) and applies nothing without it or with a handler other than `runsc`; admission refuses a
+  Deployment (melissa-apps-workloads) or any pod (new melissa-apps-isolation, every creator, app namespaces)
+  labelled `melissa.io/isolation=gvisor`, directly or through its namespace, without `runtimeClassName: gvisor`,
+  and any other RuntimeClass there; melissa-gvisor-runtimeclass keeps that class's handler `runsc` (the field
+  is immutable anyway; the policy covers a re-created class). *Runtime:* RuntimeClass `gvisor`, handler
+  `runsc`, `overhead` 48Mi/50m (Sentry memory counts against the pod). k3s 1.37 doesn't detect runsc, so the
+  container's `k3s-prepare` writes containerd's entry as `config-v3.toml.tmpl` (`{{ template "base" . }}` + the
+  runtime; left alone if someone else's) and the RuntimeClass manifest at every start, only when runsc and
+  `containerd-shim-runsc-v1` are on PATH; NixOS: `services.melissa.k3s.gvisor.enable` (default on), nixpkgs'
+  `gvisor`, the same template as the v3 file name (nixpkgs' `containerdConfigTemplate` writes the v2 name). The
+  image ships Google's static release-20261116.0 binaries (`gvisor.lock`: tarball sha512, LICENSE sha256;
+  runsc, the shim and runsc's `gvisor-bin/` sidecars, which it needs next to its real path since this
+  release; not the checkpoint, network-gofer and metrics binaries; ~118 MB unpacked). The startup summary says
+  `gVisor: on (runsc <version>)` / `off: <why>`. *Platform: systrap* (gVisor's default): no KVM needed, the
+  same on bare metal, in a VM and in the privileged container. KVM measured ~30% faster on the laptop (1M
+  one-byte syscalls 1.9 s vs 2.8 s; 300 fork+exec 0.97 s vs 1.35 s; native 0.23 s / 0.33 s) but hands the
+  Sentry `/dev/kvm` (the host's KVM module joins the attack surface) and is poor when the host is a VM; a
+  measured change in `runsc.toml` later. *Verified:* `just gvisor-test-image` (throwaway rootful container,
+  both levels through deploy_app + confirm: gVisor pod `/proc/version` `4.19.0-gvisor` and gVisor's dmesg
+  banner, standard pod the host kernel; probes; fail-closed paths) and the NixOS VM test. Cost measured
+  there (busybox `sleep`, image cached): pod replaced to Ready 1.7 s vs 1.3 s under runc; pod cgroup memory
+  16.1 MiB vs 0.7 MiB; first deploy to Ready 5.8 s incl. the image pull. Alternatives: opt-in
+  per app (the research's open question; weaker for unreviewed images), a trusted-registry list defaulting to
+  `standard` (none exists to base it on; easy to add later), silent fallback to runc when runsc is missing
+  (rejected: the label would lie). Honest framing: gVisor narrows the kernel surface; app-to-app network
+  isolation is still NetworkPolicy's job (unbuilt).
