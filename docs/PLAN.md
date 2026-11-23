@@ -212,13 +212,22 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   the proxy refusing non-allowlisted and private targets, the MCP bridge), IPC (abstract sockets, host service
   sockets), devices, and kernel surface (`unshare -U`, `mount`, `ptrace`, `keyctl`, `bpf`, `perf_event_open`).
   Controls prove the denials are not vacuous; a probe that cannot run says "skip", one with no verdict fails.
-  Kernel-surface probes would be skipped if the argv had no `--seccomp`; with the filter they are hard checks.
+  Kernel-surface probes are hard checks with the filter; without it (`seccomp = false`, or an architecture
+  without a filter) they are always skipped with the reason and the table header says seccomp is OFF (tested:
+  `seccomp_off_backend_is_reported_not_passed`); the startup summary and the log name such backends.
+  The raw-syscall probes (ptrace, keyctl, bpf, perf_event_open, abstract sockets) run through a test-only helper,
+  `melissa-escape-probe` (`crates/escape-probe`, own workspace and lockfile, safe crates: nix, linux-keyutils,
+  perf-event2, aya), bound read-only into each probe sandbox; no python3 needed (2026-11-23).
   **It is the gate for image updates:** an image (or bwrap/kernel change) ships only when it passes with no
   failures (`MELISSA_ESCAPE_REQUIRED=1`, so a missing bwrap fails rather than skips). Its first run found
   bwrap's own environment (the server's, inherited) readable through `/proc/1/environ`; fixed by spawning bwrap
   with an empty environment (`sandbox::spawn_command`). The sandbox also keeps the launcher's session keyring;
   seccomp's keyring block (`keyctl` refused) closes that. How to add probes:
-  `docs/agent-skills/sandbox-escape-tests.md`. Not yet wired into CI or packaging (open question 95).
+  `docs/agent-skills/sandbox-escape-tests.md`. **Runs against the shipped artefacts (2026-11-23):**
+  `just escape-test-image` runs it inside the built container image (rootful, `--privileged`, systemd, as
+  `melissa` with the server unit's hardening) and only a pass from the image's own revision tags it
+  `localhost/melissa:escape-tested`, the tag a release may push; the NixOS VM test runs it as `melissa`. No CI
+  runs it automatically (open question 95).
 - **Egress (2026-11-18):** deny-by-default network for every sandboxed agent (`crates/agent/src/egress`): own
   network namespace with loopback only and no resolver; `melissa-netbridge` inside forwards to per-sandbox Unix
   sockets served by the lead agent: an HTTPS `CONNECT` proxy with a per-backend host allowlist (DNS by the lead agent,
@@ -1368,17 +1377,26 @@ Roadmap (rough, phases may overlap):
     microvm.nix, Kata), so it is the natural first target; the container install needs /dev/kvm passed in.
     To find out: how it fits the app manifest and approval model; isolation, start time and memory versus
     pods; licences; and whether it can stay offline-capable.
-95. Sandbox escape suite as a real gate (2026-11-23). `just escape-test` exists and passes on the dev host, but
-    nothing runs it automatically yet. To do: run it in CI and inside the built container image before an image
-    is published (the image has no python3, so the ptrace/keyctl/bpf/perf probes skip there: ship a small
-    probe helper, or accept the skips?), and on NixOS. The sandbox still inherits the launcher's session
-    keyring (bwrap gives no new one), but seccomp now blocks `keyctl`/`add_key`/`request_key`, so it is
-    unreachable (`kern.keyctl` passes: EPERM). A fresh keyring per sandbox would only matter if seccomp were
-    turned off for a backend (`seccomp = false`).
+95. Sandbox escape suite as a real gate (2026-11-23). Mostly done: the python3 probes became a test-only helper
+    (`melissa-escape-probe`), the suite runs inside the built image (`just escape-test-image`, which tags
+    `localhost/melissa:escape-tested` only on a pass from the image's own revision) and in the NixOS VM test,
+    and `seccomp = false` is reported (skips with the reason, startup summary, log). Still open: (a) nothing
+    runs it automatically. There is no CI and no publish step yet; suggestion for the owner: when one exists
+    (CI or a local `release` recipe), it should build the image, run `just escape-test-image` and push only
+    `:escape-tested`, and run the NixOS check. Whether to add CI at all is the owner's call. (b) The image run
+    boots the image with k3s and the server masked, so the server-level path (a real backend spawned by
+    `melissa-server`) is covered by `spawn_command` being shared, not end to end. (c) The sandbox still inherits
+    the launcher's session keyring (bwrap gives no new one); seccomp blocks `keyctl`/`add_key`/`request_key`, so
+    it is unreachable (`kern.keyctl` passes: EPERM). A fresh keyring per sandbox would only matter with
+    `seccomp = false`, where the suite now shows it open (`kern.keyctl` skip: "session keyring reachable").
 96. Agent resource limits, what is left (2026-11-23). Per-sandbox cgroups work under systemd delegation (verified
-    with the real server in a `systemd-run --user --scope -p Delegate=yes` scope and the escape suite). Not yet
-    verified: the rootful container (systemd inside podman `--systemd=always`; it should get the controllers, but
-    the server reports `Limits: off` with a reason if not) and the NixOS VM test (a subtest checks it). Open: a
+    with the real server in a `systemd-run --user --scope -p Delegate=yes` scope and the escape suite). Also
+    verified by the escape suite's `limits.*` probes (2026-11-23) inside the rootful container image
+    (`just escape-test-image`: systemd under podman `--systemd=always`, `Delegate=memory pids cpu io`) and in
+    the NixOS VM test: `Resource limits: on`, fork bomb, memory hog and CPU hog all contained. Finding: with
+    `vm.panic_on_oom = 2` (the NixOS test driver's default; some hardened hosts set it) a cgroup OOM panics the
+    whole kernel, so an agent hitting its memory limit would take the box down. The VM test sets 0 and the
+    suite skips its memory probe under 2; should the server check it and report `Limits:` accordingly? Open: a
     cap on all sandboxes together (`sandboxes/memory.max`, e.g. a share of RAM) so many agents at once cannot
     starve k3s; per-agent limits in Settings (today only `[backend.sandbox.limits]` in server.toml); whether a
     hit limit should reach the audit log and the agent's chat, not only the server log.

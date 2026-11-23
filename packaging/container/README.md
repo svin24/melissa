@@ -7,7 +7,8 @@ host starts it through a Quadlet, so `systemctl start|stop|status melissa` works
 Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files on top of
 `packaging/common/`, e.g. the Settings → Providers Install/Sign-in units and their polkit rule
 `51-melissa-agent-install.rules`), `melissa.container` (Quadlet template), `install.sh`, `uninstall.sh`,
-`host/` (the update helper and its path unit, installed on the host).
+`host/` (the update helper and its path unit, installed on the host), `escape-test.sh` and
+`Containerfile.escape-test` (the sandbox escape suite inside the image; see "Release gate").
 
 ## Requirements
 - Linux with systemd, cgroup v2 (all of cpu, cpuset, io, memory, pids), podman 5 or newer, root.
@@ -239,6 +240,28 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
 - Version: `/usr/lib/melissa/release` in the image (`MELISSA_VERSION`, `MELISSA_REVISION`) and the
   image labels; Settings shows them with the image digest from the helper (or the image name and ID from
   `/run/.containerenv` without it).
+
+## Release gate (sandbox escape suite)
+An image is releasable only after the sandbox escape suite (docs/agent-skills/sandbox-escape-tests.md) passed
+**inside it**:
+
+```sh
+just container-build            # localhost/melissa:dev from the current commit
+just escape-test-image          # or: just escape-test-image localhost/melissa:<tag>
+```
+
+`escape-test.sh` builds the Containerfile's `escape-build` stage (the suite's test binary and the test-only
+probe helper; the image itself never contains them, its lint checks that), adds them under
+`/opt/melissa-escape` to a throwaway copy of the image with k3s and the server masked, copies that into root's
+storage, boots it like the Quadlet (rootful, `--privileged --systemd=always`, podman's network, no published
+ports, container name `melissa-escape-test`, so an installed `melissa` keeps running) and runs the suite as
+`melissa` with the server unit's hardening. Needs sudo. Output: the probe table and
+`target/escape-test-image.log`.
+
+On a pass, and only when the image's revision label is the commit the suite was built from (no local changes
+under `crates/`), it tags the image `localhost/melissa:escape-tested`. Any run on an image first removes that
+tag from it, so a failing run revokes an earlier pass. There is no publish step yet; whatever pushes images
+later must push only `:escape-tested` (PLAN open question 95).
 
 ## Security
 - `--privileged` rootful: the container has **root on the host**. k3s needs mounts, netfilter and network

@@ -6,7 +6,8 @@
 #   nix run .#checks.x86_64-linux.melissa-nixos.driverInteractive   (debug: start_all(), ...)
 #
 # Checked: the server starts, the UI answers on loopback only, an echo chat turn, the sandbox and
-# egress integration tests as the `melissa` user (bwrap, own netns, netbridge, proxy), a
+# egress integration tests and the escape suite (required) as the `melissa` user (bwrap, own netns,
+# netbridge, proxy, seccomp; kernel probes through melissa-escape-probe), a
 # vendor-style binary (/lib64 loader) running in the sandbox through nix-ld, k3s Ready, Melissa's
 # RBAC and admission policies applied, an app deployed from a spec (deploy_app) whose NodePort
 # answers from the LAN, stop/start of the app, Settings → Providers writing providers.toml, Settings'
@@ -60,6 +61,10 @@ pkgs.testers.runNixOSTest {
         cores = 4;
         diskSize = 8192;
       };
+      # The test driver defaults to vm.panic_on_oom = 2 (panic on any OOM), which turns the escape
+      # suite's memory probe (an OOM inside its own 256 MiB cgroup) into a kernel panic. 0 is the
+      # kernel's and NixOS's normal default.
+      boot.kernel.sysctl."vm.panic_on_oom" = 0;
       services.melissa = {
         enable = true;
         apps = {
@@ -169,7 +174,7 @@ pkgs.testers.runNixOSTest {
             print(server.execute("journalctl -u melissa-server --no-pager | tail -40")[1])
             raise Exception("no echo reply")
 
-    with subtest("sandbox and egress integration tests as the melissa user"):
+    with subtest("sandbox, egress and escape integration tests as the melissa user"):
         env = (
             "env PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin HOME=/var/lib/melissa/home TMPDIR=/tmp "
             "MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
@@ -178,6 +183,29 @@ pkgs.testers.runNixOSTest {
             out = server.succeed(f"cd /tmp && runuser -u melissa -- {env} melissa-it-{t} --nocapture --test-threads=1 2>&1")
             print(out)
             assert "test result: ok" in out and "SKIP" not in out, out
+        # The escape suite (crates/agent/tests/escape.rs): required, so a missing bwrap or probe helper
+        # fails; its scene in the melissa user's state directory. Like the server unit it runs with
+        # cgroup delegation; the shell moves into a `runner` leaf and hands the delegated cgroup to the
+        # suite (MELISSA_TEST_CGROUP), as `just escape-test` does, so the `limits.*` probes run.
+        suite = (
+            'cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup); '
+            'mkdir -p "$cg/runner" && printf 0 > "$cg/runner/cgroup.procs" && export MELISSA_TEST_CGROUP="$cg"; '
+            "exec ${tests}/bin/melissa-it-escape --nocapture --test-threads=1"
+        )
+        out = server.succeed(
+            "systemd-run --quiet --wait --pipe --collect --service-type=exec "
+            "-p User=melissa -p Group=melissa -p 'Delegate=memory pids cpu io' "
+            "-p WorkingDirectory=/tmp "
+            "-E PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin -E HOME=/var/lib/melissa/home -E TMPDIR=/tmp "
+            "-E MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
+            "-E MELISSA_ESCAPE_REQUIRED=1 -E MELISSA_ESCAPE_PROBE=${tests}/bin/melissa-escape-probe "
+            "-E MELISSA_ESCAPE_DIR=/var/lib/melissa/escape-test "
+            f"/run/current-system/sw/bin/bash -c '{suite}' 2>&1"
+        )
+        print(out)
+        assert "test result: ok" in out and "SKIP" not in out, out
+        assert "probes:" in out and " 0 fail," in out, out
+        assert "Resource limits: on" in out, out
 
     with subtest("vendor-style binary in the sandbox through nix-ld"):
         server.succeed(
