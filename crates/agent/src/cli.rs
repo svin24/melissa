@@ -183,7 +183,7 @@ impl CliBackend {
         self
     }
 
-    /// Program and argv for one run: the CLI itself, or `bwrap` wrapping it.
+    /// The command for one run: the CLI itself, or `bwrap` wrapping it.
     fn command_line(
         &self,
         program: &Path,
@@ -191,7 +191,7 @@ impl CliBackend {
         req: &RunRequest,
         bridge: Option<Bridge>,
         args: Vec<String>,
-    ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
+    ) -> Result<tokio::process::Command, AgentError> {
         let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
         sandboxed_command(
             &self.sandbox,
@@ -354,12 +354,11 @@ pub(crate) fn sandboxed_command(
     env: &[(String, String)],
     bridge: Option<Bridge>,
     args: Vec<String>,
-) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
+) -> Result<tokio::process::Command, AgentError> {
     if !sandbox.enabled {
-        return Ok((
-            program.to_path_buf(),
-            args.into_iter().map(Into::into).collect(),
-        ));
+        let mut command = tokio::process::Command::new(program);
+        command.args(args);
+        return Ok(command);
     }
     let bwrap = bwrap.ok_or_else(|| {
         AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
@@ -371,7 +370,11 @@ pub(crate) fn sandboxed_command(
         .with_env(&sandbox.vars)?
         .with_env(env)?
         .with_bridge(bridge);
-    Ok(sandbox::command(&plan, workdir, extra_ro, &args))
+    let (bwrap, argv) = sandbox::command(&plan, workdir, extra_ro, &args);
+    let mut command = tokio::process::Command::new(bwrap);
+    command.args(argv);
+    sandbox::pass_seccomp(&mut command, &plan)?;
+    Ok(command)
 }
 
 impl Backend for CliBackend {
@@ -431,14 +434,11 @@ impl Backend for CliBackend {
                 req.mcp.iter().map(|m| m.token.clone()).collect(),
             )?;
             let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
-            let (program, args) = self.command_line(&program, &workdir, req, bridge, args)?;
-
-            let mut command = tokio::process::Command::new(&program);
+            let mut command = self.command_line(&program, &workdir, req, bridge, args)?;
             if !self.sandbox.enabled {
                 command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
             }
             let mut child = command
-                .args(args)
                 .current_dir(&workdir)
                 // Ask CLIs for plain text; any remaining escape codes are stripped in `pump`.
                 .env("NO_COLOR", "1")

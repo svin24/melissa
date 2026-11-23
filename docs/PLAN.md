@@ -186,8 +186,14 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   read-only `/usr` and `/etc`, private `/tmp`, empty read-only home with only the CLI's credential file(s), the
   task workdir as the only writable host path (plus, for the lead agent and agents, their own file box, since
   2026-11-20), own PID/user/IPC/UTS namespaces, no capabilities, dies with the
-  lead agent's task. Verified with claude (incl. MCP tool calls), grok and opencode. Next: seccomp, Melissa-owned
-  CLI logins.
+  lead agent's task. Verified with claude (incl. MCP tool calls), grok and opencode. **Seccomp (2026-11-23):**
+  every sandbox also runs under a deny-list filter (`sandbox/seccomp.rs`, bwrap `--seccomp`, x86_64 and
+  aarch64): ptrace and cross-process memory, mounts and the new mount API, `setns`, `clone`/`unshare` with
+  namespace flags (no nested user namespaces), kernel modules, kexec, bpf, perf events, io_uring, userfaultfd,
+  keyrings, file-handle lookups, clock and host administration calls fail with `EPERM`; `clone3` gets `ENOSYS` so
+  libc falls back to `clone`; other ABIs (i386, x32, arm32) get nothing. Node, Bun, Go and the CLIs run
+  unchanged (verified). On by default; `[backend.sandbox] seccomp = false` turns it off for one backend. Next:
+  Melissa-owned CLI logins.
 - **Egress (2026-11-18):** deny-by-default network for every sandboxed agent (`crates/agent/src/egress`): own
   network namespace with loopback only and no resolver; `melissa-netbridge` inside forwards to per-sandbox Unix
   sockets served by the lead agent: an HTTPS `CONNECT` proxy with a per-backend host allowlist (DNS by the lead agent,
@@ -739,7 +745,11 @@ Roadmap (rough, phases may overlap):
 17. Where do confirmations go when no browser is open (notification channel: Android app, ntfy, email)?
 18. Audit log integrity against root on the agent: replicate it to another agent?
 19. Sandboxing: is a small in-sandbox init using Landlock/seccomp worth an `unsafe` exception, or are bwrap's
-    `--seccomp` and podman's own profiles enough? When is a microVM required?
+    `--seccomp` and podman's own profiles enough? When is a microVM required? *Partly answered 2026-11-23:*
+    bwrap's `--seccomp` is enough for seccomp and needs no `unsafe` (Melissa writes the BPF itself; the
+    `command-fds` crate maps the sealed memfd to fd 3 of bwrap). Still open: Landlock (bwrap has no option for it)
+    and when a microVM is required. Unverified: a CLI whose own inner sandbox needs user namespaces (e.g. a
+    bubblewrap-based Codex tool sandbox) now gets `EPERM` there.
 21. ~~App image source~~ Decided 2026-11-18: apps (Nextcloud, Immich, ...) are pulled live at runtime, driven by
     agents that manage the server environment from sandboxes. Done 2026-11-18: per-app registry allowlist and
     digest pinning in manifests (validated). Open: is a cluster-local pull-through cache worth it (Nextcloud: 513 MB,

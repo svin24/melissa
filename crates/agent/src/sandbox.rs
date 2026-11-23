@@ -16,14 +16,22 @@
 //! using the proxy, a DNS sinkhole on `127.0.0.1:53` ([`crate::egress::dns`]) answers every
 //! name with one fixed placeholder address; nothing is forwarded.
 //!
+//! Syscalls ([`seccomp`]): a seccomp filter makes the syscalls no agent CLI needs (ptrace,
+//! mounts, new namespaces, kernel modules, bpf, io_uring, keyrings, ...) fail with `EPERM`.
+//! bwrap reads the program from fd [`SECCOMP_FD`] ([`pass_seccomp`] puts it there).
+//!
 //! The command line is built by the pure [`command`] function from a [`SandboxPlan`];
 //! [`SandboxPlan::resolve`] does the host lookups (HOME, binary path, which files exist).
 
+pub mod seccomp;
+
 use std::{
     ffi::OsString,
+    os::fd::RawFd,
     path::{Component, Path, PathBuf},
 };
 
+use command_fds::{CommandFdExt, FdMapping};
 use serde::{Deserialize, Serialize};
 
 use crate::egress::HostRule;
@@ -72,6 +80,10 @@ pub struct SandboxSpec {
     /// lead agent's user, with access to all of that user's files.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
+    /// Run the CLI under Melissa's seccomp filter ([`seccomp`]). On by default; turn it off
+    /// only for a CLI that verifiably needs a denied syscall.
+    #[serde(default = "enabled_by_default")]
+    pub seccomp: bool,
     /// Empty, writable, throw-away directories (tmpfs), e.g. a CLI's state directory.
     #[serde(default)]
     pub tmpfs: Vec<String>,
@@ -105,6 +117,7 @@ impl Default for SandboxSpec {
     fn default() -> Self {
         Self {
             enabled: true,
+            seccomp: true,
             tmpfs: Vec::new(),
             ro: Vec::new(),
             rw: Vec::new(),
@@ -358,6 +371,8 @@ pub struct SandboxPlan {
     /// Further host directories bound read-write at the same path, after the working
     /// directory: the agent's own file box ([`crate::files`]). Absolute, without `..`.
     pub rw_dirs: Vec<PathBuf>,
+    /// Install the seccomp filter (`--seccomp`); the spawner must then [`pass_seccomp`].
+    pub seccomp: bool,
 }
 
 /// A top-level system directory (`/bin`, `/lib64`, ...) inside the sandbox.
@@ -533,6 +548,14 @@ impl SandboxPlan {
             _ => Network::Isolated(None),
         };
         let system = SystemRoot::detect(&program);
+        let seccomp = spec.seccomp && seccomp::host_supported();
+        if spec.seccomp && !seccomp {
+            tracing::warn!(
+                arch = std::env::consts::ARCH,
+                "no seccomp filter for this architecture (only x86_64 and aarch64): \
+                 agent sandboxes run without it"
+            );
+        }
         Ok(Self {
             bwrap: bwrap.to_path_buf(),
             home,
@@ -542,6 +565,7 @@ impl SandboxPlan {
             network,
             system,
             rw_dirs: Vec::new(),
+            seccomp,
         })
     }
 
@@ -631,6 +655,11 @@ pub fn command(
         &"--hostname",
         &SANDBOX_HOSTNAME,
     ]);
+    // Syscall filter, read from an fd the spawner maps ([`pass_seccomp`]); bwrap installs it
+    // right before executing the first program inside.
+    if plan.seccomp {
+        push(&[&"--seccomp", &SECCOMP_FD.to_string()]);
+    }
 
     // Environment: nothing from the host unless allowed.
     push(&[&"--clearenv"]);
@@ -771,6 +800,26 @@ pub fn command(
     (plan.bwrap.clone(), argv)
 }
 
+/// The fd number bwrap reads the seccomp program from (`--seccomp 3`): the first after stdio.
+pub const SECCOMP_FD: RawFd = 3;
+
+/// Give `cmd` (the `bwrap` command built from `plan`) the seccomp program at [`SECCOMP_FD`],
+/// if the plan uses one. The program is a sealed memfd; only the child gets it (the parent's
+/// copy is close-on-exec and closes when `cmd` is dropped), so no other process spawned
+/// meanwhile inherits it. Call once per command.
+pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io::Result<()> {
+    if !plan.seccomp {
+        return Ok(());
+    }
+    let mapping = FdMapping {
+        parent_fd: seccomp::memfd()?,
+        child_fd: SECCOMP_FD,
+    };
+    cmd.fd_mappings(vec![mapping])
+        .map_err(std::io::Error::other)?;
+    Ok(())
+}
+
 /// Find bubblewrap: the Fedora location first, then `PATH`.
 pub fn find_bwrap() -> Option<PathBuf> {
     let fixed = Path::new(BWRAP_PATH);
@@ -798,7 +847,42 @@ mod tests {
             network: Network::Host,
             system: SystemRoot::default(),
             rw_dirs: Vec::new(),
+            seccomp: true,
         }
+    }
+
+    #[test]
+    fn argv_carries_the_seccomp_fd_unless_turned_off() {
+        let mut p = plan(Vec::new(), "/usr/bin/cli");
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(has(&a, &["--seccomp", "3"]), "{a:?}");
+        // Before the program: bwrap options end at `--`.
+        let sep = a.iter().position(|x| *x == "--").unwrap();
+        assert!(a.iter().position(|x| *x == "--seccomp").unwrap() < sep);
+        p.seccomp = false;
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        assert!(!strs(&argv).contains(&"--seccomp"));
+    }
+
+    #[test]
+    fn seccomp_is_on_by_default_and_can_be_turned_off_in_config() {
+        assert!(SandboxSpec::default().seccomp);
+        assert!(SandboxSpec::preset("claude").seccomp);
+        let spec: SandboxSpec = serde_json::from_str(r#"{"seccomp": false}"#).unwrap();
+        assert!(!spec.seccomp && spec.enabled);
+        let spec: SandboxSpec = serde_json::from_str("{}").unwrap();
+        assert!(spec.seccomp);
+    }
+
+    #[test]
+    fn pass_seccomp_maps_only_when_planned() {
+        let mut p = plan(Vec::new(), "/usr/bin/cli");
+        let mut cmd = std::process::Command::new("true");
+        pass_seccomp(&mut cmd, &p).unwrap();
+        p.seccomp = false;
+        let mut cmd = std::process::Command::new("true");
+        pass_seccomp(&mut cmd, &p).unwrap();
     }
 
     fn bridge() -> Bridge {

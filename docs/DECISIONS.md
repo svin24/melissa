@@ -1753,3 +1753,12 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   owner asked for license, credits and a sponsor link in the app; nothing remote (no GitHub button or badge), so
   it works offline. Alternatives: the device menu (no room for the texts), one subpage per text (more clicks,
   more routes), a hand-written credits list (would drift from ACKNOWLEDGMENTS.md).
+- **2026-11-23 — Every agent sandbox runs under a seccomp deny-list (bwrap `--seccomp`), on by default.** Denied
+  syscalls return `EPERM` (not kill) so CLIs degrade instead of crashing; `clone3` returns `ENOSYS` (libc falls
+  back to `clone`, whose namespace flags the filter checks). Melissa writes the classic BPF itself in safe Rust
+  (one program for x86_64 and aarch64, tested with an in-test BPF interpreter and against libc's numbers);
+  `command-fds` hands it to bwrap as fd 3 from a sealed memfd. Other host architectures: no filter, a warning
+  (refusing would leave only "sandbox off"). `[backend.sandbox] seccomp = false` turns it off per backend. Why:
+  no agent CLI needs these calls, and they are where kernel escapes start. Alternatives: `seccompiler` (one arch
+  per program, a crate for ~150 lines), libseccomp (C library), clearing `FD_CLOEXEC` with rustix (leaks the fd
+  into every process spawned at the same time), an allow-list (breaks CLIs when they update).
