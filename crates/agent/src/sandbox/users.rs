@@ -688,7 +688,9 @@ fn load_table(path: &Path, uids: Range, gids: Range) -> Result<Table, String> {
 fn save_table(path: &Path, table: &Table) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let body = serde_json::to_vec_pretty(table).map_err(io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
+    // One temporary name per process: two processes sharing a state dir (the escape suite's
+    // parallel tests) would otherwise rename each other's file away.
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
