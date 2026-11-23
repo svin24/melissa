@@ -54,6 +54,13 @@ escape-test: escape-probe
 escape-test-image image="localhost/melissa:dev":
     packaging/container/escape-test.sh {{quote(image)}}
 
+# gVisor end to end in the built image (default localhost/melissa:dev): a throwaway rootful container with
+# k3s deploys a tiny app with the default isolation and one `standard` through deploy_app, proves which
+# kernel each sees, runs cheap escape probes and the fail-closed checks, prints start time and memory.
+# Needs sudo and the network (busybox); leaves nothing behind. Log: target/gvisor-test-image.log.
+gvisor-test-image image="localhost/melissa:dev":
+    packaging/container/gvisor-test.sh {{quote(image)}}
+
 # The server plus melissa-netbridge (the sandbox's network bridge, a binary of melissa-agent:
 # `cargo run -p melissa-server` alone does not build it, and sandboxed agents then have no network).
 build:
