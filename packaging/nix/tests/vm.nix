@@ -132,6 +132,8 @@ pkgs.testers.runNixOSTest {
     def tool(name, args, confirm=False):
         body = shlex.quote(json.dumps(args))
         out = "/tmp/tool-" + name + ".json"
+        # A second call of the same tool must not read the first one's result.
+        server.succeed(f"rm -f {out} {out}.done")
         server.succeed(
             f"(curl -sS {SOCK}--max-time 600 -H 'Content-Type: application/json' -X POST -d {body} "
             f"http://localhost/api/tools/{name} > {out}; echo done >> {out}.done) >/dev/null 2>&1 &"
@@ -286,9 +288,13 @@ pkgs.testers.runNixOSTest {
         # `hello` has no `isolation`: gVisor, stored explicitly; its kernel is gVisor's.
         assert kubectl("-n app-hello get deploy hello -o jsonpath='{.spec.template.spec.runtimeClassName}'").strip() == "gvisor"
         assert kubectl("get ns app-hello -o jsonpath='{.metadata.labels.melissa\\.io/isolation}'").strip() == "gvisor"
+        # gVisor's own kernel: not the VM's /proc/version (nixpkgs' gvisor says `4.4.0`, newer
+        # releases `4.19.0-gvisor`), and gVisor's boot banner in dmesg.
+        host_version = server.succeed("cat /proc/version").strip()
         out = tool("app_exec", {"app": "hello", "command": ["cat", "/proc/version"]}, confirm=True)
-        assert "gvisor" in json.dumps(out), out
-        server.succeed("! grep -q gvisor /proc/version")
+        assert out["result"]["stdout"].strip() != host_version, out
+        out = tool("app_exec", {"app": "hello", "command": ["dmesg"]}, confirm=True)
+        assert "Starting gVisor" in out["result"]["stdout"], out
         # The same image as `standard`: the device's kernel.
         std = dict(spec, isolation="standard")
         res = tool("deploy_app", {"app": "plain", "spec": std}, confirm=True)
@@ -296,7 +302,7 @@ pkgs.testers.runNixOSTest {
             raise Exception(res)
         server.wait_until_succeeds("k3s kubectl -n app-plain rollout status deploy --timeout=10s", timeout=240)
         out = tool("app_exec", {"app": "plain", "command": ["cat", "/proc/version"]}, confirm=True)
-        assert "gvisor" not in json.dumps(out), out
+        assert out["result"]["stdout"].strip() == host_version, out
         # Fail closed: a pod labelled gvisor without the RuntimeClass is refused by admission.
         out = server.fail(
             "k3s kubectl -n app-plain run probe --image=docker.io/melissa-test/hello:1 "

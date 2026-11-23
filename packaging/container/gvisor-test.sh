@@ -144,7 +144,10 @@ std_version=$(kc -n app-std exec "$stdpod" -- cat /proc/version)
 host_version=$(in_ctr cat /proc/version)
 echo "   gv  /proc/version: $gv_version"
 echo "   std /proc/version: $std_version"
-case "$gv_version" in *gvisor*) pass "gv pod sees gVisor's kernel" ;; *) bad "gv pod sees $gv_version" ;; esac
+# gVisor reports its own kernel: `4.19.0-gvisor` (release-20261116.0; `4.4.0` in older releases), never the host's.
+if [ "$gv_version" != "$host_version" ] && grep -Eq "gvisor|15:06:54 PST 2016" <<<"$gv_version"; then
+    pass "gv pod sees gVisor's kernel"
+else bad "gv pod sees $gv_version"; fi
 [ "$std_version" = "$host_version" ] && pass "std pod sees the device's kernel" || bad "std pod: $std_version"
 gv_dmesg=$(kc -n app-gv exec "$gvpod" -- dmesg 2>&1 | head -n3 || true)
 echo "   gv dmesg: $(echo "$gv_dmesg" | paste -sd'|' -)"
