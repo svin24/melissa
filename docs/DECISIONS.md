@@ -1876,7 +1876,8 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   first card), buttons beside each person on desktop and "⋯" only on phones (two markups for one row).
 
 - **2026-11-23 — Modern Linux hosts only (owner).** Melissa supports Linux hosts with systemd as init, cgroup v2,
-  a current kernel (user namespaces, seccomp) and nftables; nothing else. Why: "modern Linux devices with modern
+  a current kernel (user namespaces, seccomp), nftables and KVM (owner: "don't worry about kvm, it exists
+everywhere modern hardware is"); nothing else. Why: "modern Linux devices with modern
   Linux protocols and init systems like systemd tend to be the most secure systems", and the sandbox layers
   (seccomp, cgroup delegation, agent users, gVisor) depend on them. Consequence: fallbacks kept only for older
   hosts may become hard requirements in the container and NixOS installs; the from-source run keeps its warnings.

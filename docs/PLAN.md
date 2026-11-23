@@ -44,7 +44,7 @@ AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `
 > repo and preserved at git tag `bootc-archive-2026-11-19` (see "Reference distro (paused)" below).
 
 > **Supported hosts (2026-11-23, owner):** modern Linux only: systemd as init, cgroup v2 (unified), a current
-> kernel with user namespaces and seccomp, nftables. No SysV/OpenRC/runit hosts, no cgroup v1, no
+> kernel with user namespaces and seccomp, nftables, and KVM (assumed present on modern hardware). No SysV/OpenRC/runit hosts, no cgroup v1, no
 > non-Linux. These hosts are the most secure, and Melissa's hardening (seccomp, cgroup limits, agent users,
 > gVisor) relies on them. Fallbacks that only exist for older hosts can become hard requirements in installed
 > modes (from source keeps warnings for development).
