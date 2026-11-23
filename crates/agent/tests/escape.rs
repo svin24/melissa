@@ -317,10 +317,14 @@ fn scratch(base: &Path) -> PathBuf {
 /// workdir" really is a host path the sandbox has no mount for (its /tmp is a private tmpfs,
 /// where a write succeeds harmlessly). `MELISSA_ESCAPE_DIR` overrides it.
 fn scene_base() -> PathBuf {
-    std::env::var_os("MELISSA_ESCAPE_DIR")
+    let base = std::env::var_os("MELISSA_ESCAPE_DIR")
         .map(PathBuf::from)
         .or_else(|| option_env!("CARGO_TARGET_TMPDIR").map(PathBuf::from))
-        .unwrap_or_else(std::env::temp_dir)
+        .unwrap_or_else(std::env::temp_dir);
+    // Cargo names CARGO_TARGET_TMPDIR but doesn't create it, so a fresh checkout or a
+    // cleaned target/ has none; create it so the suite never fails on a missing folder.
+    std::fs::create_dir_all(&base).expect("create the escape suite's base dir");
+    base
 }
 
 /// A host program: `/usr/bin/<name>` (Fedora) or the first `<name>` on `PATH` (NixOS).
