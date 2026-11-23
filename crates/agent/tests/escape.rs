@@ -572,6 +572,12 @@ async fn run(scene: &Scene, probe: &Probe, seccomp_on: bool) -> (Outcome, bool) 
             drop(cmd);
             Outcome::Skip(format!("resource limits off: {}", limits_off_reason()))
         }
+        // With vm.panic_on_oom = 2 any cgroup OOM panics the kernel (the NixOS test VMs default to
+        // it): the memory probe would take the whole host down, so it does not run.
+        Kind::Script if probe.name == "limits.memory-hog" && panic_on_any_oom() => {
+            drop(cmd);
+            Outcome::Skip("vm.panic_on_oom = 2: a cgroup OOM would panic this host's kernel".into())
+        }
         Kind::Script => {
             let (outcome, events) = run_script(cmd, &work, probe, seccomp).await;
             match (outcome, probe.limits, events) {
@@ -670,6 +676,11 @@ fn init_limits() {
     if let Some(base) = std::env::var_os("MELISSA_TEST_CGROUP") {
         limits::init_at(Path::new(&base));
     }
+}
+
+/// `vm.panic_on_oom = 2`: the kernel panics on any OOM, also one confined to a memory cgroup.
+fn panic_on_any_oom() -> bool {
+    std::fs::read_to_string("/proc/sys/vm/panic_on_oom").is_ok_and(|s| s.trim() == "2")
 }
 
 fn limits_off_reason() -> String {

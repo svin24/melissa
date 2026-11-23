@@ -61,6 +61,10 @@ pkgs.testers.runNixOSTest {
         cores = 4;
         diskSize = 8192;
       };
+      # The test driver defaults to vm.panic_on_oom = 2 (panic on any OOM), which turns the escape
+      # suite's memory probe (an OOM inside its own 256 MiB cgroup) into a kernel panic. 0 is the
+      # kernel's and NixOS's normal default.
+      boot.kernel.sysctl."vm.panic_on_oom" = 0;
       services.melissa = {
         enable = true;
         apps = {

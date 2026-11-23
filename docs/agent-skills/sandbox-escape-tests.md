@@ -135,3 +135,6 @@ Probe::new(
 - 2026-11-23, probe fix (not an escape): the first NixOS VM run failed `fs.chown-root` as "broken": it copied
   `/usr/bin/id`, which NixOS does not have. It now copies `$(command -v id)`. Prefer tools from `PATH` over
   `/usr/bin` paths in probes.
+- 2026-11-23, NixOS VM: the memory probe panicked the VM's kernel. The test driver sets `vm.panic_on_oom = 2`, which
+  panics on any OOM, also one inside a memory cgroup. The VM test now sets 0; the suite skips
+  `limits.memory-hog` with the reason wherever it is 2 (PLAN open question 96).

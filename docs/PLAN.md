@@ -1390,9 +1390,13 @@ Roadmap (rough, phases may overlap):
     it is unreachable (`kern.keyctl` passes: EPERM). A fresh keyring per sandbox would only matter with
     `seccomp = false`, where the suite now shows it open (`kern.keyctl` skip: "session keyring reachable").
 96. Agent resource limits, what is left (2026-11-23). Per-sandbox cgroups work under systemd delegation (verified
-    with the real server in a `systemd-run --user --scope -p Delegate=yes` scope and the escape suite). Not yet
-    verified: the rootful container (systemd inside podman `--systemd=always`; it should get the controllers, but
-    the server reports `Limits: off` with a reason if not) and the NixOS VM test (a subtest checks it). Open: a
+    with the real server in a `systemd-run --user --scope -p Delegate=yes` scope and the escape suite). Also
+    verified by the escape suite's `limits.*` probes (2026-11-23) inside the rootful container image
+    (`just escape-test-image`: systemd under podman `--systemd=always`, `Delegate=memory pids cpu io`) and in
+    the NixOS VM test: `Resource limits: on`, fork bomb, memory hog and CPU hog all contained. Finding: with
+    `vm.panic_on_oom = 2` (the NixOS test driver's default; some hardened hosts set it) a cgroup OOM panics the
+    whole kernel, so an agent hitting its memory limit would take the box down. The VM test sets 0 and the
+    suite skips its memory probe under 2; should the server check it and report `Limits:` accordingly? Open: a
     cap on all sandboxes together (`sandboxes/memory.max`, e.g. a share of RAM) so many agents at once cannot
     starve k3s; per-agent limits in Settings (today only `[backend.sandbox.limits]` in server.toml); whether a
     hit limit should reach the audit log and the agent's chat, not only the server log.
