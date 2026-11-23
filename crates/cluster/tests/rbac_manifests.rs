@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use melissa_cluster::render::{
     port_service_name, APPS_SERVICE_ACCOUNT, APP_PORTS, ASSIGNED_AT_ANNOTATION,
     CREDENTIALS_BINDING, CREDENTIALS_DISMISSED_ANNOTATION, CREDENTIALS_ROLE,
-    CREDENTIALS_SERVICE_ACCOUNT, DEVICE_LABEL, LEGACY_OWNER_LABEL, MELISSA_NAMESPACE,
-    OLD_DEVICE_LABEL, OLD_OWNER_LABEL, OLD_WORKSPACE_LABEL, OWNER_AGENT_LABEL, PORTS_ANNOTATION,
-    PORT_ANNOTATION, WORKLOAD_ROLE, WORKSPACE_LABEL,
+    CREDENTIALS_SERVICE_ACCOUNT, DEVICE_LABEL, GVISOR_HANDLER, GVISOR_RUNTIME_CLASS,
+    ISOLATION_LABEL, LEGACY_OWNER_LABEL, MELISSA_NAMESPACE, OLD_DEVICE_LABEL, OLD_OWNER_LABEL,
+    OLD_WORKSPACE_LABEL, OWNER_AGENT_LABEL, PORTS_ANNOTATION, PORT_ANNOTATION, WORKLOAD_ROLE,
+    WORKSPACE_LABEL,
 };
 
 fn manifest(name: &str) -> String {
@@ -91,7 +92,7 @@ fn the_write_identity_is_narrow() {
     // setup password reader, and deleting exactly the reader's binding.
     let cluster = doc(&docs, "ClusterRole", "melissa-apps");
     let cluster_rules = rules(cluster);
-    assert_eq!(cluster_rules.len(), 4, "{cluster}");
+    assert_eq!(cluster_rules.len(), 5, "{cluster}");
     for word in [
         "secrets",
         "pods",
@@ -353,4 +354,84 @@ fn the_setup_password_reader_only_gets_secrets_per_app() {
 
 fn docs_of(file: &str) -> Vec<String> {
     docs(&manifest(file))
+}
+
+/// gVisor (2026-11-23): an app labelled gvisor never runs on the default runtime, whoever
+/// creates its pods; no other RuntimeClass is allowed; the gvisor RuntimeClass names runsc.
+#[test]
+fn gvisor_apps_never_land_on_the_default_runtime() {
+    let docs = docs(&manifest("apps-rbac.yaml"));
+    let pinned = |p: &str, pod: &str| {
+        assert!(
+            p.contains(&format!(
+                "!variables.wantsGvisor ||\n        (has({pod}.runtimeClassName) && {pod}.runtimeClassName == '{GVISOR_RUNTIME_CLASS}')"
+            )),
+            "{p}"
+        );
+        assert!(p.contains(&format!(
+            "!has({pod}.runtimeClassName) || {pod}.runtimeClassName == '{GVISOR_RUNTIME_CLASS}'"
+        )));
+        // The pod's own label or its namespace's.
+        assert!(p.contains(&format!(
+            "namespaceObject.metadata.labels['{ISOLATION_LABEL}'] == 'gvisor'"
+        )));
+    };
+    // The write identity's Deployments.
+    let workloads = doc(&docs, "ValidatingAdmissionPolicy", "melissa-apps-workloads");
+    pinned(workloads, "variables.pod");
+    assert!(workloads.contains(&format!(
+        "object.spec.template.metadata.labels['{ISOLATION_LABEL}'] == 'gvisor'"
+    )));
+    // The pods themselves, from any creator, in app namespaces only.
+    let pods = doc(&docs, "ValidatingAdmissionPolicy", "melissa-apps-isolation");
+    pinned(pods, "object.spec");
+    assert!(pods.contains("failurePolicy: Fail"));
+    assert!(pods.contains("resources: [\"pods\"]"));
+    assert!(pods.contains("melissa.io/managed: \"true\""));
+    assert!(!pods.contains("request.userInfo.username"), "every creator");
+    // The RuntimeClass keeps its handler.
+    let rc = doc(
+        &docs,
+        "ValidatingAdmissionPolicy",
+        "melissa-gvisor-runtimeclass",
+    );
+    assert!(rc.contains(&format!(
+        "object.metadata.name != '{GVISOR_RUNTIME_CLASS}' || object.handler == '{GVISOR_HANDLER}'"
+    )));
+    for name in ["melissa-apps-isolation", "melissa-gvisor-runtimeclass"] {
+        let binding = doc(&docs, "ValidatingAdmissionPolicyBinding", name);
+        assert!(binding.contains("validationActions: [Deny]"), "{name}");
+    }
+    // The namespace label holds a known level.
+    let ns = doc(
+        &docs,
+        "ValidatingAdmissionPolicy",
+        "melissa-apps-namespaces",
+    );
+    assert!(ns.contains(&format!(
+        "object.metadata.labels['{ISOLATION_LABEL}'] in ['standard', 'gvisor']"
+    )));
+    // The write identity may only look up that one RuntimeClass.
+    let cluster = doc(&docs, "ClusterRole", "melissa-apps");
+    assert!(cluster.contains(&format!(
+        "resources: [\"runtimeclasses\"]\n    verbs: [\"get\"]\n    resourceNames: [\"{GVISOR_RUNTIME_CLASS}\"]"
+    )));
+
+    // The RuntimeClass manifest (installed only where runsc is).
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packaging/common/usr/lib/melissa/k3s/gvisor");
+    let read = |f: &str| std::fs::read_to_string(path.join(f)).unwrap();
+    let rc = read("runtimeclass.yaml");
+    assert!(rc.contains("kind: RuntimeClass\n"));
+    assert!(rc.contains(&format!("\n  name: {GVISOR_RUNTIME_CLASS}\n")));
+    assert!(rc.contains(&format!("\nhandler: {GVISOR_HANDLER}\n")));
+    // containerd's entry for that handler, with gVisor's options file, and the platform.
+    let tmpl = read("config-v3.toml.tmpl");
+    assert!(tmpl.lines().next().unwrap().contains("melissa-managed"));
+    assert!(tmpl.contains("{{ template \"base\" . }}"));
+    assert!(tmpl.contains(&format!(
+        "containerd.runtimes.{GVISOR_HANDLER}]\n  runtime_type = \"io.containerd.runsc.v1\""
+    )));
+    assert!(tmpl.contains("ConfigPath = \"/usr/lib/melissa/k3s/gvisor/runsc.toml\""));
+    assert!(read("runsc.toml").contains("platform = \"systrap\""));
 }

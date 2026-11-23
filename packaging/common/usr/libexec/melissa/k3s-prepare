@@ -22,8 +22,28 @@ done
 for m in "$manifests"/melissa-*.yaml; do
     [ -e "$m" ] || continue
     b=$(basename "$m")
+    [ "$b" = melissa-gvisor-runtimeclass.yaml ] && continue # handled below
     [ -e "/usr/lib/melissa/k3s/manifests/${b#melissa-}" ] || rm -f "$m"
 done
+# gVisor for apps (docs/DECISIONS.md 2026-11-23): only where runsc and its containerd shim are, the
+# containerd runtime entry (k3s doesn't detect runsc) and the `gvisor` RuntimeClass. Without them
+# gVisor apps are refused (never run on runc). A template someone else wrote is left alone.
+gvisor=/usr/lib/melissa/k3s/gvisor
+tmpl=/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+ours() { [ ! -e "$tmpl" ] || head -n1 "$tmpl" | grep -q melissa-managed; }
+if command -v runsc >/dev/null && command -v containerd-shim-runsc-v1 >/dev/null; then
+    if ours; then
+        mkdir -p "$(dirname "$tmpl")"
+        install -m 0644 "$gvisor/config-v3.toml.tmpl" "$tmpl"
+    else
+        echo "k3s-prepare: $tmpl is not Melissa's; gVisor apps need its runsc entry" >&2
+    fi
+    install -m 0600 "$gvisor/runtimeclass.yaml" "$manifests/melissa-gvisor-runtimeclass.yaml"
+else
+    echo "k3s-prepare: runsc not found: no gVisor (apps that need it are not deployed)" >&2
+    if ours; then rm -f "$tmpl"; fi
+    rm -f "$manifests/melissa-gvisor-runtimeclass.yaml"
+fi
 stamp=/var/lib/rancher/.melissa-relabeled
 if [ ! -e "$stamp" ]; then
     restorecon -R /var/lib/rancher /etc/rancher 2>/dev/null || true

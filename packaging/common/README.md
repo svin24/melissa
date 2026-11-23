@@ -22,11 +22,12 @@ that packaging's own tree as drop-ins or overrides (same file name in a later la
 | `usr/lib/tmpfiles.d/melissa-{config,home,kube}.conf` | `/etc/melissa`, `/var/lib/melissa{,/home}`, `/run/melissa-kube` |
 | `usr/share/polkit-1/rules.d/50-melissa.rules` | Lets `melissa` restart `melissa-server.service` (Restart in Settings → Updates), nothing else |
 | `usr/bin/melissa-setup` | Root CLI: install/log in agent CLIs for the server's user (`--yes`, `--no-login`, `--no-restart`) |
-| `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests, pin the node IP (`k3s-node-ip`) |
+| `usr/libexec/melissa/k3s-prepare` | Before k3s: link the airgap images, install the manifests (and gVisor's, when runsc is on PATH), pin the node IP (`k3s-node-ip`) |
 | `usr/libexec/melissa/k3s-node-ip` | Writes `MELISSA_K3S_ARGS=--node-ip=<default-route IPv4>` to the env file given (k3s-prepare; the NixOS module's k3s) |
 | `usr/libexec/melissa/melissa-kubeconfig` | ServiceAccount tokens → `/run/melissa-kube/{server,apps}.kubeconfig` |
 | `usr/lib/melissa/k3s.lock` | Pinned k3s version and sha256 sums (binary, airgap images, LICENSE; k3s-selinux for SELinux hosts) |
 | `usr/lib/melissa/k3s/manifests/*.yaml` | Deploy-on-start manifests: server RBAC, app RBAC and ValidatingAdmissionPolicies, Traefik HelmChartConfig |
+| `usr/lib/melissa/k3s/gvisor/` | gVisor for apps: the `gvisor` RuntimeClass manifest, runsc's options (`runsc.toml`, platform systrap) and k3s's containerd template with the `runsc` runtime; installed by `k3s-prepare` only where runsc is (the Nix module writes its own template with store paths) |
 | `etc/rancher/k3s/config.yaml.d/10-melissa.yaml` | k3s defaults (kubeconfig mode, node label); no SELinux setting |
 
 Not here (built or fetched by each packaging): the Rust binaries `melissa-server`, `melissa-device`
