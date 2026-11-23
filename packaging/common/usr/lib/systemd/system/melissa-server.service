@@ -33,7 +33,10 @@ ExecStart=/usr/bin/melissa-server
 # child of sandboxes/ with memory, process and CPU limits. Without this, agents run unlimited.
 Delegate=memory pids cpu io
 Restart=on-failure
-NoNewPrivileges=yes
+# No NoNewPrivileges=: each agent sandbox runs as its own host user from melissa's subordinate ids
+# (/etc/subuid, crates/agent/src/sandbox/users.rs), mapped by shadow-utils' newuidmap/newgidmap,
+# whose file capabilities no_new_privs would disable. The server itself runs no setuid program
+# but those two; every agent still gets no_new_privs from bwrap.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes

@@ -20,6 +20,10 @@
 //! Resource limits (`limits.*` probes) need a delegated cgroup: `just escape-test` runs the suite
 //! in a `systemd-run --user --scope -p Delegate=yes` scope and names it in `MELISSA_TEST_CGROUP`.
 //! Without one those probes skip (they never run without limits: one is a fork bomb).
+//!
+//! Agent users (`users.*` probes) need subordinate ids for the user running the suite
+//! (`/etc/subuid`, `/etc/subgid`) and newuidmap; the suite keeps its id table in
+//! `<scene base>/melissa-escape-users`. Without them those probes skip with the reason.
 
 // Test-only file: panicking on setup failure is the intended behaviour.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -46,9 +50,9 @@ use melissa_agent::{
     egress::{EgressProxy, EgressRequest, HostRule, WebRead},
     mcp::McpServer,
     sandbox::{
-        self,
+        self, acl,
         limits::{self, LimitEvents, Limits},
-        SandboxChild, SandboxCommand, SandboxPlan,
+        users, Mount, SandboxChild, SandboxCommand, SandboxPlan,
     },
     tools::{DeviceInfo, TaskContext, Tool, ToolRegistry},
     NetworkMode, SandboxSpec,
@@ -91,6 +95,12 @@ pub struct Probe {
     /// A resource-limit probe: runs only when the sandbox has a cgroup with limits, then this
     /// checks its counters.
     pub limits: Option<LimitCheck>,
+    /// An agent-user probe: judged only when sandboxes run as their own host users; skipped with
+    /// the reason otherwise.
+    pub requires_users: bool,
+    /// Bind the other agent's box read-write into this sandbox (a hypothetical bug or escape):
+    /// only the host permissions stand in the way.
+    pub bind_other_box: bool,
     pub kind: Kind,
 }
 
@@ -109,8 +119,20 @@ impl Probe {
             requires_seccomp: false,
             host: None,
             limits: None,
+            requires_users: false,
+            bind_other_box: false,
             kind: Kind::Script,
         }
+    }
+
+    pub const fn users(mut self) -> Self {
+        self.requires_users = true;
+        self
+    }
+
+    pub const fn bind_other_box(mut self) -> Self {
+        self.bind_other_box = true;
+        self
     }
 
     pub const fn seccomp(mut self) -> Self {
@@ -152,6 +174,12 @@ helper() {
   exit 0
 }
 leaked() { [ "$(cat "$1" 2>/dev/null)" = "$ESC_TOKEN" ]; }
+# The host uid of in-sandbox uid $1 (/proc/self/uid_map: inside outside count), empty if unmapped.
+host_uid() {
+  while read -r i o n; do
+    [ "$1" -ge "$i" ] && [ "$1" -lt $((i + n)) ] && { echo $((o + $1 - i)); return; }
+  done < /proc/self/uid_map
+}
 direct() { curl -sS -o /dev/null --noproxy '*' --connect-timeout 3 --max-time 5 "$1" 2>/dev/null; }
 viaproxy() { curl -sS -o /dev/null --max-time 5 -x "$HTTPS_PROXY" --noproxy '' -w '%{http_connect}' "$@" 2>/dev/null; }
 proxy_verdict() {
@@ -186,6 +214,11 @@ pub struct Ctx {
     probe_helper: Option<PathBuf>,
     /// `MELISSA_ESCAPE_REQUIRED=1`: nothing may be skipped for a missing tool of ours.
     required: bool,
+    /// The suite's own uid (the "server").
+    pub server_uid: u32,
+    /// The host uids of this agent (`own_box`'s) and of the other one, when agent users are on.
+    pub own_uid: Option<u32>,
+    pub other_uid: Option<u32>,
 }
 
 impl Ctx {
@@ -226,6 +259,11 @@ impl Ctx {
                 self.probe_helper.as_deref().map(s).unwrap_or_default(),
             ),
             ("ESC_REQUIRED", u8::from(self.required).to_string()),
+            ("ESC_SERVER_UID", self.server_uid.to_string()),
+            (
+                "ESC_OTHER_UID",
+                self.other_uid.map(|u| u.to_string()).unwrap_or_default(),
+            ),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -401,6 +439,24 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// The file box keys of the suite's agent and of the other agent whose box it attacks.
+const OWN_KEY: &str = "d-0a1b2c3d.a1";
+const OTHER_KEY: &str = "d-0a1b2c3d.a2";
+
+/// Set up agent users with the suite's own id table (kept across runs, so the agents keep their
+/// ids). Off (with the reason) where this user has no subordinate ids or newuidmap.
+fn init_users() {
+    users::init(&scene_base().join("melissa-escape-users"));
+}
+
+fn users_off_reason() -> String {
+    match users::status() {
+        Some(users::Status::Off(why)) => why.clone(),
+        Some(users::Status::Active(_)) => "not used for this sandbox".into(),
+        None => "not set up".into(),
+    }
+}
+
 /// Everything the suite holds for its length.
 struct Scene {
     ctx: Ctx,
@@ -428,10 +484,15 @@ async fn scene(bwrap: PathBuf, sh: PathBuf) -> Scene {
     let outside = root.join("outside");
     let state = home.join(".local/state/melissa");
     let boxes = state.join("files/boxes");
-    let own_box = boxes.join("d-0a1b2c3d.a1");
-    let other_box = boxes.join("d-0a1b2c3d.a2");
+    let own_box = boxes.join(OWN_KEY);
+    let other_box = boxes.join(OTHER_KEY);
     for d in [&outside, &own_box, &other_box, &state.join("files/index")] {
         std::fs::create_dir_all(d).unwrap();
+    }
+    // Boxes are private, as `FileBoxes::ensure_dir` makes them.
+    for d in [&own_box, &other_box] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     for f in [
         home.join("secret-canary.txt"),
@@ -442,6 +503,36 @@ async fn scene(bwrap: PathBuf, sh: PathBuf) -> Scene {
     ] {
         std::fs::write(f, &token).unwrap();
     }
+
+    // Agent users: both agents' host uids; the other agent's box as its own runs leave it (its
+    // user let in, nobody else).
+    let server_uid = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self").unwrap().uid()
+    };
+    let (own_uid, other_uid) = match users::active() {
+        Some(setup) => {
+            let own = setup.user(OWN_KEY).unwrap();
+            let other = setup.user(OTHER_KEY).unwrap();
+            let follow = acl::Follow::No;
+            acl::grant(&other_box, other.uid, acl::RWX, follow).unwrap();
+            acl::set_default(
+                &other_box,
+                &acl::Acl::shared_default(&[other.uid, server_uid]),
+                follow,
+            )
+            .unwrap();
+            acl::grant(
+                &other_box.join("secret.txt"),
+                other.uid,
+                acl::R | acl::W,
+                follow,
+            )
+            .unwrap();
+            (Some(own.uid), Some(other.uid))
+        }
+        None => (None, None),
+    };
 
     // A host process the sandbox must neither see nor signal.
     let mark = format!("melissa-escape-canary-{}", std::process::id());
@@ -512,6 +603,9 @@ async fn scene(bwrap: PathBuf, sh: PathBuf) -> Scene {
             mcp_token,
             probe_helper: probe_helper(),
             required: required(),
+            server_uid,
+            own_uid,
+            other_uid,
         },
         proxy,
         allow,
@@ -548,13 +642,19 @@ async fn run(scene: &Scene, probe: &Probe, seccomp_on: bool) -> (Outcome, bool) 
         limits: suite_limits(),
         ..SandboxSpec::default()
     };
-    let plan = SandboxPlan::resolve(&spec, &scene.bwrap, Some(&ctx.home), &scene.sh)
+    let mut plan = SandboxPlan::resolve(&spec, &scene.bwrap, Some(&ctx.home), &scene.sh)
         .unwrap()
         .with_rw_dirs(std::slice::from_ref(&ctx.own_box))
         .unwrap()
         .with_env(&ctx.vars())
         .unwrap()
-        .with_bridge(lease.bridge().cloned());
+        .with_bridge(lease.bridge().cloned())
+        .with_user(OWN_KEY)
+        .unwrap();
+    if probe.bind_other_box {
+        // Added by hand, as a bug would: no grant comes with it.
+        plan.mounts.push(Mount::ReadWrite(ctx.other_box.clone()));
+    }
     let script = format!("{PREAMBLE}\n{}\n", probe.script);
     let args = ["-c".to_string(), script];
     // The probe helper, bound read-only (`extra_ro`, like a backend's extra files).
@@ -567,6 +667,11 @@ async fn run(scene: &Scene, probe: &Probe, seccomp_on: bool) -> (Outcome, bool) 
         .any(|a| a == "--seccomp" || a == "--add-seccomp-fd");
 
     let outcome = match probe.kind {
+        // Without agent users the hypothetical bind would simply work: not judged.
+        _ if probe.requires_users && plan.user.is_none() => {
+            drop(cmd);
+            Outcome::Skip(format!("agent users off: {}", users_off_reason()))
+        }
         // A limit probe never runs without limits (one is a fork bomb).
         Kind::Script if probe.limits.is_some() && plan.limits.is_none() => {
             drop(cmd);
@@ -593,9 +698,11 @@ async fn run(scene: &Scene, probe: &Probe, seccomp_on: bool) -> (Outcome, bool) 
         }
         Kind::ParentDies => {
             drop(cmd);
-            // Built by hand around an `sh` parent, without the cgroup gate.
+            // Built by hand around an `sh` parent, without the cgroup gate or an agent user
+            // (bwrap makes its own user namespace, as before agent users).
             let plan = SandboxPlan {
                 limits: None,
+                user: None,
                 ..plan.clone()
             };
             run_parent_dies(&scene.sh, &plan, &args, &work).await
@@ -604,6 +711,8 @@ async fn run(scene: &Scene, probe: &Probe, seccomp_on: bool) -> (Outcome, bool) 
     drop(lease);
     let outcome = match (outcome, probe.host) {
         (Outcome::Fail(f), _) => Outcome::Fail(f),
+        // Not run (or not judged): nothing to look at on the host.
+        (Outcome::Skip(s), _) if probe.requires_users => Outcome::Skip(s),
         (o, Some(check)) => match check(ctx) {
             Ok(()) => o,
             Err(e) => Outcome::Fail(format!("ESCAPED (host check): {e}")),
@@ -766,8 +875,24 @@ fn print_table(rows: &[(&Probe, Outcome)], seccomp: bool) {
         None => format!("off ({})", limits_off_reason()),
     };
     println!();
+    let agent_users = match users::active() {
+        Some(s) => {
+            let (uid, _) = s.server();
+            let id = |k| {
+                s.existing(k)
+                    .map_or_else(|| "?".into(), |u| u.uid.to_string())
+            };
+            format!(
+                "on (this agent uid {}, the other agent {}, the suite {uid})",
+                id(OWN_KEY),
+                id(OTHER_KEY)
+            )
+        }
+        None => format!("off ({})", users_off_reason()),
+    };
     println!("{}", header(seccomp));
     println!("Resource limits: {limits}");
+    println!("Agent users: {agent_users}");
     println!("{:width$}  {:6}  DETAIL", "PROBE", "RESULT");
     for (probe, outcome) in rows {
         let (word, detail) = match outcome {
@@ -793,6 +918,7 @@ async fn sandbox_escape_suite() {
         return;
     };
     init_limits();
+    init_users();
     let scene = scene(bwrap, sh).await;
     let mut rows = Vec::new();
     let mut seccomp = false;
@@ -812,7 +938,7 @@ async fn sandbox_escape_suite() {
             _ => None,
         })
         .collect();
-    let _ = std::fs::remove_dir_all(&scene.ctx.root);
+    let _ = users::remove_dir_all(&scene.ctx.root, OWN_KEY);
     let _ = std::fs::remove_dir_all(&scene.ctx.sockets);
     assert!(failed.is_empty(), "sandbox escapes:\n{}", failed.join("\n"));
 }
@@ -825,6 +951,7 @@ async fn seccomp_off_backend_is_reported_not_passed() {
         return;
     };
     init_limits();
+    init_users();
     let scene = scene(bwrap, sh).await;
     let mut rows = Vec::new();
     for probe in probes::PROBES.iter().filter(|p| p.requires_seccomp) {
@@ -837,7 +964,7 @@ async fn seccomp_off_backend_is_reported_not_passed() {
         rows.push((probe, outcome));
     }
     print_table(&rows, false);
-    let _ = std::fs::remove_dir_all(&scene.ctx.root);
+    let _ = users::remove_dir_all(&scene.ctx.root, OWN_KEY);
     let _ = std::fs::remove_dir_all(&scene.ctx.sockets);
     assert!(header(false).contains("seccomp: OFF"));
     assert!(!rows.is_empty());

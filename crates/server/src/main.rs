@@ -364,6 +364,9 @@ async fn main() -> anyhow::Result<()> {
     // melissa-server.service) before any other process starts; logs once if that is not possible.
     if matches!(command, Command::Serve { .. }) {
         melissa_agent::sandbox::limits::init();
+        // Agent users: each sandbox as its own host user (subordinate ids, newuidmap); logs once
+        // if that is not possible here.
+        melissa_agent::sandbox::users::init(&dirs.state);
     }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));

@@ -24,11 +24,18 @@
 //! own cgroup with memory, process and CPU limits. bwrap then waits on [`BLOCK_FD`] until
 //! [`SandboxCommand::spawn`] has moved it into that cgroup.
 //!
+//! Users ([`users`]): where the server's user has subordinate ids, every agent's sandbox runs as
+//! its own host uid/gid: what it creates is its own on the host, and escaped it owns nothing.
+//! bwrap is then started through `nsenter` in a user namespace mapped for that agent instead of
+//! making its own, and `setpriv` is the first program inside (it becomes the agent's user).
+//!
 //! The command line is built by the pure [`command`] function from a [`SandboxPlan`];
 //! [`SandboxPlan::resolve`] does the host lookups (HOME, binary path, which files exist).
 
+pub mod acl;
 pub mod limits;
 pub mod seccomp;
+pub mod users;
 
 use std::{
     ffi::OsString,
@@ -69,6 +76,9 @@ const RESERVED_ENV: &[&str] = &[
     "no_proxy",
     "GROK_WEB_FETCH_PROXY",
     "NODE_USE_ENV_PROXY",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
 ];
 
 /// Where the bridge's socket directory appears inside the sandbox.
@@ -440,6 +450,8 @@ pub enum SandboxError {
         #[source]
         source: std::io::Error,
     },
+    #[error(transparent)]
+    Users(#[from] users::UsersError),
 }
 
 /// How a host path appears inside the sandbox (always at the same path).
@@ -520,6 +532,9 @@ pub struct SandboxPlan {
     /// [`SandboxCommand::spawn`] has placed it. `None`: no limits (turned off for the backend,
     /// or the host does not delegate cgroups).
     pub limits: Option<limits::Limits>,
+    /// Run as this agent's own host user ([`users`]; [`SandboxPlan::with_user`]). `None`: as the
+    /// server's user (agent users off).
+    pub user: Option<users::AgentUser>,
 }
 
 /// A top-level system directory (`/bin`, `/lib64`, ...) inside the sandbox.
@@ -716,7 +731,21 @@ impl SandboxPlan {
             rw_dirs: Vec::new(),
             seccomp,
             limits,
+            user: None,
         })
+    }
+
+    /// Run as the host user of `key` (the file box key: `lead` or the agent's id;
+    /// [`users::SHARED`] for a sandbox without an owner), when agent users are on ([`users::init`]).
+    pub fn with_user(mut self, key: &str) -> Result<Self, SandboxError> {
+        if let Some(setup) = users::active() {
+            let mut user = setup.user(key)?;
+            let (passwd, group) = setup.identity(&self.home)?;
+            user.passwd = Some(passwd);
+            user.group = Some(group);
+            self.user = Some(user);
+        }
+        Ok(self)
     }
 
     /// Set fixed environment variables inside the sandbox (e.g. an agent's config chosen by
@@ -783,18 +812,47 @@ pub fn command(
     args: &[String],
 ) -> (PathBuf, Vec<OsString>) {
     let mut argv: Vec<OsString> = Vec::new();
+    // bwrap makes the missing parents of a bind's destination 0700, owned by whoever it runs as.
+    // With an agent user that is the setup id, not the agent, so each bind first gets its parent
+    // as a plain 0755 directory (`--dir`; its own parents follow that mode).
+    let users = plan.user.is_some();
     let mut push = |items: &[&dyn AsRef<std::ffi::OsStr>]| {
+        if let ([flag, _, dst], true) = (items, users) {
+            let bind = ["--bind", "--ro-bind", "--ro-bind-try"]
+                .iter()
+                .any(|f| flag.as_ref() == *f);
+            let parent = Path::new(dst.as_ref()).parent();
+            if let (true, Some(parent)) = (bind, parent.filter(|p| *p != Path::new("/"))) {
+                argv.push("--dir".into());
+                argv.push(parent.as_os_str().to_os_string());
+            }
+        }
         argv.extend(items.iter().map(|i| i.as_ref().to_os_string()));
     };
 
     // Namespaces and privileges. bwrap always sets no_new_privs for unprivileged users.
-    // `--unshare-all` includes the network namespace (bwrap brings up its loopback).
-    push(&[&"--unshare-all"]);
-    let bridge = match &plan.network {
-        Network::Host => {
-            push(&[&"--share-net"]);
-            None
+    // `--unshare-all` includes the network namespace (bwrap brings up its loopback). With an
+    // agent user the user namespace exists already (bwrap starts in it, [`users`]): the others
+    // one by one.
+    let host_net = plan.network == Network::Host;
+    if plan.user.is_some() {
+        push(&[
+            &"--unshare-ipc",
+            &"--unshare-pid",
+            &"--unshare-uts",
+            &"--unshare-cgroup-try",
+        ]);
+        if !host_net {
+            push(&[&"--unshare-net"]);
         }
+    } else {
+        push(&[&"--unshare-all"]);
+        if host_net {
+            push(&[&"--share-net"]);
+        }
+    }
+    let bridge = match &plan.network {
+        Network::Host => None,
         Network::Isolated(bridge) => bridge.as_ref(),
     };
     push(&[
@@ -805,6 +863,13 @@ pub fn command(
         &"--hostname",
         &SANDBOX_HOSTNAME,
     ]);
+    // With an agent user bwrap runs as root of the agent's user namespace; `setpriv` needs these
+    // to become the agent (and drops them, with the bounding set).
+    if plan.user.is_some() {
+        for cap in users::SETPRIV_CAPS {
+            push(&[&"--cap-add", &cap]);
+        }
+    }
     // Syscall filter, read from an fd the spawner maps ([`pass_seccomp`]); bwrap installs it
     // right before executing the first program inside.
     if plan.seccomp {
@@ -836,6 +901,13 @@ pub fn command(
     push(&[&"--setenv", &"TERM", &"dumb"]);
     for (name, value) in &plan.env {
         push(&[&"--setenv", name, value]);
+    }
+    // With an agent user, files of the server's (a working directory it made) are another
+    // user's inside; git would refuse to work in them ("dubious ownership").
+    if plan.user.is_some() {
+        push(&[&"--setenv", &"GIT_CONFIG_COUNT", &"1"]);
+        push(&[&"--setenv", &"GIT_CONFIG_KEY_0", &"safe.directory"]);
+        push(&[&"--setenv", &"GIT_CONFIG_VALUE_0", &"*"]);
     }
     if let Some(proxy) = bridge.and_then(|b| b.proxy) {
         let url = format!("http://{proxy}");
@@ -875,6 +947,18 @@ pub fn command(
         push(&[&"--ro-bind", dir, dir]);
     }
     push(&[&"--ro-bind", &"/etc", &"/etc"]);
+    if let Some(user) = &plan.user {
+        if let (Some(passwd), Some(group)) = (&user.passwd, &user.group) {
+            push(&[&"--ro-bind", passwd, &"/etc/passwd"]);
+            push(&[&"--ro-bind", group, &"/etc/group"]);
+        }
+        let store = Path::new(NIX_STORE);
+        if user.setpriv.starts_with(store) && !plan.system.ro.iter().any(|d| d == store) {
+            push(&[&"--ro-bind", &store, &store]);
+        } else if !user.setpriv.starts_with("/usr") && !user.setpriv.starts_with(store) {
+            push(&[&"--ro-bind", &user.setpriv, &user.setpriv]);
+        }
+    }
     if plan.network == Network::Host {
         push(&[
             &"--ro-bind-try",
@@ -883,13 +967,31 @@ pub fn command(
         ]);
     }
     push(&[&"--proc", &"/proc", &"--dev", &"/dev"]);
-    push(&[&"--tmpfs", &"/tmp", &"--tmpfs", &"/var/tmp"]);
+    // A tmpfs belongs to whoever mounts it: with an agent user that is the setup id, so the
+    // writable ones are open to all (only the agent is inside): /tmp sticky as anywhere, a CLI's
+    // state directory not, since a sticky one would stop the CLI from rewriting a credential
+    // file bound into it (fs.protected_regular: O_CREAT on another user's file there).
+    let (tmp, state): (
+        &[&dyn AsRef<std::ffi::OsStr>],
+        &[&dyn AsRef<std::ffi::OsStr>],
+    ) = if users {
+        (&[&"--perms", &"01777"], &[&"--perms", &"0777"])
+    } else {
+        (&[], &[])
+    };
+    for dir in ["/tmp", "/var/tmp"] {
+        push(tmp);
+        push(&[&"--tmpfs", &dir]);
+    }
 
     // Home: an empty tmpfs with only the configured paths; frozen read-only below.
     push(&[&"--tmpfs", &plan.home]);
     for mount in &plan.mounts {
         match mount {
-            Mount::Tmpfs(p) => push(&[&"--tmpfs", p]),
+            Mount::Tmpfs(p) => {
+                push(state);
+                push(&[&"--tmpfs", p]);
+            }
             Mount::ReadOnly(p) => push(&[&"--ro-bind", p, p]),
             Mount::ReadWrite(p) => push(&[&"--bind", p, p]),
             Mount::BindAt { src, dst } => push(&[&"--bind", src, dst]),
@@ -939,6 +1041,13 @@ pub fn command(
     push(&[&"--chdir", &workdir]);
 
     push(&[&"--"]);
+    if let Some(user) = &plan.user {
+        // First inside: become the agent's user (no groups, no capabilities, empty bounding set).
+        argv.extend(user.setpriv_args());
+    }
+    let mut push = |items: &[&dyn AsRef<std::ffi::OsStr>]| {
+        argv.extend(items.iter().map(|i| i.as_ref().to_os_string()));
+    };
     if let Some(b) = bridge {
         // The bridge starts first, then runs the CLI as its child.
         push(&[&b.netbridge]);
@@ -987,7 +1096,9 @@ pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io
 
 /// The one way to spawn a sandbox: the `bwrap` process for `plan` running `args` in `workdir`
 /// ([`command`]), with the seccomp program at [`SECCOMP_FD`] ([`pass_seccomp`]), the cgroup gate
-/// at [`BLOCK_FD`] when the plan has [`limits`], and an **empty environment**. `--clearenv`
+/// at [`BLOCK_FD`] when the plan has [`limits`], started through `nsenter` in the agent's user
+/// namespace when the plan has a [`users`] user (after granting that user its paths), and an
+/// **empty environment**. `--clearenv`
 /// only clears what the CLI gets; bwrap's own initial environment stays readable inside the
 /// sandbox through `/proc/1/environ` (bwrap is PID 1 there), so inheriting the lead agent's
 /// environment would hand every variable of `melissa-server` (tokens, keys) to the agent. Found
@@ -1002,7 +1113,26 @@ pub fn spawn_command(
     args: &[String],
 ) -> std::io::Result<SandboxCommand> {
     let (bwrap, argv) = command(plan, workdir, extra_ro, args);
-    let mut cmd = tokio::process::Command::new(bwrap);
+    let launch = match &plan.user {
+        None => None,
+        Some(user) => {
+            let setup = users::active().ok_or_else(|| {
+                std::io::Error::other("the plan has an agent user but agent users are off")
+            })?;
+            setup
+                .grant(plan, user, workdir, extra_ro)
+                .map_err(std::io::Error::other)?;
+            Some(setup.launch(user).map_err(std::io::Error::other)?)
+        }
+    };
+    let (mut cmd, holder) = match launch {
+        None => (tokio::process::Command::new(bwrap), None),
+        Some(l) => {
+            let mut cmd = tokio::process::Command::new(&l.program);
+            cmd.args(&l.args).arg(bwrap);
+            (cmd, Some(l.holder))
+        }
+    };
     cmd.env_clear().args(argv);
     let mut fds: Vec<FdMapping> = seccomp_mapping(plan)?.into_iter().collect();
     let gate = match &plan.limits {
@@ -1040,7 +1170,11 @@ pub fn spawn_command(
     if !fds.is_empty() {
         cmd.fd_mappings(fds).map_err(std::io::Error::other)?;
     }
-    Ok(SandboxCommand { command: cmd, gate })
+    Ok(SandboxCommand {
+        command: cmd,
+        gate,
+        holder,
+    })
 }
 
 /// The cgroup a sandbox goes into, and the pipe that lets bwrap go on.
@@ -1072,6 +1206,8 @@ impl Gate {
 pub struct SandboxCommand {
     command: tokio::process::Command,
     gate: Option<Gate>,
+    /// Holds the agent user's namespace until the sandbox has joined it.
+    holder: Option<users::Holder>,
 }
 
 impl SandboxCommand {
@@ -1080,6 +1216,7 @@ impl SandboxCommand {
         Self {
             command,
             gate: None,
+            holder: None,
         }
     }
 
@@ -1096,10 +1233,17 @@ impl SandboxCommand {
 
     /// Start the process; with limits, move it into its cgroup and only then let it go on.
     pub fn spawn(self) -> std::io::Result<SandboxChild> {
-        let Self { mut command, gate } = self;
+        let Self {
+            mut command,
+            gate,
+            holder,
+        } = self;
         let child = command.spawn()?;
         // Closes the parent's copy of the gate's read end.
         drop(command);
+        if let Some(holder) = holder {
+            holder.release_when_joined(child.id());
+        }
         let cgroup = gate.and_then(|g| g.open(child.id()));
         Ok(SandboxChild { child, cgroup })
     }
@@ -1142,6 +1286,7 @@ mod tests {
             rw_dirs: Vec::new(),
             seccomp: true,
             limits: None,
+            user: None,
         }
     }
 
@@ -1157,6 +1302,78 @@ mod tests {
         p.seccomp = false;
         let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
         assert!(!strs(&argv).contains(&"--seccomp"));
+    }
+
+    #[test]
+    fn argv_with_an_agent_user_starts_in_its_namespace_and_switches_with_setpriv() {
+        let mut p = plan(
+            vec![Mount::ReadWrite("/home/u/.claude/.credentials.json".into())],
+            "/usr/bin/cli",
+        );
+        p.network = Network::Isolated(None);
+        let (_, argv) = command(&p, Path::new("/state/work/a1"), &[], &["x".into()]);
+        let a = strs(&argv);
+        assert!(a.contains(&"--unshare-all") && !a.contains(&"--cap-add"));
+        assert!(!a.contains(&"--dir") && !a.contains(&"/usr/bin/setpriv"));
+
+        p.user = Some(users::AgentUser {
+            key: "d.a1".into(),
+            uid: 600_001,
+            gid: 600_001,
+            root_uid: 600_000,
+            root_gid: 600_000,
+            inner_uid: 1000,
+            inner_gid: 1000,
+            setpriv: "/usr/bin/setpriv".into(),
+            passwd: Some("/state/agent-users/passwd-1".into()),
+            group: Some("/state/agent-users/group-1".into()),
+        });
+        let (_, argv) = command(&p, Path::new("/state/work/a1"), &[], &["x".into()]);
+        let a = strs(&argv);
+        // The user namespace is made beforehand: no --unshare-all (it would add another).
+        assert!(!a.contains(&"--unshare-all"), "{a:?}");
+        for flag in [
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+        ] {
+            assert!(a.contains(&flag), "{flag}: {a:?}");
+        }
+        for cap in users::SETPRIV_CAPS {
+            assert!(has(&a, &["--cap-add", cap]), "{cap}: {a:?}");
+        }
+        assert!(has(
+            &a,
+            &["--ro-bind", "/state/agent-users/passwd-1", "/etc/passwd"]
+        ));
+        assert!(has(
+            &a,
+            &["--ro-bind", "/state/agent-users/group-1", "/etc/group"]
+        ));
+        // Each bind's parent is made 0755 first (bwrap would make it 0700, owned by the setup id).
+        assert!(
+            has(&a, &["--dir", "/state/work", "--bind", "/state/work/a1"]),
+            "{a:?}"
+        );
+        assert!(has(&a, &["--dir", "/home/u/.claude", "--bind"]), "{a:?}");
+        // Writable tmpfs mounts are the agent's too (bwrap's setup id mounts them).
+        assert!(has(&a, &["--perms", "01777", "--tmpfs", "/tmp"]), "{a:?}");
+        // setpriv is the first program; the CLI follows it.
+        let sep = a.iter().position(|x| *x == "--").unwrap();
+        assert_eq!(a[sep + 1], "/usr/bin/setpriv");
+        let tail = &a[sep + 1..];
+        assert!(has(
+            tail,
+            &["--reuid", "1000", "--regid", "1000", "--clear-groups"]
+        ));
+        assert!(has(tail, &["--", "/usr/bin/cli", "x"]), "{tail:?}");
+        assert!(has(&a, &["--setenv", "GIT_CONFIG_KEY_0", "safe.directory"]));
+        // Host network: the network namespace is simply not unshared.
+        p.network = Network::Host;
+        let (_, argv) = command(&p, Path::new("/state/work/a1"), &[], &[]);
+        let a = strs(&argv);
+        assert!(!a.contains(&"--unshare-net") && !a.contains(&"--share-net"));
     }
 
     #[test]

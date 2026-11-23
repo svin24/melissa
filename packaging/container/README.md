@@ -266,7 +266,9 @@ later must push only `:escape-tested` (PLAN open question 95).
 ## Security
 - `--privileged` rootful: the container has **root on the host**. k3s needs mounts, netfilter and network
   namespaces; the agent sandbox needs nested namespaces. Inside, the server runs as the unprivileged
-  `melissa` user and each agent in its own bubblewrap sandbox with an egress proxy.
+  `melissa` user and each agent in its own bubblewrap sandbox with an egress proxy, as its own host user
+  from `melissa`'s subordinate ids (`/etc/subuid`: `melissa:1879048192:65536`, set in the image; agent users,
+  DECISIONS). With rootful podman those ids are the host's own: no host user has them.
 - SELinux reads as disabled inside (k3s `selinux: false`); the host confines the container as podman does.
 - The update channel carries three fixed words as file names; the host helper takes no arguments from
   the container.

@@ -205,6 +205,20 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   the escape suite's `limits.*` probes (fork bomb, memory hog, CPU hog) check the cgroup counters.
   **Config (2026-11-23):** `[backend.sandbox]` changes the CLI's preset key by key (`limits` too) and its lists
   add to the preset's; `preset = false` starts from an empty home. Next: Melissa-owned CLI logins.
+  **Agent users (2026-11-23):** every sandbox runs as its agent's own host uid/gid (`sandbox/users.rs`, the
+  rootless-podman way): `melissa` has subordinate ids (`/etc/subuid`, `/etc/subgid`: 1879048192, 65536 on
+  both images); each agent (and the lead, and one shared user for owner-less runs) gets two of them for good
+  (`<state>/agent-users.json`): its own, and a setup id only bwrap runs as. A holder (`unshare --user`) makes
+  the user namespace, shadow-utils' `newuidmap`/`newgidmap` map it, `nsenter` starts bwrap in it (which drops
+  the server's supplementary groups, e.g. `melissa-kube`), and `setpriv` is the first program inside: the
+  agent is uid 1000 there, with no groups, capabilities or bounding set. Files: POSIX ACLs let the agent's id
+  into its workdir, file box and session store (default ACLs name the server too, so it still reads and
+  removes what the agent makes) and into the credential/config files bound from `$HOME`; deleting an agent
+  removes what it locked through a namespace where the server is root. Off (today's behaviour, one warning,
+  `Agent users: off: <why>` in the startup summary) without subordinate ids, the helpers, ACLs, under
+  `no_new_privs`, or with `MELISSA_AGENT_USERS=off`. `melissa-server.service` dropped `NoNewPrivileges=`
+  for it. Verified on Fedora (claude, grok, opencode, git, a credential refresh) and by the escape suite's
+  `users.*` probes. Open items: question 97.
 - **Escape suite (2026-11-23):** `just escape-test` runs real escape attempts inside the real sandbox (bwrap +
   egress namespace + bridge, built with `SandboxPlan` and spawned through `sandbox::spawn_command()`, the backends' one spawn path;
   `crates/agent/tests/escape.rs`, probes in `tests/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
@@ -421,9 +435,10 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   data); app to app blocked by default, links declared in manifests and opened by the lead agent after approval
   (NetworkPolicy); agent to app only through tools; app internet access by per-manifest allowlist. Honest claim:
   "strong, layered and tested", never "unbreakable" (shared kernel). Hardening milestone: seccomp + cgroup limits +
-  per-agent UIDs for sandboxes (seccomp and cgroup limits done 2026-11-23); default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
+  per-agent UIDs for sandboxes (all three done 2026-11-23); default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
   apps; gVisor/microVM runtime for agent-built apps; an adversarial escape test suite gating image updates
   (exists for agent sandboxes since 2026-11-23: see "Escape suite" above; automation is open question 95).
+  Per-agent host users are done too (2026-11-23, "Agent users" above; open question 97).
 - **Reference:** T3 Code (github.com/pingdotgg/t3code) is a useful reference for multi-agent, many-backend UX. It is currently published under the MIT license — re-verify the license and notice requirements before reusing any code; otherwise treat it as inspiration only.
 
 ## 6. Web UI
@@ -1405,3 +1420,17 @@ Roadmap (rough, phases may overlap):
     cap on all sandboxes together (`sandboxes/memory.max`, e.g. a share of RAM) so many agents at once cannot
     starve k3s; per-agent limits in Settings (today only `[backend.sandbox.limits]` in server.toml); whether a
     hit limit should reach the audit log and the agent's chat, not only the server log.
+97. Agent users, what is left (2026-11-23; DECISIONS "Agent users"). (a) Ids are never reused: 32768 agents per
+    65536-id range, then new agents fail to start (clear error). Reuse after deletion would need proof that
+    nothing of the old agent's is left on disk. (b) A changed subordinate range turns agent users off (files
+    belong to the old ids); no migration. (c) A CLI that creates a file with a strict mode (0600, `install -m`,
+    tar extraction) leaves it unreadable to the server: the file box shows it but cannot serve it; deletion
+    still works (through the agent's namespace). (d) Directories bound from `$HOME` (`ro`/`rw` lists) get no
+    grant: they must be readable by others; presets bind only files `rw`. (e) Verified 2026-11-23 on Fedora
+    (escape suite, claude/grok/opencode `--version`, git, a credential refresh) and in the NixOS VM test (escape
+    suite and a server-spawned sandbox) and in the built image (`just escape-test-image`: 62 pass with agent
+    users on); a signed-in agent turn (real API call) under agent users was not run. (f) `NoNewPrivileges=` is gone
+    from the server unit (newuidmap needs its file capabilities); the server could now run setuid programs
+    (melissa has no sudo/su rights). (g) From source on a desktop the owner's own CLI credential files get an
+    ACL entry per agent id; `MELISSA_AGENT_USERS=off` keeps them untouched. (h) The escape suite keeps its own
+    id table, so on one host it can hand out the same ids as a dev server's agents.

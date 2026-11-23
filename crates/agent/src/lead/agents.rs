@@ -199,11 +199,14 @@ pub struct AgentDeleted {
     pub removed: Vec<String>,
 }
 
-/// Remove a directory tree; true if it existed and is gone.
-fn remove_tree(dir: &std::path::Path) -> bool {
-    match std::fs::remove_dir_all(dir) {
+/// Remove a directory tree agent `key` worked in (with agent users, also what it locked
+/// itself: [`crate::sandbox::users::remove_dir_all`]); true if it existed and is gone.
+fn remove_tree(dir: &std::path::Path, key: &str) -> bool {
+    if !dir.exists() {
+        return false;
+    }
+    match crate::sandbox::users::remove_dir_all(dir, key) {
         Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => {
             tracing::warn!(path = %dir.display(), "cannot remove: {e}");
             false
@@ -374,11 +377,11 @@ impl AgentPool {
                 Err(e) => tracing::warn!("cannot remove the file box of {}: {e}", agent.id),
             }
             let workdir = a.workroot.join(&agent.id);
-            if remove_tree(&workdir) {
+            if remove_tree(&workdir, &agent.id) {
                 removed.push("its working directory".into());
             }
         }
-        if remove_tree(&self.inner.registry.agent_dir(&agent.id)) {
+        if remove_tree(&self.inner.registry.agent_dir(&agent.id), &agent.id) {
             removed.push("its chat and session store".into());
         }
         self.audit(

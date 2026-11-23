@@ -167,6 +167,10 @@ pkgs.testers.runNixOSTest {
         server.succeed(f"grep -qx \"$(systemctl show -p MainPID --value melissa-server)\" {cg}/server/cgroup.procs")
         server.succeed(f"grep -qw memory {cg}/sandboxes/cgroup.subtree_control")
 
+    with subtest("agent sandboxes run as their own host users (subordinate ids)"):
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'agent sandboxes run as their own host users'")
+        server.succeed("grep -qx 'melissa:1879048192:65536' /etc/subuid")
+
     with subtest("chat turn on the echo backend"):
         rc, out = server.execute("melissa-server ask 'hello from nixos' 2>&1")
         print(out)
@@ -206,6 +210,7 @@ pkgs.testers.runNixOSTest {
         assert "test result: ok" in out and "SKIP" not in out, out
         assert "probes:" in out and " 0 fail," in out, out
         assert "Resource limits: on" in out, out
+        assert "Agent users: on" in out, out
 
     with subtest("vendor-style binary in the sandbox through nix-ld"):
         server.succeed(

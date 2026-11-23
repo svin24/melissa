@@ -20,7 +20,9 @@
 //! host process whose argv ends in `melissa-escape-canary-<pid>`), `ESC_PORT` (an HTTP server
 //! on the host's loopback and, as `ESC_LAN`, on its LAN address if it has one), `ESC_ABSTRACT`
 //! (a host abstract Unix socket), `ESC_MCP` / `ESC_MCP_TOKEN` (Melissa's MCP endpoint through
-//! the bridge and this sandbox's token), `ESC_TMP_NAME` (a file name checked in the host's /tmp).
+//! the bridge and this sandbox's token), `ESC_TMP_NAME` (a file name checked in the host's /tmp),
+//! `ESC_SERVER_UID` (the host uid of the suite, standing in for the server) and `ESC_OTHER_UID`
+//! (the other agent's host uid; empty when agent users are off).
 
 use super::{Kind, Probe};
 
@@ -206,6 +208,56 @@ pub const PROBES: &[Probe] = &[
            case "$line" in *nosuid*) blocked "workdir is nosuid";; esac
            escaped "workdir is not mounted nosuid""#,
     ),
+    // ---- Agent users: each sandbox its own host user (skipped when off). ----
+    Probe::new(
+        "users.own-host-uid",
+        "run as the server's host uid or as another agent's",
+        "blocked (its own host uid from the subordinate range)",
+        r#"host=$(host_uid "$(id -u)")
+           [ -n "$host" ] || broken "own uid not in /proc/self/uid_map"
+           [ "$host" = "$ESC_SERVER_UID" ] && escaped "runs as the server's host uid $host"
+           [ "$host" = "$ESC_OTHER_UID" ] && escaped "runs as the other agent's host uid $host"
+           blocked "host uid $host (server $ESC_SERVER_UID, other agent $ESC_OTHER_UID)""#,
+    )
+    .users(),
+    Probe::new(
+        "users.file-owner",
+        "leave files on the host that belong to the server",
+        "blocked (what it creates is owned by its own host uid; checked there)",
+        r#"echo x > ./made-here && echo x > "$ESC_OWN_BOX/made-here" \
+             || broken "cannot write the workdir or the own box"
+           blocked "made files in the workdir and the box (owner checked on the host)""#,
+    )
+    .users()
+    .host(|c| {
+        owned_by_agent(c, c.work_of("users.file-owner").join("made-here"))?;
+        owned_by_agent(c, c.own_box.join("made-here"))
+    }),
+    Probe::new(
+        "users.server-groups",
+        "keep the server's supplementary groups (e.g. the kubeconfig group)",
+        "blocked (none)",
+        r#"g=$(sed -n 's/^Groups:[[:space:]]*//p' /proc/self/status | tr -d ' ')
+           [ -n "$g" ] && escaped "supplementary groups kept: $(sed -n 's/^Groups://p' /proc/self/status)"
+           blocked "no supplementary groups""#,
+    )
+    .users(),
+    Probe::new(
+        "users.other-box-bound",
+        "read and write another agent's file box bound into this sandbox (a hypothetical bug)",
+        "blocked (its host permissions only let that agent and the server in)",
+        r#"grep -qF " $ESC_OTHER_BOX " /proc/self/mountinfo || broken "the other box is not bound"
+           leaked "$ESC_OTHER_BOX/secret.txt" && escaped "read the other agent's file"
+           ls -A "$ESC_OTHER_BOX" >/dev/null 2>&1 && escaped "listed the other agent's box"
+           echo x > "$ESC_OTHER_BOX/planted.txt" 2>/dev/null && escaped "wrote into the other agent's box"
+           blocked "bound, but its permissions keep this agent's uid out""#,
+    )
+    .users()
+    .bind_other_box()
+    .host(|c| {
+        absent(c.other_box.join("planted.txt"))?;
+        unchanged(c.other_box.join("secret.txt"), &c.token)
+    }),
     // ---- Processes ----
     Probe::new(
         "proc.host-processes",
@@ -601,6 +653,24 @@ fn not_root_owned(path: std::path::PathBuf) -> Result<(), String> {
     match path.metadata() {
         Ok(m) if m.uid() == 0 => Err(format!("{} is root-owned on the host", path.display())),
         _ => Ok(()),
+    }
+}
+
+/// `path` exists and belongs to this agent's host uid, not to the server.
+fn owned_by_agent(c: &super::Ctx, path: std::path::PathBuf) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let owner = path
+        .metadata()
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .uid();
+    match c.own_uid {
+        Some(uid) if owner == uid => Ok(()),
+        _ => Err(format!(
+            "{} is owned by host uid {owner} (server {}, this agent {:?})",
+            path.display(),
+            c.server_uid,
+            c.own_uid
+        )),
     }
 }
 

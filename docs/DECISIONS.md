@@ -1799,3 +1799,51 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   the sandbox because of a host setting would be a surprise. Alternatives: drop `memory.max` under 2 (an agent
   could then use all memory before the same panic), refuse to start (too harsh for a host the owner may not
   control), set the sysctl ourselves (needs root; not the server's business).
+- **2026-11-23 — Every agent sandbox runs as its own host user, from the server's subordinate ids (agent users).**
+  Owner-approved design, the rootless-podman way (`crates/agent/src/sandbox/users.rs`, PLAN section 5
+  "Agent users", open question 97). Choices:
+  - *Namespace:* Melissa prepares the user namespace; bwrap never makes one. A holder (`unshare --user cat`)
+    creates it, `newuidmap`/`newgidmap` map root to a per-agent *setup id*, the agent's inside id (1000, or the
+    next id the server's own ids leave free) to the agent's host id, and the server's own uid/gid to themselves.
+    `nsenter --user=/proc/<holder>/ns/user --setuid 0 --setgid 0` then execs bwrap (explicit `--unshare-*`, no
+    `--unshare-all`) as root of that namespace: setup has capabilities there and, with the server's ids mapped,
+    can reach the server's 0700 directories it binds; `nsenter`'s `setgroups(0)` drops the server's
+    supplementary groups (`melissa`, `melissa-kube`: the kubeconfig group). bwrap keeps only `CAP_SETUID`,
+    `CAP_SETGID`, `CAP_SETPCAP` (`--cap-add`) for `setpriv`, the first program inside, which becomes the agent
+    (`--reuid/--regid 1000 --clear-groups --bounding-set -all --inh-caps -all`). The holder is dropped once
+    bwrap has joined. Rejected: bwrap `--userns FD` with `--uid` (works, but the server's supplementary groups
+    stay with the agent: bwrap never calls `setgroups`, and a process in the sandbox with those groups could
+    read the kubeconfig after an escape); bwrap `--userns-block-fd` (bwrap then never changes uid: the agent
+    would stay the server's user); the agent as root of its namespace (simplest, but uid 0 inside, a full
+    bounding set, and CLIs that refuse root); `unshare --map-users` (util-linux >= 2.39 syntax only).
+  - *Allocation:* two ids per agent (setup + agent) from the range, by file box key (`lead`, agent id;
+    `shared` for runs without an owner), in `<state>/agent-users.json`, never reused (agent ids are never
+    reused either; 32768 agents per 65536 ids). The table records the range starts; a changed range turns the
+    feature off rather than handing old files to new owners. One id per sandbox run was rejected: files would
+    outlive their owner id.
+  - *Files:* POSIX ACLs written directly as `system.posix_acl_*` xattrs (`sandbox/acl.rs`, rustix; no `setfacl`,
+    no `unsafe`). The workdir, file box and session store get `u:<agent>:rwx` plus a default ACL naming the
+    agent and the server (owner/group/other `---`), applied to the existing tree once (deepest first, never
+    following symlinks, only the server's own entries) and to new direct entries each run; credential and
+    config files bound from `$HOME`, the CLI binary, extra files and the bridge's sockets get a grant on the
+    file itself when "other" does not already cover it; the setup id gets search on the workdir (bwrap's
+    `--chdir`). Other agents are named nowhere, and every box is 0700. Rejected: chown to the agent through a
+    helper namespace (the server could then no longer read results without that helper), a shared group with
+    setgid directories (every agent would share it). Deleting an agent removes what it locked through a
+    namespace where the server is root and the agent's id is mapped (`rm -rf` as that root).
+  - *Inside:* bwrap makes missing parents of a bind 0700 and owns its tmpfs mounts, both as the setup id, so
+    each bind gets its parent as a `--dir` (0755) first, `/tmp` and `/var/tmp` are `01777`, and a CLI's state
+    tmpfs is `0777` (not sticky: `fs.protected_regular` would stop the CLI rewriting a credential file bound
+    into it). `/etc/passwd` and `/etc/group` are the host's with `agent` (uid/gid 1000) added, so git, `id`
+    and Node's `os.userInfo()` find the user; `safe.directory=*` comes through `GIT_CONFIG_*` (the server's
+    workdir is another user's inside).
+  - *Off:* without subordinate ids, the helpers (`newuidmap`, `newgidmap`, `unshare`, `nsenter`, `setpriv`),
+    ACLs on the state directory, when the server is root or has `no_new_privs`, when a trial mapping fails, or
+    with `MELISSA_AGENT_USERS=off`. Then sandboxes run as before, with one warning and `Agent users: off:
+    <why>` in the startup summary. `melissa-server.service` no longer sets `NoNewPrivileges=`: no_new_privs
+    disables newuidmap's file capabilities. The server runs no other setuid program, `melissa` has no sudo or
+    su rights, and every agent still has no_new_privs from bwrap. Both images give `melissa`
+    `1879048192:65536` (0x70000000, a block systemd's id layout leaves unused). In the container image
+    `newuidmap`/`newgidmap` are setuid root (shadow's classic install mode): Fedora's file capabilities do not
+    survive a rootless image build (found by `just escape-test-image`: "write to uid_map failed"); NixOS uses
+    its own capability wrappers.

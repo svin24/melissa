@@ -45,6 +45,8 @@ pub struct Report {
     pub netbridge: bool,
     /// Resource limits per agent sandbox: `Ok(the defaults)` when applied, `Err(why not)`.
     pub limits: Result<String, String>,
+    /// Agent users (each sandbox its own host user): `Ok(the id range)` when on, `Err(why not)`.
+    pub users: Result<String, String>,
     /// Why an agent's memory use could panic the host (`vm.panic_on_oom`), if it could.
     pub oom_panic: Option<&'static str>,
     pub backends: Vec<BackendLine>,
@@ -144,6 +146,14 @@ impl Report {
             Ok(defaults) => line(format!("  Limits:   on (each agent: {defaults}).{oom}")),
             Err(why) => line(format!(
                 "  Limits:   off: {why}. Agents run without memory, process and CPU limits.{oom}"
+            )),
+        }
+        match &self.users {
+            Ok(range) => line(format!(
+                "  Agent users: on (each agent its own host user, ids {range})."
+            )),
+            Err(why) => line(format!(
+                "  Agent users: off: {why}. Agents run as the server's own user."
             )),
         }
         line("  Agents:".into());
@@ -272,6 +282,7 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         sandbox,
         netbridge,
         limits: limits_line(),
+        users: users_line(),
         oom_panic: oom_panic(),
         backends,
         lead_order: lead_order.to_vec(),
@@ -344,6 +355,17 @@ fn limits_line() -> Result<String, String> {
     }
 }
 
+/// Whether agent sandboxes run as their own host users
+/// ([`melissa_agent::sandbox::users::init`] ran at startup); their id range when they do.
+fn users_line() -> Result<String, String> {
+    use melissa_agent::sandbox::users::{status, Status};
+    match status() {
+        Some(Status::Active(s)) => Ok(format!("{}-{}", s.uids().start, s.uids().last())),
+        Some(Status::Off(why)) => Err(why.clone()),
+        None => Err("not set up".into()),
+    }
+}
+
 /// Whether `vm.panic_on_oom` turns an agent's out-of-memory into a host panic, given whether
 /// agents get their own memory cgroup. The memory limit stays on either way
 /// ([`melissa_agent::sandbox::limits::oom_panic_risk`]); the startup log already warned.
@@ -387,6 +409,7 @@ mod tests {
             sandbox: Sandbox::Ok,
             netbridge: true,
             limits: Ok("2 GiB memory, 512 processes, 2 CPUs".into()),
+            users: Ok("1879048192-1879113727".into()),
             oom_panic: None,
             backends: vec![
                 BackendLine {

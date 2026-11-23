@@ -1679,6 +1679,7 @@ impl Conversation {
             open.effort = effort;
             open.fast = fast;
             open.files_dir = Some(files_dir);
+            open.sandbox_user = crate::files::box_key(&spec.owner);
             open.resume = saved
                 .as_ref()
                 .filter(|s| s.backend == *name && !s.session_id.is_empty())

@@ -207,6 +207,7 @@ impl CliBackend {
         let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
         sandboxed_command(
             &self.sandbox,
+            None,
             self.bwrap.as_deref(),
             self.home.as_deref(),
             program,
@@ -352,10 +353,13 @@ pub(crate) fn open_egress(
 /// disabled, else `bwrap` wrapping it. `extra_ro` are further files bound read-only;
 /// `binds` are host directories bound read-write at paths under `$HOME`; `rw_dirs` are host
 /// directories bound read-write at their own path (the agent's file box); `env` are fixed
-/// variables set inside the sandbox (without a sandbox the caller sets them on the process).
+/// variables set inside the sandbox (without a sandbox the caller sets them on the process);
+/// `user` is whose host user the sandbox runs as ([`crate::sandbox::users`]; the file box key,
+/// None: the shared user of sandboxes without an owner).
 #[allow(clippy::too_many_arguments)] // internal helper; each argument is a distinct input
 pub(crate) fn sandboxed_command(
     sandbox: &SandboxSpec,
+    user: Option<&str>,
     bwrap: Option<&Path>,
     home: Option<&Path>,
     program: &Path,
@@ -381,7 +385,8 @@ pub(crate) fn sandboxed_command(
         .with_rw_dirs(rw_dirs)?
         .with_env(&sandbox.vars)?
         .with_env(env)?
-        .with_bridge(bridge);
+        .with_bridge(bridge)
+        .with_user(user.unwrap_or(crate::sandbox::users::SHARED))?;
     Ok(sandbox::spawn_command(&plan, workdir, extra_ro, &args)?)
 }
 
