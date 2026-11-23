@@ -16,10 +16,13 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   `updates.rs` (view building + handlers, UI and JSON API), `apply.rs` (saved changes apply by themselves when
   Melissa is idle), `pages.rs` (assembly from components; `SECTIONS`).
 - Components (all in `components.rs`; the panel parts in `components/panel.rs`): `settings_frame_at` (the
-  Settings panel: search, grouped section list with icons, breadcrumb, close), `setting_card` + `setting_row` /
-  `setting_row_with` (the row pattern), `inline_form` + `inline_select` / `inline_number` (a row's control),
-  `settings_head` ("Checked
-  just now · Check again"), `split_card` + `pick_list`/`PickRow` (two panes), `provider_mark` (lettered hex)
+  Settings panel: search, grouped section list with icons, the head bar with the title, the section's tools and
+  close; `SettingsHead` = optional one-line lead + tools, `settings_tools_oob` refreshes the tools after a swap),
+  `setting_card` + `setting_row` / `setting_row_with` (the row pattern), `setting_row_full` (a form opened in
+  place, full width), `setting_row_details` (a row that opens below itself: About's licenses, Change icon),
+  `inline_form` + `inline_select` / `inline_number` (a row's control, saves on change), `inline_text_form` (a
+  name field + visible Save), `row_menu`/`RowAction` (a row's "⋯": People), `settings_head` ("Checked
+  just now · Check again", for the head bar's tools), `split_card` + `pick_list`/`PickRow` (two panes), `provider_mark` (lettered hex)
   and `provider_logo` (a vendored logo where allowed, else the letter mark; see "Logos"),
   `toggle` (styled native checkbox, `role=switch`, htmx `hx-trigger="change"`, a Save button that
   shows only on keyboard focus for no-JS), `detail_head`, `facts` (dl), `group`, `text_field`, `lines_field`,
@@ -60,17 +63,24 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   them. Links inside the panel that leave it (a helper's chat) navigate normally.
 - **Frame:** left the title, a search field (hidden without script; "/" focuses it), sections grouped **Agents**
   (Providers, Agents, Permissions, Schedules), **Chat** (Voice, Files), **System** (Updates, Developer), each with
-  its `Glyph`. Right: the breadcrumb ("Settings / Voice", "Settings / Developer / Task #3"), the close button,
-  then the section, scrolling inside. Phones: full-screen modal, the sections a row of tabs above.
+  its `Glyph`. Right: the head bar (the title, "Developer / Task #3" below a section, the section's tools, close; 2026-11-23),
+  then the section, scrolling inside. Phones: full-screen modal, the list and a section one level at a time (back link + title).
 - **Search:** filters the section list by name and `keywords`, and hides rows (`[data-setting]`) of the open
   section that don't match; kept across htmx swaps. "No settings match." when nothing does.
 - **Rows:** `setting_card(heading, rows)` is one card of `setting_row`s (title, one-line muted description, the
   control right; `extra` spans below for a confirmation, progress, notices, details). Use it for switches, a
   select or a number (`inline_form`: saves on change, a Save button for keyboard and no script), and short lists
-  where each item has one or two actions (Agents, Files' boxes). Tables stay for many columns (Schedules, the
-  rules in Permissions, Agent tasks); forms with several fields stay `card` + `settings_form`. Providers keeps its
-  split card. Region ids still wrap what htmx swaps (a region can be one row inside a card: `chat_prefs_region`,
-  `bypass_region`, `full_access_region`).
+  where each item has one or two actions (Agents, Files' boxes). Providers keeps its split card. Region ids still
+  wrap what htmx swaps (a region can be one row inside a card: `chat_prefs_region`, `bypass_region`,
+  `full_access_region`, `device_name_region`).
+- **Slim rules (2026-11-23, owner decisions 1–5; DECISIONS.md):** `setting_card` is the only container in
+  Settings (no `card()`; a table goes inside as a `setting_row_full`). The title lives only in the head bar; a
+  section's lead is one short line or none (`SettingsHead.lead`), its actions in the head bar's tools. Rows are
+  40px (56 with a description), controls 32px, disclosures 32px with no line inside a card. A big form (several
+  fields) opens behind a button as a link to the same page with a query (`?add=1`, `?password=1`, `?task=new`;
+  Cancel links back; a refused save keeps it open), in a `setting_row_full` with fields at most 24rem and its
+  submit as the one primary button. A destructive trigger uses `Btn::danger_quiet()` (`action_button`'s first
+  argument). On a phone a row keeps one small control at its end; more actions go behind `row_menu`.
 - **Restore defaults:** none of today's sections has a defaults concept, so the header has no such button.
 
 ## Providers: rules
@@ -276,8 +286,8 @@ Providers and polkit results still apply to the container (same rule, now restar
 | Secrets in HTML, JSON, CLI output, journal, `audit.jsonl` | never; only `providers.toml` (0600 melissa) |
 
 **Developer section** (2026-11-19): the third section, `/settings/developer` (route in `lib.rs`, state `Tasks`): Agent
-  tasks (`pages::dashboard` in `frame_at(.., "Developer", ..)`); `/tasks/{id}` is a page below it (breadcrumb
-  Settings / Developer / Task #n). `GET /tasks` redirects there when a lead agent is present; the task form and
+  tasks (`pages::dashboard` in `frame_at(.., "Developer", ..)`); `/tasks/{id}` is a page below it (head bar
+  "Developer / Task #n"). `GET /tasks` redirects there when a lead agent is present; the task form and
   fragments keep their `/tasks…` URLs.
   (2026-11-20) Its **Chat** card has one toggle, "Show thinking and timings" (`POST /ui/settings/developer/steps`,
   `enabled=on`; off by default). Saved in `ui.toml` next to `providers.toml` (`melissa_settings::prefs`, applies at
