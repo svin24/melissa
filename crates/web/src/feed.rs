@@ -1,7 +1,7 @@
 //! The chat feed: folds the lead agent's event log into the items the chat shows, and maps
 //! internal names (event types, tool names, backend names) to plain words.
 //!
-//! **All naming lives here.** Tool names (`give_agent_job`, `install_app`, ...), event names
+//! **All naming lives here.** Tool names (`give_agent_job`, `deploy_app`, ...), event names
 //! and backend names are internal; the UI says "helper" for an agent and "app" for a workspace. When
 //! they change, only the tables and the `match` in [`Feed::apply`] need updating. Nothing in
 //! this module renders markup: `pages.rs` turns [`Item`]s into components.
@@ -1270,12 +1270,6 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Checking the cluster",
         "Checked the cluster",
     ),
-    // Old tools from the app catalog days, still in recorded chats.
-    (
-        "list_catalog",
-        "Looking at the app catalog",
-        "Looked at the app catalog",
-    ),
     ("list_apps", "Listing your apps", "Listed your apps"),
     (
         "my_apps",
@@ -1284,11 +1278,6 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     ("deploy_app", "Setting up an app", "Set up an app"),
     ("update_app", "Changing an app", "Changed an app"),
-    (
-        "install_app",
-        "Starting an app install",
-        "Started an app install",
-    ),
     ("app_status", "Checking an app", "Checked an app"),
     ("app_logs", "Reading an app's logs", "Read an app's logs"),
     ("stop_app", "Stopping an app", "Stopped an app"),
@@ -1477,16 +1466,6 @@ pub fn approval_words(
                 a.kind = "Network access";
                 a.detail = Some(ports.join(", "));
             }
-        }
-        "install_app" => {
-            a.title = match &app {
-                Some(app) => format!("Install {app}?"),
-                None => "Install an app?".into(),
-            };
-            a.consequence = "Downloads the app and starts it on this device.".into();
-            a.yes = "Install";
-            a.kind = "Runs software";
-            a.detail = app.clone();
         }
         "stop_app" => {
             a.title = match &app {
@@ -1818,8 +1797,8 @@ mod tests {
             "Checked this device"
         );
         assert_eq!(
-            tool_words("mcp__melissa__install_app").doing,
-            "Starting an app install"
+            tool_words("mcp__melissa__deploy_app").doing,
+            "Setting up an app"
         );
         assert_eq!(
             tool_words("use_tool: melissa__list_apps").done,
@@ -2791,13 +2770,13 @@ mod tests {
         assert!(!a.destructive);
         let a = approval_words(
             2,
-            "install_app",
+            "deploy_app",
             "x",
             Some(&json!({"app": "immich"})),
             &NoLookup,
         );
-        assert_eq!(a.title, "Install Immich?");
-        assert_eq!(a.yes, "Install");
+        assert_eq!(a.title, "Set up Immich?");
+        assert_eq!(a.yes, "Set up");
     }
 
     #[test]

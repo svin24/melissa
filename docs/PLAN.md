@@ -137,13 +137,13 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   server-side applied by a second identity, `melissa/melissa-apps`, whose writes admission policies pin to
   `app-*` workspace namespaces with Pod Security baseline, never privileged or on the host (no Secret reads
   anywhere). Every deploy and update is confirmed by the user with a summary of what runs. Tools: `deploy_app`,
-  `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`. The old
-  catalog's Nextcloud keeps running and is converted to a stored spec at startup. Details:
+  `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`.
+  Support for apps from the old catalog was removed 2026-11-23 (no users). Details:
   `docs/agent-skills/app-deploy.md`.
 - **Isolation (2026-11-23, DECISIONS):** apps run under **gVisor** (`runsc`, RuntimeClass `gvisor`, platform
   systrap) by default: the spec's `isolation` is `gvisor` (default) or `standard` (runc, the device's kernel;
   for host devices or apps that fail under gVisor), `kata` reserved. No trusted-image list exists, so every
-  agent spec defaults to gVisor; the old catalog's Nextcloud is `standard`. The confirmation names the level,
+  spec without `isolation` gets gVisor, with no per-app or per-image exception. The confirmation names the level,
   the deployer stores it with the spec and fails closed (no RuntimeClass: nothing applied); admission policies
   refuse gVisor-labelled pods without the class. Image: pinned runsc + shim (`gvisor.lock`), containerd entry
   and RuntimeClass from `k3s-prepare`; NixOS: `k3s.gvisor.enable`. `just gvisor-test-image` checks it.
@@ -731,7 +731,7 @@ crates/web          # axum + maud UI, embedded htmx (rust-embed)
 crates/auth         # logins: accounts (Argon2id), owner claim, invites, sessions, sign-in limits
 crates/agent        # backend trait, echo + CLI backends (claude, grok, opencode), task board, audit log
 crates/cluster         # k3s client (kube-rs, rustls) behind small traits, cluster + app tools, rendering
-crates/appspec      # the app spec agents write, validation, legacy catalog specs
+crates/appspec      # the app spec agents write, validation
 # planned: crates/mesh (tailscale/headscale/netbird adapters)
 packaging/common/   # system files every packaging installs (units, manifests, k3s.lock, melissa-setup)
 packaging/container/ # Containerfile, Quadlet, install.sh/uninstall.sh, host update helper

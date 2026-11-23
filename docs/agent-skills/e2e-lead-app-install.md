@@ -17,7 +17,9 @@ Note (2026-11-19): apps now have `stop_app`/`start_app` ("turn off" must never b
 links `http://<device>:<port>` instead of `<app>.<domain>`.
 
 Note (2026-11-19, later): the catalog is gone. `list_catalog`/`install_app` below are history; agents now
-write a spec and call `deploy_app`, which always asks the user ([app-deploy.md](app-deploy.md)).
+write a spec and call `deploy_app`, which always asks the user ([app-deploy.md](app-deploy.md)). Since
+2026-11-23 nothing of the catalog is left in the code either (no migration of catalog installs, no
+`install_app`); a box with such an install needs it removed and redeployed from a spec.
 
 ## Setup (the installed container, 2026-11-19)
 Everything runs inside the rootful container from `packaging/container/install.sh`

@@ -555,9 +555,9 @@ fn password(fake: &Fake) -> String {
         .clone()
 }
 
-/// The Nextcloud spec (the old catalog's, now a spec like any other).
+/// A real web app ([`crate::fixtures::nextcloud`]) as JSON.
 fn nc() -> Value {
-    serde_json::to_value(legacy::nextcloud(&Map::new())).unwrap()
+    serde_json::to_value(crate::fixtures::nextcloud()).unwrap()
 }
 
 /// A Minecraft server: a public TCP port and a public UDP port, no web UI.
@@ -2741,109 +2741,6 @@ fn the_relabel_patch_keeps_what_it_cannot_map() {
     assert_eq!(
         patch,
         serde_json::json!({"metadata": {"labels": {"melissa.io/comb": null}}})
-    );
-}
-
-// ---- apps from the old catalog -------------------------------------------------------------
-
-/// Nextcloud as the old catalog installed it: no spec on the namespace, its config on the
-/// Deployment, its password in the shared `nextcloud-secrets`.
-fn catalog_nextcloud(fake: &Fake) {
-    nextcloud_of(fake, ADA);
-    let mut s = fake.state();
-    s.namespace.as_mut().unwrap().metadata.annotations = Some(BTreeMap::from([
-        ("melissa.io/port".to_string(), "30000".to_string()),
-        ("melissa.io/origin".to_string(), "catalog".to_string()),
-    ]));
-    let mut d = Deployment::default();
-    d.spec.replicas = Some(1);
-    d.metadata.annotations = Some(BTreeMap::from([(
-        CONFIG_ANNOTATION.to_string(),
-        r#"{"admin_user":"owner","php_memory_limit":"1G","upload_limit":"2G"}"#.to_string(),
-    )]));
-    s.deployment = Some(d);
-    s.secrets
-        .insert("nextcloud-secrets".into(), Secret::default());
-}
-
-#[tokio::test]
-async fn a_catalog_install_gets_its_spec_and_stays_manageable() {
-    let fake = Arc::new(Fake::default());
-    catalog_nextcloud(&fake);
-    let t = tools(Some(fake.clone()));
-    // Before the migration the tools rebuild the spec from the install config.
-    let s = call(&t, "app_status", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    assert_eq!(s["spec"]["credentials"]["user"], "owner");
-    assert_eq!(s["spec"]["containers"][0]["env"]["PHP_UPLOAD_LIMIT"], "2G");
-    assert_eq!(s["url"], "http://203.0.113.10:30000");
-    assert_eq!(s["ports"][0]["web"], true);
-
-    // The migration stores it once; nothing is applied (the app keeps running untouched).
-    let workspaces = Workspaces::new(settings(), Some(fake.clone()));
-    assert_eq!(workspaces.migrate_catalog_apps().await.unwrap(), 1);
-    assert_eq!(workspaces.migrate_catalog_apps().await.unwrap(), 0);
-    assert!(fake.state().applied.is_empty());
-    let stored = AppSpec::from_text(&ns_annotation(&fake, SPEC_ANNOTATION).unwrap()).unwrap();
-    assert_eq!(stored.credentials.unwrap().user.as_deref(), Some("owner"));
-    assert_eq!(
-        ns_annotation(&fake, SHARED_SECRETS_ANNOTATION).as_deref(),
-        Some("admin_password")
-    );
-
-    // Stop and start work as before.
-    call(&t, "stop_app", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    let out = call(&t, "start_app", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    assert_eq!(out["url"], "http://203.0.113.10:30000");
-
-    // An update with the stored spec keeps the password Secret, the volume and the port.
-    let mut spec = s["spec"].clone();
-    spec["containers"][0]["env"]["PHP_MEMORY_LIMIT"] = json!("1G");
-    let out = call(&t, "update_app", json!({"app": "nextcloud", "spec": spec}))
-        .await
-        .unwrap();
-    assert_eq!(out["secrets"]["fields"], json!({"admin_password": "kept"}));
-    assert_eq!(out["port"], 30000);
-    assert_eq!(fake.state().secrets.len(), 1, "no new Secret");
-    let pod = fake
-        .state()
-        .deployment
-        .clone()
-        .unwrap()
-        .spec
-        .template
-        .spec
-        .unwrap();
-    let pw = pod.containers[0]
-        .env
-        .as_ref()
-        .unwrap()
-        .iter()
-        .find(|e| e.name == "NEXTCLOUD_ADMIN_PASSWORD")
-        .unwrap()
-        .value_from
-        .clone()
-        .unwrap()
-        .secret_key_ref
-        .unwrap();
-    assert_eq!(
-        (pw.name.as_str(), pw.key.as_str()),
-        ("nextcloud-secrets", "admin_password")
-    );
-    assert!(fake
-        .state()
-        .volumes
-        .iter()
-        .any(|v| v.metadata.name.as_deref() == Some("nextcloud-data")));
-    // The origin record stays.
-    assert_eq!(
-        ns_annotation(&fake, "melissa.io/origin").as_deref(),
-        Some("catalog")
     );
 }
 

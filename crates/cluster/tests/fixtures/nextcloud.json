@@ -1,0 +1,72 @@
+{
+  "description": "Nextcloud: files, calendar and contacts (SQLite, for one to a few users).",
+  "version": "34.0.6",
+  "secrets": [
+    {
+      "name": "admin_password",
+      "length": 32
+    }
+  ],
+  "volumes": [
+    {
+      "name": "data",
+      "size": "10Gi"
+    }
+  ],
+  "web": "http",
+  "credentials": {
+    "user": "admin",
+    "password": "admin_password"
+  },
+  "kind": "files",
+  "containers": [
+    {
+      "name": "nextcloud",
+      "image": "docker.io/library/nextcloud:34.0.6-apache@sha256:3031e7f87baaceb863a755921ebf463bc26ea71855c07ad7858e2ae25a5a0ad7",
+      "ports": [
+        {
+          "name": "http",
+          "port": 80
+        }
+      ],
+      "mounts": [
+        {
+          "volume": "data",
+          "path": "/var/www/html"
+        }
+      ],
+      "env": {
+        "SQLITE_DATABASE": "nextcloud",
+        "NEXTCLOUD_ADMIN_USER": "admin",
+        "NEXTCLOUD_ADMIN_PASSWORD": {
+          "secret": "admin_password"
+        },
+        "NEXTCLOUD_TRUSTED_DOMAINS": {
+          "builtin": "device_hosts"
+        },
+        "PHP_MEMORY_LIMIT": "512M",
+        "PHP_UPLOAD_LIMIT": "512M"
+      },
+      "files": [
+        {
+          "path": "/docker-entrypoint-hooks.d/before-starting/50-trusted-domains.sh",
+          "executable": true,
+          "content": "#!/bin/sh\n# Make Nextcloud's trusted_domains exactly the hosts in NEXTCLOUD_TRUSTED_DOMAINS\n# (the image itself reads it only at the first install). Never fails the start: a problem\n# here only means the app answers at fewer addresses.\nset -u\n[ -n \"${NEXTCLOUD_TRUSTED_DOMAINS:-}\" ] || exit 0\ncd /var/www/html\nphp occ status --output=json 2>/dev/null | grep -q '\"installed\":true' || exit 0\nset -f\ni=0\nfor host in $NEXTCLOUD_TRUSTED_DOMAINS; do\n    php occ config:system:set trusted_domains \"$i\" --value=\"$host\" >/dev/null\n    i=$((i + 1))\ndone\nwhile php occ config:system:get trusted_domains \"$i\" >/dev/null 2>&1; do\n    php occ config:system:delete trusted_domains \"$i\" >/dev/null\n    i=$((i + 1))\ndone\necho \"trusted_domains set to: $NEXTCLOUD_TRUSTED_DOMAINS\"\n"
+        }
+      ],
+      "resources": {
+        "cpu": "1",
+        "memory": "1Gi",
+        "cpu_request": "100m",
+        "memory_request": "256Mi"
+      },
+      "probe": {
+        "port": "http",
+        "path": "/status.php",
+        "host_header": true,
+        "startup_timeout_secs": 900,
+        "period_secs": 10
+      }
+    }
+  ]
+}

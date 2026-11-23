@@ -13,6 +13,8 @@ pub mod apps;
 pub mod cluster;
 pub mod credentials;
 mod device;
+#[cfg(test)]
+mod fixtures;
 mod health;
 mod reach;
 pub mod render;

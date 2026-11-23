@@ -26,7 +26,7 @@ use melissa_appspec::{namespace_of, valid_app_name, AppSpec};
 use serde_json::json;
 
 use crate::{
-    app_tools::{now_rfc3339, shared_secrets_of, stored_spec},
+    app_tools::{now_rfc3339, stored_spec},
     apps::{optional, retry_forbidden, AppDeployer, AppObject, AppRead, NamedKind},
     cluster::{LazyCluster, RUNTIME_DIR},
     render::{
@@ -170,8 +170,7 @@ impl AppCredentials {
         let Some(ns) = self.read.namespace(app).await? else {
             return Ok(None);
         };
-        let deployment = self.read.deployment(app).await?;
-        let Some(spec) = stored_spec(app, &ns, deployment.as_ref()) else {
+        let Some(spec) = stored_spec(&ns) else {
             return Ok(None);
         };
         let dismissed = ns
@@ -179,7 +178,7 @@ impl AppCredentials {
             .annotations
             .as_ref()
             .is_some_and(|a| a.contains_key(CREDENTIALS_DISMISSED_ANNOTATION));
-        Ok(location(app, &spec, &shared_secrets_of(&ns), dismissed))
+        Ok(location(app, &spec, dismissed))
     }
 
     /// What the card shows for `app`. Reads no Secret.
@@ -226,16 +225,11 @@ impl AppCredentials {
 }
 
 /// The password's Secret and key, from the spec's `credentials`. `None` without credentials.
-fn location(
-    app: &str,
-    spec: &AppSpec,
-    shared: &std::collections::BTreeSet<String>,
-    dismissed: bool,
-) -> Option<Location> {
+fn location(app: &str, spec: &AppSpec, dismissed: bool) -> Option<Location> {
     let creds = spec.credentials.as_ref()?;
     spec.secret(&creds.password)?;
     Some(Location {
-        secret: secret_object_name(app, &creds.password, shared),
+        secret: secret_object_name(app, &creds.password),
         key: creds.password.clone(),
         user: creds.user.clone(),
         dismissed,

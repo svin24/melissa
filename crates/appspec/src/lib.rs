@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub mod legacy;
 mod validate;
 
 pub use validate::{normalize_image, ImageRef};
@@ -119,7 +118,7 @@ pub struct AppSpec {
 pub enum Isolation {
     /// An ordinary container (runc): the app's system calls reach the device's kernel,
     /// filtered by seccomp `RuntimeDefault`. For apps that need host devices or kernel
-    /// features gVisor lacks (io_uring, raw sockets), and apps from the old catalog.
+    /// features gVisor lacks (io_uring, raw sockets).
     Standard,
     /// gVisor (`runsc`, RuntimeClass `gvisor`): the app's system calls go to its own kernel
     /// in user space (the Sentry), which uses only a small, filtered set of the device's.
@@ -129,8 +128,8 @@ pub enum Isolation {
 impl Isolation {
     /// What a spec without `isolation` gets. Agents pick any image from any registry, and there
     /// is no list of trusted images, so every agent-written spec runs under gVisor unless it
-    /// asks for `standard` (shown to the user in the confirmation). The old catalog's apps
-    /// ([`legacy`]) say `standard` explicitly.
+    /// asks for `standard` (shown to the user in the confirmation). There is no per-app or
+    /// per-image exception.
     pub const DEFAULT: Isolation = Isolation::Gvisor;
 
     pub const ALL: [Isolation; 2] = [Self::Standard, Self::Gvisor];
@@ -611,11 +610,6 @@ pub fn valid_app_name(name: &str) -> bool {
 /// `app-<name>`: the namespace of an app.
 pub fn namespace_of(app: &str) -> String {
     format!("app-{app}")
-}
-
-/// Name of the Secret holding app `app`'s generated secrets.
-pub fn secret_name(app: &str) -> String {
-    format!("{app}-secrets")
 }
 
 #[cfg(test)]

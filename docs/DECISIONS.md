@@ -1924,3 +1924,13 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   `standard` (none exists to base it on; easy to add later), silent fallback to runc when runsc is missing
   (rejected: the label would lie). Honest framing: gVisor narrows the kernel surface; app-to-app network
   isolation is still NetworkPolicy's job (unbuilt).
+- **2026-11-23 — Legacy catalog support removed (owner: "don't worry about legacy, there's no users. remove
+  it").** Gone: `melissa_appspec::legacy` (`from_catalog`, the built-in Nextcloud spec), the startup migration
+  of catalog installs (`migrate_catalog_apps`), rebuilding a spec from `melissa.io/config`, the shared
+  `<app>-secrets` Secret (`melissa.io/shared-secrets`), the ignored `[apps] catalog` setting (and the NixOS
+  option), and the old `install_app`/`list_catalog` words in the chat feed. Apps are deployed only from
+  specs (`deploy_app`); every spec without `isolation` gets gVisor, with no per-app or per-image exception
+  (the catalog's Nextcloud was the one `standard` spec). Tests keep a Nextcloud spec as a test-only fixture
+  (`crates/cluster/tests/fixtures/nextcloud.json`, no `isolation`). Why: no installs exist to migrate; less
+  code and no exception to the isolation default. Alternative: keep the migration for a while (nothing to
+  migrate).

@@ -2993,14 +2993,14 @@ mod tests {
             });
             let (c, _rx) = lead.confirmations().request(
                 1,
-                "install_app",
+                "deploy_app",
                 &serde_json::json!({"app": "immich"}),
                 "this task has read untrusted content",
             );
             lead.events().push(LeadEvent::ConfirmationNeeded {
                 id: c.id,
                 task: 1,
-                tool: "install_app".into(),
+                tool: "deploy_app".into(),
                 reason: c.reason.clone(),
                 agent: None,
             });
@@ -3012,7 +3012,7 @@ mod tests {
                 "agent ids never reach the DOM: the steps card has our own key"
             );
             assert!(!body.contains("onclick"));
-            assert!(body.contains("Install Immich?"));
+            assert!(body.contains("Set up Immich?"));
             assert!(body.contains(&format!("hx-post=\"/ui/confirmations/{}/approve\"", c.id)));
             assert!(body.contains(">Install jellyfin</textarea>"));
             assert!(body.contains("sse-connect=\"/ui/stream?since=3&amp;epoch="));
@@ -5179,20 +5179,20 @@ mod tests {
             });
             let (c, _rx) = lead.confirmations().request(
                 1,
-                "install_app",
+                "deploy_app",
                 &serde_json::json!({"app": "immich"}),
                 "because",
             );
             lead.events().push(LeadEvent::ConfirmationNeeded {
                 id: c.id,
                 task: 1,
-                tool: "install_app".into(),
+                tool: "deploy_app".into(),
                 reason: "because".into(),
                 agent: None,
             });
             let frame = next_frame(&mut body).await;
             assert!(!frame.contains("Hi"), "{frame}");
-            assert!(frame.contains("Install Immich?"));
+            assert!(frame.contains("Set up Immich?"));
             // The sidebar's groups follow (Melissa needs the user now).
             assert!(
                 frame.contains("id=\"agent-groups\" hx-swap-oob=\"true\""),

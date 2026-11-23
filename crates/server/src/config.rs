@@ -64,9 +64,6 @@ impl Default for EgressSection {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AppsSection {
-    /// Deprecated and ignored: the app catalog was dropped (agents deploy any app from a
-    /// spec they write). Still accepted so old config files load; the server warns.
-    pub catalog: Option<PathBuf>,
     /// Apps are also served at `<app>.<domain>` (for people with their own DNS).
     pub domain: String,
     /// Addresses (IPs or host names) people reach this device at, for app links
@@ -88,7 +85,6 @@ pub struct AppsSection {
 impl Default for AppsSection {
     fn default() -> Self {
         Self {
-            catalog: None,
             domain: melissa_appspec::DEFAULT_DOMAIN.into(),
             addresses: None,
             port_offset: 0,
@@ -720,14 +716,10 @@ mod tests {
     fn apps_section_defaults_and_domain_check() {
         let config: ServerConfig = toml::from_str("").unwrap();
         assert_eq!(config.apps.domain, "melissa.home.arpa");
-        assert_eq!(config.apps.catalog, None);
-        let config: ServerConfig = toml::from_str(
-            "[apps]\ndomain = \"home.example.com\"\ncatalog = \"/tmp/c\"\nkubeconfig = \"/tmp/k\"",
-        )
-        .unwrap();
+        let config: ServerConfig =
+            toml::from_str("[apps]\ndomain = \"home.example.com\"\nkubeconfig = \"/tmp/k\"")
+                .unwrap();
         config.validate().unwrap();
-        // The old catalog setting still loads (ignored).
-        assert_eq!(config.apps.catalog.as_deref(), Some(Path::new("/tmp/c")));
         for bad in ["Home.Example", "localhost", "a..b", "-x.y", "x y.z"] {
             let config: ServerConfig =
                 toml::from_str(&format!("[apps]\ndomain = \"{bad}\"")).unwrap();

@@ -14,7 +14,7 @@
 //! [`PORTS_ANNOTATION`] for the others), so the app is reachable at `<device address>:<port>`
 //! without any DNS.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use k8s_openapi::{
     api::{
@@ -86,7 +86,7 @@ pub const ASSIGNED_AT_ANNOTATION: &str = "melissa.io/assigned-at";
 pub const LEGACY_OWNER_LABEL: &str = "melissa.io/owner";
 /// Annotations on the app's namespace, set at the first install and kept: who installed it
 /// (`the user`, `the lead agent (task 3)`, `agent Ada (d-….a1) (task 7)`), when (RFC 3339), and
-/// from where (`agent spec`; `catalog` for apps from before the catalog was dropped).
+/// from where (`spec`: an agent's app spec).
 pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
 pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
 /// Annotation on the app's namespace, set at the first install and kept: the signed-in person
@@ -96,9 +96,8 @@ pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
 /// the looking-after agent was made for, else "unknown".
 pub const INSTALLED_FOR_ANNOTATION: &str = "melissa.io/installed-for";
 pub const ORIGIN_ANNOTATION: &str = "melissa.io/origin";
-/// [`ORIGIN_ANNOTATION`] of apps deployed from an agent's spec, and of old catalog installs.
+/// [`ORIGIN_ANNOTATION`] of apps deployed from an agent's spec.
 pub const ORIGIN_SPEC: &str = "spec";
-pub const ORIGIN_CATALOG: &str = "catalog";
 /// Annotation on the namespace: the app's spec (compact JSON), as last deployed. Kept when
 /// the app is uninstalled with its data, so `deploy_app` can bring it back.
 pub const SPEC_ANNOTATION: &str = "melissa.io/spec";
@@ -109,10 +108,6 @@ pub const PORT_ANNOTATION: &str = "melissa.io/port";
 /// Annotation on the namespace: the other public ports, `name:nodeport/proto` separated by
 /// spaces (`game:30001/tcp voice:30002/udp`). A port keeps its NodePort across updates.
 pub const PORTS_ANNOTATION: &str = "melissa.io/ports";
-/// Annotation on the namespace: secret fields kept in the old shared Secret `<app>-secrets`
-/// (key = field name), space separated. Catalog installs only; everything else has one
-/// Secret per field ([`secret_object_name`]).
-pub const SHARED_SECRETS_ANNOTATION: &str = "melissa.io/shared-secrets";
 /// Ports Melissa gives apps. Inside k3s's NodePort range (30000-32767) and in the lower
 /// band (30000-30085) that Kubernetes keeps for static allocations, so automatically
 /// allocated NodePorts (e.g. Traefik's) avoid it. The admission policy
@@ -120,9 +115,6 @@ pub const SHARED_SECRETS_ANNOTATION: &str = "melissa.io/shared-secrets";
 pub const APP_PORTS: std::ops::RangeInclusive<u16> = 30000..=30079;
 /// Annotation on a stopped app's Deployment: the replica count `start_app` restores.
 pub const REPLICAS_BEFORE_STOP_ANNOTATION: &str = "melissa.io/replicas-before-stop";
-/// Annotation on Deployments from the catalog days: the resolved, non-secret config as JSON.
-/// Read once, to rebuild such an app's spec ([`melissa_appspec::legacy`]); never written.
-pub const CONFIG_ANNOTATION: &str = "melissa.io/config";
 /// Pod Security Standard enforced in app namespaces. `baseline` forbids privileged pods,
 /// host namespaces, hostPath volumes, host ports and added capabilities beyond a small
 /// default set, so the write identity can't reach the node.
@@ -171,12 +163,9 @@ pub struct Placement<'a> {
     pub stopped_from: Option<i32>,
     /// The device's addresses and host name (builtin `device_hosts`, after the ingress host).
     pub hosts: &'a [String],
-    /// Secret fields kept in the shared `<app>-secrets` Secret (catalog installs).
-    pub shared_secrets: &'a BTreeSet<String>,
 }
 
 static NO_PORTS: BTreeMap<String, u16> = BTreeMap::new();
-static NO_SECRETS: BTreeSet<String> = BTreeSet::new();
 
 impl<'a> Placement<'a> {
     /// Running, without device ports.
@@ -187,7 +176,6 @@ impl<'a> Placement<'a> {
             recorded_web_port: None,
             stopped_from: None,
             hosts: &[],
-            shared_secrets: &NO_SECRETS,
         }
     }
 }
@@ -206,14 +194,10 @@ pub fn port_service_name(app: &str) -> String {
     format!("{app}-port")
 }
 
-/// The Secret object that holds secret field `field` of app `app`: its own
-/// `<app>-secret-<field>` (`_` → `-`), or the shared `<app>-secrets` of a catalog install.
-pub fn secret_object_name(app: &str, field: &str, shared: &BTreeSet<String>) -> String {
-    if shared.contains(field) {
-        melissa_appspec::secret_name(app)
-    } else {
-        format!("{app}-secret-{}", field.replace('_', "-"))
-    }
+/// The Secret object that holds secret field `field` of app `app`: `<app>-secret-<field>`
+/// (`_` → `-`).
+pub fn secret_object_name(app: &str, field: &str) -> String {
+    format!("{app}-secret-{}", field.replace('_', "-"))
 }
 
 /// One generated Secret: what [`secret_object`] needs besides the value.
@@ -508,17 +492,6 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
     if !others.is_empty() {
         ns_annotations.insert(PORTS_ANNOTATION.into(), others.join(" "));
     }
-    if !placement.shared_secrets.is_empty() {
-        ns_annotations.insert(
-            SHARED_SECRETS_ANNOTATION.into(),
-            placement
-                .shared_secrets
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-    }
     let namespace = Namespace {
         metadata: ObjectMeta {
             name: Some(ns.clone()),
@@ -549,7 +522,7 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
         .into_iter()
         .map(|(key, length)| SecretPlan {
             namespace: ns.clone(),
-            name: secret_object_name(app, &key, placement.shared_secrets),
+            name: secret_object_name(app, &key),
             key,
             length,
             labels: labels(app, spec),
@@ -837,7 +810,7 @@ fn container(
                     None,
                     Some(EnvVarSource {
                         secret_key_ref: Some(SecretKeySelector {
-                            name: secret_object_name(app, f, placement.shared_secrets),
+                            name: secret_object_name(app, f),
                             key: f.to_string(),
                             optional: Some(false),
                         }),
