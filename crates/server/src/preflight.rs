@@ -47,6 +47,9 @@ pub struct Report {
     pub limits: Result<String, String>,
     /// Agent users (each sandbox its own host user): `Ok(the id range)` when on, `Err(why not)`.
     pub users: Result<String, String>,
+    /// gVisor for apps (`runsc` and its containerd shim here): `Ok(runsc's version)`, `Err(why
+    /// not)`. The deploy itself checks the cluster's RuntimeClass and fails closed.
+    pub gvisor: Result<String, String>,
     /// Why an agent's memory use could panic the host (`vm.panic_on_oom`), if it could.
     pub oom_panic: Option<&'static str>,
     pub backends: Vec<BackendLine>,
@@ -154,6 +157,14 @@ impl Report {
             )),
             Err(why) => line(format!(
                 "  Agent users: off: {why}. Agents run as the server's own user."
+            )),
+        }
+        match &self.gvisor {
+            Ok(version) => line(format!(
+                "  gVisor:   on (runsc {version}). Apps run in their own sandboxed kernel by default."
+            )),
+            Err(why) => line(format!(
+                "  gVisor:   off: {why}. Apps that run under gVisor (the default) are not deployed."
             )),
         }
         line("  Agents:".into());
@@ -274,6 +285,14 @@ pub async fn gather(i: Inputs<'_>) -> Report {
             }
         })
         .collect();
+    let k3s = kubeconfigs.iter().any(|p| p.is_file());
+    let gvisor = gvisor_line().await;
+    if let (true, Err(why)) = (k3s, &gvisor) {
+        tracing::warn!(
+            reason = %why,
+            "gVisor is off: apps that run under gVisor (the default isolation) are not deployed"
+        );
+    }
     Report {
         listen,
         state: state.to_path_buf(),
@@ -283,10 +302,11 @@ pub async fn gather(i: Inputs<'_>) -> Report {
         netbridge,
         limits: limits_line(),
         users: users_line(),
+        gvisor,
         oom_panic: oom_panic(),
         backends,
         lead_order: lead_order.to_vec(),
-        k3s: kubeconfigs.iter().any(|p| p.is_file()),
+        k3s,
         apparmor_userns_restricted: std::fs::read_to_string(
             "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
         )
@@ -366,6 +386,53 @@ fn users_line() -> Result<String, String> {
     }
 }
 
+/// The containerd shim k3s starts for the `runsc` handler (next to runsc on PATH).
+const RUNSC_SHIM: &str = "containerd-shim-runsc-v1";
+
+/// Whether gVisor can run apps here: runsc and its containerd shim on PATH (the image ships
+/// both in /usr/bin; the NixOS module puts nixpkgs' gvisor on the server's and k3s's PATH), and
+/// runsc's version. k3s gets the RuntimeClass and its containerd entry from the packaging.
+async fn gvisor_line() -> Result<String, String> {
+    let Some(runsc) = find_program("runsc") else {
+        return Err("runsc not found (gVisor is not installed)".into());
+    };
+    if find_program(RUNSC_SHIM).is_none() {
+        return Err(format!("{RUNSC_SHIM} not found next to runsc"));
+    }
+    let child = tokio::process::Command::new(&runsc)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+    let out = match tokio::time::timeout(Duration::from_secs(10), child).await {
+        Ok(Ok(out)) if out.status.success() => out,
+        Ok(Ok(out)) => {
+            return Err(format!(
+                "`runsc --version` failed: {}",
+                first_line(&String::from_utf8_lossy(&out.stderr))
+            ))
+        }
+        Ok(Err(e)) => return Err(format!("runsc does not start: {e}")),
+        Err(_) => return Err("`runsc --version` timed out".into()),
+    };
+    runsc_version(&String::from_utf8_lossy(&out.stdout))
+        .ok_or_else(|| "runsc printed no version".into())
+}
+
+/// `release-20261116.0` from runsc's `runsc version release-20261116.0` (first line).
+fn runsc_version(stdout: &str) -> Option<String> {
+    let v = stdout
+        .lines()
+        .next()?
+        .trim()
+        .strip_prefix("runsc version ")?
+        .trim();
+    (!v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_graphic()))
+        .then(|| v.to_string())
+}
+
 /// Whether `vm.panic_on_oom` turns an agent's out-of-memory into a host panic, given whether
 /// agents get their own memory cgroup. The memory limit stays on either way
 /// ([`melissa_agent::sandbox::limits::oom_panic_risk`]); the startup log already warned.
@@ -410,6 +477,7 @@ mod tests {
             netbridge: true,
             limits: Ok("2 GiB memory, 512 processes, 2 CPUs".into()),
             users: Ok("1879048192-1879113727".into()),
+            gvisor: Ok("release-20261116.0".into()),
             oom_panic: None,
             backends: vec![
                 BackendLine {
@@ -499,6 +567,26 @@ mod tests {
         assert!(r.render().contains(
             "Limits:   off: no cgroup v2 (unified hierarchy) on this host. Agents run without"
         ));
+    }
+
+    #[test]
+    fn gvisor_line_says_whether_apps_get_their_own_kernel() {
+        let mut r = report();
+        assert!(r.render().contains(
+            "  gVisor:   on (runsc release-20261116.0). Apps run in their own sandboxed kernel"
+        ));
+        r.gvisor = Err("runsc not found (gVisor is not installed)".into());
+        assert!(r.render().contains(
+            "  gVisor:   off: runsc not found (gVisor is not installed). Apps that run under \
+             gVisor (the default) are not deployed."
+        ));
+        assert_eq!(
+            runsc_version("runsc version release-20261116.0\nspec: 1.2.1\n").as_deref(),
+            Some("release-20261116.0")
+        );
+        assert_eq!(runsc_version("runsc version \n"), None);
+        assert_eq!(runsc_version("something else"), None);
+        assert_eq!(runsc_version("runsc version a\u{1b}[31m"), None);
     }
 
     #[test]

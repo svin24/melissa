@@ -77,6 +77,8 @@ pub fn nextcloud(config: &Map<String, Value>) -> AppSpec {
         "web": "http",
         "credentials": {"user": user, "password": "admin_password"},
         "kind": "files",
+        // Catalog apps ran as ordinary containers; they keep that (2026-11-23).
+        "isolation": "standard",
         "containers": [{
             "name": "nextcloud",
             "image": NEXTCLOUD_IMAGE,
@@ -130,5 +132,6 @@ mod tests {
         );
         assert_eq!(spec.credentials.unwrap().user.as_deref(), Some("owner"));
         assert!(from_catalog("hello", &Map::new()).is_none());
+        assert_eq!(spec.isolation, Some(crate::Isolation::Standard));
     }
 }

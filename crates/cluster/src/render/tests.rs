@@ -177,6 +177,56 @@ fn a_converted_catalog_install_keeps_its_objects() {
 }
 
 #[test]
+fn isolation_picks_the_runtime_class_and_labels_pod_and_namespace() {
+    let gvisor = |o: &AppObjects| {
+        let template = &o.deployment.spec.template;
+        (
+            template.spec.as_ref().unwrap().runtime_class_name.clone(),
+            template.metadata.as_ref().unwrap().labels.as_ref().unwrap()[ISOLATION_LABEL].clone(),
+            o.namespace.metadata.labels.as_ref().unwrap()[ISOLATION_LABEL].clone(),
+        )
+    };
+    // No `isolation` in the spec: the default, gVisor.
+    let mc = minecraft();
+    assert_eq!(mc.isolation, None);
+    let o = render("minecraft", &mc, &Placement::domain("x.test"));
+    assert_eq!(
+        gvisor(&o),
+        (Some("gvisor".into()), "gvisor".into(), "gvisor".into())
+    );
+    // The selector stays the app label alone (a level change is an update, not a new pod set).
+    assert_eq!(
+        o.deployment
+            .spec
+            .selector
+            .match_labels
+            .as_ref()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Other objects don't carry the level (only the namespace and the pods).
+    assert!(!o.volumes[0]
+        .metadata
+        .labels
+        .as_ref()
+        .unwrap()
+        .contains_key(ISOLATION_LABEL));
+
+    // `standard`: the node's default runtime, labelled so.
+    let mut mc = minecraft();
+    mc.isolation = Some(Isolation::Standard);
+    let o = render("minecraft", &mc, &Placement::domain("x.test"));
+    assert_eq!(gvisor(&o), (None, "standard".into(), "standard".into()));
+    // The old catalog's Nextcloud stays an ordinary container.
+    let o = render("nextcloud", &nextcloud(), &Placement::domain("x.test"));
+    assert_eq!(gvisor(&o).0, None);
+
+    assert_eq!(runtime_class(Isolation::Gvisor), Some(GVISOR_RUNTIME_CLASS));
+    assert_eq!(runtime_class(Isolation::Standard), None);
+}
+
+#[test]
 fn every_container_is_locked_down_and_sized() {
     let o = render("minecraft", &minecraft(), &Placement::domain("x.test"));
     let labels = o.namespace.metadata.labels.unwrap();

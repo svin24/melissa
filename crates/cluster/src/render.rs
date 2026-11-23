@@ -6,7 +6,8 @@
 //! `melissa-apps` ServiceAccount the `melissa-app-workload` role in that namespace only, one
 //! Secret per generated secret, one PVC per volume (`local-path`), a single-replica Deployment
 //! with the `Recreate` strategy (never privileged, seccomp `RuntimeDefault`, no privilege
-//! escalation, limits always set), a ClusterIP Service and, for an app with a `web` port, a
+//! escalation, limits always set; under the `gvisor` RuntimeClass unless the spec's isolation
+//! is `standard`), a ClusterIP Service and, for an app with a `web` port, a
 //! Traefik Ingress for `<name>.<domain>`. Ports on the device (the web port and `public`
 //! ports, TCP or UDP) are one NodePort Service `<name>-port` with a stable port each from
 //! [`APP_PORTS`], recorded on the namespace ([`PORT_ANNOTATION`] for the web port,
@@ -39,7 +40,7 @@ use k8s_openapi::{
 use kube::api::ObjectMeta;
 use melissa_agent::{migrate, tools::Owner};
 use melissa_appspec::{
-    namespace_of, AppSpec, Builtin, EnvSource, Protocol, Resources, FILES_VOLUME,
+    namespace_of, AppSpec, Builtin, EnvSource, Isolation, Protocol, Resources, FILES_VOLUME,
 };
 use sha2::{Digest, Sha256};
 
@@ -127,6 +128,15 @@ pub const CONFIG_ANNOTATION: &str = "melissa.io/config";
 /// default set, so the write identity can't reach the node.
 pub const POD_SECURITY_LEVEL: &str = "baseline";
 pub const STORAGE_CLASS: &str = "local-path";
+/// Label on the app's namespace and its pods: the spec's isolation level ([`Isolation`],
+/// `standard` | `gvisor`). The admission policy `melissa-apps-isolation` refuses a pod
+/// labelled (or in a namespace labelled) `gvisor` that would not run under
+/// [`GVISOR_RUNTIME_CLASS`], so a gVisor app never ends up on the default runtime.
+pub const ISOLATION_LABEL: &str = "melissa.io/isolation";
+/// The RuntimeClass of `gvisor` apps (k3s manifest `gvisor-runtimeclass.yaml`, installed only
+/// where runsc is) and the containerd runtime handler it names.
+pub const GVISOR_RUNTIME_CLASS: &str = "gvisor";
+pub const GVISOR_HANDLER: &str = "runsc";
 pub const INGRESS_CLASS: &str = "traefik";
 
 /// Everything one deploy applies, in apply order.
@@ -252,6 +262,14 @@ fn labels(app: &str, spec: &AppSpec) -> BTreeMap<String, String> {
         l.insert("app.kubernetes.io/version".into(), v);
     }
     l
+}
+
+/// The RuntimeClass a pod at `level` runs under (None: the node's default, runc).
+pub fn runtime_class(level: Isolation) -> Option<&'static str> {
+    match level {
+        Isolation::Standard => None,
+        Isolation::Gvisor => Some(GVISOR_RUNTIME_CLASS),
+    }
 }
 
 /// Label values: at most 63 of `[A-Za-z0-9._-]`, alphanumeric at both ends.
@@ -467,6 +485,7 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
             "latest".into(),
         ),
         ("app.kubernetes.io/managed-by".into(), "melissa".into()),
+        (ISOLATION_LABEL.into(), spec.isolation().as_str().into()),
     ]);
     let mut ns_annotations = BTreeMap::from([(SPEC_ANNOTATION.to_string(), spec.to_text())]);
     let web_port = spec
@@ -633,6 +652,8 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
         });
     }
 
+    let mut pod_labels = labels(app, spec);
+    pod_labels.insert(ISOLATION_LABEL.into(), spec.isolation().as_str().into());
     let mut deploy_meta = meta(app, spec, app);
     if let Some(n) = placement.stopped_from {
         deploy_meta.annotations = Some(BTreeMap::from([(
@@ -660,13 +681,16 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
             },
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
-                    labels: Some(labels(app, spec)),
+                    labels: Some(pod_labels),
                     annotations: files_hash
                         .map(|h| BTreeMap::from([(FILES_HASH_ANNOTATION.to_string(), h)])),
                     ..ObjectMeta::default()
                 }),
                 spec: Some(PodSpec {
                     containers,
+                    // Never a silent fallback: a missing RuntimeClass makes the API refuse the
+                    // pod (and the deployer checks for it first).
+                    runtime_class_name: runtime_class(spec.isolation()).map(String::from),
                     volumes: (!pod_volumes.is_empty()).then_some(pod_volumes),
                     // Apps never talk to the Kubernetes API.
                     automount_service_account_token: Some(false),
