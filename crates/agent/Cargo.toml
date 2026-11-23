@@ -8,6 +8,8 @@ description = "Melissa agent layer: pluggable backends, task dispatch, audit log
 
 [dependencies]
 agent-client-protocol = { workspace = true }
+# The seccomp program reaches bwrap as fd 3 of the child (`sandbox::seccomp`).
+command-fds = { workspace = true }
 # Files sent to the model as base64 content blocks (already in the build via kube-rs).
 base64 = { workspace = true }
 # Provider usage: the HTTPS client for the few usage endpoints Melissa calls itself
@@ -35,6 +37,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 # Paused time for the scheduler's tests (no real sleeping).
 tokio = { workspace = true, features = ["test-util"] }
+# Checks the seccomp syscall tables against libc's numbers (already in the build).
+libc = "0.2"
 
 # Runs inside each agent sandbox: forwards loopback ports to the lead agent's egress sockets.
 [[bin]]

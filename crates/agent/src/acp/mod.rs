@@ -375,7 +375,7 @@ impl AcpBackend {
             other => (flavor_env(other, &self.sandbox), open.mcp_servers.clone()),
         };
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
-        let (program_path, argv) = sandboxed_command(
+        let mut command = sandboxed_command(
             &self.sandbox,
             self.bwrap.as_deref(),
             self.home.as_deref(),
@@ -388,14 +388,12 @@ impl AcpBackend {
             bridge,
             self.spec.args.clone(),
         )?;
-        let mut command = tokio::process::Command::new(&program_path);
         if !self.sandbox.enabled {
             // Provider settings first, so Melissa's own variables win.
             command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
             command.envs(env.iter().map(|(k, v)| (k, v)));
         }
         let mut child = command
-            .args(argv)
             .current_dir(&cwd)
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")

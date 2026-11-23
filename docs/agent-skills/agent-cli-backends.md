@@ -60,6 +60,15 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 - `--unshare-all --die-with-parent --new-session --cap-drop ALL --hostname melissa-agent --clearenv`.
   Env: HOME, PATH (`<binary dir>:/usr/bin`), NO_COLOR, TERM, plus USER/LOGNAME/LANG/LC_ALL/TZ if set and the
   names in `sandbox.env`.
+- **Seccomp (since 2026-11-23):** `--seccomp 3`; the program (`crates/agent/src/sandbox/seccomp.rs`) arrives as
+  fd 3 of bwrap via `sandbox::pass_seccomp` (sealed memfd, `command-fds`), which every spawner must call on the
+  `bwrap` command; bwrap closes it before the CLI starts. Denied with `EPERM`: ptrace, `process_vm_*`,
+  `pidfd_getfd`, mount/umount/pivot_root/chroot and the new mount API, `setns`, `clone`/`unshare` with namespace
+  flags, kexec, kernel modules, reboot, swap, acct, quotas, syslog, clock setting, `iopl`/`ioperm`, bpf,
+  perf_event_open, userfaultfd, io_uring, keyrings, lookup_dcookie, file-handle calls, uselib, `_sysctl`,
+  `personality` other than Docker's allowed values. `clone3` → `ENOSYS`. Verified: node 24 (child process,
+  worker thread, files), bun 1.4, a Go binary, claude/grok/opencode `--version`; integration test
+  `seccomp_denies_escape_syscalls_and_keeps_the_rest`. Off per backend: `sandbox = { seccomp = false }`.
 - **Network (since 2026-11-18): own namespace, deny-by-default.** `melissa-netbridge` runs first and gives the
   CLI an HTTPS proxy on 127.0.0.1:3128 (allowlisted hosts only) and Melissa's MCP endpoint at the lead agent's own
   address; no resolver inside. Per-backend `network = "proxy"|"learn"|"none"|"host"` and `allow = [...]`.
@@ -75,7 +84,7 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 | Grok     | `~/.grok/downloads/grok-<ver>-linux-x86_64` (via `~/.grok/bin/grok`, static) | tmpfs `~/.grok`; rw `~/.grok/auth.json`; ro `~/.grok/config.toml`. |
 | OpenCode | `~/.opencode/bin/opencode`                         | ro `~/.config/opencode/opencode.json{,c}` (since 2026-11-18 not the whole dir: it also holds `service.json`, a local server password, and plugins; tmpfs `~/.config/opencode` around them); tmpfs `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode`; rw `~/.local/share/opencode/auth.json` if present (not present on the laptop: free default model). `opencode-acp`: same without the user's config files (Melissa writes the config). |
 
-- Config: `[backend.sandbox]` with `enabled`, `tmpfs`, `ro`, `rw` (paths relative to `$HOME`, no `..`), `env`
+- Config: `[backend.sandbox]` with `enabled`, `seccomp` (default true), `tmpfs`, `ro`, `rw` (paths relative to `$HOME`, no `..`), `env`
   (names to pass through). Absent table = preset for the command's file name; a given table replaces the preset.
   `sandbox = { enabled = false }` runs the CLI unsandboxed.
 - Integration test `crates/agent/tests/sandbox.rs`: fake HOME secret unreadable, writes outside the workdir fail,
@@ -123,7 +132,6 @@ ACP opencode: `flavor = "opencode"`, optional `model = "provider/model"`.
 
 ## Next (ideas, unverified)
 - Typed events: done for session backends (`crate::session`: ACP and Claude stream-json).
-- seccomp filter (bwrap `--seccomp`) to drop rarely needed syscalls (ptrace, keyctl, mount APIs).
 - Melissa-owned CLI logins (e.g. `CLAUDE_CONFIG_DIR` under `~/.local/share/melissa`) instead of binding the
   user's credential files.
 - Check each CLI's terms allow being driven by Melissa (PLAN open question).

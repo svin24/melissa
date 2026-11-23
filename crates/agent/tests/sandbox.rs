@@ -216,10 +216,10 @@ fn an_agent_sees_its_own_file_box_and_no_other() {
          echo done"
     );
     let (program, argv) = sandbox::command(&plan, &work, &[], &["-c".into(), script]);
-    let out = std::process::Command::new(program)
-        .args(argv)
-        .output()
-        .unwrap();
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(argv);
+    sandbox::pass_seccomp(&mut cmd, &plan).unwrap();
+    let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("hello"),
@@ -235,4 +235,114 @@ fn an_agent_sees_its_own_file_box_and_no_other() {
     // Whatever it writes beside its box stays in the sandbox's private /tmp.
     assert!(!boxes.join("new.txt").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs `sh -c <script>` in a sandbox (seccomp on or off) and returns (stdout, stderr).
+fn run_sandboxed(name: &str, script: &str, seccomp: bool) -> (String, String) {
+    let dir = scratch(name);
+    let home = dir.join("home");
+    let work = dir.join("work");
+    for d in [&home, &work] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let bwrap = sandbox::find_bwrap().unwrap();
+    let sh = host_program("sh").unwrap();
+    let spec = SandboxSpec {
+        network: NetworkMode::None,
+        seccomp,
+        ..SandboxSpec::default()
+    };
+    let plan = sandbox::SandboxPlan::resolve(&spec, &bwrap, Some(&home), &sh).unwrap();
+    assert_eq!(plan.seccomp, seccomp);
+    let (program, argv) = sandbox::command(&plan, &work, &[], &["-c".into(), script.into()]);
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(argv);
+    sandbox::pass_seccomp(&mut cmd, &plan).unwrap();
+    let out = cmd.output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The seccomp filter: a new user namespace (`unshare -U`, which works in the bare sandbox)
+/// and, through Python's `ctypes` when the host has it, ptrace, io_uring, bpf, keyctl and
+/// mount fail with EPERM, `clone3` with ENOSYS; ordinary commands, threads and child
+/// processes keep working.
+#[test]
+fn seccomp_denies_escape_syscalls_and_keeps_the_rest() {
+    if !bwrap_works() {
+        return;
+    }
+    let Some(unshare) = host_program("unshare") else {
+        eprintln!("SKIP: no unshare found");
+        return;
+    };
+    let python = host_program("python3");
+    let (ptrace, bpf, keyctl, mount) = if cfg!(target_arch = "aarch64") {
+        (117, 280, 219, 40)
+    } else {
+        (101, 321, 250, 165)
+    };
+    // Each call with zero arguments: PTRACE_TRACEME succeeds without the filter, the others
+    // fail with EINVAL/EFAULT (mount: EPERM, no capabilities). Under the filter: all EPERM.
+    let probe = python.as_ref().map(|py| {
+        format!(
+            "{py} -c 'import ctypes, threading, subprocess
+libc = ctypes.CDLL(None, use_errno=True)
+for name, nr in [(\"ptrace\", {ptrace}), (\"io_uring\", 425), (\"bpf\", {bpf}), \
+(\"keyctl\", {keyctl}), (\"mount\", {mount}), (\"clone3\", 435)]:
+    r = libc.syscall(nr, 0, 0, 0, 0, 0)
+    print(name, r, ctypes.get_errno())
+t = threading.Thread(target=lambda: print(\"thread ok\")); t.start(); t.join()
+print(subprocess.run([\"echo\", \"child ok\"], capture_output=True, text=True).stdout.strip())'",
+            py = py.display()
+        )
+    });
+    let script = format!(
+        "echo hello; true && echo true-ok; \
+         if {u} -U true; then echo userns-ok; else echo userns-denied; fi; \
+         if [ -e /proc/$$/fd/3 ]; then echo fd3-open; else echo fd3-closed; fi; {probe}",
+        u = unshare.display(),
+        probe = probe.as_deref().unwrap_or("true"),
+    );
+
+    let (out, err) = run_sandboxed("seccomp-on", &script, true);
+    assert!(
+        out.contains("hello") && out.contains("true-ok"),
+        "{out} / {err}"
+    );
+    assert!(out.contains("userns-denied"), "{out} / {err}");
+    assert!(err.contains("Operation not permitted"), "{err}");
+    // bwrap closes the program's fd after loading it; the CLI never sees it.
+    assert!(out.contains("fd3-closed"), "{out}");
+    if python.is_some() {
+        for name in ["ptrace", "io_uring", "bpf", "keyctl", "mount"] {
+            assert!(
+                out.contains(&format!("{name} -1 1\n")),
+                "{name}: {out} / {err}"
+            );
+        }
+        assert!(out.contains("clone3 -1 38\n"), "{out} / {err}");
+        assert!(
+            out.contains("thread ok") && out.contains("child ok"),
+            "{out} / {err}"
+        );
+    } else {
+        eprintln!("NOTE: no python3; checked only unshare -U");
+    }
+
+    // Without the filter the same sandbox may create a user namespace, so the check above is
+    // the filter's doing (where the host allows nested user namespaces). Without the Python
+    // probe: a successful PTRACE_TRACEME would leave Python stopped by its shell.
+    let script = format!(
+        "echo hello; if {u} -U true; then echo userns-ok; else echo userns-denied; fi",
+        u = unshare.display()
+    );
+    let (out, err) = run_sandboxed("seccomp-off", &script, false);
+    assert!(out.contains("hello"), "{out} / {err}");
+    if !out.contains("userns-ok") {
+        eprintln!("NOTE: nested user namespaces are off on this host");
+    }
 }
