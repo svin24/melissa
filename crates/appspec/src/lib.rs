@@ -104,6 +104,57 @@ pub struct AppSpec {
     /// without it are [`AppKind::Other`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<AppKind>,
+    /// How the app's pod is kept apart from the device's kernel (2026-11-23). Absent: the
+    /// default, [`Isolation::DEFAULT`]; the deployer stores the level it used, so a later
+    /// change of the default never moves a deployed app ([`AppSpec::isolation`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<Isolation>,
+}
+
+/// How an app's pod is kept apart from the device's kernel: the k3s RuntimeClass it runs
+/// under (docs/design/ISOLATION-RESEARCH-2026-11-23.md). Room for a `kata` level (a VM per
+/// pod) later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Isolation {
+    /// An ordinary container (runc): the app's system calls reach the device's kernel,
+    /// filtered by seccomp `RuntimeDefault`. For apps that need host devices or kernel
+    /// features gVisor lacks (io_uring, raw sockets), and apps from the old catalog.
+    Standard,
+    /// gVisor (`runsc`, RuntimeClass `gvisor`): the app's system calls go to its own kernel
+    /// in user space (the Sentry), which uses only a small, filtered set of the device's.
+    Gvisor,
+}
+
+impl Isolation {
+    /// What a spec without `isolation` gets. Agents pick any image from any registry, and there
+    /// is no list of trusted images, so every agent-written spec runs under gVisor unless it
+    /// asks for `standard` (shown to the user in the confirmation). The old catalog's apps
+    /// ([`legacy`]) say `standard` explicitly.
+    pub const DEFAULT: Isolation = Isolation::Gvisor;
+
+    pub const ALL: [Isolation; 2] = [Self::Standard, Self::Gvisor];
+
+    /// The name in specs, labels and tool answers (`gvisor`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Gvisor => "gvisor",
+        }
+    }
+
+    /// The level named `name` (as in specs); None for anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|i| i.as_str() == name)
+    }
+
+    /// For people, in the confirmation: what the level means.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Standard => "standard (shares the device's kernel)",
+            Self::Gvisor => "gVisor sandbox (its own kernel)",
+        }
+    }
 }
 
 /// The groups of the app list, in the order the UI shows them.
@@ -487,6 +538,11 @@ impl AppSpec {
             .collect()
     }
 
+    /// The isolation level the app runs at: the spec's own, else [`Isolation::DEFAULT`].
+    pub fn isolation(&self) -> Isolation {
+        self.isolation.unwrap_or(Isolation::DEFAULT)
+    }
+
     pub fn secret(&self, name: &str) -> Option<&SecretField> {
         self.secrets.iter().find(|s| s.name == name)
     }
@@ -532,6 +588,7 @@ impl AppSpec {
                 .collect();
             out.push(format!("storage: {}", v.join(", ")));
         }
+        out.push(format!("isolation: {}", self.isolation().describe()));
         out
     }
 }

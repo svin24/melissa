@@ -26,6 +26,17 @@
 - Kernel modules come from the host: install.sh loads `br_netfilter` and `overlay` and adds
   `/etc/modules-load.d/melissa.conf`; the container has no `/lib/modules` (`modprobe` in k3s.service is a no-op).
 
+- **gVisor (2026-11-23)**: the image ships runsc, `containerd-shim-runsc-v1` and runsc's `gvisor-bin/` sidecars
+  (Sentry, prewarmer, fd-parking, proc-umounter; runsc finds them next to its real path) in
+  `/usr/lib/melissa/gvisor`, linked into `/usr/bin`, pinned by `packaging/container/gvisor.lock` (tarball sha512,
+  LICENSE sha256). k3s doesn't detect runsc, so `k3s-prepare` installs containerd's `runsc` runtime entry as
+  `/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl` (`{{ template "base" . }}` plus the entry; the
+  v3 name, k3s 1.37 runs containerd 2; a template without the `melissa-managed` first line is left alone) and the
+  `gvisor` RuntimeClass manifest, both only when runsc and the shim are on PATH, removed otherwise. Platform
+  systrap (`/usr/lib/melissa/k3s/gvisor/runsc.toml`); the KVM platform would work in the privileged container
+  (`/dev/kvm` is visible) but is not the default (docs/agent-skills/app-deploy.md, "Isolation").
+  `just gvisor-test-image` checks it end to end.
+
 ## App installs: second identity (2026-11-18)
 - `apps-rbac.yaml` (installed as `melissa-apps-rbac.yaml`): ServiceAccount `melissa/melissa-apps` with
   admission policies that pin it to `app-*` namespaces; `melissa-kubeconfig` also writes

@@ -92,6 +92,12 @@ impl AppRead for Fake {
     ) -> BoxFuture<'a, Result<String, ClusterError>> {
         unused()
     }
+    fn runtime_class_handler<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, ClusterError>> {
+        unused()
+    }
 }
 
 impl AppDeployer for Fake {

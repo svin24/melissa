@@ -140,6 +140,14 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`. The old
   catalog's Nextcloud keeps running and is converted to a stored spec at startup. Details:
   `docs/agent-skills/app-deploy.md`.
+- **Isolation (2026-11-23, DECISIONS):** apps run under **gVisor** (`runsc`, RuntimeClass `gvisor`, platform
+  systrap) by default: the spec's `isolation` is `gvisor` (default) or `standard` (runc, the device's kernel;
+  for host devices or apps that fail under gVisor), `kata` reserved. No trusted-image list exists, so every
+  agent spec defaults to gVisor; the old catalog's Nextcloud is `standard`. The confirmation names the level,
+  the deployer stores it with the spec and fails closed (no RuntimeClass: nothing applied); admission policies
+  refuse gVisor-labelled pods without the class. Image: pinned runsc + shim (`gvisor.lock`), containerd entry
+  and RuntimeClass from `k3s-prepare`; NixOS: `k3s.gvisor.enable`. `just gvisor-test-image` checks it.
+  Details: `docs/agent-skills/app-deploy.md` ("Isolation").
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).
 - **App links (2026-11-19):** by default `http://<device address>:<port>`: an app's web port and each public
   TCP/UDP port get their own NodePort from 30000-30079 (`<app>-port` Service, recorded in `melissa.io/port` and
@@ -442,7 +450,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   (NetworkPolicy); agent to app only through tools; app internet access by per-manifest allowlist. Honest claim:
   "strong, layered and tested", never "unbreakable" (shared kernel). Hardening milestone: seccomp + cgroup limits +
   per-agent UIDs for sandboxes (all three done 2026-11-23); default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
-  apps; gVisor/microVM runtime for agent-built apps; an adversarial escape test suite gating image updates
+  apps; gVisor/microVM runtime for agent-built apps (gVisor done 2026-11-23: the default for every app
+  spec, section 3; Kata later); an adversarial escape test suite gating image updates
   (exists for agent sandboxes since 2026-11-23: see "Escape suite" above; automation is open question 95).
   Per-agent host users are done too (2026-11-23, "Agent users" above; open question 97).
 - **Reference:** T3 Code (github.com/pingdotgg/t3code) is a useful reference for multi-agent, many-backend UX. It is currently published under the MIT license — re-verify the license and notice requirements before reusing any code; otherwise treat it as inspiration only.
@@ -1405,6 +1414,12 @@ Roadmap (rough, phases may overlap):
     Recommendation: prototype gVisor (`runsc`) as a k3s RuntimeClass behind a new spec field `isolation`
     (no KVM, same manifest/approval/NetworkPolicy), Kata second; park Nix app services, bare microVMs (maybe
     later for agent sandboxes) and Unikraft. Owner decisions are listed there.
+    Owner 2026-11-23: modern hosts only (KVM assumed), "let's try gvisor". **Built 2026-11-23** (DECISIONS,
+    section 3): `isolation` in the spec, gVisor the default for every agent spec (owner to confirm the
+    default; no trusted-image list exists to exempt images), platform systrap, fail closed. Still open: (a)
+    Kata (`kata`) behind the same field; (b) NetworkPolicy (default-deny, declared links) is still the bigger
+    app-to-app gap; (c) a trusted-image or catalog list that could default to `standard`; (d) whether gVisor's
+    statically linked Go modules need a notice list (ACKNOWLEDGMENTS to-do).
 95. Sandbox escape suite as a real gate (2026-11-23). Mostly done: the python3 probes became a test-only helper
     (`melissa-escape-probe`), the suite runs inside the built image (`just escape-test-image`, which tags
     `localhost/melissa:escape-tested` only on a pass from the image's own revision) and in the NixOS VM test,

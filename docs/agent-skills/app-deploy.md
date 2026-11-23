@@ -47,8 +47,9 @@ produces locked-down objects) and the admission policies, never the prompt.
   "secrets": [{"name": "rcon", "length": 32}],      // generated once, kept on updates
   "web": "http",                                    // port name of the web UI: link + Ingress
   "credentials": {"user": "admin", "password": "admin_password"}, // what app-credentials prints
-  "kind": "games"                                   // the UI's group: games | media | home | files |
+  "kind": "games",                                  // the UI's group: games | media | home | files |
                                                     // network | developer | other (default)
+  "isolation": "gvisor"                             // gvisor (default) | standard; see "Isolation"
 }
 ```
 Limits: 6 public ports (web included), 16 ports, 8 volumes, 16 secrets, 128 KiB stored spec,
@@ -65,12 +66,61 @@ Example: the Nextcloud spec in `crates/appspec/src/legacy.rs` (generated admin p
 `device_hosts` for its trusted domains, an entrypoint hook as a `files` entry, HTTP probe with
 the ingress host).
 
+## Isolation (gVisor, 2026-11-23)
+`isolation` says how the pod is kept apart from the device's kernel (DECISIONS 2026-11-23,
+docs/design/ISOLATION-RESEARCH-2026-11-23.md):
+- `gvisor` (the **default**: every agent spec without the field): RuntimeClass `gvisor`, handler
+  `runsc`. The app's system calls go to gVisor's user-space kernel (the Sentry, platform systrap);
+  the device's kernel sees a small, filtered set. `/proc/version` in the pod is gVisor's
+  (`4.19.0-gvisor`; `4.4.0` in older releases such as nixpkgs'), `dmesg` shows gVisor's banner. Costs memory (an idle busybox pod: 16.1 MiB in
+  its cgroup vs 0.7 MiB under runc; the research measured ~30 MiB PSS for a sandbox), about 0.4 s
+  more per pod start (1.7 s vs 1.3 s to Ready, image cached), and syscall-heavy work runs slower. The
+  RuntimeClass adds `overhead` 48Mi / 50m to the pod's limits (64Mi limit → 112Mi pod cgroup).
+- `standard`: an ordinary container (runc), sharing the device's kernel. For apps that need host
+  devices (USB sticks, GPUs) or kernel features gVisor lacks (io_uring, raw sockets, some `/proc`
+  files), and apps that fail under gVisor. The old catalog's Nextcloud says `standard`.
+- `kata` (a VM per pod) is reserved for later; unknown values are refused.
+
+There is no list of trusted images or registries, so the default doesn't depend on the image. The
+user sees the level in the confirmation (`isolation: gVisor sandbox (its own kernel)` /
+`isolation: standard (shares the device's kernel)`); agents ask for `standard` only with a reason
+the user can judge. The deployer stores the level it used with the spec (`"isolation":"gvisor"` in
+`melissa.io/spec`), so a later change of the default never moves a running app; specs deployed
+before 2026-11-23 have no field and move to gVisor at their next update or bring-back (the
+confirmation says so).
+
+**Fail closed.** A `gvisor` deploy first reads the `gvisor` RuntimeClass (the write identity may
+`get` exactly that one); missing or with another handler, the call fails with the reason and
+nothing is applied. Admission policies hold it in the cluster too (`apps-rbac.yaml`):
+`melissa-apps-workloads` refuses a Deployment whose template or namespace is labelled
+`melissa.io/isolation=gvisor` without `runtimeClassName: gvisor`, `melissa-apps-isolation` refuses
+such **pods** from any creator in app namespaces, and no other RuntimeClass is allowed there;
+`melissa-gvisor-runtimeclass` keeps the class's handler `runsc`. Without the RuntimeClass the API
+refuses the pod; with it but no runsc on the node, the pod never starts (`app_status` shows the
+sandbox error). Never a fallback to runc.
+
+**Where it comes from.** Container: the image ships runsc, its containerd shim and runsc's
+`gvisor-bin/` sidecars (`/usr/lib/melissa/gvisor`, linked into `/usr/bin`; `gvisor.lock`), and
+`k3s-prepare` installs containerd's `runsc` entry
+(`/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl`; k3s doesn't detect runsc) and the
+RuntimeClass manifest at every start, only when runsc is on PATH. NixOS:
+`services.melissa.k3s.gvisor.enable` (default on) puts nixpkgs' `gvisor` on k3s's PATH and writes
+the same template and manifest. The startup summary says `gVisor: on (runsc <version>)` or
+`off: <why>`. Options: `packaging/common/usr/lib/melissa/k3s/gvisor/runsc.toml` (platform
+`systrap`; KVM measured ~30% faster on syscall loops but widens the host surface to KVM and is
+poor when the host is a VM).
+
+**Check it:** `just gvisor-test-image` (a throwaway container: both levels deployed through
+`deploy_app`, kernels compared, cheap escape probes, the fail-closed paths, cost printed); the
+NixOS VM test does the same on NixOS.
+
 ## Rendering (`render.rs`, pure)
 Namespace `app-<name>` (labels `melissa.io/app`, `melissa.io/managed`, Pod Security
 `enforce=baseline`; annotations spec, ports, workspace record) → RoleBinding → one Secret per
 generated secret `<app>-secret-<name>` (POST, 409 = keep; catalog installs keep the shared
 `<app>-secrets`, see below) → PVCs → ConfigMap `<app>-files` → Deployment `<app>` (1 replica, or
-0 when stopped; `Recreate`; no SA token, no service links, seccomp RuntimeDefault, every container
+0 when stopped; `Recreate`; `runtimeClassName: gvisor` and the pod and namespace label
+`melissa.io/isolation` per the spec's level; no SA token, no service links, seccomp RuntimeDefault, every container
 `privileged: false`, `allowPrivilegeEscalation: false`, limits always) → ClusterIP Service (all
 ports, TCP/UDP) → Ingress (web port only) → NodePort Service `<app>-port` (web + public ports) →
 the namespace again with the new port records. Server-side apply, field manager `melissa`, forced.

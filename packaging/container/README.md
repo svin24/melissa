@@ -263,6 +263,19 @@ under `crates/`), it tags the image `localhost/melissa:escape-tested`. Any run o
 tag from it, so a failing run revokes an earlier pass. There is no publish step yet; whatever pushes images
 later must push only `:escape-tested` (PLAN open question 95).
 
+## gVisor for apps
+Apps run under gVisor by default (the app spec's `isolation`, docs/agent-skills/app-deploy.md): the image
+carries runsc and its containerd shim (`gvisor.lock`, about 120 MB unpacked), and `k3s-prepare` gives k3s the
+`runsc` runtime and the `gvisor` RuntimeClass at every start. Nothing to set up on the host: the systrap
+platform needs no KVM. The startup summary (`journalctl -u melissa-server` inside) says `gVisor: on (runsc
+release-…)`. Check an image end to end, next to an installed `melissa` (own name, volume and tag; no ports;
+removed afterwards; needs sudo and the network for a busybox image):
+
+```sh
+just container-build
+just gvisor-test-image          # or: just gvisor-test-image localhost/melissa:<tag>
+```
+
 ## Security
 - `--privileged` rootful: the container has **root on the host**. k3s needs mounts, netfilter and network
   namespaces; the agent sandbox needs nested namespaces. Inside, the server runs as the unprivileged

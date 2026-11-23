@@ -42,6 +42,12 @@ struct State {
     /// Commands `exec` was asked to run, and what it answers.
     exec_requests: Vec<ExecRequest>,
     exec_output: ExecOutput,
+    /// The cluster has no `gvisor` RuntimeClass (runsc missing).
+    no_gvisor: bool,
+    /// The `gvisor` RuntimeClass names this handler instead of `runsc`.
+    gvisor_handler: Option<String>,
+    /// RuntimeClasses asked for.
+    runtime_classes_asked: Vec<String>,
 }
 
 /// A cluster in memory: applies objects, keeps one namespace.
@@ -122,6 +128,18 @@ impl AppRead for Fake {
             let mut s = self.state();
             s.log_requests.push(request.clone());
             Ok(s.log.clone())
+        })
+    }
+    fn runtime_class_handler<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, ClusterError>> {
+        Box::pin(async move {
+            self.check()?;
+            let mut s = self.state();
+            s.runtime_classes_asked.push(name.to_string());
+            Ok((name == "gvisor" && !s.no_gvisor)
+                .then(|| s.gvisor_handler.clone().unwrap_or_else(|| "runsc".into())))
         })
     }
 }
@@ -706,6 +724,103 @@ async fn install_applies_everything_in_order_and_never_returns_the_secret() {
         ns_annotation(&fake, "melissa.io/port").as_deref(),
         Some("30000")
     );
+}
+
+fn runtime_class_of(fake: &Fake) -> Option<String> {
+    fake.state()
+        .deployment
+        .clone()
+        .unwrap()
+        .spec
+        .template
+        .spec
+        .unwrap()
+        .runtime_class_name
+}
+
+/// Isolation (2026-11-23): agent specs run under gVisor unless they ask for `standard`; the
+/// user sees the level in the confirmation; it is stored with the spec; and a gVisor app
+/// never lands on the default runtime: without the RuntimeClass nothing is applied.
+#[tokio::test]
+async fn gvisor_is_the_default_shown_stored_and_fails_closed() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+
+    // The confirmation names the level, the default and an explicit one.
+    let ask = |spec: Value| t["deploy_app"].describe_call(&json!({"app": "mc", "spec": spec}));
+    let text = ask(minecraft()).unwrap();
+    assert!(
+        text.contains("isolation: gVisor sandbox (its own kernel)"),
+        "{text}"
+    );
+    let mut standard = minecraft();
+    standard["isolation"] = json!("standard");
+    let text = ask(standard.clone()).unwrap();
+    assert!(
+        text.contains("isolation: standard (shares the device's kernel)"),
+        "{text}"
+    );
+
+    // Not available: refused before anything is applied, with the reason.
+    fake.state().no_gvisor = true;
+    let r = call(&t, "deploy_app", json!({"app": "mc", "spec": minecraft()})).await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("gVisor is not available")
+            && m.contains("Nothing was changed")),
+        "{r:?}"
+    );
+    assert!(fake.state().applied.is_empty());
+    // A RuntimeClass with another handler is no gVisor either.
+    fake.state().no_gvisor = false;
+    fake.state().gvisor_handler = Some("runc".into());
+    let r = call(&t, "deploy_app", json!({"app": "mc", "spec": minecraft()})).await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("handler `runc`")),
+        "{r:?}"
+    );
+    assert!(fake.state().applied.is_empty());
+
+    // `standard` needs no RuntimeClass and asks for none.
+    fake.state().no_gvisor = true;
+    fake.state().runtime_classes_asked.clear();
+    let out = call(&t, "deploy_app", json!({"app": "mc", "spec": standard}))
+        .await
+        .unwrap();
+    assert!(fake.state().runtime_classes_asked.is_empty());
+    assert_eq!(runtime_class_of(&fake), None);
+    assert_eq!(
+        ns_label(&fake, "melissa.io/isolation").as_deref(),
+        Some("standard")
+    );
+    assert!(out["runs"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("isolation: standard (shares the device's kernel)")));
+
+    // Available: the update (no `isolation`: the default) moves it to gVisor, stored explicitly.
+    fake.state().no_gvisor = false;
+    fake.state().gvisor_handler = None;
+    call(&t, "update_app", json!({"app": "mc", "spec": minecraft()}))
+        .await
+        .unwrap();
+    assert_eq!(runtime_class_of(&fake).as_deref(), Some("gvisor"));
+    assert_eq!(
+        ns_label(&fake, "melissa.io/isolation").as_deref(),
+        Some("gvisor")
+    );
+    let stored = AppSpec::from_text(&ns_annotation(&fake, SPEC_ANNOTATION).unwrap()).unwrap();
+    assert_eq!(stored.isolation, Some(Isolation::Gvisor));
+
+    // Bringing it back from its stored spec checks again: gone runsc, nothing applied.
+    fake.state().no_gvisor = true;
+    fake.state().deployment = None;
+    let before = fake.state().applied.len();
+    let r = call(&t, "deploy_app", json!({"app": "mc"})).await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("gVisor")),
+        "{r:?}"
+    );
+    assert_eq!(fake.state().applied.len(), before);
 }
 
 #[tokio::test]
@@ -2778,7 +2893,7 @@ async fn a_bad_spec_fails_before_anyone_is_asked() {
         format!(
             "deploy `minecraft`: server: docker.io/itzg/minecraft-server:java21 (up to 1 CPU, \
              1536Mi memory); reachable from the network: game 25565/tcp, voice 24454/udp; \
-             storage: data 5Gi; {}",
+             storage: data 5Gi; isolation: gVisor sandbox (its own kernel); {}",
             melissa_agent::tools::RUNS_SOFTWARE
         )
     );

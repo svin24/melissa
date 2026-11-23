@@ -10,6 +10,7 @@
       "labels": {
         "app.kubernetes.io/managed-by": "melissa",
         "melissa.io/app": "minecraft",
+        "melissa.io/isolation": "gvisor",
         "melissa.io/managed": "true",
         "pod-security.kubernetes.io/enforce": "baseline",
         "pod-security.kubernetes.io/enforce-version": "latest"
@@ -109,7 +110,8 @@
           "labels": {
             "app.kubernetes.io/managed-by": "melissa",
             "app.kubernetes.io/name": "minecraft",
-            "melissa.io/app": "minecraft"
+            "melissa.io/app": "minecraft",
+            "melissa.io/isolation": "gvisor"
           }
         },
         "spec": {
@@ -194,6 +196,7 @@
             }
           ],
           "enableServiceLinks": false,
+          "runtimeClassName": "gvisor",
           "securityContext": {
             "seccompProfile": {
               "type": "RuntimeDefault"

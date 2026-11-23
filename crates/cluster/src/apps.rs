@@ -17,6 +17,7 @@ use k8s_openapi::{
         apps::v1::Deployment,
         core::v1::{ConfigMap, Namespace, PersistentVolumeClaim, Pod, Secret, Service},
         networking::v1::Ingress,
+        node::v1::RuntimeClass,
         rbac::v1::RoleBinding,
     },
     apimachinery::pkg::apis::meta::v1::Status,
@@ -117,6 +118,12 @@ pub trait AppRead: Send + Sync {
         app: &'a str,
         request: &'a LogRequest,
     ) -> BoxFuture<'a, Result<String, ClusterError>>;
+    /// The handler of the cluster's RuntimeClass `name` (`runsc` for `gvisor`); `None` when
+    /// there is no such RuntimeClass (gVisor not set up on this device).
+    fn runtime_class_handler<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, ClusterError>>;
 }
 
 /// One command to run in a container of an app's pod (`app_exec`). No shell is involved: the
@@ -365,6 +372,16 @@ impl AppRead for KubeApps {
                 ..LogParams::default()
             };
             api.logs(&request.pod, &params).await.map_err(map_err)
+        })
+    }
+
+    fn runtime_class_handler<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, ClusterError>> {
+        Box::pin(async move {
+            let api: Api<RuntimeClass> = Api::all(self.client().await?);
+            Ok(optional(api.get(name).await)?.map(|rc| rc.handler))
         })
     }
 }

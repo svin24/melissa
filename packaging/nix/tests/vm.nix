@@ -132,6 +132,8 @@ pkgs.testers.runNixOSTest {
     def tool(name, args, confirm=False):
         body = shlex.quote(json.dumps(args))
         out = "/tmp/tool-" + name + ".json"
+        # A second call of the same tool must not read the first one's result.
+        server.succeed(f"rm -f {out} {out}.done")
         server.succeed(
             f"(curl -sS {SOCK}--max-time 600 -H 'Content-Type: application/json' -X POST -d {body} "
             f"http://localhost/api/tools/{name} > {out}; echo done >> {out}.done) >/dev/null 2>&1 &"
@@ -279,6 +281,35 @@ pkgs.testers.runNixOSTest {
         client.wait_until_succeeds(f"curl -sSf --max-time 5 http://${serverIp}:{port}/ | grep -q 'hello from a melissa app'", timeout=120)
         status = tool("app_status", {"app": "hello"})
         assert "http://${serverIp}:" + port in json.dumps(status), status
+
+    with subtest("gVisor: the default isolation runs apps in their own kernel; standard doesn't"):
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'gVisor:   on (runsc '")
+        assert kubectl("get runtimeclass gvisor -o jsonpath='{.handler}'").strip() == "runsc"
+        # `hello` has no `isolation`: gVisor, stored explicitly; its kernel is gVisor's.
+        assert kubectl("-n app-hello get deploy hello -o jsonpath='{.spec.template.spec.runtimeClassName}'").strip() == "gvisor"
+        assert kubectl("get ns app-hello -o jsonpath='{.metadata.labels.melissa\\.io/isolation}'").strip() == "gvisor"
+        # gVisor's own kernel: not the VM's /proc/version (nixpkgs' gvisor says `4.4.0`, newer
+        # releases `4.19.0-gvisor`), and gVisor's boot banner in dmesg.
+        host_version = server.succeed("cat /proc/version").strip()
+        out = tool("app_exec", {"app": "hello", "command": ["cat", "/proc/version"]}, confirm=True)
+        assert out["result"]["stdout"].strip() != host_version, out
+        out = tool("app_exec", {"app": "hello", "command": ["dmesg"]}, confirm=True)
+        assert "Starting gVisor" in out["result"]["stdout"], out
+        # The same image as `standard`: the device's kernel.
+        std = dict(spec, isolation="standard")
+        res = tool("deploy_app", {"app": "plain", "spec": std}, confirm=True)
+        if "error" in res:
+            raise Exception(res)
+        server.wait_until_succeeds("k3s kubectl -n app-plain rollout status deploy --timeout=10s", timeout=240)
+        out = tool("app_exec", {"app": "plain", "command": ["cat", "/proc/version"]}, confirm=True)
+        assert out["result"]["stdout"].strip() == host_version, out
+        # Fail closed: a pod labelled gvisor without the RuntimeClass is refused by admission.
+        out = server.fail(
+            "k3s kubectl -n app-plain run probe --image=docker.io/melissa-test/hello:1 "
+            "--labels=melissa.io/isolation=gvisor --restart=Never 2>&1"
+        )
+        assert "only under the gvisor RuntimeClass" in out, out
+        tool("uninstall_app", {"app": "plain", "delete_data": True}, confirm=True)
 
     with subtest("stop and start the app"):
         tool("stop_app", {"app": "hello"}, confirm=True)
