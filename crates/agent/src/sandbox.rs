@@ -74,11 +74,11 @@ const RESERVED_ENV: &[&str] = &[
 /// Where the bridge's socket directory appears inside the sandbox.
 pub const BRIDGE_DIR: &str = "/run/melissa-net";
 
-/// Per-backend sandbox settings (`[backend.sandbox]` in the lead agent config).
+/// The sandbox a backend runs in: its built-in preset ([`SandboxSpec::preset`]) with the
+/// config's `[backend.sandbox]` table ([`SandboxConfig`]) applied on top.
 ///
 /// Paths are relative to `$HOME`. Missing `ro`/`rw` paths are skipped, so a CLI that is
-/// not logged in simply sees no credentials. If the table is given, it replaces the
-/// built-in preset for that CLI entirely.
+/// not logged in simply sees no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
@@ -272,6 +272,133 @@ impl SandboxSpec {
     }
 }
 
+/// `[backend.sandbox]` in the server config: changes to the backend's built-in preset
+/// ([`SandboxConfig::apply`]). Keys left out keep the preset's values, so a table with only
+/// `limits` or `seccomp` keeps the CLI's credential binds and state directories.
+///
+/// - `enabled`, `seccomp`: replace the preset's value when given.
+/// - `limits`: key by key ([`limits::LimitsOverride`]).
+/// - `tmpfs`, `ro`, `rw`, `env`: **added** to the preset's lists. Adding is the only thing a
+///   list can do, so a list never drops a preset entry by accident; an empty list is refused
+///   (it would say nothing).
+/// - `preset = false`: start from an empty home instead of the preset (the lists are then
+///   exactly what the table says). The only way to drop a preset path, e.g. a credential file
+///   when the CLI should use an API key instead.
+///
+/// The egress allowlist and network mode are backend keys (`allow`, `network`), not part of
+/// this table; `allow` replaces the CLI's built-in list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxConfig {
+    /// Start from the CLI's preset (default) or from an empty home (`false`).
+    #[serde(default = "enabled_by_default")]
+    pub preset: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seccomp: Option<bool>,
+    #[serde(default)]
+    pub limits: limits::LimitsOverride,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmpfs: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ro: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rw: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<String>>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            preset: true,
+            enabled: None,
+            seccomp: None,
+            limits: limits::LimitsOverride::default(),
+            tmpfs: None,
+            ro: None,
+            rw: None,
+            env: None,
+        }
+    }
+}
+
+impl SandboxConfig {
+    /// The sandbox for a backend whose built-in preset is `preset`.
+    pub fn apply(&self, preset: SandboxSpec) -> SandboxSpec {
+        let mut spec = if self.preset {
+            preset
+        } else {
+            SandboxSpec {
+                network: preset.network,
+                allow: preset.allow,
+                vars: preset.vars,
+                ..SandboxSpec::default()
+            }
+        };
+        if let Some(on) = self.enabled {
+            spec.enabled = on;
+        }
+        if let Some(on) = self.seccomp {
+            spec.seccomp = on;
+        }
+        spec.limits = self.limits.apply(spec.limits);
+        for (list, extra) in [
+            (&mut spec.tmpfs, &self.tmpfs),
+            (&mut spec.ro, &self.ro),
+            (&mut spec.rw, &self.rw),
+            (&mut spec.env, &self.env),
+        ] {
+            for item in extra.iter().flatten() {
+                if !list.contains(item) {
+                    list.push(item.clone());
+                }
+            }
+        }
+        spec
+    }
+
+    /// Refuse lists that would change nothing (`rw = []` once meant "no credentials"; now
+    /// lists only add, so that needs `preset = false`).
+    pub fn validate(&self) -> Result<(), SandboxError> {
+        if !self.preset {
+            return Ok(());
+        }
+        for (key, list) in [
+            ("tmpfs", &self.tmpfs),
+            ("ro", &self.ro),
+            ("rw", &self.rw),
+            ("env", &self.env),
+        ] {
+            if list.as_ref().is_some_and(Vec::is_empty) {
+                return Err(SandboxError::EmptyList(key));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The sandbox a backend runs in: `fixed` (set by code, e.g. [`SandboxSpec::disabled`]) if
+/// any, else `preset` with the config's table applied. `network` and `allow` come from the
+/// backend's own keys.
+pub fn effective(
+    fixed: Option<&SandboxSpec>,
+    config: Option<&SandboxConfig>,
+    preset: impl FnOnce() -> SandboxSpec,
+    network: NetworkMode,
+    allow: Option<Vec<String>>,
+) -> SandboxSpec {
+    let mut spec = match (fixed, config) {
+        (Some(spec), _) => spec.clone(),
+        (None, Some(config)) => config.apply(preset()),
+        (None, None) => preset(),
+    };
+    spec.network = network;
+    spec.allow = allow;
+    spec
+}
+
 /// A valid environment variable name that the sandbox does not set itself.
 pub fn check_env_name(name: &str) -> Result<(), SandboxError> {
     let valid = !name.is_empty()
@@ -294,6 +421,11 @@ pub enum SandboxError {
     BadDir(String),
     #[error("sandbox env `{0}` is not a valid, non-reserved variable name")]
     BadEnv(String),
+    #[error(
+        "`[backend.sandbox] {0} = []` changes nothing: lists add to the preset. \
+         To drop the preset's paths, set `preset = false` and list what the CLI needs"
+    )]
+    EmptyList(&'static str),
     #[error(transparent)]
     BadRule(#[from] crate::egress::BadRule),
     #[error("model `{0}` is not valid here (`provider/model`, only for flavor = \"opencode\")")]

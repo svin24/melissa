@@ -16,7 +16,10 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::{
     egress::{EgressLease, EgressProxy, EgressRequest, NetworkMode},
-    sandbox::{self, Bridge, SandboxChild, SandboxCommand, SandboxError, SandboxPlan, SandboxSpec},
+    sandbox::{
+        self, Bridge, SandboxChild, SandboxCommand, SandboxConfig, SandboxError, SandboxPlan,
+        SandboxSpec,
+    },
     AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream, TaskId,
 };
 
@@ -42,10 +45,14 @@ pub struct CliSpec {
     /// the backend cannot use tools.
     #[serde(default)]
     pub mcp_args: Vec<String>,
-    /// Sandbox settings. Absent: the built-in preset for this command
-    /// ([`SandboxSpec::preset`]), which is enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A whole sandbox set by code ([`CliSpec::with_sandbox`]); wins over the preset and
+    /// [`CliSpec::sandbox_table`]. Never read from the config file.
+    #[serde(skip)]
     pub sandbox: Option<SandboxSpec>,
+    /// `[backend.sandbox]`: changes to the built-in preset for this command
+    /// ([`SandboxSpec::preset`], enabled), see [`SandboxConfig`].
+    #[serde(rename = "sandbox", default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_table: Option<SandboxConfig>,
     /// Network access of the sandboxed agent: `proxy` (default: only the allowlisted hosts,
     /// through Melissa's egress proxy, plus Melissa's MCP endpoint), `learn` (every public
     /// host, logged), `none` (MCP only) or `host` (the unfiltered host network).
@@ -66,6 +73,7 @@ impl CliSpec {
             args: args.iter().map(|a| (*a).to_string()).collect(),
             mcp_args: Vec::new(),
             sandbox: None,
+            sandbox_table: None,
             network: crate::egress::NetworkMode::default(),
             allow: None,
         }
@@ -94,19 +102,23 @@ impl CliSpec {
         self.with_sandbox(SandboxSpec::disabled())
     }
 
-    /// The sandbox that applies: the configured one, else the preset for the command.
+    /// The sandbox that applies: one set by code, else the preset for the command with the
+    /// config's `[backend.sandbox]` applied.
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        let mut spec = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
-        spec.network = self.network;
-        spec.allow = self.allow.clone();
-        spec
+        sandbox::effective(
+            self.sandbox.as_ref(),
+            self.sandbox_table.as_ref(),
+            || SandboxSpec::preset(&self.command),
+            self.network,
+            self.allow.clone(),
+        )
     }
 
     /// Check the configuration (currently: the sandbox paths and env names).
     pub fn validate(&self) -> Result<(), SandboxError> {
+        if let Some(table) = &self.sandbox_table {
+            table.validate()?;
+        }
         self.effective_sandbox().validate()
     }
 

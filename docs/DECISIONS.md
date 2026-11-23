@@ -159,7 +159,8 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   name hosts; `unsafe` or a new crate). Trade-offs: host-level only (telemetry on the API host, e.g.
   Anthropic's event endpoints, cannot be separated), and a CLI that ignores the proxy gets no network at all.
 - **2026-11-18 — `network` and `allow` are backend keys, not part of `[backend.sandbox]`.** Why: a sandbox table
-  replaces the whole preset (paths), so changing only the network would mean copying the preset. Repeated
+  replaced the whole preset (paths), so changing only the network would have meant copying the preset (no longer
+  so since 2026-11-23, see below). Repeated
   identical denials (grok retries telemetry ~40 times per prompt) are counted within 60 s and written as
   `(+N repeats)` with the next record or when the sandbox ends, so the audit stays readable and every attempt
   is still counted.
@@ -1776,3 +1777,25 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   process per spawn, and still races the first fork), `clone3(CLONE_INTO_CGROUP)` (needs unsafe), moving bwrap
   after it starts without a gate (its child may already be outside), `setrlimit` (per-user, not per-sandbox,
   no memory accounting for children).
+- **2026-11-23 — `[backend.sandbox]` changes the CLI's preset instead of replacing it.** The preset is the base;
+  `enabled` and `seccomp` replace its value when given, `limits` key by key (`LimitsOverride`), and `tmpfs`, `ro`,
+  `rw`, `env` add to its lists (no duplicates). `preset = false` starts from an empty home instead (the only way
+  to drop a preset path, a narrowing). An empty list is refused: under the old rule `rw = []` meant "no
+  credentials", and silently ignoring it would now widen that config; the error points at `preset = false`.
+  `allow` (a backend key) still replaces the built-in host list: replacing is how it narrows, and widening it
+  needs hosts written out. A sandbox set in code (`with_sandbox`, tests, provider variables) still wins whole.
+  Why: a table with only `limits` or `seccomp = false` dropped the credential binds and state tmpfs, so the CLI
+  lost its login (a footgun noted in the docs). Behaviour change: a config that narrowed by leaving preset paths
+  out of a non-empty list now gets them back; such configs need `preset = false`. Alternatives: lists replace
+  (adding one path means repeating the preset, which drifts when presets change), a separate `extra_ro` etc.
+  (more keys, same effect), a per-entry removal list (more surface than one switch).
+- **2026-11-23 — The server checks `vm.panic_on_oom` at startup and keeps the memory limit on.** Kernel
+  semantics (admin-guide/sysctl/vm.rst): 0 never panics; 1 panics only on a system-wide OOM, an OOM confined to a
+  memory cgroup just kills; 2 panics on every OOM, the cgroup's included. So 2 is dangerous always (an agent at
+  its `memory.max` takes the host down), 1 only when agents run without limits (a hog then causes a system-wide
+  OOM). Then the `Limits:` line says PROBLEM with the fix (`sysctl -w vm.panic_on_oom=0`, plus a sysctl.d file)
+  and the log warns once. The limit stays on: without it a hog still ends in an OOM (a panic under 1 and 2, the
+  OOM killer picking k3s or the server under 0), the pids and CPU limits are unaffected, and quietly loosening
+  the sandbox because of a host setting would be a surprise. Alternatives: drop `memory.max` under 2 (an agent
+  could then use all memory before the same panic), refuse to start (too harsh for a host the owner may not
+  control), set the sysctl ourselves (needs root; not the server's business).

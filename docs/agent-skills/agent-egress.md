@@ -76,8 +76,8 @@ allow = ["api.anthropic.com", "platform.claude.com", "*.example.net:8443"]   # r
 - `host`: the old behaviour (shares the host's network and resolver); logs a warning at startup.
 - Rules: `host` or `*.domain` (subdomains only, not the apex), optional `:port` (default 443). No IP literals,
   no bare `*`. A custom backend (unknown command) has an empty list: deny-all until you add hosts.
-- `network` and `allow` sit on the backend, not in `[backend.sandbox]` (that table replaces the preset's
-  paths entirely; the network should be changeable without copying them).
+- `network` and `allow` sit on the backend, not in `[backend.sandbox]` (historical: that table used to replace
+  the preset's paths entirely; since 2026-11-23 it only changes what it names, see agent-cli-backends.md).
 - Fails closed: `proxy`/`learn` without the egress proxy or without `melissa-netbridge` → backend unavailable,
   and a run is refused; never a fallback to the host network.
 
