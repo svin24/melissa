@@ -485,13 +485,7 @@ pub fn read_log(path: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("melissa-inst-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_support::scratch;
 
     #[test]
     fn only_the_built_in_ids_have_a_unit() {
@@ -608,7 +602,7 @@ mod tests {
 
     #[test]
     fn a_long_sign_in_url_survives_the_log_reader() {
-        let dir = temp("longurl");
+        let dir = scratch("longurl");
         let path = dir.join("claude-login.log");
         let url = format!(
             "https://claude.com/cai/oauth/authorize?code=true&scope={}&state=end",
@@ -677,7 +671,7 @@ mod tests {
     #[test]
     fn the_code_goes_only_to_a_waiting_fifo() {
         use std::io::BufRead;
-        let dir = temp("fifo");
+        let dir = scratch("fifo");
         let inst = Installer::new(InstallWay::Button, dir.clone(), PathBuf::from("false"));
         // Nothing there, or a plain file: refused, nothing written.
         assert!(inst.send_code("abc").is_err());
@@ -710,7 +704,7 @@ mod tests {
 
     #[test]
     fn way_follows_the_host_kind_and_the_installed_files() {
-        let root = temp("way");
+        let root = scratch("way");
         assert_eq!(
             InstallWay::detect(&root, HostKind::Other),
             InstallWay::Manual
@@ -780,7 +774,7 @@ mod tests {
 
     #[test]
     fn log_tail_keeps_the_last_lines_and_the_latest_progress() {
-        let dir = temp("log");
+        let dir = scratch("log");
         let path = dir.join("opencode.log");
         let mut text = String::new();
         for i in 0..30 {
@@ -826,7 +820,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn starts_only_fixed_units_and_reads_their_state() {
-        let dir = temp("run");
+        let dir = scratch("run");
         let show = "LoadState=loaded\nActiveState=failed\nResult=exit-code\nExecMainStatus=1\n\
                     ExecMainExitTimestampMonotonic=5\n";
         let ctl = fake_systemctl(&dir, show, true);

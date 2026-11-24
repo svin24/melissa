@@ -158,48 +158,41 @@ mod tests {
 
     #[test]
     fn saved_preferences_come_back_and_default_to_off() {
-        let dir = std::env::temp_dir().join(format!("melissa-prefs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::scratch("prefs");
         let path = dir.join(FILE_NAME);
         let store = PrefsStore::open(path.clone());
-        assert!(!store.get().show_steps);
-        store.update(|p| p.show_steps = true).unwrap();
-        assert!(PrefsStore::open(path.clone()).get().show_steps);
-        // Files written before a preference existed still load (serde default).
-        assert!(!PrefsStore::open(path.clone()).get().voice_input);
-        store.update(|p| p.voice_input = true).unwrap();
-        let back = PrefsStore::open(path.clone()).get();
-        assert!(back.voice_input && back.show_steps);
-        store.update(|p| p.voice_input = false).unwrap();
-        assert!(!PrefsStore::open(path.clone()).get().voice_input);
-        // Unknown or broken content: the defaults.
-        std::fs::write(&path, "nope = 1\n").unwrap();
-        assert_eq!(PrefsStore::open(path).get(), Prefs::default());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn device_name_and_setup_progress_round_trip() {
-        let dir = std::env::temp_dir().join(format!("melissa-prefs-dev-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join(FILE_NAME);
-        let store = PrefsStore::open(path.clone());
-        assert_eq!(store.get().device_name, None);
+        assert_eq!(store.get(), Prefs::default());
+        assert!(!store.get().show_steps && !store.get().voice_input);
         store
             .update(|p| {
+                p.show_steps = true;
+                p.voice_input = true;
                 p.device_name = clean_device_name("  Living room box \u{7} ");
                 p.setup.skipped.push("extras".into());
             })
             .unwrap();
         let back = PrefsStore::open(path.clone()).get();
+        assert!(back.voice_input && back.show_steps);
         assert_eq!(back.device_name.as_deref(), Some("Living room box"));
         assert_eq!(back.setup.skipped, vec!["extras".to_string()]);
         assert!(!back.setup.dismissed);
-        // Unset again: the key leaves the file.
-        store.update(|p| p.device_name = None).unwrap();
+        // Turned off or unset again: an unset key leaves the file.
+        store
+            .update(|p| {
+                p.voice_input = false;
+                p.device_name = None;
+            })
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("device_name"), "{text}");
-        assert_eq!(PrefsStore::open(path).get().device_name, None);
+        let back = PrefsStore::open(path.clone()).get();
+        assert!(!back.voice_input && back.show_steps && back.device_name.is_none());
+        // Files written before a preference existed still load (serde default); unknown or
+        // broken content: the defaults.
+        std::fs::write(&path, "show_steps = true\n").unwrap();
+        assert!(PrefsStore::open(path.clone()).get().show_steps);
+        std::fs::write(&path, "nope = 1\n").unwrap();
+        assert_eq!(PrefsStore::open(path).get(), Prefs::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

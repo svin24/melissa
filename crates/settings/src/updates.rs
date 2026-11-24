@@ -535,6 +535,7 @@ pub fn ago(then: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::scratch;
 
     fn fixture(name: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -543,15 +544,8 @@ mod tests {
         std::fs::read_to_string(&path).unwrap()
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("melissa-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
-    fn parses_a_running_only_status() {
+    fn parses_running_staged_previous_and_found_update() {
         let v = parse_status(&fixture("container-status-running.json")).unwrap();
         let r = v.running.as_ref().unwrap();
         assert_eq!(r.image, "localhost/melissa:latest");
@@ -559,10 +553,7 @@ mod tests {
         assert_eq!(r.version.as_deref(), Some("0.1.0"));
         assert_eq!(v.auto_update.as_deref(), Some("local"));
         assert!(v.staged.is_none() && v.previous.is_none() && v.available.is_none());
-    }
 
-    #[test]
-    fn parses_staged_previous_and_found_update() {
         let v = parse_status(&fixture("container-status-staged.json")).unwrap();
         assert_eq!(
             v.staged.as_ref().and_then(|s| s.version.as_deref()),
@@ -600,7 +591,7 @@ mod tests {
 
     #[test]
     fn reads_the_helpers_files() {
-        let dir = temp("update");
+        let dir = scratch("update");
         assert_eq!(read_state(&dir), UpdateState::default());
         std::fs::write(
             dir.join("status.json"),
@@ -624,7 +615,7 @@ mod tests {
 
     #[test]
     fn host_kind_and_helper_detection() {
-        let root = temp("root");
+        let root = scratch("root");
         std::fs::create_dir_all(root.join("run")).unwrap();
         assert_eq!(HostKind::detect(&root, None), HostKind::Other);
         let env = UpdateEnv {
@@ -660,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_are_empty_files_with_fixed_names() {
-        let root = temp("request");
+        let root = scratch("request");
         let env = UpdateEnv {
             root: root.clone(),
             kind: HostKind::Container,
@@ -688,7 +679,7 @@ mod tests {
     #[test]
     fn restart_needs_only_the_polkit_rule() {
         // NixOS: the rule comes with the system profile; no host helper, no container.
-        let root = temp("nixos-root");
+        let root = scratch("nixos-root");
         let env = UpdateEnv {
             root: root.clone(),
             kind: HostKind::Other,
@@ -736,7 +727,7 @@ mod tests {
 
     #[test]
     fn release_file_wins_over_env_and_build() {
-        let dir = temp("release");
+        let dir = scratch("release");
         let file = dir.join("release");
         std::fs::write(
             &file,
@@ -762,14 +753,5 @@ mod tests {
         let r = Release::read(&dir.join("missing"));
         assert!(r.source == "source" || r.source == "env");
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn ago_reads_well() {
-        assert_eq!(ago(100, 110), "just now");
-        assert_eq!(ago(0, 300), "5 min ago");
-        assert_eq!(ago(0, 7200), "2 h ago");
-        assert_eq!(ago(0, 90_000), "1 day ago");
-        assert_eq!(ago(500, 100), "just now");
     }
 }

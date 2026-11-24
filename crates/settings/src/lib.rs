@@ -27,6 +27,9 @@ pub mod tailscale;
 pub mod updates;
 pub mod version;
 
+#[cfg(test)]
+mod test_support;
+
 /// Errors from reading, checking or saving settings. Messages never contain a variable's
 /// value (they may be shown in the UI and the log).
 #[derive(Debug, thiserror::Error)]
@@ -132,7 +135,7 @@ mod tests {
     #[test]
     fn private_files_are_0600() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("melissa-settings-{}", std::process::id()));
+        let dir = crate::test_support::scratch("settings");
         let path = dir.join("x.toml");
         write_private(&path, b"a").unwrap();
         write_private(&path, b"b").unwrap();

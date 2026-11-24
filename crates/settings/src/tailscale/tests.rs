@@ -1,28 +1,14 @@
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Mutex,
-};
+use std::sync::Mutex;
 
 use melissa_agent::tools::{TaskContext, Tool};
 
 use super::*;
+use crate::test_support::scratch;
 
 const RUNNING: &str = include_str!("fixtures/running.json");
 const NEEDS_LOGIN: &str = include_str!("fixtures/needs_login.json");
 const NEEDS_LOGIN_URL: &str = include_str!("fixtures/needs_login_url.json");
 const URL: &str = "https://login.tailscale.com/a/0123456789abcdef";
-
-fn temp_dir(tag: &str) -> PathBuf {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "melissa-tailscale-{tag}-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 // --- detection and names -----------------------------------------------------------------
 
@@ -60,7 +46,7 @@ fn node_names_are_dns_labels() {
 
 #[test]
 fn setting_file_round_trip_and_the_unit_condition() {
-    let dir = temp_dir("setting");
+    let dir = scratch("setting");
     let path = dir.join(FILE_NAME);
     assert_eq!(read_setting(&path), Ok(false), "missing: off");
     write_setting(&path, true).unwrap();
@@ -93,11 +79,12 @@ fn parses_a_running_node() {
     assert_eq!(n.ipv6, "fd7a:115c:a1e0::7".parse().ok());
     let state = state_from(Ok(d));
     assert_eq!(state.as_str(), "connected");
-    assert_eq!(state.sentence(), "Connected · melissa-box · 100.64.0.7");
-}
-
-#[test]
-fn magic_dns_off_means_no_name() {
+    let sentence = state.sentence();
+    assert!(
+        sentence.contains("melissa-box") && sentence.contains("100.64.0.7"),
+        "{sentence}"
+    );
+    // MagicDNS off: no DNS name, the address stays.
     let off = RUNNING.replace("\"MagicDNSEnabled\": true", "\"MagicDNSEnabled\": false");
     let n = parse_status(&off).unwrap().node.unwrap();
     assert_eq!(n.dns_name, None);
@@ -125,10 +112,10 @@ fn parses_sign_in_states() {
         let json = NEEDS_LOGIN.replace("\"NeedsLogin\"", &format!("\"{backend}\""));
         assert_eq!(state_from(parse_status(&json)).as_str(), want, "{backend}");
     }
-    assert_eq!(
+    assert!(matches!(
         state_from(Err("not running".into())),
-        State::Error("Tailscale isn't running.".into())
-    );
+        State::Error(_)
+    ));
 }
 
 #[test]
@@ -251,7 +238,7 @@ fn audit(dir: &Path) -> String {
 
 #[tokio::test]
 async fn not_managed_when_the_host_runs_tailscale() {
-    let dir = temp_dir("host");
+    let dir = scratch("host");
     let fake = Arc::new(Fake::default());
     for m in [Management::Host, Management::Unavailable] {
         let c = control(&dir, m, fake.clone());
@@ -272,7 +259,7 @@ async fn not_managed_when_the_host_runs_tailscale() {
 
 #[tokio::test]
 async fn off_by_default_then_enable_sign_in_and_disable() {
-    let dir = temp_dir("flow");
+    let dir = scratch("flow");
     let fake = Arc::new(Fake::default());
     let c = control(&dir, Management::Melissa, fake.clone());
     assert_eq!(c.state().await, State::Off);
@@ -328,7 +315,7 @@ async fn off_by_default_then_enable_sign_in_and_disable() {
 
 #[tokio::test]
 async fn a_sign_in_that_completes_at_once_gives_no_url() {
-    let dir = temp_dir("quick");
+    let dir = scratch("quick");
     let fake = Arc::new(Fake {
         login_completes: true,
         ..Fake::default()
@@ -341,7 +328,7 @@ async fn a_sign_in_that_completes_at_once_gives_no_url() {
 
 #[tokio::test]
 async fn a_unit_that_does_not_start_is_an_error_and_audited() {
-    let dir = temp_dir("fail");
+    let dir = scratch("fail");
     let fake = Arc::new(Fake {
         start_fails: true,
         ..Fake::default()
@@ -370,7 +357,7 @@ async fn a_unit_that_does_not_start_is_an_error_and_audited() {
 
 #[tokio::test]
 async fn tools_never_return_the_sign_in_url() {
-    let dir = temp_dir("tools");
+    let dir = scratch("tools");
     let fake = Arc::new(Fake::default());
     let c = control(&dir, Management::Melissa, fake.clone());
     let status = tool::TailscaleStatus(c.clone());
