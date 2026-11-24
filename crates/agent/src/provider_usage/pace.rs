@@ -59,35 +59,33 @@ mod tests {
     const H: u64 = 3600;
 
     #[test]
-    fn halfway_through_a_window_expects_half_used() {
-        let p = pace(50.0, 1_000 + 5 * H / 2, 5 * H, 1_000).unwrap();
-        assert!((p.expected_pct - 50.0).abs() < 1e-9);
-        assert!(p.delta_pct.abs() < 1e-9);
-        assert_eq!(p.verdict, Verdict::On);
-    }
-
-    #[test]
-    fn using_more_than_the_time_passed_is_ahead() {
-        // A week, one day in, 40 % used: expected ~14.3 %.
-        let p = pace(40.0, 6 * 24 * H, 7 * 24 * H, 0).unwrap();
-        assert!((p.expected_pct - 100.0 / 7.0).abs() < 1e-9);
-        assert_eq!(p.verdict, Verdict::Ahead);
-        let p = pace(1.0, 6 * 24 * H, 7 * 24 * H, 0).unwrap();
-        assert_eq!(p.verdict, Verdict::Under);
-    }
-
-    #[test]
-    fn past_the_reset_or_before_the_start_stays_within_0_and_100() {
-        // The reset time has passed: the whole window has passed.
-        let p = pace(120.0, 100, 5 * H, 200).unwrap();
-        assert!((p.expected_pct - 100.0).abs() < 1e-9);
-        // A reset further away than the window is long (clock skew): nothing passed yet.
-        let p = pace(0.0, 10 * H, 5 * H, 0).unwrap();
-        assert!(p.expected_pct.abs() < 1e-9);
-    }
-
-    #[test]
-    fn no_pace_without_a_length_or_a_number() {
+    fn pace_compares_what_is_used_with_the_time_passed() {
+        let week = 7 * 24 * H;
+        for (used, resets_at, length, now, expected, verdict) in [
+            // Halfway through a window, half used.
+            (
+                50.0,
+                1_000 + 5 * H / 2,
+                5 * H,
+                1_000,
+                50.0,
+                Some(Verdict::On),
+            ),
+            // A week, one day in: expected about 14.3 %.
+            (40.0, 6 * 24 * H, week, 0, 100.0 / 7.0, Some(Verdict::Ahead)),
+            (1.0, 6 * 24 * H, week, 0, 100.0 / 7.0, Some(Verdict::Under)),
+            // The reset time has passed: the whole window has passed.
+            (120.0, 100, 5 * H, 200, 100.0, None),
+            // A reset further away than the window is long (clock skew): nothing passed yet.
+            (0.0, 10 * H, 5 * H, 0, 0.0, None),
+        ] {
+            let p = pace(used, resets_at, length, now).unwrap();
+            assert!((p.expected_pct - expected).abs() < 1e-9, "{used} at {now}");
+            if let Some(v) = verdict {
+                assert_eq!(p.verdict, v, "{used} at {now}");
+            }
+        }
+        // No pace without a length or a number.
         assert!(pace(10.0, 100, 0, 0).is_none());
         assert!(pace(f64::NAN, 100, H, 0).is_none());
     }

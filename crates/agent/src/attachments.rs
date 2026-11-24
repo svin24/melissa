@@ -352,13 +352,6 @@ pub fn gib_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn gib_sizes_are_binary_and_labelled_so() {
-        assert_eq!(gib_size(8 * 1024 * 1024 * 1024), "8.0 GiB");
-        // A "512 GB" disk: 509 GB in powers of ten, 474 GiB here.
-        assert_eq!(gib_size(509_000_000_000), "474 GiB");
-    }
-
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n";
 
@@ -602,10 +595,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Sizes are binary and labelled so: a "512 GB" disk (509 GB in powers of ten) is 474 GiB.
     #[test]
-    fn sizes_read_well() {
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(34 * 1024), "34 KiB");
-        assert_eq!(human_size(1_258_291), "1.2 MiB");
+    fn sizes_are_binary_units() {
+        for (size, want) in [
+            (human_size(512), "512 B"),
+            (human_size(34 * 1024), "34 KiB"),
+            (human_size(1_258_291), "1.2 MiB"),
+            (gib_size(8 * 1024 * 1024 * 1024), "8.0 GiB"),
+            (gib_size(509_000_000_000), "474 GiB"),
+        ] {
+            assert_eq!(size, want);
+        }
     }
 }

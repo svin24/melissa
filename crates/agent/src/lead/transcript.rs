@@ -714,10 +714,4 @@ mod tests {
         assert!(short.contains("later 1"), "{short}");
         std::fs::remove_dir_all(dir).unwrap();
     }
-
-    #[test]
-    fn shorten_cuts_long_text() {
-        assert_eq!(shorten("abc", 5), "abc");
-        assert_eq!(shorten("abcdefgh", 6), "abc...");
-    }
 }

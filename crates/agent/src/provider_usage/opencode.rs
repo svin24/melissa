@@ -156,28 +156,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A key without a subscription (403) or no answer at all: unavailable, with the reason.
     #[tokio::test]
-    async fn a_key_without_a_subscription_is_unavailable() {
-        let home = home_with("nosub", include_str!("fixtures/opencode_auth.json"));
-        let http = FakeHttp::default().answer(USAGE_URL, 403, "{}");
-        let err = fetch(&home, &http, 1).await.unwrap_err();
-        assert!(
-            matches!(err, Miss::Unavailable(ref r) if r.contains("no Go")),
-            "{err:?}"
-        );
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[tokio::test]
-    async fn a_network_failure_is_unavailable() {
-        let home = home_with("down", include_str!("fixtures/opencode_auth.json"));
-        let http =
-            FakeHttp::default().fail(USAGE_URL, crate::provider_usage::https::HttpError::Timeout);
-        let err = fetch(&home, &http, 1).await.unwrap_err();
-        assert!(
-            matches!(err, Miss::Unavailable(ref r) if r.contains("no answer")),
-            "{err:?}"
-        );
+    async fn no_subscription_or_no_answer_is_unavailable() {
+        let home = home_with("unavailable", include_str!("fixtures/opencode_auth.json"));
+        for (http, reason) in [
+            (FakeHttp::default().answer(USAGE_URL, 403, "{}"), "no Go"),
+            (
+                FakeHttp::default()
+                    .fail(USAGE_URL, crate::provider_usage::https::HttpError::Timeout),
+                "no answer",
+            ),
+        ] {
+            let err = fetch(&home, &http, 1).await.unwrap_err();
+            assert!(
+                matches!(err, Miss::Unavailable(ref r) if r.contains(reason)),
+                "{err:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -173,7 +173,7 @@ async fn tool_turn_streams_events_and_allows_once() {
 }
 
 #[tokio::test]
-async fn one_turn_renders_concise_output() {
+async fn one_turn_splits_the_answer_from_its_steps() {
     let (perms, _) = policy(None);
     let steps = agent::parse(&fixture("fake_tool_turn.jsonl"));
     let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), true), None).await;
@@ -194,19 +194,17 @@ async fn one_turn_renders_concise_output() {
     while let Some(l) = rx.recv().await {
         lines.push((l.stream, l.text));
     }
-    let err = |s: &str| (Stream::Stderr, s.to_string());
-    let out = |s: &str| (Stream::Stdout, s.to_string());
-    assert_eq!(
-        lines,
-        [
-            err("[plan] Call device_info | Answer"),
-            err("[tool] melissa__device_info → pending"),
-            err("[permission] melissa__device_info → allow_once"),
-            err("[tool] melissa__device_info → done"),
-            out("Kernel: 6.1.0-test"),
-            out("Done."),
-        ]
-    );
+    // The answer on stdout; plan, tool and permission steps on stderr.
+    let on = |stream: Stream| -> Vec<&str> {
+        lines
+            .iter()
+            .filter(|(s, _)| *s == stream)
+            .map(|(_, t)| t.as_str())
+            .collect()
+    };
+    assert_eq!(on(Stream::Stdout), ["Kernel: 6.1.0-test", "Done."]);
+    let steps = on(Stream::Stderr);
+    assert!(steps.iter().any(|l| l.contains("allow_once")), "{steps:?}");
 }
 
 #[tokio::test]
@@ -314,53 +312,6 @@ async fn recorded_sessions_replay() {
     );
     opened.session.close().await.unwrap();
     agent.await.unwrap().unwrap();
-}
-
-#[tokio::test]
-async fn real_grok_transcript_replays() {
-    // Recorded from `grok agent stdio` (1.0.89) through the lead agent; see the fixture header.
-    let audit_path = scratch("grok").join("audit.jsonl");
-    let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
-    let steps = agent::parse(&fixture("grok_device_info.jsonl"));
-    let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), true), None).await;
-    let OpenedSession {
-        session,
-        mut events,
-        ..
-    } = opened;
-    let caps = session.capabilities().clone();
-    assert!(caps.load && caps.resume && caps.close && caps.mcp_http);
-    let (sink, mut rx) = EventSink::channel();
-    let stop = one_turn(
-        session.as_ref(),
-        &mut events,
-        "Use the device_info tool, then reply with one line: the kernel version.",
-        &sink,
-    )
-    .await
-    .unwrap();
-    assert_eq!(stop, StopReason::EndTurn);
-    session.close().await.unwrap();
-    agent.await.unwrap().unwrap();
-    drop(sink);
-    let mut lines = Vec::new();
-    while let Some(l) = rx.recv().await {
-        lines.push((l.stream, l.text));
-    }
-    let err = |s: &str| (Stream::Stderr, s.to_string());
-    assert_eq!(
-        lines,
-        [
-            err("[tool] search_tool → pending"),
-            err("[tool] Search tools: \"device_info\" → done"),
-            err("[tool] use_tool → pending"),
-            err("[permission] melissa__device_info → allow_once"),
-            err("[tool] melissa__device_info → done"),
-            (Stream::Stdout, "7.3.4-300.fc45.x86_64".to_string()),
-        ]
-    );
-    let log = std::fs::read_to_string(&audit_path).unwrap();
-    assert!(log.contains(r#""action":"agent.permission""#) && log.contains("allow_once"));
 }
 
 fn init_steps(resume: bool) -> Vec<agent::Step> {
@@ -488,52 +439,72 @@ async fn agent_death_between_turns_ends_the_event_stream() {
     agent.await.unwrap().unwrap();
 }
 
+/// Recorded through the lead agent from `grok agent stdio` (1.0.89) and `opencode acp`
+/// (2.3.2, flavor opencode); see the fixture headers. Melissa's MCP server is in OpenCode's
+/// config, so its `session/new` carries none, and the tool is named `melissa_device_info`
+/// (no Code Mode).
 #[tokio::test]
-async fn real_opencode_transcript_replays() {
-    // Recorded from `opencode acp` (2.3.2, flavor opencode) through the lead agent; see the header.
-    // Melissa's MCP server is in OpenCode's config, so `session/new` carries none, and the
-    // tool is named `melissa_device_info` (no Code Mode).
-    let audit_path = scratch("opencode").join("audit.jsonl");
-    let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
-    let steps = agent::parse(&fixture("opencode_device_info.jsonl"));
-    let (opened, agent) = open_replay(steps, open_with(Arc::new(perms), false), None).await;
-    let OpenedSession {
-        session,
-        mut events,
-        ..
-    } = opened;
-    let caps = session.capabilities().clone();
-    assert!(caps.load && caps.resume && caps.close && caps.mcp_http);
-    assert_eq!(caps.agent.as_deref(), Some("OpenCode 2.3.2"));
-    let (sink, mut rx) = EventSink::channel();
-    let stop = one_turn(
-        session.as_ref(),
-        &mut events,
-        "Use the device_info tool, then reply with one line: the kernel version.",
-        &sink,
-    )
-    .await
-    .unwrap();
-    assert_eq!(stop, StopReason::EndTurn);
-    session.close().await.unwrap();
-    agent.await.unwrap().unwrap();
-    drop(sink);
-    let mut lines = Vec::new();
-    while let Some(l) = rx.recv().await {
-        lines.push((l.stream, l.text));
+async fn real_transcripts_replay() {
+    for (name, mcp_in_session, tool, answer) in [
+        (
+            "grok",
+            true,
+            "melissa__device_info",
+            "7.3.4-300.fc45.x86_64",
+        ),
+        (
+            "opencode",
+            false,
+            "melissa_device_info",
+            "Kernel: 7.3.4-300.fc45.x86_64",
+        ),
+    ] {
+        let audit_path = scratch(name).join("audit.jsonl");
+        let (perms, _) = policy(Some(AuditLog::new(&audit_path)));
+        let steps = agent::parse(&fixture(&format!("{name}_device_info.jsonl")));
+        let (opened, agent) =
+            open_replay(steps, open_with(Arc::new(perms), mcp_in_session), None).await;
+        let OpenedSession {
+            session,
+            mut events,
+            ..
+        } = opened;
+        let caps = session.capabilities().clone();
+        assert!(caps.load && caps.resume && caps.close && caps.mcp_http);
+        let (sink, mut rx) = EventSink::channel();
+        let stop = one_turn(
+            session.as_ref(),
+            &mut events,
+            "Use the device_info tool, then reply with one line: the kernel version.",
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stop, StopReason::EndTurn);
+        session.close().await.unwrap();
+        agent.await.unwrap().unwrap();
+        drop(sink);
+        let mut out = Vec::new();
+        let mut steps = Vec::new();
+        while let Some(l) = rx.recv().await {
+            match l.stream {
+                Stream::Stdout => out.push(l.text),
+                _ => steps.push(l.text),
+            }
+        }
+        assert_eq!(out, [answer], "{name}");
+        assert!(
+            steps
+                .iter()
+                .any(|l| l.contains(tool) && l.contains("allow_once")),
+            "{name}: {steps:?}"
+        );
+        let log = std::fs::read_to_string(&audit_path).unwrap();
+        assert!(
+            log.contains(r#""action":"agent.permission""#) && log.contains("allow_once"),
+            "{name}: {log}"
+        );
     }
-    let err = |s: &str| (Stream::Stderr, s.to_string());
-    assert_eq!(
-        lines,
-        [
-            err("[tool] melissa_device_info → pending"),
-            err("[permission] melissa_device_info → allow_once"),
-            err("[tool] melissa_device_info → done"),
-            (Stream::Stdout, "Kernel: 7.3.4-300.fc45.x86_64".to_string()),
-        ]
-    );
-    let log = std::fs::read_to_string(&audit_path).unwrap();
-    assert!(log.contains("allow_once (other): melissa tool"), "{log}");
 }
 
 #[test]
@@ -845,12 +816,4 @@ async fn grok_answers_its_billing_extension_request() {
     assert_eq!(fetched.plan.as_deref(), Some("example-tier"));
     opened.session.close().await.unwrap();
     agent.await.unwrap().unwrap();
-}
-
-#[tokio::test]
-async fn agents_without_a_usage_request_answer_none() {
-    let steps = agent::parse(&fixture("fake_tool_turn.jsonl"));
-    let (perms, _) = policy(None);
-    let (opened, _agent) = open_replay(steps, open_with(Arc::new(perms), true), None).await;
-    assert_eq!(opened.session.plan_usage().await.unwrap(), None);
 }

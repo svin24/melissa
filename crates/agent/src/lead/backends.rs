@@ -456,8 +456,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// An ACP agent reports reasoning levels and speeds only for the model its session uses.
     #[test]
-    fn reasoning_levels_seen_for_one_model_are_kept_when_another_is_used() {
+    fn what_one_model_reported_is_kept_when_another_is_used() {
         let cache = ModelCache::new();
         let level = |id: &str| crate::session::EffortOption {
             id: id.into(),
@@ -474,11 +475,8 @@ mod tests {
         assert!(got[0].offers_effort("high"));
         assert!(got[1].offers_effort("max"));
         assert!(!got[1].offers_effort("low"));
-    }
 
-    #[test]
-    fn a_speed_seen_for_one_model_is_kept_but_the_current_models_report_wins() {
-        let cache = ModelCache::new();
+        // Speeds the same way, but the current model's own report wins.
         // Session on `a`: it reports a fast mode.
         let mut first = list(&["a", "b"]);
         first.current = Some("a".into());

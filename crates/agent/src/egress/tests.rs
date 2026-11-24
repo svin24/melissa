@@ -422,7 +422,15 @@ fn scripts_from_the_nix_store_need_it() {
 }
 
 #[test]
-fn default_allowlists_parse() {
+fn default_allow_and_deny_lists_parse() {
+    // The deny lists (telemetry the CLIs would otherwise send) by the program's file name.
+    assert_eq!(default_deny("/opt/x/grok").len(), 2);
+    assert!(allowed(
+        &default_deny("claude"),
+        "http-intake.logs.us5.datadoghq.com",
+        443
+    ));
+    assert!(default_deny("custom-cli").is_empty());
     for cli in [
         "claude",
         "grok",
@@ -877,17 +885,6 @@ async fn background_hosts_and_web_reading_off() {
     assert!(r.contains("web reading is off"), "{r}");
     drop(lease);
     let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
-fn default_denylists_parse_and_lease_dirs_hold_the_dns_files() {
-    assert_eq!(default_deny("/opt/x/grok").len(), 2);
-    assert!(allowed(
-        &default_deny("claude"),
-        "http-intake.logs.us5.datadoghq.com",
-        443
-    ));
-    assert!(default_deny("custom-cli").is_empty());
 }
 
 #[tokio::test]

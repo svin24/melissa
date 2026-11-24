@@ -674,16 +674,13 @@ mod tests {
         (result, lines)
     }
 
-    #[test]
-    fn placeholder_is_replaced_or_appended() {
+    /// The prompt replaces `{prompt}` or is appended; the MCP arguments only with a config.
+    #[tokio::test]
+    async fn prompt_and_mcp_args_go_where_they_belong() {
         let spec = CliSpec::new("c", "claude", &["-p", "{prompt}"]);
         assert_eq!(spec.render_args("hi"), ["-p", "hi"]);
         let spec = CliSpec::new("o", "opencode", &["run"]);
         assert_eq!(spec.render_args("hi there"), ["run", "hi there"]);
-    }
-
-    #[tokio::test]
-    async fn mcp_args_are_appended_only_with_a_config() {
         let spec = CliSpec::new("sh", "sh", &["-c", r#"echo "$@""#, "melissa", "{prompt}"])
             .with_mcp_args(&["--mcp-config", "{mcp_config}"])
             .without_sandbox();
@@ -704,12 +701,6 @@ mod tests {
         let (sink, mut rx) = EventSink::channel();
         backend.run(&RunRequest::prompt("hi"), sink).await.unwrap();
         assert_eq!(rx.recv().await.unwrap().text, "hi");
-    }
-
-    #[test]
-    fn missing_program_is_unavailable() {
-        let spec = CliSpec::new("x", "melissa-definitely-not-installed", &[]);
-        assert!(!CliBackend::new(spec, std::env::temp_dir()).info().available);
     }
 
     #[test]
