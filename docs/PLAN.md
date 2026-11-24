@@ -954,6 +954,14 @@ Roadmap (rough, phases may overlap):
     image carries the third-party license notices. The same images serve updates: `AutoUpdate=registry` and
     Settings → Updates (check, apply, roll back) already handle registry images; `:latest` is the stable channel,
     `:nightly` the daily one. NixOS keeps updating through the flake.
+    Owner 2026-11-24: GitHub builds the updates; **stable releases only for now**, nightly researched for
+    later. Research and phased plan: `docs/design/RELEASES-AND-UPDATES-2026-11-24.md` (nothing built or
+    published). Findings: free on standard runners while the repo is public; most gates (escape suite, gVisor,
+    container smoke, NixOS VM test) look runnable on hosted runners; podman's `policy.json` can't check GitHub
+    keyless signatures (email-only identities, no cosign 3 bundles), so the proposal is an on-device verifier
+    from the running image, with the host helper (not `podman-auto-update`) applying registry updates. Open:
+    the 13 owner decisions in section 7 there (publishing yes, `:stable` vs `:latest`, gates, signing,
+    device network calls, NixOS path, arm64, nightly).
 51. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
     services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
     Consumer Terms. Is "the user installs the official CLI and logs in with their own account on their own box"
