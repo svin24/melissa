@@ -5864,7 +5864,7 @@ ol.steps > li::marker {
   padding: 0.85rem var(--space-4);
 }
 
-.details-section + .details-section {
+.details-section:not([hidden]) + .details-section {
   padding-top: var(--space-1);
 }
 
@@ -6358,6 +6358,202 @@ ol.steps > li::marker {
   .js .details[data-ready][data-open] {
     transition: none;
   }
+}
+
+/* --- Agent threads (2026-11-24, owner design "Agent threads"; components::threads) -------
+   An event line in the chat ("Messaged Ada"), the thread in the details panel's place, the
+   details' Conversations rows, the "from Ivy" mark. */
+
+/* The event line: the other agent's icon in the activity's mark column. */
+.event-line svg.event-icon {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+}
+
+.msg-event > .msg-head {
+  margin-bottom: var(--space-1);
+}
+
+/* "↳ from Ivy" in a message's head: muted, no weight. */
+.relayed-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.relayed-mark .glyph {
+  width: 14px;
+  height: 14px;
+}
+
+/* The thread replaces the details while it is open. */
+.details[data-view="thread"] > .details-view,
+.details:not([data-view]) > .thread-slot {
+  display: none;
+}
+
+.thread-head {
+  justify-content: flex-start;
+}
+
+.thread-head .thread-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0 auto 0 0;
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-heading);
+}
+
+.thread-party {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.thread-party > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-swap {
+  flex: none;
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+  color: var(--color-text-muted);
+}
+
+.thread-body {
+  padding: var(--space-3) var(--space-4) var(--space-5);
+}
+
+.thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.thread-day {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.thread-msg .msg-head {
+  margin-bottom: var(--space-1);
+}
+
+.thread-msg > .body {
+  margin-left: 28px;
+  font-size: var(--font-size-control-md);
+  overflow-wrap: anywhere;
+}
+
+/* Conversations: one card, a row per agent (icon, name over the last message, time, chevron). */
+.conversation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-sunken);
+}
+
+.conversation-list > li + li {
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+}
+
+.conversation-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto var(--size-icon-sm);
+  align-items: center;
+  column-gap: var(--space-3);
+  min-height: var(--size-row-lg);
+  padding: 0 var(--space-3);
+  color: inherit;
+  text-decoration: none;
+}
+
+.conversation-row:focus-visible {
+  outline-offset: calc(-1 * var(--focus-width));
+}
+
+.conversation-text {
+  display: grid;
+  min-width: 0;
+}
+
+.conversation-name {
+  font-size: var(--font-size-control-md);
+  font-weight: var(--font-weight-strong);
+}
+
+.conversation-last,
+.conversation-when {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.conversation-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-when {
+  font-variant-numeric: tabular-nums;
+}
+
+.row-forward {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+  color: var(--color-text-muted);
+}
+
+@media (hover: hover) {
+  .conversation-row {
+    transition: background-color var(--motion-duration-fast) var(--motion-ease-out);
+  }
+
+  .conversation-row:hover {
+    background: var(--row-bg-hover);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-row {
+    transition: none;
+  }
+}
+
+/* "You asked: “…”" on an approval card: a 2px rule, the label muted, two lines at most. */
+.approval-quote {
+  margin: var(--space-1) 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border-control);
+  font-size: var(--font-size-control-md);
+}
+
+.approval-quote p {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.approval-quote .quote-label {
+  color: var(--color-text-muted);
 }
 
 /* --- Provider logos (2026-11-20) ---------------------------------------------------------
@@ -6948,6 +7144,26 @@ ol.steps > li::marker {
   .details-close {
     border-radius: var(--radius-full);
     background: var(--color-bg-ground);
+  }
+
+  /* A thread in the sheet: its head as the details' (handle, [back,] title, close). The
+     close button takes a finger (44px; owner, 2026-11-24). */
+  .thread-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .thread-head:not(:has(.thread-back)) {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .thread-close {
+    min-width: var(--size-target-touch);
+    min-height: var(--size-target-touch);
+  }
+
+  /* A thread fills the sheet's height, as in the design (it reads like a page). */
+  .js .details[data-view="thread"] {
+    height: calc(100dvh - 2.5rem);
   }
 
   .js .details {

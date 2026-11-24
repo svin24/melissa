@@ -25,6 +25,7 @@ mod panel;
 mod settings;
 mod setup_password;
 mod state;
+mod threads;
 pub mod tokens;
 mod ui;
 mod usage;
@@ -595,6 +596,7 @@ mod tests {
         mod mobile;
         mod reset;
         mod setup;
+        mod threads;
         mod usage;
 
         /// A Lead agent backend whose session never finishes opening.
@@ -3342,7 +3344,7 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             assert!(page.contains("<html lang=\"en\" data-sidebar=\"collapsed\">"));
-            assert!(page.contains("tabindex=\"-1\" data-closed>"));
+            assert!(page.contains("aria-labelledby=\"details-h\" data-closed>"));
             assert!(!page.contains("data-sidebar-expand hidden"));
             assert!(page.contains("Pre-alpha."));
         }

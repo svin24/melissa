@@ -1020,6 +1020,10 @@ pub struct DetailsPanel<'a> {
     pub permissions: DetailPermissions<'a>,
     pub activity: &'a [ActivityLine],
     pub schedules: DetailSchedules<'a>,
+    /// The agents this one talked with (the owner's; empty for anyone else).
+    pub conversations: &'a [ConversationRow<'a>],
+    /// A thread open in the panel's place (a page opened with `?thread=`, without script).
+    pub thread: Option<&'a ThreadPanel<'a>>,
 }
 
 /// The Details button of a chat page (works with melissa.js; without script the panel is
@@ -1042,8 +1046,11 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
     html! {
         div.details-backdrop data-details-close hidden {}
         // Hidden on wide screens when this browser closed it (`looks`; phones ignore it).
-        aside.details id=(DETAILS_ID) aria-labelledby="details-h" tabindex="-1"
-            data-closed[crate::looks::current().details_closed] {
+        aside.details id=(DETAILS_ID) tabindex="-1"
+            aria-labelledby=(if p.thread.is_some() { "thread-h" } else { "details-h" })
+            data-view=[p.thread.is_some().then_some("thread")]
+            data-closed[crate::looks::current().details_closed && p.thread.is_none()] {
+            div.details-view {
             div.details-head {
                 (sheet_handle())
                 @if let Some(w) = who { (sheet_avatar(w)) }
@@ -1058,6 +1065,7 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
                     span.visually-hidden { "Hide details" }
                 }
             }
+            (detail_conversations(p.conversations, false))
             section.details-section aria-labelledby="details-apps-h" {
                 (detail_apps(&p.apps))
             }
@@ -1078,6 +1086,11 @@ pub fn details_panel(p: &DetailsPanel<'_>, who: Option<&SheetWho<'_>>) -> Markup
                     h3.details-label #details-schedules-h { "Schedules" }
                     (detail_schedules(&p.schedules))
                 }
+            }
+            }
+            // A thread opens here, in the panel's place (agent threads, 2026-11-24).
+            div.thread-slot id=(THREAD_SLOT_ID) {
+                @if let Some(t) = p.thread { (thread_panel(t)) }
             }
         }
     }
@@ -2379,6 +2392,11 @@ pub use usage::{
     UsageLine, UsageView, LOW_AT, NEARLY_GONE_AT, USAGE_CHECKED_ID, USAGE_PROVIDERS_ID,
     USAGE_VIEW_ID,
 };
+mod threads;
+pub use threads::{
+    detail_conversations, event_line, relayed_mark, thread_panel, ConversationRow, EventLine,
+    ThreadLink, ThreadMessage, ThreadPanel, DETAILS_CONVERSATIONS_ID, THREAD_SLOT_ID,
+};
 mod onboarding;
 pub use onboarding::{
     notice_link, setup_actions, setup_checklist, setup_page, setup_submit, suggestion_chips,
@@ -3043,8 +3061,44 @@ mod tests {
             no: "Decline",
             state,
             always: Some("Always let Ada update Minecraft?"),
+            quote: None,
         })
         .into_string()
+    }
+
+    #[test]
+    fn approval_cards_quote_the_owners_words_on_a_line_of_their_own() {
+        let card = |quote| {
+            permission_card(&PermissionCard {
+                id: 9,
+                target: "c-9",
+                title: "Let immich reach the internet?",
+                consequence: "immich can reach any internet address.",
+                reason: "agents can't change network access alone",
+                kind: "Network access",
+                detail: Some("Internet"),
+                destructive: false,
+                permanent: false,
+                yes: "Allow",
+                no: "Deny",
+                state: ApprovalState::Pending,
+                always: None,
+                quote,
+            })
+            .into_string()
+        };
+        let quoted = card(Some("Turn on the <map>"));
+        assert!(
+            quoted.contains(
+                "<blockquote class=\"approval-quote\"><p><span class=\"quote-label\">You asked:\
+                 </span> “Turn on the &lt;map&gt;”</p></blockquote>"
+            ),
+            "{quoted}"
+        );
+        assert!(
+            quoted.contains("<p class=\"consequence\">immich can reach any internet address.</p>")
+        );
+        assert!(!card(None).contains("You asked"));
     }
 
     #[test]

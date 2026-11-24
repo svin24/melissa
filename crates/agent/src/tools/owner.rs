@@ -8,8 +8,8 @@
 //! never agent text, a brokered message, a helper's report, a scheduled job's instruction or a
 //! tool result, so an agent cannot make one up by writing an id into its own output.
 //!
-//! Proof never replaces approval: a cited message is shown to whoever decides ("You asked:
-//! …", [`you_asked`]), and the owner still answers the confirmation.
+//! Proof never replaces approval: a cited message is shown to whoever decides (the approval
+//! card's "You asked: …" line, [`quote_words`]), and the owner still answers the confirmation.
 
 use serde::Serialize;
 
@@ -36,16 +36,16 @@ pub trait OwnerMessages: Send + Sync {
 /// Characters of the owner's message quoted on an approval card.
 pub const QUOTE_CHARS: usize = 160;
 
-/// The quote for an approval card: `You asked: “…”` (one line, shortened).
-pub fn you_asked(text: &str) -> String {
+/// The owner's words as an approval card quotes them (one line, shortened; the card adds
+/// "You asked:" and the quotation marks).
+pub fn quote_words(text: &str) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let quoted = if line.chars().count() > QUOTE_CHARS {
+    if line.chars().count() > QUOTE_CHARS {
         let cut: String = line.chars().take(QUOTE_CHARS - 1).collect();
         format!("{}…", cut.trim_end())
     } else {
         line
-    };
-    format!("You asked: “{quoted}”")
+    }
 }
 
 /// Is `id` shaped like an owner message id (`m-` and 12 lowercase hex digits)?
@@ -162,7 +162,7 @@ mod tests {
         };
         assert_eq!(
             c.owner_quote.as_deref(),
-            Some("You asked: “Let my monitoring app reach every app.”")
+            Some("Let my monitoring app reach every app.")
         );
         reg.confirmations().resolve(c.id, Verdict::Denied);
         assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
@@ -188,13 +188,13 @@ mod tests {
     #[test]
     fn quotes_are_one_shortened_line() {
         assert_eq!(
-            you_asked("let my\nmonitoring  app in"),
-            "You asked: “let my monitoring app in”"
+            quote_words("let my\nmonitoring  app in"),
+            "let my monitoring app in"
         );
         let long = "x".repeat(400);
-        let q = you_asked(&long);
-        assert!(q.ends_with("…”"), "{q}");
-        assert!(q.chars().count() < 200);
+        let q = quote_words(&long);
+        assert!(q.ends_with('…'), "{q}");
+        assert_eq!(q.chars().count(), QUOTE_CHARS);
     }
 
     #[test]

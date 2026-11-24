@@ -30,8 +30,9 @@ pub struct Confirmation {
     /// Only the user's own yes answers this one, for this one call: never an "Always allow"
     /// rule, never No permission prompts (an agent acting on another agent's workspace).
     pub user_only: bool,
-    /// The owner's own message the call cites as its reason, verified and quoted ("You
-    /// asked: …", see [`super::owner`]). Shown to whoever decides; it never decides.
+    /// The owner's own message the call cites as its reason, verified: their words, one
+    /// shortened line ([`super::owner::quote_words`]). Shown to whoever decides ("You asked:
+    /// …"); it never decides.
     pub owner_quote: Option<String>,
 }
 

@@ -1470,9 +1470,11 @@ Roadmap (rough, phases may overlap):
     (melissa has no sudo/su rights). (g) From source on a desktop the owner's own CLI credential files get an
     ACL entry per agent id; `MELISSA_AGENT_USERS=off` keeps them untouched. (h) The escape suite keeps its own
     id table, so on one host it can hand out the same ids as a dev server's agents.
-98. Agent-to-agent talk (2026-11-24, `ask_lead`, replies back, threads; DECISIONS): (a) the "<A> ⇄ <B>" thread view
-    and a dedicated "You asked: …" line on approval cards need designs (Penpot first); today the API has the
-    threads and the quote rides in the card's consequence line. (b) Threads outlive a deleted agent (they are a
+98. Agent-to-agent talk (2026-11-24, `ask_lead`, replies back, threads; DECISIONS): (a) done 2026-11-24 (owner
+    design "Agent threads": event lines, the thread panel, Conversations, the "You asked" line, the "New" divider).
+    Open from it: the thread panel doesn't update live while open (Conversations does); "New" is per browser
+    (cookie), not per person; old chats lose their "Passed a helper a message" step (no `AgentMessaged` event then).
+    (b) Threads outlive a deleted agent (they are a
     record, like the audit log): keep, or delete with the agent's chat? (c) The reply that comes back to the lead
     agent is the helper's whole reply of that turn, even "thanks": worth a filter, or rely on the prompt and the
     `MAX_AUTO_TURNS` cap? (d) A cited owner message proves what the owner asked, in any chat; should a citation be

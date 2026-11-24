@@ -48,11 +48,12 @@ use serde_json::{json, Value};
 use crate::{
     app_list::Looker,
     components::{
-        detail_activity_inner, detail_apps, detail_apps_inner, detail_permissions,
-        detail_permissions_inner, detail_schedules, detail_schedules_inner, oob_inner,
-        ActivityLine, DetailApp, DetailApps, DetailDevice, DetailPermissions, DetailRule,
-        DetailSchedule, DetailSchedules, DetailWaiting, DetailsPanel, FilePanel, Health, Tone,
-        DETAILS_ACTIVITY_ID, DETAILS_APPS_ID, DETAILS_PERMISSIONS_ID, DETAILS_SCHEDULES_ID,
+        detail_activity_inner, detail_apps, detail_apps_inner, detail_conversations,
+        detail_permissions, detail_permissions_inner, detail_schedules, detail_schedules_inner,
+        oob_inner, ActivityLine, Avatar, ConversationRow, DetailApp, DetailApps, DetailDevice,
+        DetailPermissions, DetailRule, DetailSchedule, DetailSchedules, DetailWaiting,
+        DetailsPanel, FilePanel, Health, ThreadLink, Tone, DETAILS_ACTIVITY_ID, DETAILS_APPS_ID,
+        DETAILS_PERMISSIONS_ID, DETAILS_SCHEDULES_ID,
     },
     feed::{approval_words, rule_words, Clock},
     files::PanelData,
@@ -60,6 +61,7 @@ use crate::{
     pages::{agent_href, disk_warning, entry_id},
     settings::agents::runs_on,
     state::{phase_words, Apps, ClusterSnapshot, Keeper},
+    threads::ConvData,
     ui::Ui,
 };
 
@@ -71,8 +73,18 @@ pub(crate) struct DetailsData {
 }
 
 impl DetailsData {
-    /// The panel, with `files` (from `self.files.view()`).
-    pub(crate) fn view<'a>(&'a self, files: &'a FilePanel<'a>) -> DetailsPanel<'a> {
+    /// The Conversations rows (borrow for [`DetailsData::view`]).
+    pub(crate) fn conversation_rows(&self) -> Vec<ConversationRow<'_>> {
+        conversation_rows(&self.live.conversations)
+    }
+
+    /// The panel, with `files` (from `self.files.view()`) and `rows` (from
+    /// [`DetailsData::conversation_rows`]).
+    pub(crate) fn view<'a>(
+        &'a self,
+        files: &'a FilePanel<'a>,
+        rows: &'a [ConversationRow<'a>],
+    ) -> DetailsPanel<'a> {
         let l = &self.live;
         DetailsPanel {
             apps: l.apps_view(&self.apps_url),
@@ -88,8 +100,29 @@ impl DetailsData {
                 available: l.schedules_on,
                 flash: None,
             },
+            conversations: rows,
+            thread: None,
         }
     }
+}
+
+/// Conversations rows from their owned data.
+fn conversation_rows(rows: &[ConvData]) -> Vec<ConversationRow<'_>> {
+    rows.iter()
+        .map(|r| ConversationRow {
+            avatar: match &r.icon {
+                Some((shape, color)) => Avatar::Agent { shape, color },
+                None => Avatar::Melissa,
+            },
+            name: &r.name,
+            last: &r.last,
+            when: &r.when,
+            link: ThreadLink {
+                href: &r.href,
+                fetch: &r.fetch,
+            },
+        })
+        .collect()
 }
 
 /// The parts of the details panel that change while it is open: its services (apps handed
@@ -106,6 +139,8 @@ pub(crate) struct DetailsLive {
     activity: Vec<ActivityLine>,
     schedules: Vec<DetailSchedule>,
     schedules_on: bool,
+    /// The agents this one talked with (agent threads; the owner's only).
+    conversations: Vec<ConvData>,
 }
 
 impl DetailsLive {
@@ -137,6 +172,9 @@ pub(crate) fn details_update(old: &DetailsLive, new: &DetailsLive) -> Markup {
         }
         @if old.activity != new.activity {
             (oob_inner(DETAILS_ACTIVITY_ID, detail_activity_inner(&new.activity)))
+        }
+        @if old.conversations != new.conversations {
+            (detail_conversations(&conversation_rows(&new.conversations), true))
         }
         @if (&old.schedules, old.schedules_on) != (&new.schedules, new.schedules_on) {
             (oob_inner(DETAILS_SCHEDULES_ID, detail_schedules_inner(&DetailSchedules {
@@ -393,6 +431,7 @@ impl Ui {
             activity,
             schedules,
             schedules_on,
+            conversations: self.conversations_of(owner, looker.owner),
         }
     }
 

@@ -271,6 +271,9 @@ impl Printer {
             LeadEvent::AgentStarted { name, goal, .. } => {
                 self.line(&format!("[agent {name}] job: {}", one_line(goal)));
             }
+            LeadEvent::AgentMessaged { name, .. } => {
+                self.line(&format!("[agent {name}] messaged"));
+            }
             LeadEvent::AgentFinished {
                 name,
                 status,

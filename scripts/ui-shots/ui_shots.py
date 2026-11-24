@@ -230,12 +230,42 @@ def scroll_chat_top(page):
     page.wait_for_timeout(200)
 
 
+def show_new(page):
+    """Melissa's chat at its "New" divider (agent threads)."""
+    present(page, page.locator(".unread-divider"), "New divider").scroll_into_view_if_needed()
+    page.evaluate("""() => document.querySelector('.unread-divider')
+      .scrollIntoView({block: 'center'})""")
+    page.wait_for_timeout(150)
+
+
+def open_thread(page):
+    """Click the first event line ("Messaged Backup"): its thread opens in the panel's place."""
+    show_new(page)
+    page.wait_for_timeout(1000)  # the chat's stream settles first (it may swap the panel)
+    present(page, page.locator("a[data-thread-open]"), "event line").click()
+    page.locator("#thread-slot .thread-view").wait_for()
+    page.wait_for_timeout(250)
+
+
+def open_conversation(page):
+    """The details' Conversations, then its first row."""
+    open_details(page)
+    page.wait_for_timeout(1000)  # the chat's stream settles first (it may swap the panel)
+    present(page, page.locator(".conversation-row"), "conversation row").click()
+    page.locator("#thread-slot .thread-view").wait_for()
+    page.wait_for_timeout(250)
+
+
 def screens(helper, quiet):
     """(name, path, action or None). `helper` and `quiet` are helper ids."""
     s = [
         ("chat-melissa", "/", None),
         ("chat-melissa-top", "/", scroll_chat_top),
         ("chat-helper", f"/agents/{helper}", None),
+        ("threads-chat-new", "/chat", show_new),
+        ("threads-panel", "/chat", open_thread),
+        ("threads-details", "/chat", open_details),
+        ("threads-from-details", "/chat", open_conversation),
         ("chat-empty", f"/agents/{quiet}", None),
         ("sidebar-collapsed", "/", click("[data-sidebar-collapse]")),
         ("details-panel", f"/agents/{helper}", open_details),
@@ -491,6 +521,20 @@ class Shooter:
         page.locator("button.model-chip").click()
         page.locator("#model-picker").get_by_text("Shots Small").first.click()
         page.wait_for_timeout(500)
+        # Melissa messages Backup (agent threads): the browser saw the chat up to Melissa's
+        # "I'll tell you…" (saved, so every shot shows the "New" divider before the answer).
+        page.goto(base + "/chat")
+        self.send(page, "Is last night's photo backup done?")
+        page.get_by_text("tell you when Backup replies").first.wait_for()
+        page.wait_for_timeout(300)
+        ctx.storage_state(path=str(state_file))
+        ctx.close()
+        ctx = self.context(browser, 1440, "dark", str(state_file))
+        page = ctx.new_page()
+        # Wait for the answer elsewhere (the helper's chat), not in Melissa's.
+        page.goto(base + f"/agents/{srv.helper_id('Backup')}")
+        page.get_by_text("Finished at 02:10").first.wait_for(timeout=15000)
+        page.wait_for_timeout(1500)
         # Melissa: steps and a Markdown reply, then a permission card that keeps the turn
         # running, then a queued message.
         page.goto(base + "/")

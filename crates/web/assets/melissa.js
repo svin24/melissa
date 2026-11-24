@@ -490,7 +490,41 @@
       return;
     }
     stickToBottom = nearBottom();
+    // The chat showed this event: nothing up to it is new any more.
+    var chat = seenChat();
+    if (chat && e.detail && /^\d+-\d+$/.test(e.detail.lastEventId || "")) {
+      markSeen(chat.key, e.detail.lastEventId);
+    }
   });
+
+  // --- The chat's "New" divider (2026-11-24): this browser remembers the last event it showed
+  // of each chat (cookie `melissa_seen`, `<chat>~<epoch>-<seq>` joined by "|"); the server puts
+  // the divider before the first newer message (web looks.rs). Without script: no divider.
+
+  // The chat on this page and where its page left off: {key, at} (not the approvals list).
+  function seenChat() {
+    var wrap = document.querySelector(".feed-wrap[sse-connect]");
+    if (!wrap || !wrap.querySelector("#feed")) {
+      return null;
+    }
+    var url = wrap.getAttribute("sse-connect") || "";
+    var agent = url.match(/^\/ui\/agents\/([a-z0-9.-]+)\/stream\?/);
+    var key = agent ? agent[1] : url.indexOf("/ui/stream?") === 0 ? "lead" : null;
+    var since = url.match(/[?&]since=(\d+)/);
+    var epoch = url.match(/[?&]epoch=(\d+)/);
+    return key && since && epoch ? { key: key, at: epoch[1] + "-" + since[1] } : null;
+  }
+
+  function markSeen(key, at) {
+    var m = document.cookie.match(/(?:^|;\s*)melissa_seen=([^;]*)/);
+    var items = (m ? m[1].split("|") : []).filter(function (item) {
+      return item && item.split("~")[0] !== key;
+    });
+    items.unshift(key + "~" + at);
+    var secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie =
+      "melissa_seen=" + items.slice(0, 40).join("|") + "; Path=/; SameSite=Lax; Max-Age=31536000" + secure;
+  }
 
   document.addEventListener("htmx:sseMessage", function () {
     if (stickToBottom && document.getElementById("feed")) {
@@ -1187,6 +1221,9 @@
     if (!p) {
       return;
     }
+    if (!open) {
+      showThread(p, false);
+    }
     var wide = isWide();
     // The phone's agent list hides the chat and its sheet: then nothing is covered.
     var main = p.panel.closest("main");
@@ -1237,6 +1274,46 @@
     showDetails(open, focus);
   }
 
+  // --- Agent threads (2026-11-24): an event line ("Messaged Ada") or a Conversations row loads
+  // the thread into the details panel's place (htmx, `#thread-slot`); it opens the panel
+  // without changing what this browser remembers. Back shows the details again; Close puts the
+  // panel back as it was before. Without script the links open the chat page with the thread.
+  var threadWasOpen = null;
+
+  function showThread(p, on) {
+    if (on) {
+      p.panel.setAttribute("data-view", "thread");
+      p.panel.setAttribute("aria-labelledby", "thread-h");
+      return;
+    }
+    if (!p.panel.hasAttribute("data-view")) {
+      return;
+    }
+    p.panel.removeAttribute("data-view");
+    p.panel.setAttribute("aria-labelledby", "details-h");
+    var slot = document.getElementById("thread-slot");
+    if (slot) {
+      slot.textContent = "";
+    }
+  }
+
+  document.addEventListener("htmx:afterSwap", function (e) {
+    var target = e.detail && e.detail.target;
+    if (!target || target.id !== "thread-slot") {
+      return;
+    }
+    var p = detailsParts();
+    if (!p) {
+      return;
+    }
+    if (!p.panel.hasAttribute("data-view")) {
+      threadWasOpen = detailsOpen();
+    }
+    showThread(p, true);
+    showDetails(true, true);
+    p.panel.scrollTop = 0;
+  });
+
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (!(t instanceof Element)) {
@@ -1248,6 +1325,24 @@
     }
     if (t.closest("[data-details-close]")) {
       setDetails(false, true);
+      return;
+    }
+    var p = detailsParts();
+    if (p && t.closest("[data-thread-back]")) {
+      e.preventDefault();
+      showThread(p, false);
+      p.panel.focus();
+      return;
+    }
+    if (p && t.closest("[data-thread-close]")) {
+      e.preventDefault();
+      var was = threadWasOpen === null ? storedOpen(isWide()) : threadWasOpen;
+      threadWasOpen = null;
+      showThread(p, false);
+      showDetails(was, !was);
+      if (was) {
+        p.panel.focus();
+      }
       return;
     }
     // Review: to the permission card in the chat; on narrow screens the sheet steps aside.
@@ -1285,7 +1380,10 @@
     if (!p) {
       return;
     }
-    showDetails(storedOpen(isWide()), false);
+    // A page opened with a thread (`?thread=`) shows it; Close puts the panel back as stored.
+    var thread = p.panel.hasAttribute("data-view");
+    threadWasOpen = thread ? storedOpen(isWide()) : null;
+    showDetails(thread || storedOpen(isWide()), false);
     // Slide from now on (not while the page settles).
     window.requestAnimationFrame(function () {
       window.requestAnimationFrame(function () {
@@ -2369,6 +2467,10 @@
     grow(composer());
     showVoice();
     initDetails();
+    var chat = seenChat();
+    if (chat) {
+      markSeen(chat.key, chat.at);
+    }
     restoreDraft();
     var to = hash ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
     var feed = document.getElementById("feed");

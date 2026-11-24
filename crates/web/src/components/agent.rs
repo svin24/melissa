@@ -533,7 +533,7 @@ pub struct MessageHead<'a> {
     pub time: &'a str,
 }
 
-fn message_head(h: &MessageHead<'_>) -> Markup {
+pub(super) fn message_head(h: &MessageHead<'_>) -> Markup {
     html! {
         div.msg-head {
             (avatar(&h.avatar, "av-sm"))
@@ -739,6 +739,8 @@ pub struct PermissionCard<'a> {
     pub state: ApprovalState,
     /// The "Always allow" question (the rule it saves); None: no such button.
     pub always: Option<&'a str>,
+    /// The owner's own words the request cites, verified by Melissa: a "You asked: …" line.
+    pub quote: Option<&'a str>,
 }
 
 /// The card: a warning mark and the question, what happens and why Melissa asks, the tag line,
@@ -759,6 +761,12 @@ pub fn permission_card(c: &PermissionCard<'_>) -> Markup {
                 h3 #{ "ap-" (c.id) } { (c.title) }
             }
             p.consequence { (c.consequence) }
+            @if let Some(q) = c.quote {
+                // A 2px rule, then "You asked:" (muted) and the owner's words, two lines at most.
+                blockquote.approval-quote {
+                    p { span.quote-label { "You asked:" } " “" (q) "”" }
+                }
+            }
             @if c.permanent && c.state == ApprovalState::Pending {
                 p.permanent { "Can't be undone." }
             }

@@ -488,7 +488,7 @@ impl Ui {
 const RECENT_LINES: usize = 6;
 
 /// Tools whose outcome has an event of its own in the log (and its own activity line).
-const OWN_LINES: [&str; 2] = ["reassign_workspace", "delete_agent"];
+const OWN_LINES: [&str; 3] = ["reassign_workspace", "delete_agent", "message_agent"];
 
 /// The notable events of a conversation as (time, words, attention).
 pub(crate) fn activity_from(
@@ -520,6 +520,19 @@ pub(crate) fn activity_from(
             }
             LeadEvent::AgentDeleted { name, .. } => {
                 Some((format!("Deleted helper: {name}"), false))
+            }
+            LeadEvent::AgentMessaged { agent, name } => {
+                let name = look.agent_name(agent).unwrap_or_else(|| name.clone());
+                Some((format!("Messaged {name}"), false))
+            }
+            LeadEvent::HelperReport {
+                agent,
+                name,
+                message: Some(_),
+                ..
+            } => {
+                let name = look.agent_name(agent).unwrap_or_else(|| name.clone());
+                Some((format!("Message from {name}"), false))
             }
             LeadEvent::ConfirmationNeeded {
                 id, tool, reason, ..

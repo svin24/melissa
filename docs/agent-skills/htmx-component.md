@@ -41,7 +41,18 @@ groups `shape`/`color`, `#agent-icon`), `chat_head` (`header.chat-head`: show-ag
 name" with the `h1`, `#chat-status` with `status_pill`, the menu as `#menu-head`, `details_toggle`),
 `agent_message` (`MessageHead`: icon, name, time on a turn's first item), `steps_card` (`StepLine`s: mark, words,
 state on the right; a thought opens to its text), `permission_card` (warning mark and question, consequence,
-"Asked because", the `approval-tag` line, verb/Decline/quiet Always allow and "Waiting for your decision").
+"Asked because", the `approval-tag` line, verb/Decline/quiet Always allow and "Waiting for your decision"; a
+cited owner message is its own `blockquote.approval-quote` line under the consequence: "You asked: “…”", 2 lines).
+Agent threads (2026-11-24, owner design "Agent threads"; `components/threads.rs`, owner-only like `/api/threads`):
+`event_line` (`div.msg.msg-event`: the turn's head, then an `.activity.event-line` with the *other* agent's icon and
+"Messaged Ada" / "Message from Melissa", a link `?thread=<helper>` with `hx-get=/ui/threads/<helper>?in=<chat>`
+into `#thread-slot`; plain words for anyone else), `thread_panel` (`div.thread-view` in `#thread-slot`, the
+details panel's place: `aside[data-view=thread]` hides `.details-view`; head "Melissa ⇄ Ada" with back from
+Conversations and close; messages oldest first with day marks; read-only), `relayed_mark` ("↳ from Ivy"),
+`detail_conversations` (`section#details-conversations`, first in the details, hidden when empty, replaced out of
+band by the stream). melissa.js opens the panel when a thread lands in the slot (without storing the open state),
+Back shows the details, Close restores the panel as it was. The chat's "New" divider is `chat_divider("New")`
+before `Feed::first_unread` (cookie `melissa_seen`, written by melissa.js on load and per stream event; `looks.rs`).
 Phone views (2026-11-20, owner design "Melissa — Mobile"; `components/mobile.rs`, CSS between the "Phone views"
 markers at the end of melissa.css, JS in the "Phone views" section of melissa.js): `phone_view(PhoneView::List)`
 (a hidden `[data-phone-view=list]` in `main`; `pages::as_phone_home` sets it for `/` without `draft`/`all`; CSS
