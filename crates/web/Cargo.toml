@@ -21,6 +21,8 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 jiff = { workspace = true }
 tokio = { workspace = true }
+# Replays an action held for the password through the app (`auth::pending`); axum uses it.
+tower = { workspace = true }
 tracing = { workspace = true }
 
 [features]
@@ -33,7 +35,6 @@ fake-usage = []
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-tower = { workspace = true }
 
 [lints]
 workspace = true
