@@ -179,8 +179,7 @@ mod tests {
     #[test]
     fn the_device_identity_is_made_once_and_kept() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("melissa-device-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("device");
         let path = dir.join("device.json");
         let a = DeviceIdentity::load_or_create(&path).unwrap();
         assert!(valid_device_id(&a.id), "{}", a.id);

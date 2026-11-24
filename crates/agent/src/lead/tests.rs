@@ -17,6 +17,7 @@ use super::{
     transcript::Transcript,
     Lead, LeadError, LeadSettings,
 };
+use crate::test_support::scratch;
 use crate::{
     acp::{
         client::{self, StderrTail},
@@ -25,10 +26,10 @@ use crate::{
     },
     mcp::McpServer,
     session::{OpenSession, OpenedSession, SessionBackend},
+    test_support::TestTool,
     tools::{
         permissions::Principal, Access, DeviceInfo, Effect, Labels, Owner, ResourceKind,
-        ResourceOwners, Target, Tool, ToolError, ToolRegistry, ToolSpec, Verdict, WorkspaceInfo,
-        WorkspaceStore,
+        ResourceOwners, Target, Tool, ToolRegistry, Verdict, WorkspaceInfo, WorkspaceStore,
     },
     AgentError, AuditLog, BackendInfo, BoxFuture, EchoBackend, McpLink, TaskBoard,
 };
@@ -224,53 +225,6 @@ impl crate::session::AgentSession for Steerable {
     }
 }
 
-/// A tool that reads untrusted content (taints the task), like the real `app_logs`; the
-/// Lead agent in some tests is not allowed to use it.
-struct AppLogs;
-impl Tool for AppLogs {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "app_logs",
-            description: "test",
-            labels: Labels {
-                reads_untrusted: true,
-                ..Labels::READ_ONLY
-            },
-            params: json!({"type": "object"}),
-        }
-    }
-    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async { Ok(json!("logs")) })
-    }
-}
-
-/// A destructive tool on a workspace (like `uninstall_app`).
-struct Uninstall;
-impl Tool for Uninstall {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "uninstall_app",
-            description: "test",
-            labels: Labels {
-                effect: Effect::Destructive,
-                ..Labels::READ_ONLY
-            },
-            params: json!({"type": "object", "properties": {"app": {"type": "string"}}}),
-        }
-    }
-    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async move { Ok(json!({"uninstalled": args["app"]})) })
-    }
-    fn target(&self) -> Option<Target> {
-        Some(Target {
-            kind: ResourceKind::Workspace,
-            arg: "app",
-            access: Access::Change,
-            verb: "uninstall",
-        })
-    }
-}
-
 /// Workspaces in memory: `old` is unassigned (from before agents); tests give others to agents.
 #[derive(Default)]
 struct FakeWorkspaces {
@@ -408,13 +362,6 @@ impl Setup {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("melissa-server-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 /// A Lead agent with tools `device_info`, `app_logs`, `uninstall_app` and the agent tools, a replay
 /// backend `fake-acp` playing `scripts` (one per lead agent session) and `agent-acp` playing
 /// `agent_scripts` (one per agent session).
@@ -438,8 +385,26 @@ fn setup_full(
     );
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(DeviceInfo::new()),
-        Arc::new(AppLogs),
-        Arc::new(Uninstall),
+        // Reads untrusted content (taints the task), like the real `app_logs`.
+        TestTool::new("app_logs")
+            .labels(Labels {
+                reads_untrusted: true,
+                ..Labels::READ_ONLY
+            })
+            .reply(|_| json!("logs"))
+            .arc(),
+        // A destructive tool on a workspace, like `uninstall_app`.
+        TestTool::new("uninstall_app")
+            .effect(Effect::Destructive)
+            .params(json!({"type": "object", "properties": {"app": {"type": "string"}}}))
+            .target(Target {
+                kind: ResourceKind::Workspace,
+                arg: "app",
+                access: Access::Change,
+                verb: "uninstall",
+            })
+            .reply(|args| json!({"uninstalled": args["app"]}))
+            .arc(),
     ];
     tools.extend(pool.tools());
     let audit = AuditLog::new(dir.join("audit.jsonl"));

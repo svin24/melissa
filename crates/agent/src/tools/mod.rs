@@ -977,44 +977,13 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    struct Fake {
-        name: &'static str,
-        labels: Labels,
-    }
-    impl Tool for Fake {
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: self.name,
-                description: "test",
-                labels: self.labels,
-                params: json!({"type": "object"}),
-            }
-        }
-        fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-            Box::pin(async move { Ok(json!({"echo": args})) })
-        }
-    }
-
-    /// Answers with the person the call acts for.
-    struct Whose;
-    impl Tool for Whose {
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: "whose",
-                description: "test",
-                labels: Labels::READ_ONLY,
-                params: json!({"type": "object"}),
-            }
-        }
-        fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-            Box::pin(async move { Ok(json!(crate::audit::requester())) })
-        }
-    }
+    use crate::test_support::TestTool;
 
     #[tokio::test]
     async fn a_call_acts_for_the_person_whose_message_started_the_turn() {
-        let reg = ToolRegistry::new(vec![Arc::new(Whose)], None);
+        // Answers with the person the call acts for.
+        let whose = TestTool::new("whose").reply(|_| json!(crate::audit::requester()));
+        let reg = ToolRegistry::new(vec![whose.arc()], None);
         let mut ctx = TaskContext::default();
         assert_eq!(
             reg.call(1, &mut ctx, "whose", json!({})).await.unwrap(),
@@ -1035,33 +1004,18 @@ mod tests {
 
     fn registry(audit: Option<AuditLog>) -> ToolRegistry {
         ToolRegistry::new(
-            vec![
-                Arc::new(Fake {
-                    name: "status",
-                    labels: Labels::READ_ONLY,
+            [
+                TestTool::new("status"),
+                TestTool::new("read_logs").labels(Labels {
+                    reads_untrusted: true,
+                    ..Labels::READ_ONLY
                 }),
-                Arc::new(Fake {
-                    name: "read_logs",
-                    labels: Labels {
-                        reads_untrusted: true,
-                        ..Labels::READ_ONLY
-                    },
-                }),
-                Arc::new(Fake {
-                    name: "remove_app",
-                    labels: Labels {
-                        effect: Effect::Destructive,
-                        ..Labels::READ_ONLY
-                    },
-                }),
-                Arc::new(Fake {
-                    name: "scale",
-                    labels: Labels {
-                        effect: Effect::Reversible,
-                        ..Labels::READ_ONLY
-                    },
-                }),
-            ],
+                TestTool::new("remove_app").effect(Effect::Destructive),
+                TestTool::new("scale").effect(Effect::Reversible),
+            ]
+            .into_iter()
+            .map(|t| t.reply(|args| json!({"echo": args})).arc())
+            .collect(),
             audit,
         )
     }
@@ -1182,27 +1136,10 @@ mod tests {
         );
     }
 
-    struct LeadOnly;
-    impl Tool for LeadOnly {
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: "start_agent",
-                description: "test",
-                labels: Labels::READ_ONLY,
-                params: json!({"type": "object"}),
-            }
-        }
-        fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-            Box::pin(async { Ok(json!("started")) })
-        }
-        fn lead_only(&self) -> bool {
-            true
-        }
-    }
-
     #[tokio::test]
     async fn lead_only_tools_need_delegation() {
-        let reg = ToolRegistry::new(vec![Arc::new(LeadOnly)], None);
+        let start = TestTool::new("start_agent").lead_only();
+        let reg = ToolRegistry::new(vec![start.reply(|_| json!("started")).arc()], None);
         let mut agent = attended();
         assert!(reg.visible_to(&agent, None).is_empty());
         assert_eq!(

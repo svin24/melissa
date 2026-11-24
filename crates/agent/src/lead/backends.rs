@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn model_cache_survives_a_restart() {
-        let dir = std::env::temp_dir().join(format!("melissa-models-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("models");
         let path = dir.join("models.json");
         let cache = ModelCache::open(path.clone());
         assert_eq!(cache.get("claude-session"), None);
@@ -563,7 +563,7 @@ mod tests {
 
     #[tokio::test]
     async fn probes_fill_the_cache_without_a_prompt_and_are_rate_limited() {
-        let dir = std::env::temp_dir().join(format!("melissa-probe-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("probe");
         let cache = ModelCache::open(dir.join("models.json"));
         let claude = Arc::new(Probed::new(
             "claude-session",
@@ -618,7 +618,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_probe_that_hangs_times_out() {
-        let dir = std::env::temp_dir().join(format!("melissa-probe-t-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("probe-t");
         let mut stuck = Probed::new("grok-acp", Some(list(&["a"])));
         stuck.hang = true;
         let limit = Duration::from_millis(50);
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn the_older_model_file_still_reads() {
-        let dir = std::env::temp_dir().join(format!("melissa-models-old-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("models-old");
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("models.json");
         std::fs::write(&path, r#"{"grok-acp": [{"id": "g", "label": "G"}]}"#).ok();
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn choice_round_trips_and_bad_files_are_ignored() {
-        let dir = std::env::temp_dir().join(format!("melissa-choice-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("choice");
         let path = dir.join("backend.json");
         assert_eq!(load_choice(&path), None);
         let c = BackendChoice {

@@ -5,55 +5,32 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::BoxFuture;
+use crate::test_support::scratch;
+use crate::test_support::TestTool;
 
 const ADA: &str = "d-0a1b2c3d.a1";
 const BO: &str = "d-0a1b2c3d.a2";
 
 /// A tool on a workspace (`app`) that always needs a yes (like `update_app`).
-struct Update;
-impl Tool for Update {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "update_app",
-            description: "test",
-            labels: Labels {
-                effect: Effect::Deploy,
-                ..Labels::READ_ONLY
-            },
-            params: json!({"type": "object"}),
-        }
-    }
-    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async { Ok(json!("updated")) })
-    }
-    fn target(&self) -> Option<Target> {
-        Some(Target {
+fn update() -> Arc<dyn Tool> {
+    TestTool::new("update_app")
+        .effect(Effect::Deploy)
+        .target(Target {
             kind: ResourceKind::Workspace,
             arg: "app",
             access: Access::Change,
             verb: "update",
         })
-    }
+        .reply(|_| json!("updated"))
+        .arc()
 }
 
 /// A tool without a target that needs a yes while nobody watches (reversible).
-struct Restart;
-impl Tool for Restart {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "restart",
-            description: "test",
-            labels: Labels {
-                effect: Effect::Reversible,
-                ..Labels::READ_ONLY
-            },
-            params: json!({"type": "object"}),
-        }
-    }
-    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async { Ok(json!("restarted")) })
-    }
+fn restart() -> Arc<dyn Tool> {
+    TestTool::new("restart")
+        .effect(Effect::Reversible)
+        .reply(|_| json!("restarted"))
+        .arc()
 }
 
 /// minecraft and nextcloud are Ada's, valheim is Bo's.
@@ -70,7 +47,7 @@ impl ResourceOwners for Owners {
 }
 
 fn registry(audit: Option<AuditLog>, permissions: Permissions) -> ToolRegistry {
-    ToolRegistry::new(vec![Arc::new(Update), Arc::new(Restart)], audit)
+    ToolRegistry::new(vec![update(), restart()], audit)
         .with_owners(Arc::new(Owners(BTreeMap::from([
             ("minecraft", ADA),
             ("nextcloud", ADA),
@@ -138,20 +115,9 @@ fn audit_lines(path: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
-fn temp(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "melissa-perm-{name}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 #[tokio::test]
 async fn always_allow_saves_a_narrow_rule_and_later_calls_skip_the_prompt() {
-    let dir = temp("rule");
+    let dir = scratch("rule");
     let log = dir.join("audit.jsonl");
     let reg = registry(Some(AuditLog::new(&log)), Permissions::in_memory());
     let first = spawn(&reg, 1, ADA, "update_app", json!({"app": "minecraft"}));
@@ -276,7 +242,7 @@ async fn a_rename_keeps_the_rule() {
 
 #[tokio::test]
 async fn a_new_rule_approves_matching_pending_requests_only() {
-    let dir = temp("pending");
+    let dir = scratch("pending");
     let log = dir.join("audit.jsonl");
     let reg = registry(Some(AuditLog::new(&log)), Permissions::in_memory());
     let a = spawn(&reg, 1, ADA, "update_app", json!({"app": "minecraft"}));
@@ -320,7 +286,7 @@ async fn a_new_rule_approves_matching_pending_requests_only() {
 
 #[tokio::test]
 async fn bypass_approves_everything_pending_and_new_and_audits_it() {
-    let dir = temp("bypass");
+    let dir = scratch("bypass");
     let log = dir.join("audit.jsonl");
     let reg = registry(Some(AuditLog::new(&log)), Permissions::in_memory());
     let a = spawn(&reg, 1, ADA, "update_app", json!({"app": "minecraft"}));
@@ -403,7 +369,7 @@ async fn only_the_owner_makes_rules() {
 
 #[tokio::test]
 async fn rules_and_bypass_survive_a_restart() {
-    let dir = temp("restart");
+    let dir = scratch("restart");
     let path = dir.join("permissions.json");
     {
         let reg = registry(None, Permissions::open(&path).unwrap());
@@ -427,7 +393,7 @@ async fn rules_and_bypass_survive_a_restart() {
 
 #[tokio::test]
 async fn refusals_with_an_owner_are_audited_with_both_sides() {
-    let dir = temp("cross-refused");
+    let dir = scratch("cross-refused");
     let path = dir.join("audit.jsonl");
     let reg = registry(Some(AuditLog::new(&path)), Permissions::in_memory());
     reg.set_bypass(true).unwrap();
@@ -454,57 +420,25 @@ async fn refusals_with_an_owner_are_audited_with_both_sides() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A tool only the owner may approve, every time (like `schedule_job`).
-struct Plan;
-impl Tool for Plan {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "plan",
-            description: "test",
-            labels: Labels::READ_ONLY,
-            params: json!({"type": "object"}),
-        }
-    }
-    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async { Ok(json!("planned")) })
-    }
-    fn owner_approval(&self, _: &TaskContext, _: &Value) -> Result<Option<String>, ToolError> {
-        Ok(Some("a standing order".into()))
-    }
-}
-
-/// An owner-only tool that the label policy asks for (like `delete_agent`).
-struct Remove;
-impl Tool for Remove {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "remove",
-            description: "test",
-            labels: Labels {
-                effect: Effect::Destructive,
-                ..Labels::READ_ONLY
-            },
-            params: json!({"type": "object"}),
-        }
-    }
-    fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-        Box::pin(async { Ok(json!("removed")) })
-    }
-    fn owner_only(&self) -> bool {
-        true
-    }
-}
-
 #[tokio::test]
 async fn full_access_approves_only_the_agents_own_confirmations_and_audits_them() {
-    let dir = temp("full");
+    let dir = scratch("full");
     let log = dir.join("audit.jsonl");
     let reg = ToolRegistry::new(
         vec![
-            Arc::new(Update),
-            Arc::new(Restart),
-            Arc::new(Plan),
-            Arc::new(Remove),
+            update(),
+            restart(),
+            // Only the owner may approve, every time (like `schedule_job`).
+            TestTool::new("plan")
+                .owner_approval("a standing order")
+                .reply(|_| json!("planned"))
+                .arc(),
+            // Owner-only, and the label policy asks (like `delete_agent`).
+            TestTool::new("remove")
+                .effect(Effect::Destructive)
+                .owner_only()
+                .reply(|_| json!("removed"))
+                .arc(),
         ],
         Some(AuditLog::new(&log)),
     )

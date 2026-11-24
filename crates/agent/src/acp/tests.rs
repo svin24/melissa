@@ -10,6 +10,7 @@ use super::{
     replay::{agent, Recorder},
     transport,
 };
+use crate::test_support::scratch;
 use crate::{
     mcp::McpServer,
     session::{
@@ -25,13 +26,6 @@ fn fixture(name: &str) -> String {
         .join("tests/fixtures/acp")
         .join(name);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("melissa-acp-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 /// Policy permissions over a registry with `device_info`, for an attended task 5.

@@ -147,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fake_agent_answers_initialize() {
-        let dir = std::env::temp_dir().join(format!("melissa-probe-ok-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("probe-ok");
         let agent = fake_agent(
             &dir,
             "fake-agent",
@@ -164,7 +164,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_acp_programs_fail_or_time_out() {
-        let dir = std::env::temp_dir().join(format!("melissa-probe-bad-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("probe-bad");
         std::fs::create_dir_all(&dir).unwrap();
         // Exits at once: the connection closes before an answer.
         let r = probe(

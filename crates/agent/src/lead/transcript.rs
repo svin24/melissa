@@ -431,9 +431,7 @@ mod tests {
     /// primes an agent: no agent learns about it, let alone its login.
     #[test]
     fn setup_password_cards_stay_out_of_the_agents_context() {
-        let dir =
-            std::env::temp_dir().join(format!("melissa-transcript-sp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("transcript-sp");
         let t = Transcript::new(dir.join("lead/transcript.jsonl"), 64 * 1024);
         t.append(&record(
             1,
@@ -465,8 +463,7 @@ mod tests {
     #[test]
     fn rotates_and_summarises() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("melissa-transcript-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("transcript");
         let t = Transcript::new(dir.join("lead/transcript.jsonl"), 2048);
         for i in 0..40 {
             t.append(&record(
@@ -661,8 +658,7 @@ mod tests {
 
     #[test]
     fn a_fresh_start_and_a_summary_bound_the_recap() {
-        let dir = std::env::temp_dir().join(format!("melissa-recap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("recap");
         let t = Transcript::new(dir.join("transcript.jsonl"), 1 << 20);
         for (i, e) in [user("before"), reply("old answer"), LeadEvent::FreshStart]
             .into_iter()

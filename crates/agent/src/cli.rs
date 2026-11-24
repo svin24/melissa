@@ -604,8 +604,7 @@ mod tests {
     #[test]
     fn readiness_names_what_is_missing() {
         use crate::session::NotReady;
-        let home = std::env::temp_dir().join(format!("melissa-ready-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::fresh_path("ready");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         let mut sandbox = SandboxSpec::preset("claude");
         sandbox.network = NetworkMode::None;
@@ -705,8 +704,7 @@ mod tests {
 
     #[test]
     fn a_program_installed_later_is_found_without_a_restart() {
-        let dir = std::env::temp_dir().join(format!("melissa-late-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("late");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("agent");
         let spec = CliSpec::new("x", path.to_str().unwrap(), &[]).without_sandbox();

@@ -1634,8 +1634,7 @@ mod tests {
 
     #[test]
     fn resolv_conf_is_found_through_links() {
-        let dir = std::env::temp_dir().join(format!("melissa-resolv-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("resolv");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("resolv.conf");
         std::fs::write(&file, "nameserver 192.0.2.1\n").unwrap();
@@ -1909,7 +1908,7 @@ mod tests {
 
     #[test]
     fn resolve_skips_missing_paths_and_orders_parents_first() {
-        let home = std::env::temp_dir().join(format!("melissa-sbx-resolve-{}", std::process::id()));
+        let home = crate::test_support::fresh_path("sbx-resolve");
         std::fs::create_dir_all(home.join(".cli")).unwrap();
         std::fs::write(home.join(".cli/token"), "t").unwrap();
         let spec = SandboxSpec {

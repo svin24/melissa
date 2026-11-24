@@ -1063,8 +1063,7 @@ mod tests {
         t.slots.insert("d.a3".into(), 1);
         assert_eq!(next_free(&t, 3), None);
 
-        let dir = std::env::temp_dir().join(format!("melissa-users-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("users");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(TABLE);
         // Two ids per slot: three slots.

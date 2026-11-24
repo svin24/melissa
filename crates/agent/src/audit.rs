@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn appends_json_lines() {
-        let dir = std::env::temp_dir().join(format!("melissa-audit-test-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("audit-test");
         let log = AuditLog::new(dir.join("nested/audit.jsonl"));
         log.append(&AuditRecord::now("task.dispatch", 1, "echo", "hi"))
             .unwrap();

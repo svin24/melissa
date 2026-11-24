@@ -606,8 +606,7 @@ mod tests {
     #[tokio::test]
     async fn tool_capable_tasks_get_an_mcp_session_until_cancelled() {
         use std::os::unix::fs::PermissionsExt;
-        let workroot =
-            std::env::temp_dir().join(format!("melissa-board-mcp-{}", std::process::id()));
+        let workroot = crate::test_support::fresh_path("board-mcp");
         let server = McpServer::new(crate::tools::ToolRegistry::builtin(None));
         let board = TaskBoard::with_tools(
             vec![Arc::new(Hang), Arc::new(EchoBackend::new())],
