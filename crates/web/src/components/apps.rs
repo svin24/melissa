@@ -233,6 +233,8 @@ pub struct AppDetailsView<'a> {
     pub ask: Option<AppAsk<'a>>,
     pub message: Option<(&'a str, Tone)>,
     pub facts: &'a [AppFact<'a>],
+    /// The Network card ([`super::network_card`]), under the facts.
+    pub network: Option<Markup>,
     /// The icon picker: shapes, colours and where to post (None: may not change it).
     pub icon: Option<(&'a [&'a str], &'a [&'a str], &'a str)>,
     pub logs_url: &'a str,
@@ -306,9 +308,7 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                             }
                         }
                     }
-                    @if let Some((shapes, colors, url)) = d.icon {
-                        (app_icon_card(shapes, colors, d.shape, d.color, url, None))
-                    }
+                    @if let Some(network) = &d.network { (network) }
                 }
             }
             @if !d.gone {
@@ -318,6 +318,9 @@ pub fn app_details_region(d: &AppDetailsView<'_>) -> Markup {
                         div #app-logs hx-get=(d.logs_url) hx-trigger="load" hx-swap="outerHTML" {
                             p.quiet { "Loading…" }
                         }
+                    }
+                    @if let Some((shapes, colors, url)) = d.icon {
+                        (app_icon_card(shapes, colors, d.shape, d.color, url, None))
                     }
                     @if let Some(url) = d.delete_url {
                         section.app-card.app-danger aria-labelledby="app-delete-h" {

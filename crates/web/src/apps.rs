@@ -26,6 +26,12 @@
 //!   owner's own change, in force at once, no confirmation, audited `app.network`. 403 for
 //!   members, 422 bad change (unknown app or port, nothing to change).
 //!
+//! - The Network card (owner design N1–N6, 2026-11-24): `GET /ui/apps/{app}/network`
+//!   (`?add=1&app=`: the add-link form open), `POST /ui/apps/{app}/network/internet|lan`
+//!   (`enabled=on` or nothing), `.../network/links` (`app`, `port` = `<app>/<port>`) and
+//!   `.../network/links/remove` (`app`, `port`?): the owner's change through
+//!   `set_app_network`, with the password entered recently (`auth::sensitive`).
+//!
 //! **Who may**: the owner every app; a member only their own ([`crate::app_list`]). Any other
 //! app answers 404, as if it did not exist, on every route here.
 //!
@@ -56,8 +62,9 @@ use serde_json::{json, Value};
 use crate::{
     app_list::{icon_of, person_of, person_words, shown, visible, AppsCx},
     components::{
-        app_details_region, app_head_icon_oob, app_icon_card, app_logs_region, AppAsk,
-        AppDetailsView, AppFact, AppLogsView, Tone,
+        app_details_region, app_head_icon_oob, app_icon_card, app_logs_region, network_card,
+        AddLinkForm, AppAsk, AppDetailsView, AppFact, AppLogsView, NetworkCard, NetworkLink,
+        NetworkSwitch, Tone,
     },
     feed::display_app,
     pages::format_uptime,
@@ -82,6 +89,13 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/ui/apps/{app}/icon", post(set_icon))
         .route("/ui/apps/{app}/confirmations/{id}/{verdict}", post(answer))
         .route("/ui/apps/{app}/force-delete", post(force_delete))
+        .route("/ui/apps/{app}/network", get(network_region))
+        .route("/ui/apps/{app}/network/links", post(add_network_link))
+        .route(
+            "/ui/apps/{app}/network/links/remove",
+            post(remove_network_link),
+        )
+        .route("/ui/apps/{app}/network/{field}", post(set_network_switch))
         .route("/api/apps", get(api_list))
         .route("/api/apps/{app}", get(api_details))
         .route("/api/apps/{app}/logs", get(api_logs))
@@ -271,6 +285,8 @@ struct Extra<'a> {
     message: Option<(&'a str, Tone)>,
     ask: Option<(u64, &'static str)>,
     gone: bool,
+    /// The Network card's add-link form is open (for this app; empty: the first).
+    add_link: Option<&'a str>,
 }
 
 /// The details' region for `app`.
@@ -353,6 +369,16 @@ async fn render_details(
             format!("{base}/deny"),
         )
     });
+    let network = if extra.gone {
+        None
+    } else {
+        let show = NetShow {
+            owner: cx.looker.owner,
+            add: extra.add_link,
+            message: None,
+        };
+        network_card_for(ui, app, &show).await
+    };
     let icon_url = format!("/ui/apps/{app}/icon");
     let delete_url = format!("/ui/apps/{app}/force-delete");
     app_details_region(&AppDetailsView {
@@ -377,6 +403,7 @@ async fn render_details(
             }),
         message,
         facts: &facts,
+        network,
         icon: Some((SHAPES, COLORS, icon_url.as_str())),
         logs_url: &format!("/ui/apps/{app}/logs"),
         // Force delete is the owner's (the sign-in gate refuses members too).
@@ -395,15 +422,33 @@ async fn details(State(ui): State<Ui>, Path(app): Path<String>, headers: HeaderM
 }
 
 /// The details as a page of the Apps panel.
+#[derive(Deserialize)]
+struct DetailsQuery {
+    /// Open the Network card's add-link form (the plain link without script).
+    #[serde(default)]
+    add_link: Option<String>,
+    /// The app to link to in that form.
+    #[serde(default)]
+    to: Option<String>,
+}
+
 async fn details_page(
     State(ui): State<Ui>,
     Path(app): Path<String>,
+    Query(q): Query<DetailsQuery>,
     headers: HeaderMap,
 ) -> Response {
     let Some(who) = allowed(&ui, &app).await else {
         return not_found();
     };
-    let region = render_details(&ui, &app, host(&headers), &who, Extra::default()).await;
+    let extra = Extra {
+        add_link: q
+            .add_link
+            .is_some()
+            .then(|| q.to.as_deref().unwrap_or_default()),
+        ..Extra::default()
+    };
+    let region = render_details(&ui, &app, host(&headers), &who, extra).await;
     let name = display_app(&app);
     ui.framed_at(host(&headers), |f| {
         crate::pages::app_details_page(f, &name, region)
@@ -886,20 +931,17 @@ pub(crate) fn network_fields(tool: &str, args: &Value, current: &Value) -> Vec<&
     out
 }
 
-async fn api_network(State(ui): State<Ui>, Path(app): Path<String>) -> Response {
-    if let Some(r) = api_allowed(&ui, &app).await {
-        return r;
-    }
-    let mut view = match call(&ui, "app_network", json!({ "app": app }), false).await {
-        Ok(v) => v,
-        Err(e) => return tool_response(Err(e)),
-    };
-    let pending: Vec<Value> = ui
+/// `app`'s network (the `app_network` view) plus `pending`: agents' requests waiting for the
+/// owner that change it.
+async fn network_read(ui: &Ui, app: &str) -> Result<Value, ToolError> {
+    let mut view = call(ui, "app_network", json!({ "app": app }), false).await?;
+    #[allow(unused_mut)]
+    let mut pending: Vec<Value> = ui
         .lead
         .confirmations()
         .pending()
         .into_iter()
-        .filter(|c| c.args["app"].as_str() == Some(app.as_str()))
+        .filter(|c| c.args["app"].as_str() == Some(app))
         .filter_map(|c| {
             let fields = network_fields(&c.tool, &c.args, &view);
             (!fields.is_empty()).then(|| {
@@ -913,8 +955,332 @@ async fn api_network(State(ui): State<Ui>, Path(app): Path<String>) -> Response 
             })
         })
         .collect();
+    // The screenshot harness's fixed answer may carry requests of its own.
+    #[cfg(feature = "fake-apps")]
+    pending.extend(view["pending"].as_array().cloned().unwrap_or_default());
     view["pending"] = json!(pending);
-    Json(view).into_response()
+    Ok(view)
+}
+
+async fn api_network(State(ui): State<Ui>, Path(app): Path<String>) -> Response {
+    if let Some(r) = api_allowed(&ui, &app).await {
+        return r;
+    }
+    match network_read(&ui, &app).await {
+        Ok(view) => Json(view).into_response(),
+        Err(e) => tool_response(Err(e)),
+    }
+}
+
+// ---- the Network card ----------------------------------------------------------------------
+
+/// How the Network card shows.
+#[derive(Default)]
+struct NetShow<'a> {
+    /// The owner: switches, Add link and remove. Otherwise read-only.
+    owner: bool,
+    /// The add-link form is open, for this app (empty: the first one).
+    add: Option<&'a str>,
+    message: Option<(&'a str, Tone)>,
+}
+
+/// A port as the card shows it: "db · 5432".
+fn port_words(p: &Value) -> Option<String> {
+    Some(format!("{} · {}", p["name"].as_str()?, p["port"].as_u64()?))
+}
+
+/// The Network card from the `network_read` view. Pure, for tests.
+fn network_markup(app: &str, view: &Value, show: &NetShow<'_>) -> Markup {
+    let base = format!("/ui/apps/{app}/network");
+    let pending = |field: &str| {
+        view["pending"].as_array().into_iter().flatten().any(|p| {
+            p["fields"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|x| x == field))
+        })
+    };
+    let (internet_url, lan_url) = (format!("{base}/internet"), format!("{base}/lan"));
+    let links_url = format!("{base}/links");
+    let remove_url = format!("{base}/links/remove");
+    // The links: (app, port name, display name, port words, inactive).
+    let links: Vec<(String, Option<String>, String, String, bool)> = view["links"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| {
+            let to = l["app"].as_str()?.to_string();
+            let port = l["port"].as_str().map(str::to_string);
+            let words = match &port {
+                Some(name) => l["ports"]
+                    .as_array()
+                    .and_then(|ps| ps.first())
+                    .and_then(port_words)
+                    .unwrap_or_else(|| name.clone()),
+                None => "all ports".to_string(),
+            };
+            Some((
+                to.clone(),
+                port,
+                display_app(&to),
+                words,
+                l["active"] == false,
+            ))
+        })
+        .collect();
+    let rows: Vec<NetworkLink<'_>> = links
+        .iter()
+        .map(|(to, port, name, words, inactive)| NetworkLink {
+            name,
+            port: words,
+            inactive: *inactive,
+            remove: show
+                .owner
+                .then_some((remove_url.as_str(), to.as_str(), port.as_deref())),
+        })
+        .collect();
+    // The picker: the other apps' named ports that aren't linked yet.
+    let linked = |to: &str, port: &str| {
+        links
+            .iter()
+            .any(|(a, p, ..)| a == to && p.as_deref().is_none_or(|p| p == port))
+    };
+    let options: Vec<(String, Vec<(String, String)>)> = view["link_options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|o| {
+            let to = o["app"].as_str()?;
+            let ports: Vec<(String, String)> = o["ports"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["name"].as_str().is_some_and(|n| !linked(to, n)))
+                .filter_map(|p| Some((format!("{to}/{}", p["name"].as_str()?), port_words(p)?)))
+                .collect();
+            (!ports.is_empty()).then(|| (to.to_string(), ports))
+        })
+        .collect();
+    let app_names: Vec<(String, String)> = options
+        .iter()
+        .map(|(to, _)| (to.clone(), display_app(to)))
+        .collect();
+    let app_choices: Vec<(&str, &str)> = app_names
+        .iter()
+        .map(|(v, l)| (v.as_str(), l.as_str()))
+        .collect();
+    let open = show.add.filter(|_| show.owner).map(|want| {
+        options
+            .iter()
+            .find(|(to, _)| to == want)
+            .or(options.first())
+    });
+    let chosen = open.flatten();
+    let no_ports = Vec::new();
+    let refresh = format!("{base}?add=1");
+    let details_url = format!("/cluster/apps/{app}");
+    let add_plain = format!("{details_url}?add_link=1");
+    let add_get = format!("{base}?add=1");
+    let footer = format!("DNS and {}'s web ports always work.", display_app(app));
+    network_card(&NetworkCard {
+        internet: NetworkSwitch {
+            label: "Internet",
+            on: view["internet"] == true,
+            action: show.owner.then_some(internet_url.as_str()),
+            asked: pending("internet"),
+        },
+        lan: NetworkSwitch {
+            label: "Local network",
+            on: view["lan"] == true,
+            action: show.owner.then_some(lan_url.as_str()),
+            asked: pending("lan"),
+        },
+        links_asked: pending("links"),
+        add: (show.owner && open.is_none()).then_some((add_plain.as_str(), add_get.as_str())),
+        form: open.map(|_| AddLinkForm {
+            action: &links_url,
+            cancel: (&details_url, &base),
+            refresh: &refresh,
+            apps: &app_choices,
+            app: chosen.map(|(to, _)| to.as_str()).unwrap_or_default(),
+            ports: chosen.map(|(_, p)| p).unwrap_or(&no_ports),
+        }),
+        links: &rows,
+        footer: &footer,
+        message: show.message,
+    })
+}
+
+/// The Network card for `app`, or None when its network can't be read (not installed, no
+/// app platform).
+async fn network_card_for(ui: &Ui, app: &str, show: &NetShow<'_>) -> Option<Markup> {
+    match network_read(ui, app).await {
+        Ok(view) => Some(network_markup(app, &view, show)),
+        Err(e) => {
+            tracing::debug!("network of {app} not read: {e}");
+            None
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NetQuery {
+    #[serde(default)]
+    add: Option<String>,
+    #[serde(default)]
+    app: Option<String>,
+}
+
+/// The Network card alone: `?add=1` opens the add-link form (`&app=` picks the app).
+async fn network_region(
+    State(ui): State<Ui>,
+    Path(app): Path<String>,
+    Query(q): Query<NetQuery>,
+) -> Response {
+    let Some((cx, _)) = allowed(&ui, &app).await else {
+        return not_found();
+    };
+    let show = NetShow {
+        owner: cx.looker.owner,
+        add: q
+            .add
+            .is_some()
+            .then(|| q.app.as_deref().unwrap_or_default()),
+        message: None,
+    };
+    match network_card_for(&ui, &app, &show).await {
+        Some(card) => card.into_response(),
+        None => not_found(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SwitchForm {
+    #[serde(default)]
+    enabled: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LinkForm {
+    #[serde(default)]
+    app: String,
+    /// `<app>/<port>` from the add form; a port name from a remove button.
+    #[serde(default)]
+    port: Option<String>,
+}
+
+/// Apply the owner's change to `app`'s network and answer with the card (htmx) or the details
+/// page. The password step comes before this (the gate's `sensitive`).
+async fn apply_network(
+    ui: &Ui,
+    app: &str,
+    headers: &HeaderMap,
+    change: Value,
+    failed: &str,
+) -> Response {
+    let Some((cx, _)) = allowed(ui, app).await else {
+        return not_found();
+    };
+    if !cx.looker.owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let mut args = change;
+    args["app"] = json!(app);
+    // The owner, watching: no confirmation (the tool asks only for agents' calls).
+    let result = call(ui, "set_app_network", args, true).await;
+    if let Err(e) = &result {
+        tracing::warn!("network of {app} not changed: {e}");
+    }
+    ui.cluster.refresh_now().await;
+    if !crate::is_htmx(headers) {
+        return Redirect::to(&format!("/cluster/apps/{app}")).into_response();
+    }
+    let show = NetShow {
+        owner: true,
+        add: None,
+        message: result.is_err().then_some((failed, Tone::Caution)),
+    };
+    match network_card_for(ui, app, &show).await {
+        Some(card) => card.into_response(),
+        None => not_found(),
+    }
+}
+
+/// Internet or Local network on or off.
+async fn set_network_switch(
+    State(ui): State<Ui>,
+    Path((app, field)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(form): Form<SwitchForm>,
+) -> Response {
+    let key = match field.as_str() {
+        "internet" | "lan" => field.as_str(),
+        _ => return not_found(),
+    };
+    let on = form.enabled.is_some();
+    let change = json!({ key: on });
+    apply_network(
+        &ui,
+        &app,
+        &headers,
+        change,
+        "Couldn't change it. Try again.",
+    )
+    .await
+}
+
+/// Add a link to one of another app's named ports.
+async fn add_network_link(
+    State(ui): State<Ui>,
+    Path(app): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<LinkForm>,
+) -> Response {
+    let picked = form.port.as_deref().and_then(|p| p.split_once('/'));
+    match picked {
+        Some((to, port)) if to == form.app && !port.is_empty() => {
+            let change = json!({ "add_links": [{ "app": to, "port": port }] });
+            apply_network(&ui, &app, &headers, change, "Couldn't add that link.").await
+        }
+        // Another app was chosen without script (or nothing): show its ports.
+        _ => {
+            let Some((cx, _)) = allowed(&ui, &app).await else {
+                return not_found();
+            };
+            if !crate::is_htmx(&headers) {
+                let to = if valid(&form.app) {
+                    form.app.as_str()
+                } else {
+                    ""
+                };
+                return Redirect::to(&format!("/cluster/apps/{app}?add_link=1&to={to}"))
+                    .into_response();
+            }
+            let show = NetShow {
+                owner: cx.looker.owner,
+                add: Some(&form.app),
+                message: None,
+            };
+            match network_card_for(&ui, &app, &show).await {
+                Some(card) => card.into_response(),
+                None => not_found(),
+            }
+        }
+    }
+}
+
+/// Remove a link (at once, no confirmation: easy to add again).
+async fn remove_network_link(
+    State(ui): State<Ui>,
+    Path(app): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<LinkForm>,
+) -> Response {
+    let mut link = json!({ "app": form.app });
+    if let Some(port) = form.port.as_deref().filter(|p| !p.is_empty()) {
+        link["port"] = json!(port);
+    }
+    let change = json!({ "remove_links": [link] });
+    apply_network(&ui, &app, &headers, change, "Couldn't remove that link.").await
 }
 
 async fn api_set_network(
@@ -1068,5 +1434,54 @@ mod tests {
         assert!(!confirmed("nextcloud", "yes"));
         assert!(valid("nextcloud") && valid("home-assistant"));
         assert!(!valid("../x") && !valid("-a") && !valid("A") && !valid(""));
+    }
+
+    fn network_view() -> Value {
+        json!({
+            "internet": false, "lan": false,
+            "links": [{"app": "postgres", "port": "db", "active": true,
+                       "ports": [{"name": "db", "port": 5432, "protocol": "tcp"}]}],
+            "link_options": [
+                {"app": "ollama", "ports": [{"name": "api", "port": 11434, "protocol": "tcp"},
+                                            {"name": "web", "port": 8080, "protocol": "tcp"}]},
+                {"app": "postgres", "ports": [{"name": "db", "port": 5432, "protocol": "tcp"}]},
+                {"app": "bare", "ports": []},
+            ],
+            "pending": [{"id": 4, "tool": "set_app_network", "fields": ["internet"]}],
+        })
+    }
+
+    /// An agent's waiting request marks only the row it changes (owner decision 2).
+    #[test]
+    fn a_waiting_request_shows_agent_asked_on_its_row() {
+        let html = network_markup("immich", &network_view(), &NetShow::default()).into_string();
+        assert_eq!(html.matches("Agent asked").count(), 1);
+        let internet = html.find(">Internet<").unwrap();
+        let lan = html.find(">Local network<").unwrap();
+        let badge = html.find("Agent asked").unwrap();
+        assert!(internet < badge && badge < lan, "{html}");
+    }
+
+    /// The picker offers the other apps' named ports not linked yet, and nothing to type
+    /// (owner decision 3).
+    #[test]
+    fn the_link_picker_lists_only_named_ports() {
+        let show = NetShow {
+            owner: true,
+            add: Some("ollama"),
+            ..NetShow::default()
+        };
+        let html = network_markup("immich", &network_view(), &show).into_string();
+        let values: Vec<&str> = html
+            .split("<option value=\"")
+            .skip(1)
+            .filter_map(|o| o.split('"').next())
+            .collect();
+        // Apps: only those with a port left (postgres's one port is linked); then ollama's ports.
+        assert_eq!(values, ["ollama", "ollama/api", "ollama/web"]);
+        assert!(html.contains(">api · 11434<"));
+        assert!(!html.contains("type=\"text\"") && !html.contains("type=\"number\""));
+        // Open form: no second "Add link" button above it.
+        assert_eq!(html.matches(">Add link<").count(), 1);
     }
 }

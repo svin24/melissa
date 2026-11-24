@@ -182,6 +182,7 @@ pub(crate) fn sensitive(method: &Method, path: &str) -> bool {
         || path.ends_with("/force-delete")
         // What an app may reach on the network (the owner's own change).
         || (path.starts_with("/api/apps/") && path.ends_with("/network"))
+        || (path.starts_with("/ui/apps/") && path.contains("/network/"))
         || [
             "/ui/settings/apps",
             "/api/settings/app-access",

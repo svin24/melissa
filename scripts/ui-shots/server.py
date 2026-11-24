@@ -80,6 +80,25 @@ FAKE_APPS = {
         "installed": True, "replicas": 1, "ready_replicas": 1,
         "pods": [{"name": "minecraft-0", "restarts": 0, "age_secs": 7200}],
     }},
+    # Internet on, links to two apps, and an agent's request for the local network waiting.
+    "app_network": {"minecraft": {
+        "app": "minecraft", "internet": True, "lan": False,
+        "summary": "the internet, postgres (port db), redis (port cache)",
+        "links": [
+            {"app": "postgres", "port": "db", "active": True, "problem": None,
+             "ports": [{"name": "db", "port": 5432, "protocol": "tcp"}]},
+            {"app": "redis", "port": "cache", "active": True, "problem": None,
+             "ports": [{"name": "cache", "port": 6379, "protocol": "tcp"}]},
+        ],
+        "incoming": [],
+        "link_options": [
+            {"app": "ollama", "ports": [{"name": "api", "port": 11434, "protocol": "tcp"}]},
+            {"app": "postgres", "ports": [{"name": "db", "port": 5432, "protocol": "tcp"}]},
+            {"app": "redis", "ports": [{"name": "cache", "port": 6379, "protocol": "tcp"}]},
+        ],
+        "pending": [{"id": 900, "tool": "set_app_network", "task": 1, "fields": ["lan"],
+                     "reason": "network access"}],
+    }},
     "app_logs": {"minecraft": {
         "app": "minecraft", "pod": "minecraft-0", "container": "server",
         "containers": ["server", "backup"], "lines": 6, "truncated": False,

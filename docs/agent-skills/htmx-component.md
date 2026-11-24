@@ -101,7 +101,17 @@ Apps (the Apps panel, `/cluster`; 2026-11-22, `components/apps.rs`): `app_list` 
 owner's `show_filter` links that swap it in place, the count, "Add an app", one `ul.app-rows` per kind of `app_row`s),
 `app_icon` (a shape and colour on a tile), `app_status` (dot and word), and an app's details as a panel page
 (`/cluster/apps/{app}`): `app_details_panel` (breadcrumb back to Apps), `app_details_region` (`#app-details`, swapped
-by its actions), `app_icon_card`, `app_logs_region`. Buttons there are `.btn` (32px). Devices (in Usage and
+by its actions), `app_icon_card`, `app_logs_region`. Buttons there are `.btn` (32px).
+Network (2026-11-24, owner design N1–N6, `components/network.rs`): `network_card` (`#app-network`, under Facts;
+Icon moved to the right column): Internet and Local network rows with the `toggle` switch (members: "On"/"Off"
+text), "Links to apps" with "Add link", `link_row`s ("→ Postgres  db · 5432" and a ghost ✕, 44px on phones), a
+muted footer; an "Agent asked" attention badge on a row an agent's pending request changes. `add_link_form`: two
+selects (the other app, then one of its named ports, value `<app>/<port>`; no free port numbers), "Add link",
+Cancel; a changed app re-renders the card (`GET /ui/apps/{app}/network?add=1&app=`; without script the post
+with a mismatched port does). Posts: `/ui/apps/{app}/network/internet|lan` (`enabled`), `/links` (`app`,
+`port`), `/links/remove` (at once, no confirm); owner only, password entered recently (`auth::sensitive`).
+`network_box`: Internet / Local network / Links rows inside a `permission_card` (an install whose spec grants
+network access; more than 3 links read "N links"). Devices (in Usage and
 resources, `/usage`): `device_card` (`ul.device-facts` pills, memory and storage `<meter>`s, an optional warning, e.g. storage almost full).
 Settings (2026-11-19, owner-requested; a modal since 2026-11-20; details in [settings-ui.md](settings-ui.md)):
 `settings_frame_at` (title and tools in the head bar; a page below a section: Section / page), `setting_card`, `setting_row(_with)`, `setting_row_full`, `setting_row_details`, `row_menu`,
