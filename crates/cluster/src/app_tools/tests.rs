@@ -648,6 +648,10 @@ async fn install_applies_everything_in_order_and_never_returns_the_secret() {
         [
             "Namespace",
             "RoleBinding",
+            // Isolation, ports, egress: before any pod.
+            "NetworkPolicy",
+            "NetworkPolicy",
+            "NetworkPolicy",
             "PersistentVolumeClaim",
             "ConfigMap",
             "Deployment",
@@ -2793,7 +2797,8 @@ async fn a_bad_spec_fails_before_anyone_is_asked() {
         format!(
             "deploy `minecraft`: server: docker.io/itzg/minecraft-server:java21 (up to 1 CPU, \
              1536Mi memory); reachable from the network: game 25565/tcp, voice 24454/udp; \
-             storage: data 5Gi; isolation: gVisor sandbox (its own kernel); {}",
+             storage: data 5Gi; may reach: nothing (no internet, no home network, no other apps); \
+             isolation: gVisor sandbox (its own kernel); {}",
             melissa_agent::tools::RUNS_SOFTWARE
         )
     );
@@ -4019,3 +4024,6 @@ async fn a_cancelled_wait_stops_polling() {
         "no polling after the cancel"
     );
 }
+
+#[path = "tests/network.rs"]
+mod network_tests;

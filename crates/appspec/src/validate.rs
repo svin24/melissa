@@ -491,6 +491,10 @@ impl AppSpec {
                 ));
             }
         }
+        // Link syntax here; the self-link check needs the app's name (`Network::validate_for`).
+        if let Some(n) = &self.network {
+            n.validate_for("")?;
+        }
         if self.to_text().len() > MAX_SPEC_BYTES {
             return Err(err(
                 "spec",

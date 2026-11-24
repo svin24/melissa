@@ -16,7 +16,7 @@ use k8s_openapi::{
     api::{
         apps::v1::Deployment,
         core::v1::{ConfigMap, Namespace, PersistentVolumeClaim, Pod, Secret, Service},
-        networking::v1::Ingress,
+        networking::v1::{Ingress, NetworkPolicy},
         node::v1::RuntimeClass,
         rbac::v1::RoleBinding,
     },
@@ -53,6 +53,8 @@ pub enum AppObject {
     Deployment(Box<Deployment>),
     Service(Service),
     Ingress(Ingress),
+    /// In the app's namespace, or a link's target side in another app's namespace.
+    NetworkPolicy(NetworkPolicy),
 }
 
 impl AppObject {
@@ -65,6 +67,7 @@ impl AppObject {
             Self::Deployment(_) => "Deployment",
             Self::Service(_) => "Service",
             Self::Ingress(_) => "Ingress",
+            Self::NetworkPolicy(_) => "NetworkPolicy",
         }
     }
 }
@@ -78,6 +81,8 @@ pub enum NamedKind {
     ConfigMap,
     /// Only the setup password reader's binding (`render::CREDENTIALS_BINDING`).
     RoleBinding,
+    /// A link's target side (`render::network::link_policy`) that is no longer wanted.
+    NetworkPolicy,
 }
 
 impl NamedKind {
@@ -87,6 +92,7 @@ impl NamedKind {
             Self::Service => "Service",
             Self::ConfigMap => "ConfigMap",
             Self::RoleBinding => "RoleBinding",
+            Self::NetworkPolicy => "NetworkPolicy",
         }
     }
 }
@@ -409,6 +415,7 @@ impl AppDeployer for KubeApps {
                 AppObject::Deployment(o) => apply_namespaced(&client, o.as_ref()).await,
                 AppObject::Service(o) => apply_namespaced(&client, o).await,
                 AppObject::Ingress(o) => apply_namespaced(&client, o).await,
+                AppObject::NetworkPolicy(o) => apply_namespaced(&client, o).await,
             }
         })
     }
@@ -488,6 +495,13 @@ impl AppDeployer for KubeApps {
                 }
                 NamedKind::RoleBinding => optional(
                     self.ns_api::<RoleBinding>(app)
+                        .await?
+                        .delete(name, &dp)
+                        .await,
+                )?
+                .is_some(),
+                NamedKind::NetworkPolicy => optional(
+                    self.ns_api::<NetworkPolicy>(app)
                         .await?
                         .delete(name, &dp)
                         .await,

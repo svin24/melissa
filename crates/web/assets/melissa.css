@@ -4025,6 +4025,118 @@ a.app-row-address:hover {
   font-size: var(--font-size-xs);
 }
 
+/* The Network card (components::network_card, owner design N1/N2/N4, 2026-11-24): rows with a
+   hairline between them, a switch or a button on the right, link rows, a muted footer. */
+.net-card > .net-rows,
+.net-card > .net-foot {
+  margin: 0;
+}
+
+.net-card > .notice {
+  margin-bottom: 0;
+}
+
+.net-rows {
+  padding: 0;
+  list-style: none;
+}
+
+.net-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  min-height: var(--size-row-md);
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--font-size-sm);
+}
+
+.net-row + .net-row {
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+}
+
+.net-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.net-value,
+.net-arrow,
+.net-port,
+.net-none {
+  color: var(--color-text-muted);
+}
+
+.net-port {
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.net-row form {
+  margin: 0;
+}
+
+/* The add-link form (N2) takes the row's full width under "Links to apps". */
+.net-row .net-add {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.net-add .select-wrap {
+  flex: 1 1 7rem;
+  max-width: 10rem;
+  min-width: 0;
+}
+
+.net-none {
+  margin: 0;
+}
+
+.net-foot {
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--border-width-hairline) solid var(--color-border-default);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+/* The network box in an approval card (components::network_box, N3). */
+.net-box {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-sunken);
+  border: var(--border-width-hairline) solid var(--color-border-default);
+  border-radius: var(--radius-md);
+}
+
+.net-box > div {
+  display: grid;
+  grid-template-columns: var(--app-fact-label-width) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.net-box dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.net-box dd {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
 /* Phones: a row stacks its name over status and person; the details are one column. */
 @media (max-width: 760px) {
   .app-row {
@@ -4064,6 +4176,16 @@ a.app-row-address:hover {
   .app-facts > div {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1);
+  }
+
+  /* Owner decision 8 (2026-11-24): the remove ✕ is a 44px target on phones. */
+  .net-remove {
+    min-width: var(--size-target-touch);
+    min-height: var(--size-target-touch);
+  }
+
+  .net-row.net-link {
+    padding-right: var(--space-2);
   }
 }
 

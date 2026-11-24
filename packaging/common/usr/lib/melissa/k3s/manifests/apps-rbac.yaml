@@ -43,7 +43,7 @@
 # - Volumes: new PVCs use the local-path class and never bind a chosen PersistentVolume or
 #   copy another claim (volumeName, dataSource).
 # - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
-#   workloads, Services, Ingresses, PVCs, ConfigMaps; Secrets create/delete only (never read:
+#   workloads, Services, Ingresses, NetworkPolicies, PVCs, ConfigMaps; Secrets create/delete only (never read:
 #   generated credentials are for the owner); pods and logs read; pods/exec for app_exec
 #   (which can see whatever the container sees, its environment included).
 # - Nothing in kube-system or any other namespace; no PersistentVolumes, no nodes; no exec,
@@ -592,6 +592,12 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # App network permissions (docs/DECISIONS.md 2026-11-24): the app's own default-deny,
+  # ports and egress policies, and the target side of links from other apps
+  # (melissa-link-from-<app>), all inside app namespaces like everything here.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Generated credentials: written once, never read back by this identity. The owner's
   # reveal reads the setup password through melissa-credentials (credentials-rbac.yaml).

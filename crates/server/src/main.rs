@@ -26,6 +26,9 @@
 //!   `melissa-server [--config <path>] app details|logs <app>`  an app's status, its last log lines
 //!   `melissa-server [--config <path>] app force-delete <app> --yes`  remove it and its data now;
 //!                                                            its agent and the lead agent are told
+//!   `melissa-server [--config <path>] app network <app> [--internet on|off] [--lan on|off]
+//!        [--link <app>[:<port>]]... [--unlink <app>[:<port>]]...`  what the app may reach, or
+//!                                                            change it (no restart; audited)
 //!
 //! The client commands talk to the running daemon over its host-local socket
 //! (`$XDG_RUNTIME_DIR/melissa/api.sock`, the service's `/run/melissa/api.sock`): only root
@@ -69,8 +72,8 @@ use melissa_agent::{
     EgressProxy, McpLink, TaskBoard,
 };
 use melissa_cluster::{
-    app_tools, parse_publish_bind, AppCredentials, AppSettings, ClusterHealth, KubeApps,
-    KubeSecretReader, LazyCluster, ReachCheck, Workspaces,
+    app_tools, network_tools, parse_publish_bind, AppCredentials, AppSettings, ClusterHealth,
+    KubeApps, KubeSecretReader, LazyCluster, ReachCheck, Workspaces,
 };
 use melissa_settings::{
     app_access::{tool::SetAppAccess, AppAccessControl},
@@ -182,6 +185,11 @@ enum Command {
     FactoryReset(String),
     /// `app details|logs|force-delete <app>`: the same as the app dialog.
     App(AppCommand, String),
+    /// `app network <app> [changes]`: show (no changes) or change what the app may reach.
+    AppNetwork {
+        app: String,
+        change: Value,
+    },
     /// Talk to the lead agent (None) or an agent.
     Chat(Option<String>),
     /// Clear the memory of the lead agent (None) or an agent: "Fresh start" (`true`: then
@@ -317,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
         Command::App(AppCommand::ForceDelete, app) => {
             return client::app_force_delete(&api, app).await
         }
+        Command::AppNetwork { app, change } => return client::app_network(&api, app, change).await,
         Command::Providers => return client::providers(&api).await,
         Command::ProviderChange {
             id,
@@ -419,6 +428,11 @@ async fn main() -> anyhow::Result<()> {
         tailscale: Some(tailscale.clone()),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
+    tools.extend(network_tools(
+        app_settings.clone(),
+        Some(apps.clone()),
+        Some(audit.clone()),
+    ));
     if let Some(control) = &app_access {
         tools.push(Arc::new(SetAppAccess(control.clone())));
     }
@@ -1031,8 +1045,16 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
             "force-delete removes the app and all its data for good: \
              `melissa-server app force-delete <app> --yes`"
         ),
+        [c, a, app, rest @ ..] if c == "app" && a == "network" => Command::AppNetwork {
+            app: app.clone(),
+            change: parse_network_change(rest)?,
+        },
         [c, ..] if c == "app" => {
-            bail!("usage: melissa-server app details|logs <app>, app force-delete <app> --yes")
+            bail!(
+                "usage: melissa-server app details|logs <app>, app force-delete <app> --yes, \
+                 app network <app> [--internet on|off] [--lan on|off] [--link <app>[:<port>]]... \
+                 [--unlink <app>[:<port>]]..."
+            )
         }
         [c, ..] if c == "app-adopt" => bail!(
             "app-adopt is gone: workspaces now belong to agents. Use `melissa-server workspace list` and \
@@ -1121,6 +1143,51 @@ fn parse_args(args: Vec<String>) -> anyhow::Result<(Option<PathBuf>, Command)> {
 }
 
 /// `provider [list]`, `provider enable|disable <id>`, `provider set <id> [options]`.
+/// The flags of `app network <app>`: the JSON change for `POST /api/apps/{app}/network`
+/// (empty: just show).
+fn parse_network_change(args: &[String]) -> anyhow::Result<Value> {
+    let on_off = |flag: &str, v: Option<&String>| match v.map(String::as_str) {
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        _ => bail!("{flag} takes on or off"),
+    };
+    let link = |flag: &str, v: Option<&String>| -> anyhow::Result<Value> {
+        let Some(v) = v else {
+            bail!("{flag} takes <app> or <app>:<port>");
+        };
+        Ok(match v.split_once(':') {
+            Some((app, port)) => serde_json::json!({"app": app, "port": port}),
+            None => serde_json::json!({"app": v}),
+        })
+    };
+    let mut change = serde_json::Map::new();
+    let (mut add, mut remove) = (Vec::new(), Vec::new());
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        match flag.as_str() {
+            "--internet" => {
+                change.insert("internet".into(), Value::Bool(on_off(flag, it.next())?));
+            }
+            "--lan" => {
+                change.insert("lan".into(), Value::Bool(on_off(flag, it.next())?));
+            }
+            "--link" => add.push(link(flag, it.next())?),
+            "--unlink" => remove.push(link(flag, it.next())?),
+            other => bail!(
+                "unknown option `{other}` (app network <app> [--internet on|off] [--lan on|off] \
+                 [--link <app>[:<port>]]... [--unlink <app>[:<port>]]...)"
+            ),
+        }
+    }
+    if !add.is_empty() {
+        change.insert("add_links".into(), Value::Array(add));
+    }
+    if !remove.is_empty() {
+        change.insert("remove_links".into(), Value::Array(remove));
+    }
+    Ok(Value::Object(change))
+}
+
 fn parse_provider(args: &[String]) -> anyhow::Result<Command> {
     match args {
         [] => Ok(Command::Providers),
@@ -1307,6 +1374,32 @@ mod tests {
                 |c| matches!(c, Command::AppCredentials(a) if a == "nextcloud"),
             ),
             (
+                &["app", "network", "web"],
+                |c| matches!(c, Command::AppNetwork { app, change } if app == "web" && *change == json!({})),
+            ),
+            (
+                &[
+                    "app",
+                    "network",
+                    "web",
+                    "--internet",
+                    "on",
+                    "--lan",
+                    "off",
+                    "--link",
+                    "postgres:db",
+                    "--unlink",
+                    "redis",
+                ],
+                |c| {
+                    matches!(c, Command::AppNetwork { change, .. } if *change == json!({
+                        "internet": true, "lan": false,
+                        "add_links": [{"app": "postgres", "port": "db"}],
+                        "remove_links": [{"app": "redis"}],
+                    }))
+                },
+            ),
+            (
                 &["app", "details", "nextcloud"],
                 |c| matches!(c, Command::App(AppCommand::Details, a) if a == "nextcloud"),
             ),
@@ -1361,6 +1454,9 @@ mod tests {
             &["backend", "list", "--model", "x"],
             &["tool", "x", "not json"],
             &["app-credentials"],
+            &["app", "network", "web", "--internet", "yes"],
+            &["app", "network", "web", "--domain", "x"],
+            &["app", "network", "web", "--link"],
             // Never without --yes.
             &["app", "force-delete", "nextcloud"],
             &["app", "force-delete", "nextcloud", "-y"],
