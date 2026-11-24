@@ -5,6 +5,8 @@ setup password for apps that take it as an env value. This note looks at how oth
 semi-trusted operators who can run commands, and away from logs. Research only; nothing here is built. Links were
 checked on 2026-11-24 where noted; a few claims are marked as unverified.
 
+**Status (2026-11-24):** step 1 (redaction) is built, see DECISIONS; steps 2-4 are PLAN open question 100.
+
 ## Summary
 
 - **Short term (cheap, do now):** server-side redaction of every generated secret of the app (not only the setup

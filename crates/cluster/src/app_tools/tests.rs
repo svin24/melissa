@@ -362,6 +362,7 @@ fn settings() -> AppSettings {
         access: None,
         setup_notices: None,
         tailscale: None,
+        secret_prints: Some(SecretPrints::in_memory()),
     }
 }
 
@@ -1058,7 +1059,10 @@ fn control_sequences_are_stripped() {
     assert_eq!(strip_controls("x\u{1b}]0;title\u{7}y"), "xy");
     assert_eq!(strip_controls("x\u{1b}]8;;http://e\u{1b}\\y"), "xy");
     assert_eq!(strip_controls("t\tab\u{0}\u{8}"), "t\tab");
-    assert_eq!(sanitize_log("a\nb\nc", 10), ("a\nb\nc".into(), 3, false));
+    assert_eq!(
+        sanitize_log("a\nb\nc", 10, None),
+        ("a\nb\nc".into(), 3, false, BTreeSet::new())
+    );
 }
 
 #[tokio::test]
@@ -3055,6 +3059,53 @@ async fn exec_follows_the_workspace_rules() {
     assert!(matches!(r, Err(ToolError::BadArgs(_))), "{r:?}");
     assert!(reg.confirmations().pending().is_empty());
     assert_eq!(fake.state().exec_requests.len(), 1);
+}
+
+/// Copies of a generated secret in exec and log output are hidden, the result says so, and
+/// so does the audit line.
+#[tokio::test]
+async fn generated_secrets_are_hidden_from_exec_and_logs() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    call(&t, "deploy_app", json!({"spec": nc(), "app": "nextcloud"}))
+        .await
+        .unwrap();
+    let secret = password(&fake);
+    fake.state().pods = vec![live_pod("p1", 1)];
+    fake.state().exec_output = exited(
+        0,
+        &format!("HOME=/root\nNEXTCLOUD_ADMIN_PASSWORD={secret}\n"),
+    );
+    fake.state().log = format!(
+        "starting\nadmin password: {}\n{}",
+        &secret[..16],
+        &secret[16..]
+    );
+    let args = json!({"app": "nextcloud", "command": ["env"]});
+    let reason = t["app_exec"].describe_call(&args).unwrap();
+    assert!(reason.contains(EXEC_SECRETS_NOTE), "{reason}");
+
+    let exec = call(&t, "app_exec", args.clone()).await;
+    let logs = call(&t, "app_logs", json!({"app": "nextcloud"})).await;
+    for (tool, out, text) in [("app_exec", &exec, "stdout"), ("app_logs", &logs, "log")] {
+        let out = out.as_ref().unwrap();
+        assert!(!out.to_string().contains(&secret[..8]), "{tool}: {out}");
+        assert!(
+            out[text]
+                .as_str()
+                .unwrap()
+                .contains("[hidden: admin_password]"),
+            "{out}"
+        );
+        assert_eq!(out["hidden"], json!(["admin_password"]), "{tool}");
+        let detail = t[tool]
+            .audit_detail(&agent(BO), &args, &Ok(out.clone()))
+            .unwrap();
+        assert!(
+            detail.ends_with("hidden from the output: admin_password"),
+            "{detail}"
+        );
+    }
 }
 
 #[tokio::test]

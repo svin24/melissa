@@ -116,7 +116,8 @@ existing app not its own (2026-11-24); `reassign_workspace` lead-only; `my_files
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
 a tool by name. `describe_call(args)` adds a one-line description to confirmations;
 `audit_detail(ctx, args, result)` adds what the `tool.call` audit line must record beyond the
-argument hash (`app_exec`: who, app, argv, stdin length, pod, container, exit code; never secrets).
+argument hash (`app_exec`: who, app, argv, stdin length, pod, container, exit code; never secrets;
+`app_exec` and `app_logs`: the generated secrets hidden from the output, by field name).
 
 ## Verified (2026-11-18)
 - Unit tests: `scope.rs` (decisions, messages, presentation), `cluster/src/app_tools/tests.rs` (agent A

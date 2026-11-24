@@ -1985,3 +1985,20 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   Alternatives: per-domain egress allowlists (needs an egress proxy: open question), Cilium/Calico (heavier,
   another moving part), named ports in policies (kube-router's egress support for them is unverified; numbers
   are resolved at deploy and refreshed when the target is redeployed).
+- **2026-11-24 — Generated app secrets are hidden from `app_exec` and `app_logs` output (step 1 of
+  `docs/design/SECRET-EXPOSURE-RESEARCH-2026-11-24.md`; owner: keep the plan, build step 1).** Before output
+  reaches an agent the server replaces copies of the app's generated secrets with `[hidden: <field>]`: any piece
+  of 8+ characters, also split across whitespace or line breaks, in lower/upper hex at both nibble phases, in
+  standard or URL-safe base64 (padded or not) at all four character phases, and after `%XX` decoding. Redaction
+  runs before output is cut; a cut end loses its last few token characters (`[cut]`). The result carries
+  `hidden` and a note, and the `tool.call` audit line names the fields. The server keeps no values: when it
+  generates one it records keyed SHA-256 fingerprints of every 8-character piece (per-app random key) in
+  `~/.local/state/melissa/app-secret-prints/<app>.json` (0600) and matches hashed windows of the output. The
+  approval card gets one line for `app_exec` commands that can print the environment or config files, and for
+  deploys/updates that put a secret variable into a command, file or other env value. Why: masking stops
+  accidents and lazy prompt injections cheaply. It is not a boundary: a command can transform the value
+  (`rev`, `od`, one character at a time), and exec already controls the app. Alternatives: a reader identity
+  with `get` on the app's Secrets at exec time (the research's suggestion; rejected for now because it would
+  let Melissa read a dismissed setup password again and needs new RBAC), refusing `env`-style commands (easy to
+  get around, blocks real use). Limits: apps whose secrets predate this are not covered; anyone with the state
+  directory can test 8-character guesses offline (that identity can already exec). Steps 2-4: PLAN question 100.
