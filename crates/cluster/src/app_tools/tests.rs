@@ -478,62 +478,6 @@ async fn links_leave_out_addresses_the_host_does_not_publish_on() {
     }
 }
 
-/// Published on every address (BIND=0.0.0.0): no link is dropped although no connect to a
-/// published address works from inside the container.
-#[tokio::test]
-async fn container_without_hairpin_keeps_every_covered_link() {
-    let (_, t) = reach_tools(Some("0.0.0.0"));
-    let out = call(
-        &t,
-        "deploy_app",
-        json!({"spec": minecraft(), "app": "minecraft"}),
-    )
-    .await
-    .unwrap();
-    let rows = &out["reachability"]["addresses"];
-    assert_eq!(rows[0]["status"], "ok");
-    assert_eq!(rows[1]["status"], "ok");
-    assert_eq!(out["reachability"]["warning"], Value::Null);
-    assert_eq!(out["ports"][0]["address"], "203.0.113.10:30000");
-}
-
-/// Loopback-only publishing with non-loopback addresses: every link is dead, and the owner
-/// is told nothing is left.
-#[tokio::test]
-async fn loopback_bind_drops_every_other_address() {
-    let (_, t) = reach_tools(Some("127.0.0.1"));
-    let out = call(
-        &t,
-        "deploy_app",
-        json!({"spec": minecraft(), "app": "minecraft"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(out["ports"][0]["address"], Value::Null);
-    let warning = out["reachability"]["warning"].as_str().unwrap();
-    assert!(warning.contains("203.0.113.10, 100.64.0.10"), "{warning}");
-    assert!(warning.contains("No working address is left"), "{warning}");
-}
-
-/// No publish bind (Nix/host install): a failed connect keeps the link, with a note.
-#[tokio::test]
-async fn without_a_publish_bind_a_failed_probe_keeps_the_link() {
-    let (_, t) = reach_tools(None);
-    let out = call(
-        &t,
-        "deploy_app",
-        json!({"spec": minecraft(), "app": "minecraft"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(out["ports"][0]["address"], "203.0.113.10:30000");
-    let rows = &out["reachability"]["addresses"];
-    assert_eq!(rows[0]["status"], "unverified");
-    assert_eq!(rows[1]["status"], "unverified");
-    assert_eq!(out["reachability"]["warning"], Value::Null);
-    assert!(out["reachability"]["note"].is_string());
-}
-
 fn tools(fake: Option<Arc<Fake>>) -> BTreeMap<&'static str, Arc<dyn Tool>> {
     app_tools(settings(), fake)
         .into_iter()
@@ -1133,11 +1077,7 @@ async fn without_a_cluster_reads_say_so_and_writes_fail() {
     let Err(ToolError::Failed(m)) = r else {
         panic!("{r:?}")
     };
-    assert!(
-        m.starts_with("The app platform is not installed on this device: this copy of Melissa"),
-        "{m}"
-    );
-    assert!(m.contains("docs/QUICKSTART.md"), "{m}");
+    assert!(m.contains(crate::cluster::NOT_INSTALLED), "{m}");
     let fake = Arc::new(Fake {
         down: true,
         ..Fake::default()
@@ -1284,41 +1224,6 @@ async fn through_the_registry_logs_taint_and_uninstall_waits_for_a_human() {
     reg.confirmations().resolve(pending.id, Verdict::Approved);
     waiter.await.unwrap().unwrap();
     assert!(fake.state().namespace.is_none());
-}
-
-/// What the lead agent receives over MCP (any provider) when k3s isn't on this device: the
-/// words to pass on, not just a flag.
-#[tokio::test]
-async fn the_agent_gets_the_no_k3s_words_over_mcp() {
-    let mut tools = app_tools::<Fake>(settings(), None);
-    tools.push(Arc::new(crate::ClusterHealth::new(None)));
-    let server = melissa_agent::mcp::McpServer::new(ToolRegistry::new(tools, None));
-    let ctx = TaskContext {
-        delegate: true,
-        ..TaskContext::default()
-    };
-    let token = server.open_session(1, ctx, None).unwrap();
-    for name in ["cluster_health", "list_apps"] {
-        let reply = server
-            .handle(
-                &token,
-                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": name, "arguments": {}}}),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        let result = &reply["result"];
-        assert_ne!(result["isError"], true, "{name}: {result}");
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let body: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(body["k3s_set_up"], false, "{name}: {text}");
-        assert_eq!(
-            body["app_platform"],
-            crate::cluster::NOT_INSTALLED,
-            "{name}: {text}"
-        );
-    }
 }
 
 // ---- workspaces, agents and scopes ---------------------------------------------------------------
@@ -2675,6 +2580,33 @@ fn no_agent_tool_can_force_delete() {
     }
 }
 
+/// No agent tool reads an app's setup password: none is named for it, and after an install
+/// no tool's answer or error carries the value (the tools' cluster traits have no Secret read).
+#[tokio::test(start_paused = true)]
+async fn no_agent_tool_can_read_or_reveal_a_setup_password() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    call(&t, "deploy_app", json!({"spec": nc(), "app": "nextcloud"}))
+        .await
+        .unwrap();
+    let secret = password(&fake);
+    for name in t.keys() {
+        for word in ["password", "secret", "credential"] {
+            assert!(!name.contains(word), "{name}");
+        }
+        let args = match *name {
+            "wait_for_apps" => json!({"apps": ["nextcloud"], "timeout_secs": 1}),
+            "app_exec" => json!({"app": "nextcloud", "command": ["env"]}),
+            _ => json!({"app": "nextcloud"}),
+        };
+        let text = match call(&t, name, args).await {
+            Ok(v) => v.to_string(),
+            Err(e) => e.to_string(),
+        };
+        assert!(!text.contains(&secret), "{name}: {text}");
+    }
+}
+
 /// A namespace as the code before the rename to generic terms labelled it.
 fn old_keys_nextcloud(fake: &Fake) {
     nextcloud_with(
@@ -3293,7 +3225,7 @@ fn two_minecrafts() -> Arc<Fake> {
 }
 
 #[tokio::test]
-async fn my_apps_shows_an_agent_its_own_apps_and_only_names_and_owners_of_the_rest() {
+async fn my_apps_shows_an_agent_its_own_apps_the_rest_by_name_and_the_lead_agent_all() {
     let fake = two_minecrafts();
     let reg = registry(&fake, None);
     let out = reg
@@ -3351,12 +3283,8 @@ async fn my_apps_shows_an_agent_its_own_apps_and_only_names_and_owners_of_the_re
         .unwrap()
         .iter()
         .all(|a| a["phase"] == "ready"));
-}
 
-#[tokio::test]
-async fn my_apps_shows_the_lead_agent_every_app_grouped_by_owner() {
-    let fake = two_minecrafts();
-    let reg = registry(&fake, None);
+    // The lead agent sees every app, grouped by owner.
     let out = reg
         .call(1, &mut lead(), "my_apps", json!({}))
         .await

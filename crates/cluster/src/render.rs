@@ -979,4 +979,6 @@ pub fn secret_object(plan: &SecretPlan, value: String) -> Secret {
 #[cfg(test)]
 mod network_tests;
 #[cfg(test)]
+mod rbac_tests;
+#[cfg(test)]
 mod tests;

@@ -727,7 +727,7 @@ async fn install_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
         if installer.status(id).await.state != InstallState::Idle {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        tokio::time::sleep(look(150)).await;
     }
     Ok(format!("Installing {}…", default_label(id)))
 }
@@ -788,6 +788,12 @@ fn audit_previous(ui: &Ui, job: Job, id: &str, st: &InstallStatus) {
     }
 }
 
+/// The pause between looks at an install or sign-in unit: `ms` milliseconds, 40 times shorter
+/// in tests (the fake `systemctl` answers at once, so the tests needn't wait in real time).
+fn look(ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(if cfg!(test) { ms / 40 } else { ms })
+}
+
 /// Audit how an install or sign-in ended, once it has (whether or not anyone watches the
 /// page). After a success Melissa looks up the new agent's models.
 fn watch(ui: &Ui, job: Job, id: &str, before: u64) {
@@ -802,7 +808,7 @@ fn watch(ui: &Ui, job: Job, id: &str, before: u64) {
         let mut seen = false;
         // The units give up after 15 minutes; look a little longer.
         for round in 0..(16 * 60 / 2) {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(look(2000)).await;
             let st = s.parts().installer.job_status(job, &id).await;
             if st.state == InstallState::Running {
                 seen = true;
@@ -900,7 +906,7 @@ async fn login_checked(ui: &Ui, id: &str) -> Result<String, ChangeError> {
         if shown || ended {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(look(200)).await;
     }
     Ok(String::new())
 }
@@ -949,7 +955,7 @@ async fn send_code_checked(ui: &Ui, id: &str, code: &str) -> Result<String, Chan
     if code.is_empty() {
         // Give the unit a moment to end, so the page shows the Sign in button again.
         for _ in 0..15 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(look(200)).await;
             if installer.job_status(Job::Login, id).await.state != InstallState::Running {
                 break;
             }

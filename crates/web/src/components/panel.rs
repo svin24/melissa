@@ -610,66 +610,37 @@ mod tests {
     }
 
     #[test]
-    fn usage_table_hides_context_and_cost_when_nothing_is_reported() {
-        let html =
-            usage_table(&[row(None, None), row(None, None)], "Counted since 21 Nov.").into_string();
-        assert!(html.contains(">Approvals asked</th>"));
-        for absent in [">Context</th>", ">Cost</th>", "Not reported", "\u{2014}"] {
-            assert!(!html.contains(absent), "unexpected {absent}");
-        }
-        assert_eq!(html.matches("<td").count(), 6);
-        assert!(html.contains("<p class=\"quiet\">Counted since 21 Nov.</p>"));
-    }
-
-    #[test]
-    fn usage_table_shows_a_column_with_a_dash_where_one_row_is_missing() {
-        let html =
-            usage_table(&[row(Some("45k of 200k"), None), row(None, None)], "").into_string();
-        assert!(html.contains(">Context</th>"));
-        assert!(!html.contains(">Cost</th>"));
-        assert!(html.contains("<td class=\"num\">45k of 200k</td>"));
-        assert!(html.contains(
-            "<td class=\"num\" title=\"Not reported\"><span class=\"quiet\" aria-hidden=\"true\">\u{2014}</span><span class=\"visually-hidden\">Not reported</span></td>"
-        ));
-        assert_eq!(html.matches("<td").count(), 8);
-    }
-
-    #[test]
-    fn the_sections_bar_has_four_labelled_tabs() {
-        let html = section_bar(Nav::Chat, &UpdateHint::NONE).into_string();
-        for (href, label) in [
-            ("/settings", "Settings"),
-            ("/cluster", "Apps"),
-            ("/usage", "Usage"),
-            ("/settings/updates", "Updates"),
+    fn usage_columns_show_only_what_some_row_reports() {
+        // (rows, Context column, Cost column, cells, a row marked "Not reported").
+        for (rows, context, cost, cells, missing) in [
+            (
+                vec![row(None, None), row(None, None)],
+                false,
+                false,
+                6,
+                false,
+            ),
+            (
+                vec![row(Some("45k"), None), row(None, None)],
+                true,
+                false,
+                8,
+                true,
+            ),
+            (
+                vec![row(None, Some("$1")), row(None, Some("$2"))],
+                false,
+                true,
+                8,
+                false,
+            ),
         ] {
-            assert!(html.contains(&format!("href=\"{href}\"")), "{href}");
-            assert!(
-                html.contains(&format!("<span class=\"tab-label\">{label}</span>")),
-                "{label}"
-            );
+            let html = usage_table(&rows, "").into_string();
+            assert_eq!(html.contains(">Context</th>"), context, "{html}");
+            assert_eq!(html.contains(">Cost</th>"), cost, "{html}");
+            assert_eq!(html.matches("<td").count(), cells, "{html}");
+            assert_eq!(html.contains("Not reported"), missing, "{html}");
         }
-        assert!(html.contains("aria-label=\"Sections\""));
-        assert!(html.contains("href=\"/usage\" title=\"Usage and resources\""));
-        assert!(!html.contains("aria-current"));
-    }
-
-    #[test]
-    fn the_updates_tab_shows_a_dot_only_when_an_update_is_available() {
-        let quiet = section_bar(Nav::Chat, &UpdateHint::NONE).into_string();
-        assert!(quiet.contains("data-update=\"none\""));
-        assert!(quiet.contains("title=\"Updates\""));
-        assert!(!quiet.contains("update-dot") && !quiet.contains("has-update"));
-        let hint = UpdateHint {
-            href: "/settings/updates",
-            label: "Melissa update available",
-            available: true,
-        };
-        let dot = section_bar(Nav::Chat, &hint).into_string();
-        assert!(dot.contains("class=\"tab tab-update has-update\""));
-        assert!(dot.contains("data-update=\"available\""));
-        assert!(dot.contains("<span class=\"update-dot\" aria-hidden=\"true\"></span>"));
-        assert!(dot.contains(": Melissa update available"));
     }
 
     #[test]

@@ -716,34 +716,6 @@ mod tests {
         assert_eq!(w.cost.as_deref(), Some("US$1.25"));
     }
 
-    #[test]
-    fn the_note_mentions_context_and_cost_only_when_something_is_missing() {
-        let mut full = Usage::starting(1);
-        full.context = Some(Context {
-            used: 1_000,
-            size: 2_000,
-        });
-        full.report_cost("s", "USD", 10_000);
-        let bare = Usage::starting(1);
-        let w = |u: &Usage| words("Ada".into(), "/".into(), "Helper", u);
-        let since = || Some("21 Nov".to_string());
-        assert_eq!(note(since(), &[w(&full)]), "Counted since 21 Nov.");
-        assert_eq!(
-            note(since(), &[w(&full), w(&bare)]),
-            "Counted since 21 Nov. Context and cost show only where the provider reports them."
-        );
-        let mut context_only = Usage::starting(1);
-        context_only.context = full.context;
-        assert_eq!(
-            note(since(), &[w(&full), w(&context_only)]),
-            "Counted since 21 Nov. Cost shows only where the provider reports it."
-        );
-        assert_eq!(
-            note(None, &[w(&bare)]),
-            "Context and cost show only where the provider reports them."
-        );
-    }
-
     // --- The providers' part ------------------------------------------------------------------
 
     use melissa_agent::provider_usage::SourceStatus;

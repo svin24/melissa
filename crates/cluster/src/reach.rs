@@ -684,10 +684,8 @@ mod tests {
         let note = out.report["note"].as_str().unwrap();
         assert!(note.contains("100.64.0.10:30000 timed out"), "{note}");
         assert!(note.contains("links are kept"), "{note}");
-    }
 
-    #[tokio::test]
-    async fn probe_mode_an_app_that_does_not_answer_is_not_an_address_problem() {
+        // An app that answers nowhere (not even the control): not an address problem.
         let (r, _) = reach(FakeProbe::default(), None);
         let out = check(&r, &addrs(&["203.0.113.10"]), &[tcp(30000, 30000)])
             .await

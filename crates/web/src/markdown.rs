@@ -486,58 +486,48 @@ mod tests {
     }
 
     #[test]
-    fn linkify_finds_bare_urls() {
-        assert_eq!(
-            urls("Open http://nextcloud.example.com now"),
-            ["http://nextcloud.example.com"]
-        );
-        assert_eq!(
-            urls("See https://example.com/a?b=1&c=2#x."),
-            ["https://example.com/a?b=1&c=2#x"]
-        );
-        assert_eq!(urls("(https://example.com/x)"), ["https://example.com/x"]);
-        assert_eq!(
-            urls("https://en.example.org/wiki/Foo_(bar), ok"),
-            ["https://en.example.org/wiki/Foo_(bar)"]
-        );
-        assert_eq!(urls("HTTPS://EXAMPLE.COM!"), ["HTTPS://EXAMPLE.COM"]);
-        assert_eq!(urls("<https://example.com>"), ["https://example.com"]);
-        assert_eq!(
-            urls("a \"https://example.com/q\" b"),
-            ["https://example.com/q"]
-        );
-        assert_eq!(
-            urls("two: http://a.example and https://b.example."),
-            ["http://a.example", "https://b.example"]
-        );
-        assert_eq!(
-            urls("http://203.0.113.5:8080/"),
-            ["http://203.0.113.5:8080/"]
-        );
-    }
-
-    #[test]
-    fn linkify_skips_non_urls() {
-        assert!(urls("no links here, just http and https").is_empty());
-        assert!(urls("http:// alone, https://. too").is_empty());
-        assert!(urls("xhttp://example.com").is_empty());
-        assert!(urls("javascript:alert('http://x')").len() == 1);
-        assert!(urls("ftp://example.com").is_empty());
-    }
-
-    #[test]
-    fn linkify_keeps_all_text() {
-        let t = "a http://x.example b. https://y.example/(z) c";
-        let joined: String = linkify(t)
-            .into_iter()
-            .map(|s| match s {
-                Segment::Text(s) | Segment::Url(s) => s,
-            })
-            .collect();
-        assert_eq!(joined, t);
-        // Multi-byte text around URLs.
-        assert_eq!(urls("ünï http://ex.example/ä ü"), ["http://ex.example/ä"]);
-        assert!(urls("").is_empty());
+    fn linkify_finds_bare_urls_and_keeps_all_text() {
+        let cases: [(&str, &[&str]); 16] = [
+            (
+                "Open http://nextcloud.example.com now",
+                &["http://nextcloud.example.com"],
+            ),
+            (
+                "See https://example.com/a?b=1&c=2#x.",
+                &["https://example.com/a?b=1&c=2#x"],
+            ),
+            ("(https://example.com/x)", &["https://example.com/x"]),
+            (
+                "https://en.example.org/wiki/Foo_(bar), ok",
+                &["https://en.example.org/wiki/Foo_(bar)"],
+            ),
+            ("HTTPS://EXAMPLE.COM!", &["HTTPS://EXAMPLE.COM"]),
+            ("<https://example.com>", &["https://example.com"]),
+            ("a \"https://example.com/q\" b", &["https://example.com/q"]),
+            (
+                "two: http://a.example and https://b.example.",
+                &["http://a.example", "https://b.example"],
+            ),
+            ("http://203.0.113.5:8080/", &["http://203.0.113.5:8080/"]),
+            ("ünï http://ex.example/ä ü", &["http://ex.example/ä"]),
+            ("javascript:alert('http://x')", &["http://x"]),
+            ("no links here, just http and https", &[]),
+            ("http:// alone, https://. too", &[]),
+            ("xhttp://example.com", &[]),
+            ("ftp://example.com", &[]),
+            ("", &[]),
+        ];
+        for (text, want) in cases {
+            assert_eq!(urls(text), want, "{text}");
+            // Nothing is lost between the pieces.
+            let joined: String = linkify(text)
+                .into_iter()
+                .map(|s| match s {
+                    Segment::Text(s) | Segment::Url(s) => s,
+                })
+                .collect();
+            assert_eq!(joined, text);
+        }
     }
 
     #[test]

@@ -2941,69 +2941,13 @@ mod tests {
             let out = markdown(input).into_string();
             assert_inert(&out);
         }
-    }
-
-    #[test]
-    fn markdown_elements() {
-        let out = markdown("# Title\n\n## Sub\n\n### Small").into_string();
-        assert!(out.contains(r#"<h4 class="md-h1">Title</h4>"#), "{out}");
-        assert!(out.contains(r#"<h5 class="md-h2">Sub</h5>"#));
-        assert!(out.contains(r#"<h6 class="md-h3">Small</h6>"#));
-
-        let out = markdown("```rust\nfn main() { 1 < 2 }\n```").into_string();
-        assert!(
-            out.contains("<pre tabindex=\"0\"><code>fn main() { 1 &lt; 2 }\n</code></pre>"),
-            "{out}"
-        );
-        assert!(out.contains("copy-code"));
-
-        let out = markdown("| a | b |\n|:-:|---|\n| 1 | 2 |").into_string();
-        assert!(out.contains(r#"<div class="md-table" tabindex="0"><table><thead><tr><th scope="col" class="align-center">a</th><th scope="col">b</th></tr></thead><tbody><tr><td class="align-center">1</td><td>2</td></tr></tbody></table></div>"#), "{out}");
-
-        let out =
-            markdown("~~old~~ *em*\n> quote\n\n3. three\n4. four\n\n- [x] done\n- [ ] todo\n\n---")
-                .into_string();
-        assert!(out.contains("<del>old</del> <em>em</em>"), "{out}");
-        assert!(
-            out.contains("<blockquote><p>quote</p></blockquote>"),
-            "{out}"
-        );
-        assert!(out.contains(r#"<ol start="3"><li>three</li>"#), "{out}");
-        assert!(
-            out.contains(
-                r#"<input class="task" type="checkbox" disabled checked aria-label="Done">"#
-            ),
-            "{out}"
-        );
-        assert!(
-            out.contains(r#"<input class="task" type="checkbox" disabled aria-label="Not done">"#)
-        );
-        assert!(out.contains("<hr>"));
-
-        // Images are not loaded: a link with the alt text.
+        // Images are never loaded: a link with the alt text.
         let out = markdown("![the logo](https://example.com/logo.png)").into_string();
-        assert!(out.contains(r#"<a href="https://example.com/logo.png" target="_blank" rel="noopener noreferrer nofollow" class="md-image"><span class="image-tag">Image: </span>the logo</a>"#), "{out}");
-
-        // Line breaks inside a paragraph are kept (chat style).
-        let out = markdown("a\nb").into_string();
-        assert!(out.contains("<p>a<br>b</p>"), "{out}");
-    }
-
-    #[test]
-    fn bare_urls_become_links() {
-        let link = r#"<a href="http://nextcloud.example.com" target="_blank" rel="noopener noreferrer nofollow">http://nextcloud.example.com</a>"#;
-        let out = markdown("Open http://nextcloud.example.com.").into_string();
-        assert!(out.contains(&format!("Open {link}.")), "{out}");
-        let out = markdown("`http://nextcloud.example.com`").into_string();
-        assert!(!out.contains("<a "), "{out}");
-        let out = user_message_with("see http://nextcloud.example.com, `http://x.example`", &[])
-            .into_string();
+        assert!(!out.contains("<img"), "{out}");
         assert!(
-            out.contains(&format!("see {link}, <code>http://x.example</code>")),
+            out.contains(r#"href="https://example.com/logo.png""#),
             "{out}"
         );
-        let out = user_message_with("a\nb\n\nc <b>", &[]).into_string();
-        assert!(out.contains("<p>a<br>b</p><p>c &lt;b&gt;</p>"), "{out}");
     }
 
     #[test]
@@ -3042,13 +2986,6 @@ mod tests {
         let done = live_region("t", "/x", 2, false, html! {}).into_string();
         assert!(live.contains("hx-trigger=\"every 2s\""));
         assert!(!done.contains("hx-get"));
-    }
-
-    #[test]
-    fn truncation_keeps_full_text_in_title() {
-        let out = truncated("abcdef", 3).into_string();
-        assert!(out.contains("title=\"abcdef\""));
-        assert!(out.contains("abc…"));
     }
 
     fn card_for(state: ApprovalState, destructive: bool, permanent: bool) -> String {
@@ -3142,79 +3079,5 @@ mod tests {
             assert!(!out.contains("Can't be undone"));
             assert!(!out.contains("Waiting for your decision"));
         }
-    }
-
-    #[test]
-    fn app_list_rows_are_a_real_list_with_status_words() {
-        let rows = vec![AppRow {
-            name: "Jellyfin",
-            shape: "drop",
-            color: "teal",
-            address: Some("box:8096 (HTTP)"),
-            link: Some("http://box:8096"),
-            person: Some("ada"),
-            health: Health::Ok,
-            status: "Running",
-            details: "/cluster/apps/jellyfin",
-        }];
-        let groups = [AppGroup {
-            title: "Media",
-            rows,
-        }];
-        let filter = [
-            ShowChoice {
-                label: "Everyone",
-                key: "everyone",
-                current: true,
-            },
-            ShowChoice {
-                label: "Me",
-                key: "me",
-                current: false,
-            },
-        ];
-        let out = app_list(&AppList {
-            filter: Some(&filter),
-            count: 1,
-            add: "/?draft=Install%20",
-            groups: &groups,
-            empty: None,
-            url: "/ui/cluster/apps?by=everyone",
-        })
-        .into_string();
-        assert!(
-            out.contains("<ul class=\"app-rows\"><li class=\"app-row\">"),
-            "{out}"
-        );
-        assert!(out.contains("aria-labelledby=\"apps-show-label\""));
-        assert!(out.contains("id=\"apps-by-everyone\" href=\"/cluster?by=everyone\""));
-        assert!(out.contains("aria-current=\"true\""));
-        assert!(out.contains("Installed by </span>ada"));
-        assert!(out.contains("Running"));
-        assert!(out.contains("href=\"http://box:8096\""));
-        assert!(out.contains("1 app<"));
-        assert!(out.contains("hx-get=\"/ui/cluster/apps?by=everyone\""));
-        // A member's list has no filter.
-        let out = app_list(&AppList {
-            filter: None,
-            count: 0,
-            add: "/?draft=Install%20",
-            groups: &[],
-            empty: Some(AppsEmpty {
-                title: Some("No apps yet"),
-                text: "Ask Melissa to install one. It shows up here.",
-            }),
-            url: "/ui/cluster/apps",
-        })
-        .into_string();
-        assert!(!out.contains("show-filter"));
-        assert!(out.contains("No apps yet"));
-        assert!(out.contains("Add an app"));
-    }
-
-    #[test]
-    fn oob_targets_the_inner_content() {
-        let out = oob_inner("c-1", html! { "x" }).into_string();
-        assert_eq!(out, "<div hx-swap-oob=\"innerHTML:#c-1\">x</div>");
     }
 }

@@ -316,7 +316,7 @@ release-20261116.0) and every check passed the same.
 
 ## Gotchas
 - CEL: Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as `s.namespace`, never
-  `__namespace__` (`rbac_manifests.rs` guards it).
+  `__namespace__` (`render/rbac_tests.rs` guards it).
 - `k3s-prepare` reinstalls `/usr/lib/melissa/k3s/manifests/*` on every k3s start: rebuild the
   image instead of live-patching policies.
 - The workloads policy checks stop/start patches too: it must accept Deployments rendered by

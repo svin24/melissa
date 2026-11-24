@@ -736,12 +736,10 @@ mod tests {
         assert_eq!(p.checklist(), vec![SetupStep::Extras]);
         p.extras_on = true;
         assert!(p.checklist().is_empty());
-    }
-
-    #[test]
-    fn a_hidden_checklist_stays_hidden() {
-        let mut p = p();
-        p.skipped = vec!["device".into()];
+        // A hidden checklist stays hidden.
+        p.skipped.push("device".into());
+        p.device_named = false;
+        assert!(!p.checklist().is_empty());
         p.dismissed = true;
         assert!(p.checklist().is_empty());
     }
@@ -845,15 +843,9 @@ mod tests {
         );
         // Melissa's current backend is chosen.
         assert_eq!(current.as_deref(), Some("opencode-acp"));
-    }
 
-    #[test]
-    fn the_current_model_is_preselected_and_default_means_the_default_entry() {
-        let mut claude = backend(
-            "claude-session",
-            true,
-            &[("default", "Default (recommended)"), ("sonnet", "Sonnet")],
-        );
+        // Its current model is preselected; "default" is the default entry.
+        let mut claude = backend("claude-session", true, &[("default", "D"), ("sonnet", "S")]);
         claude.model = Some("sonnet".into());
         let (_, current) = model_options(std::slice::from_ref(&claude));
         assert_eq!(current.as_deref(), Some("claude-session sonnet"));

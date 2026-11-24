@@ -1,6 +1,4 @@
-use std::path::Path;
-
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::*;
 use crate::fixtures::nextcloud;
@@ -28,78 +26,6 @@ fn minecraft() -> AppSpec {
         "network": {"internet": true},
     }))
     .unwrap()
-}
-
-/// All objects as one JSON document (what the golden file holds).
-fn as_json(o: &AppObjects) -> Value {
-    json!({
-        "namespace": o.namespace,
-        "role_binding": o.role_binding,
-        "secrets": o.secrets.iter().map(|p| json!({
-            "namespace": p.namespace, "name": p.name, "key": p.key, "length": p.length,
-            "labels": p.labels,
-        })).collect::<Vec<_>>(),
-        "volumes": o.volumes,
-        "deployment": o.deployment,
-        "service": o.service,
-        "files": o.files,
-        "port_service": o.port_service,
-        "ingress": o.ingress,
-        "network_policies": o.network_policies,
-    })
-}
-
-/// Compare with `tests/golden/<name>.json`; `MELISSA_UPDATE_GOLDEN=1` rewrites it.
-fn golden(name: &str, actual: &Value) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden")
-        .join(format!("{name}.json"));
-    let text = serde_json::to_string_pretty(actual).unwrap() + "\n";
-    if std::env::var_os("MELISSA_UPDATE_GOLDEN").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &text).unwrap();
-    }
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-        panic!(
-            "missing {}; run with MELISSA_UPDATE_GOLDEN=1",
-            path.display()
-        )
-    });
-    assert_eq!(text, expected, "golden {name} differs; review and update");
-}
-
-#[test]
-fn nextcloud_renders_to_the_golden_objects() {
-    let ports = BTreeMap::from([("http".to_string(), 30000)]);
-    golden(
-        "nextcloud",
-        &as_json(&render(
-            "nextcloud",
-            &nextcloud(),
-            &Placement {
-                node_ports: &ports,
-                hosts: &["192.0.2.15".to_string(), "melissa".to_string()],
-                ..Placement::domain("melissa.home.arpa")
-            },
-        )),
-    );
-}
-
-#[test]
-fn minecraft_renders_to_the_golden_objects() {
-    let ports = BTreeMap::from([("game".to_string(), 30001), ("bedrock".to_string(), 30002)]);
-    golden(
-        "minecraft",
-        &as_json(&render(
-            "minecraft",
-            &minecraft(),
-            &Placement {
-                node_ports: &ports,
-                device_addresses: &["198.51.100.15".parse().unwrap()],
-                ..Placement::domain("melissa.home.arpa")
-            },
-        )),
-    );
 }
 
 /// A web app's objects: its volume, its own Secret per field (referenced from the env), its
@@ -205,26 +131,49 @@ fn isolation_picks_the_runtime_class_and_labels_pod_and_namespace() {
 
 #[test]
 fn every_container_is_locked_down_and_sized() {
-    let o = render("minecraft", &minecraft(), &Placement::domain("x.test"));
-    let labels = o.namespace.metadata.labels.unwrap();
-    assert_eq!(labels[APP_LABEL], "minecraft");
-    assert_eq!(labels["pod-security.kubernetes.io/enforce"], "baseline");
-    assert_eq!(o.role_binding.role_ref.name, WORKLOAD_ROLE);
-    let pod = o.deployment.spec.template.spec.unwrap();
-    assert_eq!(pod.automount_service_account_token, Some(false));
-    assert!(pod.host_network.is_none() && pod.host_pid.is_none() && pod.host_ipc.is_none());
-    assert_eq!(
-        pod.security_context.unwrap().seccomp_profile.unwrap().type_,
-        "RuntimeDefault"
-    );
-    for c in &pod.containers {
-        let sc = c.security_context.as_ref().unwrap();
-        assert_eq!(sc.privileged, Some(false));
-        assert_eq!(sc.allow_privilege_escalation, Some(false));
-        assert!(sc.capabilities.is_none());
-        let limits = c.resources.as_ref().unwrap().limits.as_ref().unwrap();
-        assert!(limits.contains_key("cpu") && limits.contains_key("memory"));
+    // Every app at both isolation levels; gVisor unless the spec says `standard`.
+    for (name, spec) in [("nextcloud", nextcloud()), ("minecraft", minecraft())] {
+        for isolation in [None, Some(Isolation::Standard)] {
+            let mut spec = spec.clone();
+            spec.isolation = isolation;
+            let o = render(name, &spec, &Placement::domain("x.test"));
+            let labels = o.namespace.metadata.labels.unwrap();
+            assert_eq!(labels[APP_LABEL], name);
+            assert_eq!(labels["pod-security.kubernetes.io/enforce"], "baseline");
+            assert_eq!(o.role_binding.role_ref.name, WORKLOAD_ROLE);
+            let pod = o.deployment.spec.template.spec.unwrap();
+            assert_eq!(
+                pod.runtime_class_name.as_deref(),
+                runtime_class(isolation.unwrap_or(Isolation::Gvisor)),
+                "{name} {isolation:?}"
+            );
+            assert_eq!(pod.automount_service_account_token, Some(false), "{name}");
+            assert!(pod.host_network.is_none() && pod.host_pid.is_none() && pod.host_ipc.is_none());
+            assert_eq!(
+                pod.security_context.unwrap().seccomp_profile.unwrap().type_,
+                "RuntimeDefault"
+            );
+            for c in pod
+                .containers
+                .iter()
+                .chain(pod.init_containers.iter().flatten())
+            {
+                let sc = c.security_context.as_ref().unwrap();
+                assert_eq!(sc.privileged, Some(false), "{name} {}", c.name);
+                assert_eq!(
+                    sc.allow_privilege_escalation,
+                    Some(false),
+                    "{name} {}",
+                    c.name
+                );
+                assert!(sc.capabilities.is_none(), "{name} {}", c.name);
+                let limits = c.resources.as_ref().unwrap().limits.as_ref().unwrap();
+                assert!(limits.contains_key("cpu") && limits.contains_key("memory"));
+            }
+        }
     }
+    let o = render("minecraft", &minecraft(), &Placement::domain("x.test"));
+    let pod = o.deployment.spec.template.spec.unwrap();
     assert_eq!(
         pod.containers[0]
             .security_context

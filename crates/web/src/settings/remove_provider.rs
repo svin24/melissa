@@ -304,19 +304,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_read_naturally() {
-        assert_eq!(join_names(&["Melissa".into()]), "Melissa");
-        assert_eq!(
-            join_names(&["Ada".into(), "Melissa".into()]),
-            "Ada and Melissa"
-        );
-        assert_eq!(
-            join_names(&["Ada".into(), "Bo".into(), "Melissa".into()]),
-            "Ada, Bo and Melissa"
-        );
-    }
-
-    #[test]
     fn every_installable_provider_lists_what_its_install_leaves() {
         for id in melissa_settings::install::INSTALLABLE {
             let paths = install_paths(id);

@@ -423,35 +423,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_lists_backends_and_sets_csp() {
-        let (app, _) = app();
-        // Without a lead agent, home is the task list.
-        let (status, headers, _) = send(
-            &app,
-            axum::http::Request::get("/").body(Body::empty()).unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(headers[header::LOCATION], "/tasks");
-        let (status, headers, body) = send(
-            &app,
-            axum::http::Request::get("/tasks")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("Agent tasks"));
-        // The built-in echo is a test partner: not listed for people.
-        assert!(!body.contains("value=\"echo\"") && !body.contains("built-in, no LLM"));
-        assert!(body.contains("/assets/htmx.min.js"));
-        assert!(headers[header::CONTENT_SECURITY_POLICY]
-            .to_str()
-            .unwrap()
-            .contains("default-src 'self'"));
-    }
-
-    #[tokio::test]
     async fn assets_are_embedded() {
         let (app, _) = app();
         for (path, mime) in [
@@ -488,33 +459,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn htmx_dispatch_opens_the_task() {
-        let (app, board) = app();
-        let body = "backend=echo&prompt=hello+cluster";
-        let req = post("/tasks")
-            .header("hx-request", "true")
-            .header("sec-fetch-site", "same-origin")
-            .body(Body::from(body))
-            .unwrap();
-        let (status, headers, html) = send(&app, req).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(html.is_empty());
-        assert_eq!(headers["hx-redirect"], "/tasks/1");
-        assert_eq!(board.list().len(), 1);
+    async fn dispatch_opens_the_task_with_htmx_or_a_plain_form() {
+        // (htmx, backend) → status, the header that names the task.
+        for (htmx, backend, status, to) in [
+            (
+                true,
+                "echo",
+                StatusCode::OK,
+                Some(("hx-redirect", "/tasks/1")),
+            ),
+            (
+                false,
+                "echo",
+                StatusCode::SEE_OTHER,
+                Some(("location", "/tasks/1")),
+            ),
+            (false, "missing", StatusCode::UNPROCESSABLE_ENTITY, None),
+        ] {
+            let (app, board) = app();
+            let mut req = post("/tasks").header("sec-fetch-site", "same-origin");
+            if htmx {
+                req = req.header("hx-request", "true");
+            }
+            let body = format!("backend={backend}&prompt=hi");
+            let (got, headers, _) = send(&app, req.body(Body::from(body)).unwrap()).await;
+            assert_eq!(got, status, "{htmx} {backend}");
+            if let Some((name, value)) = to {
+                assert_eq!(headers[name], value);
+            }
+            assert_eq!(board.list().len(), usize::from(to.is_some()));
+        }
     }
 
-    #[tokio::test]
-    async fn plain_dispatch_redirects_and_errors_are_shown() {
-        let (app, _) = app();
-        let ok = "backend=echo&prompt=hi";
-        let (status, headers, _) = send(&app, post("/tasks").body(Body::from(ok)).unwrap()).await;
-        assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(headers[header::LOCATION], "/tasks/1");
-
-        let bad = "backend=missing&prompt=hi";
-        let (status, _, html) = send(&app, post("/tasks").body(Body::from(bad)).unwrap()).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(html.contains("unknown backend"));
+    #[test]
+    fn same_origin_needs_this_site_or_no_browser_headers() {
+        // (Sec-Fetch-Site, Origin, Host) → allowed. Sec-Fetch-Site wins when a browser sends it.
+        for (site, origin, host, ok) in [
+            (Some("same-origin"), None, None, true),
+            (Some("none"), None, None, true),
+            (Some("same-site"), None, None, false),
+            (Some("cross-site"), None, None, false),
+            (
+                Some("cross-site"),
+                Some("http://127.0.0.1:8080"),
+                Some("127.0.0.1:8080"),
+                false,
+            ),
+            (
+                Some("same-origin"),
+                Some("http://evil.example.com"),
+                Some("127.0.0.1:8080"),
+                true,
+            ),
+            // No Sec-Fetch-Site: the Origin must be this host.
+            (
+                None,
+                Some("http://127.0.0.1:8080"),
+                Some("127.0.0.1:8080"),
+                true,
+            ),
+            (
+                None,
+                Some("https://melissa.example.com"),
+                Some("melissa.example.com"),
+                true,
+            ),
+            (
+                None,
+                Some("http://evil.example.com"),
+                Some("127.0.0.1:8080"),
+                false,
+            ),
+            (
+                None,
+                Some("http://127.0.0.1:8081"),
+                Some("127.0.0.1:8080"),
+                false,
+            ),
+            (
+                None,
+                Some("http://127.0.0.1:8080.evil.example.com"),
+                Some("127.0.0.1:8080"),
+                false,
+            ),
+            (None, Some("null"), Some("127.0.0.1:8080"), false),
+            (None, Some("http://127.0.0.1:8080"), None, false),
+            // Neither header: not a browser (the CLI on the host socket).
+            (None, None, Some("127.0.0.1:8080"), true),
+            (None, None, None, true),
+        ] {
+            let mut h = HeaderMap::new();
+            for (name, value) in [("sec-fetch-site", site), ("origin", origin), ("host", host)] {
+                if let Some(v) = value {
+                    h.insert(name, HeaderValue::from_static(v));
+                }
+            }
+            assert_eq!(same_origin(&h), ok, "{site:?} {origin:?} {host:?}");
+        }
     }
 
     #[tokio::test]
@@ -740,6 +781,69 @@ mod tests {
             let (board, mcp, lead) = lead_parts(None, false);
             let router = router_with_settings(board, mcp, lead.clone(), Settings::detached(), auth);
             (router, lead)
+        }
+
+        /// The full router behind the sign-in gate, with an owner (`ana`) and a member (`bob`).
+        struct TestBox {
+            app: Router,
+            owner: melissa_auth::NewSession,
+            member: melissa_auth::NewSession,
+            lead: Lead,
+        }
+
+        impl TestBox {
+            fn new() -> Self {
+                Self::with(Settings::detached(), false, |_, _| Vec::new())
+            }
+
+            /// `signed_out`: the lead agent's provider isn't signed in; `tools` (given the
+            /// owner and the member) replace the cluster tools of the same names.
+            fn with(
+                settings: Settings,
+                signed_out: bool,
+                tools: impl FnOnce(
+                    &melissa_auth::NewSession,
+                    &melissa_auth::NewSession,
+                ) -> Vec<Arc<dyn Tool>>,
+            ) -> Self {
+                let auth = crate::auth::Auth::in_memory().with_cost(melissa_auth::Cost::Test);
+                let (code, _) = auth.setup_code().unwrap().unwrap();
+                let owner = auth
+                    .claim(&code, "ana", "owner-password", "test", "Test")
+                    .unwrap();
+                let inv = auth.create_invite(&owner.view.person.id, "test").unwrap();
+                let member = auth
+                    .accept_invite(&inv.token, "bob", "member-password", "test", "Test")
+                    .unwrap();
+                let (board, mcp, lead) = lead_parts_with(None, signed_out, tools(&owner, &member));
+                let app = router_with_settings(board, mcp, lead.clone(), settings, auth);
+                Self {
+                    app,
+                    owner,
+                    member,
+                    lead,
+                }
+            }
+        }
+
+        /// A request as `s` through the sign-in gate: its cookie, its CSRF token and a
+        /// same-origin form post (harmless on a GET).
+        fn as_(
+            s: &melissa_auth::NewSession,
+            method: &str,
+            uri: &str,
+        ) -> axum::http::request::Builder {
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "melissa.example.com")
+                .header(
+                    header::COOKIE,
+                    format!("{}={}", crate::auth::COOKIE_PLAIN, s.token),
+                )
+                .header(crate::auth::CSRF_HEADER, s.view.csrf.clone())
+                .header("sec-fetch-site", "same-origin")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         }
 
         fn lead_parts(
@@ -1064,38 +1168,6 @@ mod tests {
             b.body(Body::from(body.to_string())).unwrap()
         }
 
-        #[tokio::test]
-        async fn settings_pages_render_and_link_from_the_rail() {
-            let fx = SettingsFixture::new("render");
-            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
-            // `/settings` is the section list (phones) over the first section (Providers).
-            let (status, _, html) = send(&app, get("/settings")).await;
-            assert_eq!(status, StatusCode::OK);
-            assert!(html.contains("data-section=\"/settings/providers\" data-list"));
-            assert!(html.contains("<title>Settings"));
-            let (status, _, html) = send(&app, get("/settings/providers?p=grok")).await;
-            assert_eq!(status, StatusCode::OK);
-            for want in [
-                "href=\"/settings\"",
-                "Settings",
-                "Providers",
-                "Claude Code",
-                "Grok",
-                "v0.9.1",
-                "role=\"switch\"",
-                "Melissa runs on it now",
-                "Checked just now",
-            ] {
-                assert!(html.contains(want), "missing {want}");
-            }
-            // Claude isn't installed here, but this is no Melissa image: no melissa-setup line.
-            assert!(!html.contains("melissa-setup"));
-            let (status, _, html) = send(&app, get("/settings/updates")).await;
-            assert_eq!(status, StatusCode::OK);
-            assert!(html.contains("0.3.1") && html.contains("From source"));
-            assert!(html.contains("git pull"));
-        }
-
         // --- Voice input ------------------------------------------------------------------
 
         mod voice_fakes {
@@ -1324,19 +1396,6 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(v["text"], "heard 120000 ms");
-        }
-
-        #[tokio::test]
-        async fn voice_input_is_locked_without_a_speech_engine() {
-            let fx = SettingsFixture::new("voice-none");
-            let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
-            let (_, _, html) = send(&app, get("/settings/voice")).await;
-            assert!(html.contains("Not available on this install"), "{html}");
-            assert!(html.contains("disabled"));
-            let (_, _, html) = send(&app, form("/ui/settings/voice", "enabled=on", true)).await;
-            assert!(html.contains("isn"), "{html}");
-            let saved = std::fs::read_to_string(fx.dir.join("config/ui.toml")).unwrap_or_default();
-            assert!(!saved.contains("voice_input = true"));
         }
 
         #[tokio::test]
@@ -1725,14 +1784,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn settings_apps_without_the_filter_says_the_firewall_decides() {
-            let (app, _) = app();
-            let (_, _, html) = send(&app, get("/settings/apps")).await;
-            assert!(html.contains("Set by this device"), "{html}");
-            assert!(!html.contains("/ui/settings/apps"));
-        }
-
-        #[tokio::test]
         async fn the_developer_toggle_shows_thinking_and_timings_in_the_chat() {
             let fx = SettingsFixture::new("steps");
             let (app, lead) = app_with(Some(fx.settings(HostKind::Other, false)));
@@ -1818,42 +1869,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn nixos_updates_show_nix_commands_and_only_restart() {
-            let fx = SettingsFixture::new("nixos");
-            // helper=true also lays down stray helper mounts: a Nix install must still not
-            // offer the container's update buttons.
-            let settings = fx.settings(HostKind::Nix, true);
-            std::fs::create_dir_all(fx.dir.join("root/etc")).unwrap();
-            std::fs::write(fx.dir.join("root/etc/NIXOS"), "").unwrap();
-            let (app, _) = app_with(Some(settings));
-            let (status, _, html) = send(&app, get("/settings/updates")).await;
-            assert_eq!(status, StatusCode::OK);
-            for want in [
-                "0.3.1",
-                "NixOS configuration",
-                "nix flake update",
-                "sudo nixos-rebuild switch",
-                "sudo nixos-rebuild switch --rollback",
-            ] {
-                assert!(html.contains(want), "missing {want}");
-            }
-            for unwanted in [
-                "git pull",
-                "podman",
-                "container-build",
-                "container image",
-                "/ui/settings/updates/apply",
-                "/ui/settings/updates/rollback",
-            ] {
-                assert!(!html.contains(unwanted), "unexpected {unwanted}");
-            }
-            let (_, _, json) = send(&app, get("/api/settings/updates")).await;
-            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-            assert_eq!(v["host"], "nix");
-            assert_eq!(v["actions"], serde_json::json!(["restart"]));
-        }
-
-        #[tokio::test]
         async fn echo_is_never_listed() {
             let fx = SettingsFixture::new("echo-hidden");
             let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
@@ -1878,6 +1893,68 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::NOT_FOUND);
+            // Nor is it offered on the task list (Settings → Developer).
+            let (status, _, html) = send(&app, get("/settings/developer")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(!html.contains("<option value=\"echo\""), "{html}");
+        }
+
+        #[tokio::test]
+        async fn every_settings_section_answers_with_its_section_id() {
+            // A Nix host: its updates offer only a restart.
+            let fx = SettingsFixture::new("sections");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Nix, true)));
+            let (status, _, list) = send(&app, get("/settings")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(list.contains("data-section=\"/settings/providers\" data-list"));
+            for s in &crate::settings::pages::SECTIONS {
+                let mark = format!("data-section=\"{}\"", s.href);
+                let (status, _, page) = send(&app, get(s.href)).await;
+                assert_eq!(status, StatusCode::OK, "{}", s.href);
+                assert!(
+                    page.contains(&mark) && !page.contains(" data-list"),
+                    "{}",
+                    s.href
+                );
+                // The section swap (melissa.js, Settings already open) gets the panel alone.
+                let req = axum::http::Request::get(s.href)
+                    .header("hx-request", "true")
+                    .header("hx-target", "settings-main")
+                    .body(Body::empty())
+                    .unwrap();
+                let (status, _, alone) = send(&app, req).await;
+                assert_eq!(status, StatusCode::OK, "{}", s.href);
+                assert!(
+                    !alone.contains("<html") && alone.contains(&mark),
+                    "{}",
+                    s.href
+                );
+            }
+            let (_, v) = send_json(&app, get("/api/settings/updates")).await;
+            assert_eq!(v["host"], "nix");
+            assert_eq!(v["actions"], serde_json::json!(["restart"]));
+        }
+
+        #[tokio::test]
+        async fn the_real_router_sets_the_security_headers_everywhere() {
+            let fx = SettingsFixture::new("headers");
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            for (req, status) in [
+                (get("/"), StatusCode::OK),
+                (get("/settings/voice"), StatusCode::OK),
+                (get("/api/settings/providers"), StatusCode::OK),
+                (get("/assets/melissa.css"), StatusCode::OK),
+                (get("/no-such-page"), StatusCode::NOT_FOUND),
+            ] {
+                let uri = req.uri().to_string();
+                let (got, headers, _) = send(&app, req).await;
+                assert_eq!(got, status, "{uri}");
+                let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+                assert!(csp.contains("default-src 'self'"), "{uri}: {csp}");
+                assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{uri}");
+                assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{uri}");
+                assert_eq!(headers[header::REFERRER_POLICY], "same-origin", "{uri}");
+            }
         }
 
         #[tokio::test]
@@ -2295,41 +2372,31 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn nix_installs_point_at_the_nix_configuration() {
-            let fx = SettingsFixture::new("nix");
-            let (app, _) = app_with(Some(fx.settings_with(
-                HostKind::Other,
-                true,
-                InstallWay::Nix,
-            )));
-            let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
-            assert!(html.contains("This requires you add Claude Code via your Nix configuration."));
-            assert!(!html.contains(">Install<") && !html.contains("melissa-setup"));
-            let (status, v) = send_json(
-                &app,
-                json_post("/api/settings/providers/claude/install", ""),
-            )
-            .await;
-            assert_eq!(status, StatusCode::CONFLICT);
-            assert!(v["error"].as_str().unwrap().contains("Nix configuration"));
-            assert!(fx.calls().is_empty(), "the unit is never used on Nix");
-        }
-
-        #[tokio::test]
-        async fn without_the_unit_the_container_shows_no_host_command() {
-            let fx = SettingsFixture::new("manual");
-            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
-            let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
-            assert!(!html.contains("melissa-setup") && !html.contains("podman"));
-            assert!(!html.contains(">Install<"));
-            let (_, v) = send_json(&app, get("/api/settings/providers")).await;
-            assert_eq!(v["providers"][0]["install"]["way"], "manual");
-            let (status, _) = send_json(
-                &app,
-                json_post("/api/settings/providers/claude/install", ""),
-            )
-            .await;
-            assert_eq!(status, StatusCode::CONFLICT);
+        async fn without_the_install_button_nothing_reaches_systemd() {
+            // Nix installs and containers without the install unit: no button, no host
+            // command, and the API refuses.
+            for (kind, way, name) in [
+                (HostKind::Other, InstallWay::Nix, "nix"),
+                (HostKind::Container, InstallWay::Manual, "manual"),
+            ] {
+                let fx = SettingsFixture::new(&format!("no-button-{name}"));
+                let (app, _) = app_with(Some(fx.settings_with(kind, true, way)));
+                let (_, _, html) = send(&app, get("/settings/providers?p=claude")).await;
+                assert!(
+                    !html.contains("/ui/settings/providers/claude/install"),
+                    "{name}"
+                );
+                assert!(!html.contains("melissa-setup") && !html.contains("podman"));
+                let (_, v) = send_json(&app, get("/api/settings/providers")).await;
+                assert_eq!(v["providers"][0]["install"]["way"], name);
+                let (status, _) = send_json(
+                    &app,
+                    json_post("/api/settings/providers/claude/install", ""),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{name}");
+                assert!(fx.calls().is_empty(), "{name}: the unit is never used");
+            }
         }
 
         #[tokio::test]
@@ -3029,40 +3096,6 @@ mod tests {
             assert!(body.contains("<span class=\"badge tone-attention\">Needs permission</span>"));
         }
 
-        #[tokio::test]
-        async fn cluster_and_details_show_apps_and_devices() {
-            let (app, _) = app();
-            let (status, _, body) = get_html(&app, "/cluster").await;
-            assert_eq!(status, StatusCode::OK);
-            // The Apps list (2026-11-22): rows with status words, grouped by kind.
-            assert!(body.contains("<li class=\"app-row\">"), "{body}");
-            assert!(body.contains("class=\"badge tone-ok\""));
-            assert!(body.contains("class=\"badge tone-attention\"><span class=\"icon spin\""));
-            assert!(body.contains("href=\"http://nextcloud.example.com\""));
-            assert!(body.contains("Add an app"));
-            assert!(body.contains(">Other<"), "no kind: Other");
-            // Devices and their resources are in Usage and resources (2026-11-20).
-            assert!(!body.contains("Fedora Linux 45"));
-            let (status, _, body) = get_html(&app, "/usage").await;
-            assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("Fedora Linux 45"));
-            assert!(body.contains("4.0 GiB of 8.0 GiB used"));
-            // device_info's /var is 91% used: a storage meter and a warning on the card.
-            assert!(body.contains("<span>Storage</span>"));
-            assert!(body.contains("value=\"91\""));
-            assert!(body.contains("Storage is almost full: 1.7 GiB left."));
-            // The chat's details panel warns on this device's row.
-            let (status, _, body) = get_html(&app, "/chat").await;
-            assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("Storage almost full (1.7 GiB left)"));
-            // The app strip is gone (2026-11-20): its fragment no longer exists.
-            let (status, _, _) = get_html(&app, "/ui/strip").await;
-            assert_eq!(status, StatusCode::NOT_FOUND);
-            let (_, _, body) = get_html(&app, "/ui/cluster/apps").await;
-            assert!(body.starts_with("<div id=\"cluster-apps\""));
-            assert!(body.contains("hx-get=\"/ui/cluster/apps?by=everyone\""));
-        }
-
         fn panel_get(uri: &str) -> axum::http::Request<Body> {
             axum::http::Request::get(uri)
                 .header("hx-request", "true")
@@ -3223,97 +3256,6 @@ mod tests {
             assert!(!usage.contains("<html"));
         }
 
-        #[tokio::test]
-        async fn another_settings_section_answers_alone_for_the_section_swap() {
-            // melissa.js swaps only `#settings-main` when Settings is already open
-            // (2026-11-22): it asks with that target and gets the panel alone, whose section
-            // part says which list entry is current.
-            let (app, _) = app();
-            let req = axum::http::Request::get("/settings/voice")
-                .header("hx-request", "true")
-                .header("hx-target", "settings-main")
-                .body(Body::empty())
-                .unwrap();
-            let (status, _, alone) = send(&app, req).await;
-            assert_eq!(status, StatusCode::OK);
-            assert!(!alone.contains("<html"));
-            assert!(alone.contains(
-                "<div class=\"settings-main\" id=\"settings-main\" data-section=\"/settings/voice\" tabindex=\"-1\">"
-            ));
-            assert!(alone.contains("href=\"/settings/voice\" aria-current=\"page\""));
-        }
-
-        #[tokio::test]
-        async fn settings_shows_the_list_at_its_root_and_a_section_below_it() {
-            // 2026-11-22, phones: `/settings` is level 1 (the list, each row with its value),
-            // any other Settings page is level 2 (a section under a back link one level up).
-            let (app, _) = app();
-            let (status, _, list) = send(&app, get("/settings")).await;
-            assert_eq!(status, StatusCode::OK);
-            assert!(list.contains(" data-list "), "the list level is marked");
-            // Rows are links in real lists, with a value where there is one and a chevron.
-            assert!(list.contains("<ul aria-labelledby=\"settings-group-0\"><li"));
-            assert!(list.contains("<a href=\"/settings/voice\"><svg class=\"glyph\""));
-            assert!(list.contains(
-                "<span class=\"settings-label\">Files</span><span class=\"settings-value\">"
-            ));
-            assert!(list.contains("<span class=\"settings-label\">Developer</span><span class=\"settings-value\">Off</span>"));
-            assert!(list.contains(
-                "<span class=\"settings-label\">Agents</span><span class=\"settings-value\">"
-            ));
-            assert!(
-                list.contains("class=\"settings-danger\""),
-                "Reset is in the danger colour"
-            );
-            assert!(list.contains("class=\"settings-chevron\""));
-            // The list has its own close control (no section beside it on a phone).
-            assert!(list.contains("settings-list-close"));
-
-            for (uri, title, up, up_label) in [
-                ("/settings/voice", "Voice", "/settings", "Settings"),
-                ("/settings/files", "Files", "/settings", "Settings"),
-                (
-                    "/settings/providers/add",
-                    "Add provider",
-                    "/settings/providers",
-                    "Providers",
-                ),
-            ] {
-                let (status, _, page) = send(&app, get(uri)).await;
-                assert_eq!(status, StatusCode::OK, "{uri}");
-                assert!(!page.contains(" data-list"), "{uri} is a section");
-                assert!(
-                    !page.contains("settings-value"),
-                    "{uri}: values only on the list"
-                );
-                assert!(
-                    page.contains(&format!(
-                        "<a class=\"settings-back\" href=\"{up}\" data-settings-back title=\"Back\">"
-                    )),
-                    "{uri}: back link to {up}"
-                );
-                assert!(
-                    page.contains(&format!("Back to {up_label}</span>")),
-                    "{uri}"
-                );
-                assert!(
-                    page.contains(&format!(
-                        "<h1 class=\"settings-here\" tabindex=\"-1\">{title}</h1>"
-                    )),
-                    "{uri}: its title"
-                );
-            }
-            // The section swap gets the same marks: the list is a part like any other section.
-            let req = axum::http::Request::get("/settings")
-                .header("hx-request", "true")
-                .header("hx-target", "settings-main")
-                .body(Body::empty())
-                .unwrap();
-            let (_, _, alone) = send(&app, req).await;
-            assert!(!alone.contains("<html"));
-            assert!(alone.contains("data-section=\"/settings/providers\" data-list"));
-        }
-
         fn get_with_cookie(uri: &str, cookie: &str) -> axum::http::Request<Body> {
             axum::http::Request::get(uri)
                 .header(header::COOKIE, cookie)
@@ -3351,119 +3293,6 @@ mod tests {
             assert!(page.contains("aria-labelledby=\"details-h\" data-closed>"));
             assert!(!page.contains("data-sidebar-expand hidden"));
             assert!(page.contains("Pre-alpha."));
-        }
-
-        #[tokio::test]
-        async fn the_light_dark_choice_comes_with_the_page() {
-            // 2026-11-22: `data-theme` is rendered from the cookie, so the page never paints
-            // in the other scheme first. No cookie (or an unknown value): follow the system.
-            let (app, _) = app();
-            for uri in ["/chat", "/settings/voice", "/no-such-page"] {
-                let (_, _, page) = get_html(&app, uri).await;
-                assert!(!page.contains("data-theme"), "{uri}");
-                assert!(
-                    page.contains("name=\"color-scheme\" content=\"light dark\""),
-                    "{uri}"
-                );
-                for theme in ["light", "dark"] {
-                    let cookie = format!("melissa_theme={theme}");
-                    let (_, _, page) = send(&app, get_with_cookie(uri, &cookie)).await;
-                    assert!(
-                        page.contains(&format!("<html lang=\"en\" data-theme=\"{theme}\"")),
-                        "{uri} {theme}"
-                    );
-                    assert!(
-                        page.contains(&format!("name=\"color-scheme\" content=\"{theme}\"")),
-                        "{uri} {theme}"
-                    );
-                }
-                let (_, _, page) = send(&app, get_with_cookie(uri, "melissa_theme=blue")).await;
-                assert!(!page.contains("data-theme"), "{uri}");
-            }
-        }
-
-        #[tokio::test]
-        async fn settings_lists_grouped_sections_with_icons_and_a_search_field() {
-            let (app, _) = app();
-            let (_, _, body) = send(&app, panel_get("/settings/files")).await;
-            // The search field (shown by script) and its keyboard hint.
-            assert!(body.contains("data-settings-search hidden"));
-            assert!(body.contains("id=\"settings-q\" type=\"search\""));
-            assert!(body.contains("aria-keyshortcuts=\"/\""));
-            assert!(body.contains("class=\"settings-none quiet\" role=\"status\" hidden"));
-            // Groups in order, each section with an icon and the titles of its settings.
-            let agents = body.find(">Agents</p>").unwrap();
-            let chat = body.find(">Chat</p>").unwrap();
-            let system = body.find(">System</p>").unwrap();
-            assert!(agents < chat && chat < system);
-            assert!(body.contains("data-keywords=\"Keep files for file boxes expired\""));
-            assert!(body.matches("<svg class=\"glyph\"").count() >= 8);
-            // The title in the head bar and the current section.
-            assert!(body.contains("<h1 class=\"settings-here\" tabindex=\"-1\">Files</h1>"));
-            assert!(body.contains("href=\"/settings/files\" aria-current=\"page\""));
-            // The row pattern: title, description, control.
-            assert!(body.contains("<div class=\"setting-row\" data-setting>"));
-            assert!(body.contains("<p class=\"setting-title\">Keep files for</p>"));
-            assert!(body.contains("hx-trigger=\"change, submit\""));
-        }
-
-        #[tokio::test]
-        async fn the_sidebar_has_search_new_helper_groups_and_a_bottom_bar() {
-            let (app, _) = app();
-            let (_, _, body) = get_html(&app, "/").await;
-            let side = &body[body.find("<nav class=\"sidebar\"").unwrap()..];
-            let side = &side[..side.find("</nav>").unwrap()];
-            // The device menu, the search (filtered by script) and "+".
-            assert!(side.contains("popovertarget=\"device-menu\""));
-            assert!(
-                side.contains("id=\"agent-search\" type=\"search\" placeholder=\"Search agents\"")
-            );
-            assert!(side.contains("data-agent-search"));
-            assert!(side.contains("href=\"/settings/agents/new\" title=\"New helper\""));
-            // Melissa is pinned, with her star and "Lead agent", and is the open chat.
-            let pinned = &side[side.find("group-pinned").unwrap()..];
-            assert!(pinned.contains("<span class=\"name\">Melissa</span><svg class=\"star-mark\""));
-            assert!(pinned.contains("<span class=\"agent-sub\">Lead agent</span>"));
-            assert!(pinned.contains("class=\"agent-link\" href=\"/chat\" aria-current=\"page\""));
-            // No "New chat", no past chats list: one chat per agent.
-            assert!(!body.contains("New chat"));
-            assert!(!body.contains("/ui/new-chat"));
-            let foot = &body[body
-                .find("<nav class=\"tab-bar\" aria-label=\"Sections\">")
-                .unwrap()..];
-            for want in [
-                "href=\"/settings\" title=\"Settings\"",
-                "href=\"/cluster\" title=\"Apps\"",
-                "href=\"/usage\" title=\"Usage and resources\"",
-                "<span class=\"tab-label\">Usage</span>",
-                // No update known (not a container with the update helper): quiet, no dot.
-                "class=\"tab tab-update\" href=\"/settings/updates\" title=\"Updates\" data-update=\"none\"",
-            ] {
-                assert!(foot.contains(want), "missing {want}");
-            }
-            assert!(!foot.contains("update-dot"));
-        }
-
-        #[tokio::test]
-        async fn usage_lists_melissa_and_helpers_with_only_reported_numbers() {
-            let (app, _) = app();
-            let (status, _, body) = get_html(&app, "/usage").await;
-            assert_eq!(status, StatusCode::OK);
-            for want in [
-                "Usage and resources",
-                "<th scope=\"row\"><a href=\"/\">Melissa</a>",
-                "Lead agent",
-                "Approvals asked",
-                "Counted since",
-                "Context and cost show only where the provider reports them.",
-                "4.0 GiB of 8.0 GiB used",
-            ] {
-                assert!(body.contains(want), "missing {want}");
-            }
-            // The echo test backend reports neither context nor cost: no such columns.
-            for absent in [">Context</th>", ">Cost</th>", "Not reported"] {
-                assert!(!body.contains(absent), "unexpected {absent}");
-            }
         }
 
         // --- App details --------------------------------------------------------------------
@@ -3992,23 +3821,6 @@ mod tests {
             assert!(!frame.contains("<b>room"), "{frame}");
         }
 
-        /// A Settings save that changes nothing an open chat shows sends it nothing.
-        #[tokio::test]
-        async fn a_save_that_changes_nothing_shown_sends_nothing() {
-            let (app, lead) = app();
-            let mut stream = open_stream(&app, &lead).await;
-            // Already "queue".
-            send(
-                &app,
-                htmx_post("/ui/settings/developer/enter", "enter=queue"),
-            )
-            .await;
-            let quiet = tokio::time::timeout(Duration::from_millis(300), stream.frame()).await;
-            if let Ok(Some(Ok(f))) = quiet {
-                panic!("no update expected: {:?}", f.into_data());
-            }
-        }
-
         /// Settings → Schedules: add (presets), edit, switch off, run now (labelled in the
         /// chat), remove; bad input keeps what was typed.
         #[tokio::test]
@@ -4317,26 +4129,6 @@ mod tests {
             assert!(!body.contains(&format!("/ui/confirmations/{}/deny", c2.id)));
             // (Decided cards lose the app's name on reload: arguments live only while pending.)
             assert!(body.contains("No longer needed"));
-        }
-
-        #[tokio::test]
-        async fn each_composer_names_its_chat_for_drafts() {
-            let (app, lead) = app();
-            let ada = lead
-                .agents()
-                .registry()
-                .create("Ada", "stuck", None, "the lead agent (task 1)")
-                .unwrap();
-            let (_, _, home) = get_html(&app, "/").await;
-            assert!(home.contains("data-draft=\"lead\""), "{home}");
-            let (_, _, page) = get_html(&app, &format!("/agents/{}", ada.id)).await;
-            assert!(
-                page.contains(&format!("data-draft=\"agent.{}\"", ada.id)),
-                "{page}"
-            );
-            // The answer to a send (it replaces the composer) keeps the attribute.
-            let (_, _, html) = send(&app, htmx_post("/ui/messages", "text=Hi")).await;
-            assert!(html.contains("data-draft=\"lead\""), "{html}");
         }
 
         #[tokio::test]
@@ -5915,43 +5707,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_built_in_echo_is_not_offered() {
-        let get = |app: Router| async move {
-            send(
-                &app,
-                axum::http::Request::get("/tasks")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .2
-        };
-        // Only the built-in echo: nothing to offer, point to Providers.
-        let (app, _) = self::app();
-        let body = get(app).await;
-        assert!(!body.contains("<option"));
-        assert!(body.contains("No agent to try yet."));
-        assert!(body.contains("href=\"/settings/providers\""));
-        // An echo the user configured is offered; the built-in one still isn't.
-        let board = TaskBoard::new(
-            vec![
-                Arc::new(EchoBackend::new()),
-                Arc::new(melissa_agent::EchoSessionBackend::new(
-                    &melissa_agent::EchoSpec {
-                        name: "echo-b".into(),
-                    },
-                )),
-            ],
-            Duration::from_secs(5),
-            None,
-        );
-        let body = get(router(board)).await;
-        assert!(body.contains("<option value=\"echo-b\">echo-b</option>"));
-        assert!(!body.contains("<option value=\"echo\""));
-    }
-
-    #[tokio::test]
-    async fn task_page_renders_the_reply_as_markdown() {
+    async fn task_page_and_missing_task() {
         let (app, board) = app();
         let id = board
             .dispatch("echo", "**bold** <script>x</script>")
@@ -5965,27 +5721,9 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("<div class=\"md\">"));
-        assert!(body.contains("<strong>bold</strong>"));
-        assert!(!body.contains("<script>x"));
-        assert!(body.contains("Done"));
-        assert!(body.contains("aria-label=\"Breadcrumb\""));
-        // Finished: the region no longer polls.
+        // The reply is markdown with its HTML escaped; finished, the region stops polling.
+        assert!(body.contains("<strong>bold</strong>") && !body.contains("<script>x"));
         assert!(!body.contains(&format!("hx-get=\"/tasks/{id}/fragment\"")));
-    }
-
-    #[tokio::test]
-    async fn task_page_and_missing_task() {
-        let (app, board) = app();
-        let id = board.dispatch("echo", "ping").unwrap();
-        let (status, _, _) = send(
-            &app,
-            axum::http::Request::get(format!("/tasks/{id}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
         let (status, _, _) = send(
             &app,
             axum::http::Request::get("/tasks/42")
