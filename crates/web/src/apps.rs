@@ -15,6 +15,16 @@
 //!   (`app_logs`), `POST /api/apps/{app}/force-delete` `{"confirm": "<app>"}` → the
 //!   [`ForceDeleted`] report; 422 without the right `confirm`, a bad name or no such workspace,
 //!   502 on a cluster failure.
+//! - Network permissions (2026-11-24): `GET /api/apps/{app}/network` → the `app_network` tool's
+//!   view (`internet`, `lan`, `summary`, `links` [{app, port, ports: [{name, port, protocol}],
+//!   active, problem}], `incoming` (links other apps have into this one, same shape),
+//!   `link_options` [{app, ports}]) plus `pending`: agents' network requests waiting for the
+//!   owner on this app [{id, tool, task, fields: ["internet"|"lan"|"links"], reason}].
+//!   `POST /api/apps/{app}/network` (owner only, password entered recently) with
+//!   `{"internet"?: bool, "lan"?: bool, "add_links"?: [{app, port?}], "remove_links"?: [{app,
+//!   port?}]}` → the `set_app_network` result (`network`, `before`, `changed`, `warnings`): the
+//!   owner's own change, in force at once, no confirmation, audited `app.network`. 403 for
+//!   members, 422 bad change (unknown app or port, nothing to change).
 //!
 //! **Who may**: the owner every app; a member only their own ([`crate::app_list`]). Any other
 //! app answers 404, as if it did not exist, on every route here.
@@ -76,6 +86,10 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/api/apps/{app}", get(api_details))
         .route("/api/apps/{app}/logs", get(api_logs))
         .route("/api/apps/{app}/force-delete", post(api_force_delete))
+        .route(
+            "/api/apps/{app}/network",
+            get(api_network).post(api_set_network),
+        )
         .with_state(ui)
 }
 
@@ -817,9 +831,154 @@ async fn api_force_delete(
     }
 }
 
+/// The parts of an app's network a pending request changes: `set_app_network` by its
+/// arguments, a deploy or update by comparing its spec's network with `current`.
+pub(crate) fn network_fields(tool: &str, args: &Value, current: &Value) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    match tool {
+        "set_app_network" => {
+            for (key, field) in [
+                ("internet", "internet"),
+                ("lan", "lan"),
+                ("add_links", "links"),
+                ("remove_links", "links"),
+            ] {
+                if args.get(key).is_some_and(|v| !v.is_null()) && !out.contains(&field) {
+                    out.push(field);
+                }
+            }
+        }
+        "deploy_app" | "update_app" => {
+            let spec = match &args["spec"] {
+                Value::String(t) => melissa_appspec::AppSpec::from_text(t).ok(),
+                v => melissa_appspec::AppSpec::from_json(v).ok(),
+            };
+            let Some(n) = spec.map(|s| s.network_or_default()) else {
+                return out;
+            };
+            if current["internet"].as_bool().unwrap_or(false) != n.internet {
+                out.push("internet");
+            }
+            if current["lan"].as_bool().unwrap_or(false) != n.lan {
+                out.push("lan");
+            }
+            let mut now: Vec<(String, Option<String>)> = current["links"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|l| {
+                    Some((
+                        l["app"].as_str()?.to_string(),
+                        l["port"].as_str().map(str::to_string),
+                    ))
+                })
+                .collect();
+            let mut wanted: Vec<(String, Option<String>)> =
+                n.links.into_iter().map(|l| (l.app, l.port)).collect();
+            now.sort();
+            wanted.sort();
+            if now != wanted {
+                out.push("links");
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+async fn api_network(State(ui): State<Ui>, Path(app): Path<String>) -> Response {
+    if let Some(r) = api_allowed(&ui, &app).await {
+        return r;
+    }
+    let mut view = match call(&ui, "app_network", json!({ "app": app }), false).await {
+        Ok(v) => v,
+        Err(e) => return tool_response(Err(e)),
+    };
+    let pending: Vec<Value> = ui
+        .lead
+        .confirmations()
+        .pending()
+        .into_iter()
+        .filter(|c| c.args["app"].as_str() == Some(app.as_str()))
+        .filter_map(|c| {
+            let fields = network_fields(&c.tool, &c.args, &view);
+            (!fields.is_empty()).then(|| {
+                json!({
+                    "id": c.id,
+                    "tool": c.tool,
+                    "task": c.task,
+                    "fields": fields,
+                    "reason": c.reason,
+                })
+            })
+        })
+        .collect();
+    view["pending"] = json!(pending);
+    Json(view).into_response()
+}
+
+async fn api_set_network(
+    State(ui): State<Ui>,
+    Path(app): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    if !crate::auth::signed_in().is_some_and(|p| p.is_owner()) {
+        return error(StatusCode::FORBIDDEN, "Only the owner can do this.");
+    }
+    if let Some(r) = api_allowed(&ui, &app).await {
+        return r;
+    }
+    let mut change = match body {
+        Some(Json(v @ Value::Object(_))) => v,
+        _ => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "send a JSON object with internet, lan, add_links or remove_links",
+            )
+        }
+    };
+    change["app"] = json!(app);
+    // The owner, watching: no confirmation (the tool asks only for agents' calls).
+    let r = call(&ui, "set_app_network", change, true).await;
+    ui.cluster.refresh_now().await;
+    tool_response(r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_requests_name_the_network_fields_they_change() {
+        let current =
+            json!({"internet": false, "lan": true, "links": [{"app": "pg", "port": "db"}]});
+        assert_eq!(
+            network_fields(
+                "set_app_network",
+                &json!({"app": "x", "internet": true, "add_links": [], "remove_links": []}),
+                &current
+            ),
+            ["internet", "links"]
+        );
+        let spec = |network: Value| {
+            json!({"app": "x", "spec": {
+                "description": "x",
+                "containers": [{"name": "x", "image": "nginx:1.27"}],
+                "network": network,
+            }})
+        };
+        assert!(network_fields(
+            "update_app",
+            &spec(json!({"lan": true, "links": [{"app": "pg", "port": "db"}]})),
+            &current
+        )
+        .is_empty());
+        assert_eq!(
+            network_fields("update_app", &spec(json!({"internet": true})), &current),
+            ["internet", "lan", "links"]
+        );
+        assert!(network_fields("stop_app", &json!({"app": "x"}), &current).is_empty());
+    }
 
     #[test]
     fn the_device_fact_uses_the_owners_name_for_this_device_only() {

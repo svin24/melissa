@@ -384,5 +384,117 @@
         }
       ]
     }
-  }
+  },
+  "network_policies": [
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "melissa.io/app": "nextcloud"
+        },
+        "name": "melissa-isolation",
+        "namespace": "app-nextcloud"
+      },
+      "spec": {
+        "egress": [
+          {
+            "to": [
+              {
+                "podSelector": {}
+              }
+            ]
+          },
+          {
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ],
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {}
+              }
+            ]
+          }
+        ],
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "melissa.io/app": "nextcloud"
+        },
+        "name": "melissa-ports",
+        "namespace": "app-nextcloud"
+      },
+      "spec": {
+        "ingress": [
+          {
+            "ports": [
+              {
+                "port": 80,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ],
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "melissa.io/app": "nextcloud"
+        },
+        "name": "melissa-egress",
+        "namespace": "app-nextcloud"
+      },
+      "spec": {
+        "egress": [],
+        "podSelector": {},
+        "policyTypes": [
+          "Egress"
+        ]
+      }
+    }
+  ]
 }

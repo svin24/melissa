@@ -1753,3 +1753,26 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   owner asked for license, credits and a sponsor link in the app; nothing remote (no GitHub button or badge), so
   it works offline. Alternatives: the device menu (no room for the texts), one subpage per text (more clicks,
   more routes), a hand-written credits list (would drift from ACKNOWLEDGMENTS.md).
+- **2026-11-24 — Per-app network permissions, enforced by NetworkPolicy (owner).** An app spec may carry
+  `network: {internet?, lan?, links?: [{app, port?}]}`; absent = all off. Every app namespace gets three
+  NetworkPolicies (`melissa-isolation`: default deny both ways, its own pods and DNS to kube-dns allowed;
+  `melissa-ports`: its web and public ports from anywhere, since NodePort traffic arrives from the node;
+  `melissa-egress`: the grants). `internet` = 0.0.0.0/0 and ::/0 minus private, CGNAT/tailnet, loopback,
+  link-local, multicast, documentation and NAT64/v4-mapped ranges and this device's own addresses; `lan` = RFC
+  1918 + IPv6 ULA minus the cluster's pod/service networks and this device's addresses (never 100.64/10). A link
+  opens both sides: the source's egress to the target namespace (by `kubernetes.io/metadata.name`) on the port's
+  number, and `melissa-link-from-<source>` in the target namespace (labelled `melissa.io/link-from`). The
+  deployer applies the app's own policies before its pods, the target sides after, deletes target sides of
+  dropped links, re-applies links into an app when it is deployed again, and removes them on uninstall and force
+  delete. A new link to a missing app or port is refused; an old one that no longer resolves stays inactive with
+  a warning. Nothing is grandfathered (no apps were installed). Editing: agents use `set_app_network` (changes
+  only the stored spec's `network` and the policies, no restart) or `update_app`; both always wait for the
+  owner, with the change in plain words, and an agent's network change is never coverable by "Always allow"
+  (`Tool::owner_approval`; a deploy or update whose spec grants anything is treated the same, since the card
+  can't tell whether it widens). Approving one needs the owner's recent password like app access. The owner's
+  own change (JSON API `POST /api/apps/{app}/network`, `melissa-server app network`) is immediate. Audited
+  `app.network` (and the deploy tools' `tool.call` detail). Why: apps could reach every other app, the LAN and
+  the internet; k3s ships kube-router's policy controller (not disabled in our config), so no new component.
+  Alternatives: per-domain egress allowlists (needs an egress proxy: open question), Cilium/Calico (heavier,
+  another moving part), named ports in policies (kube-router's egress support for them is unverified; numbers
+  are resolved at deploy and refreshed when the target is redeployed).

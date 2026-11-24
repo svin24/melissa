@@ -627,6 +627,10 @@ async fn install_applies_everything_in_order_and_never_returns_the_secret() {
         [
             "Namespace",
             "RoleBinding",
+            // Isolation, ports, egress: before any pod.
+            "NetworkPolicy",
+            "NetworkPolicy",
+            "NetworkPolicy",
             "PersistentVolumeClaim",
             "ConfigMap",
             "Deployment",
@@ -2778,7 +2782,8 @@ async fn a_bad_spec_fails_before_anyone_is_asked() {
         format!(
             "deploy `minecraft`: server: docker.io/itzg/minecraft-server:java21 (up to 1 CPU, \
              1536Mi memory); reachable from the network: game 25565/tcp, voice 24454/udp; \
-             storage: data 5Gi; {}",
+             storage: data 5Gi; may reach: nothing (no internet, no home network, no other \
+             apps); {}",
             melissa_agent::tools::RUNS_SOFTWARE
         )
     );
@@ -3669,3 +3674,6 @@ async fn links_leave_the_tailnet_node_out_while_apps_are_open_to_this_device_onl
     let warning = access["warning"].as_str().unwrap();
     assert!(warning.contains("open_to `tailnet`"), "{warning}");
 }
+
+#[path = "tests/network.rs"]
+mod network_tests;

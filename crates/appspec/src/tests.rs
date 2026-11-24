@@ -200,3 +200,96 @@ fn app_names_and_namespaces() {
     assert_eq!(namespace_of("minecraft"), "app-minecraft");
     assert_eq!(secret_name("nextcloud"), "nextcloud-secrets");
 }
+
+#[test]
+fn network_is_off_by_default_and_parses_strictly() {
+    let spec = AppSpec::from_json(&minecraft()).unwrap();
+    assert_eq!(spec.network, None);
+    assert!(spec.network_or_default().is_default());
+    assert!(spec
+        .summary()
+        .last()
+        .unwrap()
+        .starts_with("may reach: nothing"));
+
+    let mut v = minecraft();
+    v["network"] =
+        json!({"internet": true, "links": [{"app": "postgres", "port": "db"}, {"app": "redis"}]});
+    let spec = AppSpec::from_json(&v).unwrap();
+    let n = spec.network.clone().unwrap();
+    assert!(n.internet && !n.lan);
+    assert_eq!(n.links[1].port, None);
+    assert_eq!(
+        n.words(),
+        "internet; apps postgres (port db), redis (all ports)"
+    );
+    // Stored compactly: false and empty parts are left out.
+    assert!(spec.to_text().contains(
+        r#""network":{"internet":true,"links":[{"app":"postgres","port":"db"},{"app":"redis"}]}"#
+    ));
+    assert_eq!(AppSpec::from_text(&spec.to_text()).unwrap(), spec);
+
+    // An empty block is the default.
+    let mut v = minecraft();
+    v["network"] = json!({});
+    assert!(AppSpec::from_json(&v)
+        .unwrap()
+        .network_or_default()
+        .is_default());
+}
+
+#[test]
+fn network_links_are_checked() {
+    let with = |network: Value| {
+        let mut v = minecraft();
+        v["network"] = network;
+        v
+    };
+    assert!(err_of(with(json!({"internet": true, "domains": ["x"]}))).contains("unknown field"));
+    assert!(
+        err_of(with(json!({"links": [{"app": "pg", "ports": "db"}]}))).contains("unknown field")
+    );
+    assert!(err_of(with(json!({"internet": "yes"}))).contains("invalid type"));
+    assert_eq!(
+        err_of(with(json!({"links": [{"app": "Postgres"}]}))),
+        "network.links[0].app: `Postgres` is not an app name"
+    );
+    assert!(
+        err_of(with(json!({"links": [{"app": "pg", "port": "DB"}]})))
+            .starts_with("network.links[0].port:")
+    );
+    assert_eq!(
+        err_of(with(
+            json!({"links": [{"app": "pg", "port": "db"}, {"app": "pg", "port": "db"}]})
+        )),
+        "network.links[1]: duplicate link to pg (port db)"
+    );
+    let many: Vec<Value> = (0..=MAX_LINKS)
+        .map(|i| json!({"app": format!("a{i}")}))
+        .collect();
+    assert!(err_of(with(json!({ "links": many }))).contains("at most 16 links"));
+    // A link to itself is refused once the app's name is known.
+    let spec = AppSpec::from_json(&with(json!({"links": [{"app": "minecraft"}]}))).unwrap();
+    let err = spec
+        .network_or_default()
+        .validate_for("minecraft")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.starts_with("network.links[0].app: an app reaches its own"),
+        "{err}"
+    );
+    assert!(spec.network_or_default().validate_for("other").is_ok());
+}
+
+#[test]
+fn set_network_stores_the_default_as_nothing() {
+    let mut spec = AppSpec::from_json(&minecraft()).unwrap();
+    spec.set_network(Network {
+        lan: true,
+        ..Network::default()
+    });
+    assert_eq!(spec.network.as_ref().map(|n| n.lan), Some(true));
+    spec.set_network(Network::default());
+    assert_eq!(spec.network, None);
+}

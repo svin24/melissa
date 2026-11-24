@@ -11,9 +11,13 @@
 //! ports, TCP or UDP) are one NodePort Service `<name>-port` with a stable port each from
 //! [`APP_PORTS`], recorded on the namespace ([`PORT_ANNOTATION`] for the web port,
 //! [`PORTS_ANNOTATION`] for the others), so the app is reachable at `<device address>:<port>`
-//! without any DNS.
+//! without any DNS. NetworkPolicies isolate the app and grant what its spec's `network`
+//! allows ([`network`]).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use k8s_openapi::{
     api::{
@@ -28,7 +32,7 @@ use k8s_openapi::{
         },
         networking::v1::{
             HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
-            IngressServiceBackend, IngressSpec, ServiceBackendPort,
+            IngressServiceBackend, IngressSpec, NetworkPolicy, ServiceBackendPort,
         },
         rbac::v1::{RoleBinding, RoleRef, Subject},
     },
@@ -42,6 +46,10 @@ use melissa_appspec::{
     namespace_of, AppSpec, Builtin, EnvSource, Protocol, Resources, FILES_VOLUME,
 };
 use sha2::{Digest, Sha256};
+
+pub mod network;
+
+use network::LinkPorts;
 
 /// Label keys from before the rename to generic terms (docs/DECISIONS.md, 2026-11-19), with
 /// old ids (`c-<hex>`, `c-<hex>.b<n>`). Read as aliases of the new keys until [`relabel_patch`]
@@ -145,6 +153,8 @@ pub struct AppObjects {
     /// NodePort in [`Placement::node_ports`]).
     pub port_service: Option<Service>,
     pub ingress: Option<Ingress>,
+    /// The app's own NetworkPolicies ([`network::app_policies`]), applied before its pods.
+    pub network_policies: Vec<NetworkPolicy>,
 }
 
 /// Where and how an app runs, besides its spec.
@@ -163,6 +173,10 @@ pub struct Placement<'a> {
     pub hosts: &'a [String],
     /// Secret fields kept in the shared `<app>-secrets` Secret (catalog installs).
     pub shared_secrets: &'a BTreeSet<String>,
+    /// The spec's links, resolved against the other apps' specs (see [`network`]).
+    pub links: &'a [LinkPorts],
+    /// This device's own addresses: no app's egress reaches them.
+    pub device_addresses: &'a [IpAddr],
 }
 
 static NO_PORTS: BTreeMap<String, u16> = BTreeMap::new();
@@ -178,6 +192,8 @@ impl<'a> Placement<'a> {
             stopped_from: None,
             hosts: &[],
             shared_secrets: &NO_SECRETS,
+            links: &[],
+            device_addresses: &[],
         }
     }
 }
@@ -765,6 +781,12 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
         files,
         port_service,
         ingress,
+        network_policies: network::app_policies(
+            app,
+            spec,
+            placement.links,
+            placement.device_addresses,
+        ),
     }
 }
 
@@ -960,5 +982,7 @@ pub fn secret_object(plan: &SecretPlan, value: String) -> Secret {
     }
 }
 
+#[cfg(test)]
+mod network_tests;
 #[cfg(test)]
 mod tests;

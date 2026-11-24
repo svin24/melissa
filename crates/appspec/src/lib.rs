@@ -104,6 +104,119 @@ pub struct AppSpec {
     /// without it are [`AppKind::Other`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<AppKind>,
+    /// What the app may reach on the network (2026-11-24). Absent: nothing but its own pod,
+    /// DNS, and people reaching its web and public ports ([`Network::default`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<Network>,
+}
+
+/// Most links one app may declare.
+pub const MAX_LINKS: usize = 16;
+
+/// An app's network permissions, enforced by Kubernetes NetworkPolicies in its namespace.
+/// Every part is off by default: an app reaches only DNS and its own pod's containers, and
+/// people reach its web and public ports. The owner sees and approves each change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Network {
+    /// Public internet addresses (never the home network, the tailnet, the cluster or this
+    /// device).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub internet: bool,
+    /// Devices on the home network (private address ranges), never the cluster, this device
+    /// or the tailnet.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lan: bool,
+    /// Other apps on this device this app connects to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<Link>,
+}
+
+/// A connection to another app: its pods, on one of its ports (or all of them).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Link {
+    /// The other app's name.
+    pub app: String,
+    /// The other app's port name (`db`); absent: every port of that app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
+}
+
+impl Link {
+    /// `postgres (port db)` / `postgres (all ports)`, for people.
+    pub fn words(&self) -> String {
+        match &self.port {
+            Some(p) => format!("{} (port {p})", self.app),
+            None => format!("{} (all ports)", self.app),
+        }
+    }
+}
+
+impl Network {
+    /// Nothing granted (the default).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// One line for people: `internet, home network, links to postgres (port db)` or
+    /// `none (only its own ports)`.
+    pub fn words(&self) -> String {
+        let mut parts = Vec::new();
+        if self.internet {
+            parts.push("internet".to_string());
+        }
+        if self.lan {
+            parts.push("home network".to_string());
+        }
+        if !self.links.is_empty() {
+            let links: Vec<String> = self.links.iter().map(Link::words).collect();
+            parts.push(format!("apps {}", links.join(", ")));
+        }
+        if parts.is_empty() {
+            "nothing (no internet, no home network, no other apps)".into()
+        } else {
+            parts.join("; ")
+        }
+    }
+
+    /// Check the links of app `app`'s network: names, no self-link, no duplicates. (Whether
+    /// the other apps and ports exist is the deployer's check.)
+    pub fn validate_for(&self, app: &str) -> Result<(), SpecError> {
+        if self.links.len() > MAX_LINKS {
+            return Err(SpecError::invalid(
+                "network.links",
+                format!("at most {MAX_LINKS} links"),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, l) in self.links.iter().enumerate() {
+            let path = format!("network.links[{i}]");
+            if !valid_app_name(&l.app) {
+                return Err(SpecError::invalid(
+                    format!("{path}.app"),
+                    format!("`{}` is not an app name", l.app),
+                ));
+            }
+            if l.app == app {
+                return Err(SpecError::invalid(
+                    format!("{path}.app"),
+                    "an app reaches its own containers anyway; link other apps only",
+                ));
+            }
+            if let Some(p) = &l.port {
+                validate::dns_label(p, 15)
+                    .map_err(|m| SpecError::invalid(format!("{path}.port"), m))?;
+            }
+            if !seen.insert(l) {
+                return Err(SpecError::invalid(
+                    &path,
+                    format!("duplicate link to {}", l.words()),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The groups of the app list, in the order the UI shows them.
@@ -532,7 +645,18 @@ impl AppSpec {
                 .collect();
             out.push(format!("storage: {}", v.join(", ")));
         }
+        out.push(format!("may reach: {}", self.network_or_default().words()));
         out
+    }
+
+    /// The network permissions, defaults filled in.
+    pub fn network_or_default(&self) -> Network {
+        self.network.clone().unwrap_or_default()
+    }
+
+    /// Set the network permissions; the default is stored as no block at all.
+    pub fn set_network(&mut self, network: Network) {
+        self.network = (!network.is_default()).then_some(network);
     }
 }
 
