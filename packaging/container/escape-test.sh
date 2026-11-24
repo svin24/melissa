@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the sandbox escape suite (crates/agent/tests/escape.rs) inside a built Melissa image, the way the
+# Run the sandbox escape suite (crates/agent/tests/it/escape.rs) inside a built Melissa image, the way the
 # installed container runs: rootful podman, --privileged, systemd as PID 1, and the suite as the
 # `melissa` user under the server unit's hardening (ProtectSystem=strict, ProtectHome, PrivateTmp; no
 # NoNewPrivileges, as in the unit: agent users need newuidmap). So bwrap, melissa-netbridge, newuidmap,
@@ -90,7 +90,7 @@ if mkdir -p "$cg/runner" 2>/dev/null && printf 0 > "$cg/runner/cgroup.procs" 2>/
     export MELISSA_TEST_CGROUP="$cg"
 fi
 exec /opt/melissa-escape/escape --nocapture --test-threads=1 \
-    sandbox_escape_suite seccomp_off_backend_is_reported_not_passed'
+    escape::sandbox_escape_suite escape::seccomp_off_backend_is_reported_not_passed'
 sudo podman exec "$NAME" systemd-run --quiet --wait --pipe --collect --service-type=exec \
     -p User=melissa -p Group=melissa -p ProtectSystem=strict \
     -p ProtectHome=yes -p PrivateTmp=yes -p StateDirectory=melissa-escape \

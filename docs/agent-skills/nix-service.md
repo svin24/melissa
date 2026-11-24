@@ -19,7 +19,7 @@ other track is the rootful container ([container-image.md](container-image.md)).
     the `melissa-host` drop-in set it to the store copy. `MELISSA_RUNTIME=nix` makes Settings treat the
     install as Nix (`HostKind::Nix`).
   - `packages.<system>.melissa-integration-tests`: the sandbox, egress and escape integration tests of
-    `crates/agent` as `melissa-it-sandbox`, `melissa-it-egress`, `melissa-it-escape`, plus the test-only
+    `crates/agent` as `melissa-it` (one binary: `sandbox::`, `egress::`, `escape::`), plus the test-only
     `melissa-escape-probe` (own lockfile; for the VM test, never in the `melissa` package).
   - `packages.<system>.melissa-host`: non-NixOS bundle (prototype, below).
   - `overlays.default` (`pkgs.melissa`), `nixosModules.melissa` (= `default`).
@@ -115,8 +115,8 @@ write into the home, which is fine.
 |---|---|
 | web UI | lead agent active as `melissa`; `/healthz`, `/tasks` on 127.0.0.1:8080; only a loopback listener; the LAN client can't connect |
 | chat turn | `melissa-server ask` on an echo session backend |
-| sandbox / egress | `melissa-it-sandbox`, `melissa-it-egress` as `melissa`: bwrap, own netns, netbridge, proxy allowlist, MCP, no leaks, no skips |
-| escape suite | `melissa-it-escape` as `melissa`, `MELISSA_ESCAPE_REQUIRED=1`, probe helper from the tests package: every probe passes or skips with a reason, 0 fail |
+| sandbox / egress | `melissa-it sandbox:: egress::` as `melissa`, `MELISSA_SANDBOX_REQUIRED=1`: bwrap, own netns, netbridge, proxy allowlist, MCP, no leaks, no skips |
+| escape suite | `melissa-it escape::` as `melissa`, `MELISSA_ESCAPE_REQUIRED=1`, probe helper from the tests package: every probe passes or skips with a reason, 0 fail |
 | vendor CLI via nix-ld | a /lib64-loader binary as a CLI backend task, inside the sandbox |
 | k3s | node Ready (v1.37.1), `melissa.io/managed` label, Traefik rolled out offline (airgap images) |
 | policies | ServiceAccounts, 5 admission policies + bindings, kubeconfigs root:melissa-kube 0640, RBAC negatives |

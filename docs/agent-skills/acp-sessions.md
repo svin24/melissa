@@ -23,7 +23,7 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
   time, `Busy` otherwise), `cancel()` from another task, `close()`. Hold it as `Arc<dyn AgentSession>`.
 - Config: `[[backend]] kind = "acp"`, `name`, `command`, `args`, `tools` (default true), `[backend.sandbox]`,
   `record_dir` (debug transcripts, see below).
-- Live test (needs logged-in grok): `cargo nextest run -p melissa-agent --run-ignored only -E 'binary(acp_live)'`.
+- Live test (needs logged-in grok): `cargo nextest run -p melissa-agent --run-ignored only -E 'binary(it) and test(/^acp_live::/)'`.
 
 ## Which agents
 | Agent | Start command | ACP ver | load | resume | fork | close | HTTP MCP | Source |

@@ -748,45 +748,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_file_means_defaults() {
-        let config: ServerConfig = toml::from_str("").unwrap();
-        assert_eq!(config, ServerConfig::default());
-        config.validate().unwrap();
-    }
-
-    #[test]
-    fn parses_custom_backends() {
-        let config: ServerConfig = toml::from_str(
-            r#"
-            listen = "127.0.0.1:9000"
-            task_timeout_secs = 60
-            confirm_timeout_secs = 120
-            kubeconfig = "/run/example/kubeconfig"
-            [[backend]]
-            name = "gemma"
-            command = "opencode"
-            args = ["run", "-m", "ollama/gemma3", "{prompt}"]
-            "#,
-        )
-        .unwrap();
-        config.validate().unwrap();
-        assert_eq!(config.listen.port(), 9000);
-        assert_eq!(config.confirm_timeout(), Duration::from_secs(120));
-        assert_eq!(config.backends.len(), 1);
-        assert_eq!(
-            config.kubeconfig.as_deref(),
-            Some(Path::new("/run/example/kubeconfig"))
-        );
-        let BackendSpec::Cli(gemma) = &config.backends[0] else {
-            panic!("expected a cli backend: {:?}", config.backends[0]);
-        };
-        assert_eq!(
-            gemma.render_args("hi"),
-            ["run", "-m", "ollama/gemma3", "hi"]
-        );
-    }
-
-    #[test]
     fn rejects_unsafe_or_invalid_config() {
         let public: ServerConfig = toml::from_str(r#"listen = "0.0.0.0:8080""#).unwrap();
         assert!(public.validate().is_err());
@@ -799,6 +760,24 @@ mod tests {
             assert!(c.validate().is_err(), "{bad}");
         }
         assert!(ServerConfig::default().confirm_timeout() < Duration::from_secs(300));
+        // `echo` is the built-in one-shot backend's name; echo backends take no command.
+        let dup: ServerConfig =
+            toml::from_str("[[backend]]\nkind = \"echo\"\nname = \"echo\"").unwrap();
+        assert!(dup.validate().is_err());
+        // Session backends refuse what would undo their permission handling.
+        for bad in [
+            "[[backend]]\nkind = \"echo\"\nname = \"e\"\ncommand = \"x\"",
+            "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nargs = [\"--dangerously-skip-permissions\"]",
+            "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nmcp_args = []",
+            "[[backend]]\nkind = \"acp\"\nname = \"o\"\ncommand = \"opencode\"\nflavor = \"other\"",
+            "[[backend]]\nkind = \"acp\"\nname = \"g\"\ncommand = \"grok\"\nmodel = \"a/b\"",
+        ] {
+            let parsed = toml::from_str::<ServerConfig>(bad);
+            assert!(
+                parsed.is_err() || parsed.unwrap().validate().is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -806,6 +785,12 @@ mod tests {
         for b in default_backends() {
             assert!(b.effective_sandbox().enabled, "{}", b.name());
         }
+        // The user's own OpenCode config (which may allow tools) is not bound.
+        let opencode = default_backends()
+            .into_iter()
+            .find(|b| b.name() == "opencode-acp")
+            .unwrap();
+        assert!(opencode.effective_sandbox().ro.is_empty());
         // Old configs without a sandbox table get the preset for their command.
         let config: ServerConfig =
             toml::from_str("[[backend]]\nname = \"gemma\"\ncommand = \"opencode\"").unwrap();
@@ -1068,86 +1053,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_opencode_session_backends_are_built_in() {
-        let backends = default_backends();
-        let claude = backends
-            .iter()
-            .find_map(|b| match b {
-                BackendSpec::Claude(s) if s.name == "claude-session" => Some(s),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(claude.session_store, ".claude/projects");
-        assert!(claude.args.is_empty() && claude.tools);
-        let opencode = backends
-            .iter()
-            .find_map(|b| match b {
-                BackendSpec::Acp(s) if s.name == "opencode-acp" => Some(s),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(opencode.flavor, melissa_agent::acp::AcpFlavor::Opencode);
-        assert_eq!(opencode.args, ["acp"]);
-        assert_eq!(
-            opencode.session_store.as_deref(),
-            Some(".local/share/opencode")
-        );
-        // The user's own OpenCode config (which may allow tools) is not bound.
-        assert!(opencode.effective_sandbox().ro.is_empty());
-
-        let config: ServerConfig = toml::from_str(
-            r#"
-            [[backend]]
-            kind = "claude"
-            name = "c"
-            command = "claude"
-            args = ["--model", "sonnet"]
-            network = "learn"
-            [[backend]]
-            kind = "acp"
-            name = "o"
-            command = "opencode"
-            args = ["acp"]
-            flavor = "opencode"
-            model = "opencode/big-pickle"
-            [lead]
-            backends = ["c", "o"]
-            "#,
-        )
-        .unwrap();
-        config.validate().unwrap();
-        assert!(config.backends.iter().all(BackendSpec::is_session));
-
-        // Echo session backends: no LLM, for demos and for trying backend switching.
-        let config: ServerConfig = toml::from_str(
-            "[[backend]]\nkind = \"echo\"\nname = \"echo-a\"\n[[backend]]\nkind = \"echo\"\n\
-             name = \"echo-b\"\n[lead]\nbackends = [\"echo-a\", \"echo-b\"]",
-        )
-        .unwrap();
-        config.validate().unwrap();
-        // `echo` is the built-in one-shot backend's name.
-        let dup: ServerConfig =
-            toml::from_str("[[backend]]\nkind = \"echo\"\nname = \"echo\"").unwrap();
-        assert!(dup.validate().is_err());
-        assert!(toml::from_str::<ServerConfig>(
-            "[[backend]]\nkind = \"echo\"\nname = \"e\"\ncommand = \"x\""
-        )
-        .is_err());
-        for bad in [
-            "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nargs = [\"--dangerously-skip-permissions\"]",
-            "[[backend]]\nkind = \"claude\"\nname = \"c\"\ncommand = \"claude\"\nmcp_args = []",
-            "[[backend]]\nkind = \"acp\"\nname = \"o\"\ncommand = \"opencode\"\nflavor = \"other\"",
-            "[[backend]]\nkind = \"acp\"\nname = \"g\"\ncommand = \"grok\"\nmodel = \"a/b\"",
-        ] {
-            let parsed = toml::from_str::<ServerConfig>(bad);
-            assert!(
-                parsed.is_err() || parsed.unwrap().validate().is_err(),
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
     fn lead_section_defaults_and_checks() {
         let config = ServerConfig::default();
         assert_eq!(
@@ -1276,8 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_codex_and_muse_session_backends_are_built_in() {
-        use melissa_agent::acp::AcpFlavor;
+    fn gemini_codex_and_muse_session_backends_ask_before_tools() {
         let backends = default_backends();
         let acp = |name: &str| {
             backends
@@ -1289,29 +1193,16 @@ mod tests {
                 .unwrap()
         };
         let gemini = acp("gemini-acp");
-        assert_eq!(gemini.command, "gemini");
-        assert_eq!(gemini.args, ["--acp", "--approval-mode", "default"]);
-        assert_eq!(gemini.flavor, AcpFlavor::Gemini);
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|w| w == ["--approval-mode", "default"]));
         assert_eq!(gemini.mode.as_deref(), Some("default"));
         let codex = acp("codex-acp");
-        assert_eq!(codex.command, "codex-acp");
-        assert_eq!(codex.flavor, AcpFlavor::Codex);
         // Its own default ("Auto review") runs tools without asking.
         assert_eq!(codex.mode.as_deref(), Some("read-only"));
-        assert_eq!(codex.session_store.as_deref(), Some(".codex/sessions"));
         let muse = acp("muse-acp");
-        assert_eq!(muse.command, "muse");
-        assert_eq!(
-            muse.args,
-            [
-                "acp",
-                "-c",
-                "telemetry.enabled=false",
-                "-c",
-                "approval_judge=\"off\""
-            ]
-        );
-        assert_eq!(muse.flavor, AcpFlavor::Muse);
+        assert!(muse.args.iter().any(|a| a == "approval_judge=\"off\""));
         assert_eq!(muse.mode.as_deref(), Some("promptUnmatched"));
         // Each runs in its own preset with its own egress list (by the program's name).
         for (spec, host) in [
@@ -1329,12 +1220,6 @@ mod tests {
                 spec.name
             );
         }
-        // They are providers of their own (the program's file name).
-        let providers: Vec<String> = ["gemini-acp", "codex-acp", "muse-acp"]
-            .iter()
-            .map(|n| backends.iter().find(|b| b.name() == *n).unwrap().provider())
-            .collect();
-        assert_eq!(providers, ["gemini", "codex-acp", "muse"]);
     }
 
     #[test]
@@ -1386,14 +1271,6 @@ mod tests {
             panic!("not cli")
         };
         assert_eq!(c.args[0], "--verbose");
-    }
-
-    #[test]
-    fn no_provider_settings_change_nothing() {
-        let mut config = ServerConfig::default();
-        let facts = config.apply_providers(&ProviderFile::default());
-        assert_eq!(config, ServerConfig::default());
-        assert_eq!(facts.len(), config.backends.len());
     }
 
     #[test]

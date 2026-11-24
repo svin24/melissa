@@ -147,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fake_agent_answers_initialize() {
-        let dir = std::env::temp_dir().join(format!("melissa-probe-ok-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("probe-ok");
         let agent = fake_agent(
             &dir,
             "fake-agent",
@@ -164,7 +164,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_acp_programs_fail_or_time_out() {
-        let dir = std::env::temp_dir().join(format!("melissa-probe-bad-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("probe-bad");
         std::fs::create_dir_all(&dir).unwrap();
         // Exits at once: the connection closes before an answer.
         let r = probe(
@@ -178,7 +178,7 @@ mod tests {
         assert!(r.is_err(), "{r:?}");
         // Prints something that isn't ACP and keeps running: an error or the time limit.
         let chatty = fake_agent(&dir, "chatty", "hello, I am not an agent");
-        let r = probe(&chatty, &[], &dir, &env(), Duration::from_secs(2)).await;
+        let r = probe(&chatty, &[], &dir, &env(), Duration::from_millis(200)).await;
         assert!(r.is_err(), "{r:?}");
         // Not there at all.
         let r = probe(&dir.join("missing"), &[], &dir, &env(), PROBE_TIMEOUT).await;

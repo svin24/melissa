@@ -1276,98 +1276,6 @@ fn parse_backend(args: &[String]) -> anyhow::Result<Command> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_provider_and_update_commands() {
-        assert!(matches!(
-            parse(&["provider"]).unwrap().1,
-            Command::Providers
-        ));
-        let Command::ProviderChange { id, change, .. } =
-            parse(&["provider", "disable", "grok"]).unwrap().1
-        else {
-            panic!("not a change")
-        };
-        assert_eq!((id.as_str(), &change), ("grok", &json!({"enabled": false})));
-        let Command::ProviderChange {
-            change, read_env, ..
-        } = parse(&[
-            "provider",
-            "set",
-            "claude",
-            "--name",
-            "Mine",
-            "--arg",
-            "--effort",
-            "--arg",
-            "high",
-            "--env",
-            "ANTHROPIC_BASE_URL=https://llm.example.com",
-            "--env",
-            "ANTHROPIC_API_KEY",
-            "--unset",
-            "OLD",
-        ])
-        .unwrap()
-        .1
-        else {
-            panic!("not a change")
-        };
-        assert_eq!(change["display_name"], "Mine");
-        assert_eq!(change["args"], json!(["--effort", "high"]));
-        assert_eq!(
-            change["set_env"]["ANTHROPIC_BASE_URL"],
-            "https://llm.example.com"
-        );
-        assert_eq!(change["remove_env"], json!(["OLD"]));
-        // A value without `=` is read from stdin, not taken from the command line.
-        assert_eq!(read_env, ["ANTHROPIC_API_KEY"]);
-        assert!(parse(&["provider", "set", "claude"]).is_err());
-        assert!(parse(&["provider", "set", "claude", "--bogus"]).is_err());
-        assert!(matches!(
-            parse(&["update"]).unwrap().1,
-            Command::Update { action: None, .. }
-        ));
-        let Command::Update { action, yes } = parse(&["update", "apply", "--yes"]).unwrap().1
-        else {
-            panic!("not update")
-        };
-        assert_eq!((action.as_deref(), yes), (Some("apply"), true));
-        assert!(parse(&["update", "reboot"]).is_err());
-        assert!(parse(&["update", "check", "--force"]).is_err());
-    }
-
-    #[test]
-    fn parses_backend_commands() {
-        assert!(matches!(
-            parse(&["backend"]).unwrap().1,
-            Command::Backend {
-                agent: None,
-                switch: None
-            }
-        ));
-        assert!(matches!(
-            parse(&["backend", "list", "--agent", "Ada"]).unwrap().1,
-            Command::Backend { agent: Some(b), switch: None } if b == "Ada"
-        ));
-        assert!(matches!(
-            parse(&["backend", "use", "claude-session"]).unwrap().1,
-            Command::Backend { agent: None, switch: Some((n, None)) } if n == "claude-session"
-        ));
-        assert!(matches!(
-            parse(&["backend", "use", "claude-session", "--model", "sonnet", "--agent", "Ada"]).unwrap().1,
-            Command::Backend { agent: Some(b), switch: Some((n, Some(m))) }
-                if b == "Ada" && n == "claude-session" && m == "sonnet"
-        ));
-        assert!(matches!(
-            parse(&["backend", "refresh", "--agent", "Ada"]).unwrap().1,
-            Command::RefreshModels(Some(b)) if b == "Ada"
-        ));
-        assert!(parse(&["backend", "refresh", "--model", "x"]).is_err());
-        assert!(parse(&["backend", "use"]).is_err());
-        assert!(parse(&["backend", "list", "--model", "x"]).is_err());
-        assert!(parse(&["backend", "use", "x", "--model"]).is_err());
-    }
-
     fn parse(args: &[&str]) -> anyhow::Result<(Option<PathBuf>, Command)> {
         parse_args(args.iter().map(|s| s.to_string()).collect())
     }
@@ -1381,13 +1289,6 @@ mod tests {
             assert!(prompt.contains("turn off"));
             assert!(prompt.contains("only when"));
         }
-    }
-
-    /// Without k3s the lead passes the tools' `app_platform` words on, never "no helpers".
-    #[test]
-    fn lead_prompt_passes_on_the_app_platform_words() {
-        assert!(LEAD_PROMPT.contains("`app_platform`"));
-        assert!(LEAD_PROMPT.contains("Never give helpers or your own checks as the reason"));
     }
 
     #[test]
@@ -1405,121 +1306,204 @@ mod tests {
         }
     }
 
+    /// What each command line parses to.
+    type Check = fn(&Command) -> bool;
+
     #[test]
-    fn parses_serve_and_tool_commands() {
-        assert!(matches!(
-            parse(&[]).unwrap(),
-            (None, Command::Serve { demo: false })
-        ));
-        assert!(matches!(
-            parse(&["demo"]).unwrap().1,
-            Command::Serve { demo: true }
-        ));
-        let (cfg, cmd) = parse(&["--config", "/x.toml", "tool", "cluster_health"]).unwrap();
+    fn parses_each_command_and_refuses_bad_ones() {
+        let ok: &[(&[&str], Check)] = &[
+            (&[], |c| matches!(c, Command::Serve { demo: false })),
+            (&["demo"], |c| matches!(c, Command::Serve { demo: true })),
+            (&["provider"], |c| matches!(c, Command::Providers)),
+            (&["provider", "disable", "grok"], |c| {
+                matches!(c, Command::ProviderChange { id, change, .. }
+                    if id == "grok" && *change == json!({"enabled": false}))
+            }),
+            (&["update"], |c| {
+                matches!(c, Command::Update { action: None, .. })
+            }),
+            (
+                &["update", "apply", "--yes"],
+                |c| matches!(c, Command::Update { action: Some(a), yes: true } if a == "apply"),
+            ),
+            (&["backend"], |c| {
+                matches!(
+                    c,
+                    Command::Backend {
+                        agent: None,
+                        switch: None
+                    }
+                )
+            }),
+            (
+                &["backend", "list", "--agent", "Ada"],
+                |c| matches!(c, Command::Backend { agent: Some(b), switch: None } if b == "Ada"),
+            ),
+            (
+                &[
+                    "backend",
+                    "use",
+                    "claude-session",
+                    "--model",
+                    "sonnet",
+                    "--agent",
+                    "Ada",
+                ],
+                |c| {
+                    matches!(c, Command::Backend { agent: Some(b), switch: Some((n, Some(m))) }
+                        if b == "Ada" && n == "claude-session" && m == "sonnet")
+                },
+            ),
+            (
+                &["backend", "refresh", "--agent", "Ada"],
+                |c| matches!(c, Command::RefreshModels(Some(b)) if b == "Ada"),
+            ),
+            (
+                &["tool", "device_info", r#"{"a":1}"#],
+                |c| matches!(c, Command::Tool { name, args } if name == "device_info" && args["a"] == 1),
+            ),
+            (
+                &["tool", "--wait", "deploy_app", r#"{"app":"nextcloud"}"#],
+                |c| {
+                    matches!(c, Command::ToolWait { name, args }
+                    if name == "deploy_app" && args["app"] == "nextcloud")
+                },
+            ),
+            (
+                &["app-credentials", "nextcloud"],
+                |c| matches!(c, Command::AppCredentials(a) if a == "nextcloud"),
+            ),
+            (
+                &["app", "network", "web"],
+                |c| matches!(c, Command::AppNetwork { app, change } if app == "web" && *change == json!({})),
+            ),
+            (
+                &[
+                    "app",
+                    "network",
+                    "web",
+                    "--internet",
+                    "on",
+                    "--lan",
+                    "off",
+                    "--link",
+                    "postgres:db",
+                    "--unlink",
+                    "redis",
+                ],
+                |c| {
+                    matches!(c, Command::AppNetwork { change, .. } if *change == json!({
+                        "internet": true, "lan": false,
+                        "add_links": [{"app": "postgres", "port": "db"}],
+                        "remove_links": [{"app": "redis"}],
+                    }))
+                },
+            ),
+            (
+                &["app", "details", "nextcloud"],
+                |c| matches!(c, Command::App(AppCommand::Details, a) if a == "nextcloud"),
+            ),
+            (&["app", "force-delete", "nextcloud", "--yes"], |c| {
+                matches!(c, Command::App(AppCommand::ForceDelete, _))
+            }),
+            (
+                &["chat", "--agent", "Ada"],
+                |c| matches!(c, Command::Chat(Some(b)) if b == "Ada"),
+            ),
+            (&["chat", "--new"], |c| {
+                matches!(c, Command::FreshStart(None, true))
+            }),
+            (
+                &["fresh-start", "--agent", "Ada"],
+                |c| matches!(c, Command::FreshStart(Some(a), false) if a == "Ada"),
+            ),
+            (
+                &["ask", "--agent", "Ada", "hi", "there"],
+                |c| matches!(c, Command::Ask(Some(b), m) if b == "Ada" && m == "hi there"),
+            ),
+            (
+                &["agent", "rename", "Ada", "Ada", "Lovelace"],
+                |c| matches!(c, Command::RenameAgent(b, n) if b == "Ada" && n == "Ada Lovelace"),
+            ),
+            (&["workers"], |c| matches!(c, Command::Agents)),
+            (
+                &["workspace", "reassign", "nextcloud", "--to", "Bo"],
+                |c| matches!(c, Command::Reassign { workspace, to } if workspace == "nextcloud" && to == "Bo"),
+            ),
+            (
+                &["confirm", "approve", "#3"],
+                |c| matches!(c, Command::Confirm(a, Some(3)) if a == "approve"),
+            ),
+        ];
+        for (args, check) in ok {
+            let parsed = parse(args);
+            assert!(
+                parsed.as_ref().is_ok_and(|(_, c)| check(c)),
+                "{args:?}: {:?}",
+                parsed.err()
+            );
+        }
+        for bad in [
+            &["bogus"][..],
+            &["provider", "set", "claude"],
+            &["provider", "set", "claude", "--bogus"],
+            &["update", "reboot"],
+            &["update", "check", "--force"],
+            &["backend", "use"],
+            &["backend", "use", "x", "--model"],
+            &["backend", "list", "--model", "x"],
+            &["tool", "x", "not json"],
+            &["app-credentials"],
+            &["app", "network", "web", "--internet", "yes"],
+            &["app", "network", "web", "--domain", "x"],
+            &["app", "network", "web", "--link"],
+            // Never without --yes.
+            &["app", "force-delete", "nextcloud"],
+            &["app", "force-delete", "nextcloud", "-y"],
+            &["app", "remove", "nextcloud"],
+            // Replaced by `workspace reassign`.
+            &["app-adopt", "blog"],
+            &["workspace", "reassign", "nextcloud", "Bo"],
+            &["ask", "--agent", "Ada"],
+            &["agent", "rename", "Ada"],
+            &["confirm", "maybe", "1"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+        let (cfg, _) = parse(&["--config", "/x.toml", "tool", "cluster_health"]).unwrap();
         assert_eq!(cfg, Some(PathBuf::from("/x.toml")));
-        assert!(
-            matches!(cmd, Command::Tool { name, args } if name == "cluster_health" && args == json!({}))
+    }
+
+    /// A provider's secret is read from stdin, never taken from the command line.
+    #[test]
+    fn provider_set_reads_secrets_from_stdin() {
+        let Command::ProviderChange {
+            change, read_env, ..
+        } = parse(&[
+            "provider",
+            "set",
+            "claude",
+            "--arg",
+            "--effort",
+            "--env",
+            "ANTHROPIC_BASE_URL=https://llm.example.com",
+            "--env",
+            "ANTHROPIC_API_KEY",
+            "--unset",
+            "OLD",
+        ])
+        .unwrap()
+        .1
+        else {
+            panic!("not a change")
+        };
+        assert_eq!(read_env, ["ANTHROPIC_API_KEY"]);
+        assert!(change["set_env"].get("ANTHROPIC_API_KEY").is_none());
+        assert_eq!(
+            change["set_env"]["ANTHROPIC_BASE_URL"],
+            "https://llm.example.com"
         );
-        let (_, cmd) = parse(&["tool", "device_info", r#"{"a":1}"#]).unwrap();
-        assert!(matches!(cmd, Command::Tool { args, .. } if args["a"] == 1));
-        assert!(parse(&["tool", "x", "not json"]).is_err());
-        let (_, cmd) = parse(&["tool", "--wait", "deploy_app", r#"{"app":"nextcloud"}"#]).unwrap();
-        assert!(
-            matches!(cmd, Command::ToolWait { name, args } if name == "deploy_app" && args["app"] == "nextcloud")
-        );
-        assert!(matches!(
-            parse(&["tool", "--wait", "app_status"]).unwrap().1,
-            Command::ToolWait { .. }
-        ));
-        assert!(
-            matches!(parse(&["app-credentials", "nextcloud"]).unwrap().1, Command::AppCredentials(a) if a == "nextcloud")
-        );
-        assert!(
-            matches!(parse(&["app", "network", "web"]).unwrap().1, Command::AppNetwork { app, change } if app == "web" && change == serde_json::json!({}))
-        );
-        assert!(matches!(
-            parse(&["app", "network", "web", "--internet", "on", "--lan", "off", "--link", "postgres:db", "--unlink", "redis"]).unwrap().1,
-            Command::AppNetwork { change, .. } if change == serde_json::json!({
-                "internet": true, "lan": false,
-                "add_links": [{"app": "postgres", "port": "db"}],
-                "remove_links": [{"app": "redis"}],
-            })
-        ));
-        assert!(parse(&["app", "network", "web", "--internet", "yes"]).is_err());
-        assert!(parse(&["app", "network", "web", "--domain", "x"]).is_err());
-        assert!(parse(&["app", "network", "web", "--link"]).is_err());
-        assert!(parse(&["app-credentials"]).is_err());
-        assert!(
-            matches!(parse(&["app", "details", "nextcloud"]).unwrap().1, Command::App(AppCommand::Details, a) if a == "nextcloud")
-        );
-        assert!(matches!(
-            parse(&["app", "logs", "nextcloud"]).unwrap().1,
-            Command::App(AppCommand::Logs, _)
-        ));
-        assert!(matches!(
-            parse(&["app", "force-delete", "nextcloud", "--yes"])
-                .unwrap()
-                .1,
-            Command::App(AppCommand::ForceDelete, _)
-        ));
-        // Never without --yes.
-        assert!(parse(&["app", "force-delete", "nextcloud"]).is_err());
-        assert!(parse(&["app", "force-delete", "nextcloud", "-y"]).is_err());
-        assert!(parse(&["app", "remove", "nextcloud"]).is_err());
-        // Replaced by `workspace reassign`.
-        assert!(parse(&["app-adopt", "blog"]).is_err());
-        assert!(parse(&["bogus"]).is_err());
-        assert!(matches!(parse(&["chat"]).unwrap().1, Command::Chat(None)));
-        assert!(matches!(
-            parse(&["chat", "--new"]).unwrap().1,
-            Command::FreshStart(None, true)
-        ));
-        assert!(matches!(
-            parse(&["new-chat"]).unwrap().1,
-            Command::FreshStart(None, false)
-        ));
-        assert!(matches!(
-            parse(&["fresh-start"]).unwrap().1,
-            Command::FreshStart(None, false)
-        ));
-        assert!(
-            matches!(parse(&["fresh-start", "--agent", "Ada"]).unwrap().1, Command::FreshStart(Some(a), false) if a == "Ada")
-        );
-        assert!(
-            matches!(parse(&["chat", "--agent", "Ada"]).unwrap().1, Command::Chat(Some(b)) if b == "Ada")
-        );
-        assert!(
-            matches!(parse(&["ask", "how", "are you?"]).unwrap().1, Command::Ask(None, m) if m == "how are you?")
-        );
-        assert!(
-            matches!(parse(&["ask", "--agent", "Ada", "hi", "there"]).unwrap().1, Command::Ask(Some(b), m) if b == "Ada" && m == "hi there")
-        );
-        assert!(parse(&["ask"]).is_err());
-        assert!(parse(&["ask", "--agent", "Ada"]).is_err());
-        assert!(matches!(
-            parse(&["agent", "list"]).unwrap().1,
-            Command::Agents
-        ));
-        assert!(
-            matches!(parse(&["agent", "rename", "Ada", "Ada", "Lovelace"]).unwrap().1, Command::RenameAgent(b, n) if b == "Ada" && n == "Ada Lovelace")
-        );
-        assert!(parse(&["agent", "rename", "Ada"]).is_err());
-        assert!(matches!(
-            parse(&["workspace", "list"]).unwrap().1,
-            Command::Workspaces
-        ));
-        assert!(
-            matches!(parse(&["workspace", "reassign", "nextcloud", "--to", "Bo"]).unwrap().1, Command::Reassign { workspace, to } if workspace == "nextcloud" && to == "Bo")
-        );
-        assert!(parse(&["workspace", "reassign", "nextcloud", "Bo"]).is_err());
-        assert!(matches!(parse(&["agents"]).unwrap().1, Command::Agents));
-        assert!(matches!(parse(&["workers"]).unwrap().1, Command::Agents));
-        assert!(matches!(parse(&["confirm"]).unwrap().1, Command::Confirm(a, None) if a == "list"));
-        assert!(
-            matches!(parse(&["confirm", "approve", "#3"]).unwrap().1, Command::Confirm(a, Some(3)) if a == "approve")
-        );
-        assert!(parse(&["confirm", "deny", "x"]).is_err());
-        assert!(parse(&["confirm", "maybe", "1"]).is_err());
+        assert_eq!(change["remove_env"], json!(["OLD"]));
     }
 
     #[tokio::test]

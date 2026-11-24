@@ -38,14 +38,15 @@ COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 # ---- test-only: the sandbox escape suite and its probe helper ----------------------------
 # Built only with `--target escape-build` (packaging/container/escape-test.sh, `just escape-test-image`),
 # from the same sources and toolchain as the binaries above; the image below never contains them.
+# The suite is the `escape::` tests of melissa-agent's one integration test binary (`it`).
 FROM build AS escape-build
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target,id=melissa-target \
     find crates -type f -exec touch {} + \
  && cargo build --release --locked --manifest-path crates/escape-probe/Cargo.toml --target-dir target \
- && cargo test --release --locked --no-run -p melissa-agent --test escape --message-format=json \
+ && cargo test --release --locked --no-run -p melissa-agent --test it --message-format=json \
         > /tmp/escape-build.json \
- && exe=$(grep '"name":"escape"' /tmp/escape-build.json | grep -o '"executable":"[^"]*"' | cut -d'"' -f4) \
+ && exe=$(grep '"name":"it"' /tmp/escape-build.json | grep -o '"executable":"[^"]*"' | cut -d'"' -f4) \
  && test -n "$exe" \
  && install -D -m 0755 "$exe" /out/escape/escape \
  && install -D -m 0755 target/release/melissa-escape-probe /out/escape/melissa-escape-probe

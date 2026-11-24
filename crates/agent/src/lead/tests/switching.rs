@@ -316,18 +316,23 @@ fn thought_option(current: &str) -> Value {
             {"value": "high", "name": "High"}]})
 }
 
-#[tokio::test]
-async fn reasoning_levels_come_from_the_agent_and_apply_at_the_next_session() {
+/// Two sessions of `fake-acp` on model `m1`: the first reports `before` among its options and
+/// answers a turn; the second resumes it, is sent `session/set_config_option` with `set` (its
+/// params besides the session id) and answers "Again.".
+fn option_scripts(before: Value, set: Value, after: Value) -> Vec<Vec<Step>> {
     let mut first = handshake("unused");
     first.pop();
     first.push(Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
-        "sessionId": "s-1", "configOptions": [model_option("m1"), thought_option("medium")]}})));
+        "sessionId": "s-1", "configOptions": [model_option("m1"), before.clone()]}})));
     first.extend([
         prompt(2, "s-1", "<any>"),
         text("s-1", "Hi."),
         done(2, "end_turn"),
     ]);
-    // The same model with another level: the session is resumed and the level set.
+    let mut params = json!({"sessionId": "s-1"});
+    for (k, v) in set.as_object().into_iter().flatten() {
+        params[k] = v.clone();
+    }
     let mut second = handshake("unused");
     second.truncate(2);
     second.extend([
@@ -336,18 +341,29 @@ async fn reasoning_levels_come_from_the_agent_and_apply_at_the_next_session() {
             "params": {"sessionId": "s-1", "cwd": "<any>", "mcpServers": "<any>"}}),
         ),
         Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
-            "configOptions": [model_option("m1"), thought_option("medium")]}})),
+            "configOptions": [model_option("m1"), before]}})),
         Step::send(
             json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
-            "params": {"sessionId": "s-1", "configId": "thought", "value": "high"}}),
+            "params": params}),
         ),
         Step::recv(json!({"jsonrpc": "2.0", "id": 2, "result": {
-            "configOptions": [model_option("m1"), thought_option("high")]}})),
+            "configOptions": [model_option("m1"), after]}})),
         prompt(3, "s-1", "Again."),
         text("s-1", "Hello again."),
         done(3, "end_turn"),
     ]);
-    let s = setup_in(scratch("switch-effort"), vec![first, second], |_| {});
+    vec![first, second]
+}
+
+#[tokio::test]
+async fn reasoning_levels_come_from_the_agent_and_apply_at_the_next_session() {
+    // The same model with another level: the session is resumed and the level set.
+    let scripts = option_scripts(
+        thought_option("medium"),
+        json!({"configId": "thought", "value": "high"}),
+        thought_option("high"),
+    );
+    let s = setup_in(scratch("switch-effort"), scripts, |_| {});
     let (turn, since) = s.lead.send("Hello.").unwrap();
     turn_events(&s.lead, since, turn).await;
     // The levels are reported with the model the session uses; the other has none known.
@@ -410,36 +426,12 @@ fn speed_option(on: bool) -> Value {
 
 #[tokio::test]
 async fn a_fast_mode_comes_from_the_agent_and_applies_at_the_next_session() {
-    let mut first = handshake("unused");
-    first.pop();
-    first.push(Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
-        "sessionId": "s-1", "configOptions": [model_option("m1"), speed_option(false)]}})));
-    first.extend([
-        prompt(2, "s-1", "<any>"),
-        text("s-1", "Hi."),
-        done(2, "end_turn"),
-    ]);
-    let mut second = handshake("unused");
-    second.truncate(2);
-    second.extend([
-        Step::send(
-            json!({"jsonrpc": "2.0", "id": 1, "method": "session/resume",
-            "params": {"sessionId": "s-1", "cwd": "<any>", "mcpServers": "<any>"}}),
-        ),
-        Step::recv(json!({"jsonrpc": "2.0", "id": 1, "result": {
-            "configOptions": [model_option("m1"), speed_option(false)]}})),
-        Step::send(
-            json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
-            "params": {"sessionId": "s-1", "configId": "speed", "type": "boolean",
-                "value": true}}),
-        ),
-        Step::recv(json!({"jsonrpc": "2.0", "id": 2, "result": {
-            "configOptions": [model_option("m1"), speed_option(true)]}})),
-        prompt(3, "s-1", "Again."),
-        text("s-1", "Hello again."),
-        done(3, "end_turn"),
-    ]);
-    let s = setup_in(scratch("switch-fast"), vec![first, second], |_| {});
+    let scripts = option_scripts(
+        speed_option(false),
+        json!({"configId": "speed", "type": "boolean", "value": true}),
+        speed_option(true),
+    );
+    let s = setup_in(scratch("switch-fast"), scripts, |_| {});
     let (turn, since) = s.lead.send("Hello.").unwrap();
     turn_events(&s.lead, since, turn).await;
     let fake = |s: &Setup| {

@@ -238,7 +238,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   `users.*` probes. Open items: question 97.
 - **Escape suite (2026-11-23):** `just escape-test` runs real escape attempts inside the real sandbox (bwrap +
   egress namespace + bridge, built with `SandboxPlan` and spawned through `sandbox::spawn_command()`, the backends' one spawn path;
-  `crates/agent/tests/escape.rs`, probes in `tests/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
+  `crates/agent/tests/it/escape.rs`, probes in `tests/it/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
   `$HOME`, outside the workdir, the state dir and other file boxes; reads of host canaries, `permissions.json`,
   the files index, other boxes; symlinks, `..` and `/proc/<pid>/root` out; root-owned setuid files), processes
   (host PIDs, signals, `/proc/*/environ`, dying with the parent), privileges (capabilities, `no_new_privs`,

@@ -272,8 +272,7 @@ mod tests {
 
     #[test]
     fn counters_survive_a_restart() {
-        let dir = std::env::temp_dir().join(format!("melissa-hub-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("hub");
         let hub = UsageHub::open(&dir);
         hub.observe("claude", "p", totals("m", 7, 3, None), 1);
         let again = UsageHub::open(&dir);

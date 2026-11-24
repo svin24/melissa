@@ -229,7 +229,7 @@ mod tests {
         })
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn clips_run_one_at_a_time_and_extra_ones_are_turned_away() {
         let engine = fake(50);
         let t = Arc::new(Transcriber::new(engine.clone(), 2, Duration::from_secs(5)));
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(t.transcribe(&clip).await.unwrap(), "1600 samples");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_slow_run_times_out_and_frees_the_queue() {
         let t = Transcriber::new(fake(10_000), 0, Duration::from_millis(30));
         let clip = Clip::from_samples(vec![0; 16]);

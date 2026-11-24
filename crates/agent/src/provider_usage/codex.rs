@@ -313,8 +313,7 @@ mod tests {
 
     #[test]
     fn files_are_found_under_dated_folders() {
-        let root = std::env::temp_dir().join(format!("melissa-codex-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::fresh_path("codex");
         let day = root.join("2027/01/15");
         std::fs::create_dir_all(&day).unwrap();
         std::fs::write(day.join("rollout-2027-01-15T08-00-00-x.jsonl"), FIXTURE).unwrap();

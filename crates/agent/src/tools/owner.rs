@@ -73,13 +73,10 @@ pub fn new_owner_msg_id() -> Option<String> {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     use super::*;
-    use crate::{
-        tools::{Effect, Labels, TaskContext, Tool, ToolError, ToolRegistry, ToolSpec, Verdict},
-        BoxFuture,
-    };
+    use crate::tools::{Effect, TaskContext, ToolError, ToolRegistry, Verdict};
 
     /// Knows one owner message.
     struct One;
@@ -94,32 +91,15 @@ mod tests {
         }
     }
 
-    /// A call that always asks and may cite the owner's message.
-    struct Grant;
-    impl Tool for Grant {
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: "grant",
-                description: "test",
-                labels: Labels {
-                    effect: Effect::Destructive,
-                    ..Labels::READ_ONLY
-                },
-                params: json!({"type": "object"}),
-            }
-        }
-        fn call<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
-            Box::pin(async { Ok(json!("granted")) })
-        }
-        fn owner_citation(&self) -> Option<&'static str> {
-            Some("on_behalf_of")
-        }
-    }
-
     #[tokio::test]
     async fn a_cited_owner_message_is_checked_and_quoted_but_never_approves() {
-        let reg = ToolRegistry::new(vec![Arc::new(Grant)], None)
-            .with_confirm_timeout(Duration::from_secs(5));
+        // A call that always asks and may cite the owner's message.
+        let grant = crate::test_support::TestTool::new("grant")
+            .effect(Effect::Destructive)
+            .citing("on_behalf_of")
+            .reply(|_| json!("granted"));
+        let reg =
+            ToolRegistry::new(vec![grant.arc()], None).with_confirm_timeout(Duration::from_secs(5));
         let mut ctx = TaskContext::default();
         // Nothing to verify against yet: refused.
         let r = reg

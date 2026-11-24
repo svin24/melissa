@@ -729,19 +729,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::fresh_path;
 
     const DEVICE: &str = "d-0a1b2c3d";
-
-    fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("melissa-agents-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
 
     #[test]
     fn agents_persist_and_ids_are_never_reused() {
         use std::os::unix::fs::PermissionsExt;
-        let d = dir("persist");
+        let d = fresh_path("persist");
         let reg = AgentRegistry::open(&d, DEVICE).unwrap();
         let ada = reg
             .create("Ada", "grok-acp", None, "the lead agent (task 1)")
@@ -799,7 +794,7 @@ mod tests {
 
     #[test]
     fn names_are_unique_valid_and_renamable() {
-        let d = dir("names");
+        let d = fresh_path("names");
         let reg = AgentRegistry::open(&d, DEVICE).unwrap();
         reg.create("Ada", "x", None, "the user").unwrap();
         assert_eq!(
@@ -853,8 +848,7 @@ mod tests {
 
     #[test]
     fn the_lead_agent_has_a_name_unique_among_all_and_kept() {
-        let dir = std::env::temp_dir().join(format!("melissa-lead-name-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("lead-name");
         let reg = AgentRegistry::open(&dir, "d-0a1b2c3d").unwrap();
         assert_eq!(reg.lead_name(), LEAD_DEFAULT_NAME);
         // Nobody else may take the lead agent's name, or `lead`.
@@ -907,7 +901,7 @@ mod tests {
     /// name Iris; an old "message Iris" must not reach either one silently.
     #[test]
     fn a_reused_name_is_refused_not_misrouted() {
-        let d = dir("reuse");
+        let d = fresh_path("reuse");
         let reg = AgentRegistry::open(&d, DEVICE).unwrap();
         let first = reg.create("Iris", "x", None, "the user").unwrap();
         let found = reg.lookup("iris").unwrap();
@@ -989,7 +983,7 @@ mod tests {
 
     #[test]
     fn names_that_look_like_ids_are_refused() {
-        let d = dir("idnames");
+        let d = fresh_path("idnames");
         let reg = AgentRegistry::open(&d, DEVICE).unwrap();
         for bad in [
             "d-0a1b2c3d.a1",

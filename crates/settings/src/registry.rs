@@ -521,8 +521,7 @@ mod tests {
 
     #[test]
     fn cache_keeps_only_good_copies() {
-        let dir = std::env::temp_dir().join(format!("melissa-registry-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::scratch("registry");
         let cache = Cache::new(dir.join(CACHE_FILE));
         assert!(cache.load("linux-x86_64").is_none());
         assert!(cache.store("{}", "linux-x86_64").is_err());
@@ -554,8 +553,7 @@ mod tests {
 
     #[test]
     fn unpacks_a_tarball_and_finds_the_program() {
-        let dir = std::env::temp_dir().join(format!("melissa-unpack-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::scratch("unpack");
         let src = dir.join("src/pkg");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("agent"), "#!/bin/sh\n").unwrap();

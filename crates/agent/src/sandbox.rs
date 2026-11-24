@@ -1102,7 +1102,7 @@ pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io
 /// only clears what the CLI gets; bwrap's own initial environment stays readable inside the
 /// sandbox through `/proc/1/environ` (bwrap is PID 1 there), so inheriting the lead agent's
 /// environment would hand every variable of `melissa-server` (tokens, keys) to the agent. Found
-/// by the escape suite (`crates/agent/tests/escape.rs`, `proc.environ-leak`). Everything the
+/// by the escape suite (`crates/agent/tests/it/escape.rs`, `proc.environ-leak`). Everything the
 /// sandbox needs is in the argv (`--setenv`). Callers may add variables for bwrap itself (they
 /// are visible inside) and set stdio through [`SandboxCommand::command_mut`], then start it
 /// with [`SandboxCommand::spawn`].
@@ -1634,8 +1634,7 @@ mod tests {
 
     #[test]
     fn resolv_conf_is_found_through_links() {
-        let dir = std::env::temp_dir().join(format!("melissa-resolv-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("resolv");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("resolv.conf");
         std::fs::write(&file, "nameserver 192.0.2.1\n").unwrap();
@@ -1909,7 +1908,7 @@ mod tests {
 
     #[test]
     fn resolve_skips_missing_paths_and_orders_parents_first() {
-        let home = std::env::temp_dir().join(format!("melissa-sbx-resolve-{}", std::process::id()));
+        let home = crate::test_support::fresh_path("sbx-resolve");
         std::fs::create_dir_all(home.join(".cli")).unwrap();
         std::fs::write(home.join(".cli/token"), "t").unwrap();
         let spec = SandboxSpec {

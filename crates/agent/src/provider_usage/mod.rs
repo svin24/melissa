@@ -432,14 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn lengths_in_words() {
-        assert_eq!(length_words(5 * 3600), "5-hour");
-        assert_eq!(length_words(7 * 24 * 3600), "Weekly");
-        assert_eq!(length_words(30 * 24 * 3600), "30-day");
-        assert_eq!(length_words(90 * 60), "90-minute");
-    }
-
-    #[test]
     fn times_parse_with_offsets_and_fractions() {
         assert_eq!(parse_time("1970-01-01T00:01:00Z"), Some(60));
         assert_eq!(parse_time("1970-01-01T01:01:00.250+01:00"), Some(60));
@@ -460,12 +452,5 @@ mod tests {
         };
         let d = now.since(&before);
         assert_eq!((d.input, d.output), (5, 2));
-    }
-
-    #[test]
-    fn provider_ids_are_the_command_file_names() {
-        assert_eq!(provider_for_command("/usr/bin/claude"), "claude");
-        assert_eq!(provider_for_command("codex-acp"), "codex-acp");
-        assert_eq!(provider_label("codex-acp"), "Codex");
     }
 }

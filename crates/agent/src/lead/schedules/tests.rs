@@ -3,7 +3,6 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,6 +15,7 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use super::*;
+use crate::test_support::scratch;
 use crate::{
     tools::{
         ActionKey, AgentNames, AlwaysAllowError, Permissions, RuleOffer, TaskContext, ToolError,
@@ -130,17 +130,6 @@ fn input(name: &str, cron: &str) -> ScheduleInput {
         enabled: true,
         max_minutes: None,
     }
-}
-
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "melissa-sched-{name}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 fn setup(start: Timestamp) -> (Schedules, Arc<FakeClock>, Arc<FakeRunner>, Scheduler) {
@@ -272,7 +261,7 @@ fn a_daily_job_runs_once_on_both_dst_change_days() {
 #[test]
 fn schedules_are_saved_privately_and_come_back_after_a_restart() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = temp("persist");
+    let dir = scratch("persist");
     let path = dir.join("schedules.json");
     let clock = FakeClock::at(local(2026, 11, 20, 12, 0));
     let s = Schedules::open(&path, tz())
@@ -322,7 +311,7 @@ fn schedules_are_saved_privately_and_come_back_after_a_restart() {
 
 #[test]
 fn the_wait_for_a_scheduled_runs_requests_is_the_owners_setting() {
-    let dir = temp("wait");
+    let dir = scratch("wait");
     let path = dir.join("schedules.json");
     let s = Schedules::open(&path, tz()).unwrap();
     // Default: 10 minutes, also for files saved before the setting existed.
@@ -393,7 +382,7 @@ fn bad_input_is_refused_and_nothing_is_saved() {
 
 #[test]
 fn changes_are_audited_with_who_made_them() {
-    let dir = temp("audit");
+    let dir = scratch("audit");
     let log = dir.join("audit.jsonl");
     let s = Schedules::in_memory(tz()).with_audit(Some(AuditLog::new(&log)));
     let a = s
@@ -609,7 +598,7 @@ async fn the_loop_wakes_at_the_due_time_and_on_changes() {
 
 #[tokio::test(start_paused = true)]
 async fn runs_going_when_melissa_stopped_are_marked_interrupted() {
-    let dir = temp("restart");
+    let dir = scratch("restart");
     let path = dir.join("schedules.json");
     let clock = FakeClock::at(local(2026, 11, 20, 12, 0));
     let s = Schedules::open(&path, tz())

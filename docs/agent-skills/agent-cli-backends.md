@@ -56,7 +56,7 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   `$HOME` an empty read-only tmpfs plus the preset's paths, the CLI binary (symlinks resolved, bound read-only,
   executed by its real path), and the task workdir (`--chdir` into it); for conversations also the agent's own
   file box (`OpenSession::files_dir` → `SandboxPlan::with_rw_dirs`, same path). Those are the only writable host
-  paths; no other box is ever bound (`crates/agent/tests/sandbox.rs` checks it with real bwrap).
+  paths; no other box is ever bound (`crates/agent/tests/it/sandbox.rs` checks it with real bwrap).
 - `--unshare-all --die-with-parent --new-session --cap-drop ALL --hostname melissa-agent --clearenv`.
   Env: HOME, PATH (`<binary dir>:/usr/bin`), NO_COLOR, TERM, plus USER/LOGNAME/LANG/LC_ALL/TZ if set and the
   names in `sandbox.env`.
@@ -117,8 +117,9 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
   nothing. To drop preset paths (e.g. use an API key instead of the OAuth file) set `preset = false`; the lists
   are then exactly what the table says. `network`/`allow` stay backend keys (`allow` replaces the built-in host
   list). `sandbox = { enabled = false }` runs the CLI unsandboxed.
-- Integration test `crates/agent/tests/sandbox.rs`: fake HOME secret unreadable, writes outside the workdir fail,
-  inside succeed, host env not leaked, cancel kills a `setsid` background grandchild. Skips if bwrap is missing.
+- Integration test `crates/agent/tests/it/sandbox.rs`: fake HOME secret unreadable, writes outside the workdir fail,
+  inside succeed, host env not leaked, cancel kills a `setsid` background grandchild. Skips if bwrap is missing (fails instead with
+  `MELISSA_SANDBOX_REQUIRED=1`).
 
 - Headless box (since 2026-11-18): the CLIs live in the lead agent user's home `/var/lib/melissa/home`, installed by
   `sudo melissa-setup agent <name>` with the vendors' installers; same paths as above relative to that home.

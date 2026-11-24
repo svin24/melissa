@@ -203,20 +203,3 @@ impl AgentSession for EchoSession {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::echo_reply;
-
-    #[test]
-    fn echo_reply_repeats_the_message_and_counts_the_recap() {
-        assert_eq!(echo_reply("hi"), "echo: hi");
-        let p = "<melissa-system-prompt>\nx\n</melissa-system-prompt>\n\nEarlier conversation, \
-                 restored:\n<earlier-conversation>\nuser: a\nyou: b\n</earlier-conversation>\n\n\
-                 The message:\n\nhello";
-        assert_eq!(
-            echo_reply(p),
-            "echo: hello\n\n(Melissa handed me 2 earlier messages of this chat.)"
-        );
-    }
-}

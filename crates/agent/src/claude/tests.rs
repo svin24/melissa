@@ -10,6 +10,7 @@ use super::{
     client::{self, permission_response, stop_reason, tool_kind, Start},
     ClaudeBackend, ClaudeSpec, SessionArg,
 };
+use crate::test_support::scratch;
 use crate::{
     acp::{
         client::StderrTail,
@@ -31,13 +32,6 @@ fn fixture(name: &str) -> String {
         .join("tests/fixtures/claude")
         .join(name);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("melissa-claude-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 /// Policy permissions over a registry with `device_info`, for an attended task 7.

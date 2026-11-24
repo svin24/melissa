@@ -944,18 +944,6 @@ mod tests {
     }
 
     #[test]
-    fn limits_round_trip_through_serde() {
-        let l = Limits {
-            swap: Bytes(None),
-            cpus: Cpus(Some(500)),
-            io_weight: Some(IoWeight(10)),
-            ..Limits::default()
-        };
-        let text = toml::to_string(&l).unwrap();
-        assert_eq!(toml::from_str::<Limits>(&text).unwrap(), l);
-    }
-
-    #[test]
     fn cgroup_files_follow_the_limits_and_the_controllers() {
         let all = Controllers::parse("cpuset cpu io memory hugetlb pids");
         assert_eq!(

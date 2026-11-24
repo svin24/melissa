@@ -8,7 +8,7 @@
 //!
 //! `just escape-test` runs this with `MELISSA_ESCAPE_REQUIRED=1`, which turns a missing
 //! bwrap (or user namespaces being off, or a missing probe helper) into a failure instead of
-//! a skip: it is the gate for image updates. `just escape-test-image` runs the same suite inside
+//! a skip: it is the gate for image updates (`MELISSA_SANDBOX_REQUIRED=1` does the same). `just escape-test-image` runs the same suite inside
 //! the built container image, the NixOS VM test runs it on NixOS. Plain `cargo nextest run`
 //! skips it on hosts without bwrap, like the other sandbox tests.
 //!
@@ -25,10 +25,6 @@
 //! (`/etc/subuid`, `/etc/subgid`) and newuidmap; the suite keeps its id table in
 //! `<scene base>/melissa-escape-users`. Without them those probes skip with the reason.
 
-// Test-only file: panicking on setup failure is the intended behaviour.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
-#[path = "escape/probes.rs"]
 mod probes;
 
 use std::{
@@ -61,6 +57,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
 };
+
+use crate::support::{netbridge, required, sandbox_host, SandboxHost};
 
 /// A host-side check of what an attempt would have changed; `Err` = it escaped.
 pub type HostCheck = fn(&Ctx) -> Result<(), String>;
@@ -327,22 +325,6 @@ fn scene_base() -> PathBuf {
     base
 }
 
-/// A host program: `/usr/bin/<name>` (Fedora) or the first `<name>` on `PATH` (NixOS).
-fn host_program(name: &str) -> Option<PathBuf> {
-    let usr = Path::new("/usr/bin").join(name);
-    if usr.is_file() {
-        return Some(usr);
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
-}
-
-/// The suite's own run: `MELISSA_ESCAPE_REQUIRED=1` (the image gate).
-fn required() -> bool {
-    std::env::var_os("MELISSA_ESCAPE_REQUIRED").is_some_and(|v| v == "1")
-}
-
 /// `melissa-escape-probe`: `MELISSA_ESCAPE_PROBE`, else where `cargo build -p
 /// melissa-escape-probe` puts it: `target/<profile>/` (found from `CARGO_TARGET_TMPDIR`,
 /// `target/tmp`, since test binaries may live in a separate build dir), or beside the
@@ -369,39 +351,16 @@ fn probe_helper() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn netbridge() -> PathBuf {
-    std::env::var_os("MELISSA_NETBRIDGE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_melissa-netbridge").into())
-}
-
-/// bwrap and namespaces available? `MELISSA_ESCAPE_REQUIRED=1` (the image gate) makes
-/// "no" a failure rather than a skip.
+/// bwrap and namespaces available? When required (`MELISSA_ESCAPE_REQUIRED=1`, the image
+/// gate) "no" is a failure rather than a skip, and so is a missing probe helper.
 fn sandbox_available() -> Option<(PathBuf, PathBuf)> {
-    let required = required();
-    let bwrap = sandbox::find_bwrap();
-    let sh = host_program("sh");
-    let ok = match (&bwrap, &sh) {
-        (Some(b), Some(s)) => std::process::Command::new(b)
-            .args(["--unshare-all", "--ro-bind", "/", "/", "--"])
-            .arg(s)
-            .args(["-c", "true"])
-            .status()
-            .is_ok_and(|st| st.success()),
-        _ => false,
-    };
-    if !ok {
-        let why = "bwrap missing or it cannot create namespaces here";
-        assert!(!required, "escape suite required but cannot run: {why}");
-        eprintln!("SKIP: {why}");
-        return None;
-    }
+    let SandboxHost { bwrap, sh } = sandbox_host(&[])?;
     assert!(
-        !required || probe_helper().is_some(),
+        !required() || probe_helper().is_some(),
         "escape suite required but the probe helper is missing: \
          `just escape-probe`, or set MELISSA_ESCAPE_PROBE"
     );
-    Some((bwrap?, sh?))
+    Some((bwrap, sh))
 }
 
 /// The host's LAN address, if it has one (no packet is sent).
@@ -848,9 +807,10 @@ async fn run_parent_dies(sh: &Path, plan: &SandboxPlan, args: &[String], work: &
         return Outcome::Fail("broken: heartbeat never started".into());
     }
     let _ = child.kill().await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let before = read();
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Six heartbeats' worth: a survivor would have rewritten the file.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     if read() != before {
         // Clean up what escaped before failing.
         let _ = std::process::Command::new("kill")

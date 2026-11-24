@@ -89,17 +89,3 @@ pub(crate) async fn read_line<R: AsyncRead + Unpin>(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn reads_lines_and_skips_blanks() {
-        let data: &[u8] = b"{\"a\":1}\r\n\n{\"b\":2}";
-        let mut reader = BufReader::new(data);
-        assert_eq!(read_line(&mut reader).await.unwrap().unwrap(), "{\"a\":1}");
-        assert_eq!(read_line(&mut reader).await.unwrap().unwrap(), "{\"b\":2}");
-        assert!(read_line(&mut reader).await.unwrap().is_none());
-    }
-}

@@ -499,8 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_notification_stops_the_call_and_withdraws_its_confirmation() {
-        let dir = std::env::temp_dir().join(format!("melissa-mcp-cancel-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("mcp-cancel");
         let audit = crate::AuditLog::new(dir.join("audit.jsonl"));
         let server = McpServer::new(ToolRegistry::new(
             vec![std::sync::Arc::new(Destructive)],

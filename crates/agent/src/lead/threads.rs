@@ -191,8 +191,7 @@ mod tests {
 
     #[test]
     fn one_thread_per_pair_in_either_order() {
-        let dir = std::env::temp_dir().join(format!("melissa-threads-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("threads");
         let t = Threads::new(&dir);
         let a = "d-0123abcd.a1";
         t.record(&ThreadEntry::new(a, LEAD, "ask", "data", "can you ask Bo?"));
