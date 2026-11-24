@@ -4,21 +4,16 @@
 //! and Melissa's MCP endpoint.
 //! The "allowlisted host" is a local test server under a made-up name, mapped through the
 //! proxy's resolver override, so the test needs no internet. Skips if bwrap or curl is
-//! missing or bwrap cannot create namespaces.
-
-// Test-only file: panicking on setup failure is the intended behaviour.
-#![allow(clippy::unwrap_used)]
+//! missing or bwrap cannot create namespaces, unless required (`support::sandbox_host`).
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use melissa_agent::{
     egress::EgressProxy,
     mcp::McpServer,
-    sandbox,
     tools::{DeviceInfo, TaskContext, Tool, ToolRegistry},
     AuditLog, Backend, CliBackend, CliSpec, EventSink, McpEndpoint, NetworkMode, RunRequest,
     SandboxSpec,
@@ -28,34 +23,7 @@ use tokio::{
     net::TcpListener,
 };
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("melissa-egress-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// A host program: `/usr/bin/<name>` (Fedora) or the first `<name>` on `PATH` (NixOS).
-fn host_program(name: &str) -> Option<PathBuf> {
-    let usr = Path::new("/usr/bin").join(name);
-    if usr.is_file() {
-        return Some(usr);
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
-}
-
-/// Can bwrap create the sandbox's namespaces here? Probes with the host's root bound
-/// read-only, so the check does not depend on the distribution's layout.
-fn namespaces_work(bwrap: &Path, sh: &Path) -> bool {
-    std::process::Command::new(bwrap)
-        .args(["--unshare-all", "--ro-bind", "/", "/", "--"])
-        .arg(sh)
-        .args(["-c", "true"])
-        .status()
-        .is_ok_and(|s| s.success())
-}
+use crate::support::{host_program, netbridge, sandbox_host, scratch};
 
 /// `sh` and `curl` on this host, as strings for scripts and specs.
 fn sh_and_curl() -> (String, String) {
@@ -63,28 +31,8 @@ fn sh_and_curl() -> (String, String) {
     (path("sh"), path("curl"))
 }
 
-/// `melissa-netbridge`: `MELISSA_NETBRIDGE` when set (test binaries run outside their
-/// build tree, e.g. in the NixOS VM test), else the one cargo built.
-fn netbridge() -> PathBuf {
-    std::env::var_os("MELISSA_NETBRIDGE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_melissa-netbridge").into())
-}
-
 fn tools_present() -> bool {
-    let Some(bwrap) = sandbox::find_bwrap() else {
-        eprintln!("SKIP: bwrap not found");
-        return false;
-    };
-    let (Some(sh), Some(_)) = (host_program("sh"), host_program("curl")) else {
-        eprintln!("SKIP: sh or curl not found");
-        return false;
-    };
-    let ok = namespaces_work(&bwrap, &sh);
-    if !ok {
-        eprintln!("SKIP: bwrap cannot create namespaces here");
-    }
-    ok
+    sandbox_host(&["curl"]).is_some()
 }
 
 /// A tiny HTTP server on the host's loopback answering every request with `body`.

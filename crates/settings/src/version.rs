@@ -168,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn probe_runs_caches_and_times_out_quietly() {
-        let dir = std::env::temp_dir().join(format!("melissa-version-{}", std::process::id()));
+        let dir = crate::test_support::scratch("version");
         std::fs::create_dir_all(&dir).unwrap();
         let prog = dir.join("fake-cli");
         let count = dir.join("count");

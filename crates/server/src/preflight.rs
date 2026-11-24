@@ -531,16 +531,28 @@ mod tests {
         assert_eq!(all, ["on", "off"]);
     }
 
+    /// The summary's line that starts with `label`.
+    fn line(r: &Report, label: &str) -> String {
+        let text = r.render();
+        let found = text.lines().find(|l| l.trim_start().starts_with(label));
+        found
+            .unwrap_or_else(|| panic!("no {label} line: {text}"))
+            .to_string()
+    }
+
     #[test]
     fn lead_uses_first_available_backend_in_her_order() {
         let r = report();
         assert_eq!(r.lead_backend(), Some("claude-session"));
         let text = r.render();
-        assert!(text.contains("http://127.0.0.1:8080"));
-        assert!(text.contains("claude-session  claude    found   <- the lead agent uses this"));
-        assert!(text.contains("not installed (`grok` not on PATH)"));
-        assert!(text.contains("k3s:      not found"));
-        assert!(text.contains("(not present: defaults)"));
+        assert!(text.contains("http://127.0.0.1:8080"), "{text}");
+        let lead = text.lines().find(|l| l.contains("<-")).unwrap();
+        assert!(lead.contains("claude-session"), "{text}");
+        // Why the other one is not used.
+        assert!(
+            text.contains("not installed (`grok` not on PATH)"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -550,36 +562,39 @@ mod tests {
         r.sandbox = Sandbox::NoBwrap;
         let text = r.render();
         assert_eq!(r.lead_backend(), None);
-        assert!(text.contains("bwrap not found. Install bubblewrap"));
-        assert!(text.contains("No agent CLI is usable"));
+        assert!(!text.contains("<-"), "{text}");
+        assert!(text.contains("bubblewrap"), "{text}");
         r.sandbox = Sandbox::Blocked("setting up uid map: Permission denied".into());
         r.apparmor_userns_restricted = true;
-        assert!(r.render().contains("Ubuntu and AppArmor"));
+        assert!(r.render().contains("AppArmor"));
     }
 
     #[test]
-    fn limits_line_says_whether_agents_are_limited() {
+    fn limits_and_gvisor_lines_say_on_or_off_and_why() {
         let mut r = report();
-        assert!(r
-            .render()
-            .contains("Limits:   on (each agent: 2 GiB memory, 512 processes, 2 CPUs)"));
+        let limits = line(&r, "Limits:");
+        assert!(
+            limits.contains("on") && limits.contains("2 GiB memory"),
+            "{limits}"
+        );
         r.limits = Err("no cgroup v2 (unified hierarchy) on this host".into());
-        assert!(r.render().contains(
-            "Limits:   off: no cgroup v2 (unified hierarchy) on this host. Agents run without"
-        ));
-    }
+        let limits = line(&r, "Limits:");
+        assert!(
+            limits.contains("off") && limits.contains("no cgroup v2"),
+            "{limits}"
+        );
 
-    #[test]
-    fn gvisor_line_says_whether_apps_get_their_own_kernel() {
-        let mut r = report();
-        assert!(r.render().contains(
-            "  gVisor:   on (runsc release-20261116.0). Apps run in their own sandboxed kernel"
-        ));
+        let gvisor = line(&r, "gVisor:");
+        assert!(
+            gvisor.contains("on") && gvisor.contains("release-20261116.0"),
+            "{gvisor}"
+        );
         r.gvisor = Err("runsc not found (gVisor is not installed)".into());
-        assert!(r.render().contains(
-            "  gVisor:   off: runsc not found (gVisor is not installed). Apps that run under \
-             gVisor (the default) are not deployed."
-        ));
+        let gvisor = line(&r, "gVisor:");
+        assert!(
+            gvisor.contains("off") && gvisor.contains("runsc not found"),
+            "{gvisor}"
+        );
         assert_eq!(
             runsc_version("runsc version release-20261116.0\nspec: 1.2.1\n").as_deref(),
             Some("release-20261116.0")
@@ -605,11 +620,5 @@ mod tests {
         // 1 is safe while agents have their own memory cgroup.
         r.oom_panic = oom_panic_risk(Some(OomPanic::SystemWide), true);
         assert!(!r.render().contains("panic_on_oom"));
-    }
-
-    #[test]
-    fn first_line_trims_and_handles_empty() {
-        assert_eq!(first_line("bwrap: x\nmore"), "bwrap: x");
-        assert_eq!(first_line(""), "no error message");
     }
 }

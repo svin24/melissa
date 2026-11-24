@@ -281,8 +281,10 @@ mod tests {
         wav(FORMAT_PCM, 2, rate, 16, &data)
     }
 
+    /// Stereo 48 kHz becomes 16 kHz mono with the same length and level; float 8 kHz is
+    /// upsampled; canonical 16 kHz mono round-trips unchanged.
     #[test]
-    fn stereo_48k_becomes_16k_mono_with_the_same_length_and_level() {
+    fn clips_are_converted_to_16k_mono_and_back() {
         let clip = decode(&stereo_sine(48_000, 1.5)).unwrap();
         assert_eq!(clip.samples().len(), 24_000);
         assert_eq!(clip.millis(), 1500);
@@ -294,10 +296,7 @@ mod tests {
             .max()
             .unwrap();
         assert!((13_500..=15_100).contains(&peak), "peak {peak}");
-    }
 
-    #[test]
-    fn canonical_16k_mono_round_trips_unchanged() {
         let samples: Vec<i16> = (0..8000)
             .map(|i| ((i % 200) * 100 - 10_000) as i16)
             .collect();
@@ -309,10 +308,7 @@ mod tests {
         assert_eq!((u16_at(&w, 20), u16_at(&w, 22)), (1, 1));
         assert_eq!((u32_at(&w, 24), u16_at(&w, 34)), (16_000, 16));
         assert_eq!(u32_at(&w, 40) as usize, samples.len() * 2);
-    }
 
-    #[test]
-    fn upsampling_float_8k_works() {
         let data: Vec<u8> = (0..4000)
             .flat_map(|i| (if i % 2 == 0 { 0.5f32 } else { -0.5 }).to_le_bytes())
             .collect();

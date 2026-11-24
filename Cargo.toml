@@ -70,3 +70,11 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+# Password hashing at full cost is slow unoptimised (about 1.5 s per hash in tests and the dev
+# server); optimise just the hash and its compression function. Release builds are unaffected.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

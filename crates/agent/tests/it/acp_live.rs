@@ -1,9 +1,6 @@
 //! Live checks against a real ACP agent (`grok agent stdio`, sandboxed). Ignored by default:
 //! they need Grok installed and logged in and spend a few model calls. Run with
-//! `cargo nextest run -p melissa-agent --run-ignored only -E 'binary(acp_live)'`.
-
-// Test-only file: panicking on setup failure is the intended behaviour.
-#![allow(clippy::unwrap_used)]
+//! `cargo nextest run -p melissa-agent --run-ignored only -E 'binary(it) and test(/^acp_live::/)'`.
 
 use std::{sync::Arc, time::Duration};
 

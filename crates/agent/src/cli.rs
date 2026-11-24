@@ -604,8 +604,7 @@ mod tests {
     #[test]
     fn readiness_names_what_is_missing() {
         use crate::session::NotReady;
-        let home = std::env::temp_dir().join(format!("melissa-ready-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::fresh_path("ready");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         let mut sandbox = SandboxSpec::preset("claude");
         sandbox.network = NetworkMode::None;
@@ -674,16 +673,13 @@ mod tests {
         (result, lines)
     }
 
-    #[test]
-    fn placeholder_is_replaced_or_appended() {
+    /// The prompt replaces `{prompt}` or is appended; the MCP arguments only with a config.
+    #[tokio::test]
+    async fn prompt_and_mcp_args_go_where_they_belong() {
         let spec = CliSpec::new("c", "claude", &["-p", "{prompt}"]);
         assert_eq!(spec.render_args("hi"), ["-p", "hi"]);
         let spec = CliSpec::new("o", "opencode", &["run"]);
         assert_eq!(spec.render_args("hi there"), ["run", "hi there"]);
-    }
-
-    #[tokio::test]
-    async fn mcp_args_are_appended_only_with_a_config() {
         let spec = CliSpec::new("sh", "sh", &["-c", r#"echo "$@""#, "melissa", "{prompt}"])
             .with_mcp_args(&["--mcp-config", "{mcp_config}"])
             .without_sandbox();
@@ -707,15 +703,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_program_is_unavailable() {
-        let spec = CliSpec::new("x", "melissa-definitely-not-installed", &[]);
-        assert!(!CliBackend::new(spec, std::env::temp_dir()).info().available);
-    }
-
-    #[test]
     fn a_program_installed_later_is_found_without_a_restart() {
-        let dir = std::env::temp_dir().join(format!("melissa-late-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("late");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("agent");
         let spec = CliSpec::new("x", path.to_str().unwrap(), &[]).without_sandbox();

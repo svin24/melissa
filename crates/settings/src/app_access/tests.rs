@@ -1,26 +1,11 @@
-use std::{
-    cell::RefCell,
-    collections::VecDeque,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::{cell::RefCell, collections::VecDeque};
 
 use melissa_agent::tools::{TaskContext, Tool};
 
 use super::*;
+use crate::test_support::scratch;
 
 const GW: Ipv4Addr = Ipv4Addr::new(10, 88, 0, 1);
-
-fn temp_dir(tag: &str) -> PathBuf {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "melissa-app-access-{tag}-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 // --- levels and addresses ----------------------------------------------------------------
 
@@ -73,7 +58,7 @@ fn addresses_need_the_right_level() {
 
 #[test]
 fn setting_file_round_trip_and_defaults() {
-    let dir = temp_dir("file");
+    let dir = scratch("file");
     let path = dir.join(FILE_NAME);
     assert_eq!(
         read_setting(&path),
@@ -91,7 +76,7 @@ fn setting_file_round_trip_and_defaults() {
 
 #[test]
 fn setting_file_refuses_a_symlink() {
-    let dir = temp_dir("link");
+    let dir = scratch("link");
     let target = dir.join("secret");
     std::fs::write(&target, "apps = \"tailnet\"\n").unwrap();
     let path = dir.join(FILE_NAME);
@@ -441,7 +426,7 @@ fn control(dir: &Path, fail_loads: usize) -> (AppAccessControl, PathBuf) {
 
 #[tokio::test]
 async fn set_applies_and_audits() {
-    let dir = temp_dir("set");
+    let dir = scratch("set");
     let (c, audit) = control(&dir, 0);
     assert_eq!(c.setting(), AppAccess::ThisDevice);
     let view = c.set(AppAccess::Tailnet, "ui").await.unwrap();
@@ -458,7 +443,7 @@ async fn set_applies_and_audits() {
 
 #[tokio::test]
 async fn set_that_fails_reports_and_links_stay_closed() {
-    let dir = temp_dir("setfail");
+    let dir = scratch("setfail");
     let (c, audit) = control(&dir, 1);
     let err = c.set(AppAccess::HomeNetwork, "agent").await.unwrap_err();
     assert!(matches!(err, AppAccessError::Apply(_)), "{err}");
@@ -476,7 +461,7 @@ async fn set_that_fails_reports_and_links_stay_closed() {
 
 #[tokio::test]
 async fn tool_asks_the_owner_only_to_widen() {
-    let dir = temp_dir("tool");
+    let dir = scratch("tool");
     let (c, _) = control(&dir, 0);
     let t = tool::SetAppAccess(c.clone());
     let ctx = TaskContext::default();

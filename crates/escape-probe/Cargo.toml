@@ -1,4 +1,4 @@
-# Test-only helper of the sandbox escape suite (crates/agent/tests/escape.rs). Its own workspace and
+# Test-only helper of the sandbox escape suite (crates/agent/tests/it/escape.rs). Its own workspace and
 # Cargo.lock on purpose: its dependencies are never compiled into a shipped binary, so they stay out
 # of the main lockfile, the license report (`just licenses`, cargo-about --workspace) and the
 # packages (the image and the Nix package build only `-p melissa-server -p melissa-device

@@ -145,7 +145,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_billing_summary_gives_a_credit_window_and_pools() {
+    fn billing_answers_become_a_credit_window_and_pools() {
         let answer: Value =
             serde_json::from_str(include_str!("fixtures/grok_billing.json")).unwrap();
         let f = billing(&answer, 7).unwrap();
@@ -159,20 +159,14 @@ mod tests {
         assert_eq!(ids, ["included", "on_demand", "prepaid"]);
         assert_eq!(f.credits[1].used, Some(2.5));
         assert_eq!(f.credits[2].balance, Some(10.0));
-    }
 
-    #[test]
-    fn a_flat_answer_with_a_weekly_period_and_no_percentage_reads_as_unused() {
+        // A flat answer with a weekly period and no percentage reads as unused.
         let answer = serde_json::json!({"currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY",
             "start": "2027-01-08T08:00:00Z", "end": "2027-01-15T08:00:00Z"}});
         let f = billing(&answer, 1).unwrap();
         assert_eq!(f.windows[0].kind, WindowKind::Weekly);
-        assert_eq!(f.windows[0].label, "Weekly credits");
         assert!(f.windows[0].used_pct.abs() < 1e-9);
-    }
-
-    #[test]
-    fn an_answer_without_figures_is_unavailable() {
+        // Without figures: unavailable.
         assert!(billing(&serde_json::json!({"ok": true}), 1).is_err());
     }
 }

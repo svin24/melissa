@@ -29,6 +29,9 @@ pub mod sandbox;
 pub mod session;
 pub mod tools;
 
+#[cfg(test)]
+mod test_support;
+
 pub use acp::{AcpBackend, AcpSpec};
 pub use audit::{
     requester, requester_is_owner, AuditLog, AuditRecord, PERSON as AUDIT_PERSON, PERSON_ID,

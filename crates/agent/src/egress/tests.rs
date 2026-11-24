@@ -9,13 +9,8 @@ use tokio::{
 };
 
 use super::*;
+use crate::test_support::fresh_path;
 use crate::tools::{DeviceInfo, TaskContext, Tool, ToolRegistry};
-
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("melissa-egress-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
 
 /// A TCP server on 127.0.0.1 that answers every connection with `hello` and echoes
 /// one read.
@@ -74,7 +69,7 @@ fn request(mode: NetworkMode, allow: &[&str], tokens: Vec<String>) -> EgressRequ
 
 #[tokio::test]
 async fn allowlisted_hosts_tunnel_and_everything_is_audited() {
-    let root = scratch("proxy");
+    let root = fresh_path("proxy");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     let server = echo_server().await;
     let proxy = EgressProxy::new(root.join("sockets"), Some(audit.clone()))
@@ -163,7 +158,7 @@ async fn allowlisted_hosts_tunnel_and_everything_is_audited() {
 
 #[tokio::test]
 async fn repeated_denials_are_counted_not_repeated() {
-    let root = scratch("repeat");
+    let root = fresh_path("repeat");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     let proxy = EgressProxy::new(root.join("sockets"), Some(audit.clone()))
         .unwrap()
@@ -208,7 +203,7 @@ async fn repeated_denials_are_counted_not_repeated() {
 
 #[tokio::test]
 async fn learn_mode_allows_unlisted_hosts_but_not_private_ones() {
-    let root = scratch("learn");
+    let root = fresh_path("learn");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     let server = echo_server().await;
     let port = server.port();
@@ -238,7 +233,7 @@ async fn learn_mode_allows_unlisted_hosts_but_not_private_ones() {
 
 #[tokio::test]
 async fn connection_limit_per_sandbox() {
-    let root = scratch("limit");
+    let root = fresh_path("limit");
     let proxy = EgressProxy::new(root.join("sockets"), None)
         .unwrap()
         .with_netbridge("/usr/bin/true".into())
@@ -278,7 +273,7 @@ async fn http(dir: &Path, method: &str, path: &str, body: &str) -> (u16, String)
 
 #[tokio::test]
 async fn mcp_socket_serves_only_its_own_tokens() {
-    let root = scratch("mcp");
+    let root = fresh_path("mcp");
     let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(DeviceInfo::new())];
     let server = McpServer::new(ToolRegistry::new(tools, None));
     let mine = server
@@ -337,7 +332,7 @@ async fn mcp_socket_serves_only_its_own_tokens() {
 
 #[tokio::test]
 async fn proxy_port_moves_aside_for_the_mcp_port_and_needs_a_bridge() {
-    let root = scratch("ports");
+    let root = fresh_path("ports");
     let server = McpServer::new(ToolRegistry::new(Vec::new(), None));
     let proxy = EgressProxy::new(root.join("sockets"), None)
         .unwrap()
@@ -365,7 +360,7 @@ async fn proxy_port_moves_aside_for_the_mcp_port_and_needs_a_bridge() {
 
 #[tokio::test]
 async fn startup_keeps_live_leases_and_rejects_long_paths() {
-    let root = scratch("stale");
+    let root = fresh_path("stale");
     let sockets = root.join("s");
     let first = EgressProxy::new(sockets.clone(), None)
         .unwrap()
@@ -408,7 +403,7 @@ fn elf_interpreter_is_read_from_the_binary() {
 
 #[test]
 fn scripts_from_the_nix_store_need_it() {
-    let dir = std::env::temp_dir().join(format!("melissa-shebang-{}", std::process::id()));
+    let dir = crate::test_support::fresh_path("shebang");
     std::fs::create_dir_all(&dir).unwrap();
     let nix = dir.join("nix");
     std::fs::write(&nix, "#!/nix/store/abc-bash/bin/bash -e\nexec x\n").unwrap();
@@ -422,7 +417,15 @@ fn scripts_from_the_nix_store_need_it() {
 }
 
 #[test]
-fn default_allowlists_parse() {
+fn default_allow_and_deny_lists_parse() {
+    // The deny lists (telemetry the CLIs would otherwise send) by the program's file name.
+    assert_eq!(default_deny("/opt/x/grok").len(), 2);
+    assert!(allowed(
+        &default_deny("claude"),
+        "http-intake.logs.us5.datadoghq.com",
+        443
+    ));
+    assert!(default_deny("custom-cli").is_empty());
     for cli in [
         "claude",
         "grok",
@@ -471,35 +474,17 @@ fn new_clis_reach_their_apis_but_not_their_telemetry_or_updates() {
     assert!(!allowed("codex", "api.openai.com"));
 }
 
-/// A destructive tool, so every call waits in the confirmation inbox.
-struct NeedsApproval;
-impl Tool for NeedsApproval {
-    fn spec(&self) -> crate::tools::ToolSpec {
-        crate::tools::ToolSpec {
-            name: "remove_everything",
-            description: "test",
-            labels: crate::tools::Labels {
-                effect: crate::tools::Effect::Destructive,
-                ..crate::tools::Labels::READ_ONLY
-            },
-            params: json!({"type": "object"}),
-        }
-    }
-    fn call<'a>(
-        &'a self,
-        _args: Value,
-    ) -> crate::BoxFuture<'a, Result<Value, crate::tools::ToolError>> {
-        Box::pin(async { Ok(json!({"removed": true})) })
-    }
-}
-
 /// An agent's MCP client gives up on a call that waits for a confirmation (Claude Code's
 /// HTTP client does so after 300 s) and closes the connection: the confirmation must leave
 /// the inbox, or a later approval would run an action nobody is waiting for.
 #[tokio::test]
 async fn mcp_call_abandoned_by_the_client_withdraws_its_confirmation() {
-    let root = scratch("mcp-abandon");
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(NeedsApproval)];
+    let root = fresh_path("mcp-abandon");
+    // A destructive tool, so every call waits in the confirmation inbox.
+    let tools: Vec<Arc<dyn Tool>> = vec![crate::test_support::TestTool::new("remove_everything")
+        .effect(crate::tools::Effect::Destructive)
+        .reply(|_| json!({"removed": true}))
+        .arc()];
     let server = McpServer::new(ToolRegistry::new(tools, None));
     let token = server
         .open_session(7, TaskContext::default(), None)
@@ -570,7 +555,7 @@ fn web_proxy(root: &Path, audit: &AuditLog, web: WebRead) -> EgressProxy {
 
 #[tokio::test]
 async fn web_reads_reach_any_public_host_audited_capped_and_tainting() {
-    let root = scratch("web");
+    let root = fresh_path("web");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     let server = echo_server().await;
     let port = server.port();
@@ -651,7 +636,7 @@ async fn web_reads_reach_any_public_host_audited_capped_and_tainting() {
 
 #[tokio::test]
 async fn web_reads_refuse_private_addresses_local_names_and_other_ports() {
-    let root = scratch("ssrf");
+    let root = fresh_path("ssrf");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     let mut proxy = web_proxy(&root, &audit, WebRead::on());
     // Names whose DNS answers point inside: LAN, loopback (also hidden in IPv6), cloud
@@ -768,7 +753,7 @@ async fn http_origin(body: &'static str) -> (SocketAddr, tokio::sync::mpsc::Rece
 
 #[tokio::test]
 async fn plain_http_is_forwarded_read_only() {
-    let root = scratch("http");
+    let root = fresh_path("http");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     let (origin, mut heads) = http_origin("<title>Hi</title>").await;
     let port = origin.port();
@@ -845,7 +830,7 @@ async fn plain_http_is_forwarded_read_only() {
 
 #[tokio::test]
 async fn background_hosts_and_web_reading_off() {
-    let root = scratch("weboff");
+    let root = fresh_path("weboff");
     let audit = AuditLog::new(root.join("audit.jsonl"));
     // On: the CLI's own background hosts stay denied (no lookup, no taint).
     let proxy = web_proxy(&root, &audit, WebRead::on());
@@ -879,20 +864,9 @@ async fn background_hosts_and_web_reading_off() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-#[test]
-fn default_denylists_parse_and_lease_dirs_hold_the_dns_files() {
-    assert_eq!(default_deny("/opt/x/grok").len(), 2);
-    assert!(allowed(
-        &default_deny("claude"),
-        "http-intake.logs.us5.datadoghq.com",
-        443
-    ));
-    assert!(default_deny("custom-cli").is_empty());
-}
-
 #[tokio::test]
 async fn proxied_sandboxes_get_a_dns_handoff_and_resolv_conf() {
-    let root = scratch("dnsfiles");
+    let root = fresh_path("dnsfiles");
     let proxy = EgressProxy::new(root.join("sockets"), None)
         .unwrap()
         .with_netbridge("/usr/bin/true".into());

@@ -163,8 +163,7 @@ mod tests {
 
     #[test]
     fn saves_and_loads_and_reads_a_missing_file_as_none() {
-        let dir = std::env::temp_dir().join(format!("melissa-usage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("usage");
         assert_eq!(Usage::load(&dir), None);
         let mut u = Usage::starting(7);
         u.count_turn(10, 1);

@@ -140,7 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn reads_fixture_root() {
-        let dir = std::env::temp_dir().join(format!("melissa-beeinfo-{}", std::process::id()));
+        let dir = crate::test_support::fresh_path("beeinfo");
         for (rel, body) in [
             (
                 "etc/os-release",

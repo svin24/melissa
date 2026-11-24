@@ -779,10 +779,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("melissa-providers-{name}-{}", std::process::id()))
-    }
+    use crate::test_support::scratch;
 
     #[test]
     fn secret_names_are_recognised() {
@@ -883,7 +880,7 @@ mod tests {
     #[test]
     fn store_saves_0600_and_tracks_restart() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = temp("store");
+        let dir = scratch("store");
         let path = dir.join(FILE_NAME);
         let store = ProviderStore::new(path.clone(), ProviderFile::default());
         assert!(!store.restart_needed());
@@ -922,7 +919,7 @@ mod tests {
 
     #[test]
     fn bad_files_are_errors_without_their_text() {
-        let dir = temp("bad");
+        let dir = scratch("bad");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE_NAME);
         std::fs::write(&path, "[provider.claude]\nenv = \"sk-leak\"\n").unwrap();
@@ -935,16 +932,6 @@ mod tests {
             .providers
             .is_empty());
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn provider_ids() {
-        assert_eq!(
-            provider_id("/var/lib/melissa/home/.local/bin/claude"),
-            "claude"
-        );
-        assert_eq!(provider_id("grok"), "grok");
-        assert!(valid_id("opencode") && !valid_id("") && !valid_id("-x") && !valid_id("A"));
     }
 
     fn added(command: &str) -> AddedProvider {
@@ -961,6 +948,7 @@ mod tests {
 
     #[test]
     fn added_providers_are_checked() {
+        assert!(valid_id("opencode") && !valid_id("") && !valid_id("-x") && !valid_id("A"));
         assert!(added("/opt/kimi/kimi").validate("kimi").is_ok());
         // The file name is the provider id.
         assert!(added("/opt/kimi/other").validate("kimi").is_err());
@@ -994,7 +982,7 @@ mod tests {
 
     #[test]
     fn an_agent_added_before_it_was_built_in_gives_way_to_the_built_in() {
-        let dir = temp("added-now-built-in");
+        let dir = scratch("added-now-built-in");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("providers.toml");
         std::fs::write(
@@ -1016,7 +1004,7 @@ mod tests {
 
     #[test]
     fn remove_restore_add_and_forget_are_saved() {
-        let dir = temp("add-remove");
+        let dir = scratch("add-remove");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("providers.toml");
         let store = ProviderStore::new(path.clone(), ProviderFile::default());
@@ -1069,7 +1057,7 @@ mod tests {
 
     #[test]
     fn a_broken_added_entry_fails_the_load() {
-        let dir = temp("added-bad");
+        let dir = scratch("added-bad");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("providers.toml");

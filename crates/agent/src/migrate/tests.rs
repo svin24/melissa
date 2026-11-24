@@ -1,17 +1,11 @@
 //! The migration against a state directory in the old layout (as a live install had it on
 //! 2026-11-19: one agent, Ada, owning Nextcloud).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::*;
 use crate::lead::{events::EventRecord, registry::AgentRegistry};
-
-fn temp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("melissa-migrate-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+use crate::test_support::scratch;
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -114,7 +108,7 @@ fn ids_map_to_the_new_shape() {
 
 #[test]
 fn the_old_layout_moves_and_the_new_code_reads_it() {
-    let state = temp("layout");
+    let state = scratch("layout");
     old_state(&state);
     let report = migrate_state(&state).unwrap();
     assert!(!report.steps.is_empty());
@@ -217,7 +211,7 @@ fn the_old_layout_moves_and_the_new_code_reads_it() {
 
 #[test]
 fn migrating_twice_changes_nothing_and_new_state_is_left_alone() {
-    let state = temp("twice");
+    let state = scratch("twice");
     old_state(&state);
     migrate_state(&state).unwrap();
     let snapshot = |s: &Path| {
@@ -240,7 +234,7 @@ fn migrating_twice_changes_nothing_and_new_state_is_left_alone() {
     assert_eq!(snapshot(&state), before);
 
     // A fresh device: nothing to do.
-    let fresh = temp("fresh");
+    let fresh = scratch("fresh");
     assert_eq!(migrate_state(&fresh).unwrap(), Report::default());
     std::fs::remove_dir_all(&state).unwrap();
     std::fs::remove_dir_all(&fresh).unwrap();
@@ -248,7 +242,7 @@ fn migrating_twice_changes_nothing_and_new_state_is_left_alone() {
 
 #[test]
 fn an_interrupted_run_finishes() {
-    let state = temp("interrupted");
+    let state = scratch("interrupted");
     old_state(&state);
     // As if the last run wrote device.json and stopped before the rest.
     write(
@@ -267,7 +261,7 @@ fn an_interrupted_run_finishes() {
 
 #[test]
 fn queen_toml_becomes_server_toml_unless_one_exists() {
-    let config = temp("config");
+    let config = scratch("config");
     write(&config.join("queen.toml"), "[queen]\nmax_bees = 2\n");
     let report = migrate_config(&config).unwrap();
     assert_eq!(report.steps.len(), 1);

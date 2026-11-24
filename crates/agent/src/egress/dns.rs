@@ -276,8 +276,7 @@ mod tests {
     #[tokio::test]
     async fn a_handed_over_socket_is_bound_and_answers() {
         use std::os::fd::AsFd;
-        let dir = std::env::temp_dir().join(format!("melissa-dns-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::fresh_path("dns");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("dns.sock");
         let port = std::net::UdpSocket::bind("127.0.0.1:0")

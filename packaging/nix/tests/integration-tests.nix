@@ -42,7 +42,7 @@ rustPlatform.buildRustPackage {
 
   buildPhase = ''
     runHook preBuild
-    cargo test --release --frozen --no-run -p melissa-agent --test sandbox --test egress --test escape \
+    cargo test --release --frozen --no-run -p melissa-agent --test it \
       --message-format=json-render-diagnostics > build.json
     runHook postBuild
   '';
@@ -50,10 +50,10 @@ rustPlatform.buildRustPackage {
   installPhase = ''
     runHook preInstall
     mkdir -p $out/bin
-    jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null)
-      | "\(.target.name) \(.executable)"' build.json |
-      while read -r name exe; do install -Dm0755 "$exe" "$out/bin/melissa-it-$name"; done
-    test -x $out/bin/melissa-it-sandbox && test -x $out/bin/melissa-it-egress && test -x $out/bin/melissa-it-escape
+    # melissa-agent's one integration test binary: the sandbox::, egress:: and escape:: tests.
+    exe=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true
+      and .target.name == "it" and .executable != null) | .executable' build.json)
+    install -Dm0755 "$exe" $out/bin/melissa-it
     # A copy, not a link: the suite bind-mounts it read-only into each probe's sandbox.
     install -m0755 ${probe}/bin/melissa-escape-probe $out/bin/melissa-escape-probe
     runHook postInstall
@@ -63,6 +63,6 @@ rustPlatform.buildRustPackage {
 
   meta = melissa.meta // {
     description = "Melissa sandbox, egress and escape integration tests (for the NixOS VM test)";
-    mainProgram = "melissa-it-egress";
+    mainProgram = "melissa-it";
   };
 }

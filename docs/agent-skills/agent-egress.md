@@ -135,7 +135,7 @@ policy: 10.0.0.1 is a private or local address; web reading reaches public hosts
   refusals with reasons, taint on fetch, reads allowed after taint, changes not), `sandbox::tests` (argv:
   `--unshare-all` without `--share-net`, proxy env incl. `GROK_WEB_FETCH_PROXY`, `resolv.conf` bind incl.
   link targets, `--dns`, bridge before the CLI), bridge argument parsing.
-- Integration `crates/agent/tests/egress.rs` (skips without bwrap/curl): a sandboxed `sh` reaches an allowlisted
+- Integration `crates/agent/tests/it/egress.rs` (skips without bwrap/curl; fails instead with `MELISSA_SANDBOX_REQUIRED=1`): a sandboxed `sh` reaches an allowlisted
   name (a local server mapped with `with_resolver_override`), is denied another name and `example.com`, cannot
   reach the host's loopback, a LAN address or the placeholder directly, resolves every name to the placeholder
   (the hand-over worked), uses MCP through the bridge, gets 404 for `/api/*`;

@@ -15,8 +15,8 @@ nix build .#checks.x86_64-linux.melissa-nixos -L   # on NixOS, in the VM test (K
 It prints a table (probe, result, detail) and a count line, and fails on any `FAIL`. `just escape-test` sets
 `MELISSA_ESCAPE_REQUIRED=1`, so a host without bwrap, without unprivileged user namespaces or without the probe
 helper **fails**; under plain `just check` / `cargo nextest run` the suite skips there like the other sandbox
-tests. Takes about 3 seconds (about 8 with the resource-limit probes). `just escape-test` also runs
-`seccomp_off_backend_is_reported_not_passed` (below).
+tests (`MELISSA_SANDBOX_REQUIRED=1` makes those fail too, see "How it works"). Takes about 3 seconds (about 8 with
+the resource-limit probes). `just escape-test` also runs `seccomp_off_backend_is_reported_not_passed` (below).
 
 - **Image** (`packaging/container/escape-test.sh`): builds the Containerfile's `escape-build` stage (the test
   binary and `melissa-escape-probe`, same builder and sources as the image's binaries), adds them under
@@ -26,8 +26,9 @@ tests. Takes about 3 seconds (about 8 with the resource-limit probes). `just esc
   what the probes face. Log: `target/escape-test-image.log`. A pass tags the image
   `localhost/melissa:escape-tested` only when the image's revision label is the commit the suite was built
   from (and `crates/` has no local changes); any run on that image first removes the tag. Publish only that tag.
-- **NixOS**: the VM test (`packaging/nix/tests/vm.nix`) runs `melissa-it-escape` as `melissa` with
+- **NixOS**: the VM test (`packaging/nix/tests/vm.nix`) runs `melissa-it escape::` as `melissa` with
   `MELISSA_ESCAPE_REQUIRED=1`; the helper comes from `melissa-integration-tests` (`bin/melissa-escape-probe`).
+  It runs `melissa-it sandbox:: egress::` with `MELISSA_SANDBOX_REQUIRED=1` before.
 - **Resource limits in the image**: the transient unit gets `Delegate=yes` and the suite gets
   `MELISSA_TEST_CGROUP`, as in `just escape-test`, so the `limits.*` probes run there; if the container's
   systemd cannot delegate, they skip with the reason and the header says `Resource limits: off (...)`.
@@ -66,7 +67,14 @@ host the two can hand out the same ids (PLAN open question 97).
 
 ## How it works
 
-- `crates/agent/tests/escape.rs` is the runner; `crates/agent/tests/escape/probes.rs` is the data.
+- `crates/agent/tests/it/escape.rs` is the runner; `crates/agent/tests/it/escape/probes.rs` is the data. Both are
+  the `escape` module of melissa-agent's one integration test binary, `it` (`tests/it/main.rs`), next to the
+  `sandbox`, `egress` and `acp_live` modules; run them alone with `cargo nextest run -p melissa-agent --test it
+  escape::`. The shared helpers (`host_program`, `netbridge`, the bwrap check) are in `tests/it/support.rs`.
+- Required or skipped: `support::sandbox_host` checks bwrap, `sh`, the tools a test needs and that bwrap can
+  create namespaces. If not, the sandbox, egress and escape tests print `SKIP: <why>` and pass, so local
+  development works on any host; with `MELISSA_SANDBOX_REQUIRED=1` or `MELISSA_ESCAPE_REQUIRED=1` they fail
+  instead. Either one also makes a missing probe helper a failure.
 - One sandbox per probe, built the way agents get theirs: an `EgressProxy` lease (proxy with web read on, DNS
   sinkhole, MCP through the bridge), `SandboxPlan::resolve` from a `SandboxSpec` with `network = proxy`,
   `with_rw_dirs` (the agent's own file box), `with_env`, `with_bridge`, then `sandbox::spawn_command()`: the one

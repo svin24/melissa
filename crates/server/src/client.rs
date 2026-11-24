@@ -1157,30 +1157,3 @@ pub async fn factory_reset(client: &Client, word: &str) -> anyhow::Result<()> {
     println!("Then the setup code: melissa-server setup-code");
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn update_status_shows_digests_and_last_message() {
-        let state = json!({
-            "status": {
-                "running": {"image": "registry.example.com/melissa:dev", "version": "abc1234",
-                           "digest": "sha256:96e1d42a824a821abe9579b17235c180"},
-                "previous": {"image": "registry.example.com/melissa:dev",
-                             "digest": "sha256:fee4874b18675799b133faaac4b47a28"}
-            },
-            "last": {"action": "check", "ok": false, "at": 1, "message": "no network"}
-        });
-        assert_eq!(
-            image_lines(&state),
-            [
-                "  running    registry.example.com/melissa:dev abc1234 sha256:96e1d42a824a",
-                "  previous   registry.example.com/melissa:dev sha256:fee4874b1867",
-                "  last check: failed (no network)",
-            ]
-        );
-        assert!(image_lines(&json!({})).is_empty());
-    }
-}

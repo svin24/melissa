@@ -2,24 +2,11 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
 
 use super::*;
-
-/// A fresh temporary directory.
-fn temp(name: &str) -> PathBuf {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "melissa-reset-{name}-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::SeqCst)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.canonicalize().unwrap()
-}
+use crate::test_support::scratch;
 
 // --- the lists ----------------------------------------------------------------------------------
 
@@ -173,7 +160,7 @@ fn mount_points_come_from_mountinfo() {
 
 #[test]
 fn the_marker_round_trips_and_anything_else_still_means_reset() {
-    let dir = temp("marker");
+    let dir = scratch("marker");
     let path = dir.join(MARKER_NAME);
     assert_eq!(read_marker(&path).unwrap(), None);
     let m = Marker {
@@ -229,7 +216,7 @@ fn steps_only_go_forward() {
     assert!(Step::OnlineDone < Step::Stopping);
     assert!(Step::Stopping < Step::Wiping);
     assert!(Step::Wiping < Step::Finishing);
-    let dir = temp("advance");
+    let dir = scratch("advance");
     let path = dir.join(MARKER_NAME);
     let mut m = Marker::new("ui", true);
     m.step = Step::Wiping;
@@ -243,7 +230,7 @@ fn steps_only_go_forward() {
 
 #[test]
 fn a_request_writes_the_marker_once_and_audits_it() {
-    let dir = temp("request");
+    let dir = scratch("request");
     let audit = AuditLog::new(dir.join("audit.jsonl"));
     let r = Requester::new(dir.join("reset"), Some(audit));
     std::fs::create_dir_all(dir.join("reset")).unwrap();
@@ -387,7 +374,7 @@ struct Tree {
 
 impl Tree {
     fn new(name: &str) -> Self {
-        let root = temp(name);
+        let root = scratch(name);
         let w = |rel: &str, text: &str| {
             let p = at(&root, rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -443,7 +430,7 @@ impl Tree {
     }
 
     fn run(&self, host: &Fake) -> Result<Outcome, ResetError> {
-        run_with(&self.root, host, Duration::from_millis(200), &mut |_| {})
+        run_with(&self.root, host, Duration::from_millis(50), &mut |_| {})
     }
 
     fn exists(&self, rel: &str) -> bool {
@@ -635,7 +622,7 @@ fn a_run_killed_at_any_step_finishes_on_the_next() {
 #[test]
 fn symlinks_are_removed_never_followed() {
     let tree = Tree::new("links");
-    let outside = temp("links-outside");
+    let outside = scratch("links-outside");
     std::fs::write(outside.join("precious"), "keep").unwrap();
     // A wiped entry that is a symlink to somewhere else.
     let home = at(&tree.root, "/var/lib/melissa/home");
@@ -657,7 +644,7 @@ fn symlinks_are_removed_never_followed() {
 #[test]
 fn a_symlinked_directory_on_the_way_is_refused() {
     let tree = Tree::new("parent-link");
-    let outside = temp("parent-outside");
+    let outside = scratch("parent-outside");
     std::fs::write(outside.join("providers.toml"), "someone else's").unwrap();
     let etc = at(&tree.root, "/var/lib/melissa-container/etc-melissa");
     std::fs::remove_dir_all(&etc).unwrap();
