@@ -1,10 +1,12 @@
 # App deploys: any app from an agent's spec
 
 **When:** touching the app tools (`my_apps`, `deploy_app`, `update_app`, `list_apps`, `app_status`,
-`wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`), the app spec format, rendering, app ports
-and links, the write identity `melissa-apps` or its admission policies, the owner's
+`wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`, `app_network`,
+`set_app_network`), the app spec format, rendering, app ports and links, app network permissions
+(NetworkPolicies), the write identity `melissa-apps` or its admission policies, the owner's
 `app-credentials` command.
 Code: `crates/appspec` (spec, validation), `crates/cluster/src/{render,apps,app_tools}.rs`,
+`crates/cluster/src/render/network.rs`, `crates/cluster/src/app_tools/network.rs`,
 `crates/server/src/credentials.rs`, `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`.
 
 There is **no catalog** (dropped 2026-11-19, docs/DECISIONS.md): agents choose images and settings
@@ -49,7 +51,9 @@ produces locked-down objects) and the admission policies, never the prompt.
   "credentials": {"user": "admin", "password": "admin_password"}, // what app-credentials prints
   "kind": "games",                                  // the UI's group: games | media | home | files |
                                                     // network | developer | other (default)
-  "isolation": "gvisor"                             // gvisor (default) | standard; see "Isolation"
+  "isolation": "gvisor",                            // gvisor (default) | standard; see "Isolation"
+  "network": {"internet": true, "lan": false,       // what it may reach (all off if absent), see
+              "links": [{"app": "postgres", "port": "db"}]} // "Network" below
 }
 ```
 Limits: 6 public ports (web included), 16 ports, 8 volumes, 16 secrets, 128 KiB stored spec,
@@ -170,10 +174,66 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
   seconds, pausing" and idles until a player joins (pause-when-empty, `pause-when-empty-seconds`
   in server.properties); it still accepts connections. Don't restart for it.
 
+## Network (2026-11-24, DECISIONS "Per-app network permissions")
+Every app is isolated by Kubernetes NetworkPolicies (k3s's built-in kube-router controller; our k3s config
+does not disable it). In `app-<name>`, always three policies (`render/network.rs`):
+- `melissa-isolation`: default deny ingress and egress for all pods; allowed: the namespace's own pods
+  (sidecars share the pod anyway) and DNS to kube-dns (kube-system, UDP/TCP 53).
+- `melissa-ports`: ingress to the web port and `public` ports from anywhere (NodePort traffic reaches the pod
+  from the node, SNATed; Traefik for the web host). Other ports: nobody outside the namespace.
+- `melissa-egress`: the spec's grants. `internet`: 0.0.0.0/0 and ::/0 except private, CGNAT/tailnet,
+  loopback, link-local, multicast, documentation, and NAT64 ranges and this device's own addresses.
+  `lan`: 10/8, 172.16/12, 192.168/16, fc00::/7 except the pod and service networks (10.42/16, 10.43/16) and
+  this device's addresses. Never reachable: the Kubernetes API, Melissa, other apps' device ports (all on
+  this device's addresses), the tailnet (100.64/10), other namespaces without a link, kube-system except DNS.
+  "This device's addresses" (`app_tools/network.rs::device_addresses`): local IPv4 (fib_trie) and IPv6
+  (if_inet6), `[apps] addresses` that are IPs, and in the container the publish bind and the default gateway
+  (the host, which publishes Melissa's UI port).
+- Links: `{app, port?}` (port = the other app's port name; absent = all its ports). Egress in the source to the
+  target namespace (matched by `kubernetes.io/metadata.name`) on the resolved port number, and in the target
+  namespace `melissa-link-from-<source>` (label `melissa.io/link-from=<source>`) letting the source's namespace
+  in on those ports. The deployer applies the app's own policies right after the RoleBinding (before any pod),
+  the target sides after; deletes the target side of a dropped link (old spec vs new); re-applies links into
+  an app when it is deployed again (`refresh_incoming`: scans the other apps' specs); removes an app's target
+  sides on uninstall and force delete. A new link to a missing app or port is refused (`no app ...`, `has no
+  port ... (its ports: ...)`); an existing one that no longer resolves stays in the spec, inactive, with a
+  `network_warnings` entry.
+- gVisor pods: traffic still leaves through the pod's veth, so the policies apply the same (verified
+  with the smoke under runsc).
+- RBAC: `melissa-app-workload` may manage `networkpolicies` (only in app namespaces, like the rest).
+
+Editing:
+- `set_app_network {app, internet?, lan?, add_links?, remove_links?}` changes only the stored spec's
+  `network` (namespace annotation, merge patch) and re-applies the policies: no pod restart. A remove
+  without `port` removes every link to that app. An agent's call always waits for the owner
+  (`Tool::owner_approval`, no "Always allow", an agent's Full access can't answer it; approving needs the
+  owner's recent password, `OWNER_REAUTH_TOOLS`); the card says it plainly ("Let vuls-web reach the
+  internet; Let vuls-web connect to postgres on its port db"). Scope as `update_app` (an agent's own apps;
+  the lead agent any; another agent's: the user's own yes). Audited `app.network` (actor, change, result).
+- `deploy_app`/`update_app` with a spec that grants anything: also never coverable by "Always allow" for an
+  agent; the card's summary ends with `may reach: ...`; the `tool.call` audit line carries
+  `app.network <app>: may reach ...`. The user's own deploy (scope `User`) is not affected.
+- `app_network {app}` (read-only): `internet`, `lan`, `summary`, `links` [{app, port, ports: [{name, port,
+  protocol}], active, problem}], `incoming` (links other apps have into it, same shape), `link_options`
+  [{app, ports}] (the other apps' named ports). `app_status` has `network` {internet, lan, links, summary}.
+- Owner: `GET /api/apps/{app}/network` (the `app_network` view + `pending` [{id, tool, task, fields:
+  internet|lan|links, reason}] for agents' requests waiting on this app; members: their own apps,
+  read-only); `POST /api/apps/{app}/network` with the `set_app_network` arguments minus `app` (owner only,
+  password entered recently; immediate, audited). CLI: `melissa-server app network <app> [--internet on|off]
+  [--lan on|off] [--link <app>[:<port>]]... [--unlink <app>[:<port>]]...` (no flags: show).
+
+Agent guidance: declare what the app needs in the spec at deploy time: `internet` for apps that download
+things (game servers fetching their jar, package mirrors, updates, external APIs), `links` for a database or
+broker in another app (a sidecar in the same pod needs nothing), `lan` only for apps that talk to devices at
+home (Home Assistant, a media server's DLNA). The owner sees it on the card. Ask with `set_app_network` when an
+app turns out to need more (`app_logs` shows DNS working but connections timing out).
+
 ## Tools and labels
 | tool | labels | notes |
 |---|---|---|
 | `deploy_app {app, spec?, agent?}` | **Deploy** (always confirmed), target `app` (Create) | new app, or one uninstalled with data kept (spec may be left out: the stored one); refuses an app that is deployed ("use update_app"). An agent's new workspace is its own; the user may name `agent`. The lead agent may not create a new app (refused before any confirmation: it hands the job to a helper, 2026-11-20); it may bring back an uninstalled one. |
+| `set_app_network {app, internet?, lan?, add_links?, remove_links?}` | Reversible, target `app` (Change), owner approval every time for agents | see "Network"; no restart |
+| `app_network {app}` | read-only, target `app` (Read) | see "Network" |
 | `update_app {app, spec}` | **Deploy**, target `app` (Change) | whole new spec (start from `app_status.spec`); keeps volumes, secrets, ports; a stopped app stays stopped |
 | `my_apps {}` | read-only, no target (filters by `ctx.scope` in `call_in`) | **call first when a request mentions an app.** Agent: `yours` (essentials from `app_status`: `app`, `description`, `phase`, `image`, `url`, `ports` name/protocol/address, `reachability`, `assigned_by`, `assigned_at`) and `not_yours` (`app` + `owner` name only, null = unassigned; nothing else of them is read). Lead agent/user: `by_owner` groups (`owner`, `agent` id, `apps`), unassigned last. Cost: one namespace read per app, a status only for the caller's own apps (the lead: every app). Always in an agent's tool list. |
 | `app_status {app}` | read-only, target `app` (Read: the owner, the lead agent, the user; another agent → user-only confirmation) | phase, pods (reason codes), `spec`, `description`, links, `ports`, `assigned_by`/`assigned_at` |
@@ -244,6 +304,15 @@ apply -f <privileged deployment>` → denied with the policy message.
   RBAC. A valid Deployment passed. `container-run.sh smoke` passed.
 - **NixOS VM test** (`nix build .#checks.x86_64-linux.melissa-nixos -L`): the test app deployed with
   `deploy_app` (image pinned by the digest k3s reports), NodePort answered from the client VM, stop/start.
+
+## Verified: network permissions (2026-11-24, rootful test container, k3s v1.37.2, APP_PORT_BASE 35000)
+`SMOKE_APPS=1 container-run.sh smoke`: policies in every app namespace; a default app reaches neither another
+app, 1.1.1.1:443 nor the node's 6443; with `internet` it reaches 1.1.1.1:443 but not the node's 6443, the
+Kubernetes service 10.43.0.1, Melissa's UI forward (node:8081), the host's UI port via the gateway, or another
+app; the public port answers from the host through the NodePort; the owner's `POST /api/apps/{app}/network`
+link opens a→b (c still blocked) and removing it closes it again. DNS works under default deny. First run found
+that the API refuses `::ffff:0:0/96` in an ipBlock (removed). Re-run on master with gVisor (2026-11-24): the three test apps ran under RuntimeClass `gvisor` (runsc
+release-20261116.0) and every check passed the same.
 
 ## Gotchas
 - CEL: Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as `s.namespace`, never
