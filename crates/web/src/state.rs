@@ -707,6 +707,7 @@ mod tests {
             assigned_by: None,
             assigned_at: None,
             legacy_owner: legacy.map(str::to_string),
+            deleting: false,
         };
         let k = keepers(&[
             workspace("nextcloud", Some("d.a1"), None),

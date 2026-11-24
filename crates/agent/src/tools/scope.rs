@@ -335,6 +335,9 @@ pub struct WorkspaceInfo {
     pub assigned_at: Option<String>,
     /// The old `melissa.io/owner` value (`owner`, `job-<key>`) of a workspace not yet migrated.
     pub legacy_owner: Option<String>,
+    /// It is being deleted (its namespace is terminating): it and its owner record go away on
+    /// their own, so it no longer ties its agent down.
+    pub deleting: bool,
 }
 
 /// Where workspaces live (the cluster): list them and change their owner. Only the reassign path

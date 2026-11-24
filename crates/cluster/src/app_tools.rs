@@ -710,6 +710,7 @@ impl WorkspaceStore for Workspaces {
                     assigned_by: o.assigned_by,
                     assigned_at: o.assigned_at,
                     legacy_owner: o.legacy_owner,
+                    deleting: is_terminating(&ns),
                 });
             }
             Ok(out)

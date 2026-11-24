@@ -2,7 +2,7 @@
 //! network). The fake agents call Melissa's tools over their MCP sessions like real agents.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -275,6 +275,8 @@ impl Tool for Uninstall {
 struct FakeWorkspaces {
     workspaces: Mutex<BTreeMap<String, Owner>>,
     assigned: Mutex<Vec<(String, String, String)>>,
+    /// Workspaces whose namespace is terminating.
+    deleting: Mutex<BTreeSet<String>>,
 }
 
 impl FakeWorkspaces {
@@ -295,6 +297,10 @@ impl FakeWorkspaces {
     fn owner(&self, workspace: &str) -> Option<Owner> {
         self.workspaces.lock().unwrap().get(workspace).cloned()
     }
+    /// The workspace's app was removed with its data: its namespace is terminating.
+    fn mark_deleting(&self, workspace: &str) {
+        self.deleting.lock().unwrap().insert(workspace.into());
+    }
 }
 
 impl ResourceOwners for FakeWorkspaces {
@@ -310,6 +316,7 @@ impl ResourceOwners for FakeWorkspaces {
 impl WorkspaceStore for FakeWorkspaces {
     fn workspaces(&self) -> BoxFuture<'_, Result<Vec<WorkspaceInfo>, String>> {
         Box::pin(async move {
+            let deleting = self.deleting.lock().unwrap().clone();
             Ok(self
                 .workspaces
                 .lock()
@@ -322,6 +329,7 @@ impl WorkspaceStore for FakeWorkspaces {
                     assigned_by: None,
                     assigned_at: None,
                     legacy_owner: None,
+                    deleting: deleting.contains(name),
                 })
                 .collect())
         })
@@ -2290,6 +2298,60 @@ async fn deleting_a_helper_by_the_lead_needs_the_users_confirmation() {
     .await;
     s.close().await;
     assert!(s.audit().contains(r#""action":"agent.delete""#));
+}
+
+#[tokio::test]
+async fn an_app_being_deleted_does_not_keep_its_agent() {
+    let s = setup("delete-while-app-deleting", Vec::new());
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada", "Bo"]).await;
+    // Ada's only app was just removed with its data: its namespace is terminating.
+    s.workspaces.set("minecraft", Owner::Agent(ADA.into()));
+    s.workspaces.mark_deleting("minecraft");
+    // Bo has one app on its way out and one that stays.
+    s.workspaces.set("pumpkin", Owner::Agent(BO.into()));
+    s.workspaces.mark_deleting("pumpkin");
+    s.workspaces.set("nextcloud", Owner::Agent(BO.into()));
+
+    // The lead's list no longer counts the deleting apps.
+    let r = call(&s.server, &q, "list_agents", json!({})).await;
+    let agents = r["structuredContent"]["agents"].as_array().unwrap().clone();
+    let apps = |id: &str| {
+        agents
+            .iter()
+            .find(|a| a["agent_id"] == id)
+            .map(|a| a["workspaces"].clone())
+            .unwrap()
+    };
+    assert_eq!(apps(ADA), json!([]), "{r}");
+    assert_eq!(apps(BO), json!(["nextcloud"]), "{r}");
+
+    // Ada can be deleted at once; nothing waits for the namespace to go.
+    let gone = s.pool().delete("Ada", "ui").await.unwrap();
+    assert_eq!(gone.agent, ADA);
+    assert!(s.pool().get("Ada").is_none());
+
+    // Bo is still refused, naming only the app that stays.
+    match s.pool().delete("Bo", "ui").await {
+        Err(LeadError::InUse(m)) => assert_eq!(
+            m,
+            "Bo still looks after nextcloud. Reassign or remove its apps first."
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(s.pool().get("Bo").is_some());
+    // The user's workspace list still shows the deleting app, marked.
+    let list = s.pool().workspaces().await.unwrap();
+    let pumpkin = list.iter().find(|w| w.workspace == "pumpkin").unwrap();
+    assert!(pumpkin.deleting);
+    assert!(
+        !list
+            .iter()
+            .find(|w| w.workspace == "nextcloud")
+            .unwrap()
+            .deleting
+    );
+    s.close().await;
 }
 
 #[tokio::test]
