@@ -107,7 +107,8 @@ user with "`nextcloud` is looked after by agent Ada (…); stop `nextcloud` (…
 controls: not unscoped sessions either), `Change`. For an agent all three mean "its own, or the user's yes".
 `arg` is a required string. Audit of every app tool (2026-11-20): `app_status` Read; `app_logs` ReadScoped;
 `deploy_app` Create; `app_exec`, `update_app`, `stop_app`, `start_app`, `uninstall_app` Change; `list_apps` and
-`my_apps` untargeted but scope-filtered; `reassign_workspace` lead-only; `my_files` is the agent's own file box
+`my_apps` untargeted but scope-filtered; `wait_for_apps` (several apps) untargeted, an agent refused for any
+existing app not its own (2026-11-24); `reassign_workspace` lead-only; `my_files` is the agent's own file box
 (no workspace); `transfer_file` (lead-only, `owner_approval` every call) copies or moves a file between boxes; there is no volume tool (volumes show in `app_status`).
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
 a tool by name. `describe_call(args)` adds a one-line description to confirmations;

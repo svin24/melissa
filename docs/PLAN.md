@@ -131,7 +131,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   server-side applied by a second identity, `melissa/melissa-apps`, whose writes admission policies pin to
   `app-*` workspace namespaces with Pod Security baseline, never privileged or on the host (no Secret reads
   anywhere). Every deploy and update is confirmed by the user with a summary of what runs. Tools: `deploy_app`,
-  `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`. The old
+  `update_app`, `list_apps`, `app_status`, `wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`. The old
   catalog's Nextcloud keeps running and is converted to a stored spec at startup. Details:
   `docs/agent-skills/app-deploy.md`.
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).

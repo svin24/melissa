@@ -1,5 +1,5 @@
-//! The app tools: `deploy_app`, `update_app`, `list_apps`, `app_status`, `app_logs`,
-//! `app_exec`, `stop_app`, `start_app`, `uninstall_app`.
+//! The app tools: `deploy_app`, `update_app`, `list_apps`, `my_apps`, `app_status`,
+//! `wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`.
 //!
 //! There is no catalog: agents deploy any app the user asks for by writing an app spec
 //! (`melissa_appspec::AppSpec`: images, ports, volumes, env, files, resources, probe). The
@@ -7,7 +7,7 @@
 //! the images, ports and volumes), renders it to locked-down objects in the app's own
 //! namespace and stores it there ([`SPEC_ANNOTATION`]) for `update_app` and `app_status`.
 //!
-//! Labels (policy keys off them): `list_apps` and `app_status` read-only; `app_logs` reads
+//! Labels (policy keys off them): `list_apps`, `app_status` and `wait_for_apps` read-only; `app_logs` reads
 //! untrusted content (app output is attacker-influenced); `deploy_app` and `update_app`
 //! [`Effect::Deploy`] (always confirmed: they choose what software runs); `start_app`
 //! Reversible; `stop_app` Disruptive (always confirmed, never called destructive: nothing is
@@ -428,7 +428,7 @@ fn merge(target: &mut Value, fields: Value) {
     }
 }
 
-/// All ten tools over one cluster connection (`None` = no k3s on this device).
+/// All eleven tools over one cluster connection (`None` = no k3s on this device).
 pub fn app_tools<C>(settings: AppSettings, cluster: Option<Arc<C>>) -> Vec<Arc<dyn Tool>>
 where
     C: AppRead + AppDeployer + AppExec + 'static,
@@ -456,6 +456,10 @@ where
         Arc::new(AppStatus {
             settings: settings.clone(),
             read: read.clone(),
+        }),
+        Arc::new(WaitForApps {
+            read: read.clone(),
+            poll: WAIT_POLL,
         }),
         Arc::new(AppLogs { read: read.clone() }),
         Arc::new(AppExecTool {
@@ -1231,8 +1235,9 @@ impl Deployer {
             "next": if stopped_from.is_some() {
                 "the app is stopped and stays stopped (its spec is updated); start_app starts it"
             } else {
-                "images are pulled and the app starts in the background; poll app_status (a \
-                 failing pod's reason and app_logs tell what is wrong)"
+                "images are pulled and the app starts in the background; wait_for_apps \
+                 (until: ready) waits for it, app_status shows progress (a failing pod's \
+                 reason and app_logs tell what is wrong)"
             },
         });
         let ports: Vec<DevicePort> = spec
@@ -2650,7 +2655,7 @@ impl StopApp {
             "replicas_before_stop": replicas,
             "kept": ["data volumes", "generated credentials", "settings", "its port and link"],
             "note": "nothing is deleted; start_app starts it again with the same data and link. \
-                     app_status shows `stopping`, then `stopped`",
+                     app_status shows `stopping`, then `stopped` (wait_for_apps waits for it)",
         }))
     }
 }
@@ -2737,7 +2742,8 @@ impl StartApp {
                 "state": "starting",
                 "changed": true,
                 "replicas": restore,
-                "next": "it starts in the background with its data; poll app_status",
+                "next": "it starts in the background with its data; wait_for_apps (until: ready) \
+                         waits for it",
             })
         };
         merge(&mut out, checked_links(&self.settings, &app, &ports).await);
@@ -2811,7 +2817,8 @@ impl UninstallApp {
                 "app": app,
                 "deleted": if deleted { vec!["Namespace (all objects, volumes and data)"] } else { vec![] },
                 "kept": [],
-                "note": "the namespace is removed in the background; app_status shows `deleting` until it is gone",
+                "note": "the namespace is removed in the background; app_status shows `deleting` \
+                         until it is gone; wait_for_apps (until: gone) waits for it",
             }));
         }
         let deleted = deploy.delete_workload(&app).await.map_err(failed)?;
@@ -2864,6 +2871,279 @@ impl Tool for UninstallApp {
 
     fn target(&self) -> Option<Target> {
         Some(app_target(Access::Change, "uninstall"))
+    }
+}
+
+// ---- wait_for_apps -----------------------------------------------------------------------
+
+/// How often `wait_for_apps` reads the cluster again.
+const WAIT_POLL: Duration = Duration::from_secs(3);
+/// The longest one `wait_for_apps` call waits (also its default): below the shortest tool-call
+/// limit of an agent backend (Claude Code gives up after 300 s), less the same margin
+/// scheduled confirmations keep, so the answer arrives while the agent still listens. The
+/// agent calls again to wait longer.
+const MAX_WAIT: Duration = melissa_agent::claude::CLAUDE_TOOL_CALL_LIMIT
+    .saturating_sub(melissa_agent::lead::schedules::TOOL_CALL_MARGIN);
+/// Most apps one call waits for.
+const MAX_WAIT_APPS: usize = 20;
+
+/// What `wait_for_apps` waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Until {
+    /// The namespace is removed for good (an app that never existed counts).
+    Gone,
+    /// Running and ready (`app_status` phase `ready`).
+    Ready,
+    /// Stopped (`app_status` phase `stopped`).
+    Stopped,
+}
+
+impl Until {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "gone" => Some(Self::Gone),
+            "ready" => Some(Self::Ready),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Gone => "gone",
+            Self::Ready => "ready",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    /// Does an app in `state` (an `app_status` phase, or `gone`) count as done?
+    fn reached(self, state: &str) -> bool {
+        state == self.as_str()
+    }
+}
+
+/// Wait in the same turn until apps are gone, ready or stopped: polls the cluster and answers
+/// as soon as every app is there, or at the timeout with each app's state. Cancel-safe: a
+/// stopped turn drops the call (the MCP server's cancel, or the closed request), and nothing
+/// is left running.
+struct WaitForApps {
+    read: Option<Arc<dyn AppRead>>,
+    /// How often the cluster is read again (short in tests).
+    poll: Duration,
+}
+
+/// The arguments of one `wait_for_apps` call.
+struct WaitArgs {
+    apps: Vec<String>,
+    until: Until,
+    timeout: Duration,
+}
+
+fn wait_args(args: &Value) -> Result<WaitArgs, ToolError> {
+    let args = arg_object(args)?;
+    reject_unknown(args, &["apps", "until", "timeout_secs"])?;
+    let Some(Value::Array(list)) = args.get("apps") else {
+        return Err(ToolError::BadArgs(
+            "`apps` (a list of app names) is required".into(),
+        ));
+    };
+    let mut apps: Vec<String> = Vec::new();
+    for app in list {
+        match app.as_str() {
+            Some(s) if valid_app_name(s) => {
+                if !apps.iter().any(|a| a == s) {
+                    apps.push(s.to_string());
+                }
+            }
+            Some(s) => return Err(ToolError::BadArgs(format!("`{s}` is not an app name"))),
+            None => return Err(ToolError::BadArgs("`apps` must list app names".into())),
+        }
+    }
+    if apps.is_empty() || apps.len() > MAX_WAIT_APPS {
+        return Err(ToolError::BadArgs(format!(
+            "`apps` needs 1 to {MAX_WAIT_APPS} app names"
+        )));
+    }
+    let until = args
+        .get("until")
+        .and_then(Value::as_str)
+        .and_then(Until::parse)
+        .ok_or_else(|| ToolError::BadArgs("`until` must be one of gone, ready, stopped".into()))?;
+    let timeout = match args.get("timeout_secs") {
+        None | Some(Value::Null) => MAX_WAIT,
+        Some(v) => match v.as_u64() {
+            Some(secs) if secs > 0 => Duration::from_secs(secs).min(MAX_WAIT),
+            _ => {
+                return Err(ToolError::BadArgs(
+                    "`timeout_secs` must be a positive whole number".into(),
+                ))
+            }
+        },
+    };
+    Ok(WaitArgs {
+        apps,
+        until,
+        timeout,
+    })
+}
+
+impl WaitForApps {
+    /// One app's state now: `gone` (no namespace), `deleting`, or its `app_status` phase.
+    /// Also the namespace, for the first round's checks.
+    async fn state_of(
+        read: &dyn AppRead,
+        app: &str,
+    ) -> Result<(String, Option<Namespace>), ClusterError> {
+        let Some(ns) = read.namespace(app).await? else {
+            return Ok(("gone".into(), None));
+        };
+        if is_terminating(&ns) {
+            return Ok(("deleting".into(), Some(ns)));
+        }
+        let (deployment, volumes, pods) =
+            tokio::try_join!(read.deployment(app), read.volumes(app), read.pods(app))?;
+        let report = status_report(app, Some(&ns), deployment.as_ref(), None, &volumes, &pods);
+        let phase = report["phase"].as_str().unwrap_or("unknown").to_string();
+        Ok((phase, Some(ns)))
+    }
+
+    async fn wait(&self, args: Value, scope: &Scope) -> Result<Value, ToolError> {
+        let WaitArgs {
+            apps,
+            until,
+            timeout,
+        } = wait_args(&args)?;
+        let Some(read) = &self.read else {
+            return Ok(crate::cluster::unavailable(&ClusterError::NotConfigured));
+        };
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
+        let mut first = true;
+        loop {
+            let mut states = Vec::with_capacity(apps.len());
+            for app in &apps {
+                let (state, ns) = match Self::state_of(read.as_ref(), app).await {
+                    Ok(s) => s,
+                    Err(
+                        e @ (ClusterError::Unreachable(_)
+                        | ClusterError::NotConfigured
+                        | ClusterError::Starting),
+                    ) if first => return Ok(crate::cluster::unavailable(&e)),
+                    Err(e) => return Err(failed(e)),
+                };
+                if first {
+                    Self::check_first(scope, app, until, ns.as_ref())?;
+                }
+                states.push((app.clone(), state));
+            }
+            first = false;
+            let done = states.iter().all(|(_, s)| until.reached(s));
+            let now = tokio::time::Instant::now();
+            if done || now >= deadline {
+                let waited = now.duration_since(started).as_secs();
+                let mut out = json!({
+                    "until": until.as_str(),
+                    "done": done,
+                    "waited_secs": waited,
+                    "apps": states
+                        .iter()
+                        .map(|(app, state)| json!({"app": app, "state": state, "done": until.reached(state)}))
+                        .collect::<Vec<_>>(),
+                });
+                if !done {
+                    out["note"] = json!(format!(
+                        "not all {} after {waited} s: call wait_for_apps again to keep waiting, \
+                         or check the ones not done with app_status",
+                        until.as_str()
+                    ));
+                }
+                return Ok(out);
+            }
+            tokio::time::sleep(self.poll.min(deadline - now)).await;
+        }
+    }
+
+    /// Before waiting: the app must exist (unless waiting for it to be gone), and an agent
+    /// waits only on its own apps.
+    fn check_first(
+        scope: &Scope,
+        app: &str,
+        until: Until,
+        ns: Option<&Namespace>,
+    ) -> Result<(), ToolError> {
+        let Some(ns) = ns else {
+            return match until {
+                Until::Gone => Ok(()),
+                _ => Err(ToolError::BadArgs(format!(
+                    "there is no app `{app}` on this device (my_apps lists them)"
+                ))),
+            };
+        };
+        if let Some(me) = scope.agent() {
+            match Ownership::of(ns).owner {
+                Owner::Agent(id) if id == me => {}
+                _ => {
+                    return Err(ToolError::Refused(format!(
+                        "not yours: `{app}` is not an app you look after; wait only on your \
+                         own apps (my_apps lists them)"
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Tool for WaitForApps {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "wait_for_apps",
+            description: "Wait until apps are `gone` (uninstalled with their data: the \
+                namespace is removed), `ready` or `stopped`, then carry on in the same turn. \
+                Use it after uninstall_app, deploy_app, update_app, start_app or stop_app when \
+                your next step or answer depends on it, instead of telling the user to come \
+                back later. Answers as soon as every app is there, or at the timeout (default \
+                and most 240 s) with each app's state: then call it again or report what is \
+                still pending. An app that doesn't exist counts as gone.",
+            // Names and phases only, like app_status.
+            labels: Labels::READ_ONLY,
+            params: json!({
+                "type": "object",
+                "properties": {
+                    "apps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": MAX_WAIT_APPS,
+                    },
+                    "until": {"type": "string", "enum": ["gone", "ready", "stopped"]},
+                    "timeout_secs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_WAIT.as_secs(),
+                    },
+                },
+                "required": ["apps", "until"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(async move { self.wait(args, &Scope::Nothing).await })
+    }
+
+    fn call_in<'a>(
+        &'a self,
+        _task: TaskId,
+        ctx: &'a mut TaskContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+        Box::pin(self.wait(args, &ctx.scope))
+    }
+
+    fn check_args(&self, args: &Value) -> Result<(), ToolError> {
+        wait_args(args).map(|_| ())
     }
 }
 

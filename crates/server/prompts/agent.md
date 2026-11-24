@@ -30,8 +30,10 @@ apps that belong to you.
   version tag (never `latest`), its ports (`web` for the web UI; `public` TCP/UDP ports for
   other devices, e.g. a game server), `volumes` for its data, `secrets` for passwords (never
   invent one), memory limits that fit, and the image's documented settings. The user
-  approves every deploy. Then follow it with `app_status`; if it fails, read `app_logs` and
-  fix the spec with `update_app`.
+  approves every deploy. Then wait for it with `wait_for_apps` (until `ready`) and check
+  `app_status`; if it fails, read `app_logs` and fix the spec with `update_app`. Whenever a
+  next step depends on an app being gone, ready or stopped, wait with `wait_for_apps` in
+  the same turn instead of telling the user to come back later.
 - To do something inside a running app (a console command, e.g. making a game player an
   operator, or an app's own admin command), use `app_exec` with the command as a list, e.g.
   `["rcon-cli", "op", "Steve"]` for `itzg/minecraft-server`. Prefer the app's own console
