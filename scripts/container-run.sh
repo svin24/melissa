@@ -12,7 +12,8 @@
 #   scripts/container-run.sh rm         remove the container (keeps the volume)
 #   scripts/container-run.sh purge      remove the container and its /var volume
 #   scripts/container-run.sh preflight  check the host (cgroup delegation, pasta, kernel modules)
-#   scripts/container-run.sh smoke      k3s Ready, Traefik, admission policies, RBAC, a NodePort from the host
+#   scripts/container-run.sh smoke      k3s Ready, Traefik, admission policies, RBAC, a NodePort from the host;
+#                                       SMOKE_APPS=1 also deploys test apps for the app network permissions
 #                                       (also works against an install.sh container: NAME=melissa UI_PORT=8080)
 #
 # Rootful (run it as root) is the supported mode: root's own image storage (`podman load`), the default
@@ -227,6 +228,8 @@ smoke() {
     [ "$code" = 404 ] && pass "NodePort 30079 reachable from the host at $apphost:$last" || bad "NodePort from the host ($apphost:$last): HTTP $code"
     in_ctr kubectl -n kube-system delete service melissa-smoke --wait=false >/dev/null
     pod_isolation || fail=1
+    if [ "${SMOKE_APPS:-0}" = 1 ]; then app_network || fail=1
+    else echo "note: app network permissions not tested (SMOKE_APPS=1 deploys three test apps)"; fi
     host_power || fail=1
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$UI_PORT/" || true)
     [ "$code" = 200 ] && pass "web UI http://127.0.0.1:$UI_PORT/" || bad "web UI: HTTP $code"
@@ -252,6 +255,85 @@ pod_isolation() {
         if [ "$code" = 000 ]; then echo "PASS: a pod cannot reach $a"
         else echo "FAIL: a pod reaches $a (HTTP $code)"; fail=1; fi
     done
+    return "$fail"
+}
+
+# App network permissions (SMOKE_APPS=1 only: it deploys apps, so never against someone's real
+# install). Three busybox apps from k3s's own airgap images (no pull): netpol-b serves HTTP on a
+# public port, netpol-a has no permissions, netpol-c has `internet`. Deploys go through the server's
+# tools (each approved here as the owner); the link through the owner's JSON API. The namespaces
+# are deleted at the end.
+app_network() {
+    local fail=0 sock=/run/melissa/api.sock busybox node gw b ok
+    api() { in_ctr curl -s --unix-socket "$sock" -H 'Content-Type: application/json' "$@"; }
+    busybox=$(in_ctr k3s crictl images -o json | grep -o '"docker.io/rancher/mirrored-library-busybox:[^"]*"' | head -1 | tr -d '"')
+    [ -n "$busybox" ] || { echo "FAIL: no busybox image in k3s's images"; return 1; }
+    deployed() { # app spec: deploy_app through the daemon, approving its confirmation as the owner
+        in_ctr melissa-server tool --wait deploy_app "{\"app\":\"$1\",\"spec\":$2}" >/dev/null 2>&1 &
+        local pid=$! id=""
+        for _ in $(seq 1 60); do
+            id=$(api http://localhost/api/confirmations | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+            [ -n "$id" ] && break; sleep 1
+        done
+        [ -n "$id" ] && api -X POST -d '{}' "http://localhost/api/confirmations/$id/approve" >/dev/null
+        wait "$pid"
+    }
+    ready() { in_ctr kubectl -n "app-$1" rollout status "deploy/$1" --timeout=5s >/dev/null 2>&1; }
+    # Can app $1 open a TCP connection to $2 (host:port)? busybox nc: -w timeout, no data.
+    reaches() { in_ctr kubectl -n "app-$1" exec "deploy/$1" -- sh -c "nc -w 3 ${2%:*} ${2##*:} </dev/null >/dev/null 2>&1"; }
+    settle() { # yes|no app target: wait up to a minute for policies to reach kube-router
+        local want=$1 got
+        for _ in $(seq 1 20); do
+            if reaches "$2" "$3"; then got=yes; else got=no; fi
+            [ "$got" = "$want" ] && return 0; sleep 3
+        done
+    }
+    expect() { # yes|no app target what
+        if reaches "$2" "$3"; then got=yes; else got=no; fi
+        if [ "$got" = "$1" ]; then echo "PASS: $4"; else echo "FAIL: $4 (reaches: $got)"; fail=1; fi
+    }
+    local sleeper="{\"description\":\"network smoke\",\"containers\":[{\"name\":\"main\",\"image\":\"$busybox\",\"command\":[\"sleep\",\"86400\"]}]"
+    deployed netpol-b "{\"description\":\"network smoke\",\"containers\":[{\"name\":\"main\",\"image\":\"$busybox\",\"command\":[\"sh\",\"-c\",\"echo ok >/tmp/index.html && exec httpd -f -p 8080 -h /tmp\"],\"ports\":[{\"name\":\"http\",\"port\":8080,\"public\":true}]}]}" || fail=1
+    deployed netpol-a "$sleeper}" || fail=1
+    deployed netpol-c "$sleeper,\"network\":{\"internet\":true}}" || fail=1
+    for a in netpol-a netpol-b netpol-c; do
+        wait_for 180 "$a ready" ready "$a" || { echo "FAIL: $a not ready"; return 1; }
+    done
+    in_ctr kubectl get networkpolicy -A --no-headers | grep -q 'app-netpol-a .*melissa-isolation' \
+        && echo "PASS: app namespaces carry NetworkPolicies" || { echo "FAIL: no NetworkPolicy in app-netpol-a"; fail=1; }
+    b="netpol-b.app-netpol-b.svc.cluster.local:8080"
+    node=$(in_ctr kubectl get node "$NAME" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+    gw=$(in_ctr ip -4 route show default | awk '{print $3; exit}')
+    settle no netpol-a "$b"
+    expect no netpol-a "$b" "a default app can't reach another app"
+    expect no netpol-a "1.1.1.1:443" "a default app can't reach the internet"
+    expect no netpol-a "$node:6443" "a default app can't reach the Kubernetes API on the node"
+    ok=no; in_ctr curl -s --max-time 5 -o /dev/null https://1.1.1.1/ && ok=yes
+    if [ "$ok" = yes ]; then expect yes netpol-c "1.1.1.1:443" "with internet, an app reaches a public address"
+    else echo "note: this container has no internet; the internet-allowed check is skipped"; fi
+    expect no netpol-c "$node:6443" "with internet, still not the Kubernetes API on the node"
+    expect no netpol-c "10.43.0.1:443" "with internet, still not the Kubernetes service (10/8)"
+    expect no netpol-c "$node:8081" "with internet, still not Melissa's UI forward"
+    expect no netpol-c "$gw:$UI_PORT" "with internet, still not the host's UI port"
+    expect no netpol-c "$b" "with internet, still not another app"
+    # The device port keeps working from the host (NodePort traffic arrives from the node).
+    local port; port=$(in_ctr kubectl -n app-netpol-b get svc netpol-b-port -o jsonpath='{.spec.ports[0].nodePort}')
+    local apphost=$BIND; case "$BIND" in 0.0.0.0|::|'') apphost=127.0.0.1 ;; esac
+    local hport=$((port - 30000 + APP_PORT_BASE))
+    [ "$(curl -s --max-time 5 "http://$apphost:$hport/" || true)" = ok ] \
+        && echo "PASS: netpol-b's device port answers from the host ($apphost:$hport)" \
+        || { echo "FAIL: netpol-b's device port $apphost:$hport"; fail=1; }
+    # A link, by the owner (no confirmation): netpol-a may reach netpol-b's http port; c still not.
+    local out; out=$(api -X POST -d '{"add_links":[{"app":"netpol-b","port":"http"}]}' http://localhost/api/apps/netpol-a/network)
+    grep -q '"changed"' <<<"$out" && echo "PASS: owner added a link (POST /api/apps/netpol-a/network)" \
+        || { echo "FAIL: adding a link: $out"; fail=1; }
+    settle yes netpol-a "$b"
+    expect yes netpol-a "$b" "a linked app reaches its target's port"
+    expect no netpol-c "$b" "an app without the link still can't"
+    out=$(api -X POST -d '{"remove_links":[{"app":"netpol-b"}]}' http://localhost/api/apps/netpol-a/network)
+    settle no netpol-a "$b"
+    expect no netpol-a "$b" "a removed link closes again"
+    in_ctr kubectl delete namespace app-netpol-a app-netpol-b app-netpol-c --wait=false >/dev/null 2>&1 || true
     return "$fail"
 }
 

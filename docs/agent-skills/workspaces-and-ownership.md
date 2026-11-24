@@ -106,7 +106,7 @@ user with "`nextcloud` is looked after by agent Ada (…); stop `nextcloud` (…
 `access`: `Read` (names, phases, addresses: everyone but another agent), `ReadScoped` (content the workspace
 controls: not unscoped sessions either), `Change`. For an agent all three mean "its own, or the user's yes".
 `arg` is a required string. Audit of every app tool (2026-11-20): `app_status` Read; `app_logs` ReadScoped;
-`deploy_app` Create; `app_exec`, `update_app`, `stop_app`, `start_app`, `uninstall_app` Change; `list_apps` and
+`deploy_app` Create; `app_exec`, `update_app`, `stop_app`, `start_app`, `uninstall_app`, `set_app_network` (2026-11-24, `owner_approval` for every agent call) Change; `app_network` Read; `list_apps` and
 `my_apps` untargeted but scope-filtered; `reassign_workspace` lead-only; `my_files` is the agent's own file box
 (no workspace); `transfer_file` (lead-only, `owner_approval` every call) copies or moves a file between boxes; there is no volume tool (volumes show in `app_status`).
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
