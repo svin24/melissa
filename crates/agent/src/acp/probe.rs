@@ -178,7 +178,7 @@ mod tests {
         assert!(r.is_err(), "{r:?}");
         // Prints something that isn't ACP and keeps running: an error or the time limit.
         let chatty = fake_agent(&dir, "chatty", "hello, I am not an agent");
-        let r = probe(&chatty, &[], &dir, &env(), Duration::from_secs(2)).await;
+        let r = probe(&chatty, &[], &dir, &env(), Duration::from_millis(200)).await;
         assert!(r.is_err(), "{r:?}");
         // Not there at all.
         let r = probe(&dir.join("missing"), &[], &dir, &env(), PROBE_TIMEOUT).await;

@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(relay.await.unwrap(), (5, 6));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn idle_tunnels_are_closed() {
         let (client, mut client_peer) = tokio::io::duplex(64);
         let (upstream, mut upstream_peer) = tokio::io::duplex(64);
@@ -305,7 +305,7 @@ mod tests {
         assert!(started.elapsed() >= Duration::from_millis(450));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_half_closed_tunnel_ends_after_a_short_grace() {
         let (client, client_peer) = tokio::io::duplex(64);
         let (upstream, _upstream_peer) = tokio::io::duplex(64);
@@ -319,6 +319,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, (0, 0));
+        assert!(started.elapsed() >= HALF_CLOSE_GRACE);
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -369,7 +370,7 @@ mod tests {
             .contains("read-only"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn download_cap_and_lifetime_close_the_tunnel() {
         let (client, _client_peer) = tokio::io::duplex(64 * 1024);
         let (upstream, mut upstream_peer) = tokio::io::duplex(64 * 1024);
@@ -383,6 +384,7 @@ mod tests {
         let started = Instant::now();
         let stats = relay_with(client, upstream, web_limits()).await;
         assert_eq!(stats.end, RelayEnd::Lifetime);
+        assert!(started.elapsed() >= Duration::from_millis(400));
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 }

@@ -443,7 +443,7 @@ impl Tree {
     }
 
     fn run(&self, host: &Fake) -> Result<Outcome, ResetError> {
-        run_with(&self.root, host, Duration::from_millis(200), &mut |_| {})
+        run_with(&self.root, host, Duration::from_millis(50), &mut |_| {})
     }
 
     fn exists(&self, rel: &str) -> bool {

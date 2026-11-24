@@ -1063,7 +1063,7 @@ async fn a_restarted_daemon_resumes_the_agent_session() {
     s.replay.check().await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn taint_outlives_the_session_and_the_daemon() {
     let dir = scratch("taint-restart");
     let mut first = handshake("s-1");
@@ -1646,7 +1646,7 @@ async fn the_user_talks_to_a_agent_directly() {
     assert!(msgs.iter().all(|l| l["actor"] == "ui"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn agent_tool_guards_time_limits_and_concurrency() {
     let limits = AgentLimits {
         max_concurrent: 1,

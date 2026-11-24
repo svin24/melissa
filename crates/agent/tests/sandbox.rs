@@ -162,14 +162,29 @@ async fn cancelling_kills_background_grandchildren() {
         workdir: Some(workdir.clone()),
         ..RunRequest::default()
     };
-    // Dropping the run future (as the board does on cancel/timeout) must kill everything.
-    let run = tokio::time::timeout(Duration::from_millis(1500), backend.run(&req, sink)).await;
-    assert!(run.is_err(), "script should still be running: {run:?}");
+    // Dropping the run future (as the board does on cancel/timeout) must kill everything:
+    // drop it as soon as the grandchild's first heartbeat is there.
     let beat = workdir.join("beat");
-    assert!(beat.exists(), "grandchild never started");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let first_beat = async {
+        while !beat.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let run = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::select! {
+            r = backend.run(&req, sink) => Some(r),
+            () = first_beat => None,
+        }
+    })
+    .await;
+    assert!(
+        matches!(run, Ok(None)),
+        "the grandchild never started, or the script ended: {run:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
     let before = std::fs::read_to_string(&beat).unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Five heartbeats' worth: a survivor would have rewritten the file.
+    tokio::time::sleep(Duration::from_millis(250)).await;
     let after = std::fs::read_to_string(&beat).unwrap();
     assert_eq!(before, after, "grandchild survived the cancel");
     std::fs::remove_dir_all(&root).unwrap();

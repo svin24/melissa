@@ -848,9 +848,10 @@ async fn run_parent_dies(sh: &Path, plan: &SandboxPlan, args: &[String], work: &
         return Outcome::Fail("broken: heartbeat never started".into());
     }
     let _ = child.kill().await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let before = read();
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Six heartbeats' worth: a survivor would have rewritten the file.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     if read() != before {
         // Clean up what escaped before failing.
         let _ = std::process::Command::new("kill")
