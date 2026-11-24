@@ -1937,3 +1937,28 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
 - **2026-11-24 — Versioning starts: Melissa is 0.0.2 (owner).** Every crate's `version` (crates/*/Cargo.toml) is
   the release version; the image (`just container-build`, default from crates/server/Cargo.toml) and the Nix
   package read it, so Settings → Updates shows it instead of `dev`. Bump all crates together.
+- **2026-11-24 — Helpers reach other agents only through the lead agent, both ways; the owner's own messages are
+  citable proof (owner).** Two owner decisions, keeping the 2026-11-18 rule (no direct helper-to-helper talk):
+  (1) A helper may now *start* a conversation with another agent, but only via the lead agent: the helper-only
+  tool `ask_lead {text, on_behalf_of?}` (`Tool::helper_only`: hidden from and refused to the lead agent) queues
+  the request for the lead agent as data from that helper (like a helper's report: a turn of its own, or queued
+  while she works; `MAX_AUTO_TURNS` still bounds turns in a row; a tainted helper taints her), audited
+  `agent.ask_lead`, at most 3 waiting per helper (refused beyond, audited). The lead decides and passes things
+  on with `message_agent`. Requested the same day (owner's reference screenshots): replies come back on their
+  own: when the lead passes a helper a message, the helper's reply in the turn that message started goes back to
+  the lead as data (`helper_report` with `message: reply`, audited `agent.brokered`), so lead→helper and
+  helper→lead→helper exchanges need no nudging from the owner. Every message is kept in a thread per pair of
+  agents (`<state>/threads/<a>__<b>.jsonl`: from, to, time, text, `data`/`relayed`), read-only to the owner
+  (`GET /api/threads`, `/api/threads/{a}/{b}`); an "A ⇄ B" view is UI work for Penpot first. (2) Requests that
+  need the owner's authority cite one of the owner's chat messages by id. Every message the owner types (signed in
+  as the owner, or the host's CLI) gets an owner message id (`m-` + 12 hex, random) stored with the message in the
+  transcript (`owner_msg`); agents see `[owner message m-…]` in front of it (not in the chat). Melissa verifies an
+  id only against those records (`AgentPool::verify_owner_message`), never against agent text, brokered text,
+  reports, scheduled instructions or tool results, so an agent can't forge one by writing it. Proof never
+  replaces approval: `ask_lead` shows the lead the owner's words ("verified") or says the claim failed; tools
+  that declare `Tool::owner_citation` refuse an unverifiable id and put the verified quote on their confirmation
+  (`Confirmation::owner_quote`, "You asked: “…”", shown in the card's existing consequence line), and the owner
+  still answers. Why: helpers need other agents' knowledge (an address, a port) without breaking isolation, and
+  "the owner asked for it" must be checkable rather than claimed. Alternatives: direct helper-to-helper messages
+  (rejected 2026-11-18: no single point that sees, audits and can refuse them); trusting an agent's word that the
+  owner asked (forgeable); signing messages (nothing to sign with: the agents run inside Melissa anyway).

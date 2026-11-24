@@ -149,6 +149,8 @@ pub(crate) fn routes(lead: Lead) -> Router {
         .route("/api/workspaces", get(workspaces))
         .route("/api/workspaces/{workspace}/reassign", post(reassign))
         .route("/api/usage/providers", get(provider_usage))
+        .route("/api/threads", get(threads))
+        .route("/api/threads/{a}/{b}", get(thread))
         .route("/api/confirmations", get(confirmations))
         .route("/api/confirmations/{id}/{verdict}", post(resolve))
         .with_state(lead)
@@ -222,6 +224,23 @@ async fn send_message(State(lead): State<Lead>, Json(msg): Json<Message>) -> Res
     match lead.submit(&msg.text, Vec::new(), msg.mode()).await {
         Ok(s) => sent(s),
         Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
+    }
+}
+
+/// The threads of agent-to-agent talk, the most recent first (owner only; read-only).
+async fn threads(State(lead): State<Lead>) -> Response {
+    Json(json!({"threads": lead.agents().threads().list()})).into_response()
+}
+
+/// One thread: every message between `a` and `b` (`lead` or agent ids), oldest first. The
+/// texts are agent-written (untrusted).
+async fn thread(State(lead): State<Lead>, Path((a, b)): Path<(String, String)>) -> Response {
+    match lead.agents().threads().read(&a, &b) {
+        Some(messages) => Json(json!({"a": a, "b": b, "messages": messages})).into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "a thread is between two of `lead` and agent ids",
+        ),
     }
 }
 
@@ -616,6 +635,8 @@ async fn confirmations(State(lead): State<Lead>) -> Response {
                 })),
                 // Another agent's workspace: only the user's own yes, for this call.
                 "user_only": c.user_only,
+                // The owner's own message the call cites, verified ("You asked: …").
+                "owner_quote": c.owner_quote,
                 "created": c.created.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             })
         })

@@ -30,7 +30,10 @@ pub mod session;
 pub mod tools;
 
 pub use acp::{AcpBackend, AcpSpec};
-pub use audit::{requester, AuditLog, AuditRecord, PERSON as AUDIT_PERSON, PERSON_ID};
+pub use audit::{
+    requester, requester_is_owner, AuditLog, AuditRecord, PERSON as AUDIT_PERSON, PERSON_ID,
+    PERSON_IS_OWNER,
+};
 pub use backend::{
     AgentError, Backend, BackendInfo, BoxFuture, EventSink, McpEndpoint, OutputLine, RunRequest,
     Stream,

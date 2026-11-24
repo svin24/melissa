@@ -31,7 +31,10 @@ a lead agent. Until 2026-11-19 these were bee terms (hive, comb, queen, bee, cel
 contributors aren't confused, with a migration for existing installs (DECISIONS.md, 2026-11-19).
 **Status (2026-11-18):** the code follows the model on one device: `crates/device`, device/agent ids, persistent named
 agents with their own resumable sessions, workspaces owned by agents (namespace labels + admission), reassign only by the
-lead agent with the user's yes or by the user, user chat with any agent, agent-to-agent only via the lead agent. Since
+lead agent with the user's yes or by the user, user chat with any agent, agent-to-agent only via the lead agent (since
+2026-11-24 both ways: helpers ask her with `ask_lead`, answers to her `message_agent` come back on their own, every
+exchange is kept per pair of agents, and the owner's own messages carry ids agents cite as proof, verified by
+Melissa, never replacing the owner's yes; DECISIONS 2026-11-24). Since
 2026-11-20 new apps are always created by a helper: the lead agent hands "make/install/set up X" to one (`create_agent`
 with its first `job`, or `give_agent_job`) and its own `deploy_app` of a new app is refused (AGENT-MODEL rule 10). Mapping table in
 AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `lead-loop.md`. Multi-device is M3.
@@ -1467,3 +1470,10 @@ Roadmap (rough, phases may overlap):
     (melissa has no sudo/su rights). (g) From source on a desktop the owner's own CLI credential files get an
     ACL entry per agent id; `MELISSA_AGENT_USERS=off` keeps them untouched. (h) The escape suite keeps its own
     id table, so on one host it can hand out the same ids as a dev server's agents.
+98. Agent-to-agent talk (2026-11-24, `ask_lead`, replies back, threads; DECISIONS): (a) the "<A> ⇄ <B>" thread view
+    and a dedicated "You asked: …" line on approval cards need designs (Penpot first); today the API has the
+    threads and the quote rides in the card's consequence line. (b) Threads outlive a deleted agent (they are a
+    record, like the audit log): keep, or delete with the agent's chat? (c) The reply that comes back to the lead
+    agent is the helper's whole reply of that turn, even "thanks": worth a filter, or rely on the prompt and the
+    `MAX_AUTO_TURNS` cap? (d) A cited owner message proves what the owner asked, in any chat; should a citation be
+    limited to recent messages, or to the chat the request came through?

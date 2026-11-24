@@ -19,11 +19,20 @@ tokio::task_local! {
     /// [`PERSON`]; `ToolRegistry::call` sets it again from [`crate::tools::TaskContext::person`]
     /// for a turn a person started). Apps record it as who they were installed for.
     pub static PERSON_ID: String;
+    /// The signed-in person for the same request is the owner (the web layer sets it with
+    /// [`PERSON_ID`]; the host's own CLI counts as the owner). Never set inside a turn: only
+    /// a message the owner typed gets an owner message id ([`crate::tools::owner`]).
+    pub static PERSON_IS_OWNER: bool;
 }
 
 /// The account id of the person the current request or turn acts for, if known.
 pub fn requester() -> Option<String> {
     PERSON_ID.try_with(Clone::clone).ok()
+}
+
+/// Is the request being handled the owner's own (see [`PERSON_IS_OWNER`])? False when unknown.
+pub fn requester_is_owner() -> bool {
+    PERSON_IS_OWNER.try_with(|o| *o).unwrap_or(false)
 }
 
 /// One audit entry, written as a single JSON line.

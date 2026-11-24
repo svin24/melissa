@@ -185,7 +185,15 @@ pub(crate) struct Report {
     pub name: String,
     /// `succeeded`, `failed` or `cancelled`.
     pub status: String,
+    /// Not a job's end but a message from the helper: `ask` (its `ask_lead`) or `reply` (its
+    /// answer to a message the lead agent passed it). See [`LeadEvent::HelperReport`].
+    pub message: Option<&'static str>,
 }
+
+/// Called once when the turn a queued message started has ended (with how it ended), or
+/// with None when the message never gets a turn of its own (taken back, kept as a note,
+/// dropped). Dropping it uncalled is fine too (e.g. a daemon restart).
+pub(crate) type TurnHook = Box<dyn FnOnce(Option<&TurnOutcome>) + Send>;
 
 /// A queued message with what starting it needs.
 struct Pending {
@@ -195,6 +203,10 @@ struct Pending {
     /// The signed-in person who sent it (account id; [`crate::audit::requester`] when it was
     /// sent): the turn it starts acts for them.
     person: Option<String>,
+    /// Its owner message id, when the owner typed it ([`crate::tools::owner`]).
+    owner_msg: Option<String>,
+    /// Told when the turn it starts has ended.
+    hook: Option<TurnHook>,
 }
 
 #[derive(Default)]
@@ -362,6 +374,8 @@ struct TurnState {
     auto: u32,
     /// The person whose message started the running turn.
     person: Option<String>,
+    /// Told when the running turn ends (the messages that started it or went into it).
+    hooks: Vec<TurnHook>,
 }
 
 struct Inner {
@@ -951,13 +965,25 @@ impl Conversation {
     /// [`Conversation::submit`] for a text without files that waits its turn (the lead
     /// agent's messages to its agents): starts a turn, or queues.
     pub(crate) fn offer(&self, text: &str, actor: &str) -> Result<Sent, LeadError> {
+        self.offer_hooked(text, actor, None)
+    }
+
+    /// [`Conversation::offer`]; `hook` is told when the turn the message starts has ended
+    /// (the lead agent's messages to helpers: the helper's reply goes back to it).
+    pub(crate) fn offer_hooked(
+        &self,
+        text: &str,
+        actor: &str,
+        hook: Option<TurnHook>,
+    ) -> Result<Sent, LeadError> {
         let from = if actor == "lead" {
             QueuedFrom::Lead
         } else {
             QueuedFrom::User
         };
         let (text, stored) = self.check_and_store(text, Vec::new())?;
-        let pending = self.pending(text, stored, actor, from, None);
+        let mut pending = self.pending(text, stored, actor, from, None);
+        pending.hook = hook;
         Ok(match self.start_or_queue(pending) {
             Ok(sent) => sent,
             Err(p) => self.enqueue(*p),
@@ -968,13 +994,20 @@ impl Conversation {
     /// of its own, now or when the running turn and the messages before it are done. Never
     /// fails: past [`MAX_AUTO_TURNS`] it waits for the user's next message as a note.
     pub(crate) fn report(&self, text: &str, report: Report) -> Sent {
-        let pending = self.pending(
+        self.report_hooked(text, report, None)
+    }
+
+    /// [`Conversation::report`]; `hook` is told when its turn has ended, or that it got none
+    /// (kept as a note).
+    pub(crate) fn report_hooked(&self, text: &str, report: Report, hook: Option<TurnHook>) -> Sent {
+        let mut pending = self.pending(
             text.to_string(),
             Vec::new(),
             "melissa",
             QueuedFrom::Helper,
             Some(report),
         );
+        pending.hook = hook;
         match self.start_or_queue(pending) {
             Ok(sent) => sent,
             Err(p) => self.enqueue(*p),
@@ -1026,9 +1059,17 @@ impl Conversation {
                 from,
                 at: now_secs(),
             },
+            // Only a message the owner typed (signed in as the owner, not inside a turn)
+            // gets an id agents may cite.
+            owner_msg: (actor == "ui"
+                && from == QueuedFrom::User
+                && crate::audit::requester_is_owner())
+            .then(crate::tools::owner::new_owner_msg_id)
+            .flatten(),
             actor: actor.to_string(),
             report,
             person: crate::audit::requester(),
+            hook: None,
         }
     }
 
@@ -1166,7 +1207,7 @@ impl Conversation {
             return self.start_next(p, since);
         };
         if let Some(live) = live.filter(|l| l.session.capabilities().steer) {
-            let mut text = p.msg.text.clone();
+            let mut text = with_owner_msg(p.owner_msg.as_deref(), p.msg.text.clone());
             let blocks = self.deliver(&live, &p.msg.attachments, &mut text).await;
             match live.session.steer(&text, &blocks).await {
                 Ok(()) => {
@@ -1176,7 +1217,14 @@ impl Conversation {
                         text: p.msg.text.clone(),
                         attachments: p.msg.attachments.clone(),
                         scheduled: None,
+                        owner_msg: p.owner_msg.clone(),
                     });
+                    {
+                        let mut t = lock(&self.inner.turn);
+                        if t.busy == Some(turn) {
+                            t.hooks.extend(p.hook);
+                        }
+                    }
                     self.audit(
                         "steer",
                         &p.actor,
@@ -1293,9 +1341,16 @@ impl Conversation {
             actor,
             report,
             person,
+            mut owner_msg,
+            hook,
         } = p;
+        if scheduled.is_some() {
+            // A schedule's instruction is not something the owner typed just now.
+            owner_msg = None;
+        }
         t.last += 1;
         t.person = person;
+        t.hooks.extend(hook);
         let turn = t.last;
         t.busy = Some(turn);
         t.started = Some(Instant::now());
@@ -1315,12 +1370,14 @@ impl Conversation {
                 agent: r.agent.clone(),
                 name: r.name.clone(),
                 status: r.status.clone(),
+                message: r.message.map(Into::into),
             }),
             None => self.inner.events.push(LeadEvent::UserMessage {
                 turn,
                 text: text.clone(),
                 attachments: stored.clone(),
                 scheduled: scheduled.as_ref().map(|(n, _)| n.clone()),
+                owner_msg: owner_msg.clone(),
             }),
         };
         let mut audited = shorten(&text, 500);
@@ -1332,12 +1389,19 @@ impl Conversation {
             audited = format!("scheduled `{name}`: {audited}");
         }
         if let Some(r) = &report {
-            audited = format!("report of helper {} ({}): {audited}", r.name, r.status);
+            audited = match r.message {
+                Some(kind) => format!("{kind} from helper {}: {audited}", r.name),
+                None => format!("report of helper {} ({}): {audited}", r.name, r.status),
+            };
+        }
+        if let Some(id) = &owner_msg {
+            audited = format!("owner message {id}: {audited}");
         }
         self.audit("message", &actor, &audited);
         // The turn runs on the backend chosen when it starts; a later switch waits for it.
         let choice = self.choice();
         let note = scheduled.as_ref().map(|(name, _)| scheduled_note(name));
+        let text = with_owner_msg(owner_msg.as_deref(), text);
         let handle = tokio::spawn(self.clone().run_turn(turn, text, stored, choice, note));
         t.abort = Some(handle.abort_handle());
         (turn, since)
@@ -1503,6 +1567,23 @@ impl Conversation {
                 self.finish_turn(turn, "error", Some(e.to_string()));
             }
         }
+    }
+
+    /// The owner's message `id` in this conversation: when it was sent and its text. Only
+    /// `user_message` events Melissa recorded with that owner message id count (see
+    /// [`crate::tools::owner`]); the running log first, then the transcript.
+    pub(crate) fn find_owner_message(&self, id: &str) -> Option<(u64, String)> {
+        let page = self.inner.events.since(0, usize::MAX);
+        let live = page.events.into_iter().find_map(|r| match r.event {
+            LeadEvent::UserMessage {
+                owner_msg: Some(m),
+                text,
+                scheduled: None,
+                ..
+            } if m == id => Some((r.ts, text)),
+            _ => None,
+        });
+        live.or_else(|| self.inner.events.transcript()?.find_owner_message(id))
     }
 
     /// Tell the agent `text` with its next message, without starting a turn (the user's
@@ -1866,8 +1947,15 @@ impl Conversation {
             turn,
             stop_reason: stop_reason.into(),
         });
+        let hooks = std::mem::take(&mut t.hooks);
         // Released last, so the next turn's events come after this turn's end.
         drop(t);
+        if !hooks.is_empty() {
+            let outcome = lock(&self.inner.last).clone();
+            for hook in hooks {
+                hook(outcome.as_ref());
+            }
+        }
         self.withdraw_confirmations();
         self.count_turn(spent);
         self.plan_compaction(turn, stop_reason);
@@ -2158,4 +2246,13 @@ fn scheduled_note(name: &str) -> String {
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     // Poisoning only means another thread panicked mid-update; the data is still usable.
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// What the agent reads for a message: the owner message id (when the owner typed it) in
+/// front of the text, so it can cite it ([`crate::tools::owner`]). Not shown in the chat.
+pub(crate) fn with_owner_msg(owner_msg: Option<&str>, text: String) -> String {
+    match owner_msg {
+        Some(id) => format!("[owner message {id}]\n{text}"),
+        None => text,
+    }
 }
