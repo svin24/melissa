@@ -38,8 +38,8 @@ escape-test: escape-probe
         if mkdir -p "$cg/runner" 2>/dev/null && printf 0 > "$cg/runner/cgroup.procs" 2>/dev/null; then
             export MELISSA_TEST_CGROUP="$cg"
         fi
-        MELISSA_ESCAPE_REQUIRED=1 exec cargo nextest run -p melissa-agent --test escape --no-capture \
-            sandbox_escape_suite seccomp_off_backend_is_reported_not_passed'
+        MELISSA_ESCAPE_REQUIRED=1 exec cargo nextest run -p melissa-agent --test it --no-capture \
+            escape::sandbox_escape_suite escape::seccomp_off_backend_is_reported_not_passed'
     if systemd-run --user --scope --quiet -p Delegate=yes true >/dev/null 2>&1; then
         exec systemd-run --user --scope --quiet -p Delegate=yes -- bash -c "$suite"
     fi

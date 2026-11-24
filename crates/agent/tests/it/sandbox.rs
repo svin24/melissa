@@ -1,65 +1,17 @@
 //! Runs a tiny shell script as a sandboxed CLI backend and checks the isolation from the
-//! outside. Skips (with a message) when bubblewrap is missing or cannot create namespaces.
+//! outside. Skips (with a message) when bubblewrap is missing or cannot create namespaces,
+//! unless required (`support::sandbox_host`).
 
-// Test-only file: panicking on setup failure is the intended behaviour.
-#![allow(clippy::unwrap_used)]
-
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use melissa_agent::{
     sandbox, Backend, CliBackend, CliSpec, EventSink, NetworkMode, RunRequest, SandboxSpec,
 };
 
-/// A fresh directory under the system temp dir.
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "melissa-sandbox-test-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// A host program: `/usr/bin/<name>` (Fedora) or the first `<name>` on `PATH` (NixOS).
-fn host_program(name: &str) -> Option<PathBuf> {
-    let usr = Path::new("/usr/bin").join(name);
-    if usr.is_file() {
-        return Some(usr);
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
-}
-
-/// Can bwrap create the sandbox's namespaces here? Probes with the host's root bound
-/// read-only, so the check does not depend on the distribution's layout.
-fn namespaces_work(bwrap: &Path, sh: &Path) -> bool {
-    std::process::Command::new(bwrap)
-        .args(["--unshare-all", "--ro-bind", "/", "/", "--"])
-        .arg(sh)
-        .args(["-c", "true"])
-        .status()
-        .is_ok_and(|s| s.success())
-}
+use crate::support::{host_program, sandbox_host, scratch};
 
 fn bwrap_works() -> bool {
-    let Some(bwrap) = sandbox::find_bwrap() else {
-        eprintln!("SKIP: bwrap not found; install bubblewrap to run the sandbox tests");
-        return false;
-    };
-    let Some(sh) = host_program("sh") else {
-        eprintln!("SKIP: no sh found");
-        return false;
-    };
-    let ok = namespaces_work(&bwrap, &sh);
-    if !ok {
-        eprintln!("SKIP: bwrap cannot create namespaces here (unprivileged user namespaces off?)");
-    }
-    ok
+    sandbox_host(&[]).is_some()
 }
 
 /// `sh -c <script>` as a sandboxed backend whose home is `home`.
@@ -71,7 +23,7 @@ fn backend(script: &str, home: &Path, workdir: &Path) -> CliBackend {
             ro: vec![".fakecli".into()],
             ..SandboxSpec::default()
         })
-        // These tests are about files and processes; tests/egress.rs covers the network.
+        // These tests are about files and processes; the egress module covers the network.
         .with_network(NetworkMode::None);
     let backend = CliBackend::new(spec, workdir.to_path_buf()).with_home(home.to_path_buf());
     assert!(backend.info().available, "{:?}", backend.info());
@@ -287,13 +239,10 @@ fn run_sandboxed(name: &str, script: &str, seccomp: bool) -> (String, String) {
 /// processes keep working.
 #[test]
 fn seccomp_denies_escape_syscalls_and_keeps_the_rest() {
-    if !bwrap_works() {
+    if sandbox_host(&["unshare"]).is_none() {
         return;
     }
-    let Some(unshare) = host_program("unshare") else {
-        eprintln!("SKIP: no unshare found");
-        return;
-    };
+    let unshare = host_program("unshare").unwrap();
     let python = host_program("python3");
     let (ptrace, bpf, keyctl, mount) = if cfg!(target_arch = "aarch64") {
         (117, 280, 219, 40)

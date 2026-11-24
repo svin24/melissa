@@ -183,20 +183,20 @@ pkgs.testers.runNixOSTest {
     with subtest("sandbox, egress and escape integration tests as the melissa user"):
         env = (
             "env PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin HOME=/var/lib/melissa/home TMPDIR=/tmp "
-            "MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
+            "MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge MELISSA_SANDBOX_REQUIRED=1 "
         )
-        for t in ["sandbox", "egress"]:
-            out = server.succeed(f"cd /tmp && runuser -u melissa -- {env} melissa-it-{t} --nocapture --test-threads=1 2>&1")
-            print(out)
-            assert "test result: ok" in out and "SKIP" not in out, out
-        # The escape suite (crates/agent/tests/escape.rs): required, so a missing bwrap or probe helper
+        # Required: a missing bwrap or curl fails instead of skipping.
+        out = server.succeed(f"cd /tmp && runuser -u melissa -- {env} melissa-it --nocapture --test-threads=1 sandbox:: egress:: 2>&1")
+        print(out)
+        assert "test result: ok" in out and "SKIP" not in out, out
+        # The escape suite (crates/agent/tests/it/escape.rs): required, so a missing bwrap or probe helper
         # fails; its scene in the melissa user's state directory. Like the server unit it runs with
         # cgroup delegation; the shell moves into a `runner` leaf and hands the delegated cgroup to the
         # suite (MELISSA_TEST_CGROUP), as `just escape-test` does, so the `limits.*` probes run.
         suite = (
             'cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup); '
             'mkdir -p "$cg/runner" && printf 0 > "$cg/runner/cgroup.procs" && export MELISSA_TEST_CGROUP="$cg"; '
-            "exec ${tests}/bin/melissa-it-escape --nocapture --test-threads=1"
+            "exec ${tests}/bin/melissa-it --nocapture --test-threads=1 escape::"
         )
         out = server.succeed(
             "systemd-run --quiet --wait --pipe --collect --service-type=exec "

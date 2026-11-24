@@ -1102,7 +1102,7 @@ pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io
 /// only clears what the CLI gets; bwrap's own initial environment stays readable inside the
 /// sandbox through `/proc/1/environ` (bwrap is PID 1 there), so inheriting the lead agent's
 /// environment would hand every variable of `melissa-server` (tokens, keys) to the agent. Found
-/// by the escape suite (`crates/agent/tests/escape.rs`, `proc.environ-leak`). Everything the
+/// by the escape suite (`crates/agent/tests/it/escape.rs`, `proc.environ-leak`). Everything the
 /// sandbox needs is in the argv (`--setenv`). Callers may add variables for bwrap itself (they
 /// are visible inside) and set stdio through [`SandboxCommand::command_mut`], then start it
 /// with [`SandboxCommand::spawn`].

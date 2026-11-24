@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! `melissa-escape-probe`: the kernel-surface (and abstract-socket) attempts of the sandbox escape suite
-//! (crates/agent/tests/escape.rs), as one small binary instead of python3 ctypes, so the
+//! (crates/agent/tests/it/escape.rs), as one small binary instead of python3 ctypes, so the
 //! suite runs the same on a Fedora host, inside the container image (no python3) and on NixOS.
 //!
 //! Test-only: never installed. The image builds it only in its `escape-test` stage, the Nix
