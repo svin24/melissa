@@ -198,7 +198,65 @@ fn app_names_and_namespaces() {
     assert!(!valid_app_name("Minecraft"));
     assert!(!valid_app_name(&"a".repeat(41)));
     assert_eq!(namespace_of("minecraft"), "app-minecraft");
-    assert_eq!(secret_name("nextcloud"), "nextcloud-secrets");
+}
+
+#[test]
+fn isolation_defaults_to_gvisor_and_is_shown() {
+    // Absent: the default, gVisor; parsing writes nothing back into the spec.
+    let spec = AppSpec::from_json(&minecraft()).unwrap();
+    assert_eq!(spec.isolation, None);
+    assert_eq!(spec.isolation(), Isolation::Gvisor);
+    assert_eq!(Isolation::DEFAULT, Isolation::Gvisor);
+    assert_eq!(
+        spec.summary().last().map(String::as_str),
+        Some("isolation: gVisor sandbox (its own kernel)")
+    );
+    assert!(!spec.to_text().contains("isolation"));
+
+    // Asked for explicitly: kept, shown and stored.
+    for (name, level, words) in [
+        (
+            "standard",
+            Isolation::Standard,
+            "isolation: standard (shares the device's kernel)",
+        ),
+        (
+            "gvisor",
+            Isolation::Gvisor,
+            "isolation: gVisor sandbox (its own kernel)",
+        ),
+    ] {
+        let mut v = minecraft();
+        v["isolation"] = json!(name);
+        let spec = AppSpec::from_json(&v).unwrap();
+        assert_eq!(spec.isolation, Some(level));
+        assert_eq!(spec.isolation(), level);
+        assert_eq!(Isolation::from_name(name), Some(level));
+        assert_eq!(level.as_str(), name);
+        assert!(spec.summary().iter().any(|l| l == words), "{name}");
+        assert!(spec
+            .to_text()
+            .contains(&format!("\"isolation\":\"{name}\"")));
+        assert_eq!(AppSpec::from_text(&spec.to_text()).unwrap(), spec);
+    }
+}
+
+#[test]
+fn unknown_isolation_levels_are_refused() {
+    // `kata` is reserved for later; anything else is a typo. Never silently the default.
+    for bad in [
+        json!("kata"),
+        json!("GVISOR"),
+        json!("none"),
+        json!(""),
+        json!(true),
+    ] {
+        let mut v = minecraft();
+        v["isolation"] = bad.clone();
+        let e = err_of(v);
+        assert!(e.contains("not valid JSON for an app spec"), "{bad}: {e}");
+    }
+    assert_eq!(Isolation::from_name("kata"), None);
 }
 
 #[test]
@@ -208,9 +266,8 @@ fn network_is_off_by_default_and_parses_strictly() {
     assert!(spec.network_or_default().is_default());
     assert!(spec
         .summary()
-        .last()
-        .unwrap()
-        .starts_with("may reach: nothing"));
+        .iter()
+        .any(|l| l.starts_with("may reach: nothing")));
 
     let mut v = minecraft();
     v["network"] =

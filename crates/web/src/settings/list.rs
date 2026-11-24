@@ -73,30 +73,44 @@ async fn values(ui: &Ui, providers: Option<&pages::ProvidersView>) -> ListLevel 
             values.push((pages::SCHEDULES_URL, count_words(n, "job", "jobs")));
         }
     }
+    // Every row has a value (owner board P1, 2026-11-23).
     let voice = voice::view(&ui.settings, None);
-    if voice.available {
-        values.push((pages::VOICE_URL, on_off(voice.on).into()));
-    }
+    let voice = if voice.available {
+        on_off(voice.on)
+    } else {
+        NOT_HERE
+    };
+    values.push((pages::VOICE_URL, voice.into()));
     values.push((pages::FILES_URL, files::default_words(ui)));
     if owner {
-        if let Some(c) = ui.settings.parts().app_access.as_ref() {
-            values.push((pages::APPS_URL, c.view().setting.label().into()));
-        }
-        if let Some(c) = ui.settings.parts().tailscale.clone() {
-            if let Some(w) = tailscale_words(&c.cached_state().await) {
-                values.push((pages::TAILSCALE_URL, w.into()));
-            }
-        }
-        if let Some(w) = updates::status_word(ui) {
-            values.push((pages::UPDATES_URL, w.into()));
-        }
+        let apps = match ui.settings.parts().app_access.as_ref() {
+            Some(c) => c.view().setting.label().into(),
+            None => "Firewall".into(),
+        };
+        values.push((pages::APPS_URL, apps));
+        let tailscale = match ui.settings.parts().tailscale.clone() {
+            Some(c) => tailscale_words(&c.cached_state().await),
+            None => None,
+        };
+        values.push((pages::TAILSCALE_URL, tailscale.unwrap_or(NOT_HERE).into()));
+        values.push((pages::UPDATES_URL, updates::list_word(ui).into()));
         let perms = ui.registry().permissions();
         let developer = perms.bypass() || perms.full_access_allowed();
         values.push((pages::DEVELOPER_URL, on_off(developer).into()));
+        if !super::reset::available(ui) {
+            values.push((pages::RESET_URL, NOT_HERE.into()));
+        }
+        values.push(("/settings/people", ui.auth.people().len().to_string()));
+    }
+    if let Some(p) = crate::auth::signed_in() {
+        values.push(("/settings/account", p.username));
     }
     values.push((pages::ABOUT_URL, about::version(ui)));
     ListLevel { values }
 }
+
+/// A row whose setting this install doesn't have.
+const NOT_HERE: &str = "Not available";
 
 /// "3 ready": the providers that are on and ready.
 fn ready_words(v: &pages::ProvidersView) -> String {

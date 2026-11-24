@@ -13,6 +13,9 @@ Read this at the start of every session. One file per skill; update the skill wh
   recording/replay transcripts, gotchas.
 - [agent-egress.md](agent-egress.md) — deny-by-default network for sandboxed agents: netns + `melissa-netbridge`,
   CONNECT proxy with per-backend allowlists, MCP-only socket, `network = proxy|learn|none|host`, what each CLI contacts.
+- [sandbox-escape-tests.md](sandbox-escape-tests.md) — the adversarial escape suite (`just escape-test`,
+  `just escape-test-image`, the gate for image updates): how probes run, verdict words, controls, seccomp-gated
+  and resource-limit probes, the probe helper, adding a probe in a few lines.
 - [lead-loop.md](lead-loop.md) — the lead agent and its persistent, named agents: the shared
   conversation machinery, agent registry, agent tools and guards, event stream + transcript, resume via a
   Melissa-owned session store, `/api/lead`, `/api/agents`, `melissa-server chat|ask [--agent]`, `agent`, `workspace`;
@@ -31,7 +34,7 @@ Read this at the start of every session. One file per skill; update the skill wh
   (`deploy_app`/`update_app`; images, TCP/UDP ports, volumes, secrets, files, resources, probes), validation,
   rendering, the always-confirmed deploy, app ports and links (per-port NodePorts 30000-30079), the
   `melissa-apps` write identity + admission policies (workloads, services, volumes), owner-only
-  `app-credentials`, the migration of catalog installs (Nextcloud).
+  `app-credentials`.
 - [workspaces-and-ownership.md](workspaces-and-ownership.md) — the cluster model in code: device/agent ids, workspaces owned by
   agents (`melissa.io/owner-agent`), scopes (User/Lead/Agent/Nothing), the one scope check in the registry
   (another agent's workspace: user-only confirmation, no rule/bypass; `my_apps`; `tool.cross_owner` audit),

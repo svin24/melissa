@@ -1,0 +1,12 @@
+{{- /* melissa-managed: k3s-prepare replaces this file at every start (gVisor, docs/DECISIONS.md 2026-11-23). */ -}}
+{{ template "base" . }}
+
+# Melissa: gVisor for apps with isolation `gvisor` (RuntimeClass `gvisor`, handler `runsc`). k3s
+# detects crun, nvidia and the wasm runtimes itself, not runsc, so it comes from this template.
+# containerd starts containerd-shim-runsc-v1 (on PATH), which runs runsc with runsc.toml's flags.
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+  runtime_type = "io.containerd.runsc.v1"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc.options]
+  TypeUrl = "io.containerd.runsc.v1.options"
+  ConfigPath = "/usr/lib/melissa/k3s/gvisor/runsc.toml"

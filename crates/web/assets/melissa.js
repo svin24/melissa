@@ -878,8 +878,10 @@
     var box = e.target;
     if (!box.matches || !box.matches("input[data-show-password]")) return;
     var wrap = box.closest(".field-pw");
-    var field = wrap && wrap.querySelector("label.field input");
-    if (field) field.type = box.checked ? "text" : "password";
+    // One switch can show a group of fields (Change password: "Show passwords").
+    each(wrap ? wrap.querySelectorAll("label.field input") : [], function (field) {
+      field.type = box.checked ? "text" : "password";
+    });
   });
 
   // --- The model picker (a popover; the browser opens and closes it, Esc and clicks outside
@@ -1741,6 +1743,11 @@
     }
     var el = document.getElementById(hash);
     if (el) {
+      // A part behind a row that opens (a helper's Change icon): open it first.
+      var closed = el.closest("details:not([open])");
+      if (closed) {
+        closed.open = true;
+      }
       el.scrollIntoView({ block: "start" });
       var field = el.querySelector("input:not([type=hidden]), select, textarea, summary");
       if (field) {
@@ -1860,11 +1867,16 @@
     return isPhone() && main && !main.hasAttribute("data-list") ? main.querySelector(".settings-here") : null;
   }
 
-  // Where focus lands when Settings opens on a phone (null: not a phone, or not Settings).
+  // Where focus lands when Settings opens (null: not Settings): the section's title in the
+  // head bar, which shows no ring (2026-11-23: no ring on the current nav item at open); on a
+  // phone's list level the list's title.
   function settingsLanding(root) {
     var main = root.querySelector("#settings-main");
-    if (!isPhone() || !main) {
+    if (!main) {
       return null;
+    }
+    if (!isPhone()) {
+      return main.querySelector(".settings-here");
     }
     return main.hasAttribute("data-list") ? root.querySelector(".settings-title") : settingsTitle(root);
   }

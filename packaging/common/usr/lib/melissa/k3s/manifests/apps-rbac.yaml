@@ -35,6 +35,11 @@
 #   added capabilities only from Pod Security baseline's default set, seccomp RuntimeDefault,
 #   CPU and memory limits on every container, no service account token. Root inside the
 #   container is allowed (many images need it), privileges never.
+# - Isolation (docs/DECISIONS.md 2026-11-23): a pod template, pod or namespace labelled
+#   melissa.io/isolation=gvisor runs only under the `gvisor` RuntimeClass (handler runsc), never on
+#   the default runtime; no other RuntimeClass is allowed in app namespaces. The `gvisor`
+#   RuntimeClass itself (k3s manifest from packaging/common/usr/lib/melissa/k3s/gvisor/, only
+#   where runsc is) must name runsc, whoever writes it. Without it the API refuses such pods.
 # - Volumes: new PVCs use the local-path class and never bind a chosen PersistentVolume or
 #   copy another claim (volumeName, dataSource).
 # - Inside an app namespace, the RoleBinding the installer creates grants melissa-app-workload:
@@ -114,6 +119,11 @@ spec:
         !('melissa.io/device' in object.metadata.labels) ||
         object.metadata.labels['melissa.io/device'].matches('^d-[0-9a-f]{8}$')
       message: "melissa.io/device must be a device id (d-<8 hex>)"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !('melissa.io/isolation' in object.metadata.labels) ||
+        object.metadata.labels['melissa.io/isolation'] in ['standard', 'gvisor']
+      message: "melissa.io/isolation must be standard or gvisor"
     - expression: >-
         request.operation == 'DELETE' ||
         !('melissa.io/owner-agent' in object.metadata.labels) ||
@@ -328,6 +338,15 @@ spec:
   variables:
     - name: pod
       expression: "object.spec.template.spec"
+    # The template or its namespace says gVisor (melissa.io/isolation=gvisor).
+    - name: wantsGvisor
+      expression: >-
+        (has(object.spec.template.metadata.labels) &&
+         'melissa.io/isolation' in object.spec.template.metadata.labels &&
+         object.spec.template.metadata.labels['melissa.io/isolation'] == 'gvisor') ||
+        (has(namespaceObject.metadata.labels) &&
+         'melissa.io/isolation' in namespaceObject.metadata.labels &&
+         namespaceObject.metadata.labels['melissa.io/isolation'] == 'gvisor')
     # Pod Security baseline's default capabilities: adding them changes nothing; nothing else.
     - name: allowedCaps
       expression: >-
@@ -387,6 +406,12 @@ spec:
         (!has(variables.pod.serviceAccountName) || variables.pod.serviceAccountName == 'default') &&
         has(variables.pod.automountServiceAccountToken) && !variables.pod.automountServiceAccountToken
       message: "app pods get no Kubernetes API token"
+    - expression: "!has(variables.pod.runtimeClassName) || variables.pod.runtimeClassName == 'gvisor'"
+      message: "app pods run on the default runtime or under the gvisor RuntimeClass, nothing else"
+    - expression: >-
+        !variables.wantsGvisor ||
+        (has(variables.pod.runtimeClassName) && variables.pod.runtimeClassName == 'gvisor')
+      message: "an app labelled melissa.io/isolation=gvisor runs only under the gvisor RuntimeClass"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -394,6 +419,74 @@ metadata:
   name: melissa-apps-workloads
 spec:
   policyName: melissa-apps-workloads
+  validationActions: [Deny]
+---
+# The pods themselves, whoever creates them (the ReplicaSet controller does, not melissa-apps):
+# in an app namespace, a gVisor pod never starts on the default runtime, whatever happened to its
+# Deployment. Matches namespaces the renderer labels melissa.io/managed=true.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-apps-isolation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        melissa.io/managed: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE", "UPDATE"]
+  variables:
+    - name: wantsGvisor
+      expression: >-
+        (has(object.metadata.labels) && 'melissa.io/isolation' in object.metadata.labels &&
+         object.metadata.labels['melissa.io/isolation'] == 'gvisor') ||
+        (has(namespaceObject.metadata.labels) &&
+         'melissa.io/isolation' in namespaceObject.metadata.labels &&
+         namespaceObject.metadata.labels['melissa.io/isolation'] == 'gvisor')
+  validations:
+    - expression: "!has(object.spec.runtimeClassName) || object.spec.runtimeClassName == 'gvisor'"
+      message: "app pods run on the default runtime or under the gvisor RuntimeClass, nothing else"
+    - expression: >-
+        !variables.wantsGvisor ||
+        (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor')
+      message: "an app labelled melissa.io/isolation=gvisor runs only under the gvisor RuntimeClass"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-apps-isolation
+spec:
+  policyName: melissa-apps-isolation
+  validationActions: [Deny]
+---
+# The gvisor RuntimeClass always means runsc (a changed handler would quietly run gVisor apps on
+# something else). Applies to every writer, k3s's manifest controller included.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: melissa-gvisor-runtimeclass
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["node.k8s.io"]
+        apiVersions: ["v1"]
+        resources: ["runtimeclasses"]
+        operations: ["CREATE", "UPDATE"]
+  validations:
+    - expression: "object.metadata.name != 'gvisor' || object.handler == 'runsc'"
+      message: "the gvisor RuntimeClass must use the runsc handler"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: melissa-gvisor-runtimeclass
+spec:
+  policyName: melissa-gvisor-runtimeclass
   validationActions: [Deny]
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -466,6 +559,11 @@ rules:
     resources: ["rolebindings"]
     verbs: ["delete"]
     resourceNames: ["melissa-app-credentials"]
+  # Before a gVisor deploy: is the gvisor RuntimeClass there (fail closed if not)?
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+    resourceNames: ["gvisor"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

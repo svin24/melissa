@@ -30,6 +30,9 @@ pub struct Confirmation {
     /// Only the user's own yes answers this one, for this one call: never an "Always allow"
     /// rule, never No permission prompts (an agent acting on another agent's workspace).
     pub user_only: bool,
+    /// The owner's own message the call cites as its reason, verified and quoted ("You
+    /// asked: …", see [`super::owner`]). Shown to whoever decides; it never decides.
+    pub owner_quote: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +122,7 @@ impl ConfirmationStore {
         reason: &str,
         rule: Option<RuleOffer>,
     ) -> (Confirmation, oneshot::Receiver<Verdict>) {
-        self.insert(task, tool, args, reason, rule, false)
+        self.insert(task, tool, args, reason, rule, false, None)
     }
 
     /// [`ConfirmationStore::request`] that only the user's own yes answers
@@ -131,9 +134,27 @@ impl ConfirmationStore {
         args: &Value,
         reason: &str,
     ) -> (Confirmation, oneshot::Receiver<Verdict>) {
-        self.insert(task, tool, args, reason, None, true)
+        self.insert(task, tool, args, reason, None, true, None)
     }
 
+    /// [`ConfirmationStore::request_with`] (or, `user_only`, [`ConfirmationStore::request_user_only`])
+    /// with the verified quote of the owner's message the call cites
+    /// ([`Confirmation::owner_quote`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_quoted(
+        &self,
+        task: TaskId,
+        tool: &str,
+        args: &Value,
+        reason: &str,
+        rule: Option<RuleOffer>,
+        user_only: bool,
+        quote: Option<String>,
+    ) -> (Confirmation, oneshot::Receiver<Verdict>) {
+        self.insert(task, tool, args, reason, rule, user_only, quote)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn insert(
         &self,
         task: TaskId,
@@ -142,6 +163,7 @@ impl ConfirmationStore {
         reason: &str,
         rule: Option<RuleOffer>,
         user_only: bool,
+        owner_quote: Option<String>,
     ) -> (Confirmation, oneshot::Receiver<Verdict>) {
         let (tx, rx) = oneshot::channel();
         let mut inner = lock(&self.inner);
@@ -156,6 +178,7 @@ impl ConfirmationStore {
             created: SystemTime::now(),
             rule: rule.map(Box::new),
             user_only,
+            owner_quote,
         };
         inner.pending.insert(
             info.id,

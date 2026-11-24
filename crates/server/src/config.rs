@@ -64,9 +64,6 @@ impl Default for EgressSection {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AppsSection {
-    /// Deprecated and ignored: the app catalog was dropped (agents deploy any app from a
-    /// spec they write). Still accepted so old config files load; the server warns.
-    pub catalog: Option<PathBuf>,
     /// Apps are also served at `<app>.<domain>` (for people with their own DNS).
     pub domain: String,
     /// Addresses (IPs or host names) people reach this device at, for app links
@@ -88,7 +85,6 @@ pub struct AppsSection {
 impl Default for AppsSection {
     fn default() -> Self {
         Self {
-            catalog: None,
             domain: melissa_appspec::DEFAULT_DOMAIN.into(),
             addresses: None,
             port_offset: 0,
@@ -297,8 +293,8 @@ impl BackendSpec {
         }
     }
 
-    #[cfg(test)]
-    fn effective_sandbox(&self) -> melissa_agent::SandboxSpec {
+    /// The sandbox this backend runs in: its preset with `[backend.sandbox]` applied.
+    pub fn effective_sandbox(&self) -> melissa_agent::SandboxSpec {
         match self {
             Self::Cli(s) => s.effective_sandbox(),
             Self::Acp(s) => s.effective_sandbox(),
@@ -345,7 +341,7 @@ impl<'de> Deserialize<'de> for BackendSpec {
 
 /// Headless invocations of the agent CLIs Melissa knows about. Backends whose binary is
 /// missing show up as "not installed" and cannot be selected. Each runs in its built-in
-/// bubblewrap sandbox preset (`SandboxSpec::preset`) unless the config says otherwise.
+/// bubblewrap sandbox preset (`SandboxSpec::preset`), changed by `[backend.sandbox]` if given.
 pub fn default_backends() -> Vec<BackendSpec> {
     let cli = [
         // `--tools ""` removes Claude's built-in tools (shell, file access); it acts only
@@ -720,14 +716,10 @@ mod tests {
     fn apps_section_defaults_and_domain_check() {
         let config: ServerConfig = toml::from_str("").unwrap();
         assert_eq!(config.apps.domain, "melissa.home.arpa");
-        assert_eq!(config.apps.catalog, None);
-        let config: ServerConfig = toml::from_str(
-            "[apps]\ndomain = \"home.example.com\"\ncatalog = \"/tmp/c\"\nkubeconfig = \"/tmp/k\"",
-        )
-        .unwrap();
+        let config: ServerConfig =
+            toml::from_str("[apps]\ndomain = \"home.example.com\"\nkubeconfig = \"/tmp/k\"")
+                .unwrap();
         config.validate().unwrap();
-        // The old catalog setting still loads (ignored).
-        assert_eq!(config.apps.catalog.as_deref(), Some(Path::new("/tmp/c")));
         for bad in ["Home.Example", "localhost", "a..b", "-x.y", "x y.z"] {
             let config: ServerConfig =
                 toml::from_str(&format!("[apps]\ndomain = \"{bad}\"")).unwrap();
@@ -852,6 +844,114 @@ mod tests {
         )
         .unwrap();
         assert!(escape.validate().is_err());
+    }
+
+    /// One backend with the given lines after `command`.
+    fn sandbox_of(command: &str, rest: &str) -> melissa_agent::SandboxSpec {
+        let config: ServerConfig = toml::from_str(&format!(
+            "[[backend]]\nname = \"b\"\ncommand = \"{command}\"\n{rest}"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        config.backends[0].effective_sandbox()
+    }
+
+    #[test]
+    fn partial_sandbox_tables_keep_the_preset() {
+        use melissa_agent::sandbox::limits::{Bytes, Limits};
+        let preset = melissa_agent::SandboxSpec::preset("claude");
+        let paths = |s: &melissa_agent::SandboxSpec| (s.tmpfs.clone(), s.ro.clone(), s.rw.clone());
+
+        // Only limits: the preset's paths stay; unset limit keys keep their defaults.
+        let s = sandbox_of("claude", "[backend.sandbox.limits]\nmemory = \"3G\"");
+        assert_eq!(paths(&s), paths(&preset));
+        assert!(s.enabled && s.seccomp);
+        assert_eq!(s.limits.memory, Bytes(Some(3 << 30)));
+        assert_eq!(s.limits.pids, Limits::default().pids);
+
+        // Only seccomp = false: everything else is the preset.
+        let s = sandbox_of("claude", "[backend.sandbox]\nseccomp = false");
+        assert!(!s.seccomp);
+        assert_eq!(
+            s,
+            melissa_agent::SandboxSpec {
+                seccomp: false,
+                ..sandbox_of("claude", "")
+            }
+        );
+
+        // Only egress (backend keys): the preset's paths and limits stay.
+        let s = sandbox_of(
+            "claude",
+            "network = \"learn\"\nallow = [\"api.example.com\"]",
+        );
+        assert_eq!(paths(&s), paths(&preset));
+        assert_eq!(s.limits, Limits::default());
+        assert_eq!(s.allow, Some(vec!["api.example.com".to_string()]));
+
+        // Lists add to the preset (no duplicates).
+        let s = sandbox_of(
+            "claude",
+            "[backend.sandbox]\nro = [\".config/x\"]\nrw = [\".claude/.credentials.json\"]\nenv = [\"X_KEY\"]",
+        );
+        assert_eq!(s.rw, preset.rw);
+        assert_eq!(s.ro, [".config/x"]);
+        assert_eq!(s.tmpfs, preset.tmpfs);
+        assert_eq!(s.env, ["X_KEY"]);
+
+        // The managed OpenCode preset (no user config files) stays the base for its flavor.
+        let s = sandbox_of(
+            "opencode",
+            "kind = \"acp\"\nflavor = \"opencode\"\n[backend.sandbox]\nseccomp = false",
+        );
+        assert!(s.ro.is_empty());
+        assert_eq!(
+            s.tmpfs,
+            melissa_agent::SandboxSpec::preset("opencode").tmpfs
+        );
+    }
+
+    #[test]
+    fn full_sandbox_override_and_opt_out() {
+        use melissa_agent::sandbox::limits::Pids;
+        // preset = false: exactly the table, nothing from the preset.
+        let s = sandbox_of(
+            "claude",
+            r#"[backend.sandbox]
+            preset = false
+            enabled = true
+            seccomp = true
+            tmpfs = [".claude"]
+            rw = [".claude/token"]
+            env = ["ANTHROPIC_API_KEY"]
+            [backend.sandbox.limits]
+            pids = 64"#,
+        );
+        assert_eq!(s.tmpfs, [".claude"]);
+        assert_eq!(s.rw, [".claude/token"]);
+        assert!(s.ro.is_empty());
+        assert_eq!(s.env, ["ANTHROPIC_API_KEY"]);
+        assert_eq!(s.limits.pids, Pids(Some(64)));
+        let bare = sandbox_of("claude", "[backend.sandbox]\npreset = false");
+        assert!(bare.rw.is_empty() && bare.tmpfs.is_empty() && bare.enabled);
+        // An empty list would once have dropped the preset's paths; now it is refused.
+        for bad in ["rw = []", "ro = []", "tmpfs = []", "env = []"] {
+            let config: ServerConfig = toml::from_str(&format!(
+                "[[backend]]\nname = \"b\"\ncommand = \"claude\"\n[backend.sandbox]\n{bad}"
+            ))
+            .unwrap();
+            assert!(config.validate().is_err(), "{bad}");
+        }
+        let ok: ServerConfig = toml::from_str(
+            "[[backend]]\nname = \"b\"\ncommand = \"claude\"\n[backend.sandbox]\npreset = false\nrw = []",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        // Unknown keys inside limits are rejected too.
+        assert!(toml::from_str::<ServerConfig>(
+            "[[backend]]\nname = \"b\"\ncommand = \"claude\"\n[backend.sandbox.limits]\nmem = 1",
+        )
+        .is_err());
     }
 
     #[test]

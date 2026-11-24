@@ -1,0 +1,11 @@
+# Melissa: gVisor's options for k3s's containerd (runtime handler `runsc`; ConfigPath in
+# config-v3.toml.tmpl). Keys under [runsc_config] are runsc flags.
+#
+# Platform: systrap (gVisor's default). It needs no KVM and works the same on bare metal, in a VM
+# and inside the privileged Melissa container. The KVM platform was about 30% faster on syscall-
+# and fork-heavy loops on the dev laptop (2026-11-23: 1M one-byte dd syscalls 1.9 s vs 2.8 s,
+# 300 fork+exec 0.97 s vs 1.35 s; native 0.23 s / 0.33 s) but gives the Sentry /dev/kvm (the
+# host's KVM module becomes part of the attack surface) and is slow or unusable when the host is
+# itself a VM. Change it here only with a measurement (docs/agent-skills/app-deploy.md, "gVisor").
+[runsc_config]
+  platform = "systrap"

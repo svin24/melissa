@@ -41,6 +41,11 @@ fn requester(ui: &Ui) -> Option<&Requester> {
     ui.settings.parts().factory_reset.as_ref()
 }
 
+/// This install can reset (else the Settings list says "Not available").
+pub(super) fn available(ui: &Ui) -> bool {
+    requester(ui).is_some()
+}
+
 /// Why a reset can't start now.
 fn blocked(ui: &Ui) -> Option<&'static str> {
     let updates = &ui.settings.parts().updates;

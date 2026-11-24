@@ -20,13 +20,12 @@ use k8s_openapi::api::{
 };
 use kube::{api::ListParams, Api};
 use melissa_agent::BoxFuture;
-use melissa_appspec::{legacy, namespace_of, valid_app_name, AppSpec};
+use melissa_appspec::{namespace_of, valid_app_name, AppSpec};
 use melissa_cluster::{
-    render::{APP_LABEL, CONFIG_ANNOTATION, CREDENTIALS_DISMISSED_ANNOTATION, SPEC_ANNOTATION},
+    render::{APP_LABEL, CREDENTIALS_DISMISSED_ANNOTATION, SPEC_ANNOTATION},
     AppCredentials, CredentialsError, KubeCluster, SetupLogin,
 };
 use melissa_web::{RevealedPassword, SetupError, SetupState};
-use serde_json::{Map, Value};
 
 /// k3s's admin kubeconfig (mode 0600, root), see `config.yaml.d/10-melissa.yaml`.
 pub const ADMIN_KUBECONFIG: &str = "/etc/rancher/k3s/k3s.yaml";
@@ -71,7 +70,6 @@ pub async fn show(app: &str, domain: &str, kubeconfig: &Path) -> anyhow::Result<
         .get_opt(app)
         .await
         .with_context(|| format!("reading {ns_name}/{app}"))?;
-    // The stored spec, or for an app from the old catalog, the one rebuilt from its config.
     let annotation = |key: &str| {
         ns.metadata
             .annotations
@@ -79,19 +77,8 @@ pub async fn show(app: &str, domain: &str, kubeconfig: &Path) -> anyhow::Result<
             .and_then(|a| a.get(key))
             .cloned()
     };
-    let spec = match annotation(SPEC_ANNOTATION) {
-        Some(text) => AppSpec::from_text(&text).ok(),
-        None => {
-            let config: Map<String, Value> = deployment
-                .as_ref()
-                .and_then(|d| d.metadata.annotations.as_ref())
-                .and_then(|a| a.get(CONFIG_ANNOTATION))
-                .and_then(|c| serde_json::from_str(c).ok())
-                .unwrap_or_default();
-            legacy::from_catalog(app, &config)
-        }
-    };
-    // Every generated Secret of the app (one per field; one shared one for catalog installs).
+    let spec = annotation(SPEC_ANNOTATION).and_then(|text| AppSpec::from_text(&text).ok());
+    // Every generated Secret of the app (one per field).
     let list = Api::<Secret>::namespaced(client, &ns_name)
         .list(&ListParams::default().labels(&format!("{APP_LABEL}={app}")))
         .await

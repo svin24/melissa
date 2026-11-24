@@ -12,6 +12,7 @@ fn earlier_chat(dir: &std::path::Path, n: u64) {
     for i in 0..n {
         for (j, e) in [
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: i + 1,
                 text: format!("question {i}"),
                 attachments: vec![],

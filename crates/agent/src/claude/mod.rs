@@ -66,9 +66,12 @@ pub struct ClaudeSpec {
     /// Give the agent Melissa's tools (an MCP config file per session).
     #[serde(default = "yes")]
     pub tools: bool,
-    /// Sandbox settings. Absent: the built-in preset for this command.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A whole sandbox set by code ([`ClaudeSpec::with_sandbox`]); never from the config file.
+    #[serde(skip)]
     pub sandbox: Option<SandboxSpec>,
+    /// `[backend.sandbox]`: changes to the built-in preset ([`sandbox::SandboxConfig`]).
+    #[serde(rename = "sandbox", default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_table: Option<sandbox::SandboxConfig>,
     /// Network access of the sandboxed agent (see [`crate::AcpSpec::network`]).
     #[serde(default)]
     pub network: crate::egress::NetworkMode,
@@ -97,6 +100,7 @@ impl ClaudeSpec {
             args: Vec::new(),
             tools: true,
             sandbox: None,
+            sandbox_table: None,
             network: crate::egress::NetworkMode::default(),
             allow: None,
             record_dir: None,
@@ -124,13 +128,13 @@ impl ClaudeSpec {
     }
 
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        let mut spec = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
-        spec.network = self.network;
-        spec.allow = self.allow.clone();
-        spec
+        sandbox::effective(
+            self.sandbox.as_ref(),
+            self.sandbox_table.as_ref(),
+            || SandboxSpec::preset(&self.command),
+            self.network,
+            self.allow.clone(),
+        )
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {
@@ -419,8 +423,9 @@ impl ClaudeBackend {
         let extra = with_fast(extra, open.fast);
         let args = claude_args(&extra, mcp_file.as_ref().map(|f| f.path()), &session);
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
-        let (program_path, argv) = sandboxed_command(
+        let mut command = sandboxed_command(
             &self.sandbox,
+            open.sandbox_user.as_deref(),
             self.bwrap.as_deref(),
             self.home.as_deref(),
             &program,
@@ -432,14 +437,14 @@ impl ClaudeBackend {
             bridge,
             args,
         )?;
-        let mut command = tokio::process::Command::new(&program_path);
         if !self.sandbox.enabled {
             // Provider settings first, so Melissa's own variables win.
-            command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
-            command.envs(env.iter().map(|(k, v)| (k, v)));
+            let c = command.command_mut();
+            c.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+            c.envs(env.iter().map(|(k, v)| (k, v)));
         }
-        let mut child = command
-            .args(argv)
+        command
+            .command_mut()
             .current_dir(cwd)
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -447,9 +452,9 @@ impl ClaudeBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // Dropping the session kills the agent (and under bwrap the whole sandbox).
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| AgentError::Spawn {
+            .kill_on_drop(true);
+        let crate::sandbox::SandboxChild { mut child, cgroup } =
+            command.spawn().map_err(|source| AgentError::Spawn {
                 command: self.spec.command.clone(),
                 source,
             })?;
@@ -475,7 +480,9 @@ impl ClaudeBackend {
         let shutdown: crate::acp::client::Shutdown = Box::new(move || {
             Box::pin(async move {
                 stop().await;
-                // The sockets close after the agent has stopped; the MCP file goes with it.
+                // The sockets close after the agent has stopped; the MCP file goes with it, and
+                // the sandbox's cgroup (killing anything left inside).
+                drop(cgroup);
                 drop(lease);
                 drop(mcp_file);
             })

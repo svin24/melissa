@@ -366,6 +366,28 @@ async fn an_agents_network_change_always_waits_for_the_owner_in_plain_words() {
     assert_eq!(call.await.unwrap(), Err(ToolError::Denied));
 }
 
+/// An agent may cite the owner's message (`on_behalf_of`); a made-up id is refused before
+/// anyone is asked (the registry's owner-message check).
+#[tokio::test]
+async fn a_cited_owner_message_must_be_real() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_for_ada(&fake).await;
+    let reg = network_registry(&fake, None);
+    let r = reg
+        .call(
+            1,
+            &mut agent(ADA),
+            "set_app_network",
+            json!({"app": "nextcloud", "internet": true, "on_behalf_of": "m-0123456789ab"}),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(ToolError::Refused(m)) if m.contains("not one the owner wrote")),
+        "{r:?}"
+    );
+    assert!(reg.confirmations().pending().is_empty());
+}
+
 #[tokio::test]
 async fn the_owners_own_change_needs_no_confirmation_and_bad_links_are_refused() {
     let fake = Arc::new(Fake::default());

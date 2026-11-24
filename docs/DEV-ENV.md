@@ -81,6 +81,8 @@ Melissa (pre-alpha) is running.
   State:    /home/you/.local/state/melissa
   Config:   /home/you/.config/melissa/server.toml  (not present: defaults)
   Sandbox:  ok (bubblewrap)
+  Limits:   off: the server shares its cgroup with other processes. Agents run without memory, process and CPU limits.
+  Agent users: on (each agent its own host user, ids 524288-589823).
   Agents:
     claude          claude    found
     grok-acp        grok      not installed (`grok` not on PATH)
@@ -178,6 +180,19 @@ Pick one (not yet tested by us on Ubuntu; please tell us what worked):
   [lead]
   backends = ["claude-session"]   # or "grok-acp", "opencode-acp"
   ```
+- **"Limits: off".** Normal from source: memory, process and CPU limits per agent sandbox need a cgroup
+  systemd delegates to the server alone (the installed `melissa-server.service` has `Delegate=`). To try them
+  from source, start the built binary by itself in a delegated scope (not through `just`/`cargo`, which would
+  share it): `just build && systemd-run --user --scope -p Delegate=yes target/debug/melissa-server demo`.
+- **"Agent users: on" and your CLI logins.** Where your user has subordinate ids (`/etc/subuid`; Fedora and
+  most distributions give every login user 65536) each agent runs as its own host id from that range, as on
+  the installed images. Your CLIs' credential files (e.g. `~/.claude/.credentials.json`) then get one POSIX
+  ACL entry per agent id (`getfacl` shows them), and agents' workdirs and file boxes get ACLs naming them.
+  To keep your own files untouched, run with `MELISSA_AGENT_USERS=off just demo` (the summary then says
+  `Agent users: off: turned off`); remove entries with `setfacl -x u:<id> <file>`.
+- **"Agent users: off: ...".** The reason says what is missing: subordinate ids for your user, `newuidmap` /
+  `newgidmap` (shadow-utils), `unshare`/`nsenter`/`setpriv` (util-linux), ACL support in the state directory,
+  or a parent with `NoNewPrivileges=`. Agents then run as your own user, as before.
 - **Something else.** Run with the full log: `RUST_LOG=info just demo`, and look at the audit log in
   `~/.local/state/melissa/audit.jsonl`.
 

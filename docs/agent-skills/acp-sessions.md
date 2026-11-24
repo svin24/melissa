@@ -51,8 +51,8 @@ until the prompt returns a stop reason; `session/cancel` stops a turn. The agent
   {"melissa": {"type": "remote", "url": …, "headers": {}, "codemode": false}}, "model"?}` plus
   `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_DISABLE_CLAUDE_CODE=1`. The
   sandbox (`SandboxSpec::preset_opencode_managed`) does not bind `~/.config/opencode`, so a user config with
-  `allow` rules cannot merge in. (If you give your own `[backend.sandbox]` and bind your config, its permission
-  rules merge with Melissa's: avoid.)
+  `allow` rules cannot merge in. A `[backend.sandbox]` table builds on this managed preset. (If it binds your
+  config with `ro`, its permission rules merge with Melissa's: avoid.)
 - Cancel: `session/cancel` while a permission request waited → OpenCode sent `$/cancel_request` for it, then
   the prompt returned `cancelled`; the next prompt worked. Resume: `session/resume` with the Melissa-owned
   `~/.local/share/opencode` (database `opencode.db`, logs, snapshots) after a daemon restart kept context.

@@ -525,7 +525,12 @@ fn role_word(role: Role) -> &'static str {
     }
 }
 
-fn account_markup(ui: &Ui, viewer: &Viewer, flash: Option<(&str, Tone)>) -> Markup {
+fn account_markup(
+    ui: &Ui,
+    viewer: &Viewer,
+    flash: Option<(&str, Tone)>,
+    password_open: bool,
+) -> Markup {
     let auth = &ui.auth;
     let now = now();
     let sessions = auth.sessions(&viewer.person.id);
@@ -550,11 +555,22 @@ fn account_markup(ui: &Ui, viewer: &Viewer, flash: Option<(&str, Tone)>) -> Mark
         role: role_word(viewer.person.role),
         sessions: rows,
         flash,
+        password_open,
     })
 }
 
-async fn account_page(State(ui): State<Ui>, Extension(viewer): Extension<Viewer>) -> Response {
-    let region = account_markup(&ui, &viewer, None);
+/// `?password=1`: the Change password form shows (its button leads here).
+#[derive(Deserialize, Default)]
+pub(crate) struct AccountQuery {
+    password: Option<String>,
+}
+
+async fn account_page(
+    State(ui): State<Ui>,
+    Extension(viewer): Extension<Viewer>,
+    Query(q): Query<AccountQuery>,
+) -> Response {
+    let region = account_markup(&ui, &viewer, None, q.password.is_some());
     ui.framed(|f| crate::settings::pages::frame_at(f, "Account", None, region))
         .await
         .into_response()
@@ -623,7 +639,7 @@ async fn change_password(
         ),
         Err(e) => (e.clone(), Tone::Caution),
     };
-    let region = account_markup(&ui, &viewer, Some((&text, tone)));
+    let region = account_markup(&ui, &viewer, Some((&text, tone)), result.is_err());
     region_answer(
         &ui,
         &headers,
@@ -650,7 +666,7 @@ async fn revoke_session(
     } else {
         ("That session already ended.", Tone::Ok)
     };
-    let region = account_markup(&ui, &viewer, Some(flash));
+    let region = account_markup(&ui, &viewer, Some(flash), false);
     region_answer(&ui, &headers, "Account", "/settings/account", false, region).await
 }
 
@@ -734,7 +750,11 @@ fn people_markup(
 
 async fn people_page(State(ui): State<Ui>, Extension(viewer): Extension<Viewer>) -> Response {
     let region = people_markup(&ui.auth, &viewer, None, None);
-    ui.framed(|f| crate::settings::pages::frame_at(f, "People", None, region))
+    let head = crate::components::SettingsHead {
+        lead: Some("Who can sign in to this Melissa. Members join with an invite link."),
+        tools: None,
+    };
+    ui.framed(|f| crate::settings::pages::frame_head(f, "People", None, head, region))
         .await
         .into_response()
 }

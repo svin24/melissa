@@ -133,9 +133,13 @@ pub struct AcpSpec {
     /// Give the agent Melissa's tools (MCP over HTTP, passed in `session/new`).
     #[serde(default = "yes")]
     pub tools: bool,
-    /// Sandbox settings. Absent: the built-in preset for this command.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A whole sandbox set by code ([`AcpSpec::with_sandbox`]); never from the config file.
+    #[serde(skip)]
     pub sandbox: Option<SandboxSpec>,
+    /// `[backend.sandbox]`: changes to the built-in preset for this command
+    /// ([`sandbox::SandboxConfig`]).
+    #[serde(rename = "sandbox", default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_table: Option<sandbox::SandboxConfig>,
     /// Network access of the sandboxed agent: `proxy` (default: only the allowlisted hosts,
     /// through Melissa's egress proxy, plus Melissa's MCP endpoint), `learn` (every public
     /// host, logged), `none` (MCP only) or `host` (the unfiltered host network).
@@ -176,6 +180,7 @@ impl AcpSpec {
             args: args.iter().map(|a| (*a).to_string()).collect(),
             tools: true,
             sandbox: None,
+            sandbox_table: None,
             network: crate::egress::NetworkMode::default(),
             allow: None,
             record_dir: None,
@@ -224,15 +229,18 @@ impl AcpSpec {
     }
 
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        let mut spec = self.sandbox.clone().unwrap_or_else(|| match self.flavor {
-            // Melissa writes OpenCode's whole config; the user's own (which may allow
-            // tools without asking) stays hidden.
-            AcpFlavor::Opencode => SandboxSpec::preset_opencode_managed(),
-            _ => SandboxSpec::preset(&self.command),
-        });
-        spec.network = self.network;
-        spec.allow = self.allow.clone();
-        spec
+        sandbox::effective(
+            self.sandbox.as_ref(),
+            self.sandbox_table.as_ref(),
+            || match self.flavor {
+                // Melissa writes OpenCode's whole config; the user's own (which may allow
+                // tools without asking) stays hidden.
+                AcpFlavor::Opencode => SandboxSpec::preset_opencode_managed(),
+                _ => SandboxSpec::preset(&self.command),
+            },
+            self.network,
+            self.allow.clone(),
+        )
     }
 
     pub fn validate(&self) -> Result<(), SandboxError> {
@@ -256,6 +264,9 @@ impl AcpSpec {
             {
                 return Err(SandboxError::BadPath(store.clone()));
             }
+        }
+        if let Some(table) = &self.sandbox_table {
+            table.validate()?;
         }
         self.effective_sandbox().validate()
     }
@@ -375,8 +386,9 @@ impl AcpBackend {
             other => (flavor_env(other, &self.sandbox), open.mcp_servers.clone()),
         };
         let rw_dirs: Vec<std::path::PathBuf> = open.files_dir.iter().cloned().collect();
-        let (program_path, argv) = sandboxed_command(
+        let mut command = sandboxed_command(
             &self.sandbox,
+            open.sandbox_user.as_deref(),
             self.bwrap.as_deref(),
             self.home.as_deref(),
             &program,
@@ -388,14 +400,14 @@ impl AcpBackend {
             bridge,
             self.spec.args.clone(),
         )?;
-        let mut command = tokio::process::Command::new(&program_path);
         if !self.sandbox.enabled {
             // Provider settings first, so Melissa's own variables win.
-            command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
-            command.envs(env.iter().map(|(k, v)| (k, v)));
+            let c = command.command_mut();
+            c.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+            c.envs(env.iter().map(|(k, v)| (k, v)));
         }
-        let mut child = command
-            .args(argv)
+        command
+            .command_mut()
             .current_dir(&cwd)
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -404,9 +416,9 @@ impl AcpBackend {
             .stderr(Stdio::piped())
             // Dropping the session (task cancelled, timed out) kills the agent; under bwrap
             // that takes the whole sandbox (PID namespace) with it.
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| AgentError::Spawn {
+            .kill_on_drop(true);
+        let crate::sandbox::SandboxChild { mut child, cgroup } =
+            command.spawn().map_err(|source| AgentError::Spawn {
                 command: self.spec.command.clone(),
                 source,
             })?;
@@ -475,6 +487,8 @@ impl AcpBackend {
         let shutdown: client::Shutdown = Box::new(move || {
             Box::pin(async move {
                 stop().await;
+                // Kills anything left in the sandbox's cgroup and removes it.
+                drop(cgroup);
                 drop(lease);
             })
         });

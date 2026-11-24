@@ -40,6 +40,22 @@ let
 
 
   manifestsDir = "${cfg.package}/share/melissa/k3s/manifests";
+  gvisorDir = "${cfg.package}/share/melissa/k3s/gvisor";
+  # k3s's containerd template with the runsc runtime entry (the container's
+  # packaging/common/usr/lib/melissa/k3s/gvisor/config-v3.toml.tmpl, with store paths). Written as
+  # config-v3.toml.tmpl, the name k3s 1.37 (containerd 2) reads; nixpkgs' containerdConfigTemplate
+  # option writes config.toml.tmpl.
+  gvisorTemplate = pkgs.writeText "config-v3.toml.tmpl" ''
+    {{ template "base" . }}
+
+    # Melissa: gVisor for apps with isolation `gvisor` (RuntimeClass `gvisor`, handler `runsc`).
+    [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
+      runtime_type = "io.containerd.runsc.v1"
+
+    [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc.options]
+      TypeUrl = "io.containerd.runsc.v1.options"
+      ConfigPath = "${gvisorDir}/runsc.toml"
+  '';
   # Names from the shared source tree (no import-from-derivation); files from the package.
   manifestNames = builtins.attrNames (
     lib.filterAttrs (n: t: t == "regular" && lib.hasSuffix ".yaml" n) (
@@ -99,16 +115,6 @@ in
     };
 
     apps = {
-      catalog = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        visible = false;
-        description = ''
-          Deprecated, ignored: the app catalog was dropped (2026-11-19). Agents deploy any app
-          from a spec they write. Setting it only prints a warning.
-        '';
-      };
-
       addresses = lib.mkOption {
         type = lib.types.nullOr (lib.types.listOf lib.types.str);
         default = null;
@@ -175,6 +181,20 @@ in
         description = "Further image archives to import into k3s at start (`services.k3s.images`).";
       };
 
+      gvisor = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            gVisor for apps (docs/DECISIONS.md 2026-11-23): runsc and its containerd shim on k3s's
+            PATH, containerd's `runsc` runtime entry and the `gvisor` RuntimeClass. Apps run under it
+            by default (`isolation` in the app spec); without it those apps are not deployed (never
+            on the default runtime instead).
+          '';
+        };
+        package = lib.mkPackageOption pkgs "gvisor" { };
+      };
+
       nodeIp = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -234,8 +254,6 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        warnings = lib.optional (cfg.apps.catalog != null)
-          "services.melissa.apps.catalog is ignored: the app catalog was dropped (agents deploy any app from a spec). Remove the setting.";
         assertions = [
           {
             assertion = config.security.allowUserNamespaces;
@@ -249,6 +267,21 @@ in
           description = "Melissa server and its agents";
           inherit home;
           shell = "${pkgs.shadow}/bin/nologin";
+          # Agent users (crates/agent/src/sandbox/users.rs): each agent sandbox runs as its own host ids
+          # from this range, mapped by NixOS's newuidmap/newgidmap wrappers. 0x70000000: a block systemd's
+          # id layout leaves unused, clear of the automatic ranges of normal users.
+          subUidRanges = [
+            {
+              startUid = 1879048192;
+              count = 65536;
+            }
+          ];
+          subGidRanges = [
+            {
+              startGid = 1879048192;
+              count = 65536;
+            }
+          ];
         };
         users.groups.melissa = { };
         # May read the server's k3s kubeconfigs in /run/melissa-kube; only the server's unit has it.
@@ -270,6 +303,8 @@ in
             pkgs.bubblewrap
           ]
           ++ cfg.agents.packages
+          # runsc for the startup summary's gVisor line (k3s runs it, see below).
+          ++ lib.optional (cfg.k3s.enable && cfg.k3s.gvisor.enable) cfg.k3s.gvisor.package
           ++ [ "/run/current-system/sw" ];
           # The release file (version, revision, MELISSA_RUNTIME=nix) is in the store, not /usr.
           environment = {
@@ -316,7 +351,13 @@ in
                 target = "melissa-${name}";
               }
             ) manifestNames
-          );
+          )
+          // lib.optionalAttrs cfg.k3s.gvisor.enable {
+            melissa-gvisor-runtimeclass = {
+              source = "${gvisorDir}/runtimeclass.yaml";
+              target = "melissa-gvisor-runtimeclass.yaml";
+            };
+          };
           images = lib.optional cfg.k3s.airgapImages airgapImages ++ cfg.k3s.images;
         };
 
@@ -331,6 +372,13 @@ in
             lib.optional (config.services.k3s.environmentFile != null) config.services.k3s.environmentFile
             ++ [ "-/run/melissa-k3s/env" ]
           );
+        };
+
+        # gVisor: containerd (a child of k3s) finds containerd-shim-runsc-v1 and runsc on k3s's PATH.
+        systemd.services.k3s.path = lib.mkIf cfg.k3s.gvisor.enable [ cfg.k3s.gvisor.package ];
+        systemd.tmpfiles.settings."10-melissa-gvisor" = lib.mkIf cfg.k3s.gvisor.enable {
+          "/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl"."L+".argument =
+            "${gvisorTemplate}";
         };
 
         # Pods reach the API server and kubelet on the host through cni0 (the images' firewalld

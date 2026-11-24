@@ -66,6 +66,7 @@ async fn a_scheduled_turn_in_the_lead_chat_is_labelled_and_runs_unattended() {
     assert_eq!(
         shown,
         LeadEvent::UserMessage {
+            owner_msg: None,
             turn,
             text: "Update all apps.".into(),
             attachments: vec![],
@@ -158,6 +159,7 @@ async fn a_scheduled_job_wakes_its_agent_in_the_agents_own_chat() {
         .map(|r| r.event)
         .collect();
     assert!(events.contains(&LeadEvent::UserMessage {
+        owner_msg: None,
         turn: run.turn.unwrap(),
         text: "Check for updates.".into(),
         attachments: vec![],

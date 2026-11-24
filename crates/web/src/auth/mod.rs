@@ -146,6 +146,8 @@ const OWNER_PREFIXES: &[&str] = &[
     // Usage panel's views; members see the agents and devices at /usage).
     "/api/usage/providers",
     "/ui/usage",
+    // What agents said to each other (agent-to-agent threads).
+    "/api/threads",
 ];
 
 pub(crate) fn need(path: &str) -> Need {
@@ -475,10 +477,13 @@ async fn run_as(
         person: Some(viewer.person.clone()),
     };
     let id = viewer.person.id.clone();
+    let owner = viewer.person.is_owner();
     req.extensions_mut().insert(viewer);
     let fut = melissa_agent::AUDIT_PERSON.scope(audit_name.to_string(), next.run(req));
     // Whose message starts a turn, whose app an install is (`melissa.io/installed-for`).
     let fut = melissa_agent::PERSON_ID.scope(id, fut);
+    // Only the owner's own messages get an owner message id (cited as proof by agents).
+    let fut = melissa_agent::PERSON_IS_OWNER.scope(owner, fut);
     CURRENT.scope(current, fut).await
 }
 

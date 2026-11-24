@@ -159,7 +159,8 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   name hosts; `unsafe` or a new crate). Trade-offs: host-level only (telemetry on the API host, e.g.
   Anthropic's event endpoints, cannot be separated), and a CLI that ignores the proxy gets no network at all.
 - **2026-11-18 — `network` and `allow` are backend keys, not part of `[backend.sandbox]`.** Why: a sandbox table
-  replaces the whole preset (paths), so changing only the network would mean copying the preset. Repeated
+  replaced the whole preset (paths), so changing only the network would have meant copying the preset (no longer
+  so since 2026-11-23, see below). Repeated
   identical denials (grok retries telemetry ~40 times per prompt) are counted within 60 s and written as
   `(+N repeats)` with the next record or when the sandbox ends, so the audit stays readable and every attempt
   is still counted.
@@ -1753,6 +1754,214 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   owner asked for license, credits and a sponsor link in the app; nothing remote (no GitHub button or badge), so
   it works offline. Alternatives: the device menu (no room for the texts), one subpage per text (more clicks,
   more routes), a hand-written credits list (would drift from ACKNOWLEDGMENTS.md).
+- **2026-11-23 — Every agent sandbox runs under a seccomp deny-list (bwrap `--seccomp`), on by default.** Denied
+  syscalls return `EPERM` (not kill) so CLIs degrade instead of crashing; `clone3` returns `ENOSYS` (libc falls
+  back to `clone`, whose namespace flags the filter checks). Melissa writes the classic BPF itself in safe Rust
+  (one program for x86_64 and aarch64, tested with an in-test BPF interpreter and against libc's numbers);
+  `command-fds` hands it to bwrap as fd 3 from a sealed memfd. Other host architectures: no filter, a warning
+  (refusing would leave only "sandbox off"). `[backend.sandbox] seccomp = false` turns it off per backend. Why:
+  no agent CLI needs these calls, and they are where kernel escapes start. Alternatives: `seccompiler` (one arch
+  per program, a crate for ~150 lines), libseccomp (C library), clearing `FD_CLOEXEC` with rustix (leaks the fd
+  into every process spawned at the same time), an allow-list (breaks CLIs when they update).
+- **2026-11-23 — Agent sandboxes get resource limits through systemd cgroup delegation, placed before they run.**
+  `melissa-server.service` has `Delegate=memory pids cpu io`; at startup the server moves itself into a `server`
+  leaf (cgroup v2: no processes in a cgroup whose controllers are enabled for children), enables the controllers
+  and creates `sandboxes/`. Each sandbox gets its own child with `memory.max` 2 GiB, `memory.swap.max` 0,
+  `pids.max` 512, `cpu.max` 2 CPUs (per backend: `[backend.sandbox.limits]`), written as plain files in safe
+  Rust. bwrap runs with `--block-fd`: it makes its namespaces and waits before it forks or executes anything
+  inside; the server writes bwrap and its one child to `cgroup.procs`, then lets it go on. On exit:
+  `cgroup.kill`, `rmdir`, and a log line if the OOM killer or `pids.max` struck. No delegation (from source,
+  cgroup v1): agents run unlimited, logged once and shown in the startup summary. Why: one runaway or hostile
+  agent must not starve the box; Node CLIs need ~0.5-1.5 GB, so 2 GiB leaves room for their tools. Alternatives:
+  `systemd-run --scope -p MemoryMax=` per sandbox (needs the user bus or root and a systemd per deployment, a
+  process per spawn, and still races the first fork), `clone3(CLONE_INTO_CGROUP)` (needs unsafe), moving bwrap
+  after it starts without a gate (its child may already be outside), `setrlimit` (per-user, not per-sandbox,
+  no memory accounting for children).
+- **2026-11-23 — `[backend.sandbox]` changes the CLI's preset instead of replacing it.** The preset is the base;
+  `enabled` and `seccomp` replace its value when given, `limits` key by key (`LimitsOverride`), and `tmpfs`, `ro`,
+  `rw`, `env` add to its lists (no duplicates). `preset = false` starts from an empty home instead (the only way
+  to drop a preset path, a narrowing). An empty list is refused: under the old rule `rw = []` meant "no
+  credentials", and silently ignoring it would now widen that config; the error points at `preset = false`.
+  `allow` (a backend key) still replaces the built-in host list: replacing is how it narrows, and widening it
+  needs hosts written out. A sandbox set in code (`with_sandbox`, tests, provider variables) still wins whole.
+  Why: a table with only `limits` or `seccomp = false` dropped the credential binds and state tmpfs, so the CLI
+  lost its login (a footgun noted in the docs). Behaviour change: a config that narrowed by leaving preset paths
+  out of a non-empty list now gets them back; such configs need `preset = false`. Alternatives: lists replace
+  (adding one path means repeating the preset, which drifts when presets change), a separate `extra_ro` etc.
+  (more keys, same effect), a per-entry removal list (more surface than one switch).
+- **2026-11-23 — The server checks `vm.panic_on_oom` at startup and keeps the memory limit on.** Kernel
+  semantics (admin-guide/sysctl/vm.rst): 0 never panics; 1 panics only on a system-wide OOM, an OOM confined to a
+  memory cgroup just kills; 2 panics on every OOM, the cgroup's included. So 2 is dangerous always (an agent at
+  its `memory.max` takes the host down), 1 only when agents run without limits (a hog then causes a system-wide
+  OOM). Then the `Limits:` line says PROBLEM with the fix (`sysctl -w vm.panic_on_oom=0`, plus a sysctl.d file)
+  and the log warns once. The limit stays on: without it a hog still ends in an OOM (a panic under 1 and 2, the
+  OOM killer picking k3s or the server under 0), the pids and CPU limits are unaffected, and quietly loosening
+  the sandbox because of a host setting would be a surprise. Alternatives: drop `memory.max` under 2 (an agent
+  could then use all memory before the same panic), refuse to start (too harsh for a host the owner may not
+  control), set the sysctl ourselves (needs root; not the server's business).
+- **2026-11-23 — Every agent sandbox runs as its own host user, from the server's subordinate ids (agent users).**
+  Owner-approved design, the rootless-podman way (`crates/agent/src/sandbox/users.rs`, PLAN section 5
+  "Agent users", open question 97). Choices:
+  - *Namespace:* Melissa prepares the user namespace; bwrap never makes one. A holder (`unshare --user cat`)
+    creates it, `newuidmap`/`newgidmap` map root to a per-agent *setup id*, the agent's inside id (1000, or the
+    next id the server's own ids leave free) to the agent's host id, and the server's own uid/gid to themselves.
+    `nsenter --user=/proc/<holder>/ns/user --setuid 0 --setgid 0` then execs bwrap (explicit `--unshare-*`, no
+    `--unshare-all`) as root of that namespace: setup has capabilities there and, with the server's ids mapped,
+    can reach the server's 0700 directories it binds; `nsenter`'s `setgroups(0)` drops the server's
+    supplementary groups (`melissa`, `melissa-kube`: the kubeconfig group). bwrap keeps only `CAP_SETUID`,
+    `CAP_SETGID`, `CAP_SETPCAP` (`--cap-add`) for `setpriv`, the first program inside, which becomes the agent
+    (`--reuid/--regid 1000 --clear-groups --bounding-set -all --inh-caps -all`). The holder is dropped once
+    bwrap has joined. Rejected: bwrap `--userns FD` with `--uid` (works, but the server's supplementary groups
+    stay with the agent: bwrap never calls `setgroups`, and a process in the sandbox with those groups could
+    read the kubeconfig after an escape); bwrap `--userns-block-fd` (bwrap then never changes uid: the agent
+    would stay the server's user); the agent as root of its namespace (simplest, but uid 0 inside, a full
+    bounding set, and CLIs that refuse root); `unshare --map-users` (util-linux >= 2.39 syntax only).
+  - *Allocation:* two ids per agent (setup + agent) from the range, by file box key (`lead`, agent id;
+    `shared` for runs without an owner), in `<state>/agent-users.json`, never reused (agent ids are never
+    reused either; 32768 agents per 65536 ids). The table records the range starts; a changed range turns the
+    feature off rather than handing old files to new owners. One id per sandbox run was rejected: files would
+    outlive their owner id.
+  - *Files:* POSIX ACLs written directly as `system.posix_acl_*` xattrs (`sandbox/acl.rs`, rustix; no `setfacl`,
+    no `unsafe`). The workdir, file box and session store get `u:<agent>:rwx` plus a default ACL naming the
+    agent and the server (owner/group/other `---`), applied to the existing tree once (deepest first, never
+    following symlinks, only the server's own entries) and to new direct entries each run; credential and
+    config files bound from `$HOME`, the CLI binary, extra files and the bridge's sockets get a grant on the
+    file itself when "other" does not already cover it; the setup id gets search on the workdir (bwrap's
+    `--chdir`). Other agents are named nowhere, and every box is 0700. Rejected: chown to the agent through a
+    helper namespace (the server could then no longer read results without that helper), a shared group with
+    setgid directories (every agent would share it). Deleting an agent removes what it locked through a
+    namespace where the server is root and the agent's id is mapped (`rm -rf` as that root).
+  - *Inside:* bwrap makes missing parents of a bind 0700 and owns its tmpfs mounts, both as the setup id, so
+    each bind gets its parent as a `--dir` (0755) first, `/tmp` and `/var/tmp` are `01777`, and a CLI's state
+    tmpfs is `0777` (not sticky: `fs.protected_regular` would stop the CLI rewriting a credential file bound
+    into it). `/etc/passwd` and `/etc/group` are the host's with `agent` (uid/gid 1000) added, so git, `id`
+    and Node's `os.userInfo()` find the user; `safe.directory=*` comes through `GIT_CONFIG_*` (the server's
+    workdir is another user's inside).
+  - *Off:* without subordinate ids, the helpers (`newuidmap`, `newgidmap`, `unshare`, `nsenter`, `setpriv`),
+    ACLs on the state directory, when the server is root or has `no_new_privs`, when a trial mapping fails, or
+    with `MELISSA_AGENT_USERS=off`. Then sandboxes run as before, with one warning and `Agent users: off:
+    <why>` in the startup summary. `melissa-server.service` no longer sets `NoNewPrivileges=`: no_new_privs
+    disables newuidmap's file capabilities. The server runs no other setuid program, `melissa` has no sudo or
+    su rights, and every agent still has no_new_privs from bwrap. Both images give `melissa`
+    `1879048192:65536` (0x70000000, a block systemd's id layout leaves unused). In the container image
+    `newuidmap`/`newgidmap` are setuid root (shadow's classic install mode): Fedora's file capabilities do not
+    survive a rootless image build (found by `just escape-test-image`: "write to uid_map failed"); NixOS uses
+    its own capability wrappers.
+
+- **2026-11-23 — Settings slimmed: five owner decisions (owner, all as recommended).** Brief:
+  [design/SETTINGS-AUDIT-2026-11-23.md](design/SETTINGS-AUDIT-2026-11-23.md); boards: Penpot "Settings v3" (exports
+  `settings-v3/`, D1–D7, P1, P2). (1) **The section's title is only in the head bar** on every width: no
+  breadcrumb, no big h1, no repeated lead (`settings_frame_at`'s `h1.settings-here`; a page below a section reads
+  "Agents / Backup"). The head bar's right side holds the section's tools ("Checked just now · Check again", Add
+  provider, Add schedule, New helper, Check for updates; `SettingsHead`, refreshed after a swap by
+  `settings_tools_oob`). (2) **A section's description is at most one short line** above the first card
+  (`SettingsHead.lead`, hidden on phones), and only where it adds something. (3) **Big forms open behind a
+  button, in place**: Add schedule, Change password and Developer → New task are links to the same page with the
+  form open (`?add=1`, `?password=1`, `?task=new`; Cancel links back), so they work without script and never use
+  a browser dialog; a refused save keeps the form open. The form is a full-width row (`setting_row_full`), fields
+  at most 24rem, its submit the card's one primary button. (4) **A helper's settings are one card**: Name (inline
+  field + Save), Icon (a row that opens the picker), Pinned (a switch), Fresh start, Delete helper; when it was made
+  and what it runs on go in a quiet line below. (5) **Rows are 40px with one line and 56px with a description**
+  on desktop, controls 32px, disclosures 32px (44px under a finger); the phone's Settings list rows are 56px and
+  every row has a value. With them, the audit's fixes: one line per boundary (no disclosure line inside a card,
+  an extra part or a detail pane; rows inside a region get their divider), one card style (`setting_card`
+  everywhere in Settings, tables and forms inside it), the split card stacks by its own width (a container query,
+  below 640px: Providers at 768px), People's row actions behind one "⋯" (`row_menu`, the agent menu's native
+  popover), Delete/Remove/Sign out all in the quiet caution style (`action_button` takes the look), About in two
+  cards with "Show" rows (`setting_row_details`), inline code in Markdown wraps (About's credits scrolled sideways
+  at 390/320), and Settings opens with focus on the title, so the nav shows no ring. Why: the owner found Settings
+  "way too fat" with "double lines"; sections are 40–90% shorter (e.g. Account 826→260px, Schedules 1090→134px,
+  a helper 861→285px at 1440). Alternatives: a modal `dialog` for the forms (needs script; the owner asked for
+  the form in place), keeping the h1 and dropping only the breadcrumb (the title twice, 80px more above the
+  first card), buttons beside each person on desktop and "⋯" only on phones (two markups for one row).
+
+- **2026-11-23 — Modern Linux hosts only (owner).** Melissa supports Linux hosts with systemd as init, cgroup v2,
+  a current kernel (user namespaces, seccomp), nftables and KVM (owner: "don't worry about kvm, it exists
+everywhere modern hardware is"); nothing else. Why: "modern Linux devices with modern
+  Linux protocols and init systems like systemd tend to be the most secure systems", and the sandbox layers
+  (seccomp, cgroup delegation, agent users, gVisor) depend on them. Consequence: fallbacks kept only for older
+  hosts may become hard requirements in the container and NixOS installs; the from-source run keeps its warnings.
+  Alternatives: best-effort support for other init systems or cgroup v1 (more code paths, weaker defaults).
+
+- **2026-11-23 — gVisor is the first extra isolation for apps (owner: "let's try gvisor").** Prototype gVisor
+  (`runsc`) as a k3s RuntimeClass chosen per app, per docs/design/ISOLATION-RESEARCH-2026-11-23.md. Kata (needs
+  KVM) second; Nix-built services and bare microVMs parked.
+
+- **2026-11-23 — Apps run under gVisor by default; `isolation` in the app spec (built; the default is
+  provisional, owner to confirm).** Following "let's try gvisor": the spec's optional `isolation` is `gvisor`
+  or `standard` (`kata` reserved, unknown values refused). *Default:* every spec without the field gets
+  `gvisor`. The brief was "agent-built apps and images outside the trusted registries: gvisor; catalog/trusted
+  apps: standard", but Melissa has no catalog and no trusted-image or registry list any more (agents pick any
+  image), so the rule reduces to "gvisor unless the spec says standard"; the old catalog's Nextcloud
+  (`appspec::legacy`) says `standard`. The confirmation summary names the level in words
+  (`isolation: gVisor sandbox (its own kernel)` / `isolation: standard (shares the device's kernel)`; no new UI
+  component), the deployer stores the level it used with the spec (a later default change never moves a
+  running app; specs from before have no field and move to gVisor at their next confirmed update or
+  bring-back). *Fail closed:* a gVisor deploy reads the `gvisor` RuntimeClass first (melissa-apps may `get`
+  only that one) and applies nothing without it or with a handler other than `runsc`; admission refuses a
+  Deployment (melissa-apps-workloads) or any pod (new melissa-apps-isolation, every creator, app namespaces)
+  labelled `melissa.io/isolation=gvisor`, directly or through its namespace, without `runtimeClassName: gvisor`,
+  and any other RuntimeClass there; melissa-gvisor-runtimeclass keeps that class's handler `runsc` (the field
+  is immutable anyway; the policy covers a re-created class). *Runtime:* RuntimeClass `gvisor`, handler
+  `runsc`, `overhead` 48Mi/50m (Sentry memory counts against the pod). k3s 1.37 doesn't detect runsc, so the
+  container's `k3s-prepare` writes containerd's entry as `config-v3.toml.tmpl` (`{{ template "base" . }}` + the
+  runtime; left alone if someone else's) and the RuntimeClass manifest at every start, only when runsc and
+  `containerd-shim-runsc-v1` are on PATH; NixOS: `services.melissa.k3s.gvisor.enable` (default on), nixpkgs'
+  `gvisor`, the same template as the v3 file name (nixpkgs' `containerdConfigTemplate` writes the v2 name). The
+  image ships Google's static release-20261116.0 binaries (`gvisor.lock`: tarball sha512, LICENSE sha256;
+  runsc, the shim and runsc's `gvisor-bin/` sidecars, which it needs next to its real path since this
+  release; not the checkpoint, network-gofer and metrics binaries; ~118 MB unpacked). The startup summary says
+  `gVisor: on (runsc <version>)` / `off: <why>`. *Platform: systrap* (gVisor's default): no KVM needed, the
+  same on bare metal, in a VM and in the privileged container. KVM measured ~30% faster on the laptop (1M
+  one-byte syscalls 1.9 s vs 2.8 s; 300 fork+exec 0.97 s vs 1.35 s; native 0.23 s / 0.33 s) but hands the
+  Sentry `/dev/kvm` (the host's KVM module joins the attack surface) and is poor when the host is a VM; a
+  measured change in `runsc.toml` later. *Verified:* `just gvisor-test-image` (throwaway rootful container,
+  both levels through deploy_app + confirm: gVisor pod `/proc/version` `4.19.0-gvisor` and gVisor's dmesg
+  banner, standard pod the host kernel; probes; fail-closed paths) and the NixOS VM test. Cost measured
+  there (busybox `sleep`, image cached): pod replaced to Ready 1.7 s vs 1.3 s under runc; pod cgroup memory
+  16.1 MiB vs 0.7 MiB; first deploy to Ready 5.8 s incl. the image pull. Alternatives: opt-in
+  per app (the research's open question; weaker for unreviewed images), a trusted-registry list defaulting to
+  `standard` (none exists to base it on; easy to add later), silent fallback to runc when runsc is missing
+  (rejected: the label would lie). Honest framing: gVisor narrows the kernel surface; app-to-app network
+  isolation is still NetworkPolicy's job (unbuilt).
+- **2026-11-23 — Legacy catalog support removed (owner: "don't worry about legacy, there's no users. remove
+  it").** Gone: `melissa_appspec::legacy` (`from_catalog`, the built-in Nextcloud spec), the startup migration
+  of catalog installs (`migrate_catalog_apps`), rebuilding a spec from `melissa.io/config`, the shared
+  `<app>-secrets` Secret (`melissa.io/shared-secrets`), the ignored `[apps] catalog` setting (and the NixOS
+  option), and the old `install_app`/`list_catalog` words in the chat feed. Apps are deployed only from
+  specs (`deploy_app`); every spec without `isolation` gets gVisor, with no per-app or per-image exception
+  (the catalog's Nextcloud was the one `standard` spec). Tests keep a Nextcloud spec as a test-only fixture
+  (`crates/cluster/tests/fixtures/nextcloud.json`, no `isolation`). Why: no installs exist to migrate; less
+  code and no exception to the isolation default. Alternative: keep the migration for a while (nothing to
+  migrate).
+- **2026-11-24 — Versioning starts: Melissa is 0.0.2 (owner).** Every crate's `version` (crates/*/Cargo.toml) is
+  the release version; the image (`just container-build`, default from crates/server/Cargo.toml) and the Nix
+  package read it, so Settings → Updates shows it instead of `dev`. Bump all crates together.
+- **2026-11-24 — Helpers reach other agents only through the lead agent, both ways; the owner's own messages are
+  citable proof (owner).** Two owner decisions, keeping the 2026-11-18 rule (no direct helper-to-helper talk):
+  (1) A helper may now *start* a conversation with another agent, but only via the lead agent: the helper-only
+  tool `ask_lead {text, on_behalf_of?}` (`Tool::helper_only`: hidden from and refused to the lead agent) queues
+  the request for the lead agent as data from that helper (like a helper's report: a turn of its own, or queued
+  while she works; `MAX_AUTO_TURNS` still bounds turns in a row; a tainted helper taints her), audited
+  `agent.ask_lead`, at most 3 waiting per helper (refused beyond, audited). The lead decides and passes things
+  on with `message_agent`. Requested the same day (owner's reference screenshots): replies come back on their
+  own: when the lead passes a helper a message, the helper's reply in the turn that message started goes back to
+  the lead as data (`helper_report` with `message: reply`, audited `agent.brokered`), so lead→helper and
+  helper→lead→helper exchanges need no nudging from the owner. Every message is kept in a thread per pair of
+  agents (`<state>/threads/<a>__<b>.jsonl`: from, to, time, text, `data`/`relayed`), read-only to the owner
+  (`GET /api/threads`, `/api/threads/{a}/{b}`); an "A ⇄ B" view is UI work for Penpot first. (2) Requests that
+  need the owner's authority cite one of the owner's chat messages by id. Every message the owner types (signed in
+  as the owner, or the host's CLI) gets an owner message id (`m-` + 12 hex, random) stored with the message in the
+  transcript (`owner_msg`); agents see `[owner message m-…]` in front of it (not in the chat). Melissa verifies an
+  id only against those records (`AgentPool::verify_owner_message`), never against agent text, brokered text,
+  reports, scheduled instructions or tool results, so an agent can't forge one by writing it. Proof never
+  replaces approval: `ask_lead` shows the lead the owner's words ("verified") or says the claim failed; tools
+  that declare `Tool::owner_citation` refuse an unverifiable id and put the verified quote on their confirmation
+  (`Confirmation::owner_quote`, "You asked: “…”", shown in the card's existing consequence line), and the owner
+  still answers. Why: helpers need other agents' knowledge (an address, a port) without breaking isolation, and
+  "the owner asked for it" must be checkable rather than claimed. Alternatives: direct helper-to-helper messages
+  (rejected 2026-11-18: no single point that sees, audits and can refuse them); trusting an agent's word that the
+  owner asked (forgeable); signing messages (nothing to sign with: the agents run inside Melissa anyway).
 - **2026-11-24 — Per-app network permissions, enforced by NetworkPolicy (owner).** An app spec may carry
   `network: {internet?, lan?, links?: [{app, port?}]}`; absent = all off. Every app namespace gets three
   NetworkPolicies (`melissa-isolation`: default deny both ways, its own pods and DNS to kube-dns allowed;

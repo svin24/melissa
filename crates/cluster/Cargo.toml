@@ -1,6 +1,6 @@
 [package]
 name = "melissa-cluster"
-version = "0.0.1"
+version = "0.0.2"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
@@ -18,6 +18,10 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Paused time for wait_for_apps' tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

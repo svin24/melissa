@@ -6,7 +6,8 @@
 //! `melissa-apps` ServiceAccount the `melissa-app-workload` role in that namespace only, one
 //! Secret per generated secret, one PVC per volume (`local-path`), a single-replica Deployment
 //! with the `Recreate` strategy (never privileged, seccomp `RuntimeDefault`, no privilege
-//! escalation, limits always set), a ClusterIP Service and, for an app with a `web` port, a
+//! escalation, limits always set; under the `gvisor` RuntimeClass unless the spec's isolation
+//! is `standard`), a ClusterIP Service and, for an app with a `web` port, a
 //! Traefik Ingress for `<name>.<domain>`. Ports on the device (the web port and `public`
 //! ports, TCP or UDP) are one NodePort Service `<name>-port` with a stable port each from
 //! [`APP_PORTS`], recorded on the namespace ([`PORT_ANNOTATION`] for the web port,
@@ -14,10 +15,7 @@
 //! without any DNS. NetworkPolicies isolate the app and grant what its spec's `network`
 //! allows ([`network`]).
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
-};
+use std::{collections::BTreeMap, net::IpAddr};
 
 use k8s_openapi::{
     api::{
@@ -43,7 +41,7 @@ use k8s_openapi::{
 use kube::api::ObjectMeta;
 use melissa_agent::{migrate, tools::Owner};
 use melissa_appspec::{
-    namespace_of, AppSpec, Builtin, EnvSource, Protocol, Resources, FILES_VOLUME,
+    namespace_of, AppSpec, Builtin, EnvSource, Isolation, Protocol, Resources, FILES_VOLUME,
 };
 use sha2::{Digest, Sha256};
 
@@ -93,7 +91,7 @@ pub const ASSIGNED_AT_ANNOTATION: &str = "melissa.io/assigned-at";
 pub const LEGACY_OWNER_LABEL: &str = "melissa.io/owner";
 /// Annotations on the app's namespace, set at the first install and kept: who installed it
 /// (`the user`, `the lead agent (task 3)`, `agent Ada (d-….a1) (task 7)`), when (RFC 3339), and
-/// from where (`agent spec`; `catalog` for apps from before the catalog was dropped).
+/// from where (`spec`: an agent's app spec).
 pub const INSTALLED_BY_ANNOTATION: &str = "melissa.io/installed-by";
 pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
 /// Annotation on the app's namespace, set at the first install and kept: the signed-in person
@@ -103,9 +101,8 @@ pub const INSTALLED_AT_ANNOTATION: &str = "melissa.io/installed-at";
 /// the looking-after agent was made for, else "unknown".
 pub const INSTALLED_FOR_ANNOTATION: &str = "melissa.io/installed-for";
 pub const ORIGIN_ANNOTATION: &str = "melissa.io/origin";
-/// [`ORIGIN_ANNOTATION`] of apps deployed from an agent's spec, and of old catalog installs.
+/// [`ORIGIN_ANNOTATION`] of apps deployed from an agent's spec.
 pub const ORIGIN_SPEC: &str = "spec";
-pub const ORIGIN_CATALOG: &str = "catalog";
 /// Annotation on the namespace: the app's spec (compact JSON), as last deployed. Kept when
 /// the app is uninstalled with its data, so `deploy_app` can bring it back.
 pub const SPEC_ANNOTATION: &str = "melissa.io/spec";
@@ -116,10 +113,6 @@ pub const PORT_ANNOTATION: &str = "melissa.io/port";
 /// Annotation on the namespace: the other public ports, `name:nodeport/proto` separated by
 /// spaces (`game:30001/tcp voice:30002/udp`). A port keeps its NodePort across updates.
 pub const PORTS_ANNOTATION: &str = "melissa.io/ports";
-/// Annotation on the namespace: secret fields kept in the old shared Secret `<app>-secrets`
-/// (key = field name), space separated. Catalog installs only; everything else has one
-/// Secret per field ([`secret_object_name`]).
-pub const SHARED_SECRETS_ANNOTATION: &str = "melissa.io/shared-secrets";
 /// Ports Melissa gives apps. Inside k3s's NodePort range (30000-32767) and in the lower
 /// band (30000-30085) that Kubernetes keeps for static allocations, so automatically
 /// allocated NodePorts (e.g. Traefik's) avoid it. The admission policy
@@ -127,14 +120,20 @@ pub const SHARED_SECRETS_ANNOTATION: &str = "melissa.io/shared-secrets";
 pub const APP_PORTS: std::ops::RangeInclusive<u16> = 30000..=30079;
 /// Annotation on a stopped app's Deployment: the replica count `start_app` restores.
 pub const REPLICAS_BEFORE_STOP_ANNOTATION: &str = "melissa.io/replicas-before-stop";
-/// Annotation on Deployments from the catalog days: the resolved, non-secret config as JSON.
-/// Read once, to rebuild such an app's spec ([`melissa_appspec::legacy`]); never written.
-pub const CONFIG_ANNOTATION: &str = "melissa.io/config";
 /// Pod Security Standard enforced in app namespaces. `baseline` forbids privileged pods,
 /// host namespaces, hostPath volumes, host ports and added capabilities beyond a small
 /// default set, so the write identity can't reach the node.
 pub const POD_SECURITY_LEVEL: &str = "baseline";
 pub const STORAGE_CLASS: &str = "local-path";
+/// Label on the app's namespace and its pods: the spec's isolation level ([`Isolation`],
+/// `standard` | `gvisor`). The admission policy `melissa-apps-isolation` refuses a pod
+/// labelled (or in a namespace labelled) `gvisor` that would not run under
+/// [`GVISOR_RUNTIME_CLASS`], so a gVisor app never ends up on the default runtime.
+pub const ISOLATION_LABEL: &str = "melissa.io/isolation";
+/// The RuntimeClass of `gvisor` apps (k3s manifest `gvisor-runtimeclass.yaml`, installed only
+/// where runsc is) and the containerd runtime handler it names.
+pub const GVISOR_RUNTIME_CLASS: &str = "gvisor";
+pub const GVISOR_HANDLER: &str = "runsc";
 pub const INGRESS_CLASS: &str = "traefik";
 
 /// Everything one deploy applies, in apply order.
@@ -171,8 +170,6 @@ pub struct Placement<'a> {
     pub stopped_from: Option<i32>,
     /// The device's addresses and host name (builtin `device_hosts`, after the ingress host).
     pub hosts: &'a [String],
-    /// Secret fields kept in the shared `<app>-secrets` Secret (catalog installs).
-    pub shared_secrets: &'a BTreeSet<String>,
     /// The spec's links, resolved against the other apps' specs (see [`network`]).
     pub links: &'a [LinkPorts],
     /// This device's own addresses: no app's egress reaches them.
@@ -180,7 +177,6 @@ pub struct Placement<'a> {
 }
 
 static NO_PORTS: BTreeMap<String, u16> = BTreeMap::new();
-static NO_SECRETS: BTreeSet<String> = BTreeSet::new();
 
 impl<'a> Placement<'a> {
     /// Running, without device ports.
@@ -191,7 +187,6 @@ impl<'a> Placement<'a> {
             recorded_web_port: None,
             stopped_from: None,
             hosts: &[],
-            shared_secrets: &NO_SECRETS,
             links: &[],
             device_addresses: &[],
         }
@@ -212,14 +207,10 @@ pub fn port_service_name(app: &str) -> String {
     format!("{app}-port")
 }
 
-/// The Secret object that holds secret field `field` of app `app`: its own
-/// `<app>-secret-<field>` (`_` → `-`), or the shared `<app>-secrets` of a catalog install.
-pub fn secret_object_name(app: &str, field: &str, shared: &BTreeSet<String>) -> String {
-    if shared.contains(field) {
-        melissa_appspec::secret_name(app)
-    } else {
-        format!("{app}-secret-{}", field.replace('_', "-"))
-    }
+/// The Secret object that holds secret field `field` of app `app`: `<app>-secret-<field>`
+/// (`_` → `-`).
+pub fn secret_object_name(app: &str, field: &str) -> String {
+    format!("{app}-secret-{}", field.replace('_', "-"))
 }
 
 /// One generated Secret: what [`secret_object`] needs besides the value.
@@ -268,6 +259,14 @@ fn labels(app: &str, spec: &AppSpec) -> BTreeMap<String, String> {
         l.insert("app.kubernetes.io/version".into(), v);
     }
     l
+}
+
+/// The RuntimeClass a pod at `level` runs under (None: the node's default, runc).
+pub fn runtime_class(level: Isolation) -> Option<&'static str> {
+    match level {
+        Isolation::Standard => None,
+        Isolation::Gvisor => Some(GVISOR_RUNTIME_CLASS),
+    }
 }
 
 /// Label values: at most 63 of `[A-Za-z0-9._-]`, alphanumeric at both ends.
@@ -483,6 +482,7 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
             "latest".into(),
         ),
         ("app.kubernetes.io/managed-by".into(), "melissa".into()),
+        (ISOLATION_LABEL.into(), spec.isolation().as_str().into()),
     ]);
     let mut ns_annotations = BTreeMap::from([(SPEC_ANNOTATION.to_string(), spec.to_text())]);
     let web_port = spec
@@ -504,17 +504,6 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
         .collect();
     if !others.is_empty() {
         ns_annotations.insert(PORTS_ANNOTATION.into(), others.join(" "));
-    }
-    if !placement.shared_secrets.is_empty() {
-        ns_annotations.insert(
-            SHARED_SECRETS_ANNOTATION.into(),
-            placement
-                .shared_secrets
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
     }
     let namespace = Namespace {
         metadata: ObjectMeta {
@@ -546,7 +535,7 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
         .into_iter()
         .map(|(key, length)| SecretPlan {
             namespace: ns.clone(),
-            name: secret_object_name(app, &key, placement.shared_secrets),
+            name: secret_object_name(app, &key),
             key,
             length,
             labels: labels(app, spec),
@@ -649,6 +638,8 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
         });
     }
 
+    let mut pod_labels = labels(app, spec);
+    pod_labels.insert(ISOLATION_LABEL.into(), spec.isolation().as_str().into());
     let mut deploy_meta = meta(app, spec, app);
     if let Some(n) = placement.stopped_from {
         deploy_meta.annotations = Some(BTreeMap::from([(
@@ -676,13 +667,16 @@ pub fn render(app: &str, spec: &AppSpec, placement: &Placement<'_>) -> AppObject
             },
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
-                    labels: Some(labels(app, spec)),
+                    labels: Some(pod_labels),
                     annotations: files_hash
                         .map(|h| BTreeMap::from([(FILES_HASH_ANNOTATION.to_string(), h)])),
                     ..ObjectMeta::default()
                 }),
                 spec: Some(PodSpec {
                     containers,
+                    // Never a silent fallback: a missing RuntimeClass makes the API refuse the
+                    // pod (and the deployer checks for it first).
+                    runtime_class_name: runtime_class(spec.isolation()).map(String::from),
                     volumes: (!pod_volumes.is_empty()).then_some(pod_volumes),
                     // Apps never talk to the Kubernetes API.
                     automount_service_account_token: Some(false),
@@ -835,7 +829,7 @@ fn container(
                     None,
                     Some(EnvVarSource {
                         secret_key_ref: Some(SecretKeySelector {
-                            name: secret_object_name(app, f, placement.shared_secrets),
+                            name: secret_object_name(app, f),
                             key: f.to_string(),
                             optional: Some(false),
                         }),

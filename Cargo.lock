@@ -266,6 +266,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "cfg_aliases"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
 name = "chacha20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -296,6 +302,17 @@ checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "command-fds"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
+dependencies = [
+ "nix",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1254,11 +1271,12 @@ dependencies = [
 
 [[package]]
 name = "melissa-agent"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
  "bytes",
+ "command-fds",
  "croner",
  "futures",
  "http-body-util",
@@ -1266,18 +1284,20 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jiff",
+ "libc",
  "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+ "toml",
  "tracing",
 ]
 
 [[package]]
 name = "melissa-appspec"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1286,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-auth"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1299,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-cluster"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "futures",
  "k8s-openapi",
@@ -1316,11 +1336,11 @@ dependencies = [
 
 [[package]]
 name = "melissa-device"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "melissa-server"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "http-body-util",
@@ -1345,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-settings"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "melissa-agent",
  "melissa-auth",
@@ -1361,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-voice"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bytes",
  "futures",
@@ -1377,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-web"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "axum",
  "futures",
@@ -1455,6 +1475,18 @@ name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
+
+[[package]]
+name = "nix"
+version = "0.31.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
 
 [[package]]
 name = "nohash-hasher"

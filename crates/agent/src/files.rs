@@ -879,11 +879,8 @@ impl FileBoxes {
         let count = self.list(owner).len();
         lock(&self.inner.boxes).remove(&key);
         let dir = self.inner.root.join("boxes").join(&key);
-        match fs::remove_dir_all(&dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
+        // The agent's own files in it may be locked against the server (agent users).
+        crate::sandbox::users::remove_dir_all(&dir, &key)?;
         match fs::remove_file(self.index_path(&key)) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}

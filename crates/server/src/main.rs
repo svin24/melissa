@@ -287,12 +287,6 @@ async fn main() -> anyhow::Result<()> {
     let provider_file = load_providers(&providers_path);
     let facts = config.apply_providers(&provider_file);
     config.validate()?;
-    if config.apps.catalog.is_some() && matches!(command, Command::Serve { .. }) {
-        tracing::warn!(
-            "[apps] catalog is ignored: the app catalog was dropped (agents deploy any app); \
-             remove the setting"
-        );
-    }
 
     let socket = client::socket_path(&dirs.scratch);
     let api = client::Client::new(&socket);
@@ -368,6 +362,14 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Serve { .. } | Command::Tool { .. } => {}
+    }
+    // Resource limits for agent sandboxes: take over the delegated cgroup (Delegate= in
+    // melissa-server.service) before any other process starts; logs once if that is not possible.
+    if matches!(command, Command::Serve { .. }) {
+        melissa_agent::sandbox::limits::init();
+        // Agent users: each sandbox as its own host user (subordinate ids, newuidmap); logs once
+        // if that is not possible here.
+        melissa_agent::sandbox::users::init(&dirs.state);
     }
 
     let audit = AuditLog::new(dirs.state.join("audit.jsonl"));
@@ -531,18 +533,6 @@ async fn relabel_old_namespaces(workspaces: Arc<Workspaces>) {
                 break;
             }
             Err(e) => tracing::debug!("app namespace labels not migrated yet: {e}"),
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-    }
-    // Apps from the old catalog get their spec stored, so update_app works on them.
-    loop {
-        match workspaces.migrate_catalog_apps().await {
-            Ok(0) => return,
-            Ok(n) => {
-                tracing::info!(apps = n, "stored specs for apps from the old catalog");
-                return;
-            }
-            Err(e) => tracing::debug!("catalog apps not converted yet: {e}"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
@@ -1433,9 +1423,9 @@ mod tests {
         let (_, cmd) = parse(&["tool", "device_info", r#"{"a":1}"#]).unwrap();
         assert!(matches!(cmd, Command::Tool { args, .. } if args["a"] == 1));
         assert!(parse(&["tool", "x", "not json"]).is_err());
-        let (_, cmd) = parse(&["tool", "--wait", "install_app", r#"{"app":"nextcloud"}"#]).unwrap();
+        let (_, cmd) = parse(&["tool", "--wait", "deploy_app", r#"{"app":"nextcloud"}"#]).unwrap();
         assert!(
-            matches!(cmd, Command::ToolWait { name, args } if name == "install_app" && args["app"] == "nextcloud")
+            matches!(cmd, Command::ToolWait { name, args } if name == "deploy_app" && args["app"] == "nextcloud")
         );
         assert!(matches!(
             parse(&["tool", "--wait", "app_status"]).unwrap().1,

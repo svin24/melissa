@@ -31,7 +31,7 @@ mod usage;
 mod workspace;
 
 use axum::{
-    extract::{Form, FromRef, Path, Request, State},
+    extract::{Form, FromRef, Path, Query, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
@@ -213,15 +213,22 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::R
     .await
 }
 
-async fn dashboard(State(t): State<Tasks>) -> Markup {
+/// `?task=new` on Settings → Developer: the New task form shows (opened in place).
+#[derive(serde::Deserialize, Default)]
+struct DashboardQuery {
+    task: Option<String>,
+}
+
+async fn dashboard(State(t): State<Tasks>, Query(q): Query<DashboardQuery>) -> Markup {
     let (backends, tasks) = (t.board.backends(), t.board.list());
+    let new_task = q.task.as_deref() == Some("new");
     match &t.ui {
         Some(ui) => {
             let prefs = ui.settings.prefs();
-            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, prefs))
+            ui.framed(|f| pages::dashboard(Some(f), &backends, &tasks, prefs, new_task))
                 .await
         }
-        None => pages::dashboard(None, &backends, &tasks, Default::default()),
+        None => pages::dashboard(None, &backends, &tasks, Default::default(), true),
     }
 }
 
@@ -1725,6 +1732,7 @@ mod tests {
             let (app, lead) = app_with(Some(fx.settings(HostKind::Other, false)));
             for e in [
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "Hi".into(),
                     attachments: vec![],
@@ -2972,6 +2980,7 @@ mod tests {
 
             // A conversation with a tool call and a pending confirmation.
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Install <b>Immich</b>".into(),
                 attachments: vec![],
@@ -2986,14 +2995,14 @@ mod tests {
             });
             let (c, _rx) = lead.confirmations().request(
                 1,
-                "install_app",
+                "deploy_app",
                 &serde_json::json!({"app": "immich"}),
                 "this task has read untrusted content",
             );
             lead.events().push(LeadEvent::ConfirmationNeeded {
                 id: c.id,
                 task: 1,
-                tool: "install_app".into(),
+                tool: "deploy_app".into(),
                 reason: c.reason.clone(),
                 agent: None,
             });
@@ -3005,7 +3014,7 @@ mod tests {
                 "agent ids never reach the DOM: the steps card has our own key"
             );
             assert!(!body.contains("onclick"));
-            assert!(body.contains("Install Immich?"));
+            assert!(body.contains("Set up Immich?"));
             assert!(body.contains(&format!("hx-post=\"/ui/confirmations/{}/approve\"", c.id)));
             assert!(body.contains(">Install jellyfin</textarea>"));
             assert!(body.contains("sse-connect=\"/ui/stream?since=3&amp;epoch="));
@@ -3383,8 +3392,8 @@ mod tests {
             assert!(agents < chat && chat < system);
             assert!(body.contains("data-keywords=\"Keep files for file boxes expired\""));
             assert!(body.matches("<svg class=\"glyph\"").count() >= 8);
-            // Breadcrumb and the current section.
-            assert!(body.contains("<li aria-current=\"page\">Files</li>"));
+            // The title in the head bar and the current section.
+            assert!(body.contains("<h1 class=\"settings-here\" tabindex=\"-1\">Files</h1>"));
             assert!(body.contains("href=\"/settings/files\" aria-current=\"page\""));
             // The row pattern: title, description, control.
             assert!(body.contains("<div class=\"setting-row\" data-setting>"));
@@ -3474,6 +3483,7 @@ mod tests {
                         assigned_by: None,
                         assigned_at: None,
                         legacy_owner: None,
+                        deleting: false,
                     }])
                 })
             }
@@ -3762,7 +3772,7 @@ mod tests {
             let remove = format!("/ui/settings/permissions/{}/remove", rules[0].id);
             let (status, _, html) = send(&app, htmx_post(&remove, "")).await;
             assert_eq!(status, StatusCode::OK);
-            assert!(html.contains("Nothing yet."));
+            assert!(html.contains("Nothing yet"));
             assert!(lead.server().registry().permissions().rules().is_empty());
         }
 
@@ -3857,6 +3867,7 @@ mod tests {
             let (app, lead) = app();
             for e in [
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "Hi".into(),
                     attachments: vec![],
@@ -4003,8 +4014,12 @@ mod tests {
             let sched = lead.start_schedules(Schedules::in_memory(TimeZone::UTC));
             let (status, _, body) = get_html(&app, "/settings/schedules").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("Nothing scheduled yet."));
+            assert!(body.contains("Nothing scheduled yet"));
             assert!(body.contains("href=\"/settings/schedules\""));
+            // The form opens behind Add schedule (2026-11-23).
+            assert!(!body.contains("action=\"/ui/settings/schedules\""));
+            assert!(body.contains("href=\"/settings/schedules?add=1\""));
+            let (_, _, body) = get_html(&app, "/settings/schedules?add=1").await;
             assert!(body.contains("action=\"/ui/settings/schedules\""));
 
             let form = "name=Nightly+updates&agent=lead&instruction=Update+all+apps.\
@@ -4040,7 +4055,7 @@ mod tests {
             assert_eq!((s.cron.as_str(), s.max_minutes), ("30 4 * * 1", 90));
 
             let (_, _, html) = send(&app, htmx_post(&format!("{edit}/enabled"), "")).await;
-            assert!(html.contains(">Off<"), "{html}");
+            assert!(html.contains("Next: Off"), "{html}");
             assert!(!sched.schedules().get(made.id).unwrap().enabled);
 
             // Run now works while off; the chat shows the instruction with its label.
@@ -4770,8 +4785,10 @@ mod tests {
                 );
             }
             let (_, _, body) = get_html(&app, task.as_str()).await;
-            // Breadcrumb: Settings / Developer (a link) / Task #n.
-            assert!(body.contains("<a href=\"/settings/developer\">Developer</a>"));
+            // The head bar: Developer (a link) / Task #n.
+            assert!(body.contains(
+                "<a class=\"settings-parent\" href=\"/settings/developer\">Developer</a>"
+            ));
             assert!(body.contains("<title>Task #") && body.contains("Developer · Settings"));
             // Every Settings page lists the Developer section.
             let (_, _, body) = get_html(&app, "/settings/updates").await;
@@ -4833,6 +4850,7 @@ mod tests {
         async fn a_fresh_start_keeps_the_one_chat_and_old_archives_stay_readable() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi <there>".into(),
                 attachments: vec![],
@@ -4954,6 +4972,7 @@ mod tests {
             let (app, lead) = app();
             for i in 0..100 {
                 lead.events().push(LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: i + 1,
                     text: format!("message number {i}."),
                     attachments: vec![],
@@ -4996,6 +5015,7 @@ mod tests {
             // A longer chat: pages in the middle link both ways, a page at most PAGE_ENTRIES.
             for i in 100..300 {
                 lead.events().push(LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: i + 1,
                     text: format!("message number {i}."),
                     attachments: vec![],
@@ -5030,6 +5050,7 @@ mod tests {
         async fn a_stream_from_another_epoch_reloads() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
@@ -5077,6 +5098,7 @@ mod tests {
         async fn the_stream_sends_rendered_updates() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
@@ -5159,6 +5181,7 @@ mod tests {
                 .unwrap();
             let mut body = res.into_body();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
@@ -5166,20 +5189,20 @@ mod tests {
             });
             let (c, _rx) = lead.confirmations().request(
                 1,
-                "install_app",
+                "deploy_app",
                 &serde_json::json!({"app": "immich"}),
                 "because",
             );
             lead.events().push(LeadEvent::ConfirmationNeeded {
                 id: c.id,
                 task: 1,
-                tool: "install_app".into(),
+                tool: "deploy_app".into(),
                 reason: "because".into(),
                 agent: None,
             });
             let frame = next_frame(&mut body).await;
             assert!(!frame.contains("Hi"), "{frame}");
-            assert!(frame.contains("Install Immich?"));
+            assert!(frame.contains("Set up Immich?"));
             // The sidebar's groups follow (Melissa needs the user now).
             assert!(
                 frame.contains("id=\"agent-groups\" hx-swap-oob=\"true\""),
@@ -5597,6 +5620,7 @@ mod tests {
                         assigned_by: None,
                         assigned_at: None,
                         legacy_owner: None,
+                        deleting: false,
                     }])
                 })
             }

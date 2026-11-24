@@ -1,0 +1,20 @@
+# Melissa: the RuntimeClass of apps with isolation `gvisor` (the default for agent specs; docs/DECISIONS.md
+# 2026-11-23). Installed as a k3s deploy-on-start manifest only where gVisor is: k3s-prepare (container)
+# when runsc and containerd-shim-runsc-v1 are on PATH, the NixOS module when services.melissa.k3s.gvisor
+# is on. Without it the API refuses gVisor pods and the server refuses gVisor deploys: never a fallback
+# to runc. The handler `runsc` is containerd's runtime entry from config-v3.toml.tmpl (next to this).
+# The admission policy melissa-gvisor-runtimeclass (apps-rbac.yaml) keeps the handler runsc.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+  labels:
+    app.kubernetes.io/managed-by: melissa
+handler: runsc
+# What a gVisor sandbox costs on top of the containers (Sentry and gofer, about 30 MiB idle, measured
+# 2026-11-23). Added to the pod's cgroup limits and to scheduling, so the Sentry's memory counts
+# against the pod, not the node.
+overhead:
+  podFixed:
+    memory: "48Mi"
+    cpu: "50m"

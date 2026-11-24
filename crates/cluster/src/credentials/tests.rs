@@ -6,11 +6,10 @@ use k8s_openapi::api::{
     networking::v1::Ingress,
 };
 use kube::api::ObjectMeta;
-use melissa_appspec::legacy;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::*;
-use crate::{apps::LogRequest, render::SPEC_ANNOTATION};
+use crate::{apps::LogRequest, fixtures::nextcloud, render::SPEC_ANNOTATION};
 
 /// One app namespace in memory, and what was done to it.
 #[derive(Default)]
@@ -90,6 +89,12 @@ impl AppRead for Fake {
         _: &'a str,
         _: &'a LogRequest,
     ) -> BoxFuture<'a, Result<String, ClusterError>> {
+        unused()
+    }
+    fn runtime_class_handler<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, ClusterError>> {
         unused()
     }
 }
@@ -187,10 +192,6 @@ impl SecretReader for Fake {
                 .map(SetupPassword::new))
         })
     }
-}
-
-fn nextcloud() -> AppSpec {
-    legacy::nextcloud(&Map::new())
 }
 
 fn creds(fake: &Arc<Fake>) -> AppCredentials {

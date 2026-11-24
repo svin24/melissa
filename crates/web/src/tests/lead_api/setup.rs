@@ -269,7 +269,7 @@ async fn the_owner_renames_the_device_in_settings() {
     let (status, _, page) = send(&b.app, as_get(&b.owner, "/settings/updates")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        page.contains("Device name") && page.contains("Save name"),
+        page.contains("Device name") && page.contains(">Save</button>"),
         "{page}"
     );
     assert!(page.contains("action=\"/ui/settings/device-name\""));

@@ -7,7 +7,8 @@ host starts it through a Quadlet, so `systemctl start|stop|status melissa` works
 Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files on top of
 `packaging/common/`, e.g. the Settings → Providers Install/Sign-in units and their polkit rule
 `51-melissa-agent-install.rules`), `melissa.container` (Quadlet template), `install.sh`, `uninstall.sh`,
-`host/` (the update helper and its path unit, installed on the host).
+`host/` (the update helper and its path unit, installed on the host), `escape-test.sh` and
+`Containerfile.escape-test` (the sandbox escape suite inside the image; see "Release gate").
 
 ## Requirements
 - Linux with systemd, cgroup v2 (all of cpu, cpuset, io, memory, pids), podman 5 or newer, root.
@@ -240,10 +241,47 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
   image labels; Settings shows them with the image digest from the helper (or the image name and ID from
   `/run/.containerenv` without it).
 
+## Release gate (sandbox escape suite)
+An image is releasable only after the sandbox escape suite (docs/agent-skills/sandbox-escape-tests.md) passed
+**inside it**:
+
+```sh
+just container-build            # localhost/melissa:dev from the current commit
+just escape-test-image          # or: just escape-test-image localhost/melissa:<tag>
+```
+
+`escape-test.sh` builds the Containerfile's `escape-build` stage (the suite's test binary and the test-only
+probe helper; the image itself never contains them, its lint checks that), adds them under
+`/opt/melissa-escape` to a throwaway copy of the image with k3s and the server masked, copies that into root's
+storage, boots it like the Quadlet (rootful, `--privileged --systemd=always`, podman's network, no published
+ports, container name `melissa-escape-test`, so an installed `melissa` keeps running) and runs the suite as
+`melissa` with the server unit's hardening. Needs sudo. Output: the probe table and
+`target/escape-test-image.log`.
+
+On a pass, and only when the image's revision label is the commit the suite was built from (no local changes
+under `crates/`), it tags the image `localhost/melissa:escape-tested`. Any run on an image first removes that
+tag from it, so a failing run revokes an earlier pass. There is no publish step yet; whatever pushes images
+later must push only `:escape-tested` (PLAN open question 95).
+
+## gVisor for apps
+Apps run under gVisor by default (the app spec's `isolation`, docs/agent-skills/app-deploy.md): the image
+carries runsc and its containerd shim (`gvisor.lock`, about 120 MB unpacked), and `k3s-prepare` gives k3s the
+`runsc` runtime and the `gvisor` RuntimeClass at every start. Nothing to set up on the host: the systrap
+platform needs no KVM. The startup summary (`journalctl -u melissa-server` inside) says `gVisor: on (runsc
+release-…)`. Check an image end to end, next to an installed `melissa` (own name, volume and tag; no ports;
+removed afterwards; needs sudo and the network for a busybox image):
+
+```sh
+just container-build
+just gvisor-test-image          # or: just gvisor-test-image localhost/melissa:<tag>
+```
+
 ## Security
 - `--privileged` rootful: the container has **root on the host**. k3s needs mounts, netfilter and network
   namespaces; the agent sandbox needs nested namespaces. Inside, the server runs as the unprivileged
-  `melissa` user and each agent in its own bubblewrap sandbox with an egress proxy.
+  `melissa` user and each agent in its own bubblewrap sandbox with an egress proxy, as its own host user
+  from `melissa`'s subordinate ids (`/etc/subuid`: `melissa:1879048192:65536`, set in the image; agent users,
+  DECISIONS). With rootful podman those ids are the host's own: no host user has them.
 - SELinux reads as disabled inside (k3s `selinux: false`); the host confines the container as podman does.
 - The update channel carries three fixed words as file names; the host helper takes no arguments from
   the container.

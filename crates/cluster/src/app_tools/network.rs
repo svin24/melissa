@@ -273,7 +273,14 @@ pub(crate) struct NetworkChange {
     pub remove: Vec<Link>,
 }
 
-const CHANGE_ARGS: &[&str] = &["app", "internet", "lan", "add_links", "remove_links"];
+const CHANGE_ARGS: &[&str] = &[
+    "app",
+    "internet",
+    "lan",
+    "add_links",
+    "remove_links",
+    "on_behalf_of",
+];
 
 fn links_arg(args: &Map<String, Value>, key: &str) -> Result<Vec<Link>, ToolError> {
     match args.get(key) {
@@ -427,9 +434,7 @@ pub(crate) async fn network_view(read: &dyn AppRead, app: &str) -> Result<Value,
         .await
         .map_err(failed)?
         .ok_or_else(|| ToolError::Failed(format!("`{app}` is not installed")))?;
-    let deployment = read.deployment(app).await.map_err(failed)?;
-    let spec = stored_spec(app, &ns, deployment.as_ref())
-        .ok_or_else(|| ToolError::Failed(format!("`{app}` has no spec")))?;
+    let spec = stored_spec(&ns).ok_or_else(|| ToolError::Failed(format!("`{app}` has no spec")))?;
     let network = spec.network_or_default();
     // Every other app's spec, once.
     let mut others: BTreeMap<String, AppSpec> = BTreeMap::new();
@@ -558,8 +563,7 @@ impl SetAppNetwork {
         if is_terminating(&ns) {
             return Err(ToolError::Failed(format!("`{app}` is being deleted")));
         }
-        let deployment = read.deployment(&app).await.map_err(failed)?;
-        let mut spec = stored_spec(&app, &ns, deployment.as_ref()).ok_or_else(|| {
+        let mut spec = stored_spec(&ns).ok_or_else(|| {
             ToolError::Failed(format!(
                 "`{app}` has no spec to change (update_app sets one)"
             ))
@@ -635,6 +639,7 @@ impl Tool for SetAppNetwork {
                     "lan": {"type": "boolean", "description": "Allow (true) or block (false) devices on the home network"},
                     "add_links": {"type": "array", "items": {"type": "object", "properties": {"app": {"type": "string"}, "port": {"type": "string"}}, "required": ["app"], "additionalProperties": false}},
                     "remove_links": {"type": "array", "items": {"type": "object", "properties": {"app": {"type": "string"}, "port": {"type": "string"}}, "required": ["app"], "additionalProperties": false}},
+                    "on_behalf_of": {"type": "string", "description": "The owner message id (m-…) this change carries out, if the owner asked for it: quoted on the owner's card (it never replaces the owner's yes)."},
                 },
                 "required": ["app"],
                 "additionalProperties": false,
@@ -661,6 +666,12 @@ impl Tool for SetAppNetwork {
 
     fn check_args(&self, args: &Value) -> Result<(), ToolError> {
         change_args(args).map(|_| ())
+    }
+
+    fn owner_citation(&self) -> Option<&'static str> {
+        // The owner's own request, quoted on the card ("You asked: …"); the owner still
+        // answers it (the registry checks the id: a made-up one is refused).
+        Some("on_behalf_of")
     }
 
     fn owner_approval(&self, ctx: &TaskContext, _: &Value) -> Result<Option<String>, ToolError> {

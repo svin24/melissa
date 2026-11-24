@@ -6,7 +6,8 @@
 #   nix run .#checks.x86_64-linux.melissa-nixos.driverInteractive   (debug: start_all(), ...)
 #
 # Checked: the server starts, the UI answers on loopback only, an echo chat turn, the sandbox and
-# egress integration tests as the `melissa` user (bwrap, own netns, netbridge, proxy), a
+# egress integration tests and the escape suite (required) as the `melissa` user (bwrap, own netns,
+# netbridge, proxy, seccomp; kernel probes through melissa-escape-probe), a
 # vendor-style binary (/lib64 loader) running in the sandbox through nix-ld, k3s Ready, Melissa's
 # RBAC and admission policies applied, an app deployed from a spec (deploy_app) whose NodePort
 # answers from the LAN, stop/start of the app, Settings → Providers writing providers.toml, Settings'
@@ -60,6 +61,10 @@ pkgs.testers.runNixOSTest {
         cores = 4;
         diskSize = 8192;
       };
+      # The test driver defaults to vm.panic_on_oom = 2 (panic on any OOM), which turns the escape
+      # suite's memory probe (an OOM inside its own 256 MiB cgroup) into a kernel panic. 0 is the
+      # kernel's and NixOS's normal default.
+      boot.kernel.sysctl."vm.panic_on_oom" = 0;
       services.melissa = {
         enable = true;
         apps = {
@@ -127,6 +132,8 @@ pkgs.testers.runNixOSTest {
     def tool(name, args, confirm=False):
         body = shlex.quote(json.dumps(args))
         out = "/tmp/tool-" + name + ".json"
+        # A second call of the same tool must not read the first one's result.
+        server.succeed(f"rm -f {out} {out}.done")
         server.succeed(
             f"(curl -sS {SOCK}--max-time 600 -H 'Content-Type: application/json' -X POST -d {body} "
             f"http://localhost/api/tools/{name} > {out}; echo done >> {out}.done) >/dev/null 2>&1 &"
@@ -154,6 +161,18 @@ pkgs.testers.runNixOSTest {
         server.succeed("systemctl show -p User --value melissa-server | grep -qx melissa")
         server.succeed("stat -c '%U %a' /etc/melissa | grep -qx 'melissa 750'")
 
+    with subtest("agent sandboxes get resource limits (delegated cgroup)"):
+        cg = "/sys/fs/cgroup/system.slice/melissa-server.service"
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'agent sandboxes get resource limits'")
+        # The server moved itself into server/; the unit's own cgroup holds no process.
+        server.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
+        server.succeed(f"grep -qx \"$(systemctl show -p MainPID --value melissa-server)\" {cg}/server/cgroup.procs")
+        server.succeed(f"grep -qw memory {cg}/sandboxes/cgroup.subtree_control")
+
+    with subtest("agent sandboxes run as their own host users (subordinate ids)"):
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'agent sandboxes run as their own host users'")
+        server.succeed("grep -qx 'melissa:1879048192:65536' /etc/subuid")
+
     with subtest("chat turn on the echo backend"):
         rc, out = server.execute("melissa-server ask 'hello from nixos' 2>&1")
         print(out)
@@ -161,7 +180,7 @@ pkgs.testers.runNixOSTest {
             print(server.execute("journalctl -u melissa-server --no-pager | tail -40")[1])
             raise Exception("no echo reply")
 
-    with subtest("sandbox and egress integration tests as the melissa user"):
+    with subtest("sandbox, egress and escape integration tests as the melissa user"):
         env = (
             "env PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin HOME=/var/lib/melissa/home TMPDIR=/tmp "
             "MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
@@ -170,6 +189,30 @@ pkgs.testers.runNixOSTest {
             out = server.succeed(f"cd /tmp && runuser -u melissa -- {env} melissa-it-{t} --nocapture --test-threads=1 2>&1")
             print(out)
             assert "test result: ok" in out and "SKIP" not in out, out
+        # The escape suite (crates/agent/tests/escape.rs): required, so a missing bwrap or probe helper
+        # fails; its scene in the melissa user's state directory. Like the server unit it runs with
+        # cgroup delegation; the shell moves into a `runner` leaf and hands the delegated cgroup to the
+        # suite (MELISSA_TEST_CGROUP), as `just escape-test` does, so the `limits.*` probes run.
+        suite = (
+            'cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup); '
+            'mkdir -p "$cg/runner" && printf 0 > "$cg/runner/cgroup.procs" && export MELISSA_TEST_CGROUP="$cg"; '
+            "exec ${tests}/bin/melissa-it-escape --nocapture --test-threads=1"
+        )
+        out = server.succeed(
+            "systemd-run --quiet --wait --pipe --collect --service-type=exec "
+            "-p User=melissa -p Group=melissa -p 'Delegate=memory pids cpu io' "
+            "-p WorkingDirectory=/tmp "
+            "-E PATH=${pkgs.bubblewrap}/bin:/run/current-system/sw/bin -E HOME=/var/lib/melissa/home -E TMPDIR=/tmp "
+            "-E MELISSA_NETBRIDGE=${melissa}/bin/melissa-netbridge "
+            "-E MELISSA_ESCAPE_REQUIRED=1 -E MELISSA_ESCAPE_PROBE=${tests}/bin/melissa-escape-probe "
+            "-E MELISSA_ESCAPE_DIR=/var/lib/melissa/escape-test "
+            f"/run/current-system/sw/bin/bash -c '{suite}' 2>&1"
+        )
+        print(out)
+        assert "test result: ok" in out and "SKIP" not in out, out
+        assert "probes:" in out and " 0 fail," in out, out
+        assert "Resource limits: on" in out, out
+        assert "Agent users: on" in out, out
 
     with subtest("vendor-style binary in the sandbox through nix-ld"):
         server.succeed(
@@ -238,6 +281,35 @@ pkgs.testers.runNixOSTest {
         client.wait_until_succeeds(f"curl -sSf --max-time 5 http://${serverIp}:{port}/ | grep -q 'hello from a melissa app'", timeout=120)
         status = tool("app_status", {"app": "hello"})
         assert "http://${serverIp}:" + port in json.dumps(status), status
+
+    with subtest("gVisor: the default isolation runs apps in their own kernel; standard doesn't"):
+        server.succeed("journalctl -u melissa-server --no-pager | grep -q 'gVisor:   on (runsc '")
+        assert kubectl("get runtimeclass gvisor -o jsonpath='{.handler}'").strip() == "runsc"
+        # `hello` has no `isolation`: gVisor, stored explicitly; its kernel is gVisor's.
+        assert kubectl("-n app-hello get deploy hello -o jsonpath='{.spec.template.spec.runtimeClassName}'").strip() == "gvisor"
+        assert kubectl("get ns app-hello -o jsonpath='{.metadata.labels.melissa\\.io/isolation}'").strip() == "gvisor"
+        # gVisor's own kernel: not the VM's /proc/version (nixpkgs' gvisor says `4.4.0`, newer
+        # releases `4.19.0-gvisor`), and gVisor's boot banner in dmesg.
+        host_version = server.succeed("cat /proc/version").strip()
+        out = tool("app_exec", {"app": "hello", "command": ["cat", "/proc/version"]}, confirm=True)
+        assert out["result"]["stdout"].strip() != host_version, out
+        out = tool("app_exec", {"app": "hello", "command": ["dmesg"]}, confirm=True)
+        assert "Starting gVisor" in out["result"]["stdout"], out
+        # The same image as `standard`: the device's kernel.
+        std = dict(spec, isolation="standard")
+        res = tool("deploy_app", {"app": "plain", "spec": std}, confirm=True)
+        if "error" in res:
+            raise Exception(res)
+        server.wait_until_succeeds("k3s kubectl -n app-plain rollout status deploy --timeout=10s", timeout=240)
+        out = tool("app_exec", {"app": "plain", "command": ["cat", "/proc/version"]}, confirm=True)
+        assert out["result"]["stdout"].strip() == host_version, out
+        # Fail closed: a pod labelled gvisor without the RuntimeClass is refused by admission.
+        out = server.fail(
+            "k3s kubectl -n app-plain run probe --image=docker.io/melissa-test/hello:1 "
+            "--labels=melissa.io/isolation=gvisor --restart=Never 2>&1"
+        )
+        assert "only under the gvisor RuntimeClass" in out, out
+        tool("uninstall_app", {"app": "plain", "delete_data": True}, confirm=True)
 
     with subtest("stop and start the app"):
         tool("stop_app", {"app": "hello"}, confirm=True)

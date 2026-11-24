@@ -8,6 +8,8 @@
 #   lib/systemd/system/melissa-server.service              the shared unit, ExecStart in the store
 #   lib/tmpfiles.d/melissa-{config,home,kube}.conf        the shared tmpfiles rules
 #   share/melissa/k3s/manifests/*.yaml                    RBAC, admission policies, Traefik config
+#   share/melissa/k3s/gvisor/                             gVisor RuntimeClass, runsc.toml (the module
+#                                                         writes its own containerd template)
 #   share/polkit-1/rules.d/50-melissa.rules               lets the server restart itself (Settings)
 #   lib/melissa/release                                   MELISSA_VERSION/REVISION, MELISSA_RUNTIME=nix
 #                                                         (the server reads it via MELISSA_RELEASE_FILE)
@@ -120,6 +122,7 @@ stdenvNoCC.mkDerivation {
     # Copies, not links: the sandbox bind-mounts melissa-netbridge, and bwrap can't mount on a symlink.
     install -m0755 -t $out/bin ${bins}/bin/*
     install -Dm0644 -t $out/share/melissa/k3s/manifests ${root + "/usr/lib/melissa/k3s/manifests"}/*.yaml
+    install -Dm0644 -t $out/share/melissa/k3s/gvisor ${root + "/usr/lib/melissa/k3s/gvisor"}/*
     install -Dm0644 ${root + "/usr/share/polkit-1/rules.d/50-melissa.rules"} \
       $out/share/polkit-1/rules.d/50-melissa.rules
     for f in melissa-config melissa-home melissa-kube; do

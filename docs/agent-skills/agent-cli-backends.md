@@ -60,6 +60,40 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 - `--unshare-all --die-with-parent --new-session --cap-drop ALL --hostname melissa-agent --clearenv`.
   Env: HOME, PATH (`<binary dir>:/usr/bin`), NO_COLOR, TERM, plus USER/LOGNAME/LANG/LC_ALL/TZ if set and the
   names in `sandbox.env`.
+- **Seccomp (since 2026-11-23):** `--seccomp 3`; the program (`crates/agent/src/sandbox/seccomp.rs`) arrives as
+  fd 3 of bwrap via `sandbox::pass_seccomp` (sealed memfd, `command-fds`), which every spawner must call on the
+  `bwrap` command; bwrap closes it before the CLI starts. Denied with `EPERM`: ptrace, `process_vm_*`,
+  `pidfd_getfd`, mount/umount/pivot_root/chroot and the new mount API, `setns`, `clone`/`unshare` with namespace
+  flags, kexec, kernel modules, reboot, swap, acct, quotas, syslog, clock setting, `iopl`/`ioperm`, bpf,
+  perf_event_open, userfaultfd, io_uring, keyrings, lookup_dcookie, file-handle calls, uselib, `_sysctl`,
+  `personality` other than Docker's allowed values. `clone3` → `ENOSYS`. Verified: node 24 (child process,
+  worker thread, files), bun 1.4, a Go binary, claude/grok/opencode `--version`; integration test
+  `seccomp_denies_escape_syscalls_and_keeps_the_rest`. Off per backend: `sandbox = { seccomp = false }`.
+- **Resource limits (since 2026-11-23):** where the server's cgroup is delegated (`melissa-server.service`,
+  `Delegate=`; `sandbox::limits::init` at startup), every sandbox gets its own cgroup with `memory.max` 2 GiB,
+  `memory.swap.max` 0, `pids.max` 512, `cpu.max` 2 CPUs, optional `io.weight`. `--block-fd 4` makes bwrap wait
+  until `SandboxCommand::spawn` has moved it and its child into the cgroup; keep the returned
+  `SandboxChild::cgroup` until the CLI has exited (dropping it kills what is left and removes the cgroup).
+  So spawn through `sandbox::spawn_command()` → `SandboxCommand::spawn()`, never the inner command's own
+  `spawn`. Per backend:
+  ```toml
+  [backend.sandbox.limits]
+  memory = "3G"   # or "max"
+  swap = "0"
+  pids = 1024
+  cpus = 1.5      # or "max"
+  io_weight = 50  # 1-10000, only where the io controller is delegated
+  enabled = false # this backend runs without limits
+  ```
+  Without delegation: no limits, one warning, `Limits: off` in the startup summary.
+- **Agent users (since 2026-11-23):** where the server's user has subordinate ids, every sandbox runs as its
+  agent's own host uid/gid (`crates/agent/src/sandbox/users.rs`; DECISIONS "Agent users"): `nsenter` starts
+  bwrap in a user namespace Melissa mapped with `newuidmap`, and `setpriv` (first program inside) becomes uid
+  1000 `agent`. Pass the owner with `OpenSession::sandbox_user` (the file box key) or `sandboxed_command`'s
+  `user`; `None` is the shared user. What a sandbox binds must be readable by that id: workdir, file box and
+  session store get ACLs automatically, files from `ro`/`rw` get a grant on the file, **directories** from
+  `ro`/`rw` are bound as they are (readable by others or not at all). A CLI that needs a writable
+  directory in `$HOME` should get it as `tmpfs` (0777 inside, the agent's) rather than `rw`.
 - **Network (since 2026-11-18): own namespace, deny-by-default.** `melissa-netbridge` runs first and gives the
   CLI an HTTPS proxy on 127.0.0.1:3128 (allowlisted hosts only) and Melissa's MCP endpoint at the lead agent's own
   address; no resolver inside. Per-backend `network = "proxy"|"learn"|"none"|"host"` and `allow = [...]`.
@@ -75,9 +109,14 @@ Every CLI backend runs under `bwrap` by default; the echo backend is in-process 
 | Grok     | `~/.grok/downloads/grok-<ver>-linux-x86_64` (via `~/.grok/bin/grok`, static) | tmpfs `~/.grok`; rw `~/.grok/auth.json`; ro `~/.grok/config.toml`. |
 | OpenCode | `~/.opencode/bin/opencode`                         | ro `~/.config/opencode/opencode.json{,c}` (since 2026-11-18 not the whole dir: it also holds `service.json`, a local server password, and plugins; tmpfs `~/.config/opencode` around them); tmpfs `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode`; rw `~/.local/share/opencode/auth.json` if present (not present on the laptop: free default model). `opencode-acp`: same without the user's config files (Melissa writes the config). |
 
-- Config: `[backend.sandbox]` with `enabled`, `tmpfs`, `ro`, `rw` (paths relative to `$HOME`, no `..`), `env`
-  (names to pass through). Absent table = preset for the command's file name; a given table replaces the preset.
-  `sandbox = { enabled = false }` runs the CLI unsandboxed.
+- Config: `[backend.sandbox]` with `enabled`, `seccomp` (default true), `limits` (table, above), `tmpfs`, `ro`, `rw` (paths relative to `$HOME`, no `..`), `env`
+  (names to pass through), `preset` (default true). Since 2026-11-23 the table changes the preset for the
+  command's file name instead of replacing it (`SandboxConfig`): `enabled`/`seccomp` replace the preset's value,
+  `limits` key by key, and the lists **add** to the preset's (no duplicates), so `[backend.sandbox.limits]` or
+  `seccomp = false` alone keeps the credential binds. An empty list (`rw = []`) is refused: it would change
+  nothing. To drop preset paths (e.g. use an API key instead of the OAuth file) set `preset = false`; the lists
+  are then exactly what the table says. `network`/`allow` stay backend keys (`allow` replaces the built-in host
+  list). `sandbox = { enabled = false }` runs the CLI unsandboxed.
 - Integration test `crates/agent/tests/sandbox.rs`: fake HOME secret unreadable, writes outside the workdir fail,
   inside succeed, host env not leaked, cancel kills a `setsid` background grandchild. Skips if bwrap is missing.
 
@@ -123,7 +162,6 @@ ACP opencode: `flavor = "opencode"`, optional `model = "provider/model"`.
 
 ## Next (ideas, unverified)
 - Typed events: done for session backends (`crate::session`: ACP and Claude stream-json).
-- seccomp filter (bwrap `--seccomp`) to drop rarely needed syscalls (ptrace, keyctl, mount APIs).
 - Melissa-owned CLI logins (e.g. `CLAUDE_CONFIG_DIR` under `~/.local/share/melissa`) instead of binding the
   user's credential files.
 - Check each CLI's terms allow being driven by Melissa (PLAN open question).

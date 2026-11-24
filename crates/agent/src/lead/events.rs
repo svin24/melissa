@@ -37,15 +37,28 @@ pub enum LeadEvent {
         /// labels it "Scheduled: <name>"); None for a message someone typed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scheduled: Option<String>,
+        /// The owner message id (`m-…`) when the owner typed this message (signed in as the
+        /// owner, or the host's CLI): agents see it in front of the message and may cite it
+        /// as proof of what the owner asked ([`crate::tools::owner`]). None for everyone
+        /// else's messages, brokered ones, scheduled ones and transcripts from before
+        /// 2026-11-24. Not shown in the chat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_msg: Option<String>,
     },
     /// A helper's job ended and its report starts a turn of the lead agent (instead of a
     /// user message; the report itself goes to the agent as data, not into the chat).
     /// `status`: `succeeded`, `failed` or `cancelled`, like [`LeadEvent::AgentFinished`].
+    ///
+    /// `message` (since 2026-11-24): not a job's end but a message from the helper for the
+    /// lead agent, as data: `ask` (the helper's `ask_lead`) or `reply` (its answer to a
+    /// message the lead agent passed it). The feed says "Message from <name>".
     HelperReport {
         turn: TurnId,
         agent: String,
         name: String,
         status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     /// Only in memory (a daemon restart drops the queue): a message waits for the running
     /// turn to end. `from`: `user`, `lead` (a message the lead agent passed on) or `helper`

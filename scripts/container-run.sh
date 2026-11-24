@@ -197,10 +197,17 @@ smoke() {
     targs() { in_ctr kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q checkNewVersion=false; }
     wait_for 300 "Traefik update check disabled" targs && pass "Traefik update check disabled" || fail=1
     for p in melissa-apps-namespaces melissa-apps-rolebindings melissa-apps-services \
-             melissa-apps-workloads melissa-apps-volumes; do
+             melissa-apps-workloads melissa-apps-volumes melissa-apps-isolation \
+             melissa-gvisor-runtimeclass; do
         in_ctr kubectl get validatingadmissionpolicybinding "$p" >/dev/null 2>&1 \
             && pass "admission policy $p bound" || bad "admission policy $p missing"
     done
+    # gVisor (the default isolation for apps): RuntimeClass and containerd entry (just gvisor-test-image
+    # deploys apps under it).
+    if [ "$(in_ctr kubectl get runtimeclass gvisor -o jsonpath='{.handler}' 2>/dev/null)" = runsc ] \
+        && in_ctr grep -q 'containerd.runtimes.runsc' /var/lib/rancher/k3s/agent/etc/containerd/config.toml; then
+        pass "gVisor: RuntimeClass gvisor (runsc) and containerd's runsc entry ($(in_ctr runsc --version | head -1))"
+    else bad "gVisor: no RuntimeClass gvisor or no runsc entry in containerd's config"; fi
     wait_for 120 "melissa-kubeconfig" in_ctr test -s /run/melissa-kube/apps.kubeconfig || fail=1
     local k=(kubectl --kubeconfig /run/melissa-kube/apps.kubeconfig)
     [ "$(in_ctr "${k[@]}" auth can-i create pods -n kube-system 2>/dev/null)" = no ] \

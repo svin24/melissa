@@ -355,6 +355,12 @@ Tokens: `chip.{tone}.{bg|text|border}`, `chip.height`, `chip.font-size`.
 Sizes: `size.row.md` 40 (one line), `size.row.lg` 56 (two lines); padding-inline `space.3`; hairline between
 rows only inside cards, never around the list (space groups).
 
+Settings (built 2026-11-23, owner decisions in DECISIONS.md): a setting card has no padding of its own; its rows
+pad `space.1`/`space.4` with the text `space.1` more above and below, so one line is 40 and title + description 56
+with a 32px control. One hairline between rows, none from a child: a `details` disclosure inside a card, an
+extra part or a detail pane draws no line and its summary is `size.control.md` (44 under a finger). A form opened
+in a card is a full-width row with fields at most 24rem. The phone's Settings list rows are `size.row.lg`.
+
 | State | Look |
 |---|---|
 | hover (links only) | `bg.hover` |

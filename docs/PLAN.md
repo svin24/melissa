@@ -31,7 +31,10 @@ a lead agent. Until 2026-11-19 these were bee terms (hive, comb, queen, bee, cel
 contributors aren't confused, with a migration for existing installs (DECISIONS.md, 2026-11-19).
 **Status (2026-11-18):** the code follows the model on one device: `crates/device`, device/agent ids, persistent named
 agents with their own resumable sessions, workspaces owned by agents (namespace labels + admission), reassign only by the
-lead agent with the user's yes or by the user, user chat with any agent, agent-to-agent only via the lead agent. Since
+lead agent with the user's yes or by the user, user chat with any agent, agent-to-agent only via the lead agent (since
+2026-11-24 both ways: helpers ask her with `ask_lead`, answers to her `message_agent` come back on their own, every
+exchange is kept per pair of agents, and the owner's own messages carry ids agents cite as proof, verified by
+Melissa, never replacing the owner's yes; DECISIONS 2026-11-24). Since
 2026-11-20 new apps are always created by a helper: the lead agent hands "make/install/set up X" to one (`create_agent`
 with its first `job`, or `give_agent_job`) and its own `deploy_app` of a new app is refused (AGENT-MODEL rule 10). Mapping table in
 AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `lead-loop.md`. Multi-device is M3.
@@ -42,6 +45,12 @@ AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `
 > **rootful podman container** started by systemd (Quadlet). A **Nix-packaged service** (flake, systemd units) is a
 > parallel track under `packaging/nix/`. The bootc OS images, VM tooling and release disk are removed from the
 > repo and preserved at git tag `bootc-archive-2026-11-19` (see "Reference distro (paused)" below).
+
+> **Supported hosts (2026-11-23, owner):** modern Linux only: systemd as init, cgroup v2 (unified), a current
+> kernel with user namespaces and seccomp, nftables, and KVM (assumed present on modern hardware). No SysV/OpenRC/runit hosts, no cgroup v1, no
+> non-Linux. These hosts are the most secure, and Melissa's hardening (seccomp, cgroup limits, agent users,
+> gVisor) relies on them. Fallbacks that only exist for older hosts can become hard requirements in installed
+> modes (from source keeps warnings for development).
 
 - **Layout:** `packaging/common/` holds the host-agnostic system files every packaging installs (lead agent and k3s
   units, kubeconfig helper, sysusers/tmpfiles, k3s config and manifests, polkit rule, `melissa-setup`,
@@ -131,9 +140,17 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   server-side applied by a second identity, `melissa/melissa-apps`, whose writes admission policies pin to
   `app-*` workspace namespaces with Pod Security baseline, never privileged or on the host (no Secret reads
   anywhere). Every deploy and update is confirmed by the user with a summary of what runs. Tools: `deploy_app`,
-  `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`. The old
-  catalog's Nextcloud keeps running and is converted to a stored spec at startup. Details:
+  `update_app`, `list_apps`, `app_status`, `wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`.
+  Support for apps from the old catalog was removed 2026-11-23 (no users). Details:
   `docs/agent-skills/app-deploy.md`.
+- **Isolation (2026-11-23, DECISIONS):** apps run under **gVisor** (`runsc`, RuntimeClass `gvisor`, platform
+  systrap) by default: the spec's `isolation` is `gvisor` (default) or `standard` (runc, the device's kernel;
+  for host devices or apps that fail under gVisor), `kata` reserved. No trusted-image list exists, so every
+  spec without `isolation` gets gVisor, with no per-app or per-image exception. The confirmation names the level,
+  the deployer stores it with the spec and fails closed (no RuntimeClass: nothing applied); admission policies
+  refuse gVisor-labelled pods without the class. Image: pinned runsc + shim (`gvisor.lock`), containerd entry
+  and RuntimeClass from `k3s-prepare`; NixOS: `k3s.gvisor.enable`. `just gvisor-test-image` checks it.
+  Details: `docs/agent-skills/app-deploy.md` ("Isolation").
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).
 - **App links (2026-11-19):** by default `http://<device address>:<port>`: an app's web port and each public
   TCP/UDP port get their own NodePort from 30000-30079 (`<app>-port` Service, recorded in `melissa.io/port` and
@@ -186,8 +203,65 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   read-only `/usr` and `/etc`, private `/tmp`, empty read-only home with only the CLI's credential file(s), the
   task workdir as the only writable host path (plus, for the lead agent and agents, their own file box, since
   2026-11-20), own PID/user/IPC/UTS namespaces, no capabilities, dies with the
-  lead agent's task. Verified with claude (incl. MCP tool calls), grok and opencode. Next: seccomp, Melissa-owned
-  CLI logins.
+  lead agent's task. Verified with claude (incl. MCP tool calls), grok and opencode. **Seccomp (2026-11-23):**
+  every sandbox also runs under a deny-list filter (`sandbox/seccomp.rs`, bwrap `--seccomp`, x86_64 and
+  aarch64): ptrace and cross-process memory, mounts and the new mount API, `setns`, `clone`/`unshare` with
+  namespace flags (no nested user namespaces), kernel modules, kexec, bpf, perf events, io_uring, userfaultfd,
+  keyrings, file-handle lookups, clock and host administration calls fail with `EPERM`; `clone3` gets `ENOSYS` so
+  libc falls back to `clone`; other ABIs (i386, x32, arm32) get nothing. Node, Bun, Go and the CLIs run
+  unchanged (verified). On by default; `[backend.sandbox] seccomp = false` turns it off for one backend.
+  **Resource limits (2026-11-23):** every sandbox runs in its own cgroup v2 (`sandbox/limits.rs`) with
+  `memory.max` 2 GiB, `memory.swap.max` 0, `pids.max` 512 and `cpu.max` 2 CPUs by default (optional `io.weight`),
+  per backend in `[backend.sandbox.limits]`. `melissa-server.service` has `Delegate=memory pids cpu io`; the
+  server moves itself into `server/`, each sandbox gets `sandboxes/agent-<pid>-<n>/`; bwrap waits on
+  `--block-fd` until it and its child are inside, so nothing in the sandbox ever runs outside its cgroup. On
+  exit the cgroup is killed (`cgroup.kill`) and removed; OOM kills and refused forks are logged. Without
+  delegation (from source, cgroup v1) agents run unlimited, with one warning and a `Limits: off` line in the
+  startup summary. `vm.panic_on_oom = 2` (or 1 with limits off) is reported there as a PROBLEM and logged: an
+  agent's OOM would panic the host; the limit stays on. Verified with the real server in a delegated user scope;
+  the escape suite's `limits.*` probes (fork bomb, memory hog, CPU hog) check the cgroup counters.
+  **Config (2026-11-23):** `[backend.sandbox]` changes the CLI's preset key by key (`limits` too) and its lists
+  add to the preset's; `preset = false` starts from an empty home. Next: Melissa-owned CLI logins.
+  **Agent users (2026-11-23):** every sandbox runs as its agent's own host uid/gid (`sandbox/users.rs`, the
+  rootless-podman way): `melissa` has subordinate ids (`/etc/subuid`, `/etc/subgid`: 1879048192, 65536 on
+  both images); each agent (and the lead, and one shared user for owner-less runs) gets two of them for good
+  (`<state>/agent-users.json`): its own, and a setup id only bwrap runs as. A holder (`unshare --user`) makes
+  the user namespace, shadow-utils' `newuidmap`/`newgidmap` map it, `nsenter` starts bwrap in it (which drops
+  the server's supplementary groups, e.g. `melissa-kube`), and `setpriv` is the first program inside: the
+  agent is uid 1000 there, with no groups, capabilities or bounding set. Files: POSIX ACLs let the agent's id
+  into its workdir, file box and session store (default ACLs name the server too, so it still reads and
+  removes what the agent makes) and into the credential/config files bound from `$HOME`; deleting an agent
+  removes what it locked through a namespace where the server is root. Off (today's behaviour, one warning,
+  `Agent users: off: <why>` in the startup summary) without subordinate ids, the helpers, ACLs, under
+  `no_new_privs`, or with `MELISSA_AGENT_USERS=off`. `melissa-server.service` dropped `NoNewPrivileges=`
+  for it. Verified on Fedora (claude, grok, opencode, git, a credential refresh) and by the escape suite's
+  `users.*` probes. Open items: question 97.
+- **Escape suite (2026-11-23):** `just escape-test` runs real escape attempts inside the real sandbox (bwrap +
+  egress namespace + bridge, built with `SandboxPlan` and spawned through `sandbox::spawn_command()`, the backends' one spawn path;
+  `crates/agent/tests/escape.rs`, probes in `tests/escape/probes.rs`): filesystem (writes to `/usr`, `/etc`,
+  `$HOME`, outside the workdir, the state dir and other file boxes; reads of host canaries, `permissions.json`,
+  the files index, other boxes; symlinks, `..` and `/proc/<pid>/root` out; root-owned setuid files), processes
+  (host PIDs, signals, `/proc/*/environ`, dying with the parent), privileges (capabilities, `no_new_privs`,
+  setuid binaries), network (interfaces/routes, direct TCP to the host's loopback and LAN and 203.0.113.1, DNS,
+  the proxy refusing non-allowlisted and private targets, the MCP bridge), IPC (abstract sockets, host service
+  sockets), devices, and kernel surface (`unshare -U`, `mount`, `ptrace`, `keyctl`, `bpf`, `perf_event_open`).
+  Controls prove the denials are not vacuous; a probe that cannot run says "skip", one with no verdict fails.
+  Kernel-surface probes are hard checks with the filter; without it (`seccomp = false`, or an architecture
+  without a filter) they are always skipped with the reason and the table header says seccomp is OFF (tested:
+  `seccomp_off_backend_is_reported_not_passed`); the startup summary and the log name such backends.
+  The raw-syscall probes (ptrace, keyctl, bpf, perf_event_open, abstract sockets) run through a test-only helper,
+  `melissa-escape-probe` (`crates/escape-probe`, own workspace and lockfile, safe crates: nix, linux-keyutils,
+  perf-event2, aya), bound read-only into each probe sandbox; no python3 needed (2026-11-23).
+  **It is the gate for image updates:** an image (or bwrap/kernel change) ships only when it passes with no
+  failures (`MELISSA_ESCAPE_REQUIRED=1`, so a missing bwrap fails rather than skips). Its first run found
+  bwrap's own environment (the server's, inherited) readable through `/proc/1/environ`; fixed by spawning bwrap
+  with an empty environment (`sandbox::spawn_command`). The sandbox also keeps the launcher's session keyring;
+  seccomp's keyring block (`keyctl` refused) closes that. How to add probes:
+  `docs/agent-skills/sandbox-escape-tests.md`. **Runs against the shipped artefacts (2026-11-23):**
+  `just escape-test-image` runs it inside the built container image (rootful, `--privileged`, systemd, as
+  `melissa` with the server unit's hardening) and only a pass from the image's own revision tags it
+  `localhost/melissa:escape-tested`, the tag a release may push; the NixOS VM test runs it as `melissa`. No CI
+  runs it automatically (open question 95).
 - **Egress (2026-11-18):** deny-by-default network for every sandboxed agent (`crates/agent/src/egress`): own
   network namespace with loopback only and no resolver; `melissa-netbridge` inside forwards to per-sandbox Unix
   sockets served by the lead agent: an HTTPS `CONNECT` proxy with a per-backend host allowlist (DNS by the lead agent,
@@ -378,10 +452,13 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   data); app to app blocked by default, links declared in manifests and opened by the lead agent after approval
   (NetworkPolicy); agent to app only through tools; app internet access by per-manifest allowlist. Honest claim:
   "strong, layered and tested", never "unbreakable" (shared kernel). Hardening milestone: seccomp + cgroup limits +
-  per-agent UIDs for sandboxes; default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
-  apps; gVisor/microVM runtime for agent-built apps; an adversarial escape test suite gating image updates.
+  per-agent UIDs for sandboxes (all three done 2026-11-23); default-deny NetworkPolicy, quotas, restricted Pod Security and user namespaces for
+  apps; gVisor/microVM runtime for agent-built apps (gVisor done 2026-11-23: the default for every app
+  spec, section 3; Kata later); an adversarial escape test suite gating image updates
+  (exists for agent sandboxes since 2026-11-23: see "Escape suite" above; automation is open question 95).
+  Per-agent host users are done too (2026-11-23, "Agent users" above; open question 97).
   2026-11-24: app links and internet access are in: the spec's `network` block (internet, lan, links), default
-  deny per namespace, owner approves every agent change (DECISIONS; domain allowlists still open, 95).
+  deny per namespace, owner approves every agent change (DECISIONS; domain allowlists still open, 99).
 - **Reference:** T3 Code (github.com/pingdotgg/t3code) is a useful reference for multi-agent, many-backend UX. It is currently published under the MIT license — re-verify the license and notice requirements before reusing any code; otherwise treat it as inspiration only.
 
 ## 6. Web UI
@@ -659,7 +736,7 @@ crates/web          # axum + maud UI, embedded htmx (rust-embed)
 crates/auth         # logins: accounts (Argon2id), owner claim, invites, sessions, sign-in limits
 crates/agent        # backend trait, echo + CLI backends (claude, grok, opencode), task board, audit log
 crates/cluster         # k3s client (kube-rs, rustls) behind small traits, cluster + app tools, rendering
-crates/appspec      # the app spec agents write, validation, legacy catalog specs
+crates/appspec      # the app spec agents write, validation
 # planned: crates/mesh (tailscale/headscale/netbird adapters)
 packaging/common/   # system files every packaging installs (units, manifests, k3s.lock, melissa-setup)
 packaging/container/ # Containerfile, Quadlet, install.sh/uninstall.sh, host update helper
@@ -741,7 +818,11 @@ Roadmap (rough, phases may overlap):
 17. Where do confirmations go when no browser is open (notification channel: Android app, ntfy, email)?
 18. Audit log integrity against root on the agent: replicate it to another agent?
 19. Sandboxing: is a small in-sandbox init using Landlock/seccomp worth an `unsafe` exception, or are bwrap's
-    `--seccomp` and podman's own profiles enough? When is a microVM required?
+    `--seccomp` and podman's own profiles enough? When is a microVM required? *Partly answered 2026-11-23:*
+    bwrap's `--seccomp` is enough for seccomp and needs no `unsafe` (Melissa writes the BPF itself; the
+    `command-fds` crate maps the sealed memfd to fd 3 of bwrap). Still open: Landlock (bwrap has no option for it)
+    and when a microVM is required. Unverified: a CLI whose own inner sandbox needs user namespaces (e.g. a
+    bubblewrap-based Codex tool sandbox) now gets `EPERM` there.
 21. ~~App image source~~ Decided 2026-11-18: apps (Nextcloud, Immich, ...) are pulled live at runtime, driven by
     agents that manage the server environment from sandboxes. Done 2026-11-18: per-app registry allowlist and
     digest pinning in manifests (validated). Open: is a cluster-local pull-through cache worth it (Nextcloud: 513 MB,
@@ -810,7 +891,7 @@ Roadmap (rough, phases may overlap):
     users/processes still can.
 38. App NetworkPolicy. Done 2026-11-24 (DECISIONS "Per-app network permissions"): default deny per app
     namespace (own pods and DNS only), web and public ports open, `network` {internet, lan, links} in the
-    spec, edited by agents with the owner's yes (`set_app_network`) or by the owner directly. Follow-ups in 95.
+    spec, edited by agents with the owner's yes (`set_app_network`) or by the owner directly. Follow-ups in 99.
 39. Nextcloud on SQLite is for M2; move to Postgres (second container or a shared DB service?) before
     real use, plus background jobs (cron) and `trusted_proxies`/`overwriteprotocol` once TLS exists.
 40. The lead agent's taint is sticky for the whole conversation since 2026-11-18 (it survives session reopens
@@ -879,6 +960,14 @@ Roadmap (rough, phases may overlap):
     image carries the third-party license notices. The same images serve updates: `AutoUpdate=registry` and
     Settings → Updates (check, apply, roll back) already handle registry images; `:latest` is the stable channel,
     `:nightly` the daily one. NixOS keeps updating through the flake.
+    Owner 2026-11-24: GitHub builds the updates; **stable releases only for now**, nightly researched for
+    later. Research and phased plan: `docs/design/RELEASES-AND-UPDATES-2026-11-24.md` (nothing built or
+    published). Findings: free on standard runners while the repo is public; most gates (escape suite, gVisor,
+    container smoke, NixOS VM test) look runnable on hosted runners; podman's `policy.json` can't check GitHub
+    keyless signatures (email-only identities, no cosign 3 bundles), so the proposal is an on-device verifier
+    from the running image, with the host helper (not `podman-auto-update`) applying registry updates. Open:
+    the 13 owner decisions in section 7 there (publishing yes, `:stable` vs `:latest`, gates, signing,
+    device network calls, NixOS path, arm64, nightly).
 51. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
     services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
     Consumer Terms. Is "the user installs the official CLI and logs in with their own account on their own box"
@@ -984,7 +1073,7 @@ Roadmap (rough, phases may overlap):
 64. Any app from an agent's spec (2026-11-19, catalog dropped; DECISIONS): (a) images come from any public
     registry, pinned by tag, not by digest: a tag can be re-pushed. Resolve tags to digests at deploy time
     (needs a registry client in the server) or pin digests in the spec? Image signature checks (cosign) later?
-    (b) NetworkPolicy: done 2026-11-24 (38, 95). (c) Root inside containers is allowed (many images need it); should Melissa prefer
+    (b) NetworkPolicy: done 2026-11-24 (38, 99). (c) Root inside containers is allowed (many images need it); should Melissa prefer
     `run_as_user` when an image documents one, or try `restricted` Pod Security per app? (d) Resource limits
     are per container, not per device: nothing stops agents from deploying more than the box can run
     (scheduler requests only); a per-device budget? (e) Public ports are open to the LAN and tailnet like web
@@ -1334,7 +1423,63 @@ Roadmap (rough, phases may overlap):
     microvm.nix, Kata), so it is the natural first target; the container install needs /dev/kvm passed in.
     To find out: how it fits the app manifest and approval model; isolation, start time and memory versus
     pods; licences; and whether it can stay offline-capable.
-95. App network permissions follow-ups (2026-11-24; DECISIONS "Per-app network permissions"). (a) Domain
+    Researched 2026-11-23: [design/ISOLATION-RESEARCH-2026-11-23.md](design/ISOLATION-RESEARCH-2026-11-23.md).
+    Recommendation: prototype gVisor (`runsc`) as a k3s RuntimeClass behind a new spec field `isolation`
+    (no KVM, same manifest/approval/NetworkPolicy), Kata second; park Nix app services, bare microVMs (maybe
+    later for agent sandboxes) and Unikraft. Owner decisions are listed there.
+    Owner 2026-11-23: modern hosts only (KVM assumed), "let's try gvisor". **Built 2026-11-23** (DECISIONS,
+    section 3): `isolation` in the spec, gVisor the default for every agent spec (owner to confirm the
+    default; no trusted-image list exists to exempt images), platform systrap, fail closed. Still open: (a)
+    Kata (`kata`) behind the same field; (b) NetworkPolicy (default-deny, declared links) is still the bigger
+    app-to-app gap; (c) a trusted-image or catalog list that could default to `standard`; (d) whether gVisor's
+    statically linked Go modules need a notice list (ACKNOWLEDGMENTS to-do).
+95. Sandbox escape suite as a real gate (2026-11-23). Mostly done: the python3 probes became a test-only helper
+    (`melissa-escape-probe`), the suite runs inside the built image (`just escape-test-image`, which tags
+    `localhost/melissa:escape-tested` only on a pass from the image's own revision) and in the NixOS VM test,
+    and `seccomp = false` is reported (skips with the reason, startup summary, log). Still open: (a) nothing
+    runs it automatically. There is no CI and no publish step yet; suggestion for the owner: when one exists
+    (CI or a local `release` recipe), it should build the image, run `just escape-test-image` and push only
+    `:escape-tested`, and run the NixOS check. Whether to add CI at all is the owner's call. (b) The image run
+    boots the image with k3s and the server masked, so the server-level path (a real backend spawned by
+    `melissa-server`) is covered by `spawn_command` being shared, not end to end. (c) The sandbox still inherits
+    the launcher's session keyring (bwrap gives no new one); seccomp blocks `keyctl`/`add_key`/`request_key`, so
+    it is unreachable (`kern.keyctl` passes: EPERM). A fresh keyring per sandbox would only matter with
+    `seccomp = false`, where the suite now shows it open (`kern.keyctl` skip: "session keyring reachable").
+96. Agent resource limits, what is left (2026-11-23). Per-sandbox cgroups work under systemd delegation (verified
+    with the real server in a `systemd-run --user --scope -p Delegate=yes` scope and the escape suite). Also
+    verified by the escape suite's `limits.*` probes (2026-11-23) inside the rootful container image
+    (`just escape-test-image`: systemd under podman `--systemd=always`, `Delegate=memory pids cpu io`) and in
+    the NixOS VM test: `Resource limits: on`, fork bomb, memory hog and CPU hog all contained. Finding: with
+    `vm.panic_on_oom = 2` (the NixOS test driver's default; some hardened hosts set it) a cgroup OOM panics the
+    whole kernel, so an agent hitting its memory limit would take the box down. The VM test sets 0 and the
+    suite skips its memory probe under 2. Done (2026-11-23): the server reads it at startup; under 2 (or 1 with
+    limits off) the `Limits:` line says PROBLEM with the fix and the log warns; the memory limit stays on
+    (DECISIONS). Not done: nothing re-checks it if it changes while the server runs. Open: a
+    cap on all sandboxes together (`sandboxes/memory.max`, e.g. a share of RAM) so many agents at once cannot
+    starve k3s; per-agent limits in Settings (today only `[backend.sandbox.limits]` in server.toml); whether a
+    hit limit should reach the audit log and the agent's chat, not only the server log.
+97. Agent users, what is left (2026-11-23; DECISIONS "Agent users"). (a) Ids are never reused: 32768 agents per
+    65536-id range, then new agents fail to start (clear error). Reuse after deletion would need proof that
+    nothing of the old agent's is left on disk. (b) A changed subordinate range turns agent users off (files
+    belong to the old ids); no migration. (c) A CLI that creates a file with a strict mode (0600, `install -m`,
+    tar extraction) leaves it unreadable to the server: the file box shows it but cannot serve it; deletion
+    still works (through the agent's namespace). (d) Directories bound from `$HOME` (`ro`/`rw` lists) get no
+    grant: they must be readable by others; presets bind only files `rw`. (e) Verified 2026-11-23 on Fedora
+    (escape suite, claude/grok/opencode `--version`, git, a credential refresh) and in the NixOS VM test (escape
+    suite and a server-spawned sandbox) and in the built image (`just escape-test-image`: 62 pass with agent
+    users on); a signed-in agent turn (real API call) under agent users was not run. (f) `NoNewPrivileges=` is gone
+    from the server unit (newuidmap needs its file capabilities); the server could now run setuid programs
+    (melissa has no sudo/su rights). (g) From source on a desktop the owner's own CLI credential files get an
+    ACL entry per agent id; `MELISSA_AGENT_USERS=off` keeps them untouched. (h) The escape suite keeps its own
+    id table, so on one host it can hand out the same ids as a dev server's agents.
+98. Agent-to-agent talk (2026-11-24, `ask_lead`, replies back, threads; DECISIONS): (a) the "<A> ⇄ <B>" thread view
+    and a dedicated "You asked: …" line on approval cards need designs (Penpot first); today the API has the
+    threads and the quote rides in the card's consequence line. (b) Threads outlive a deleted agent (they are a
+    record, like the audit log): keep, or delete with the agent's chat? (c) The reply that comes back to the lead
+    agent is the helper's whole reply of that turn, even "thanks": worth a filter, or rely on the prompt and the
+    `MAX_AUTO_TURNS` cap? (d) A cited owner message proves what the owner asked, in any chat; should a citation be
+    limited to recent messages, or to the chat the request came through?
+99. App network permissions follow-ups (2026-11-24; DECISIONS "Per-app network permissions"). (a) Domain
     allowlists ("only github.com and the Debian mirrors") need an egress proxy (NetworkPolicy only knows
     addresses); until then `internet` is all or nothing. (b) Tailnet access for apps (100.64.0.0/10 is never
     reachable today, not even with `lan`): a separate `tailnet` permission? (c) An app that may reach every app

@@ -1419,6 +1419,7 @@ pub fn file_panel_inner(p: &FilePanel<'_>) -> Markup {
                                         }
                                     }
                                     (action_button(
+                                        Btn::danger_quiet(),
                                         &f.delete,
                                         FILE_BODY_ID,
                                         "Delete",
@@ -2171,9 +2172,10 @@ pub fn post_form(action: &str, target: &str, submit_label: &str, fields: Markup)
 
 /// A single-button action, e.g. "Remove", confirmed in the page (never a browser dialog):
 /// the button opens `confirm` with a "Yes, <label>" button that posts. No script needed.
-pub fn action_button(action: &str, target: &str, label: &str, confirm: &str) -> Markup {
+/// `look`: the button's look, `Btn::danger_quiet()` when it deletes something.
+pub fn action_button(look: Btn, action: &str, target: &str, label: &str, confirm: &str) -> Markup {
     inline_confirm(
-        false,
+        look,
         label,
         confirm,
         html! {
@@ -2205,7 +2207,7 @@ pub struct DangerConfirm<'a> {
 pub fn danger_confirm(c: &DangerConfirm<'_>) -> Markup {
     html! {
         details.confirm-inline.danger-confirm open[c.error.is_some()] {
-            summary.(Btn::secondary()) { (c.label) }
+            summary.(Btn::danger_quiet()) { (c.label) }
             section.approval.destructive.confirm aria-label=(c.label) {
                 (facts(&[("Erased", html! { (c.erased) }), ("Kept", html! { (c.kept) })]))
                 form.stack method="post" action=(c.action) hx-post=(c.action)
@@ -2241,10 +2243,11 @@ pub fn away_card(title: &str, text: &str, poll: &str, link_to: (&str, &str)) -> 
 /// The in-page confirmation behind [`action_button`] and the variable list's Remove: a
 /// `<details>` whose summary is the action and whose body asks `question` next to `form`
 /// (which holds the real submit button). `link`: the summary looks like a text link.
-fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Markup {
+fn inline_confirm(look: Btn, label: &str, question: &str, form: Markup) -> Markup {
+    let link = look == Btn::link();
     html! {
         details.confirm-inline.link[link] {
-            summary.(if link { Btn::link() } else { Btn::secondary() }) { (label) }
+            summary.(look) { (label) }
             div.confirm-inline-body {
                 span { (question) }
                 (form)
@@ -2259,32 +2262,73 @@ fn inline_confirm(link: bool, label: &str, question: &str, form: Markup) -> Mark
 // header, and each section's content. Built for more sections than Providers and Updates.
 
 pub use panel::{
-    glyph, inline_form, inline_number, inline_select, overlay_dialog, panel, section_bar,
-    setting_card, setting_row, setting_row_with, settings_frame_at, usage_table, Glyph,
+    glyph, inline_form, inline_number, inline_select, inline_text_form, overlay_dialog, panel,
+    section_bar, setting_card, setting_row, setting_row_details, setting_row_full,
+    setting_row_with, settings_frame_at, settings_tools_oob, usage_table, Glyph, SettingsHead,
     SettingsSection, UpdateHint, UsageRow, OVERLAY_BODY_ID, OVERLAY_ID, SETTINGS_MAIN_ID,
+    SETTINGS_TOOLS_ID,
 };
 
-/// A heading row with an action on the right, e.g. "Providers" and "Checked just now · Check
-/// again". `action` posts to `action_url`, and htmx swaps the response into `#target`.
+/// When a section last looked, and the button that looks again, e.g. "Checked just now ·
+/// Check again" (for the head bar's tools). Posts to `action_url`; htmx swaps the answer into
+/// `#target`. Empty `checked`: the button alone.
 pub fn settings_head(
-    title: &str,
-    lead: &str,
     checked: &str,
     action_url: &str,
     target: &str,
     action: &str,
+    look: Btn,
 ) -> Markup {
     html! {
-        header.settings-head {
-            div {
-                h1 { (title) }
-                p.lead { (lead) }
-            }
-            form.checked method="post" action=(action_url) hx-post=(action_url)
-                hx-target={ "#" (target) } hx-swap="outerHTML" {
-                (crate::components::csrf_field())
-                span { (checked) }
-                button.(Btn::link()) type="submit" { (action) }
+        form.checked method="post" action=(action_url) hx-post=(action_url)
+            hx-target={ "#" (target) } hx-swap="outerHTML" {
+            (crate::components::csrf_field())
+            @if !checked.is_empty() { span { (checked) } }
+            button.(look) type="submit" { (action) }
+        }
+    }
+}
+
+/// One thing a row's "⋯" menu does: a form with one button, or one that asks first.
+pub struct RowAction<'a> {
+    pub label: &'a str,
+    pub icon: Glyph,
+    pub action: &'a str,
+    pub target: &'a str,
+    /// Asks this in the menu before it posts (a destructive action, drawn in caution).
+    pub confirm: Option<&'a str>,
+}
+
+/// A row's "⋯" button and its menu (Settings → People: Reset password, Remove), so a row
+/// keeps one small control instead of buttons that wrap under its name on a phone (owner
+/// board P2, 2026-11-23). The agent menu's native popover (`id`: unique on the page) and its
+/// in-menu confirmation; no script needed.
+pub fn row_menu(id: &str, name: &str, items: &[RowAction<'_>]) -> Markup {
+    html! {
+        button.more-button.(Btn::ghost().icon()) type="button" popovertarget=(id) aria-haspopup="true"
+            title={ "More for " (name) } {
+            (glyph(Glyph::More))
+            span.visually-hidden { "More for " (name) }
+        }
+        div.menu id=(id) popover="auto" aria-label={ "Menu for " (name) } {
+            @for a in items {
+                @let form = html! {
+                    form method="post" action=(a.action) hx-post=(a.action)
+                        hx-target={ "#" (a.target) } hx-swap="outerHTML" {
+                        (crate::components::csrf_field())
+                        @match a.confirm {
+                            Some(_) => button.(Btn::danger()) type="submit" { "Yes, " (a.label.to_lowercase()) },
+                            None => button.menu-item type="submit" { (glyph(a.icon)) span { (a.label) } },
+                        }
+                    }
+                };
+                @match a.confirm {
+                    Some(q) => details.menu-confirm {
+                        summary.menu-item.danger { (glyph(a.icon)) span { (a.label) } }
+                        div.menu-confirm-body { p { (q) } (form) }
+                    },
+                    None => (form),
+                }
             }
         }
     }
@@ -2498,13 +2542,27 @@ pub fn lines_field(name: &str, label: &str, value: &str, hint: Option<&str>) -> 
 }
 
 /// A form that saves settings and swaps `#target` (htmx) or posts normally.
-pub fn settings_form(action: &str, target: &str, submit: &str, fields: Markup) -> Markup {
+/// `cancel`: a form opened in place of a button (owner decision 3, 2026-11-23): its submit is
+/// the card's one primary button, and Cancel (a link to the page without it) closes it.
+pub fn settings_form(
+    action: &str,
+    target: &str,
+    submit: &str,
+    cancel: Option<&str>,
+    fields: Markup,
+) -> Markup {
     html! {
         form.stack.settings-form method="post" action=(action) hx-post=(action)
             hx-target={ "#" (target) } hx-swap="outerHTML" {
             (crate::components::csrf_field())
             (fields)
-            div { button.(Btn::secondary()) type="submit" { (submit) } }
+            @match cancel {
+                Some(href) => div.action-row {
+                    button.(Btn::primary()) type="submit" { (submit) }
+                    a.(Btn::ghost()) href=(href) { "Cancel" }
+                },
+                None => div { button.(Btn::secondary()) type="submit" { (submit) } },
+            }
         }
     }
 }
@@ -2532,7 +2590,7 @@ pub fn var_list(rows: &[VarRow<'_>], target: &str, empty: &str) -> Markup {
                             None => span.var-secret { "set" span.visually-hidden { " (hidden)" } },
                         }
                         div.var-remove {
-                            (inline_confirm(true, "Remove", &format!("Remove {}?", r.name), html! {
+                            (inline_confirm(Btn::link(), "Remove", &format!("Remove {}?", r.name), html! {
                                 form method="post" action=(r.remove_action) hx-post=(r.remove_action)
                                     hx-target={ "#" (target) } hx-swap="outerHTML" {
                                     (crate::components::csrf_field())
@@ -2662,14 +2720,17 @@ pub fn new_tab_button(look: Btn, href: &str, label: &str, icon: Option<Glyph>) -
     }
 }
 
-/// The head of Settings → About: Melissa's mark, her name and one quiet line (the version).
+/// The first row of Settings → About's card: Melissa's mark, her name and one quiet line (the
+/// version), laid out like a setting row (2026-11-23).
 pub fn about_head(name: &str, detail: &str) -> Markup {
     html! {
-        header.page-header.about-head {
-            (mark("mark-lg"))
-            div {
-                h1 { (name) }
-                p.lead { (detail) }
+        div.setting-row.about-head {
+            div.about-name {
+                (mark("mark"))
+                div.setting-text {
+                    p.setting-title { (name) }
+                    p.setting-desc { (detail) }
+                }
             }
         }
     }
@@ -2700,7 +2761,14 @@ mod tests {
 
     #[test]
     fn confirmations_stay_in_the_page() {
-        let out = action_button("/x/remove", "t", "Remove", "Remove <this>?").into_string();
+        let out = action_button(
+            Btn::secondary(),
+            "/x/remove",
+            "t",
+            "Remove",
+            "Remove <this>?",
+        )
+        .into_string();
         assert!(!out.contains("hx-confirm"), "no browser dialogs: {out}");
         assert!(out.contains("<details class=\"confirm-inline\">"));
         assert!(out.contains("<summary class=\"btn btn-secondary\">Remove</summary>"));

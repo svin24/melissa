@@ -393,6 +393,9 @@ pub(super) async fn icon(
 pub(super) struct PinForm {
     #[serde(default)]
     pinned: String,
+    /// The Pinned switch on the helper's page (a checkbox: absent when off).
+    #[serde(default)]
+    enabled: Option<String>,
 }
 
 pub(super) async fn pin(
@@ -401,7 +404,7 @@ pub(super) async fn pin(
     headers: HeaderMap,
     Form(form): Form<PinForm>,
 ) -> Response {
-    let on = form.pinned == "on";
+    let on = form.pinned == "on" || form.enabled.as_deref() == Some("on");
     let flash = match ui.lead.agents().set_pinned(&id, on) {
         Ok(_) => Flash {
             text: if on { "Pinned." } else { "Unpinned." }.into(),

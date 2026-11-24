@@ -1,10 +1,11 @@
 # App deploys: any app from an agent's spec
 
 **When:** touching the app tools (`my_apps`, `deploy_app`, `update_app`, `list_apps`, `app_status`,
-`app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`, `app_network`, `set_app_network`), the app
-spec format, rendering, app ports and links, app network permissions (NetworkPolicies), the write identity `melissa-apps` or its admission policies, the owner's
-`app-credentials` command, or the migration of apps installed from the old catalog.
-Code: `crates/appspec` (spec, validation, `legacy`), `crates/cluster/src/{render,apps,app_tools}.rs`,
+`wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`, `app_network`,
+`set_app_network`), the app spec format, rendering, app ports and links, app network permissions
+(NetworkPolicies), the write identity `melissa-apps` or its admission policies, the owner's
+`app-credentials` command.
+Code: `crates/appspec` (spec, validation), `crates/cluster/src/{render,apps,app_tools}.rs`,
 `crates/cluster/src/render/network.rs`, `crates/cluster/src/app_tools/network.rs`,
 `crates/server/src/credentials.rs`, `packaging/common/usr/lib/melissa/k3s/manifests/apps-rbac.yaml`.
 
@@ -50,6 +51,7 @@ produces locked-down objects) and the admission policies, never the prompt.
   "credentials": {"user": "admin", "password": "admin_password"}, // what app-credentials prints
   "kind": "games",                                  // the UI's group: games | media | home | files |
                                                     // network | developer | other (default)
+  "isolation": "gvisor",                            // gvisor (default) | standard; see "Isolation"
   "network": {"internet": true, "lan": false,       // what it may reach (all off if absent), see
               "links": [{"app": "postgres", "port": "db"}]} // "Network" below
 }
@@ -64,16 +66,65 @@ reliably (one shape, no Kubernetes boilerplate, no `securityContext` to forget),
 to strip (no privileged/hostPath/hostNetwork knobs exist in it), the confirmation summary is
 exact, and updates diff cleanly. Unknown keys are refused, not ignored.
 
-Example: the Nextcloud spec in `crates/appspec/src/legacy.rs` (generated admin password,
+Example: the Nextcloud spec in `crates/cluster/tests/fixtures/nextcloud.json` (test-only; generated admin password,
 `device_hosts` for its trusted domains, an entrypoint hook as a `files` entry, HTTP probe with
 the ingress host).
+
+## Isolation (gVisor, 2026-11-23)
+`isolation` says how the pod is kept apart from the device's kernel (DECISIONS 2026-11-23,
+docs/design/ISOLATION-RESEARCH-2026-11-23.md):
+- `gvisor` (the **default**: every agent spec without the field): RuntimeClass `gvisor`, handler
+  `runsc`. The app's system calls go to gVisor's user-space kernel (the Sentry, platform systrap);
+  the device's kernel sees a small, filtered set. `/proc/version` in the pod is gVisor's
+  (`4.19.0-gvisor`; `4.4.0` in older releases such as nixpkgs'), `dmesg` shows gVisor's banner. Costs memory (an idle busybox pod: 16.1 MiB in
+  its cgroup vs 0.7 MiB under runc; the research measured ~30 MiB PSS for a sandbox), about 0.4 s
+  more per pod start (1.7 s vs 1.3 s to Ready, image cached), and syscall-heavy work runs slower. The
+  RuntimeClass adds `overhead` 48Mi / 50m to the pod's limits (64Mi limit → 112Mi pod cgroup).
+- `standard`: an ordinary container (runc), sharing the device's kernel. For apps that need host
+  devices (USB sticks, GPUs) or kernel features gVisor lacks (io_uring, raw sockets, some `/proc`
+  files), and apps that fail under gVisor. Only a spec can ask for it: there is no per-app or
+  per-image exception.
+- `kata` (a VM per pod) is reserved for later; unknown values are refused.
+
+There is no list of trusted images or registries, so the default doesn't depend on the image. The
+user sees the level in the confirmation (`isolation: gVisor sandbox (its own kernel)` /
+`isolation: standard (shares the device's kernel)`); agents ask for `standard` only with a reason
+the user can judge. The deployer stores the level it used with the spec (`"isolation":"gvisor"` in
+`melissa.io/spec`), so a later change of the default never moves a running app; specs deployed
+before 2026-11-23 have no field and move to gVisor at their next update or bring-back (the
+confirmation says so).
+
+**Fail closed.** A `gvisor` deploy first reads the `gvisor` RuntimeClass (the write identity may
+`get` exactly that one); missing or with another handler, the call fails with the reason and
+nothing is applied. Admission policies hold it in the cluster too (`apps-rbac.yaml`):
+`melissa-apps-workloads` refuses a Deployment whose template or namespace is labelled
+`melissa.io/isolation=gvisor` without `runtimeClassName: gvisor`, `melissa-apps-isolation` refuses
+such **pods** from any creator in app namespaces, and no other RuntimeClass is allowed there;
+`melissa-gvisor-runtimeclass` keeps the class's handler `runsc`. Without the RuntimeClass the API
+refuses the pod; with it but no runsc on the node, the pod never starts (`app_status` shows the
+sandbox error). Never a fallback to runc.
+
+**Where it comes from.** Container: the image ships runsc, its containerd shim and runsc's
+`gvisor-bin/` sidecars (`/usr/lib/melissa/gvisor`, linked into `/usr/bin`; `gvisor.lock`), and
+`k3s-prepare` installs containerd's `runsc` entry
+(`/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl`; k3s doesn't detect runsc) and the
+RuntimeClass manifest at every start, only when runsc is on PATH. NixOS:
+`services.melissa.k3s.gvisor.enable` (default on) puts nixpkgs' `gvisor` on k3s's PATH and writes
+the same template and manifest. The startup summary says `gVisor: on (runsc <version>)` or
+`off: <why>`. Options: `packaging/common/usr/lib/melissa/k3s/gvisor/runsc.toml` (platform
+`systrap`; KVM measured ~30% faster on syscall loops but widens the host surface to KVM and is
+poor when the host is a VM).
+
+**Check it:** `just gvisor-test-image` (a throwaway container: both levels deployed through
+`deploy_app`, kernels compared, cheap escape probes, the fail-closed paths, cost printed); the
+NixOS VM test does the same on NixOS.
 
 ## Rendering (`render.rs`, pure)
 Namespace `app-<name>` (labels `melissa.io/app`, `melissa.io/managed`, Pod Security
 `enforce=baseline`; annotations spec, ports, workspace record) → RoleBinding → one Secret per
-generated secret `<app>-secret-<name>` (POST, 409 = keep; catalog installs keep the shared
-`<app>-secrets`, see below) → PVCs → ConfigMap `<app>-files` → Deployment `<app>` (1 replica, or
-0 when stopped; `Recreate`; no SA token, no service links, seccomp RuntimeDefault, every container
+generated secret `<app>-secret-<name>` (POST, 409 = keep) → PVCs → ConfigMap `<app>-files` → Deployment `<app>` (1 replica, or
+0 when stopped; `Recreate`; `runtimeClassName: gvisor` and the pod and namespace label
+`melissa.io/isolation` per the spec's level; no SA token, no service links, seccomp RuntimeDefault, every container
 `privileged: false`, `allowPrivilegeEscalation: false`, limits always) → ClusterIP Service (all
 ports, TCP/UDP) → Ingress (web port only) → NodePort Service `<app>-port` (web + public ports) →
 the namespace again with the new port records. Server-side apply, field manager `melissa`, forced.
@@ -185,6 +236,7 @@ app turns out to need more (`app_logs` shows DNS working but connections timing 
 | `update_app {app, spec}` | **Deploy**, target `app` (Change) | whole new spec (start from `app_status.spec`); keeps volumes, secrets, ports; a stopped app stays stopped |
 | `my_apps {}` | read-only, no target (filters by `ctx.scope` in `call_in`) | **call first when a request mentions an app.** Agent: `yours` (essentials from `app_status`: `app`, `description`, `phase`, `image`, `url`, `ports` name/protocol/address, `reachability`, `assigned_by`, `assigned_at`) and `not_yours` (`app` + `owner` name only, null = unassigned; nothing else of them is read). Lead agent/user: `by_owner` groups (`owner`, `agent` id, `apps`), unassigned last. Cost: one namespace read per app, a status only for the caller's own apps (the lead: every app). Always in an agent's tool list. |
 | `app_status {app}` | read-only, target `app` (Read: the owner, the lead agent, the user; another agent → user-only confirmation) | phase, pods (reason codes), `spec`, `description`, links, `ports`, `assigned_by`/`assigned_at` |
+| `wait_for_apps {apps, until, timeout_secs?}` | read-only, no target (an agent: refused unless every existing app is its own, checked in `call_in`) | waits in the same turn until every app is `gone` (namespace removed; an unknown app counts), `ready` or `stopped` (`app_status` phases; an unknown app is an error). Polls every 3 s; timeout default and max 240 s (below Claude Code's 300 s tool-call limit, less the 60 s margin), then answers `done: false` with each app's `state` and the agent calls again. Cancel-safe: Stop drops the call (MCP `notifications/cancelled`). Feed: "Waited for apps". |
 | `list_apps` | read-only | every app namespace (labelled list), same phases; for an agent, other agents' apps only as `{app, owner, not_yours}` |
 | `app_logs`, `stop_app`, `start_app`, `uninstall_app` | unchanged | uninstall keeps data, secrets and the spec; `deploy_app` brings it back |
 | `app_exec {app, command, container?, stdin?, timeout_secs?}` | **Destructive** (always confirmed, the card shows the exact argv), reads private + untrusted, target `app` (Change) | one command in the newest running pod's container (default: the first), argv only, no implicit shell; stdin optional (≤ 64 KiB, then closed); timeout 30 s default, 300 s max (on timeout: output so far, `timed_out`, the command may still run); stdout/stderr ≤ 64 KiB each, `*_truncated`, control chars stripped; returns `exit_code`. Audited: the `tool.call` line names the agent, app, argv (each arg cut to 200 chars), stdin length (never its content), pod, container and exit code (`Tool::audit_detail`). |
@@ -220,14 +272,6 @@ Admission (`apps-rbac.yaml`, fail closed, matched on `melissa-apps`):
 Root inside a container is allowed (many images need it), privileges never. Images from any
 public registry are allowed (pre-alpha; supply-chain risk noted in DECISIONS).
 
-## Apps from the old catalog (migration)
-A catalog install has no `melissa.io/spec`. At startup the server stores one
-(`Workspaces::migrate_catalog_apps`, after the relabel): `legacy::from_catalog(app, config)` from
-the Deployment's `melissa.io/config`, plus `melissa.io/shared-secrets: admin_password` so its
-password stays in the shared `nextcloud-secrets`. Nothing is re-applied: the app keeps running.
-Until then the tools rebuild the spec on the fly. The spec renders the same volume, Secret, files
-(same hash) and port; the first `update_app` adds `allowPrivilegeEscalation: false` (one restart).
-
 ## Test in a container
 ```
 q='sudo podman exec melissa-test melissa-server'
@@ -240,13 +284,6 @@ Admission checks as the apps identity: `kubectl --kubeconfig /run/melissa-kube/a
 apply -f <privileged deployment>` → denied with the policy message.
 
 ## Verified (2026-11-19, rootful test container, APP_PORT_BASE 35000, k3s v1.37)
-- **Upgrade from the catalog:** master (3c9879b) installed Nextcloud with `install_app` (ready, a WebDAV file
-  uploaded). The branch image on the same volume logged "stored specs for apps from the old catalog apps=1";
-  the same pod kept running; `app_status` showed the rebuilt spec (user `admin`), link `127.0.0.1:35000`.
-  `stop_app`/`start_app` passed the new workloads policy on the old Deployment. `update_app` (upload limit 2G)
-  kept `nextcloud-secrets` (`kept`), the volume, the port and the password (`app-credentials` unchanged, file
-  still there) and added `allowPrivilegeEscalation: false`. Keep-data uninstall, then `deploy_app {"app":
-  "nextcloud"}` without a spec brought it back with its data.
 - **Minecraft** (`itzg/minecraft-server`, EULA, 1536Mi, 5Gi volume, game 25565/tcp + query 25565/udp public):
   NodePorts 30001/30002 (35001/35002 on the host). Java 21 tag crash-looped (Minecraft 26.3 needs Java 25;
   `app_logs` said so); `update_app` to the java25 tag kept both ports. From the host: `nc -z` open, a status

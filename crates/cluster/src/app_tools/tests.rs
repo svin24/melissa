@@ -42,6 +42,14 @@ struct State {
     /// Commands `exec` was asked to run, and what it answers.
     exec_requests: Vec<ExecRequest>,
     exec_output: ExecOutput,
+    /// The cluster has no `gvisor` RuntimeClass (runsc missing).
+    no_gvisor: bool,
+    /// The `gvisor` RuntimeClass names this handler instead of `runsc`.
+    gvisor_handler: Option<String>,
+    /// RuntimeClasses asked for.
+    runtime_classes_asked: Vec<String>,
+    /// How often `namespace` was read.
+    namespace_reads: usize,
 }
 
 /// A cluster in memory: applies objects, keeps one namespace.
@@ -86,7 +94,8 @@ impl AppRead for Fake {
         let name = namespace_of(app);
         Box::pin(async move {
             self.check()?;
-            let s = self.state();
+            let mut s = self.state();
+            s.namespace_reads += 1;
             if let Some(other) = s.others.get(name.trim_start_matches("app-")) {
                 return Ok(Some(other.clone()));
             }
@@ -122,6 +131,18 @@ impl AppRead for Fake {
             let mut s = self.state();
             s.log_requests.push(request.clone());
             Ok(s.log.clone())
+        })
+    }
+    fn runtime_class_handler<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, ClusterError>> {
+        Box::pin(async move {
+            self.check()?;
+            let mut s = self.state();
+            s.runtime_classes_asked.push(name.to_string());
+            Ok((name == "gvisor" && !s.no_gvisor)
+                .then(|| s.gvisor_handler.clone().unwrap_or_else(|| "runsc".into())))
         })
     }
 }
@@ -537,9 +558,9 @@ fn password(fake: &Fake) -> String {
         .clone()
 }
 
-/// The Nextcloud spec (the old catalog's, now a spec like any other).
+/// A real web app ([`crate::fixtures::nextcloud`]) as JSON.
 fn nc() -> Value {
-    serde_json::to_value(legacy::nextcloud(&Map::new())).unwrap()
+    serde_json::to_value(crate::fixtures::nextcloud()).unwrap()
 }
 
 /// A Minecraft server: a public TCP port and a public UDP port, no web UI.
@@ -710,6 +731,103 @@ async fn install_applies_everything_in_order_and_never_returns_the_secret() {
         ns_annotation(&fake, "melissa.io/port").as_deref(),
         Some("30000")
     );
+}
+
+fn runtime_class_of(fake: &Fake) -> Option<String> {
+    fake.state()
+        .deployment
+        .clone()
+        .unwrap()
+        .spec
+        .template
+        .spec
+        .unwrap()
+        .runtime_class_name
+}
+
+/// Isolation (2026-11-23): agent specs run under gVisor unless they ask for `standard`; the
+/// user sees the level in the confirmation; it is stored with the spec; and a gVisor app
+/// never lands on the default runtime: without the RuntimeClass nothing is applied.
+#[tokio::test]
+async fn gvisor_is_the_default_shown_stored_and_fails_closed() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+
+    // The confirmation names the level, the default and an explicit one.
+    let ask = |spec: Value| t["deploy_app"].describe_call(&json!({"app": "mc", "spec": spec}));
+    let text = ask(minecraft()).unwrap();
+    assert!(
+        text.contains("isolation: gVisor sandbox (its own kernel)"),
+        "{text}"
+    );
+    let mut standard = minecraft();
+    standard["isolation"] = json!("standard");
+    let text = ask(standard.clone()).unwrap();
+    assert!(
+        text.contains("isolation: standard (shares the device's kernel)"),
+        "{text}"
+    );
+
+    // Not available: refused before anything is applied, with the reason.
+    fake.state().no_gvisor = true;
+    let r = call(&t, "deploy_app", json!({"app": "mc", "spec": minecraft()})).await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("gVisor is not available")
+            && m.contains("Nothing was changed")),
+        "{r:?}"
+    );
+    assert!(fake.state().applied.is_empty());
+    // A RuntimeClass with another handler is no gVisor either.
+    fake.state().no_gvisor = false;
+    fake.state().gvisor_handler = Some("runc".into());
+    let r = call(&t, "deploy_app", json!({"app": "mc", "spec": minecraft()})).await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("handler `runc`")),
+        "{r:?}"
+    );
+    assert!(fake.state().applied.is_empty());
+
+    // `standard` needs no RuntimeClass and asks for none.
+    fake.state().no_gvisor = true;
+    fake.state().runtime_classes_asked.clear();
+    let out = call(&t, "deploy_app", json!({"app": "mc", "spec": standard}))
+        .await
+        .unwrap();
+    assert!(fake.state().runtime_classes_asked.is_empty());
+    assert_eq!(runtime_class_of(&fake), None);
+    assert_eq!(
+        ns_label(&fake, "melissa.io/isolation").as_deref(),
+        Some("standard")
+    );
+    assert!(out["runs"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("isolation: standard (shares the device's kernel)")));
+
+    // Available: the update (no `isolation`: the default) moves it to gVisor, stored explicitly.
+    fake.state().no_gvisor = false;
+    fake.state().gvisor_handler = None;
+    call(&t, "update_app", json!({"app": "mc", "spec": minecraft()}))
+        .await
+        .unwrap();
+    assert_eq!(runtime_class_of(&fake).as_deref(), Some("gvisor"));
+    assert_eq!(
+        ns_label(&fake, "melissa.io/isolation").as_deref(),
+        Some("gvisor")
+    );
+    let stored = AppSpec::from_text(&ns_annotation(&fake, SPEC_ANNOTATION).unwrap()).unwrap();
+    assert_eq!(stored.isolation, Some(Isolation::Gvisor));
+
+    // Bringing it back from its stored spec checks again: gone runsc, nothing applied.
+    fake.state().no_gvisor = true;
+    fake.state().deployment = None;
+    let before = fake.state().applied.len();
+    let r = call(&t, "deploy_app", json!({"app": "mc"})).await;
+    assert!(
+        matches!(&r, Err(ToolError::Failed(m)) if m.contains("gVisor")),
+        "{r:?}"
+    );
+    assert_eq!(fake.state().applied.len(), before);
 }
 
 #[tokio::test]
@@ -2072,10 +2190,10 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
     };
     assert_eq!(
         names(&TaskContext::default()),
-        ["app_status", "list_apps", "my_apps"]
+        ["app_status", "list_apps", "my_apps", "wait_for_apps"]
     );
     let specs = reg.visible_to(&agent(ADA), None);
-    assert_eq!(specs.len(), 10);
+    assert_eq!(specs.len(), 11);
     for tool in [
         "app_exec",
         "stop_app",
@@ -2095,7 +2213,7 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
     }
     // The lead agent sees everything unchanged.
     let all = reg.visible_to(&lead(), None);
-    assert_eq!(all.len(), 10);
+    assert_eq!(all.len(), 11);
     let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert!(uninstall.params["properties"]["app"]
         .get("description")
@@ -2633,109 +2751,6 @@ fn the_relabel_patch_keeps_what_it_cannot_map() {
     );
 }
 
-// ---- apps from the old catalog -------------------------------------------------------------
-
-/// Nextcloud as the old catalog installed it: no spec on the namespace, its config on the
-/// Deployment, its password in the shared `nextcloud-secrets`.
-fn catalog_nextcloud(fake: &Fake) {
-    nextcloud_of(fake, ADA);
-    let mut s = fake.state();
-    s.namespace.as_mut().unwrap().metadata.annotations = Some(BTreeMap::from([
-        ("melissa.io/port".to_string(), "30000".to_string()),
-        ("melissa.io/origin".to_string(), "catalog".to_string()),
-    ]));
-    let mut d = Deployment::default();
-    d.spec.replicas = Some(1);
-    d.metadata.annotations = Some(BTreeMap::from([(
-        CONFIG_ANNOTATION.to_string(),
-        r#"{"admin_user":"owner","php_memory_limit":"1G","upload_limit":"2G"}"#.to_string(),
-    )]));
-    s.deployment = Some(d);
-    s.secrets
-        .insert("nextcloud-secrets".into(), Secret::default());
-}
-
-#[tokio::test]
-async fn a_catalog_install_gets_its_spec_and_stays_manageable() {
-    let fake = Arc::new(Fake::default());
-    catalog_nextcloud(&fake);
-    let t = tools(Some(fake.clone()));
-    // Before the migration the tools rebuild the spec from the install config.
-    let s = call(&t, "app_status", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    assert_eq!(s["spec"]["credentials"]["user"], "owner");
-    assert_eq!(s["spec"]["containers"][0]["env"]["PHP_UPLOAD_LIMIT"], "2G");
-    assert_eq!(s["url"], "http://203.0.113.10:30000");
-    assert_eq!(s["ports"][0]["web"], true);
-
-    // The migration stores it once; nothing is applied (the app keeps running untouched).
-    let workspaces = Workspaces::new(settings(), Some(fake.clone()));
-    assert_eq!(workspaces.migrate_catalog_apps().await.unwrap(), 1);
-    assert_eq!(workspaces.migrate_catalog_apps().await.unwrap(), 0);
-    assert!(fake.state().applied.is_empty());
-    let stored = AppSpec::from_text(&ns_annotation(&fake, SPEC_ANNOTATION).unwrap()).unwrap();
-    assert_eq!(stored.credentials.unwrap().user.as_deref(), Some("owner"));
-    assert_eq!(
-        ns_annotation(&fake, SHARED_SECRETS_ANNOTATION).as_deref(),
-        Some("admin_password")
-    );
-
-    // Stop and start work as before.
-    call(&t, "stop_app", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    let out = call(&t, "start_app", json!({"app": "nextcloud"}))
-        .await
-        .unwrap();
-    assert_eq!(out["url"], "http://203.0.113.10:30000");
-
-    // An update with the stored spec keeps the password Secret, the volume and the port.
-    let mut spec = s["spec"].clone();
-    spec["containers"][0]["env"]["PHP_MEMORY_LIMIT"] = json!("1G");
-    let out = call(&t, "update_app", json!({"app": "nextcloud", "spec": spec}))
-        .await
-        .unwrap();
-    assert_eq!(out["secrets"]["fields"], json!({"admin_password": "kept"}));
-    assert_eq!(out["port"], 30000);
-    assert_eq!(fake.state().secrets.len(), 1, "no new Secret");
-    let pod = fake
-        .state()
-        .deployment
-        .clone()
-        .unwrap()
-        .spec
-        .template
-        .spec
-        .unwrap();
-    let pw = pod.containers[0]
-        .env
-        .as_ref()
-        .unwrap()
-        .iter()
-        .find(|e| e.name == "NEXTCLOUD_ADMIN_PASSWORD")
-        .unwrap()
-        .value_from
-        .clone()
-        .unwrap()
-        .secret_key_ref
-        .unwrap();
-    assert_eq!(
-        (pw.name.as_str(), pw.key.as_str()),
-        ("nextcloud-secrets", "admin_password")
-    );
-    assert!(fake
-        .state()
-        .volumes
-        .iter()
-        .any(|v| v.metadata.name.as_deref() == Some("nextcloud-data")));
-    // The origin record stays.
-    assert_eq!(
-        ns_annotation(&fake, "melissa.io/origin").as_deref(),
-        Some("catalog")
-    );
-}
-
 #[tokio::test]
 async fn a_bad_spec_fails_before_anyone_is_asked() {
     let fake = Arc::new(Fake::default());
@@ -2782,8 +2797,8 @@ async fn a_bad_spec_fails_before_anyone_is_asked() {
         format!(
             "deploy `minecraft`: server: docker.io/itzg/minecraft-server:java21 (up to 1 CPU, \
              1536Mi memory); reachable from the network: game 25565/tcp, voice 24454/udp; \
-             storage: data 5Gi; may reach: nothing (no internet, no home network, no other \
-             apps); {}",
+             storage: data 5Gi; may reach: nothing (no internet, no home network, no other apps); \
+             isolation: gVisor sandbox (its own kernel); {}",
             melissa_agent::tools::RUNS_SOFTWARE
         )
     );
@@ -3673,6 +3688,341 @@ async fn links_leave_the_tailnet_node_out_while_apps_are_open_to_this_device_onl
     );
     let warning = access["warning"].as_str().unwrap();
     assert!(warning.contains("open_to `tailnet`"), "{warning}");
+}
+
+#[tokio::test]
+async fn a_terminating_namespace_is_listed_as_deleting() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    let workspaces = Workspaces::new(settings(), Some(fake.clone()));
+    let list = workspaces.workspaces().await.unwrap();
+    assert!(!list[0].deleting);
+    if let Some(ns) = fake.state().namespace.as_mut() {
+        ns.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::UNIX_EPOCH));
+    }
+    let list = workspaces.workspaces().await.unwrap();
+    assert_eq!(list[0].owner, Owner::Agent(ADA.into()));
+    assert!(list[0].deleting);
+}
+
+// ---- wait_for_apps ---------------------------------------------------------------------------
+
+/// Another app's namespace (in `others`), optionally owned by `agent` and being deleted.
+fn other_app(fake: &Fake, app: &str, agent: Option<&str>, deleting: bool) {
+    let mut labels = BTreeMap::from([("melissa.io/app".to_string(), app.to_string())]);
+    if let Some(agent) = agent {
+        labels.insert("melissa.io/owner-agent".into(), agent.into());
+    }
+    fake.state().others.insert(
+        app.into(),
+        Namespace {
+            metadata: ObjectMeta {
+                name: Some(format!("app-{app}")),
+                labels: Some(labels),
+                deletion_timestamp: deleting
+                    .then_some(Time(k8s_openapi::jiff::Timestamp::UNIX_EPOCH)),
+                ..ObjectMeta::default()
+            },
+            ..Namespace::default()
+        },
+    );
+}
+
+/// `wait_for_apps` reading `fake` every `poll`.
+fn waiter(fake: &Arc<Fake>, poll: Duration) -> WaitForApps {
+    WaitForApps {
+        read: Some(fake.clone() as Arc<dyn AppRead>),
+        poll,
+    }
+}
+
+#[test]
+fn the_longest_wait_stays_below_the_agents_tool_call_limit() {
+    assert_eq!(MAX_WAIT, Duration::from_secs(240));
+    assert!(MAX_WAIT < melissa_agent::claude::CLAUDE_TOOL_CALL_LIMIT);
+    let spec = tools(None)["wait_for_apps"].spec();
+    assert_eq!(spec.labels, Labels::READ_ONLY);
+    assert!(spec.description.contains("240 s"));
+    assert_eq!(spec.params["properties"]["timeout_secs"]["maximum"], 240);
+    assert_eq!(spec.params["additionalProperties"], false);
+}
+
+#[tokio::test(start_paused = true)]
+async fn deleted_apps_are_waited_for_until_they_are_gone() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    other_app(&fake, "minecraft", None, true);
+    let remover = {
+        let fake = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            fake.state().others.remove("jellyfin");
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            fake.state().others.remove("minecraft");
+        })
+    };
+    let out = call(
+        &tools(Some(fake.clone())),
+        "wait_for_apps",
+        json!({"apps": ["jellyfin", "minecraft", "jellyfin"], "until": "gone"}),
+    )
+    .await
+    .unwrap();
+    remover.await.unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(out["until"], "gone");
+    // Polled every 3 s: done at the first poll after 14 s.
+    assert_eq!(out["waited_secs"], 15, "{out}");
+    assert_eq!(
+        out["apps"],
+        json!([
+            {"app": "jellyfin", "state": "gone", "done": true},
+            {"app": "minecraft", "state": "gone", "done": true},
+        ])
+    );
+    assert!(out.get("note").is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_short_poll_interval_answers_sooner() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let remover = {
+        let fake = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            fake.state().others.remove("jellyfin");
+        })
+    };
+    let started = tokio::time::Instant::now();
+    let out = waiter(&fake, Duration::from_millis(100))
+        .call(json!({"apps": ["jellyfin"], "until": "gone"}))
+        .await
+        .unwrap();
+    remover.await.unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(started.elapsed(), Duration::from_millis(300));
+}
+
+#[tokio::test(start_paused = true)]
+async fn at_the_timeout_it_answers_with_each_apps_state() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let out = call(
+        &tools(Some(fake.clone())),
+        "wait_for_apps",
+        json!({"apps": ["jellyfin", "never-there"], "until": "gone", "timeout_secs": 10}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], false, "{out}");
+    assert_eq!(out["waited_secs"], 10);
+    assert_eq!(
+        out["apps"],
+        json!([
+            {"app": "jellyfin", "state": "deleting", "done": false},
+            {"app": "never-there", "state": "gone", "done": true},
+        ])
+    );
+    assert!(out["note"]
+        .as_str()
+        .unwrap()
+        .contains("wait_for_apps again"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timeout_is_capped() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let t = tools(Some(fake.clone()));
+    for args in [
+        json!({"apps": ["jellyfin"], "until": "gone", "timeout_secs": 3600}),
+        json!({"apps": ["jellyfin"], "until": "gone"}),
+    ] {
+        let started = tokio::time::Instant::now();
+        let out = call(&t, "wait_for_apps", args).await.unwrap();
+        assert_eq!(out["done"], false, "{out}");
+        assert_eq!(out["waited_secs"], 240, "{out}");
+        assert_eq!(started.elapsed(), MAX_WAIT);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unknown_app_is_gone_but_never_ready() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    let started = tokio::time::Instant::now();
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "gone"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], true);
+    assert_eq!(out["waited_secs"], 0);
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    for until in ["ready", "stopped"] {
+        let r = call(
+            &t,
+            "wait_for_apps",
+            json!({"apps": ["nextcloud"], "until": until}),
+        )
+        .await;
+        assert!(
+            matches!(&r, Err(ToolError::BadArgs(m)) if m.contains("no app `nextcloud`")),
+            "{r:?}"
+        );
+    }
+    for bad in [
+        json!({"apps": [], "until": "gone"}),
+        json!({"apps": ["Not An App"], "until": "gone"}),
+        json!({"apps": ["nextcloud"], "until": "deleted"}),
+        json!({"apps": ["nextcloud"]}),
+        json!({"apps": ["nextcloud"], "until": "gone", "timeout_secs": 0}),
+        json!({"apps": ["nextcloud"], "until": "gone", "extra": 1}),
+    ] {
+        let r = call(&t, "wait_for_apps", bad.clone()).await;
+        assert!(matches!(r, Err(ToolError::BadArgs(_))), "{bad}: {r:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn waits_until_an_app_is_ready_or_stopped() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    let t = tools(Some(fake.clone()));
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "stopped", "timeout_secs": 5}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], false, "{out}");
+    assert_eq!(out["apps"][0]["state"], "starting", "{out}");
+    let becomes_ready = {
+        let fake = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            fake.state().deployment.as_mut().unwrap().status =
+                Some(k8s_openapi::api::apps::v1::DeploymentStatus {
+                    ready_replicas: Some(1),
+                    ..Default::default()
+                });
+        })
+    };
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "ready"}),
+    )
+    .await
+    .unwrap();
+    becomes_ready.await.unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(out["apps"][0]["state"], "ready");
+    fake.state().deployment.as_mut().unwrap().spec.replicas = Some(0);
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "stopped"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(out["apps"][0]["state"], "stopped");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_waits_only_on_its_own_apps_and_needs_no_approval() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", Some(ADA), true);
+    other_app(&fake, "minecraft", Some(BO), true);
+    other_app(&fake, "legacy", None, true);
+    let reg = registry(&fake, None);
+    for app in ["minecraft", "legacy"] {
+        let r = reg
+            .call(
+                1,
+                &mut agent(ADA),
+                "wait_for_apps",
+                json!({"apps": ["jellyfin", app], "until": "gone", "timeout_secs": 1}),
+            )
+            .await;
+        assert!(
+            matches!(&r, Err(ToolError::Refused(m)) if m.contains(&format!("`{app}`"))),
+            "{r:?}"
+        );
+    }
+    // Its own, and one already gone: no confirmation, just the answer.
+    let out = reg
+        .call(
+            1,
+            &mut agent(ADA),
+            "wait_for_apps",
+            json!({"apps": ["jellyfin", "gone-app"], "until": "gone", "timeout_secs": 1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["apps"][0]["state"], "deleting");
+    // The lead agent (and an unscoped, unattended task) waits on any app without asking.
+    for mut ctx in [lead(), TaskContext::default()] {
+        let out = reg
+            .call(
+                1,
+                &mut ctx,
+                "wait_for_apps",
+                json!({"apps": ["jellyfin", "minecraft", "legacy"], "until": "gone",
+                       "timeout_secs": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["done"], false);
+    }
+    assert!(reg.confirmations().pending().is_empty());
+}
+
+/// Stop in the UI: the agent's MCP client cancels the call, which drops the wait at once and
+/// stops polling.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_wait_stops_polling() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let server = melissa_agent::mcp::McpServer::new(registry(&fake, None));
+    let token = server.open_session(1, lead(), None).unwrap();
+    let call = {
+        let (server, token) = (server.clone(), token.clone());
+        tokio::spawn(async move {
+            server
+                .handle(
+                    &token,
+                    json!({"jsonrpc": "2.0", "id": "w-1", "method": "tools/call",
+                           "params": {"name": "wait_for_apps",
+                                      "arguments": {"apps": ["jellyfin"], "until": "gone"}}}),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(fake.state().namespace_reads >= 3);
+    server
+        .handle(
+            &token,
+            json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                   "params": {"requestId": "w-1", "reason": "stopped"}}),
+        )
+        .await
+        .unwrap();
+    let answer = call.await.unwrap().unwrap().unwrap();
+    assert_eq!(answer["error"]["code"], -32800, "{answer}");
+    let reads = fake.state().namespace_reads;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(
+        fake.state().namespace_reads,
+        reads,
+        "no polling after the cancel"
+    );
 }
 
 #[path = "tests/network.rs"]

@@ -58,7 +58,9 @@ Code: `crates/agent/src/tools/scope.rs` (model + the one check), `crates/agent/s
   cached; after `assign` the new owner has full access and the old one gets user-only confirmations.
 - **Hidden, not just refused:** agents never see the lead agent-only tools (`create_agent`, `give_agent_job`,
   `agent_status`, `list_agents`, `stop_agent`, `message_agent`, `reassign_workspace`); calling one by name gets
-  "unknown tool". Every targeted tool's `app` argument (reads too) tells an agent "Only the workspaces you look
+  "unknown tool". The reverse holds for the helper-only `ask_lead` (2026-11-24): the lead agent never sees it.
+  It is how a helper reaches anything outside its own workspaces through the lead agent (see lead-loop.md,
+  "Agent-to-agent talk"). Every targeted tool's `app` argument (reads too) tells an agent "Only the workspaces you look
   after (my_apps lists them) and new ones you create … Another agent's needs the user's yes, each time."
   `Nothing` sessions don't see change/scoped-read tools at all.
 - **Every new workspace gets an agent:** an agent's install → itself; the lead agent's install needs `agent`
@@ -106,8 +108,10 @@ user with "`nextcloud` is looked after by agent Ada (…); stop `nextcloud` (…
 `access`: `Read` (names, phases, addresses: everyone but another agent), `ReadScoped` (content the workspace
 controls: not unscoped sessions either), `Change`. For an agent all three mean "its own, or the user's yes".
 `arg` is a required string. Audit of every app tool (2026-11-20): `app_status` Read; `app_logs` ReadScoped;
-`deploy_app` Create; `app_exec`, `update_app`, `stop_app`, `start_app`, `uninstall_app`, `set_app_network` (2026-11-24, `owner_approval` for every agent call) Change; `app_network` Read; `list_apps` and
-`my_apps` untargeted but scope-filtered; `reassign_workspace` lead-only; `my_files` is the agent's own file box
+`deploy_app` Create; `app_exec`, `update_app`, `stop_app`, `start_app`, `uninstall_app`, `set_app_network` (2026-11-24,
+`owner_approval` for every agent call) Change; `app_network` Read; `list_apps` and
+`my_apps` untargeted but scope-filtered; `wait_for_apps` (several apps) untargeted, an agent refused for any
+existing app not its own (2026-11-24); `reassign_workspace` lead-only; `my_files` is the agent's own file box
 (no workspace); `transfer_file` (lead-only, `owner_approval` every call) copies or moves a file between boxes; there is no volume tool (volumes show in `app_status`).
 A creating tool reads `ctx.scope` in `call_in` (see `InstallApp::new_owner`). Never decide ownership in
 a tool by name. `describe_call(args)` adds a one-line description to confirmations;

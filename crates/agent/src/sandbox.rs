@@ -16,14 +16,35 @@
 //! using the proxy, a DNS sinkhole on `127.0.0.1:53` ([`crate::egress::dns`]) answers every
 //! name with one fixed placeholder address; nothing is forwarded.
 //!
+//! Syscalls ([`seccomp`]): a seccomp filter makes the syscalls no agent CLI needs (ptrace,
+//! mounts, new namespaces, kernel modules, bpf, io_uring, keyrings, ...) fail with `EPERM`.
+//! bwrap reads the program from fd [`SECCOMP_FD`] ([`pass_seccomp`] puts it there).
+//!
+//! Resources ([`limits`]): where the host delegates cgroups to Melissa, every sandbox runs in its
+//! own cgroup with memory, process and CPU limits. bwrap then waits on [`BLOCK_FD`] until
+//! [`SandboxCommand::spawn`] has moved it into that cgroup.
+//!
+//! Users ([`users`]): where the server's user has subordinate ids, every agent's sandbox runs as
+//! its own host uid/gid: what it creates is its own on the host, and escaped it owns nothing.
+//! bwrap is then started through `nsenter` in a user namespace mapped for that agent instead of
+//! making its own, and `setpriv` is the first program inside (it becomes the agent's user).
+//!
 //! The command line is built by the pure [`command`] function from a [`SandboxPlan`];
 //! [`SandboxPlan::resolve`] does the host lookups (HOME, binary path, which files exist).
 
+pub mod acl;
+pub mod limits;
+pub mod seccomp;
+pub mod users;
+
 use std::{
     ffi::OsString,
+    io::Write as _,
+    os::fd::RawFd,
     path::{Component, Path, PathBuf},
 };
 
+use command_fds::{CommandFdExt, FdMapping};
 use serde::{Deserialize, Serialize};
 
 use crate::egress::HostRule;
@@ -55,16 +76,19 @@ const RESERVED_ENV: &[&str] = &[
     "no_proxy",
     "GROK_WEB_FETCH_PROXY",
     "NODE_USE_ENV_PROXY",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
 ];
 
 /// Where the bridge's socket directory appears inside the sandbox.
 pub const BRIDGE_DIR: &str = "/run/melissa-net";
 
-/// Per-backend sandbox settings (`[backend.sandbox]` in the lead agent config).
+/// The sandbox a backend runs in: its built-in preset ([`SandboxSpec::preset`]) with the
+/// config's `[backend.sandbox]` table ([`SandboxConfig`]) applied on top.
 ///
 /// Paths are relative to `$HOME`. Missing `ro`/`rw` paths are skipped, so a CLI that is
-/// not logged in simply sees no credentials. If the table is given, it replaces the
-/// built-in preset for that CLI entirely.
+/// not logged in simply sees no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
@@ -72,6 +96,14 @@ pub struct SandboxSpec {
     /// lead agent's user, with access to all of that user's files.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
+    /// Run the CLI under Melissa's seccomp filter ([`seccomp`]). On by default; turn it off
+    /// only for a CLI that verifiably needs a denied syscall.
+    #[serde(default = "enabled_by_default")]
+    pub seccomp: bool,
+    /// Memory, process and CPU limits (`[backend.sandbox.limits]`); defaults in
+    /// [`limits::Limits::default`]. Applied where the host delegates cgroups ([`limits::init`]).
+    #[serde(default)]
+    pub limits: limits::Limits,
     /// Empty, writable, throw-away directories (tmpfs), e.g. a CLI's state directory.
     #[serde(default)]
     pub tmpfs: Vec<String>,
@@ -105,6 +137,8 @@ impl Default for SandboxSpec {
     fn default() -> Self {
         Self {
             enabled: true,
+            seccomp: true,
+            limits: limits::Limits::default(),
             tmpfs: Vec::new(),
             ro: Vec::new(),
             rw: Vec::new(),
@@ -248,6 +282,133 @@ impl SandboxSpec {
     }
 }
 
+/// `[backend.sandbox]` in the server config: changes to the backend's built-in preset
+/// ([`SandboxConfig::apply`]). Keys left out keep the preset's values, so a table with only
+/// `limits` or `seccomp` keeps the CLI's credential binds and state directories.
+///
+/// - `enabled`, `seccomp`: replace the preset's value when given.
+/// - `limits`: key by key ([`limits::LimitsOverride`]).
+/// - `tmpfs`, `ro`, `rw`, `env`: **added** to the preset's lists. Adding is the only thing a
+///   list can do, so a list never drops a preset entry by accident; an empty list is refused
+///   (it would say nothing).
+/// - `preset = false`: start from an empty home instead of the preset (the lists are then
+///   exactly what the table says). The only way to drop a preset path, e.g. a credential file
+///   when the CLI should use an API key instead.
+///
+/// The egress allowlist and network mode are backend keys (`allow`, `network`), not part of
+/// this table; `allow` replaces the CLI's built-in list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxConfig {
+    /// Start from the CLI's preset (default) or from an empty home (`false`).
+    #[serde(default = "enabled_by_default")]
+    pub preset: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seccomp: Option<bool>,
+    #[serde(default)]
+    pub limits: limits::LimitsOverride,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmpfs: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ro: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rw: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<String>>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            preset: true,
+            enabled: None,
+            seccomp: None,
+            limits: limits::LimitsOverride::default(),
+            tmpfs: None,
+            ro: None,
+            rw: None,
+            env: None,
+        }
+    }
+}
+
+impl SandboxConfig {
+    /// The sandbox for a backend whose built-in preset is `preset`.
+    pub fn apply(&self, preset: SandboxSpec) -> SandboxSpec {
+        let mut spec = if self.preset {
+            preset
+        } else {
+            SandboxSpec {
+                network: preset.network,
+                allow: preset.allow,
+                vars: preset.vars,
+                ..SandboxSpec::default()
+            }
+        };
+        if let Some(on) = self.enabled {
+            spec.enabled = on;
+        }
+        if let Some(on) = self.seccomp {
+            spec.seccomp = on;
+        }
+        spec.limits = self.limits.apply(spec.limits);
+        for (list, extra) in [
+            (&mut spec.tmpfs, &self.tmpfs),
+            (&mut spec.ro, &self.ro),
+            (&mut spec.rw, &self.rw),
+            (&mut spec.env, &self.env),
+        ] {
+            for item in extra.iter().flatten() {
+                if !list.contains(item) {
+                    list.push(item.clone());
+                }
+            }
+        }
+        spec
+    }
+
+    /// Refuse lists that would change nothing (`rw = []` once meant "no credentials"; now
+    /// lists only add, so that needs `preset = false`).
+    pub fn validate(&self) -> Result<(), SandboxError> {
+        if !self.preset {
+            return Ok(());
+        }
+        for (key, list) in [
+            ("tmpfs", &self.tmpfs),
+            ("ro", &self.ro),
+            ("rw", &self.rw),
+            ("env", &self.env),
+        ] {
+            if list.as_ref().is_some_and(Vec::is_empty) {
+                return Err(SandboxError::EmptyList(key));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The sandbox a backend runs in: `fixed` (set by code, e.g. [`SandboxSpec::disabled`]) if
+/// any, else `preset` with the config's table applied. `network` and `allow` come from the
+/// backend's own keys.
+pub fn effective(
+    fixed: Option<&SandboxSpec>,
+    config: Option<&SandboxConfig>,
+    preset: impl FnOnce() -> SandboxSpec,
+    network: NetworkMode,
+    allow: Option<Vec<String>>,
+) -> SandboxSpec {
+    let mut spec = match (fixed, config) {
+        (Some(spec), _) => spec.clone(),
+        (None, Some(config)) => config.apply(preset()),
+        (None, None) => preset(),
+    };
+    spec.network = network;
+    spec.allow = allow;
+    spec
+}
+
 /// A valid environment variable name that the sandbox does not set itself.
 pub fn check_env_name(name: &str) -> Result<(), SandboxError> {
     let valid = !name.is_empty()
@@ -270,6 +431,11 @@ pub enum SandboxError {
     BadDir(String),
     #[error("sandbox env `{0}` is not a valid, non-reserved variable name")]
     BadEnv(String),
+    #[error(
+        "`[backend.sandbox] {0} = []` changes nothing: lists add to the preset. \
+         To drop the preset's paths, set `preset = false` and list what the CLI needs"
+    )]
+    EmptyList(&'static str),
     #[error(transparent)]
     BadRule(#[from] crate::egress::BadRule),
     #[error("model `{0}` is not valid here (`provider/model`, only for flavor = \"opencode\")")]
@@ -284,6 +450,8 @@ pub enum SandboxError {
         #[source]
         source: std::io::Error,
     },
+    #[error(transparent)]
+    Users(#[from] users::UsersError),
 }
 
 /// How a host path appears inside the sandbox (always at the same path).
@@ -358,6 +526,15 @@ pub struct SandboxPlan {
     /// Further host directories bound read-write at the same path, after the working
     /// directory: the agent's own file box ([`crate::files`]). Absolute, without `..`.
     pub rw_dirs: Vec<PathBuf>,
+    /// Install the seccomp filter (`--seccomp`); the spawner must then [`pass_seccomp`].
+    pub seccomp: bool,
+    /// Run in a cgroup with these limits: bwrap waits on [`BLOCK_FD`] (`--block-fd`) until
+    /// [`SandboxCommand::spawn`] has placed it. `None`: no limits (turned off for the backend,
+    /// or the host does not delegate cgroups).
+    pub limits: Option<limits::Limits>,
+    /// Run as this agent's own host user ([`users`]; [`SandboxPlan::with_user`]). `None`: as the
+    /// server's user (agent users off).
+    pub user: Option<users::AgentUser>,
 }
 
 /// A top-level system directory (`/bin`, `/lib64`, ...) inside the sandbox.
@@ -533,6 +710,16 @@ impl SandboxPlan {
             _ => Network::Isolated(None),
         };
         let system = SystemRoot::detect(&program);
+        let seccomp = spec.seccomp && seccomp::host_supported();
+        if spec.seccomp && !seccomp {
+            tracing::warn!(
+                arch = std::env::consts::ARCH,
+                "no seccomp filter for this architecture (only x86_64 and aarch64): \
+                 agent sandboxes run without it"
+            );
+        }
+        // Only where the host delegates cgroups ([`limits::init`] logged why not, once).
+        let limits = (spec.limits.enabled && limits::tree().is_some()).then(|| spec.limits.clone());
         Ok(Self {
             bwrap: bwrap.to_path_buf(),
             home,
@@ -542,7 +729,23 @@ impl SandboxPlan {
             network,
             system,
             rw_dirs: Vec::new(),
+            seccomp,
+            limits,
+            user: None,
         })
+    }
+
+    /// Run as the host user of `key` (the file box key: `lead` or the agent's id;
+    /// [`users::SHARED`] for a sandbox without an owner), when agent users are on ([`users::init`]).
+    pub fn with_user(mut self, key: &str) -> Result<Self, SandboxError> {
+        if let Some(setup) = users::active() {
+            let mut user = setup.user(key)?;
+            let (passwd, group) = setup.identity(&self.home)?;
+            user.passwd = Some(passwd);
+            user.group = Some(group);
+            self.user = Some(user);
+        }
+        Ok(self)
     }
 
     /// Set fixed environment variables inside the sandbox (e.g. an agent's config chosen by
@@ -609,18 +812,47 @@ pub fn command(
     args: &[String],
 ) -> (PathBuf, Vec<OsString>) {
     let mut argv: Vec<OsString> = Vec::new();
+    // bwrap makes the missing parents of a bind's destination 0700, owned by whoever it runs as.
+    // With an agent user that is the setup id, not the agent, so each bind first gets its parent
+    // as a plain 0755 directory (`--dir`; its own parents follow that mode).
+    let users = plan.user.is_some();
     let mut push = |items: &[&dyn AsRef<std::ffi::OsStr>]| {
+        if let ([flag, _, dst], true) = (items, users) {
+            let bind = ["--bind", "--ro-bind", "--ro-bind-try"]
+                .iter()
+                .any(|f| flag.as_ref() == *f);
+            let parent = Path::new(dst.as_ref()).parent();
+            if let (true, Some(parent)) = (bind, parent.filter(|p| *p != Path::new("/"))) {
+                argv.push("--dir".into());
+                argv.push(parent.as_os_str().to_os_string());
+            }
+        }
         argv.extend(items.iter().map(|i| i.as_ref().to_os_string()));
     };
 
     // Namespaces and privileges. bwrap always sets no_new_privs for unprivileged users.
-    // `--unshare-all` includes the network namespace (bwrap brings up its loopback).
-    push(&[&"--unshare-all"]);
-    let bridge = match &plan.network {
-        Network::Host => {
-            push(&[&"--share-net"]);
-            None
+    // `--unshare-all` includes the network namespace (bwrap brings up its loopback). With an
+    // agent user the user namespace exists already (bwrap starts in it, [`users`]): the others
+    // one by one.
+    let host_net = plan.network == Network::Host;
+    if plan.user.is_some() {
+        push(&[
+            &"--unshare-ipc",
+            &"--unshare-pid",
+            &"--unshare-uts",
+            &"--unshare-cgroup-try",
+        ]);
+        if !host_net {
+            push(&[&"--unshare-net"]);
         }
+    } else {
+        push(&[&"--unshare-all"]);
+        if host_net {
+            push(&[&"--share-net"]);
+        }
+    }
+    let bridge = match &plan.network {
+        Network::Host => None,
         Network::Isolated(bridge) => bridge.as_ref(),
     };
     push(&[
@@ -631,6 +863,23 @@ pub fn command(
         &"--hostname",
         &SANDBOX_HOSTNAME,
     ]);
+    // With an agent user bwrap runs as root of the agent's user namespace; `setpriv` needs these
+    // to become the agent (and drops them, with the bounding set).
+    if plan.user.is_some() {
+        for cap in users::SETPRIV_CAPS {
+            push(&[&"--cap-add", &cap]);
+        }
+    }
+    // Syscall filter, read from an fd the spawner maps ([`pass_seccomp`]); bwrap installs it
+    // right before executing the first program inside.
+    if plan.seccomp {
+        push(&[&"--seccomp", &SECCOMP_FD.to_string()]);
+    }
+    // Wait (namespaces made, nothing forked or executed inside yet) until the spawner has moved
+    // bwrap into the sandbox's cgroup ([`SandboxCommand::spawn`]).
+    if plan.limits.is_some() {
+        push(&[&"--block-fd", &BLOCK_FD.to_string()]);
+    }
 
     // Environment: nothing from the host unless allowed.
     push(&[&"--clearenv"]);
@@ -652,6 +901,13 @@ pub fn command(
     push(&[&"--setenv", &"TERM", &"dumb"]);
     for (name, value) in &plan.env {
         push(&[&"--setenv", name, value]);
+    }
+    // With an agent user, files of the server's (a working directory it made) are another
+    // user's inside; git would refuse to work in them ("dubious ownership").
+    if plan.user.is_some() {
+        push(&[&"--setenv", &"GIT_CONFIG_COUNT", &"1"]);
+        push(&[&"--setenv", &"GIT_CONFIG_KEY_0", &"safe.directory"]);
+        push(&[&"--setenv", &"GIT_CONFIG_VALUE_0", &"*"]);
     }
     if let Some(proxy) = bridge.and_then(|b| b.proxy) {
         let url = format!("http://{proxy}");
@@ -691,6 +947,18 @@ pub fn command(
         push(&[&"--ro-bind", dir, dir]);
     }
     push(&[&"--ro-bind", &"/etc", &"/etc"]);
+    if let Some(user) = &plan.user {
+        if let (Some(passwd), Some(group)) = (&user.passwd, &user.group) {
+            push(&[&"--ro-bind", passwd, &"/etc/passwd"]);
+            push(&[&"--ro-bind", group, &"/etc/group"]);
+        }
+        let store = Path::new(NIX_STORE);
+        if user.setpriv.starts_with(store) && !plan.system.ro.iter().any(|d| d == store) {
+            push(&[&"--ro-bind", &store, &store]);
+        } else if !user.setpriv.starts_with("/usr") && !user.setpriv.starts_with(store) {
+            push(&[&"--ro-bind", &user.setpriv, &user.setpriv]);
+        }
+    }
     if plan.network == Network::Host {
         push(&[
             &"--ro-bind-try",
@@ -699,13 +967,31 @@ pub fn command(
         ]);
     }
     push(&[&"--proc", &"/proc", &"--dev", &"/dev"]);
-    push(&[&"--tmpfs", &"/tmp", &"--tmpfs", &"/var/tmp"]);
+    // A tmpfs belongs to whoever mounts it: with an agent user that is the setup id, so the
+    // writable ones are open to all (only the agent is inside): /tmp sticky as anywhere, a CLI's
+    // state directory not, since a sticky one would stop the CLI from rewriting a credential
+    // file bound into it (fs.protected_regular: O_CREAT on another user's file there).
+    let (tmp, state): (
+        &[&dyn AsRef<std::ffi::OsStr>],
+        &[&dyn AsRef<std::ffi::OsStr>],
+    ) = if users {
+        (&[&"--perms", &"01777"], &[&"--perms", &"0777"])
+    } else {
+        (&[], &[])
+    };
+    for dir in ["/tmp", "/var/tmp"] {
+        push(tmp);
+        push(&[&"--tmpfs", &dir]);
+    }
 
     // Home: an empty tmpfs with only the configured paths; frozen read-only below.
     push(&[&"--tmpfs", &plan.home]);
     for mount in &plan.mounts {
         match mount {
-            Mount::Tmpfs(p) => push(&[&"--tmpfs", p]),
+            Mount::Tmpfs(p) => {
+                push(state);
+                push(&[&"--tmpfs", p]);
+            }
             Mount::ReadOnly(p) => push(&[&"--ro-bind", p, p]),
             Mount::ReadWrite(p) => push(&[&"--bind", p, p]),
             Mount::BindAt { src, dst } => push(&[&"--bind", src, dst]),
@@ -755,6 +1041,13 @@ pub fn command(
     push(&[&"--chdir", &workdir]);
 
     push(&[&"--"]);
+    if let Some(user) = &plan.user {
+        // First inside: become the agent's user (no groups, no capabilities, empty bounding set).
+        argv.extend(user.setpriv_args());
+    }
+    let mut push = |items: &[&dyn AsRef<std::ffi::OsStr>]| {
+        argv.extend(items.iter().map(|i| i.as_ref().to_os_string()));
+    };
     if let Some(b) = bridge {
         // The bridge starts first, then runs the CLI as its child.
         push(&[&b.netbridge]);
@@ -769,6 +1062,199 @@ pub fn command(
     push(&[&plan.program]);
     argv.extend(args.iter().map(OsString::from));
     (plan.bwrap.clone(), argv)
+}
+
+/// The fd number bwrap reads the seccomp program from (`--seccomp 3`): the first after stdio.
+pub const SECCOMP_FD: RawFd = 3;
+
+/// The fd number bwrap waits on before it starts anything inside (`--block-fd 4`), when the
+/// sandbox has [`limits`].
+pub const BLOCK_FD: RawFd = 4;
+
+/// The seccomp program's fd mapping, if the plan uses one: a sealed memfd at [`SECCOMP_FD`].
+fn seccomp_mapping(plan: &SandboxPlan) -> std::io::Result<Option<FdMapping>> {
+    if !plan.seccomp {
+        return Ok(None);
+    }
+    Ok(Some(FdMapping {
+        parent_fd: seccomp::memfd()?,
+        child_fd: SECCOMP_FD,
+    }))
+}
+
+/// Give `cmd` (the `bwrap` command built from `plan`) the seccomp program at [`SECCOMP_FD`],
+/// if the plan uses one. The program is a sealed memfd; only the child gets it (the parent's
+/// copy is close-on-exec and closes when `cmd` is dropped), so no other process spawned
+/// meanwhile inherits it. Call once per command ([`spawn_command`] does this itself).
+pub fn pass_seccomp<C: CommandFdExt>(cmd: &mut C, plan: &SandboxPlan) -> std::io::Result<()> {
+    if let Some(mapping) = seccomp_mapping(plan)? {
+        cmd.fd_mappings(vec![mapping])
+            .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+/// The one way to spawn a sandbox: the `bwrap` process for `plan` running `args` in `workdir`
+/// ([`command`]), with the seccomp program at [`SECCOMP_FD`] ([`pass_seccomp`]), the cgroup gate
+/// at [`BLOCK_FD`] when the plan has [`limits`], started through `nsenter` in the agent's user
+/// namespace when the plan has a [`users`] user (after granting that user its paths), and an
+/// **empty environment**. `--clearenv`
+/// only clears what the CLI gets; bwrap's own initial environment stays readable inside the
+/// sandbox through `/proc/1/environ` (bwrap is PID 1 there), so inheriting the lead agent's
+/// environment would hand every variable of `melissa-server` (tokens, keys) to the agent. Found
+/// by the escape suite (`crates/agent/tests/escape.rs`, `proc.environ-leak`). Everything the
+/// sandbox needs is in the argv (`--setenv`). Callers may add variables for bwrap itself (they
+/// are visible inside) and set stdio through [`SandboxCommand::command_mut`], then start it
+/// with [`SandboxCommand::spawn`].
+pub fn spawn_command(
+    plan: &SandboxPlan,
+    workdir: &Path,
+    extra_ro: &[PathBuf],
+    args: &[String],
+) -> std::io::Result<SandboxCommand> {
+    let (bwrap, argv) = command(plan, workdir, extra_ro, args);
+    let launch = match &plan.user {
+        None => None,
+        Some(user) => {
+            let setup = users::active().ok_or_else(|| {
+                std::io::Error::other("the plan has an agent user but agent users are off")
+            })?;
+            setup
+                .grant(plan, user, workdir, extra_ro)
+                .map_err(std::io::Error::other)?;
+            Some(setup.launch(user).map_err(std::io::Error::other)?)
+        }
+    };
+    let (mut cmd, holder) = match launch {
+        None => (tokio::process::Command::new(bwrap), None),
+        Some(l) => {
+            let mut cmd = tokio::process::Command::new(&l.program);
+            cmd.args(&l.args).arg(bwrap);
+            (cmd, Some(l.holder))
+        }
+    };
+    cmd.env_clear().args(argv);
+    let mut fds: Vec<FdMapping> = seccomp_mapping(plan)?.into_iter().collect();
+    let gate = match &plan.limits {
+        None => None,
+        Some(l) => {
+            // Both ends are close-on-exec; only bwrap gets the read end, at BLOCK_FD.
+            let (read, write) = std::io::pipe()?;
+            fds.push(FdMapping {
+                parent_fd: read.into(),
+                child_fd: BLOCK_FD,
+            });
+            let label = plan
+                .program
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let cgroup = limits::tree().and_then(|tree| match tree.create(l, &label) {
+                Ok(cg) => Some(cg),
+                Err(e) => {
+                    tracing::warn!(
+                        sandbox = %label,
+                        "cannot create the sandbox's cgroup; it runs without limits: {e}"
+                    );
+                    None
+                }
+            });
+            Some(Gate {
+                release: write,
+                cgroup,
+            })
+        }
+    };
+    // One call: each call adds its own pre-exec step, and a later one could clobber the fd an
+    // earlier one placed.
+    if !fds.is_empty() {
+        cmd.fd_mappings(fds).map_err(std::io::Error::other)?;
+    }
+    Ok(SandboxCommand {
+        command: cmd,
+        gate,
+        holder,
+    })
+}
+
+/// The cgroup a sandbox goes into, and the pipe that lets bwrap go on.
+#[derive(Debug)]
+struct Gate {
+    release: std::io::PipeWriter,
+    cgroup: Option<limits::SandboxCgroup>,
+}
+
+impl Gate {
+    /// Place `pid` (bwrap) in the cgroup, then let it go on. A failed move is logged and the
+    /// sandbox runs anyway: limits guard against exhaustion; the sandbox itself still holds.
+    fn open(mut self, pid: Option<u32>) -> Option<limits::SandboxCgroup> {
+        if let (Some(cg), Some(pid)) = (&self.cgroup, pid) {
+            if let Err(e) = cg.adopt(pid) {
+                tracing::warn!(
+                    "cannot move the agent sandbox into its cgroup; limits may not apply: {e}"
+                );
+            }
+        }
+        // bwrap reads one byte. EPIPE: it is gone already, which the caller's `wait` shows.
+        let _ = self.release.write_all(b"1");
+        self.cgroup
+    }
+}
+
+/// A sandboxed (or, with the sandbox off, plain) agent CLI command, ready to spawn.
+#[derive(Debug)]
+pub struct SandboxCommand {
+    command: tokio::process::Command,
+    gate: Option<Gate>,
+    /// Holds the agent user's namespace until the sandbox has joined it.
+    holder: Option<users::Holder>,
+}
+
+impl SandboxCommand {
+    /// A command without a sandbox (the backend's sandbox is turned off).
+    pub fn plain(command: tokio::process::Command) -> Self {
+        Self {
+            command,
+            gate: None,
+            holder: None,
+        }
+    }
+
+    pub fn command(&self) -> &tokio::process::Command {
+        &self.command
+    }
+
+    /// For stdio, working directory and the like. Start it with [`SandboxCommand::spawn`], never
+    /// with the inner command's own `spawn` (bwrap would wait until this value is dropped and
+    /// then run outside its cgroup).
+    pub fn command_mut(&mut self) -> &mut tokio::process::Command {
+        &mut self.command
+    }
+
+    /// Start the process; with limits, move it into its cgroup and only then let it go on.
+    pub fn spawn(self) -> std::io::Result<SandboxChild> {
+        let Self {
+            mut command,
+            gate,
+            holder,
+        } = self;
+        let child = command.spawn()?;
+        // Closes the parent's copy of the gate's read end.
+        drop(command);
+        if let Some(holder) = holder {
+            holder.release_when_joined(child.id());
+        }
+        let cgroup = gate.and_then(|g| g.open(child.id()));
+        Ok(SandboxChild { child, cgroup })
+    }
+}
+
+/// A running sandbox. Keep `cgroup` until the process has exited: dropping it kills whatever is
+/// left in the sandbox and removes the cgroup.
+#[derive(Debug)]
+pub struct SandboxChild {
+    pub child: tokio::process::Child,
+    pub cgroup: Option<limits::SandboxCgroup>,
 }
 
 /// Find bubblewrap: the Fedora location first, then `PATH`.
@@ -798,7 +1284,146 @@ mod tests {
             network: Network::Host,
             system: SystemRoot::default(),
             rw_dirs: Vec::new(),
+            seccomp: true,
+            limits: None,
+            user: None,
         }
+    }
+
+    #[test]
+    fn argv_carries_the_seccomp_fd_unless_turned_off() {
+        let mut p = plan(Vec::new(), "/usr/bin/cli");
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(has(&a, &["--seccomp", "3"]), "{a:?}");
+        // Before the program: bwrap options end at `--`.
+        let sep = a.iter().position(|x| *x == "--").unwrap();
+        assert!(a.iter().position(|x| *x == "--seccomp").unwrap() < sep);
+        p.seccomp = false;
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        assert!(!strs(&argv).contains(&"--seccomp"));
+    }
+
+    #[test]
+    fn argv_with_an_agent_user_starts_in_its_namespace_and_switches_with_setpriv() {
+        let mut p = plan(
+            vec![Mount::ReadWrite("/home/u/.claude/.credentials.json".into())],
+            "/usr/bin/cli",
+        );
+        p.network = Network::Isolated(None);
+        let (_, argv) = command(&p, Path::new("/state/work/a1"), &[], &["x".into()]);
+        let a = strs(&argv);
+        assert!(a.contains(&"--unshare-all") && !a.contains(&"--cap-add"));
+        assert!(!a.contains(&"--dir") && !a.contains(&"/usr/bin/setpriv"));
+
+        p.user = Some(users::AgentUser {
+            key: "d.a1".into(),
+            uid: 600_001,
+            gid: 600_001,
+            root_uid: 600_000,
+            root_gid: 600_000,
+            inner_uid: 1000,
+            inner_gid: 1000,
+            setpriv: "/usr/bin/setpriv".into(),
+            passwd: Some("/state/agent-users/passwd-1".into()),
+            group: Some("/state/agent-users/group-1".into()),
+        });
+        let (_, argv) = command(&p, Path::new("/state/work/a1"), &[], &["x".into()]);
+        let a = strs(&argv);
+        // The user namespace is made beforehand: no --unshare-all (it would add another).
+        assert!(!a.contains(&"--unshare-all"), "{a:?}");
+        for flag in [
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+        ] {
+            assert!(a.contains(&flag), "{flag}: {a:?}");
+        }
+        for cap in users::SETPRIV_CAPS {
+            assert!(has(&a, &["--cap-add", cap]), "{cap}: {a:?}");
+        }
+        assert!(has(
+            &a,
+            &["--ro-bind", "/state/agent-users/passwd-1", "/etc/passwd"]
+        ));
+        assert!(has(
+            &a,
+            &["--ro-bind", "/state/agent-users/group-1", "/etc/group"]
+        ));
+        // Each bind's parent is made 0755 first (bwrap would make it 0700, owned by the setup id).
+        assert!(
+            has(&a, &["--dir", "/state/work", "--bind", "/state/work/a1"]),
+            "{a:?}"
+        );
+        assert!(has(&a, &["--dir", "/home/u/.claude", "--bind"]), "{a:?}");
+        // Writable tmpfs mounts are the agent's too (bwrap's setup id mounts them).
+        assert!(has(&a, &["--perms", "01777", "--tmpfs", "/tmp"]), "{a:?}");
+        // setpriv is the first program; the CLI follows it.
+        let sep = a.iter().position(|x| *x == "--").unwrap();
+        assert_eq!(a[sep + 1], "/usr/bin/setpriv");
+        let tail = &a[sep + 1..];
+        assert!(has(
+            tail,
+            &["--reuid", "1000", "--regid", "1000", "--clear-groups"]
+        ));
+        assert!(has(tail, &["--", "/usr/bin/cli", "x"]), "{tail:?}");
+        assert!(has(&a, &["--setenv", "GIT_CONFIG_KEY_0", "safe.directory"]));
+        // Host network: the network namespace is simply not unshared.
+        p.network = Network::Host;
+        let (_, argv) = command(&p, Path::new("/state/work/a1"), &[], &[]);
+        let a = strs(&argv);
+        assert!(!a.contains(&"--unshare-net") && !a.contains(&"--share-net"));
+    }
+
+    #[test]
+    fn argv_waits_on_the_cgroup_gate_only_with_limits() {
+        let mut p = plan(Vec::new(), "/usr/bin/cli");
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        assert!(!strs(&argv).contains(&"--block-fd"));
+        p.limits = Some(limits::Limits::default());
+        let (_, argv) = command(&p, Path::new("/w"), &[], &[]);
+        let a = strs(&argv);
+        assert!(has(&a, &["--block-fd", "4"]), "{a:?}");
+        let sep = a.iter().position(|x| *x == "--").unwrap();
+        assert!(a.iter().position(|x| *x == "--block-fd").unwrap() < sep);
+    }
+
+    #[test]
+    fn limits_default_on_and_come_from_the_sandbox_table() {
+        assert_eq!(SandboxSpec::default().limits, limits::Limits::default());
+        assert_eq!(
+            SandboxSpec::preset("claude").limits,
+            limits::Limits::default()
+        );
+        let spec: SandboxSpec =
+            serde_json::from_str(r#"{"limits": {"memory": "1G", "pids": 64}}"#).unwrap();
+        assert_eq!(spec.limits.memory, limits::Bytes(Some(1 << 30)));
+        assert_eq!(spec.limits.pids, limits::Pids(Some(64)));
+        assert_eq!(spec.limits.cpus, limits::Limits::default().cpus);
+        assert!(serde_json::from_str::<SandboxSpec>(r#"{"limits": {"pids": 0}}"#).is_err());
+        // Not set up in unit tests: a resolved plan has no limits (and no gate).
+        assert!(limits::tree().is_none());
+    }
+
+    #[test]
+    fn seccomp_is_on_by_default_and_can_be_turned_off_in_config() {
+        assert!(SandboxSpec::default().seccomp);
+        assert!(SandboxSpec::preset("claude").seccomp);
+        let spec: SandboxSpec = serde_json::from_str(r#"{"seccomp": false}"#).unwrap();
+        assert!(!spec.seccomp && spec.enabled);
+        let spec: SandboxSpec = serde_json::from_str("{}").unwrap();
+        assert!(spec.seccomp);
+    }
+
+    #[test]
+    fn pass_seccomp_maps_only_when_planned() {
+        let mut p = plan(Vec::new(), "/usr/bin/cli");
+        let mut cmd = std::process::Command::new("true");
+        pass_seccomp(&mut cmd, &p).unwrap();
+        p.seccomp = false;
+        let mut cmd = std::process::Command::new("true");
+        pass_seccomp(&mut cmd, &p).unwrap();
     }
 
     fn bridge() -> Bridge {

@@ -35,6 +35,21 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 # Melissa's own license (LICENSE, MIT) and the acknowledgments ship with the report.
 COPY ACKNOWLEDGMENTS.md LICENSE* /out/licenses/
 
+# ---- test-only: the sandbox escape suite and its probe helper ----------------------------
+# Built only with `--target escape-build` (packaging/container/escape-test.sh, `just escape-test-image`),
+# from the same sources and toolchain as the binaries above; the image below never contains them.
+FROM build AS escape-build
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target,id=melissa-target \
+    find crates -type f -exec touch {} + \
+ && cargo build --release --locked --manifest-path crates/escape-probe/Cargo.toml --target-dir target \
+ && cargo test --release --locked --no-run -p melissa-agent --test escape --message-format=json \
+        > /tmp/escape-build.json \
+ && exe=$(grep '"name":"escape"' /tmp/escape-build.json | grep -o '"executable":"[^"]*"' | cut -d'"' -f4) \
+ && test -n "$exe" \
+ && install -D -m 0755 "$exe" /out/escape/escape \
+ && install -D -m 0755 target/release/melissa-escape-probe /out/escape/melissa-escape-probe
+
 # ---- stage 2: fetch and verify k3s (versions and hashes pinned in k3s.lock) ----------
 # No k3s-selinux: SELinux reads as disabled inside a container; the host confines the container.
 FROM ${BUILDER} AS k3s
@@ -64,6 +79,27 @@ RUN set -eu; . /tailscale.lock; mkdir -p /out /src; cd /src; \
     tar xzf "$tgz" --strip-components=1; \
     install -m 0755 tailscale tailscaled /out/; \
     install -m 0644 LICENSE THIRD-PARTY.md /out/
+
+# ---- stage 2c: fetch and verify gVisor (version and hashes in gvisor.lock) ----------------
+# runsc and its containerd shim run apps with isolation `gvisor` (k3s RuntimeClass `gvisor`). runsc
+# looks for its sidecars in gvisor-bin/ next to its real path, so they stay together in
+# /usr/lib/melissa/gvisor, linked into /usr/bin.
+FROM ${BUILDER} AS gvisor
+RUN dnf -y install --setopt=install_weak_deps=False bzip2 && dnf clean all
+COPY packaging/container/gvisor.lock /gvisor.lock
+RUN set -eu; . /gvisor.lock; mkdir -p /out/gvisor-bin /src; cd /src; \
+    curl -fsSL --retry 3 -o gvisor.tar.bz2 \
+        "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}/x86_64/gvisor.tar.bz2"; \
+    curl -fsSL --retry 3 -o LICENSE \
+        "https://raw.githubusercontent.com/google/gvisor/release-${GVISOR_VERSION}/LICENSE"; \
+    printf '%s  gvisor.tar.bz2\n' "$GVISOR_SHA512" | sha512sum -c -; \
+    printf '%s  LICENSE\n' "$GVISOR_LICENSE_SHA256" | sha256sum -c -; \
+    tar xjf gvisor.tar.bz2; \
+    install -m 0755 runsc containerd-shim-runsc-v1 /out/; \
+    install -m 0755 gvisor-bin/gvisor_sentry gvisor-bin/gvisor-sentry-prewarmer \
+        gvisor-bin/runsc-fd-parking gvisor-bin/gvisor-proc-umounter /out/gvisor-bin/; \
+    install -m 0644 LICENSE /out/LICENSE; \
+    [ "$(/out/runsc --version | head -n1)" = "runsc version release-${GVISOR_VERSION}" ]
 
 # ---- stage 3: build whisper.cpp's CLI for voice input (version and hash in whisper.lock) ----
 # A separate program, not linked into melissa-server: the server stays lean and C++-free, and a
@@ -117,6 +153,15 @@ COPY --from=tailscale /out/tailscaled /usr/sbin/tailscaled
 COPY --from=tailscale /out/LICENSE /out/THIRD-PARTY.md /usr/share/licenses/tailscale/
 COPY packaging/container/tailscale.lock /usr/lib/melissa/tailscale.lock
 
+# gVisor (rarely changes): k3s-prepare sets up containerd's runsc entry and the `gvisor` RuntimeClass
+# when these are on PATH.
+COPY --from=gvisor /out/runsc /out/containerd-shim-runsc-v1 /usr/lib/melissa/gvisor/
+COPY --from=gvisor /out/gvisor-bin/ /usr/lib/melissa/gvisor/gvisor-bin/
+COPY --from=gvisor /out/LICENSE /usr/share/licenses/gvisor/LICENSE
+COPY packaging/container/gvisor.lock /usr/lib/melissa/gvisor.lock
+RUN ln -s ../lib/melissa/gvisor/runsc /usr/bin/runsc \
+ && ln -s ../lib/melissa/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
+
 # whisper.cpp's CLI for voice input (rarely changes): found by melissa-server at this path.
 COPY --from=whisper /out/ /usr/lib/melissa/whisper/
 COPY --from=whisper /licenses/LICENSE /usr/share/licenses/whisper.cpp/LICENSE
@@ -155,6 +200,14 @@ RUN set -eu; \
     # /etc/.updated (seen 2026-11-20: melissa-server failed with "Unknown user 'melissa'"), so drop it:
     # the container is new at every start anyway.
     rm -f /etc/.updated; \
+    # Agent users (crates/agent/src/sandbox/users.rs): every agent sandbox runs as its own host ids from
+    # melissa's subordinate range, mapped by newuidmap/newgidmap. 0x70000000: a block systemd's id layout
+    # leaves unused, far from useradd's ranges (by name: the user itself comes from sysusers.d at start).
+    for f in /etc/subuid /etc/subgid; do echo 'melissa:1879048192:65536' >> "$f"; done; \
+    # Fedora gives newuidmap/newgidmap file capabilities, which a rootless image build does not keep
+    # (`rpm -V shadow-utils` shows P; the server then logs "write to uid_map failed"). shadow's classic
+    # install mode instead: setuid root, which survives any image storage.
+    chmod 4755 /usr/bin/newuidmap /usr/bin/newgidmap; \
     ln -s /var/lib/melissa-container/rancher-node /etc/rancher/node; \
     ln -s /var/lib/melissa-container/etc-melissa /etc/melissa
 
@@ -171,12 +224,27 @@ RUN set -eu; \
     for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
         /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
         /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled \
-        /usr/libexec/melissa/factory-reset; do \
+        /usr/libexec/melissa/factory-reset /usr/bin/newuidmap /usr/bin/newgidmap /usr/bin/nsenter \
+        /usr/bin/unshare /usr/bin/setpriv; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
+    for f in /etc/subuid /etc/subgid; do \
+        grep -qx 'melissa:1879048192:65536' "$f" || { echo "lint: no agent-user range in $f"; exit 1; }; done; \
+    for f in /usr/bin/newuidmap /usr/bin/newgidmap; do \
+        test -u "$f" || { echo "lint: $f must be setuid (agent users)"; exit 1; }; done; \
+    # Test-only binaries (escape-build stage) never ship.
+    for f in /usr/bin/melissa-escape-probe /opt/melissa-escape; do \
+        test ! -e "$f" || { echo "lint: test-only $f must not be in the image"; exit 1; }; done; \
     . /usr/lib/melissa/tailscale.lock; \
     [ "$(/usr/bin/tailscale version | head -1)" = "$TAILSCALE_VERSION" ] \
         || { echo "lint: tailscale is not $TAILSCALE_VERSION"; exit 1; }; \
     test -s /usr/share/licenses/tailscale/LICENSE || { echo "lint: tailscale's license missing"; exit 1; }; \
+    . /usr/lib/melissa/gvisor.lock; \
+    [ "$(runsc --version | head -n1)" = "runsc version release-${GVISOR_VERSION}" ] \
+        || { echo "lint: runsc is not release-$GVISOR_VERSION"; exit 1; }; \
+    for f in /usr/bin/containerd-shim-runsc-v1 /usr/lib/melissa/gvisor/gvisor-bin/gvisor_sentry \
+        /usr/lib/melissa/k3s/gvisor/runsc.toml /usr/lib/melissa/k3s/gvisor/config-v3.toml.tmpl \
+        /usr/lib/melissa/k3s/gvisor/runtimeclass.yaml /usr/share/licenses/gvisor/LICENSE; do \
+        test -s "$f" || { echo "lint: gVisor: missing $f"; exit 1; }; done; \
     /usr/lib/melissa/whisper/whisper-cli --help >/dev/null 2>&1 || { echo "lint: whisper-cli doesn't run"; exit 1; }; \
     # npm-only agent CLIs (Gemini CLI, Pi) run on the image's Node; their packages need >= 20.6.
     node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || { echo "lint: node >= 22 missing"; exit 1; }; \

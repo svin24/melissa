@@ -18,8 +18,9 @@ other track is the rootful container ([container-image.md](container-image.md)).
     reads `/usr/lib/melissa/release` unless **`MELISSA_RELEASE_FILE`** names another file; the module and
     the `melissa-host` drop-in set it to the store copy. `MELISSA_RUNTIME=nix` makes Settings treat the
     install as Nix (`HostKind::Nix`).
-  - `packages.<system>.melissa-integration-tests`: the sandbox and egress integration tests of
-    `crates/agent` as `melissa-it-sandbox`, `melissa-it-egress` (for the VM test).
+  - `packages.<system>.melissa-integration-tests`: the sandbox, egress and escape integration tests of
+    `crates/agent` as `melissa-it-sandbox`, `melissa-it-egress`, `melissa-it-escape`, plus the test-only
+    `melissa-escape-probe` (own lockfile; for the VM test, never in the `melissa` package).
   - `packages.<system>.melissa-host`: non-NixOS bundle (prototype, below).
   - `overlays.default` (`pkgs.melissa`), `nixosModules.melissa` (= `default`).
   - `checks.x86_64-linux.melissa-nixos`: the VM test.
@@ -48,6 +49,7 @@ other track is the rootful container ([container-image.md](container-image.md)).
 | `k3s.enable` | true | nixpkgs `services.k3s` (server) |
 | `k3s.package` | `pkgs.k3s_1_37` | the API version Melissa's client is built for |
 | `k3s.airgapImages` | false | `services.k3s.images` += k3s's airgap tarball (needed offline) |
+| `k3s.gvisor.enable` | true | gVisor for apps (default isolation): `k3s.gvisor.package` (`pkgs.gvisor`) on k3s's and the server's PATH, containerd's `runsc` entry as `/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl` (tmpfiles `L+`; nixpkgs' `containerdConfigTemplate` writes the v2 name), the `gvisor` RuntimeClass manifest. Off: gVisor apps are refused, never run on runc |
 | `k3s.images` | `[]` | more image archives (the VM test's app) |
 | `k3s.nodeIp` | null | null: default-route IPv4 pinned at each start by the shared `k3s-node-ip` (as `k3s-prepare` does) |
 | `agents.nixLd` | true | `programs.nix-ld.enable` |
@@ -84,8 +86,14 @@ nixpkgs wrapper on Fedora) gets `/nix/store` too. The store is world-readable on
 secrets by Nix convention. Fedora's argv is unchanged (unit tests pin it).
 
 Unprivileged user namespaces: on by default on NixOS (`security.allowUserNamespaces`, asserted).
-bubblewrap is used **non-setuid** (the unit has `NoNewPrivileges=yes`, as on the images). Hardened
+bubblewrap is used **non-setuid** (from `pkgs.bubblewrap` on the unit's PATH). Hardened
 kernels need `security.unprivilegedUsernsClone = true`.
+
+Agent users (each sandbox its own host ids, `crates/agent/src/sandbox/users.rs`): the module gives
+`melissa` `subUidRanges`/`subGidRanges` (1879048192, 65536 ids); NixOS's own
+`/run/wrappers/bin/newuidmap`/`newgidmap` (file capabilities) map them, and util-linux's `unshare`,
+`nsenter` and `setpriv` come from the system profile. The unit has no `NoNewPrivileges=` for that.
+The startup summary says `Agent users: on` or why not.
 
 ## Agent CLIs on NixOS
 **The documented way: `services.melissa.agents.packages`**, e.g.
@@ -108,6 +116,7 @@ write into the home, which is fine.
 | web UI | lead agent active as `melissa`; `/healthz`, `/tasks` on 127.0.0.1:8080; only a loopback listener; the LAN client can't connect |
 | chat turn | `melissa-server ask` on an echo session backend |
 | sandbox / egress | `melissa-it-sandbox`, `melissa-it-egress` as `melissa`: bwrap, own netns, netbridge, proxy allowlist, MCP, no leaks, no skips |
+| escape suite | `melissa-it-escape` as `melissa`, `MELISSA_ESCAPE_REQUIRED=1`, probe helper from the tests package: every probe passes or skips with a reason, 0 fail |
 | vendor CLI via nix-ld | a /lib64-loader binary as a CLI backend task, inside the sandbox |
 | k3s | node Ready (v1.37.1), `melissa.io/managed` label, Traefik rolled out offline (airgap images) |
 | policies | ServiceAccounts, 5 admission policies + bindings, kubeconfigs root:melissa-kube 0640, RBAC negatives |

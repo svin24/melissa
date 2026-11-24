@@ -4,6 +4,7 @@
 *.pem
 secrets/
 /target/
+/crates/escape-probe/target/
 /bin/
 /dist/
 *.test

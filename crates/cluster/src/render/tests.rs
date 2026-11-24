@@ -1,13 +1,9 @@
 use std::path::Path;
 
-use melissa_appspec::legacy;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 use super::*;
-
-fn nextcloud() -> AppSpec {
-    legacy::nextcloud(&Map::new())
-}
+use crate::fixtures::nextcloud;
 
 fn minecraft() -> AppSpec {
     AppSpec::from_json(&json!({
@@ -72,14 +68,9 @@ fn golden(name: &str, actual: &Value) {
     assert_eq!(text, expected, "golden {name} differs; review and update");
 }
 
-fn shared(keys: &[&str]) -> BTreeSet<String> {
-    keys.iter().map(|k| k.to_string()).collect()
-}
-
 #[test]
 fn nextcloud_renders_to_the_golden_objects() {
     let ports = BTreeMap::from([("http".to_string(), 30000)]);
-    let shared = shared(&["admin_password"]);
     golden(
         "nextcloud",
         &as_json(&render(
@@ -88,7 +79,6 @@ fn nextcloud_renders_to_the_golden_objects() {
             &Placement {
                 node_ports: &ports,
                 hosts: &["192.0.2.15".to_string(), "melissa".to_string()],
-                shared_secrets: &shared,
                 ..Placement::domain("melissa.home.arpa")
             },
         )),
@@ -112,18 +102,16 @@ fn minecraft_renders_to_the_golden_objects() {
     );
 }
 
-/// A converted catalog install renders the objects the catalog did: same volume, Secret and
-/// key, files, Service ports and device port, so an update keeps its data and password.
+/// A web app's objects: its volume, its own Secret per field (referenced from the env), its
+/// files, the web NodePort record and the spec stored on the namespace.
 #[test]
-fn a_converted_catalog_install_keeps_its_objects() {
+fn a_web_app_gets_its_volume_secret_files_and_records() {
     let ports = BTreeMap::from([("http".to_string(), 30000)]);
-    let shared = shared(&["admin_password"]);
     let o = render(
         "nextcloud",
         &nextcloud(),
         &Placement {
             node_ports: &ports,
-            shared_secrets: &shared,
             ..Placement::domain("x.test")
         },
     );
@@ -134,7 +122,7 @@ fn a_converted_catalog_install_keeps_its_objects() {
     assert_eq!(o.secrets.len(), 1);
     assert_eq!(
         (o.secrets[0].name.as_str(), o.secrets[0].key.as_str()),
-        ("nextcloud-secrets", "admin_password")
+        ("nextcloud-secret-admin-password", "admin_password")
     );
     let pod = o.deployment.spec.template.spec.as_ref().unwrap();
     let env = pod.containers[0].env.as_ref().unwrap();
@@ -151,7 +139,7 @@ fn a_converted_catalog_install_keeps_its_objects() {
         .unwrap();
     assert_eq!(
         (key.name.as_str(), key.key.as_str()),
-        ("nextcloud-secrets", "admin_password")
+        ("nextcloud-secret-admin-password", "admin_password")
     );
     assert_eq!(
         o.files.unwrap().metadata.name.as_deref(),
@@ -159,25 +147,60 @@ fn a_converted_catalog_install_keeps_its_objects() {
     );
     let ns = o.namespace.metadata.annotations.unwrap();
     assert_eq!(ns[PORT_ANNOTATION], "30000");
-    assert_eq!(ns[SHARED_SECRETS_ANNOTATION], "admin_password");
     assert_eq!(
         AppSpec::from_text(&ns[SPEC_ANNOTATION]).unwrap(),
         nextcloud()
     );
-    // The old golden file's files hash: the hook is byte for byte the catalog's.
-    let hash = o
-        .deployment
-        .spec
-        .template
-        .metadata
-        .unwrap()
-        .annotations
-        .unwrap()[FILES_HASH_ANNOTATION]
-        .clone();
+}
+
+#[test]
+fn isolation_picks_the_runtime_class_and_labels_pod_and_namespace() {
+    let gvisor = |o: &AppObjects| {
+        let template = &o.deployment.spec.template;
+        (
+            template.spec.as_ref().unwrap().runtime_class_name.clone(),
+            template.metadata.as_ref().unwrap().labels.as_ref().unwrap()[ISOLATION_LABEL].clone(),
+            o.namespace.metadata.labels.as_ref().unwrap()[ISOLATION_LABEL].clone(),
+        )
+    };
+    // No `isolation` in the spec: the default, gVisor.
+    let mc = minecraft();
+    assert_eq!(mc.isolation, None);
+    let o = render("minecraft", &mc, &Placement::domain("x.test"));
     assert_eq!(
-        hash,
-        "3cc528c204f35a34aec5a1f1bf808a942e074ac03bdac24367683f02d6945d28"
+        gvisor(&o),
+        (Some("gvisor".into()), "gvisor".into(), "gvisor".into())
     );
+    // The selector stays the app label alone (a level change is an update, not a new pod set).
+    assert_eq!(
+        o.deployment
+            .spec
+            .selector
+            .match_labels
+            .as_ref()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Other objects don't carry the level (only the namespace and the pods).
+    assert!(!o.volumes[0]
+        .metadata
+        .labels
+        .as_ref()
+        .unwrap()
+        .contains_key(ISOLATION_LABEL));
+
+    // `standard`: the node's default runtime, labelled so.
+    let mut mc = minecraft();
+    mc.isolation = Some(Isolation::Standard);
+    let o = render("minecraft", &mc, &Placement::domain("x.test"));
+    assert_eq!(gvisor(&o), (None, "standard".into(), "standard".into()));
+    // No per-app exception: a real web app without `isolation` gets gVisor too.
+    let o = render("nextcloud", &nextcloud(), &Placement::domain("x.test"));
+    assert_eq!(gvisor(&o).0.as_deref(), Some(GVISOR_RUNTIME_CLASS));
+
+    assert_eq!(runtime_class(Isolation::Gvisor), Some(GVISOR_RUNTIME_CLASS));
+    assert_eq!(runtime_class(Isolation::Standard), None);
 }
 
 #[test]

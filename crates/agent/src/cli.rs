@@ -16,7 +16,10 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::{
     egress::{EgressLease, EgressProxy, EgressRequest, NetworkMode},
-    sandbox::{self, Bridge, SandboxError, SandboxPlan, SandboxSpec},
+    sandbox::{
+        self, Bridge, SandboxChild, SandboxCommand, SandboxConfig, SandboxError, SandboxPlan,
+        SandboxSpec,
+    },
     AgentError, Backend, BackendInfo, BoxFuture, EventSink, RunRequest, Stream, TaskId,
 };
 
@@ -42,10 +45,14 @@ pub struct CliSpec {
     /// the backend cannot use tools.
     #[serde(default)]
     pub mcp_args: Vec<String>,
-    /// Sandbox settings. Absent: the built-in preset for this command
-    /// ([`SandboxSpec::preset`]), which is enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A whole sandbox set by code ([`CliSpec::with_sandbox`]); wins over the preset and
+    /// [`CliSpec::sandbox_table`]. Never read from the config file.
+    #[serde(skip)]
     pub sandbox: Option<SandboxSpec>,
+    /// `[backend.sandbox]`: changes to the built-in preset for this command
+    /// ([`SandboxSpec::preset`], enabled), see [`SandboxConfig`].
+    #[serde(rename = "sandbox", default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_table: Option<SandboxConfig>,
     /// Network access of the sandboxed agent: `proxy` (default: only the allowlisted hosts,
     /// through Melissa's egress proxy, plus Melissa's MCP endpoint), `learn` (every public
     /// host, logged), `none` (MCP only) or `host` (the unfiltered host network).
@@ -66,6 +73,7 @@ impl CliSpec {
             args: args.iter().map(|a| (*a).to_string()).collect(),
             mcp_args: Vec::new(),
             sandbox: None,
+            sandbox_table: None,
             network: crate::egress::NetworkMode::default(),
             allow: None,
         }
@@ -94,19 +102,23 @@ impl CliSpec {
         self.with_sandbox(SandboxSpec::disabled())
     }
 
-    /// The sandbox that applies: the configured one, else the preset for the command.
+    /// The sandbox that applies: one set by code, else the preset for the command with the
+    /// config's `[backend.sandbox]` applied.
     pub fn effective_sandbox(&self) -> SandboxSpec {
-        let mut spec = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxSpec::preset(&self.command));
-        spec.network = self.network;
-        spec.allow = self.allow.clone();
-        spec
+        sandbox::effective(
+            self.sandbox.as_ref(),
+            self.sandbox_table.as_ref(),
+            || SandboxSpec::preset(&self.command),
+            self.network,
+            self.allow.clone(),
+        )
     }
 
     /// Check the configuration (currently: the sandbox paths and env names).
     pub fn validate(&self) -> Result<(), SandboxError> {
+        if let Some(table) = &self.sandbox_table {
+            table.validate()?;
+        }
         self.effective_sandbox().validate()
     }
 
@@ -183,7 +195,7 @@ impl CliBackend {
         self
     }
 
-    /// Program and argv for one run: the CLI itself, or `bwrap` wrapping it.
+    /// The command for one run: the CLI itself, or `bwrap` wrapping it.
     fn command_line(
         &self,
         program: &Path,
@@ -191,10 +203,11 @@ impl CliBackend {
         req: &RunRequest,
         bridge: Option<Bridge>,
         args: Vec<String>,
-    ) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
+    ) -> Result<SandboxCommand, AgentError> {
         let extra: Vec<PathBuf> = req.mcp_config.iter().cloned().collect();
         sandboxed_command(
             &self.sandbox,
+            None,
             self.bwrap.as_deref(),
             self.home.as_deref(),
             program,
@@ -340,10 +353,13 @@ pub(crate) fn open_egress(
 /// disabled, else `bwrap` wrapping it. `extra_ro` are further files bound read-only;
 /// `binds` are host directories bound read-write at paths under `$HOME`; `rw_dirs` are host
 /// directories bound read-write at their own path (the agent's file box); `env` are fixed
-/// variables set inside the sandbox (without a sandbox the caller sets them on the process).
+/// variables set inside the sandbox (without a sandbox the caller sets them on the process);
+/// `user` is whose host user the sandbox runs as ([`crate::sandbox::users`]; the file box key,
+/// None: the shared user of sandboxes without an owner).
 #[allow(clippy::too_many_arguments)] // internal helper; each argument is a distinct input
 pub(crate) fn sandboxed_command(
     sandbox: &SandboxSpec,
+    user: Option<&str>,
     bwrap: Option<&Path>,
     home: Option<&Path>,
     program: &Path,
@@ -354,12 +370,11 @@ pub(crate) fn sandboxed_command(
     env: &[(String, String)],
     bridge: Option<Bridge>,
     args: Vec<String>,
-) -> Result<(PathBuf, Vec<std::ffi::OsString>), AgentError> {
+) -> Result<SandboxCommand, AgentError> {
     if !sandbox.enabled {
-        return Ok((
-            program.to_path_buf(),
-            args.into_iter().map(Into::into).collect(),
-        ));
+        let mut command = tokio::process::Command::new(program);
+        command.args(args);
+        return Ok(SandboxCommand::plain(command));
     }
     let bwrap = bwrap.ok_or_else(|| {
         AgentError::Unavailable("sandbox is enabled but `bwrap` was not found".into())
@@ -370,8 +385,9 @@ pub(crate) fn sandboxed_command(
         .with_rw_dirs(rw_dirs)?
         .with_env(&sandbox.vars)?
         .with_env(env)?
-        .with_bridge(bridge);
-    Ok(sandbox::command(&plan, workdir, extra_ro, &args))
+        .with_bridge(bridge)
+        .with_user(user.unwrap_or(crate::sandbox::users::SHARED))?;
+    Ok(sandbox::spawn_command(&plan, workdir, extra_ro, &args)?)
 }
 
 impl Backend for CliBackend {
@@ -431,14 +447,14 @@ impl Backend for CliBackend {
                 req.mcp.iter().map(|m| m.token.clone()).collect(),
             )?;
             let bridge = lease.as_ref().and_then(|l| l.bridge().cloned());
-            let (program, args) = self.command_line(&program, &workdir, req, bridge, args)?;
-
-            let mut command = tokio::process::Command::new(&program);
+            let mut command = self.command_line(&program, &workdir, req, bridge, args)?;
             if !self.sandbox.enabled {
-                command.envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
+                command
+                    .command_mut()
+                    .envs(self.sandbox.vars.iter().map(|(k, v)| (k, v)));
             }
-            let mut child = command
-                .args(args)
+            command
+                .command_mut()
                 .current_dir(&workdir)
                 // Ask CLIs for plain text; any remaining escape codes are stripped in `pump`.
                 .env("NO_COLOR", "1")
@@ -448,12 +464,15 @@ impl Backend for CliBackend {
                 .stderr(Stdio::piped())
                 // Cancellation and timeouts drop this future; make sure the child dies too.
                 // Under bwrap that takes the whole sandbox (PID namespace) with it.
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|source| AgentError::Spawn {
-                    command: self.spec.command.clone(),
-                    source,
-                })?;
+                .kill_on_drop(true);
+            // `_cgroup` lives until the CLI has exited (dropping it removes the cgroup).
+            let SandboxChild {
+                mut child,
+                cgroup: _cgroup,
+            } = command.spawn().map_err(|source| AgentError::Spawn {
+                command: self.spec.command.clone(),
+                source,
+            })?;
 
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();

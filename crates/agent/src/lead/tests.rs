@@ -2,7 +2,7 @@
 //! network). The fake agents call Melissa's tools over their MCP sessions like real agents.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -37,6 +37,7 @@ mod compaction;
 mod queue;
 mod schedules;
 mod switching;
+mod talk;
 
 const DEVICE: &str = "d-0a1b2c3d";
 /// A session backend that plays one scripted agent per `open`.
@@ -275,6 +276,8 @@ impl Tool for Uninstall {
 struct FakeWorkspaces {
     workspaces: Mutex<BTreeMap<String, Owner>>,
     assigned: Mutex<Vec<(String, String, String)>>,
+    /// Workspaces whose namespace is terminating.
+    deleting: Mutex<BTreeSet<String>>,
 }
 
 impl FakeWorkspaces {
@@ -295,6 +298,10 @@ impl FakeWorkspaces {
     fn owner(&self, workspace: &str) -> Option<Owner> {
         self.workspaces.lock().unwrap().get(workspace).cloned()
     }
+    /// The workspace's app was removed with its data: its namespace is terminating.
+    fn mark_deleting(&self, workspace: &str) {
+        self.deleting.lock().unwrap().insert(workspace.into());
+    }
 }
 
 impl ResourceOwners for FakeWorkspaces {
@@ -310,6 +317,7 @@ impl ResourceOwners for FakeWorkspaces {
 impl WorkspaceStore for FakeWorkspaces {
     fn workspaces(&self) -> BoxFuture<'_, Result<Vec<WorkspaceInfo>, String>> {
         Box::pin(async move {
+            let deleting = self.deleting.lock().unwrap().clone();
             Ok(self
                 .workspaces
                 .lock()
@@ -322,6 +330,7 @@ impl WorkspaceStore for FakeWorkspaces {
                     assigned_by: None,
                     assigned_at: None,
                     legacy_owner: None,
+                    deleting: deleting.contains(name),
                 })
                 .collect())
         })
@@ -662,6 +671,7 @@ async fn turn_with_a_tool_call_then_a_second_turn_in_the_same_session() {
     assert_eq!(finished(&events), "end_turn");
     let expect = [
         LeadEvent::UserMessage {
+            owner_msg: None,
             turn,
             text: "What kernel does this device run?".into(),
             attachments: vec![],
@@ -1151,6 +1161,7 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert_eq!(kinds.first(), Some(&&LeadEvent::EarlierStart));
     assert_eq!(kinds.last(), Some(&&LeadEvent::EarlierEnd));
     assert!(kinds.contains(&&LeadEvent::UserMessage {
+        owner_msg: None,
         turn: 1,
         text: "Check the logs.".into(),
         attachments: vec![],
@@ -1487,6 +1498,7 @@ async fn the_lead_creates_a_named_agent_and_gives_it_a_job() {
     .await;
     // The report turn: shown as Ada's report, not as a user message.
     let report = LeadEvent::HelperReport {
+        message: None,
         turn: turn + 1,
         agent: ADA.into(),
         name: "Ada".into(),
@@ -1513,6 +1525,7 @@ async fn the_lead_creates_a_named_agent_and_gives_it_a_job() {
         .map(|r| r.event)
         .collect();
     assert!(agent_events.contains(&LeadEvent::UserMessage {
+        owner_msg: None,
         turn: 1,
         text: "A job from the lead agent:\n\nReport the kernel version.".into(),
         attachments: vec![],
@@ -2293,6 +2306,60 @@ async fn deleting_a_helper_by_the_lead_needs_the_users_confirmation() {
 }
 
 #[tokio::test]
+async fn an_app_being_deleted_does_not_keep_its_agent() {
+    let s = setup("delete-while-app-deleting", Vec::new());
+    let q = s.lead_token();
+    create_agents(&s, &q, &["Ada", "Bo"]).await;
+    // Ada's only app was just removed with its data: its namespace is terminating.
+    s.workspaces.set("minecraft", Owner::Agent(ADA.into()));
+    s.workspaces.mark_deleting("minecraft");
+    // Bo has one app on its way out and one that stays.
+    s.workspaces.set("pumpkin", Owner::Agent(BO.into()));
+    s.workspaces.mark_deleting("pumpkin");
+    s.workspaces.set("nextcloud", Owner::Agent(BO.into()));
+
+    // The lead's list no longer counts the deleting apps.
+    let r = call(&s.server, &q, "list_agents", json!({})).await;
+    let agents = r["structuredContent"]["agents"].as_array().unwrap().clone();
+    let apps = |id: &str| {
+        agents
+            .iter()
+            .find(|a| a["agent_id"] == id)
+            .map(|a| a["workspaces"].clone())
+            .unwrap()
+    };
+    assert_eq!(apps(ADA), json!([]), "{r}");
+    assert_eq!(apps(BO), json!(["nextcloud"]), "{r}");
+
+    // Ada can be deleted at once; nothing waits for the namespace to go.
+    let gone = s.pool().delete("Ada", "ui").await.unwrap();
+    assert_eq!(gone.agent, ADA);
+    assert!(s.pool().get("Ada").is_none());
+
+    // Bo is still refused, naming only the app that stays.
+    match s.pool().delete("Bo", "ui").await {
+        Err(LeadError::InUse(m)) => assert_eq!(
+            m,
+            "Bo still looks after nextcloud. Reassign or remove its apps first."
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(s.pool().get("Bo").is_some());
+    // The user's workspace list still shows the deleting app, marked.
+    let list = s.pool().workspaces().await.unwrap();
+    let pumpkin = list.iter().find(|w| w.workspace == "pumpkin").unwrap();
+    assert!(pumpkin.deleting);
+    assert!(
+        !list
+            .iter()
+            .find(|w| w.workspace == "nextcloud")
+            .unwrap()
+            .deleting
+    );
+    s.close().await;
+}
+
+#[tokio::test]
 async fn the_user_reassigns_workspaces_without_a_confirmation() {
     let s = setup("user-reassign", Vec::new());
     let q = s.lead_token();
@@ -2341,7 +2408,8 @@ async fn a_lead_brokered_message_is_tagged_as_data_and_audited() {
     );
     let s = setup_full(
         scratch("agent-broker"),
-        Vec::new(),
+        // Bo's answer comes back to the lead agent on its own.
+        vec![lead_hears_report("s-1", "Bo (d-0a1b2c3d.a2)")],
         vec![bo],
         AgentLimits::default(),
         |_| {},
@@ -2376,6 +2444,21 @@ async fn a_lead_brokered_message_is_tagged_as_data_and_audited() {
         ),
         "{detail}"
     );
+    // Kept in Ada and Bo's thread as relayed (by the lead agent), Bo's answer in his with her.
+    let thread = s.pool().threads().read(BO, ADA).unwrap();
+    assert_eq!(thread.len(), 1, "{thread:?}");
+    assert_eq!(
+        (
+            thread[0].from.as_str(),
+            thread[0].to.as_str(),
+            thread[0].delivery.as_str()
+        ),
+        (ADA, BO, "relayed")
+    );
+    assert_eq!(report_turn(&s, "Bo").await, "end_turn");
+    let replies = s.pool().threads().read(BO, "lead").unwrap();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0].kind, "reply");
     s.close().await;
 }
 

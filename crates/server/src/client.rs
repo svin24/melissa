@@ -351,6 +351,15 @@ impl Printer {
                     "[taint] read untrusted content{from}; changes now need your OK until a fresh start"
                 ));
             }
+            LeadEvent::HelperReport {
+                name,
+                message: Some(kind),
+                ..
+            } => {
+                self.line(&format!(
+                    "[agent {name}] message ({kind}) passed to the lead agent"
+                ));
+            }
             LeadEvent::HelperReport { name, status, .. } => {
                 self.line(&format!(
                     "[agent {name}] report ({status}) passed to the lead agent"

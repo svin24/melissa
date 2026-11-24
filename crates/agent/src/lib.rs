@@ -30,7 +30,10 @@ pub mod session;
 pub mod tools;
 
 pub use acp::{AcpBackend, AcpSpec};
-pub use audit::{requester, AuditLog, AuditRecord, PERSON as AUDIT_PERSON, PERSON_ID};
+pub use audit::{
+    requester, requester_is_owner, AuditLog, AuditRecord, PERSON as AUDIT_PERSON, PERSON_ID,
+    PERSON_IS_OWNER,
+};
 pub use backend::{
     AgentError, Backend, BackendInfo, BoxFuture, EventSink, McpEndpoint, OutputLine, RunRequest,
     Stream,
@@ -43,4 +46,4 @@ pub use claude::{ClaudeBackend, ClaudeSpec};
 pub use cli::{CliBackend, CliSpec, MCP_CONFIG_PLACEHOLDER};
 pub use echo::{EchoBackend, EchoSessionBackend, EchoSpec};
 pub use egress::{EgressProxy, NetworkMode};
-pub use sandbox::SandboxSpec;
+pub use sandbox::{SandboxConfig, SandboxSpec};
