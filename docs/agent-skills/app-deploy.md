@@ -1,7 +1,7 @@
 # App deploys: any app from an agent's spec
 
 **When:** touching the app tools (`my_apps`, `deploy_app`, `update_app`, `list_apps`, `app_status`,
-`app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`), the app spec format, rendering, app ports
+`wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`), the app spec format, rendering, app ports
 and links, the write identity `melissa-apps` or its admission policies, the owner's
 `app-credentials` command.
 Code: `crates/appspec` (spec, validation), `crates/cluster/src/{render,apps,app_tools}.rs`,
@@ -177,6 +177,7 @@ volumes and secrets are never deleted by an update (`unused_volumes_kept`).
 | `update_app {app, spec}` | **Deploy**, target `app` (Change) | whole new spec (start from `app_status.spec`); keeps volumes, secrets, ports; a stopped app stays stopped |
 | `my_apps {}` | read-only, no target (filters by `ctx.scope` in `call_in`) | **call first when a request mentions an app.** Agent: `yours` (essentials from `app_status`: `app`, `description`, `phase`, `image`, `url`, `ports` name/protocol/address, `reachability`, `assigned_by`, `assigned_at`) and `not_yours` (`app` + `owner` name only, null = unassigned; nothing else of them is read). Lead agent/user: `by_owner` groups (`owner`, `agent` id, `apps`), unassigned last. Cost: one namespace read per app, a status only for the caller's own apps (the lead: every app). Always in an agent's tool list. |
 | `app_status {app}` | read-only, target `app` (Read: the owner, the lead agent, the user; another agent → user-only confirmation) | phase, pods (reason codes), `spec`, `description`, links, `ports`, `assigned_by`/`assigned_at` |
+| `wait_for_apps {apps, until, timeout_secs?}` | read-only, no target (an agent: refused unless every existing app is its own, checked in `call_in`) | waits in the same turn until every app is `gone` (namespace removed; an unknown app counts), `ready` or `stopped` (`app_status` phases; an unknown app is an error). Polls every 3 s; timeout default and max 240 s (below Claude Code's 300 s tool-call limit, less the 60 s margin), then answers `done: false` with each app's `state` and the agent calls again. Cancel-safe: Stop drops the call (MCP `notifications/cancelled`). Feed: "Waited for apps". |
 | `list_apps` | read-only | every app namespace (labelled list), same phases; for an agent, other agents' apps only as `{app, owner, not_yours}` |
 | `app_logs`, `stop_app`, `start_app`, `uninstall_app` | unchanged | uninstall keeps data, secrets and the spec; `deploy_app` brings it back |
 | `app_exec {app, command, container?, stdin?, timeout_secs?}` | **Destructive** (always confirmed, the card shows the exact argv), reads private + untrusted, target `app` (Change) | one command in the newest running pod's container (default: the first), argv only, no implicit shell; stdin optional (≤ 64 KiB, then closed); timeout 30 s default, 300 s max (on timeout: output so far, `timed_out`, the command may still run); stdout/stderr ≤ 64 KiB each, `*_truncated`, control chars stripped; returns `exit_code`. Audited: the `tool.call` line names the agent, app, argv (each arg cut to 200 chars), stdin length (never its content), pod, container and exit code (`Tool::audit_detail`). |

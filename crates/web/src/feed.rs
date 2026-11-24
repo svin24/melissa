@@ -1279,6 +1279,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ("deploy_app", "Setting up an app", "Set up an app"),
     ("update_app", "Changing an app", "Changed an app"),
     ("app_status", "Checking an app", "Checked an app"),
+    ("wait_for_apps", "Waiting for apps", "Waited for apps"),
     ("app_logs", "Reading an app's logs", "Read an app's logs"),
     ("stop_app", "Stopping an app", "Stopped an app"),
     ("start_app", "Starting an app", "Started an app"),
@@ -2885,6 +2886,10 @@ mod tests {
         assert!(!a.destructive);
         assert_eq!(tool_words("melissa__stop_app").done, "Stopped an app");
         assert_eq!(tool_words("start_app").doing, "Starting an app");
+        assert_eq!(
+            tool_words("mcp__melissa__wait_for_apps").done,
+            "Waited for apps"
+        );
     }
 
     #[test]

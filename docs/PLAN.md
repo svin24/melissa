@@ -137,7 +137,7 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   server-side applied by a second identity, `melissa/melissa-apps`, whose writes admission policies pin to
   `app-*` workspace namespaces with Pod Security baseline, never privileged or on the host (no Secret reads
   anywhere). Every deploy and update is confirmed by the user with a summary of what runs. Tools: `deploy_app`,
-  `update_app`, `list_apps`, `app_status`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`.
+  `update_app`, `list_apps`, `app_status`, `wait_for_apps`, `app_logs`, `app_exec`, `stop_app`, `start_app`, `uninstall_app`.
   Support for apps from the old catalog was removed 2026-11-23 (no users). Details:
   `docs/agent-skills/app-deploy.md`.
 - **Isolation (2026-11-23, DECISIONS):** apps run under **gVisor** (`runsc`, RuntimeClass `gvisor`, platform

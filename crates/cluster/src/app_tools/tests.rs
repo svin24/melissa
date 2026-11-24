@@ -48,6 +48,8 @@ struct State {
     gvisor_handler: Option<String>,
     /// RuntimeClasses asked for.
     runtime_classes_asked: Vec<String>,
+    /// How often `namespace` was read.
+    namespace_reads: usize,
 }
 
 /// A cluster in memory: applies objects, keeps one namespace.
@@ -92,7 +94,8 @@ impl AppRead for Fake {
         let name = namespace_of(app);
         Box::pin(async move {
             self.check()?;
-            let s = self.state();
+            let mut s = self.state();
+            s.namespace_reads += 1;
             if let Some(other) = s.others.get(name.trim_start_matches("app-")) {
                 return Ok(Some(other.clone()));
             }
@@ -2183,10 +2186,10 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
     };
     assert_eq!(
         names(&TaskContext::default()),
-        ["app_status", "list_apps", "my_apps"]
+        ["app_status", "list_apps", "my_apps", "wait_for_apps"]
     );
     let specs = reg.visible_to(&agent(ADA), None);
-    assert_eq!(specs.len(), 10);
+    assert_eq!(specs.len(), 11);
     for tool in [
         "app_exec",
         "stop_app",
@@ -2206,7 +2209,7 @@ fn agents_are_told_their_scope_and_scopeless_sessions_only_read() {
     }
     // The lead agent sees everything unchanged.
     let all = reg.visible_to(&lead(), None);
-    assert_eq!(all.len(), 10);
+    assert_eq!(all.len(), 11);
     let uninstall = all.iter().find(|s| s.name == "uninstall_app").unwrap();
     assert!(uninstall.params["properties"]["app"]
         .get("description")
@@ -3695,4 +3698,324 @@ async fn a_terminating_namespace_is_listed_as_deleting() {
     let list = workspaces.workspaces().await.unwrap();
     assert_eq!(list[0].owner, Owner::Agent(ADA.into()));
     assert!(list[0].deleting);
+}
+
+// ---- wait_for_apps ---------------------------------------------------------------------------
+
+/// Another app's namespace (in `others`), optionally owned by `agent` and being deleted.
+fn other_app(fake: &Fake, app: &str, agent: Option<&str>, deleting: bool) {
+    let mut labels = BTreeMap::from([("melissa.io/app".to_string(), app.to_string())]);
+    if let Some(agent) = agent {
+        labels.insert("melissa.io/owner-agent".into(), agent.into());
+    }
+    fake.state().others.insert(
+        app.into(),
+        Namespace {
+            metadata: ObjectMeta {
+                name: Some(format!("app-{app}")),
+                labels: Some(labels),
+                deletion_timestamp: deleting
+                    .then_some(Time(k8s_openapi::jiff::Timestamp::UNIX_EPOCH)),
+                ..ObjectMeta::default()
+            },
+            ..Namespace::default()
+        },
+    );
+}
+
+/// `wait_for_apps` reading `fake` every `poll`.
+fn waiter(fake: &Arc<Fake>, poll: Duration) -> WaitForApps {
+    WaitForApps {
+        read: Some(fake.clone() as Arc<dyn AppRead>),
+        poll,
+    }
+}
+
+#[test]
+fn the_longest_wait_stays_below_the_agents_tool_call_limit() {
+    assert_eq!(MAX_WAIT, Duration::from_secs(240));
+    assert!(MAX_WAIT < melissa_agent::claude::CLAUDE_TOOL_CALL_LIMIT);
+    let spec = tools(None)["wait_for_apps"].spec();
+    assert_eq!(spec.labels, Labels::READ_ONLY);
+    assert!(spec.description.contains("240 s"));
+    assert_eq!(spec.params["properties"]["timeout_secs"]["maximum"], 240);
+    assert_eq!(spec.params["additionalProperties"], false);
+}
+
+#[tokio::test(start_paused = true)]
+async fn deleted_apps_are_waited_for_until_they_are_gone() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    other_app(&fake, "minecraft", None, true);
+    let remover = {
+        let fake = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            fake.state().others.remove("jellyfin");
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            fake.state().others.remove("minecraft");
+        })
+    };
+    let out = call(
+        &tools(Some(fake.clone())),
+        "wait_for_apps",
+        json!({"apps": ["jellyfin", "minecraft", "jellyfin"], "until": "gone"}),
+    )
+    .await
+    .unwrap();
+    remover.await.unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(out["until"], "gone");
+    // Polled every 3 s: done at the first poll after 14 s.
+    assert_eq!(out["waited_secs"], 15, "{out}");
+    assert_eq!(
+        out["apps"],
+        json!([
+            {"app": "jellyfin", "state": "gone", "done": true},
+            {"app": "minecraft", "state": "gone", "done": true},
+        ])
+    );
+    assert!(out.get("note").is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_short_poll_interval_answers_sooner() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let remover = {
+        let fake = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            fake.state().others.remove("jellyfin");
+        })
+    };
+    let started = tokio::time::Instant::now();
+    let out = waiter(&fake, Duration::from_millis(100))
+        .call(json!({"apps": ["jellyfin"], "until": "gone"}))
+        .await
+        .unwrap();
+    remover.await.unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(started.elapsed(), Duration::from_millis(300));
+}
+
+#[tokio::test(start_paused = true)]
+async fn at_the_timeout_it_answers_with_each_apps_state() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let out = call(
+        &tools(Some(fake.clone())),
+        "wait_for_apps",
+        json!({"apps": ["jellyfin", "never-there"], "until": "gone", "timeout_secs": 10}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], false, "{out}");
+    assert_eq!(out["waited_secs"], 10);
+    assert_eq!(
+        out["apps"],
+        json!([
+            {"app": "jellyfin", "state": "deleting", "done": false},
+            {"app": "never-there", "state": "gone", "done": true},
+        ])
+    );
+    assert!(out["note"]
+        .as_str()
+        .unwrap()
+        .contains("wait_for_apps again"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timeout_is_capped() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let t = tools(Some(fake.clone()));
+    for args in [
+        json!({"apps": ["jellyfin"], "until": "gone", "timeout_secs": 3600}),
+        json!({"apps": ["jellyfin"], "until": "gone"}),
+    ] {
+        let started = tokio::time::Instant::now();
+        let out = call(&t, "wait_for_apps", args).await.unwrap();
+        assert_eq!(out["done"], false, "{out}");
+        assert_eq!(out["waited_secs"], 240, "{out}");
+        assert_eq!(started.elapsed(), MAX_WAIT);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unknown_app_is_gone_but_never_ready() {
+    let fake = Arc::new(Fake::default());
+    let t = tools(Some(fake.clone()));
+    let started = tokio::time::Instant::now();
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "gone"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], true);
+    assert_eq!(out["waited_secs"], 0);
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    for until in ["ready", "stopped"] {
+        let r = call(
+            &t,
+            "wait_for_apps",
+            json!({"apps": ["nextcloud"], "until": until}),
+        )
+        .await;
+        assert!(
+            matches!(&r, Err(ToolError::BadArgs(m)) if m.contains("no app `nextcloud`")),
+            "{r:?}"
+        );
+    }
+    for bad in [
+        json!({"apps": [], "until": "gone"}),
+        json!({"apps": ["Not An App"], "until": "gone"}),
+        json!({"apps": ["nextcloud"], "until": "deleted"}),
+        json!({"apps": ["nextcloud"]}),
+        json!({"apps": ["nextcloud"], "until": "gone", "timeout_secs": 0}),
+        json!({"apps": ["nextcloud"], "until": "gone", "extra": 1}),
+    ] {
+        let r = call(&t, "wait_for_apps", bad.clone()).await;
+        assert!(matches!(r, Err(ToolError::BadArgs(_))), "{bad}: {r:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn waits_until_an_app_is_ready_or_stopped() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    let t = tools(Some(fake.clone()));
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "stopped", "timeout_secs": 5}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], false, "{out}");
+    assert_eq!(out["apps"][0]["state"], "starting", "{out}");
+    let becomes_ready = {
+        let fake = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            fake.state().deployment.as_mut().unwrap().status =
+                Some(k8s_openapi::api::apps::v1::DeploymentStatus {
+                    ready_replicas: Some(1),
+                    ..Default::default()
+                });
+        })
+    };
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "ready"}),
+    )
+    .await
+    .unwrap();
+    becomes_ready.await.unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(out["apps"][0]["state"], "ready");
+    fake.state().deployment.as_mut().unwrap().spec.replicas = Some(0);
+    let out = call(
+        &t,
+        "wait_for_apps",
+        json!({"apps": ["nextcloud"], "until": "stopped"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["done"], true, "{out}");
+    assert_eq!(out["apps"][0]["state"], "stopped");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_waits_only_on_its_own_apps_and_needs_no_approval() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", Some(ADA), true);
+    other_app(&fake, "minecraft", Some(BO), true);
+    other_app(&fake, "legacy", None, true);
+    let reg = registry(&fake, None);
+    for app in ["minecraft", "legacy"] {
+        let r = reg
+            .call(
+                1,
+                &mut agent(ADA),
+                "wait_for_apps",
+                json!({"apps": ["jellyfin", app], "until": "gone", "timeout_secs": 1}),
+            )
+            .await;
+        assert!(
+            matches!(&r, Err(ToolError::Refused(m)) if m.contains(&format!("`{app}`"))),
+            "{r:?}"
+        );
+    }
+    // Its own, and one already gone: no confirmation, just the answer.
+    let out = reg
+        .call(
+            1,
+            &mut agent(ADA),
+            "wait_for_apps",
+            json!({"apps": ["jellyfin", "gone-app"], "until": "gone", "timeout_secs": 1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["apps"][0]["state"], "deleting");
+    // The lead agent (and an unscoped, unattended task) waits on any app without asking.
+    for mut ctx in [lead(), TaskContext::default()] {
+        let out = reg
+            .call(
+                1,
+                &mut ctx,
+                "wait_for_apps",
+                json!({"apps": ["jellyfin", "minecraft", "legacy"], "until": "gone",
+                       "timeout_secs": 1}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["done"], false);
+    }
+    assert!(reg.confirmations().pending().is_empty());
+}
+
+/// Stop in the UI: the agent's MCP client cancels the call, which drops the wait at once and
+/// stops polling.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_wait_stops_polling() {
+    let fake = Arc::new(Fake::default());
+    other_app(&fake, "jellyfin", None, true);
+    let server = melissa_agent::mcp::McpServer::new(registry(&fake, None));
+    let token = server.open_session(1, lead(), None).unwrap();
+    let call = {
+        let (server, token) = (server.clone(), token.clone());
+        tokio::spawn(async move {
+            server
+                .handle(
+                    &token,
+                    json!({"jsonrpc": "2.0", "id": "w-1", "method": "tools/call",
+                           "params": {"name": "wait_for_apps",
+                                      "arguments": {"apps": ["jellyfin"], "until": "gone"}}}),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(fake.state().namespace_reads >= 3);
+    server
+        .handle(
+            &token,
+            json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                   "params": {"requestId": "w-1", "reason": "stopped"}}),
+        )
+        .await
+        .unwrap();
+    let answer = call.await.unwrap().unwrap().unwrap();
+    assert_eq!(answer["error"]["code"], -32800, "{answer}");
+    let reads = fake.state().namespace_reads;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(
+        fake.state().namespace_reads,
+        reads,
+        "no polling after the cancel"
+    );
 }
