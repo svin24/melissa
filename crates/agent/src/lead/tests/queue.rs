@@ -30,6 +30,7 @@ async fn submit(s: &Setup, text: &str, mode: SendMode) -> Sent {
 
 fn user(turn: TurnId, text: &str) -> LeadEvent {
     LeadEvent::UserMessage {
+        owner_msg: None,
         turn,
         text: text.into(),
         attachments: vec![],
@@ -264,6 +265,7 @@ async fn helper_reports_get_turns_of_their_own_but_never_loop() {
         conv.report(
             &format!("report {i}"),
             Report {
+                message: None,
                 agent: ADA.into(),
                 name: "Ada".into(),
                 status: "succeeded".into(),

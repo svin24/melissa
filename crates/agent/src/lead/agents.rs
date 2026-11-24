@@ -15,10 +15,17 @@
 //! `transfer_file` (a file from one file box to another; always asks the user). The user talks to any agent directly (API `/api/agents/{agent}/messages`, CLI
 //! `melissa-server chat --agent <name>`), renames agents and reassigns workspaces.
 //!
+//! Helpers reach the lead agent with the helper-only `ask_lead`, and their answers to her messages
+//! come back to her on their own; every exchange is kept per pair of agents (see `talk`).
+//!
 //! Taint flows both ways: a job or message from a tainted lead agent taints the agent, and the
 //! Lead agent becomes tainted when it reads the status of an agent that read untrusted content.
 
+mod talk;
 mod transfer;
+
+#[cfg(test)]
+pub(crate) use talk::MAX_PENDING_ASKS;
 
 use std::{
     collections::HashMap,
@@ -133,6 +140,10 @@ struct PoolInner {
     start: Mutex<()>,
     /// The device's schedules, once they run (deleting an agent removes its schedules).
     schedules: OnceLock<super::schedules::Schedules>,
+    /// The record of agent-to-agent talk (`<state>/threads/`).
+    threads: super::threads::Threads,
+    /// Helpers' requests waiting for the lead agent ([`talk`]).
+    asks: talk::Asks,
 }
 
 /// The agents of this device. Cheap to clone.
@@ -232,6 +243,7 @@ impl AgentPool {
         registry: AgentRegistry,
         workspaces: Option<Arc<dyn WorkspaceStore>>,
     ) -> Self {
+        let threads = super::threads::Threads::new(threads_dir(&registry));
         Self {
             inner: Arc::new(PoolInner {
                 limits,
@@ -243,6 +255,8 @@ impl AgentPool {
                 jobs: Mutex::new(HashMap::new()),
                 start: Mutex::new(()),
                 schedules: OnceLock::new(),
+                threads,
+                asks: talk::Asks::default(),
             }),
         }
     }
@@ -267,6 +281,7 @@ impl AgentPool {
             Arc::new(ReassignWorkspace(self.clone())),
             Arc::new(DeleteAgent(self.clone())),
             Arc::new(transfer::TransferFile(self.clone())),
+            Arc::new(talk::AskLead(self.clone())),
         ]
     }
 
@@ -433,8 +448,15 @@ impl AgentPool {
     fn handable(&self, a: &Attached) -> Vec<(&'static str, Labels)> {
         let registry = a.server.registry();
         registry
-            .visible(a.lead_allow.as_deref())
+            .visible(None)
             .into_iter()
+            // Helper-only tools are not the lead agent's to limit.
+            .filter(|s| {
+                registry.is_helper_only(s.name)
+                    || a.lead_allow
+                        .as_deref()
+                        .is_none_or(|allow| allow.contains(&s.name))
+            })
             .filter(|s| !registry.is_lead_only(s.name))
             .map(|s| (s.name, s.labels))
             .collect()
@@ -470,10 +492,13 @@ impl AgentPool {
         let handable = self.handable(a);
         let allow: Vec<&'static str> = match &agent.tools {
             None => handable.iter().map(|(n, _)| *n).collect(),
-            // Every agent can see which apps are its own, whatever tools it was given.
+            // Every agent can see which apps are its own and ask the lead agent, whatever
+            // tools it was given.
             Some(names) => handable
                 .iter()
-                .filter(|(n, _)| *n == "my_apps" || names.iter().any(|w| w == n))
+                .filter(|(n, _)| {
+                    *n == "my_apps" || *n == "ask_lead" || names.iter().any(|w| w == n)
+                })
                 .map(|(n, _)| *n)
                 .collect(),
         };
@@ -1579,6 +1604,7 @@ impl AgentPool {
                 lead.report(
                     &text,
                     super::conversation::Report {
+                        message: None,
                         agent: id,
                         name,
                         status: status.into(),
@@ -1760,10 +1786,19 @@ impl AgentPool {
             .and_then(|f| lock(&self.inner.convs).get(&f.id).cloned())
             .is_some_and(|c| c.is_tainted());
         let conv = self.conversation(&agent)?;
-        // A working agent gets it when its turn ends (its queue).
+        // A working agent gets it when its turn ends (its queue). Its answer comes back to
+        // the lead agent as data when that turn ends ([`talk`]).
         let sent = conv
-            .offer(&framed, "lead")
+            .offer_hooked(&framed, "lead", Some(self.reply_hook(&agent)))
             .map_err(|e| ToolError::BadArgs(e.to_string()))?;
+        self.inner.threads.record(&super::threads::ThreadEntry::new(
+            from.as_ref()
+                .map_or(super::threads::LEAD, |f| f.id.as_str()),
+            &agent.id,
+            "message",
+            if from.is_some() { "relayed" } else { "data" },
+            text,
+        ));
         self.watch_conv(conv.clone());
         if ctx.tainted || source_tainted {
             conv.taint(crate::mcp::TaintSource {
@@ -1786,6 +1821,7 @@ impl AgentPool {
             "queued": matches!(sent, super::Sent::Queued { .. }),
             "from": source,
             "delivered_as": "data",
+            "reply": "comes back to you as data when the agent has answered",
         });
         with_note(&mut out, (!notes.is_empty()).then(|| notes.join("; ")));
         Ok(out)
@@ -1810,6 +1846,13 @@ impl AgentPool {
         with_note(&mut out, note);
         Ok(out)
     }
+}
+
+/// Where the threads of agent-to-agent talk live: next to the agents' directory.
+fn threads_dir(registry: &AgentRegistry) -> std::path::PathBuf {
+    let agents = registry.agent_dir("-");
+    let agents = agents.parent().unwrap_or(&agents);
+    agents.parent().unwrap_or(agents).join("threads")
 }
 
 /// A message for an agent, framed as data: nothing inside may close the data block early.

@@ -191,6 +191,13 @@ impl Lookup for Ui {
         self.lead.confirmations().get(id).map(|c| c.args)
     }
 
+    fn confirmation_quote(&self, id: u64) -> Option<String> {
+        self.lead
+            .confirmations()
+            .get(id)
+            .and_then(|c| c.owner_quote)
+    }
+
     fn agent_name(&self, agent: &str) -> Option<String> {
         self.lead.agents().get(agent).map(|b| b.name)
     }

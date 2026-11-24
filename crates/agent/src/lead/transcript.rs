@@ -110,6 +110,28 @@ impl Transcript {
         parse_chat(&text, max_turns)
     }
 
+    /// The owner's message with owner message id `id` (when it was sent, its text), from
+    /// both files. Only a `user_message` Melissa recorded with that id counts.
+    pub fn find_owner_message(&self, id: &str) -> Option<(u64, String)> {
+        let text = {
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            self.read_all()
+        };
+        text.lines()
+            // Cheap filter first: most lines are not it.
+            .filter(|l| l.contains(id))
+            .filter_map(|l| serde_json::from_str::<EventRecord>(l).ok())
+            .find_map(|r| match r.event {
+                LeadEvent::UserMessage {
+                    owner_msg: Some(m),
+                    text,
+                    scheduled: None,
+                    ..
+                } if m == id => Some((r.ts, text)),
+                _ => None,
+            })
+    }
+
     /// Archived chats, newest first.
     pub fn past_chats(&self) -> Vec<PastChat> {
         let Ok(dir) = std::fs::read_dir(self.archive_dir()) else {
@@ -179,8 +201,25 @@ impl Transcript {
                     break;
                 }
                 LeadEvent::UserMessage {
-                    text, attachments, ..
-                } => ("user", with_file_names(text, attachments)),
+                    text,
+                    attachments,
+                    owner_msg,
+                    ..
+                } => (
+                    "user",
+                    super::conversation::with_owner_msg(
+                        owner_msg.as_deref(),
+                        with_file_names(text, attachments),
+                    ),
+                ),
+                LeadEvent::HelperReport {
+                    name,
+                    message: Some(_),
+                    ..
+                } => (
+                    "melissa",
+                    format!("helper {name} sent you a message; it reached you as data"),
+                ),
                 LeadEvent::HelperReport { name, status, .. } => (
                     "melissa",
                     format!("helper {name}'s job ended ({status}); its report reached you as data"),
@@ -399,6 +438,7 @@ mod tests {
         t.append(&record(
             1,
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "set up photos".into(),
                 attachments: vec![],
@@ -432,6 +472,7 @@ mod tests {
             t.append(&record(
                 i,
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: i,
                     text: format!("message {i}"),
                     attachments: vec![],
@@ -476,6 +517,7 @@ mod tests {
         let lines: Vec<String> = [
             // An earlier chat, closed by "New chat".
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "old".into(),
                 attachments: vec![],
@@ -484,6 +526,7 @@ mod tests {
             LeadEvent::NewChat,
             // Two daemon runs, both counting turns from 1.
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "a".into(),
                 attachments: vec![],
@@ -494,6 +537,7 @@ mod tests {
                 text: "ra".into(),
             },
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "b".into(),
                 attachments: vec![],
@@ -507,6 +551,7 @@ mod tests {
                 ms: Some(12),
             },
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 2,
                 text: "c".into(),
                 attachments: vec![],
@@ -538,6 +583,7 @@ mod tests {
         assert_eq!(
             last_two[0].event,
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "b".into(),
                 attachments: vec![],
@@ -550,6 +596,7 @@ mod tests {
     fn a_steered_turn_survives_a_reload_and_unknown_events_are_skipped() {
         let mut lines: Vec<String> = [
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 5,
                 text: "get immich working".into(),
                 attachments: vec![],
@@ -557,6 +604,7 @@ mod tests {
             },
             LeadEvent::TurnSteered { turn: 5 },
             LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 6,
                 text: "and jellyfin".into(),
                 attachments: vec![],
@@ -596,6 +644,7 @@ mod tests {
 
     fn user(text: &str) -> LeadEvent {
         LeadEvent::UserMessage {
+            owner_msg: None,
             turn: 1,
             text: text.into(),
             attachments: vec![],

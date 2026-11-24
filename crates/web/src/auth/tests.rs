@@ -51,6 +51,8 @@ fn paths_are_public_member_or_owner() {
         "/ui/settings/reset",
         "/api/settings/reset",
         "/api/usage/providers",
+        "/api/threads",
+        "/api/threads/lead/d-0a1b2c3d.a1",
     ] {
         assert_eq!(need(p), Need::Owner, "{p}");
     }

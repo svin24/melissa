@@ -11,6 +11,7 @@
 
 mod builtin;
 mod confirm;
+pub mod owner;
 #[cfg(test)]
 mod permission_tests;
 pub mod permissions;
@@ -18,13 +19,18 @@ pub mod policy;
 pub mod scope;
 mod setup;
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub use builtin::DeviceInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
+pub use owner::{you_asked, OwnerMessage, OwnerMessages};
 pub use permissions::{
     ActionKey, Grant, Permissions, PermissionsError, Principal, Rule, RuleOffer,
 };
@@ -88,6 +94,21 @@ pub trait Tool: Send + Sync {
     /// call this tool (e.g. `start_agent`). Default: false.
     fn lead_only(&self) -> bool {
         false
+    }
+
+    /// Only helpers see and may call this tool, never a session that may delegate (the lead
+    /// agent), e.g. `ask_lead`. Default: false.
+    fn helper_only(&self) -> bool {
+        false
+    }
+
+    /// The argument in which a call may cite one of the owner's chat messages by its id as
+    /// the reason for the call (see [`owner`]). The registry checks the id before anything
+    /// else: an id that is not a message the owner typed refuses the call, and a verified one
+    /// is quoted on the call's confirmation ("You asked: …"). It never answers the
+    /// confirmation. Default: none.
+    fn owner_citation(&self) -> Option<&'static str> {
+        None
     }
 
     /// The resource this tool works on, named by one of its arguments. The registry checks
@@ -160,6 +181,9 @@ pub struct ToolRegistry {
     permissions: Permissions,
     /// Setup password cards for the chats ([`SetupNotices`]); the install pipeline sends.
     setup_notices: SetupNotices,
+    /// Where cited owner messages are verified (set once the lead agent runs; shared by
+    /// every clone). Without it, every citation is refused.
+    owner_messages: Arc<OnceLock<Arc<dyn OwnerMessages>>>,
 }
 
 /// Why "Always allow" could not save a rule.
@@ -206,7 +230,21 @@ impl ToolRegistry {
             agents: None,
             permissions: Permissions::default(),
             setup_notices: SetupNotices::new(),
+            owner_messages: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Where the owner's messages are verified (once; later calls are ignored).
+    pub fn set_owner_messages(&self, messages: Arc<dyn OwnerMessages>) {
+        let _ = self.owner_messages.set(messages);
+    }
+
+    /// The owner's message `id`, if it is one (see [`owner`]).
+    pub fn verify_owner_message(&self, id: &str) -> Option<OwnerMessage> {
+        if !owner::valid_owner_msg_id(id) {
+            return None;
+        }
+        self.owner_messages.get()?.verify(id)
     }
 
     /// The channel the install pipeline tells the chats about new setup passwords on (the
@@ -293,6 +331,7 @@ impl ToolRegistry {
         self.tools
             .values()
             .filter(|t| ctx.delegate || !t.lead_only())
+            .filter(|t| !(ctx.delegate && t.helper_only()))
             .filter_map(|t| {
                 let mut spec = t.spec();
                 match t.target() {
@@ -312,6 +351,11 @@ impl ToolRegistry {
     /// Is `name` a Lead-only tool?
     pub fn is_lead_only(&self, name: &str) -> bool {
         self.tools.get(name).is_some_and(|t| t.lead_only())
+    }
+
+    /// Is `name` a helper-only tool?
+    pub fn is_helper_only(&self, name: &str) -> bool {
+        self.tools.get(name).is_some_and(|t| t.helper_only())
     }
 
     /// Call a tool for `task`, applying the policy. May wait for a human confirmation.
@@ -347,7 +391,7 @@ impl ToolRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
-        if tool.lead_only() && !ctx.delegate {
+        if (tool.lead_only() && !ctx.delegate) || (tool.helper_only() && ctx.delegate) {
             // Same answer as for a nonexistent tool: agents never learn these exist.
             return Err(ToolError::UnknownTool(name.to_string()));
         }
@@ -361,6 +405,29 @@ impl ToolRegistry {
             self.audit(task, "tool.call", name, &hash, &format!("error: {e}"));
             return Err(e);
         }
+        // A cited owner message must be one (checked first: a made-up proof is refused).
+        let quote = match tool
+            .owner_citation()
+            .and_then(|arg| args.get(arg))
+            .filter(|v| !v.is_null())
+        {
+            None => None,
+            Some(cited) => {
+                let found = cited.as_str().and_then(|id| self.verify_owner_message(id));
+                match found {
+                    Some(m) => Some(you_asked(&m.text)),
+                    None => {
+                        let e = ToolError::Refused(
+                            "the cited message is not one the owner wrote (cite the id shown \
+                             in front of the owner's message)"
+                                .into(),
+                        );
+                        self.audit(task, "tool.refused", name, &hash, &e.to_string());
+                        return Err(e);
+                    }
+                }
+            }
+        };
 
         let mut reasons = Vec::new();
         let mut note = None;
@@ -446,6 +513,7 @@ impl ToolRegistry {
                     &reasons.join("; "),
                     ctx.confirm_wait,
                     answerable,
+                    quote,
                 )
                 .await;
             if let Some(c) = &crossed {
@@ -583,7 +651,7 @@ impl ToolRegistry {
         reason: &str,
         wait: Option<Duration>,
     ) -> Result<(), ToolError> {
-        self.ask(task, rule, name, args, reason, wait, Answerable::Own)
+        self.ask(task, rule, name, args, reason, wait, Answerable::Own, None)
             .await
     }
 
@@ -599,6 +667,7 @@ impl ToolRegistry {
         reason: &str,
         wait: Option<Duration>,
         answerable: Answerable,
+        quote: Option<String>,
     ) -> Result<(), ToolError> {
         let user_only = answerable == Answerable::UserOnly;
         let hash = args_hash(args);
@@ -612,13 +681,15 @@ impl ToolRegistry {
             self.audit_grant(task, "tool.auto_approved", name, &hash, grant, reason);
             return Ok(());
         }
-        let (info, rx) = if user_only {
-            self.confirmations
-                .request_user_only(task, name, args, reason)
-        } else {
-            self.confirmations
-                .request_with(task, name, args, reason, rule)
-        };
+        let (info, rx) = self.confirmations.request_quoted(
+            task,
+            name,
+            args,
+            reason,
+            if user_only { None } else { rule },
+            user_only,
+            quote,
+        );
         let _withdraw = Withdraw {
             store: &self.confirmations,
             id: info.id,

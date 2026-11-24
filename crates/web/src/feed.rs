@@ -380,6 +380,8 @@ impl Feed {
                 text,
                 attachments,
                 scheduled,
+                // Only for the agents (proof of what the owner asked); not shown.
+                owner_msg: _,
             } => {
                 self.busy = Some(*turn);
                 self.open_steps = None;
@@ -403,11 +405,16 @@ impl Feed {
                 agent,
                 name,
                 status,
+                message,
             } => {
-                // Melissa speaks because a helper's job ended: a small line, not a message.
+                // Melissa speaks because a helper's job ended, or a helper sent her a
+                // message (a request, or its answer to hers): a small line, not a message.
                 self.busy = Some(*turn);
                 self.open_steps = None;
-                let (label, state) = finished_words(name, status);
+                let (label, state) = match message {
+                    Some(_) => (format!("Message from {name}"), ActivityState::Done),
+                    None => finished_words(name, status),
+                };
                 vec![
                     self.add(
                         format!("h{}", rec.seq),
@@ -470,7 +477,14 @@ impl Feed {
                 status,
                 ms,
                 turn,
-            } => self.tool_call(rec, turn.or(self.busy), id, title, status, *ms),
+            } => {
+                let out = self.tool_call(rec, turn.or(self.busy), id, title, status, *ms);
+                if tool_name(title) == "ask_lead" {
+                    // "Asked Melissa": the lead agent by the name the user gave her.
+                    self.name_lead(&out, &look.lead_name());
+                }
+                out
+            }
             LeadEvent::Thought { turn, text, ms } => self.thought(rec, *turn, text, *ms),
             LeadEvent::Permission {
                 title,
@@ -828,6 +842,30 @@ impl Feed {
                 Item::Note { .. } | Item::Divider { .. } | Item::Date { .. }
             )
         })
+    }
+
+    /// Steps that name the lead agent by her default name ("Asked Melissa") get the name
+    /// the user gave her.
+    fn name_lead(&mut self, changes: &[Change], lead: &str) {
+        if lead == LEAD_DEFAULT_NAME {
+            return;
+        }
+        for c in changes {
+            let (Change::Added(i) | Change::Updated(i)) = c else {
+                continue;
+            };
+            if let Some(Entry {
+                item: Item::Steps { steps, .. },
+                ..
+            }) = self.entries.get_mut(*i)
+            {
+                for step in steps.iter_mut() {
+                    if step.label.contains(LEAD_DEFAULT_NAME) {
+                        step.label = step.label.replace(LEAD_DEFAULT_NAME, lead);
+                    }
+                }
+            }
+        }
     }
 
     fn add(&mut self, key: String, item: Item) -> Change {
@@ -1196,6 +1234,11 @@ pub trait Lookup {
     fn rule_offer(&self, _id: u64) -> Option<RuleOffer> {
         None
     }
+    /// The verified quote of the owner's message a pending confirmation cites ("You asked:
+    /// …", [`melissa_agent::tools::you_asked`]).
+    fn confirmation_quote(&self, _id: u64) -> Option<String> {
+        None
+    }
 }
 
 /// No extra knowledge.
@@ -1317,6 +1360,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Passing a helper a message",
         "Passed a helper a message",
     ),
+    ("ask_lead", "Asking Melissa", "Asked Melissa"),
     (
         "reassign_workspace",
         "Handing an app to a helper",
@@ -1679,6 +1723,15 @@ pub fn approval_words(
             a.detail = words.unknown.then(|| shorten(other, 40));
         }
     }
+    // The owner's own message the call cites, verified by Melissa ("You asked: …"): in the
+    // card's consequence line, no element of its own.
+    if let Some(quote) = look.confirmation_quote(id) {
+        a.consequence = if a.consequence.is_empty() {
+            quote
+        } else {
+            format!("{} {quote}", a.consequence)
+        };
+    }
     a
 }
 
@@ -1844,6 +1897,7 @@ mod tests {
             rec(
                 1,
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "Install Nextcloud".into(),
                     attachments: vec![],
@@ -2239,6 +2293,7 @@ mod tests {
         let report = rec(
             7,
             LeadEvent::HelperReport {
+                message: None,
                 turn: 1,
                 agent: "d.a1".into(),
                 name: "Ada".into(),
@@ -2256,6 +2311,63 @@ mod tests {
                 agent: Some("d.a1".into()),
             })
         );
+    }
+
+    #[test]
+    fn helpers_messages_ask_lead_steps_and_cited_owner_messages() {
+        /// The lead agent renamed, one confirmation citing the owner's words.
+        struct Named;
+        impl Lookup for Named {
+            fn lead_name(&self) -> String {
+                "Ivy".into()
+            }
+            fn confirmation_quote(&self, id: u64) -> Option<String> {
+                (id == 7).then(|| "You asked: “open it up”".into())
+            }
+        }
+        let mut feed = Feed::new();
+        // A helper's request (or answer) for the lead agent: one small line.
+        let ask = rec(
+            1,
+            LeadEvent::HelperReport {
+                turn: 1,
+                agent: "d.a1".into(),
+                name: "Ada".into(),
+                status: "asked".into(),
+                message: Some("ask".into()),
+            },
+        );
+        feed.apply(&ask, &Named);
+        assert_eq!(
+            feed.entries().last().map(|e| e.item.clone()),
+            Some(Item::Activity {
+                label: "Message from Ada".into(),
+                detail: None,
+                state: ActivityState::Done,
+                agent: Some("d.a1".into()),
+            })
+        );
+        // In the helper's chat: "Asked Ivy" (the lead agent by her name).
+        let step = rec(
+            2,
+            LeadEvent::ToolCall {
+                turn: Some(1),
+                id: "t1".into(),
+                title: "melissa__ask_lead".into(),
+                status: "done".into(),
+                ms: None,
+            },
+        );
+        feed.apply(&step, &Named);
+        let Some(Item::Steps { steps, .. }) = feed.entries().last().map(|e| e.item.clone()) else {
+            panic!("no steps: {:?}", feed.entries());
+        };
+        assert_eq!(steps[0].label, "Asked Ivy");
+        // A confirmation citing the owner's message quotes it in its consequence line.
+        let a = approval_words(7, "stop_agent", "x", None, &Named);
+        assert!(a.consequence.ends_with(" You asked: “open it up”"), "{a:?}");
+        let b = approval_words(8, "stop_agent", "x", None, &Named);
+        assert!(!b.consequence.contains("You asked"), "{b:?}");
     }
 
     #[test]
@@ -2302,6 +2414,7 @@ mod tests {
             &rec(
                 1,
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
@@ -2336,6 +2449,7 @@ mod tests {
             &rec(
                 4,
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 2,
                     text: "again".into(),
                     attachments: vec![],
@@ -2360,6 +2474,7 @@ mod tests {
     #[test]
     fn a_steered_turn_says_so_and_a_plain_stop_says_stopped() {
         let user = |turn, text: &str| LeadEvent::UserMessage {
+            owner_msg: None,
             turn,
             text: text.into(),
             attachments: vec![],
@@ -2494,6 +2609,7 @@ mod tests {
             vec![
                 switched("claude"),
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
@@ -2512,6 +2628,7 @@ mod tests {
     fn a_switch_mid_chat_is_one_line_not_two() {
         let mut feed = Feed::new();
         let user = |turn| LeadEvent::UserMessage {
+            owner_msg: None,
             turn,
             text: "hi".into(),
             attachments: vec![],
@@ -2555,6 +2672,7 @@ mod tests {
             &mut feed,
             vec![
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
@@ -2602,6 +2720,7 @@ mod tests {
         let events = || {
             vec![
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "hi".into(),
                     attachments: vec![],
@@ -2664,6 +2783,7 @@ mod tests {
             &mut feed,
             vec![
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "Set it up".into(),
                     attachments: vec![],
@@ -2712,6 +2832,7 @@ mod tests {
         let (yesterday, now) = (1_795_079_520, 1_795_171_320);
         let mut feed = Feed::new().with_clock(Clock::fixed(tz, today));
         let user = |turn, text: &str| LeadEvent::UserMessage {
+            owner_msg: None,
             turn,
             text: text.into(),
             attachments: vec![],

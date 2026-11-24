@@ -16,6 +16,7 @@ pub mod icon;
 pub(crate) mod prompt;
 pub mod registry;
 pub mod schedules;
+pub mod threads;
 pub mod transcript;
 pub mod usage;
 
@@ -267,6 +268,8 @@ impl Lead {
             files: files.clone(),
             provider_usage: usage_hub.clone(),
         });
+        // Cited owner messages are looked up in the lead agent's and the helpers' chats.
+        registry.set_owner_messages(Arc::new(pool.clone()));
         forward_setup_passwords(registry.setup_notices(), events.clone(), pool.clone());
         forward_confirmations(registry.confirmations(), events, pool.clone());
         let lead = Self {

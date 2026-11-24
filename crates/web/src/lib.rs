@@ -1725,6 +1725,7 @@ mod tests {
             let (app, lead) = app_with(Some(fx.settings(HostKind::Other, false)));
             for e in [
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "Hi".into(),
                     attachments: vec![],
@@ -2972,6 +2973,7 @@ mod tests {
 
             // A conversation with a tool call and a pending confirmation.
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Install <b>Immich</b>".into(),
                 attachments: vec![],
@@ -3857,6 +3859,7 @@ mod tests {
             let (app, lead) = app();
             for e in [
                 LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: 1,
                     text: "Hi".into(),
                     attachments: vec![],
@@ -4833,6 +4836,7 @@ mod tests {
         async fn a_fresh_start_keeps_the_one_chat_and_old_archives_stay_readable() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi <there>".into(),
                 attachments: vec![],
@@ -4954,6 +4958,7 @@ mod tests {
             let (app, lead) = app();
             for i in 0..100 {
                 lead.events().push(LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: i + 1,
                     text: format!("message number {i}."),
                     attachments: vec![],
@@ -4996,6 +5001,7 @@ mod tests {
             // A longer chat: pages in the middle link both ways, a page at most PAGE_ENTRIES.
             for i in 100..300 {
                 lead.events().push(LeadEvent::UserMessage {
+                    owner_msg: None,
                     turn: i + 1,
                     text: format!("message number {i}."),
                     attachments: vec![],
@@ -5030,6 +5036,7 @@ mod tests {
         async fn a_stream_from_another_epoch_reloads() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
@@ -5077,6 +5084,7 @@ mod tests {
         async fn the_stream_sends_rendered_updates() {
             let (app, lead) = app();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],
@@ -5159,6 +5167,7 @@ mod tests {
                 .unwrap();
             let mut body = res.into_body();
             lead.events().push(LeadEvent::UserMessage {
+                owner_msg: None,
                 turn: 1,
                 text: "Hi".into(),
                 attachments: vec![],

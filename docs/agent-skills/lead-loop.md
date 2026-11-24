@@ -63,7 +63,8 @@ agent, `mod.rs` the lead agent, `agents.rs` agent pool + Lead-only tools, `regis
   reply as `result`, `read_untrusted_content`); `list_agents` (with workspaces per agent and unassigned workspaces);
   `stop_agent` (cancel + close session, `stopped` until the next job or message); `message_agent {agent, text,
   from_agent?}` (agent-to-agent only via the lead agent: text wrapped in `<melissa-data from="…">`, a closing tag
-  inside is escaped, audited `agent.brokered`); `reassign_workspace {workspace, to}` (always the user's confirmation);
+  inside is escaped, audited `agent.brokered`; the agent's answer comes back to the lead agent on its own, see
+  "Agent-to-agent talk" below); `reassign_workspace {workspace, to}` (always the user's confirmation);
   `delete_agent {agent}` (2026-11-20; Destructive: always the user's confirmation, naming the agent; then
   `AgentPool::delete`, the same as Settings → Agents and `DELETE /api/agents/{agent}`: refused while it looks after
   apps, else its schedules, file box, transcript/session store and workdir go; event `agent_deleted`).
@@ -111,6 +112,41 @@ Owner feedback: asked to "set up a Minecraft server", the lead deployed it itsel
   with `job` (one call). The brief carries the goal, the user's words (`user_request`) and the research. Then
   the lead tells the user who is on it and ends her turn; the helper's report brings her back to relay the
   outcome (2026-11-21).
+
+## Agent-to-agent talk, both ways, and the owner's messages as proof (2026-11-24)
+Owner decisions (DECISIONS 2026-11-24). Code: `lead/agents/talk.rs`, `lead/threads.rs`, `tools/owner.rs`; tests
+`lead/tests/talk.rs`.
+- **`ask_lead {text, on_behalf_of?}`**, helper-only (`Tool::helper_only`: hidden from the lead agent, and a call
+  from a delegating session is "unknown tool"; every helper gets it, even with an explicit tool list or a limited
+  `[lead] tools`). The request goes to the lead agent's conversation through `Conversation::report_hooked`, the
+  helper-report path: framed as data (`<melissa-data from="agent Name (id)">`, closing tag escaped), a turn of its
+  own (`helper_report` with `message: "ask"`; the feed says "Message from <name>") or queued while she works, and
+  the `MAX_AUTO_TURNS` cap applies. A tainted helper taints the lead agent. Audited `agent.ask_lead` (actor: the
+  helper's id; with the citation and whether it verified). At most `MAX_PENDING_ASKS` (3) per helper wait at once:
+  each request holds a ticket that is freed when its lead turn ends or it never gets one (noted, dropped); the
+  fourth is refused and audited. In the helper's chat the tool step reads "Asked <lead name>".
+- **Replies come back.** `message_agent` queues its message with a `TurnHook` (`Conversation::offer_hooked`): when
+  the turn that message started ends (`finish_turn` calls the turn's hooks after `turn_finished`), the helper's
+  reply goes back to the lead agent as data (`helper_report` with `message: "reply"`, status `replied`, `failed` or
+  `cancelled`; audited `agent.brokered`, actor `melissa`). A message relayed from another helper (`from_agent`) is
+  answered to the lead agent too, who relays on; helpers never reach each other.
+- **Threads.** Every `ask_lead`, `message_agent` and reply is appended to the pair's thread
+  (`<state>/threads/<a>__<b>.jsonl`, ids sorted, `lead` for the lead agent; 0600, rotated at 1 MiB): from, to, ts,
+  kind `ask`/`message`/`reply`, delivery `data`/`relayed`, text, `on_behalf_of` + `verified`. Owner-only, read-only
+  JSON: `GET /api/threads` (pairs, newest first), `GET /api/threads/{a}/{b}`.
+- **Owner message ids.** `Conversation::pending` gives a message an id (`m-` + 12 hex) only when actor `ui`, from the
+  user, and the request is the owner's (`PERSON_IS_OWNER`, set by the web layer with `PERSON_ID`; the host's CLI is
+  the owner; never set inside a turn, so nothing an agent's tool call sends gets one). Scheduled turns drop it. It is
+  stored on the `user_message` event (`owner_msg`; older transcripts load without it), audited with the message, and
+  put in front of the text the agent receives (`[owner message m-…]`, also in a recap), not in the chat.
+  `AgentPool::verify_owner_message(id)` (and `ToolRegistry::verify_owner_message`, wired in `Lead::new`) looks it up
+  in the lead agent's and each helper's event log and transcript, only on `user_message` events with that
+  `owner_msg`: agent text, brokered messages, reports and tool results never verify.
+- **Proof never approves.** `ask_lead` shows the lead agent the owner's words as verified, or that the claim failed.
+  A tool that declares `Tool::owner_citation()` (the argument holding the id) is refused when the id does not verify,
+  and otherwise its confirmation carries `owner_quote` (`tools::you_asked`: `You asked: “…”`, 160 characters), shown
+  in the approval card's consequence line (`feed::Lookup::confirmation_quote`) and `/api/confirmations`. The owner
+  still answers it.
 
 ## Switching backend and model (2026-11-19)
 Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends, check_choice, switch}`,
