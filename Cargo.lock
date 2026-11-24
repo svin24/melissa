@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-agent"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-appspec"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-auth"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-cluster"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "futures",
  "k8s-openapi",
@@ -1336,11 +1336,11 @@ dependencies = [
 
 [[package]]
 name = "melissa-device"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "melissa-server"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "http-body-util",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-settings"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "melissa-agent",
  "melissa-auth",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-voice"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bytes",
  "futures",
@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "melissa-web"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "axum",
  "futures",

@@ -108,7 +108,9 @@ tokens mode="json":
 
 # --- container image (packaging/container) ---------------------------------------------
 # Build localhost/melissa:dev (rootless). --network=host: rootless pasta may be denied by SELinux.
-container-build version="dev":
+# Default version: melissa-server's (crates/server/Cargo.toml).
+melissa_version := `sed -n 's/^version = "\(.*\)"/\1/p' crates/server/Cargo.toml | head -1`
+container-build version=melissa_version:
     # SOURCE_DATE_EPOCH: the Nix dev shell exports 315532800 (1980), which podman uses as the image's
     # creation time (Settings shows it as "built"); use the last commit's time instead.
     SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) podman build --layers --network=host \

@@ -1934,3 +1934,6 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   (`crates/cluster/tests/fixtures/nextcloud.json`, no `isolation`). Why: no installs exist to migrate; less
   code and no exception to the isolation default. Alternative: keep the migration for a while (nothing to
   migrate).
+- **2026-11-24 — Versioning starts: Melissa is 0.0.2 (owner).** Every crate's `version` (crates/*/Cargo.toml) is
+  the release version; the image (`just container-build`, default from crates/server/Cargo.toml) and the Nix
+  package read it, so Settings → Updates shows it instead of `dev`. Bump all crates together.
