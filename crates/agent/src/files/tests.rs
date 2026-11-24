@@ -519,3 +519,66 @@ async fn the_tool_only_reaches_the_callers_own_box() {
         .is_err());
     assert!(tool.check_args(&json!({"action": "nope"})).is_err());
 }
+
+/// Deleting an agent removes its whole box, index and retention override, and only those:
+/// the other boxes stay, a symlinked box is unlinked without touching where it points, and
+/// an owner that has no valid box key is refused before anything is removed.
+#[test]
+fn remove_box_removes_only_that_owners_box() {
+    let fx = fixture("remove-box");
+    let log = AuditLog::new(fx.root.join("audit.jsonl"));
+    let b = fx.boxes.clone().with_audit(Some(log));
+    b.store_uploads(&ada(), vec![up("a.txt", b"one"), up("b.png", PNG)])
+        .unwrap();
+    b.store_uploads(&bo(), vec![up("bo.txt", b"bo's")]).unwrap();
+    b.store_uploads(&Principal::Lead, vec![up("lead.txt", b"lead's")])
+        .unwrap();
+    b.set_override(&ada(), Some(Keep::Forever), "ui").unwrap();
+    b.set_override(&bo(), Some(Keep::Days(3)), "ui").unwrap();
+    let files = fx.root.join("files");
+    assert!(files.join(format!("index/{ADA}.json")).exists());
+
+    assert_eq!(b.remove_box(&ada(), "lead").unwrap(), 2);
+    assert!(!files.join("boxes").join(ADA).exists());
+    assert!(!files.join(format!("index/{ADA}.json")).exists());
+    assert!(b.list(&ada()).is_empty());
+    assert_eq!(b.override_for(&ada()), None);
+    // Everyone else's box, index and retention are untouched.
+    assert_eq!(b.list(&bo()).len(), 1);
+    assert_eq!(b.list(&Principal::Lead).len(), 1);
+    assert!(files.join(format!("index/{BO}.json")).exists());
+    assert_eq!(b.override_for(&bo()), Some(Keep::Days(3)));
+    assert!(!b.owners().contains(&ada()));
+    let audit = fs::read_to_string(fx.root.join("audit.jsonl")).unwrap();
+    assert!(
+        audit.contains("files.box_removed") && audit.contains(ADA),
+        "{audit}"
+    );
+    // A second removal finds nothing and still succeeds.
+    assert_eq!(b.remove_box(&ada(), "lead").unwrap(), 0);
+
+    // A box that is a symlink (planted or not): the link goes, its target stays.
+    let elsewhere = fx.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("keep.txt"), "not a box").unwrap();
+    let linked = files.join("boxes").join(ADA);
+    std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+    b.remove_box(&ada(), "lead").unwrap();
+    assert!(linked.symlink_metadata().is_err(), "the link is gone");
+    assert_eq!(
+        fs::read_to_string(elsewhere.join("keep.txt")).unwrap(),
+        "not a box"
+    );
+
+    // Not a box owner: refused, nothing removed.
+    for bad in ["..", "../files", "d-0a1b2c3d.a1/..", ""] {
+        let err = b.remove_box(&Principal::Agent(bad.into()), "lead");
+        assert_eq!(
+            err.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{bad:?}"
+        );
+    }
+    assert_eq!(b.list(&bo()).len(), 1);
+    assert!(files.join("boxes").join(BO).exists());
+}
