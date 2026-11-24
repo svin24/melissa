@@ -403,7 +403,8 @@ impl Auth {
         self
     }
 
-    fn now(&self) -> u64 {
+    /// Seconds since the epoch on this store's clock (a test's own clock when set).
+    pub fn now(&self) -> u64 {
         (self.clock)()
     }
 

@@ -115,6 +115,9 @@ pub struct ThreadPanel<'a> {
     pub back: Option<&'a str>,
     /// Close: the chat page (melissa.js closes it in place).
     pub close: &'a str,
+    /// Where the panel loads from: melissa.js reloads its messages from here when the chat's
+    /// stream says a thread changed (Conversations). None: never.
+    pub refresh: Option<&'a str>,
 }
 
 fn swap_glyph() -> Markup {
@@ -167,7 +170,9 @@ pub fn thread_panel(t: &ThreadPanel<'_>) -> Markup {
                     span.visually-hidden { "Close conversation" }
                 }
             }
-            div.thread-body {
+            // Live (owner): the messages come again on `thread-refresh` (melissa.js).
+            div.thread-body hx-get=[t.refresh] hx-trigger=[t.refresh.map(|_| "thread-refresh")]
+                hx-select=[t.refresh.map(|_| ".thread-body")] hx-swap=[t.refresh.map(|_| "outerHTML")] {
                 @if t.messages.is_empty() {
                     p.quiet { "No messages yet." }
                 } @else {
@@ -317,8 +322,11 @@ mod tests {
             messages: &messages,
             back: Some("/chat"),
             close: "/chat",
+            refresh: Some("/ui/threads/x?in=lead"),
         };
         let html = thread_panel(&t).into_string();
+        // Live: the messages reload on the chat stream's word.
+        assert!(html.contains(r#"hx-trigger="thread-refresh""#), "{html}");
         assert!(html.contains(r#"id="thread-h""#), "{html}");
         assert!(html.contains("data-thread-back"), "{html}");
         assert!(html.contains("data-thread-close"), "{html}");

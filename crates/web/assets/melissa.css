@@ -4137,6 +4137,34 @@ a.app-row-address:hover {
   overflow-wrap: anywhere;
 }
 
+/* One row, muted: an install that may reach nothing ("Network: None"). */
+.net-box-quiet {
+  background: none;
+}
+
+.net-box-quiet dd {
+  color: var(--color-text-muted);
+}
+
+/* "Agent asked" links to the request's approval card: the badge's border shows on hover. */
+.net-asked {
+  display: inline-flex;
+  border-radius: var(--radius-full);
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  .net-asked:hover > .badge {
+    border-color: currentColor;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .net-asked > .badge {
+    transition: border-color var(--motion-duration-fast) var(--motion-ease-out);
+  }
+}
+
 /* Phones: a row stacks its name over status and person; the details are one column. */
 @media (max-width: 760px) {
   .app-row {

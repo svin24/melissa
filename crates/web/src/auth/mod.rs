@@ -12,7 +12,8 @@
 //!   `<meta name="csrf-token">`) or a `_csrf` form field (forms without script; taken out of
 //!   the body before the handler sees it). The same-origin check in `security` stays.
 //! - Sensitive actions ([`sensitive`]) need the password entered within the last 5 minutes:
-//!   otherwise the browser goes to `/reauth` and comes back.
+//!   otherwise the browser goes to `/reauth` and comes back, and the action is applied then
+//!   (held on the server for a few minutes, once: see [`pending`]).
 //!
 //! The person and the CSRF token travel as a task-local for the request, so components
 //! can add the token to forms and show who is signed in without every handler passing it
@@ -20,6 +21,7 @@
 //! (`melissa_agent::AUDIT_PERSON`).
 
 pub(crate) mod pages;
+pub(crate) mod pending;
 
 use std::{path::Path, time::Duration};
 
@@ -96,11 +98,16 @@ pub(crate) fn signed_in() -> Option<Person> {
 #[derive(Clone)]
 pub struct Gate {
     pub(crate) auth: Auth,
+    /// Actions waiting for the password (shared by every clone).
+    pub(crate) pending: pending::PendingActions,
 }
 
 impl Gate {
     pub fn new(auth: Auth) -> Self {
-        Self { auth }
+        Self {
+            auth,
+            pending: pending::PendingActions::default(),
+        }
     }
 }
 
@@ -438,25 +445,42 @@ pub(crate) async fn layer(State(gate): State<Gate>, req: Request, next: Next) ->
     }
 
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    let req = if mutating {
-        match check_csrf(req, &view.csrf).await {
+    let (req, action) = if mutating {
+        let req = match check_csrf(req, &view.csrf).await {
             Ok(req) => req,
             Err(res) => return *res,
+        };
+        // Only what may wait for the password is kept (never the password form itself).
+        if view.reauth_fresh || path == "/reauth" {
+            (req, None)
+        } else {
+            match keep_action(req).await {
+                Ok(kept) => kept,
+                Err(res) => return *res,
+            }
         }
     } else {
-        req
+        (req, None)
+    };
+    // What to do with the action when the password is wanted again.
+    let hold = |action: pending::Action| {
+        gate.pending
+            .hold(&view.id, &view.person.id, gate.auth.now(), action);
     };
 
     if sensitive(req.method(), &path) && !view.reauth_fresh {
+        if let Some(a) = action {
+            hold(a);
+        }
         return reauth_needed(&req);
     }
 
     let name = view.person.username.clone();
     let csrf = view.csrf.clone();
-    run_as(
+    let res = run_as(
         Viewer {
-            person: view.person,
-            session: Some(view.id),
+            person: view.person.clone(),
+            session: Some(view.id.clone()),
             reauth_fresh: view.reauth_fresh,
         },
         Some(csrf),
@@ -464,7 +488,34 @@ pub(crate) async fn layer(State(gate): State<Gate>, req: Request, next: Next) ->
         req,
         next,
     )
-    .await
+    .await;
+    // A handler that wants the password again (an approval only the owner may give).
+    if let Some(a) = action.filter(|_| res.extensions().get::<pending::ReauthAsked>().is_some()) {
+        hold(a);
+    }
+    res
+}
+
+/// A page's form post (htmx or plain, urlencoded or empty): read its body and keep a copy
+/// for [`pending`]. Anything else (the API, files, fetch from script) passes as it is.
+async fn keep_action(req: Request) -> Result<(Request, Option<pending::Action>), Box<Response>> {
+    let h = req.headers();
+    let form = match h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(ct) => ct.starts_with("application/x-www-form-urlencoded"),
+    };
+    if !form || is_api(req.uri().path()) || !(crate::is_htmx(h) || accepts_html(h)) {
+        return Ok((req, None));
+    }
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_FORM_BYTES).await else {
+        return Err(Box::new(
+            (StatusCode::PAYLOAD_TOO_LARGE, "form too large").into_response(),
+        ));
+    };
+    let req = Request::from_parts(parts, Body::from(bytes.clone()));
+    let action = pending::Action::of(&req, bytes);
+    Ok((req, action))
 }
 
 async fn run_as(
@@ -552,6 +603,8 @@ pub(crate) fn require_owner_reauth(
             if let Ok(v) = HeaderValue::from_str(&to) {
                 res.headers_mut().insert("hx-redirect", v);
             }
+            // The gate holds the request until the password is in (see `pending`).
+            res.extensions_mut().insert(pending::ReauthAsked);
         }
         return Err(Box::new(res));
     }

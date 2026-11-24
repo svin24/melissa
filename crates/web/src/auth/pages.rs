@@ -400,8 +400,19 @@ async fn reauth(
     };
     let (auth, src) = (g.auth.clone(), src(&source));
     let password = form.password;
-    match blocking(move || auth.reauth(&token, &password, &src)).await {
-        Ok(()) => Redirect::to(&next).into_response(),
+    let t = token.clone();
+    match blocking(move || auth.reauth(&t, &password, &src)).await {
+        Ok(()) => {
+            // The change that was waiting for the password, once, before the page loads
+            // again (see `auth::pending`).
+            if let Some(view) = g.auth.session(&token) {
+                let now = g.auth.now();
+                if let Some(action) = g.pending.take(&view.id, &view.person.id, now) {
+                    g.pending.replay(action, &headers, &token, &view.csrf).await;
+                }
+            }
+            Redirect::to(&next).into_response()
+        }
         Err(e) => (status_for(&e), reauth_form(&next, Some(&say(&e)))).into_response(),
     }
 }

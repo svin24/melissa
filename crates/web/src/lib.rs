@@ -124,7 +124,8 @@ pub fn router_with_settings(
     )
     .with_board(board.clone())
     .with_auth(auth.clone());
-    ui_routes(board, Some(ui.clone()))
+    let gate = Gate::new(auth);
+    let app = ui_routes(board, Some(ui.clone()))
         .merge(ui::routes(ui.clone()))
         .merge(apps::routes(ui.clone()))
         .merge(setup_password::routes(ui.clone()))
@@ -137,12 +138,14 @@ pub fn router_with_settings(
                 .with_state(mcp),
         )
         .merge(api::routes(lead))
-        .merge(auth::pages::routes(Gate::new(auth.clone())))
+        // One gate for both: they share the actions waiting for the password.
+        .merge(auth::pages::routes(gate.clone()))
         .layer(middleware::from_fn(panel::layer))
-        .layer(middleware::from_fn_with_state(Gate::new(auth), auth::layer))
+        .layer(middleware::from_fn_with_state(gate.clone(), auth::layer))
         // Outside auth, so pages the sign-in gate answers with get the looks too.
         .layer(middleware::from_fn(looks::layer))
-        .layer(middleware::from_fn(security))
+        .layer(middleware::from_fn(security));
+    auth::pending::with_replay(app, &gate.pending)
 }
 
 /// State of the task pages: the board, and the lead agent's UI (for the rail) when there is one.
@@ -594,6 +597,7 @@ mod tests {
         mod auth;
         mod details;
         mod mobile;
+        mod reauth;
         mod reset;
         mod setup;
         mod threads;

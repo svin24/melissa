@@ -100,6 +100,9 @@ pub(crate) struct ConvData {
     pub when: String,
     pub href: String,
     pub fetch: String,
+    /// Messages in the thread: a new one changes the row even when its words and minute
+    /// don't (the open thread reloads when the rows change).
+    pub count: usize,
 }
 
 /// Characters of the last message a Conversations row shows (CSS cuts it to one line).
@@ -124,25 +127,27 @@ impl Ui {
         }
         let all = by_helper(self.lead.agents().threads());
         let clock = Clock::default();
-        let row = |who: Who<'_>, helper: &str, name: String, icon, last: &Msg| {
+        let row = |who: Who<'_>, helper: &str, name: String, icon, msgs: &[Msg]| {
+            let last = msgs.last()?;
             let (href, fetch) = who.thread_urls(helper, true);
-            ConvData {
+            Some(ConvData {
                 name,
                 icon,
                 last: one_line(&last.text),
                 when: clock.short_when(last.ts),
                 href,
                 fetch,
-            }
+                count: msgs.len(),
+            })
         };
         match owner {
             Principal::Lead => {
                 let mut rows: Vec<(u64, ConvData)> = all
                     .iter()
                     .filter_map(|(helper, msgs)| {
-                        let last = msgs.last()?;
+                        let ts = msgs.last()?.ts;
                         let (name, icon) = helper_look(self, helper);
-                        Some((last.ts, row(Who::Lead, helper, name, Some(icon), last)))
+                        Some((ts, row(Who::Lead, helper, name, Some(icon), msgs)?))
                     })
                     .collect();
                 rows.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -150,10 +155,9 @@ impl Ui {
             }
             Principal::Agent(id) => all
                 .get(id)
-                .and_then(|msgs| msgs.last())
-                .map(|last| {
+                .and_then(|msgs| {
                     let lead = self.lead.agents().lead_name();
-                    row(Who::Agent(id), id, lead, None, last)
+                    row(Who::Agent(id), id, lead, None, msgs)
                 })
                 .into_iter()
                 .collect(),
@@ -202,6 +206,7 @@ impl Ui {
             lines,
             back: back.then(|| chat.clone()),
             close: chat,
+            refresh: who.thread_urls(helper, back).1,
         })
     }
 }
@@ -225,6 +230,8 @@ pub(crate) struct ThreadData {
     lines: Vec<ThreadLine>,
     back: Option<String>,
     close: String,
+    /// Where it loads from (the live update reloads it).
+    refresh: String,
 }
 
 impl ThreadData {
@@ -265,6 +272,7 @@ impl ThreadData {
             messages,
             back: self.back.as_deref(),
             close: &self.close,
+            refresh: Some(&self.refresh),
         }
     }
 

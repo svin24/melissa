@@ -1672,17 +1672,21 @@ pub fn approval_words(
                 a.kind = "Network access";
                 a.detail = Some(ports.join(", "));
             }
-            a.network = args
-                .and_then(|a| a.get("spec"))
-                .map(spec_network_rows)
-                .unwrap_or_default();
+            a.network = match args.and_then(|a| a.get("spec")).and_then(spec_network_rows) {
+                // An install that may reach nothing says so in one muted row.
+                Some(rows) if rows.is_empty() && !update => {
+                    vec![("Network".into(), "None".into())]
+                }
+                rows => rows.unwrap_or_default(),
+            };
         }
         "set_app_network" => {
             let name = app.clone().unwrap_or_else(|| "the app".into());
             let (title, consequence, fields) = network_change_words(&name, args);
             a.title = title;
             a.consequence = consequence;
-            a.reason = "agents can't change network access alone".into();
+            a.reason = asked_because(reason)
+                .unwrap_or_else(|| "agents can't change network access alone".into());
             // Owner decision 2026-11-24: Allow / Deny on this card.
             a.no = "Deny";
             a.kind = "Network access";
@@ -1885,26 +1889,35 @@ pub fn approval_words(
     a
 }
 
+/// The backend's own reasons in a confirmation's reason, for "Asked because …": its `; `
+/// parts that read on from those words (lower case). What the call does and whose workspace
+/// it is come first, capitalised, and the card says them already. None: no such part.
+fn asked_because(reason: &str) -> Option<String> {
+    let parts: Vec<&str> = reason
+        .split("; ")
+        .map(str::trim)
+        .filter(|p| p.chars().next().is_some_and(char::is_lowercase))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
 /// More links than this show as a count on an approval card ("5 links").
 const LINKS_LISTED: usize = 3;
 
 /// What a deploy's spec lets the app reach, for the approval card's network box: Internet,
-/// Local network and Links rows, when it grants anything (unvalidated: only known fields are
-/// read).
-fn spec_network_rows(spec: &Value) -> Vec<(String, String)> {
+/// Local network and Links rows, when it grants anything; empty when it grants nothing; None
+/// when the spec can't be read (unvalidated: only known fields are read).
+fn spec_network_rows(spec: &Value) -> Option<Vec<(String, String)>> {
     let parsed;
     let spec = match spec {
-        Value::String(text) => match melissa_appspec::AppSpec::from_text(text)
-            .ok()
-            .and_then(|s| serde_json::to_value(s).ok())
-        {
-            Some(v) => {
-                parsed = v;
-                &parsed
-            }
-            None => return Vec::new(),
-        },
-        v => v,
+        Value::String(text) => {
+            parsed = melissa_appspec::AppSpec::from_text(text)
+                .ok()
+                .and_then(|s| serde_json::to_value(s).ok())?;
+            &parsed
+        }
+        v @ Value::Object(_) => v,
+        _ => return None,
     };
     let n = &spec["network"];
     let internet = n["internet"] == true;
@@ -1922,7 +1935,7 @@ fn spec_network_rows(spec: &Value) -> Vec<(String, String)> {
         })
         .collect();
     if !internet && !lan && links.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
     let on_off = |b: bool| if b { "On" } else { "Off" }.to_string();
     let links = match links.len() {
@@ -1930,11 +1943,11 @@ fn spec_network_rows(spec: &Value) -> Vec<(String, String)> {
         n if n > LINKS_LISTED => format!("{n} links"),
         _ => links.join(", "),
     };
-    vec![
+    Some(vec![
         ("Internet".into(), on_off(internet)),
         ("Local network".into(), on_off(lan)),
         ("Links".into(), links),
-    ]
+    ])
 }
 
 /// An agent's `set_app_network` in words: the card's title ("Let Vuls-web reach the
@@ -3297,7 +3310,7 @@ mod tests {
     }
 
     /// The install card's network box (owner decision 6): every link up to three, then a
-    /// count; nothing when the spec grants nothing. An agent's network change reads as a
+    /// count; one short row when the spec grants nothing. An agent's network change reads as a
     /// question with Allow / Deny (decision 7).
     #[test]
     fn network_cards_say_what_an_app_may_reach() {
@@ -3335,13 +3348,41 @@ mod tests {
             Some(&json!({"app": "x", "spec": {}})),
             &NoLookup,
         );
-        assert!(none.network.is_empty());
+        // An install that may reach nothing: one short row.
+        assert_eq!(none.network.len(), 1);
+        assert_eq!(none.network[0].0, "Network");
+        let changed = approval_words(
+            2,
+            "update_app",
+            "x",
+            Some(&json!({"app": "x", "spec": {}})),
+            &NoLookup,
+        );
+        assert!(changed.network.is_empty());
 
         let args = json!({"app": "vuls-web", "internet": true});
         let a = approval_words(3, "set_app_network", "x", Some(&args), &NoLookup);
         assert_eq!(a.title, "Let Vuls-web reach the internet?");
         assert_eq!((a.yes, a.no), ("Allow", "Deny"));
         assert_eq!(a.detail.as_deref(), Some("Internet"));
+        assert_eq!(a.reason, "x", "the backend's reason");
+        // What the call does is the title already; without a reason of its own, the fallback.
+        let a = approval_words(
+            3,
+            "set_app_network",
+            "Let vuls-web reach the internet",
+            Some(&args),
+            &NoLookup,
+        );
+        assert!(a.reason.contains("network access"), "{}", a.reason);
+        let a = approval_words(
+            3,
+            "set_app_network",
+            "Let vuls-web reach the internet; changes what an app may reach",
+            Some(&args),
+            &NoLookup,
+        );
+        assert_eq!(a.reason, "changes what an app may reach");
     }
 
     #[test]

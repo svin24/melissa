@@ -13,9 +13,14 @@ use super::{glyph, status_badge, toggle, Btn, Glyph, Mark, Toggle, Tone};
 /// The Network card's region id (its actions swap it).
 pub const APP_NETWORK_ID: &str = "app-network";
 
-/// "Agent asked": an agent's change to this row waits for the owner.
-fn asked_badge() -> Markup {
-    status_badge("Agent asked", Tone::Attention, Mark::Dot)
+/// "Agent asked": an agent's change to this row waits for the owner; it links to the request's
+/// approval card in the chat (`href`).
+fn asked_badge(href: &str) -> Markup {
+    html! {
+        a.net-asked href=(href) title="Open the request" {
+            (status_badge("Agent asked", Tone::Attention, Mark::Dot))
+        }
+    }
 }
 
 /// Internet or Local network.
@@ -24,8 +29,8 @@ pub struct NetworkSwitch<'a> {
     pub on: bool,
     /// Where the switch posts (`enabled=on` or nothing). None: read-only (a member).
     pub action: Option<&'a str>,
-    /// An agent asked to change it.
-    pub asked: bool,
+    /// An agent asked to change it: where its approval card is.
+    pub asked: Option<&'a str>,
 }
 
 /// One link to another app's port: "→ postgres  db · 5432  ✕".
@@ -60,8 +65,8 @@ pub struct AddLinkForm<'a> {
 pub struct NetworkCard<'a> {
     pub internet: NetworkSwitch<'a>,
     pub lan: NetworkSwitch<'a>,
-    /// An agent asked to change the links.
-    pub links_asked: bool,
+    /// An agent asked to change the links: where its approval card is.
+    pub links_asked: Option<&'a str>,
     /// "Add link": (the plain URL, the htmx URL). None: read-only, or the form is open.
     pub add: Option<(&'a str, &'a str)>,
     pub form: Option<AddLinkForm<'a>>,
@@ -74,7 +79,7 @@ pub struct NetworkCard<'a> {
 fn switch_row(s: &NetworkSwitch<'_>) -> Markup {
     html! {
         li.net-row {
-            span.net-label { (s.label) @if s.asked { (asked_badge()) } }
+            span.net-label { (s.label) @if let Some(h) = s.asked { (asked_badge(h)) } }
             @match s.action {
                 Some(action) => (toggle(&Toggle {
                     action,
@@ -164,7 +169,7 @@ pub fn network_card(c: &NetworkCard<'_>) -> Markup {
                 (switch_row(&c.internet))
                 (switch_row(&c.lan))
                 li.net-row.net-links-head {
-                    span.net-label { "Links to apps" @if c.links_asked { (asked_badge()) } }
+                    span.net-label { "Links to apps" @if let Some(h) = c.links_asked { (asked_badge(h)) } }
                     @if let Some((href, get)) = c.add {
                         a.(Btn::secondary().sm()) href=(href) hx-get=(get)
                             hx-target={ "#" (APP_NETWORK_ID) } hx-swap="outerHTML" { "Add link" }
@@ -179,10 +184,11 @@ pub fn network_card(c: &NetworkCard<'_>) -> Markup {
 }
 
 /// The network box inside an approval card (N3): label and value rows (Internet, Local
-/// network, Links).
+/// network, Links). A single row is the short, muted form ("Network: None", an install that
+/// may reach nothing).
 pub fn network_box(rows: &[(&str, &str)]) -> Markup {
     html! {
-        dl.net-box {
+        dl.net-box.net-box-quiet[rows.len() == 1] {
             @for (label, value) in rows {
                 div { dt { (label) } dd { (value) } }
             }

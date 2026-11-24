@@ -67,7 +67,7 @@ use crate::{
         NetworkSwitch, Tone,
     },
     feed::display_app,
-    pages::format_uptime,
+    pages::{agent_href, entry_id, format_uptime},
     state::{host_name_of, phase_words, Apps},
     ui::{host, AppsQuery, Ui},
 };
@@ -931,6 +931,20 @@ pub(crate) fn network_fields(tool: &str, args: &Value, current: &Value) -> Vec<&
     out
 }
 
+/// Where confirmation `id` (of `task`) has its approval card: the chat it was asked in (the
+/// same anchor the details' Waiting rows use), else Waiting for you.
+fn approval_href(ui: &Ui, task: melissa_agent::TaskId, id: u64) -> String {
+    let chat = if task == ui.lead.task_id() {
+        "/".to_string()
+    } else {
+        match ui.lead.agents().agent_of_task(task) {
+            Some(agent) => agent_href(&agent),
+            None => "/approvals".to_string(),
+        }
+    };
+    format!("{chat}#{}", entry_id(&format!("c{id}")))
+}
+
 /// `app`'s network (the `app_network` view) plus `pending`: agents' requests waiting for the
 /// owner that change it.
 async fn network_read(ui: &Ui, app: &str) -> Result<Value, ToolError> {
@@ -951,6 +965,7 @@ async fn network_read(ui: &Ui, app: &str) -> Result<Value, ToolError> {
                     "task": c.task,
                     "fields": fields,
                     "reason": c.reason,
+                    "href": approval_href(ui, c.task, c.id),
                 })
             })
         })
@@ -992,13 +1007,27 @@ fn port_words(p: &Value) -> Option<String> {
 /// The Network card from the `network_read` view. Pure, for tests.
 fn network_markup(app: &str, view: &Value, show: &NetShow<'_>) -> Markup {
     let base = format!("/ui/apps/{app}/network");
-    let pending = |field: &str| {
-        view["pending"].as_array().into_iter().flatten().any(|p| {
-            p["fields"]
-                .as_array()
-                .is_some_and(|f| f.iter().any(|x| x == field))
-        })
+    // The approval card of the first waiting request that changes `field`.
+    let asked = |field: &str| {
+        view["pending"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|p| {
+                p["fields"]
+                    .as_array()
+                    .is_some_and(|f| f.iter().any(|x| x == field))
+            })
+            .map(|p| match p["href"].as_str() {
+                Some(h) => h.to_string(),
+                None => format!(
+                    "/approvals#{}",
+                    entry_id(&format!("c{}", p["id"].as_u64().unwrap_or_default()))
+                ),
+            })
     };
+    let (internet_asked, lan_asked, links_asked) =
+        (asked("internet"), asked("lan"), asked("links"));
     let (internet_url, lan_url) = (format!("{base}/internet"), format!("{base}/lan"));
     let links_url = format!("{base}/links");
     let remove_url = format!("{base}/links/remove");
@@ -1086,15 +1115,15 @@ fn network_markup(app: &str, view: &Value, show: &NetShow<'_>) -> Markup {
             label: "Internet",
             on: view["internet"] == true,
             action: show.owner.then_some(internet_url.as_str()),
-            asked: pending("internet"),
+            asked: internet_asked.as_deref(),
         },
         lan: NetworkSwitch {
             label: "Local network",
             on: view["lan"] == true,
             action: show.owner.then_some(lan_url.as_str()),
-            asked: pending("lan"),
+            asked: lan_asked.as_deref(),
         },
-        links_asked: pending("links"),
+        links_asked: links_asked.as_deref(),
         add: (show.owner && open.is_none()).then_some((add_plain.as_str(), add_get.as_str())),
         form: open.map(|_| AddLinkForm {
             action: &links_url,
@@ -1460,6 +1489,8 @@ mod tests {
         let lan = html.find(">Local network<").unwrap();
         let badge = html.find("Agent asked").unwrap();
         assert!(internet < badge && badge < lan, "{html}");
+        // It links to the request's approval card.
+        assert!(html.contains("href=\"/approvals#f-c4\""), "{html}");
     }
 
     /// The picker offers the other apps' named ports not linked yet, and nothing to type
