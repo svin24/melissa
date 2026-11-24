@@ -3681,3 +3681,18 @@ async fn links_leave_the_tailnet_node_out_while_apps_are_open_to_this_device_onl
     let warning = access["warning"].as_str().unwrap();
     assert!(warning.contains("open_to `tailnet`"), "{warning}");
 }
+
+#[tokio::test]
+async fn a_terminating_namespace_is_listed_as_deleting() {
+    let fake = Arc::new(Fake::default());
+    nextcloud_of(&fake, ADA);
+    let workspaces = Workspaces::new(settings(), Some(fake.clone()));
+    let list = workspaces.workspaces().await.unwrap();
+    assert!(!list[0].deleting);
+    if let Some(ns) = fake.state().namespace.as_mut() {
+        ns.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::UNIX_EPOCH));
+    }
+    let list = workspaces.workspaces().await.unwrap();
+    assert_eq!(list[0].owner, Owner::Agent(ADA.into()));
+    assert!(list[0].deleting);
+}

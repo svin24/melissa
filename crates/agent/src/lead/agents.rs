@@ -226,6 +226,8 @@ pub struct WorkspaceView {
     pub assigned_at: Option<String>,
     /// `melissa.io/owner` of a workspace from before agents (not migrated yet).
     pub legacy_owner: Option<String>,
+    /// It is being deleted (its namespace is terminating) and will be gone shortly.
+    pub deleting: bool,
 }
 
 impl AgentPool {
@@ -280,9 +282,12 @@ impl AgentPool {
 
     /// Delete an agent for good (`actor`: `ui` for the user, `lead` for the lead agent's
     /// approved `delete_agent`). Refused ([`LeadError::InUse`]) while it looks after any
-    /// workspace, or when its workspaces cannot be checked: the user reassigns or removes
-    /// those apps first, so no app is left without an agent. Otherwise its running job is
-    /// cancelled and its session closed, then its schedules (every schedule that runs it),
+    /// workspace that is not being deleted, or when its workspaces cannot be checked: the user
+    /// reassigns or removes those apps first, so no app is left without an agent. A workspace
+    /// already being deleted (its namespace terminating, e.g. right after its app was removed
+    /// with its data) does not count: it and its owner record go away on their own, so nothing
+    /// waits for it. Otherwise its running job is cancelled and its session closed, then its
+    /// schedules (every schedule that runs it),
     /// its file box, its chat transcript and session store, and its working directory are
     /// removed, and it leaves the registry (its id is never reused). Audited
     /// `agent.delete`. The lead agent is not in the registry and cannot be deleted.
@@ -306,7 +311,7 @@ impl AgentPool {
             })?;
             let owned: Vec<String> = all
                 .into_iter()
-                .filter(|w| w.owner.label_value() == Some(agent.id.as_str()))
+                .filter(|w| !w.deleting && w.owner.label_value() == Some(agent.id.as_str()))
                 .map(|w| w.name)
                 .collect();
             if !owned.is_empty() {
@@ -1093,6 +1098,7 @@ impl AgentPool {
             assigned_by: c.assigned_by,
             assigned_at: c.assigned_at,
             legacy_owner: c.legacy_owner,
+            deleting: c.deleting,
         }
     }
 
@@ -1671,7 +1677,9 @@ impl AgentPool {
         let workspaces_known = match &self.inner.workspaces {
             Some(store) => match store.workspaces().await {
                 Ok(workspaces) => {
-                    for c in workspaces {
+                    // A workspace being deleted is on its way out: it is no longer anyone's
+                    // to look after (and doesn't stop its agent from being deleted).
+                    for c in workspaces.into_iter().filter(|c| !c.deleting) {
                         match c.owner {
                             Owner::Agent(id) => owned.entry(id).or_default().push(c.name),
                             Owner::Unassigned => unassigned.push(c.name),

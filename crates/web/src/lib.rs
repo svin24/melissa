@@ -3481,6 +3481,7 @@ mod tests {
                         assigned_by: None,
                         assigned_at: None,
                         legacy_owner: None,
+                        deleting: false,
                     }])
                 })
             }
@@ -5610,6 +5611,7 @@ mod tests {
                         assigned_by: None,
                         assigned_at: None,
                         legacy_owner: None,
+                        deleting: false,
                     }])
                 })
             }
