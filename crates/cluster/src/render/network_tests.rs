@@ -134,7 +134,7 @@ fn internet_is_everything_but_private_cluster_and_device_addresses() {
     let v6 = &e[0]["to"][1]["ipBlock"];
     assert_eq!(v6["cidr"], "::/0");
     let except6 = v6["except"].as_array().unwrap();
-    for range in ["fc00::/7", "fe80::/10", "::ffff:0:0/96", "64:ff9b::/96"] {
+    for range in ["fc00::/7", "fe80::/10", "64:ff9b::/96"] {
         assert!(except6.contains(&json!(range)), "{range}");
     }
     // Inside excepted ranges already.

@@ -54,11 +54,10 @@ const NOT_INTERNET_V4: [&str; 12] = [
     "224.0.0.0/4",
     "240.0.0.0/4",
 ];
-/// The same for IPv6, including the IPv4-mapped and NAT64 ranges (they lead to IPv4
-/// addresses, private ones too).
-const NOT_INTERNET_V6: [&str; 7] = [
+/// The same for IPv6, including NAT64 (it leads to IPv4 addresses, private ones too). The API
+/// refuses IPv4-mapped ranges (::ffff:0:0/96) in policies; such addresses never leave a host.
+const NOT_INTERNET_V6: [&str; 6] = [
     "::/127",
-    "::ffff:0:0/96",
     "64:ff9b::/96",
     "2001:db8::/32",
     "fc00::/7",

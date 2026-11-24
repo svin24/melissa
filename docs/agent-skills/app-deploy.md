@@ -131,7 +131,7 @@ does not disable it). In `app-<name>`, always three policies (`render/network.rs
 - `melissa-ports`: ingress to the web port and `public` ports from anywhere (NodePort traffic reaches the pod
   from the node, SNATed; Traefik for the web host). Other ports: nobody outside the namespace.
 - `melissa-egress`: the spec's grants. `internet`: 0.0.0.0/0 and ::/0 except private, CGNAT/tailnet,
-  loopback, link-local, multicast, documentation, NAT64 and v4-mapped ranges and this device's own addresses.
+  loopback, link-local, multicast, documentation, and NAT64 ranges and this device's own addresses.
   `lan`: 10/8, 172.16/12, 192.168/16, fc00::/7 except the pod and service networks (10.42/16, 10.43/16) and
   this device's addresses. Never reachable: the Kubernetes API, Melissa, other apps' device ports (all on
   this device's addresses), the tailnet (100.64/10), other namespaces without a link, kube-system except DNS.

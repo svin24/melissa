@@ -1758,7 +1758,7 @@ Entries before 2026-11-19 use the old role names: hive = cluster, comb = device,
   NetworkPolicies (`melissa-isolation`: default deny both ways, its own pods and DNS to kube-dns allowed;
   `melissa-ports`: its web and public ports from anywhere, since NodePort traffic arrives from the node;
   `melissa-egress`: the grants). `internet` = 0.0.0.0/0 and ::/0 minus private, CGNAT/tailnet, loopback,
-  link-local, multicast, documentation and NAT64/v4-mapped ranges and this device's own addresses; `lan` = RFC
+  link-local, multicast, documentation and NAT64 ranges and this device's own addresses; `lan` = RFC
   1918 + IPv6 ULA minus the cluster's pod/service networks and this device's addresses (never 100.64/10). A link
   opens both sides: the source's egress to the target namespace (by `kubernetes.io/metadata.name`) on the port's
   number, and `melissa-link-from-<source>` in the target namespace (labelled `melissa.io/link-from`). The
