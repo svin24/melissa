@@ -4,7 +4,8 @@
 //! builds don't have it.
 //!
 //! `MELISSA_FAKE_APPS` names the file: `{"list_apps": {...}, "app_status": {"<app>": {...}},
-//! "app_logs": {"<app>": {...}}}`, each in the tool's own answer shape. It is read on every
+//! "app_logs": {"<app>": {...}}, "app_network": {"<app>": {...}}}`, each in the tool's own
+//! answer shape (`app_network` may add `pending`, agents' requests). It is read on every
 //! call; a missing file or tool falls through to the real tools. `installed_for` may name a
 //! person as `user:<username>`: it becomes their account id once they exist (the harness
 //! makes the people after the server started).
@@ -52,7 +53,7 @@ pub(crate) fn answer(tool: &str, args: &Value) -> Option<Value> {
             person_ids(&mut v);
             v
         }
-        "app_status" | "app_logs" => data[tool][args["app"].as_str()?].clone(),
+        "app_status" | "app_logs" | "app_network" => data[tool][args["app"].as_str()?].clone(),
         _ => Value::Null,
     };
     (!v.is_null()).then_some(v)

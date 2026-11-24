@@ -19,6 +19,11 @@ struct Box3 {
 /// A box with an owner (`ana`) and a member (`bob`), and three apps: Jellyfin installed for
 /// the owner, Minecraft for the member, Forgejo from before anyone was recorded.
 fn box3() -> Box3 {
+    box3_with(Vec::new())
+}
+
+/// [`box3`] with more tools.
+fn box3_with(extra: Vec<Arc<dyn Tool>>) -> Box3 {
     let auth = Auth::in_memory().with_cost(Cost::Test);
     let (code, _) = auth.setup_code().unwrap().unwrap();
     let owner = auth
@@ -40,10 +45,13 @@ fn box3() -> Box3 {
     let (board, mcp, lead) = lead_parts_with(
         None,
         false,
-        vec![
+        [
             Arc::new(Fixed("list_apps", list)) as Arc<dyn Tool>,
             Arc::new(Fixed("cluster_health", nodes)),
-        ],
+        ]
+        .into_iter()
+        .chain(extra)
+        .collect(),
     );
     let app = router_with_settings(board, mcp, lead.clone(), Settings::detached(), auth);
     Box3 {
@@ -334,4 +342,97 @@ async fn live_details_updates_keep_each_persons_apps() {
     );
     let frames = frames_until(&mut member, done).await;
     assert!(!activity(&frames).unwrap().contains("Jellyfin"), "{frames}");
+}
+
+/// `set_app_network` as a recorder: each call's arguments.
+struct RecordNetwork(Arc<std::sync::Mutex<Vec<Value>>>);
+impl Tool for RecordNetwork {
+    fn spec(&self) -> melissa_agent::tools::ToolSpec {
+        melissa_agent::tools::ToolSpec {
+            name: "set_app_network",
+            description: "test",
+            labels: melissa_agent::tools::Labels::READ_ONLY,
+            params: serde_json::json!({"type": "object"}),
+        }
+    }
+    fn call<'a>(
+        &'a self,
+        args: Value,
+    ) -> BoxFuture<'a, Result<Value, melissa_agent::tools::ToolError>> {
+        self.0.lock().unwrap().push(args);
+        Box::pin(async { Ok(serde_json::json!({"changed": true})) })
+    }
+}
+
+/// The Network card (owner design N1, 2026-11-24): the owner gets switches, Add link and
+/// remove; a member sees the same facts read-only and can't post. Each owner action sends
+/// `set_app_network` the one change it names.
+#[tokio::test]
+async fn the_network_card_is_the_owners_to_change_and_a_members_to_read() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let view = serde_json::json!({
+        "app": "minecraft", "internet": true, "lan": false,
+        "links": [{"app": "postgres", "port": "db", "active": true, "problem": null,
+                   "ports": [{"name": "db", "port": 5432, "protocol": "tcp"}]}],
+        "incoming": [],
+        "link_options": [{"app": "ollama", "ports": [{"name": "api", "port": 11434, "protocol": "tcp"}]}],
+    });
+    let b = box3_with(vec![
+        Arc::new(Fixed("app_network", view)) as Arc<dyn Tool>,
+        Arc::new(RecordNetwork(calls.clone())),
+    ]);
+
+    let (_, body) = page(&b.app, &b.owner, "/cluster/apps/minecraft").await;
+    assert!(body.contains("id=\"app-network\""), "{body}");
+    assert!(body.contains("action=\"/ui/apps/minecraft/network/internet\""));
+    assert!(body.contains("action=\"/ui/apps/minecraft/network/lan\""));
+    assert!(body.contains(">Add link<") && body.contains("Remove link to Postgres"));
+    assert!(
+        body.contains("db · 5432") && body.contains("DNS and Minecraft's web ports always work.")
+    );
+
+    let (status, body) = page(&b.app, &b.member, "/cluster/apps/minecraft").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("id=\"app-network\"") && body.contains("db · 5432"));
+    assert!(body.contains("<span class=\"net-value\">On</span>"));
+    for owner_only in ["/network/internet", "Add link", "Remove link", "net-add"] {
+        assert!(!body.contains(owner_only), "{owner_only}");
+    }
+
+    let post = |s: &NewSession, uri: &str, form: &str| {
+        let mut req = as_(s, "POST", uri);
+        *req.body_mut() = Body::from(form.to_string());
+        req
+    };
+    let base = "/ui/apps/minecraft/network";
+    let (status, _, _) = send(
+        &b.app,
+        post(&b.member, &format!("{base}/internet"), "enabled=on"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(calls.lock().unwrap().is_empty());
+
+    for (path, form) in [
+        ("/lan", "enabled=on"),
+        ("/internet", ""),
+        ("/links", "app=ollama&port=ollama%2Fapi"),
+        ("/links/remove", "app=postgres&port=db"),
+    ] {
+        let (status, _, body) = send(&b.app, post(&b.owner, &format!("{base}{path}"), form)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        assert!(
+            body.starts_with("<section class=\"app-card net-card\" id=\"app-network\""),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            serde_json::json!({"app": "minecraft", "lan": true}),
+            serde_json::json!({"app": "minecraft", "internet": false}),
+            serde_json::json!({"app": "minecraft", "add_links": [{"app": "ollama", "port": "api"}]}),
+            serde_json::json!({"app": "minecraft", "remove_links": [{"app": "postgres", "port": "db"}]}),
+        ]
+    );
 }

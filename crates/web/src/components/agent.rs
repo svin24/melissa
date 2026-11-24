@@ -739,6 +739,9 @@ pub struct PermissionCard<'a> {
     pub state: ApprovalState,
     /// The "Always allow" question (the rule it saves); None: no such button.
     pub always: Option<&'a str>,
+    /// What the app may reach (Internet, Local network, Links), as a box under the
+    /// consequence ([`super::network_box`]). Empty: none.
+    pub network: &'a [(&'a str, &'a str)],
 }
 
 /// The card: a warning mark and the question, what happens and why Melissa asks, the tag line,
@@ -759,6 +762,7 @@ pub fn permission_card(c: &PermissionCard<'_>) -> Markup {
                 h3 #{ "ap-" (c.id) } { (c.title) }
             }
             p.consequence { (c.consequence) }
+            @if !c.network.is_empty() { (super::network_box(c.network)) }
             @if c.permanent && c.state == ApprovalState::Pending {
                 p.permanent { "Can't be undone." }
             }
