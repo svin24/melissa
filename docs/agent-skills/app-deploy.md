@@ -198,7 +198,8 @@ does not disable it). In `app-<name>`, always three policies (`render/network.rs
   sides on uninstall and force delete. A new link to a missing app or port is refused (`no app ...`, `has no
   port ... (its ports: ...)`); an existing one that no longer resolves stays in the spec, inactive, with a
   `network_warnings` entry.
-- gVisor pods: traffic still leaves through the pod's veth, so the policies apply the same.
+- gVisor pods: traffic still leaves through the pod's veth, so the policies apply the same (verified
+  with the smoke under runsc).
 - RBAC: `melissa-app-workload` may manage `networkpolicies` (only in app namespaces, like the rest).
 
 Editing:
@@ -310,7 +311,8 @@ app, 1.1.1.1:443 nor the node's 6443; with `internet` it reaches 1.1.1.1:443 but
 Kubernetes service 10.43.0.1, Melissa's UI forward (node:8081), the host's UI port via the gateway, or another
 app; the public port answers from the host through the NodePort; the owner's `POST /api/apps/{app}/network`
 link opens a→b (c still blocked) and removing it closes it again. DNS works under default deny. First run found
-that the API refuses `::ffff:0:0/96` in an ipBlock (removed). gVisor is not in the image yet: unverified there.
+that the API refuses `::ffff:0:0/96` in an ipBlock (removed). Re-run on master with gVisor (2026-11-24): the three test apps ran under RuntimeClass `gvisor` (runsc
+release-20261116.0) and every check passed the same.
 
 ## Gotchas
 - CEL: Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as `s.namespace`, never
