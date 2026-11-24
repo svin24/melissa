@@ -1659,6 +1659,14 @@ pub fn approval_words(
                 .filter(|w| !w.is_empty())
                 .unwrap_or_else(|| "Starts it again with its data.".into());
             a.reason = "it runs software on this device".into();
+            // The backend's warning that the spec passes a generated secret to a command or
+            // file, where it can end up printed (melissa_cluster::SECRET_USE_NOTE).
+            if let Some(warning) = reason
+                .split("; ")
+                .find(|p| p.starts_with("uses generated secret"))
+            {
+                a.reason = format!("{}; it {warning}", a.reason);
+            }
             a.yes = if update { "Change" } else { "Set up" };
             let ports = args
                 .and_then(|a| a.get("spec"))

@@ -239,7 +239,7 @@ app turns out to need more (`app_logs` shows DNS working but connections timing 
 | `app_status {app}` | read-only, target `app` (Read: the owner, the lead agent, the user; another agent → user-only confirmation) | phase, pods (reason codes), `spec`, `description`, links, `ports`, `assigned_by`/`assigned_at` |
 | `wait_for_apps {apps, until, timeout_secs?}` | read-only, no target (an agent: refused unless every existing app is its own, checked in `call_in`) | waits in the same turn until every app is `gone` (namespace removed; an unknown app counts), `ready` or `stopped` (`app_status` phases; an unknown app is an error). Polls every 3 s; timeout default and max 240 s (below Claude Code's 300 s tool-call limit, less the 60 s margin), then answers `done: false` with each app's `state` and the agent calls again. Cancel-safe: Stop drops the call (MCP `notifications/cancelled`). Feed: "Waited for apps". |
 | `list_apps` | read-only | every app namespace (labelled list), same phases; for an agent, other agents' apps only as `{app, owner, not_yours}` |
-| `app_logs`, `stop_app`, `start_app`, `uninstall_app` | unchanged | uninstall keeps data, secrets and the spec; `deploy_app` brings it back |
+| `app_logs`, `stop_app`, `start_app`, `uninstall_app` | unchanged | uninstall keeps data, secrets and the spec; `deploy_app` brings it back; `app_logs` hides generated secrets (see below) |
 | `app_exec {app, command, container?, stdin?, timeout_secs?}` | **Destructive** (always confirmed, the card shows the exact argv), reads private + untrusted, target `app` (Change) | one command in the newest running pod's container (default: the first), argv only, no implicit shell; stdin optional (≤ 64 KiB, then closed); timeout 30 s default, 300 s max (on timeout: output so far, `timed_out`, the command may still run); stdout/stderr ≤ 64 KiB each, `*_truncated`, control chars stripped; returns `exit_code`. Audited: the `tool.call` line names the agent, app, argv (each arg cut to 200 chars), stdin length (never its content), pod, container and exit code (`Tool::audit_detail`). |
 
 ### Live console commands (`app_exec`)
@@ -255,6 +255,16 @@ refused before anyone is asked. RBAC: the per-namespace workload role has `pods/
 `get`+`create` (WebSocket exec needs both), nothing cluster-wide, no attach or port-forward.
 A command sees what the container sees, including environment variables that hold generated
 secrets: the user's confirmation is what stands between an agent and those.
+
+Generated secrets in output (2026-11-24, `crates/cluster/src/redact.rs`): `app_exec` stdout/stderr and
+`app_logs` show `[hidden: <field>]` wherever the app printed one of its generated secrets (exact, any
+8+ character piece, split across lines, hex, base64 at any alignment, `%XX`). The result then has
+`hidden: [<field>...]` and says so in `note`; the `tool.call` audit line ends with `hidden from the output:
+<fields>`. Don't try to get the value another way: the owner has it on the setup password card. Output cut
+at the 64 KiB limit loses its last few token characters (`[cut]`). The approval card adds a line for commands
+that can print the environment or config files (`env`, `printenv`, `set`, `ps`, `/proc/*/environ`,
+config-like paths, `sh -c` with `$`), and for specs that use a secret variable in a command, file or other env
+value. Best effort only (see PLAN question 100).
 
 ## Safety rules (server and admission)
 Validator: unknown keys refused, pinned images, sizes and counts bounded, mounts and files

@@ -73,7 +73,7 @@ use melissa_agent::{
 };
 use melissa_cluster::{
     app_tools, network_tools, parse_publish_bind, AppCredentials, AppSettings, ClusterHealth,
-    KubeApps, KubeSecretReader, LazyCluster, ReachCheck, Workspaces,
+    KubeApps, KubeSecretReader, LazyCluster, ReachCheck, SecretPrints, Workspaces,
 };
 use melissa_settings::{
     app_access::{tool::SetAppAccess, AppAccessControl},
@@ -426,6 +426,8 @@ async fn main() -> anyhow::Result<()> {
         access: app_access.clone(),
         setup_notices: Some(setup_notices.clone()),
         tailscale: Some(tailscale.clone()),
+        // Fingerprints of generated app secrets, so app output can hide them (0600 files).
+        secret_prints: Some(SecretPrints::in_dir(dirs.state.join("app-secret-prints"))),
     };
     tools.extend(app_tools(app_settings.clone(), Some(apps.clone())));
     tools.extend(network_tools(
@@ -1523,6 +1525,7 @@ mod tests {
             access: None,
             setup_notices: None,
             tailscale: None,
+            secret_prints: None,
         };
         let workspaces = Arc::new(Workspaces::new::<KubeApps>(settings, None));
         let wiring = Wiring {

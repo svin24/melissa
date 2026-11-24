@@ -294,6 +294,14 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   (Destructive), output untrusted (taints) and bounded (64 KiB per stream, 30 s default / 300 s max timeout).
   The audit line records who, app, argv, stdin length (not content), pod, container and exit code. RBAC: the
   per-app-namespace workload role gains `pods/exec` `get`+`create`; still no attach or port-forward.
+- **Secrets hidden from app output (2026-11-24; DECISIONS; research
+  `docs/design/SECRET-EXPOSURE-RESEARCH-2026-11-24.md`, step 1):** `app_exec` and `app_logs` replace copies of
+  the app's generated secrets with `[hidden: <field>]` (exact, 8+ character pieces, split across lines, hex,
+  base64 at every alignment, `%XX`), say so in the result (`hidden`, note) and in the `tool.call` audit line.
+  The server keeps only keyed fingerprints of 8-character pieces (`<state>/app-secret-prints/<app>.json`,
+  0600), written when it generates a value. The approval card warns for `app_exec` commands that can print the
+  environment or config files, and for specs that put a secret variable into a command, file or other env
+  value. Steps 2-4 are open question 100.
 - **Cluster tools (2026-11-18):** `cluster_health` (read-only) in `crates/cluster`, registered next to `device_info`;
   Verified in the headless VM (bootc, archived) and again in the rootful container (2026-11-19) through the lead agent's own credentials. `melissa-server tool <name> [json]` runs one tool
   through the MCP session path (unattended policy, no waiting for confirmations) for operators and tests.
@@ -1090,7 +1098,9 @@ Roadmap (rough, phases may overlap):
     heavy for routine console commands (`rcon-cli list`); per-app pre-approved command prefixes chosen by
     the user (e.g. `rcon-cli`)? (c) On timeout the command may keep running in the container (the exec
     stream closes, the process is not killed). (d) The confirmation card is the generic one with the argv
-    in its reason; a dedicated card (owner's UI) could show argv and stdin size more clearly.
+    in its reason; a dedicated card (owner's UI) could show argv and stdin size more clearly. (a) partly
+    answered 2026-11-24: output is redacted and risky commands are flagged on the card, nothing is refused
+    (see 100).
 66. Chat attachments (2026-11-20): (a) Claude Code's stream-json input with `document` (PDF) blocks is built
     from the API's format but not yet tried live; images likewise only in tests. (b) Resolved 2026-11-20 by the
     file boxes: files are pruned after the owner's retention time (default 5 days; see 70). (c) Text files could
@@ -1319,8 +1329,8 @@ Roadmap (rough, phases may overlap):
 86. Setup passwords (2026-11-21; DECISIONS). (a) Done 2026-11-21: Show, Copy and Dismiss need the password
     again (5 minutes); members can still reveal one until permissions (6c step 3). (b) Copy works only in a secure context (HTTPS or localhost); on plain HTTP the
     owner selects the shown value (TLS, Q22). (c) `app_exec` (confirmed by the user, audited) can still read an
-    app's environment, which holds the password for apps that take it as an env value; tightening that is
-    separate. (d) An old card of an app force-deleted and installed again shows the new app's password (it
+    app's environment, which holds the password for apps that take it as an env value. Step 1 done
+    2026-11-24: copies in `app_exec`/`app_logs` output are hidden (best effort); the rest is question 100. (d) An old card of an app force-deleted and installed again shows the new app's password (it
     goes by app name); a new card comes with the new install. (e) Unsandboxed agent backends (an explicit
     owner setting) run as the server's user with its groups, like for the other kubeconfigs.
 87. Logins (2026-11-21; DECISIONS "Logins"). (a) Behind the container's UI forward and `tailscale serve` every
@@ -1497,3 +1507,22 @@ Roadmap (rough, phases may overlap):
     them (they can't: pod networks are excluded from `lan`/`internet`). (h) A link's port number is resolved
     at deploy time; if the target changes its port number, links into it are refreshed when the target is
     deployed again, but a target that drops the port leaves the link inactive (shown in `app_network`).
+100. App secrets and agents, after redaction (2026-11-24; research `docs/design/SECRET-EXPOSURE-RESEARCH-
+    2026-11-24.md`; step 1, redaction, is built, DECISIONS). Planned, in order: (a) Secrets as files: an env
+    form `{secret_file: name}` (projected Secret volume, mode 0400, the variable holds the path) for images that
+    read `*_FILE` variables, preferred in agent guidance, so `env` and `/proc/1/environ` show nothing. (b)
+    Seed-only setup passwords: a spec flag (e.g. `seed_only: true`) for apps that read the admin password only
+    at first start; after the owner signs in and confirms on the card ("I've set my own password"), Melissa
+    removes the env reference (an approved update) and deletes the Secret, so a leaked value opens nothing.
+    What counts as "consumed": owner confirmation only, or also detection? Which catalogue apps read `*_FILE`,
+    and which reapply the env password at every start? (c) Server-run actions instead of raw exec: per-app
+    actions declared in the spec (game consoles over RCON, app CLIs that need a secret) that the server runs and
+    returns redacted; `app_exec` stays, owner-approved, for the rest. (d) Melissa as the login for apps
+    (largest win, highest cost): forward auth on app ingress (Melissa checks the session, sets trusted user
+    headers), then a small OIDC provider, so an SSO-capable app's admin is a Melissa person and there is no
+    setup password (ties to 6c and question 84). Open from step 1: (e) redaction hits show in the tool
+    result (the chat's tool output) and the audit, not as a card of their own; does the owner want a visible
+    chat line or a count of repeated hits per agent? (f) Apps whose secrets were generated before 2026-11-24
+    have no fingerprints and are not redacted (none were installed outside tests). (g) Masking is best effort:
+    an agent that runs commands can transform the value (`rev`, one character per call, `od`) or read it
+    some other way; only (a)-(d) shrink that.

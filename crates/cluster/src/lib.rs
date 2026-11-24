@@ -17,6 +17,7 @@ mod device;
 mod fixtures;
 mod health;
 mod reach;
+mod redact;
 pub mod render;
 
 pub use app_tools::{
@@ -33,3 +34,4 @@ pub use credentials::{
 };
 pub use health::ClusterHealth;
 pub use reach::{parse_publish_bind, PortProbe, Probe, ReachCheck, TcpProbe};
+pub use redact::{SecretPrints, SECRET_USE_NOTE};
