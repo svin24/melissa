@@ -5,7 +5,7 @@
     "metadata": {
       "annotations": {
         "melissa.io/ports": "game:30001/tcp bedrock:30002/udp",
-        "melissa.io/spec": "{\"description\":\"Minecraft Java server\",\"containers\":[{\"name\":\"server\",\"image\":\"docker.io/itzg/minecraft-server:java21\",\"env\":{\"EULA\":\"TRUE\",\"MEMORY\":\"1G\"},\"ports\":[{\"name\":\"game\",\"port\":25565,\"public\":true},{\"name\":\"bedrock\",\"port\":19132,\"protocol\":\"udp\",\"public\":true},{\"name\":\"rcon\",\"port\":25575}],\"mounts\":[{\"volume\":\"data\",\"path\":\"/data\"}],\"resources\":{\"cpu\":\"2\",\"memory\":\"1536Mi\"},\"probe\":{\"port\":\"game\",\"startup_timeout_secs\":300,\"period_secs\":10},\"run_as_user\":1000}],\"volumes\":[{\"name\":\"data\",\"size\":\"5Gi\"}],\"secrets\":[{\"name\":\"rcon_password\"}]}"
+        "melissa.io/spec": "{\"description\":\"Minecraft Java server\",\"containers\":[{\"name\":\"server\",\"image\":\"docker.io/itzg/minecraft-server:java21\",\"env\":{\"EULA\":\"TRUE\",\"MEMORY\":\"1G\"},\"ports\":[{\"name\":\"game\",\"port\":25565,\"public\":true},{\"name\":\"bedrock\",\"port\":19132,\"protocol\":\"udp\",\"public\":true},{\"name\":\"rcon\",\"port\":25575}],\"mounts\":[{\"volume\":\"data\",\"path\":\"/data\"}],\"resources\":{\"cpu\":\"2\",\"memory\":\"1536Mi\"},\"probe\":{\"port\":\"game\",\"startup_timeout_secs\":300,\"period_secs\":10},\"run_as_user\":1000}],\"volumes\":[{\"name\":\"data\",\"size\":\"5Gi\"}],\"secrets\":[{\"name\":\"rcon_password\"}],\"network\":{\"internet\":true}}"
       },
       "labels": {
         "app.kubernetes.io/managed-by": "melissa",
@@ -289,5 +289,159 @@
       "type": "NodePort"
     }
   },
-  "ingress": null
+  "ingress": null,
+  "network_policies": [
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "melissa.io/app": "minecraft"
+        },
+        "name": "melissa-isolation",
+        "namespace": "app-minecraft"
+      },
+      "spec": {
+        "egress": [
+          {
+            "to": [
+              {
+                "podSelector": {}
+              }
+            ]
+          },
+          {
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ],
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {}
+              }
+            ]
+          }
+        ],
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "melissa.io/app": "minecraft"
+        },
+        "name": "melissa-ports",
+        "namespace": "app-minecraft"
+      },
+      "spec": {
+        "ingress": [
+          {
+            "ports": [
+              {
+                "port": 25565,
+                "protocol": "TCP"
+              },
+              {
+                "port": 19132,
+                "protocol": "UDP"
+              }
+            ]
+          }
+        ],
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/managed-by": "melissa",
+          "melissa.io/app": "minecraft"
+        },
+        "name": "melissa-egress",
+        "namespace": "app-minecraft"
+      },
+      "spec": {
+        "egress": [
+          {
+            "to": [
+              {
+                "ipBlock": {
+                  "cidr": "0.0.0.0/0",
+                  "except": [
+                    "0.0.0.0/8",
+                    "10.0.0.0/8",
+                    "100.64.0.0/10",
+                    "127.0.0.0/8",
+                    "169.254.0.0/16",
+                    "172.16.0.0/12",
+                    "192.0.0.0/24",
+                    "192.0.2.0/24",
+                    "192.168.0.0/16",
+                    "198.18.0.0/15",
+                    "198.51.100.15/32",
+                    "224.0.0.0/4",
+                    "240.0.0.0/4"
+                  ]
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "::/0",
+                  "except": [
+                    "2001:db8::/32",
+                    "64:ff9b::/96",
+                    "::/127",
+                    "fc00::/7",
+                    "fe80::/10",
+                    "ff00::/8"
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "podSelector": {},
+        "policyTypes": [
+          "Egress"
+        ]
+      }
+    }
+  ]
 }

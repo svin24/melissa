@@ -739,6 +739,9 @@ pub struct PermissionCard<'a> {
     pub state: ApprovalState,
     /// The "Always allow" question (the rule it saves); None: no such button.
     pub always: Option<&'a str>,
+    /// What the app may reach (Internet, Local network, Links), as a box under the
+    /// consequence ([`super::network_box`]). Empty: none.
+    pub network: &'a [(&'a str, &'a str)],
     /// The owner's own words the request cites, verified by Melissa: a "You asked: …" line.
     pub quote: Option<&'a str>,
 }
@@ -761,6 +764,7 @@ pub fn permission_card(c: &PermissionCard<'_>) -> Markup {
                 h3 #{ "ap-" (c.id) } { (c.title) }
             }
             p.consequence { (c.consequence) }
+            @if !c.network.is_empty() { (super::network_box(c.network)) }
             @if let Some(q) = c.quote {
                 // A 2px rule, then "You asked:" (muted) and the owner's words, two lines at most.
                 blockquote.approval-quote {

@@ -136,6 +136,9 @@ pub struct Approval {
     /// The owner's own words the call cites, verified by Melissa: the card's "You asked: …"
     /// line (one shortened line, [`melissa_agent::tools::quote_words`]).
     pub quote: Option<String>,
+    /// What an app may reach, as (label, value) rows: Internet, Local network, Links (an
+    /// install or change that grants network access). Empty: no such box.
+    pub network: Vec<(String, String)>,
 }
 
 /// A feed item with its stable key (used as the DOM id suffix).
@@ -1472,6 +1475,16 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ("deploy_app", "Setting up an app", "Set up an app"),
     ("update_app", "Changing an app", "Changed an app"),
     ("app_status", "Checking an app", "Checked an app"),
+    (
+        "set_app_network",
+        "Changing an app's network",
+        "Changed an app's network",
+    ),
+    (
+        "app_network",
+        "Checking an app's network",
+        "Checked an app's network",
+    ),
     ("wait_for_apps", "Waiting for apps", "Waited for apps"),
     ("app_logs", "Reading an app's logs", "Read an app's logs"),
     ("stop_app", "Stopping an app", "Stopped an app"),
@@ -1629,6 +1642,7 @@ pub fn approval_words(
         kind: "Request",
         detail: None,
         quote: None,
+        network: Vec::new(),
     };
     match tool_name(tool) {
         "deploy_app" | "update_app" => {
@@ -1658,6 +1672,21 @@ pub fn approval_words(
                 a.kind = "Network access";
                 a.detail = Some(ports.join(", "));
             }
+            a.network = args
+                .and_then(|a| a.get("spec"))
+                .map(spec_network_rows)
+                .unwrap_or_default();
+        }
+        "set_app_network" => {
+            let name = app.clone().unwrap_or_else(|| "the app".into());
+            let (title, consequence, fields) = network_change_words(&name, args);
+            a.title = title;
+            a.consequence = consequence;
+            a.reason = "agents can't change network access alone".into();
+            // Owner decision 2026-11-24: Allow / Deny on this card.
+            a.no = "Deny";
+            a.kind = "Network access";
+            a.detail = (!fields.is_empty()).then(|| fields.join(", "));
         }
         "stop_app" => {
             a.title = match &app {
@@ -1854,6 +1883,125 @@ pub fn approval_words(
     // line (owner decision, 2026-11-24).
     a.quote = look.confirmation_quote(id);
     a
+}
+
+/// More links than this show as a count on an approval card ("5 links").
+const LINKS_LISTED: usize = 3;
+
+/// What a deploy's spec lets the app reach, for the approval card's network box: Internet,
+/// Local network and Links rows, when it grants anything (unvalidated: only known fields are
+/// read).
+fn spec_network_rows(spec: &Value) -> Vec<(String, String)> {
+    let parsed;
+    let spec = match spec {
+        Value::String(text) => match melissa_appspec::AppSpec::from_text(text)
+            .ok()
+            .and_then(|s| serde_json::to_value(s).ok())
+        {
+            Some(v) => {
+                parsed = v;
+                &parsed
+            }
+            None => return Vec::new(),
+        },
+        v => v,
+    };
+    let n = &spec["network"];
+    let internet = n["internet"] == true;
+    let lan = n["lan"] == true;
+    let links: Vec<String> = n["links"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| {
+            let app = l["app"].as_str()?;
+            Some(match l["port"].as_str() {
+                Some(port) => format!("{app} ({port})"),
+                None => app.to_string(),
+            })
+        })
+        .collect();
+    if !internet && !lan && links.is_empty() {
+        return Vec::new();
+    }
+    let on_off = |b: bool| if b { "On" } else { "Off" }.to_string();
+    let links = match links.len() {
+        0 => "None".to_string(),
+        n if n > LINKS_LISTED => format!("{n} links"),
+        _ => links.join(", "),
+    };
+    vec![
+        ("Internet".into(), on_off(internet)),
+        ("Local network".into(), on_off(lan)),
+        ("Links".into(), links),
+    ]
+}
+
+/// An agent's `set_app_network` in words: the card's title ("Let Vuls-web reach the
+/// internet?"), what changes, and the parts it touches for the tag line.
+fn network_change_words(app: &str, args: Option<&Value>) -> (String, String, Vec<&'static str>) {
+    let get = |k: &str| args.and_then(|a| a.get(k));
+    let links = |k: &str| -> Vec<String> {
+        get(k)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|l| {
+                let to = display_app(l["app"].as_str()?);
+                Some(match l["port"].as_str() {
+                    Some(port) => format!("{to} on its port {port}"),
+                    None => to,
+                })
+            })
+            .collect()
+    };
+    // What it may do from now on (the title's words, the sentence) and what it loses.
+    let mut gains: Vec<(String, String)> = Vec::new();
+    let mut losses: Vec<String> = Vec::new();
+    let mut fields = Vec::new();
+    for (key, field, reach, sentence) in [
+        (
+            "internet",
+            "Internet",
+            "reach the internet",
+            "can reach any internet address",
+        ),
+        (
+            "lan",
+            "Local network",
+            "reach the local network",
+            "can reach devices on your home network",
+        ),
+    ] {
+        match get(key).and_then(Value::as_bool) {
+            Some(true) => gains.push((reach.into(), sentence.into())),
+            Some(false) => losses.push(format!("can no longer {reach}")),
+            None => continue,
+        }
+        fields.push(field);
+    }
+    let added = links("add_links");
+    let removed = links("remove_links");
+    if !added.is_empty() || !removed.is_empty() {
+        fields.push("Links");
+    }
+    for to in added {
+        gains.push((format!("connect to {to}"), format!("can connect to {to}")));
+    }
+    for to in removed {
+        losses.push(format!("can no longer connect to {to}"));
+    }
+    let title = match (gains.as_slice(), losses.is_empty()) {
+        ([(reach, _)], true) => format!("Let {app} {reach}?"),
+        _ => format!("Change what {app} can reach?"),
+    };
+    let parts: Vec<String> = gains.into_iter().map(|(_, s)| s).chain(losses).collect();
+    let consequence = if parts.is_empty() {
+        "Nothing changes.".to_string()
+    } else {
+        format!("{app} {}.", parts.join("; it "))
+    };
+    (title, consequence, fields)
 }
 
 /// The ports a deploy opens to the network (`TCP 25565`), from its spec (unvalidated).
@@ -3146,6 +3294,54 @@ mod tests {
         );
         assert_eq!(a.title, "Set up Immich?");
         assert_eq!(a.yes, "Set up");
+    }
+
+    /// The install card's network box (owner decision 6): every link up to three, then a
+    /// count; nothing when the spec grants nothing. An agent's network change reads as a
+    /// question with Allow / Deny (decision 7).
+    #[test]
+    fn network_cards_say_what_an_app_may_reach() {
+        let deploy = |links: Value| {
+            let spec = json!({"network": {"internet": true, "links": links}});
+            approval_words(
+                1,
+                "deploy_app",
+                "x",
+                Some(&json!({"app": "immich", "spec": spec})),
+                &NoLookup,
+            )
+            .network
+        };
+        let row = |rows: &[(String, String)], label: &str| {
+            rows.iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, v)| v.clone())
+        };
+        let three = deploy(
+            json!([{"app": "postgres", "port": "db"}, {"app": "redis", "port": "cache"}, {"app": "ollama"}]),
+        );
+        assert_eq!(row(&three, "Internet").as_deref(), Some("On"));
+        assert_eq!(row(&three, "Local network").as_deref(), Some("Off"));
+        assert_eq!(
+            row(&three, "Links").as_deref(),
+            Some("postgres (db), redis (cache), ollama")
+        );
+        let four = deploy(json!([{"app": "a"}, {"app": "b"}, {"app": "c"}, {"app": "d"}]));
+        assert_eq!(row(&four, "Links").as_deref(), Some("4 links"));
+        let none = approval_words(
+            2,
+            "deploy_app",
+            "x",
+            Some(&json!({"app": "x", "spec": {}})),
+            &NoLookup,
+        );
+        assert!(none.network.is_empty());
+
+        let args = json!({"app": "vuls-web", "internet": true});
+        let a = approval_words(3, "set_app_network", "x", Some(&args), &NoLookup);
+        assert_eq!(a.title, "Let Vuls-web reach the internet?");
+        assert_eq!((a.yes, a.no), ("Allow", "Deny"));
+        assert_eq!(a.detail.as_deref(), Some("Internet"));
     }
 
     #[test]

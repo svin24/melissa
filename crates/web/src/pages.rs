@@ -484,6 +484,11 @@ pub fn entry_content(entry: &Entry, x: &EntryCtx<'_>) -> Markup {
 
 /// A permission card whose buttons replace the content of `target`.
 pub fn approval_content(a: &Approval, target: &str) -> Markup {
+    let network: Vec<(&str, &str)> = a
+        .network
+        .iter()
+        .map(|(label, value)| (label.as_str(), value.as_str()))
+        .collect();
     permission_card(&PermissionCard {
         id: a.id,
         target,
@@ -499,6 +504,7 @@ pub fn approval_content(a: &Approval, target: &str) -> Markup {
         state: a.state,
         always: a.always.as_deref(),
         quote: a.quote.as_deref(),
+        network: &network,
     })
 }
 

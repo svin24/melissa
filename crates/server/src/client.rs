@@ -784,6 +784,72 @@ pub async fn app_logs(client: &Client, app: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `app network <app> [changes]`: what the app may reach; with changes (`change` not empty),
+/// the owner's own change first (in force at once, audited).
+pub async fn app_network(client: &Client, app: &str, change: &Value) -> anyhow::Result<()> {
+    let path = format!("/api/apps/{}/network", path_segment(app));
+    if change.as_object().is_some_and(|c| !c.is_empty()) {
+        let (status, body) = client.post(&path, change.clone()).await?;
+        let body = ok(status, body)?;
+        for c in body["changed"].as_array().into_iter().flatten() {
+            println!("{}", c.as_str().unwrap_or("?"));
+        }
+        for w in body["warnings"].as_array().into_iter().flatten() {
+            eprintln!("warning: {}", w.as_str().unwrap_or("?"));
+        }
+    }
+    let v = client.get(&path).await?;
+    let on = |k: &str| if v[k] == true { "yes" } else { "no" };
+    println!("{app} may reach:");
+    println!("  internet         {}", on("internet"));
+    println!("  home network     {}", on("lan"));
+    let port_words = |l: &Value| {
+        let ports: Vec<String> = l["ports"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                format!(
+                    "{} {}/{}",
+                    p["name"].as_str().unwrap_or("?"),
+                    p["port"],
+                    p["protocol"].as_str().unwrap_or("?")
+                )
+            })
+            .collect();
+        let inactive = l["problem"]
+            .as_str()
+            .map(|p| format!(" (inactive: {p})"))
+            .unwrap_or_default();
+        format!(
+            "{}: {}{inactive}",
+            l["app"].as_str().unwrap_or("?"),
+            if l["port"].is_null() {
+                "all ports".to_string()
+            } else {
+                ports.join(", ")
+            }
+        )
+    };
+    for (label, key) in [("links to", "links"), ("linked from", "incoming")] {
+        let list = v[key].as_array().cloned().unwrap_or_default();
+        if list.is_empty() {
+            println!("  {label:<16} none");
+        }
+        for l in &list {
+            println!("  {label:<16} {}", port_words(l));
+        }
+    }
+    for p in v["pending"].as_array().into_iter().flatten() {
+        println!(
+            "  waiting for you  confirmation {}: {}",
+            p["id"],
+            p["reason"].as_str().unwrap_or("?")
+        );
+    }
+    Ok(())
+}
+
 /// `app force-delete <app> --yes`: remove the app and its data; its agent and the lead agent are told.
 pub async fn app_force_delete(client: &Client, app: &str) -> anyhow::Result<()> {
     eprintln!("Deleting {app} and all its data (this can take a minute)…");

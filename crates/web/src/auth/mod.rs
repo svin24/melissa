@@ -181,6 +181,9 @@ pub(crate) fn sensitive(method: &Method, path: &str) -> bool {
     (path.starts_with("/ui/apps/")
         && (path.ends_with("/setup-password/reveal") || path.ends_with("/setup-password/dismiss")))
         || path.ends_with("/force-delete")
+        // What an app may reach on the network (the owner's own change).
+        || (path.starts_with("/api/apps/") && path.ends_with("/network"))
+        || (path.starts_with("/ui/apps/") && path.contains("/network/"))
         || [
             "/ui/settings/apps",
             "/api/settings/app-access",
@@ -557,7 +560,7 @@ pub(crate) fn require_owner_reauth(
 
 /// Tools whose approval widens who can reach the box: only the owner, with the password
 /// entered recently, may approve them (denying stays open to everyone signed in).
-const OWNER_REAUTH_TOOLS: &[&str] = &["set_app_access", "enable_tailscale"];
+const OWNER_REAUTH_TOOLS: &[&str] = &["set_app_access", "enable_tailscale", "set_app_network"];
 
 /// For the approve/always handlers: refuse when confirmation `id` is one only the owner
 /// may approve and this person can't right now.

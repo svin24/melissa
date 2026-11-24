@@ -2372,6 +2372,11 @@ pub use apps::{
     app_logs_region, app_status, AppAsk, AppDetailsView, AppFact, AppGroup, AppList, AppLogsView,
     AppRow, AppsEmpty, ShowChoice, APPS_LIST_ID, APP_DETAILS_ID,
 };
+mod network;
+pub use network::{
+    add_link_form, link_row, network_box, network_card, AddLinkForm, NetworkCard, NetworkLink,
+    NetworkSwitch, APP_NETWORK_ID,
+};
 mod mobile;
 pub use mobile::{
     back_link, composer_caption, menu_cancel, menu_head, new_agent_round, phone_view, sheet_avatar,
@@ -3062,6 +3067,7 @@ mod tests {
             state,
             always: Some("Always let Ada update Minecraft?"),
             quote: None,
+            network: &[],
         })
         .into_string()
     }
@@ -3084,6 +3090,7 @@ mod tests {
                 state: ApprovalState::Pending,
                 always: None,
                 quote,
+                network: &[],
             })
             .into_string()
         };

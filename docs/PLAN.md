@@ -457,6 +457,8 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   spec, section 3; Kata later); an adversarial escape test suite gating image updates
   (exists for agent sandboxes since 2026-11-23: see "Escape suite" above; automation is open question 95).
   Per-agent host users are done too (2026-11-23, "Agent users" above; open question 97).
+  2026-11-24: app links and internet access are in: the spec's `network` block (internet, lan, links), default
+  deny per namespace, owner approves every agent change (DECISIONS; domain allowlists still open, 99).
 - **Reference:** T3 Code (github.com/pingdotgg/t3code) is a useful reference for multi-agent, many-backend UX. It is currently published under the MIT license — re-verify the license and notice requirements before reusing any code; otherwise treat it as inspiration only.
 
 ## 6. Web UI
@@ -887,8 +889,9 @@ Roadmap (rough, phases may overlap):
     loopback API has auth. Sandboxed agents no longer reach it (2026-11-18: deny-by-default egress, each
     sandbox only sees its own MCP socket), except backends configured with `network = "host"`; other local
     users/processes still can.
-38. Apps have no NetworkPolicy yet (any pod can reach any pod; apps can reach the internet). Default-deny
-    per app namespace with ingress from Traefik only, and an egress allowlist per manifest?
+38. App NetworkPolicy. Done 2026-11-24 (DECISIONS "Per-app network permissions"): default deny per app
+    namespace (own pods and DNS only), web and public ports open, `network` {internet, lan, links} in the
+    spec, edited by agents with the owner's yes (`set_app_network`) or by the owner directly. Follow-ups in 99.
 39. Nextcloud on SQLite is for M2; move to Postgres (second container or a shared DB service?) before
     real use, plus background jobs (cron) and `trusted_proxies`/`overwriteprotocol` once TLS exists.
 40. The lead agent's taint is sticky for the whole conversation since 2026-11-18 (it survives session reopens
@@ -1070,8 +1073,7 @@ Roadmap (rough, phases may overlap):
 64. Any app from an agent's spec (2026-11-19, catalog dropped; DECISIONS): (a) images come from any public
     registry, pinned by tag, not by digest: a tag can be re-pushed. Resolve tags to digests at deploy time
     (needs a registry client in the server) or pin digests in the spec? Image signature checks (cosign) later?
-    (b) No NetworkPolicy yet (38): a deployed app can reach the internet and other apps; default-deny with
-    per-spec egress? (c) Root inside containers is allowed (many images need it); should Melissa prefer
+    (b) NetworkPolicy: done 2026-11-24 (38, 99). (c) Root inside containers is allowed (many images need it); should Melissa prefer
     `run_as_user` when an image documents one, or try `restricted` Pod Security per app? (d) Resource limits
     are per container, not per device: nothing stops agents from deploying more than the box can run
     (scheduler requests only); a per-device budget? (e) Public ports are open to the LAN and tailnet like web
@@ -1479,3 +1481,19 @@ Roadmap (rough, phases may overlap):
     agent is the helper's whole reply of that turn, even "thanks": worth a filter, or rely on the prompt and the
     `MAX_AUTO_TURNS` cap? (d) A cited owner message proves what the owner asked, in any chat; should a citation be
     limited to recent messages, or to the chat the request came through?
+99. App network permissions follow-ups (2026-11-24; DECISIONS "Per-app network permissions"). (a) Domain
+    allowlists ("only github.com and the Debian mirrors") need an egress proxy (NetworkPolicy only knows
+    addresses); until then `internet` is all or nothing. (b) Tailnet access for apps (100.64.0.0/10 is never
+    reachable today, not even with `lan`): a separate `tailnet` permission? (c) An app that may reach every app
+    (monitoring), owner-approved: planned as a label on the source namespace (e.g. `melissa.io/reach-all-apps`,
+    guarded by the namespaces admission policy) that every app's `melissa-isolation` policy lets in, so apps
+    installed later are covered without touching the link policies. (d) This device's addresses are excluded
+    from `internet`/`lan` as they are at deploy time; after a DHCP change an app with `lan` may reach the new
+    address until its next deploy or network change (re-apply at server start?). (e) Apps deployed before
+    2026-11-24 get policies only at their next deploy or update (none were installed). (f) A deploy or update
+    whose spec grants any network access is never coverable by "Always allow", even when the network part is
+    unchanged (the card can't compare with the stored spec); a narrower check needs an async owner check. (g)
+    Public ports accept traffic from any source, including other apps' pods by pod IP if those could reach
+    them (they can't: pod networks are excluded from `lan`/`internet`). (h) A link's port number is resolved
+    at deploy time; if the target changes its port number, links into it are refreshed when the target is
+    deployed again, but a target that drops the port leaves the link inactive (shown in `app_network`).

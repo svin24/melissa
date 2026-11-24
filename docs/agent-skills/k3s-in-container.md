@@ -25,6 +25,9 @@
   kubelet writes host-wide sysctls (install.sh sets them openly, see packaging/container/README.md).
 - Kernel modules come from the host: install.sh loads `br_netfilter` and `overlay` and adds
   `/etc/modules-load.d/melissa.conf`; the container has no `/lib/modules` (`modprobe` in k3s.service is a no-op).
+- NetworkPolicies are enforced by k3s's embedded kube-router controller (on by default; never set
+  `disable-network-policy`): every app namespace is default-deny with the grants of its spec's `network`
+  (app-deploy.md, "Network"). `container-run.sh smoke` with `SMOKE_APPS=1` checks it with three busybox apps.
 
 - **gVisor (2026-11-23)**: the image ships runsc, `containerd-shim-runsc-v1` and runsc's `gvisor-bin/` sidecars
   (Sentry, prewarmer, fd-parking, proc-umounter; runsc finds them next to its real path) in

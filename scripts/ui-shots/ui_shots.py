@@ -276,6 +276,7 @@ def screens(helper, quiet):
         ("apps", "/cluster", None),
         ("apps-by-person", "/cluster", show_person("ben")),
         ("app-details", "/cluster/apps/minecraft", None),
+        ("app-details-add-link", "/cluster/apps/minecraft", click("#app-network a:has-text('Add link')")),
         ("usage", "/usage", usage_loaded),
         ("usage-cost", "/usage?view=cost", usage_loaded),
         ("usage-tokens", "/usage?view=tokens", usage_loaded),

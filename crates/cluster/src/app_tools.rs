@@ -524,6 +524,12 @@ impl Workspaces {
                     .map(str::to_string),
             );
         }
+        // The other sides of its links (best effort: the delete goes on regardless).
+        if let Err(e) =
+            network::remove_link_targets(read.as_ref(), deploy.as_ref(), workspace).await
+        {
+            tracing::warn!(workspace, "removing link policies failed: {e}");
+        }
         deploy.delete_namespace(workspace).await.map_err(err)?;
         removed.push("Namespace (all objects, volumes and data)".into());
         let started = tokio::time::Instant::now();
@@ -739,8 +745,12 @@ macro_rules! spec_help {
     UI: it gets a link), credentials? {user?, password: secret name}, kind? (the app list's \
     group: games|media|home|files|network|developer|other), isolation? (gvisor, the default: \
     its own sandboxed kernel; standard: shares the device's kernel, only for apps that need \
-    host devices or fail under gVisor)}. Containers share one pod: a database sidecar is at \
-    localhost."
+    host devices or fail under gVisor), network? {internet? (public internet: downloads, \
+    updates, external APIs), lan? (devices on the home network), links? [{app, port?}] (other \
+    apps on this device it connects to, e.g. a database app; port = their port name, absent = \
+    all)}: apps reach none of that by default; declare only what the app needs, the owner sees \
+    and approves it (set_app_network changes it later without a restart). Containers share \
+    one pod: a database sidecar is at localhost."
     };
 }
 
@@ -936,6 +946,21 @@ impl Deployer {
         spec.isolation = Some(spec.isolation());
         check_isolation(read.as_ref(), spec.isolation()).await?;
 
+        // Links to other apps: a new one must name an installed app and port (refused here,
+        // before anything is applied); old ones that no longer resolve stay inactive.
+        let old_network = existing
+            .as_ref()
+            .and_then(stored_spec)
+            .map(|s| s.network_or_default());
+        let (links, link_warnings) = network::resolve_links(
+            read.as_ref(),
+            &app,
+            &spec.network_or_default(),
+            old_network.as_ref(),
+        )
+        .await?;
+        let device_addresses = network::device_addresses(&self.settings);
+
         let names = self.settings.agents.as_deref();
         let ownership = match &existing {
             Some(ns) => {
@@ -1025,6 +1050,8 @@ impl Deployer {
                     recorded_web_port: recorded_web,
                     stopped_from,
                     hosts: &hosts,
+                    links: &links,
+                    device_addresses: &device_addresses,
                     ..Placement::domain(&domain)
                 },
             )
@@ -1042,10 +1069,18 @@ impl Deployer {
         ownership.apply_to(&app, &mut first_ns);
 
         let mut applied = Vec::new();
+        // The app's NetworkPolicies before any of its pods can run.
         for object in [
             AppObject::Namespace(first_ns),
             AppObject::RoleBinding(objects.role_binding),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            objects
+                .network_policies
+                .into_iter()
+                .map(AppObject::NetworkPolicy),
+        ) {
             deploy.apply(&object).await.map_err(failed)?;
             applied.push(object.kind());
         }
@@ -1152,6 +1187,13 @@ impl Deployer {
                 }
             }
         }
+        // The other side of each link, and links from other apps into this one.
+        let mut network_changes =
+            network::sync_link_targets(deploy.as_ref(), &app, &links, old_network.as_ref()).await?;
+        network_changes.extend(
+            network::refresh_incoming(read.as_ref(), deploy.as_ref(), &app, &device_addresses)
+                .await?,
+        );
         let unused_volumes: Vec<String> = match &existing {
             Some(_) => read
                 .volumes(&app)
@@ -1186,6 +1228,9 @@ impl Deployer {
                          password itself",
             })),
             "unused_volumes_kept": unused_volumes,
+            "network": network::network_json(&spec.network_or_default()),
+            "network_applied": network_changes,
+            "network_warnings": link_warnings,
             "next": if stopped_from.is_some() {
                 "the app is stopped and stays stopped (its spec is updated); start_app starts it"
             } else {
@@ -1344,6 +1389,19 @@ impl Tool for DeployApp {
     fn describe_call(&self, args: &Value) -> Option<String> {
         describe_deploy(args, Mode::New)
     }
+
+    fn owner_approval(&self, ctx: &TaskContext, args: &Value) -> Result<Option<String>, ToolError> {
+        Ok(network::deploy_owner_approval(ctx, args))
+    }
+
+    fn audit_detail(
+        &self,
+        _: &TaskContext,
+        args: &Value,
+        _: &Result<Value, ToolError>,
+    ) -> Option<String> {
+        network::deploy_audit_detail(args)
+    }
 }
 
 struct UpdateApp(Arc<Deployer>);
@@ -1406,6 +1464,19 @@ impl Tool for UpdateApp {
 
     fn describe_call(&self, args: &Value) -> Option<String> {
         describe_deploy(args, Mode::Update)
+    }
+
+    fn owner_approval(&self, ctx: &TaskContext, args: &Value) -> Result<Option<String>, ToolError> {
+        Ok(network::deploy_owner_approval(ctx, args))
+    }
+
+    fn audit_detail(
+        &self,
+        _: &TaskContext,
+        args: &Value,
+        _: &Result<Value, ToolError>,
+    ) -> Option<String> {
+        network::deploy_audit_detail(args)
     }
 }
 
@@ -1509,6 +1580,9 @@ impl AppStatus {
         );
         report["description"] = json!(spec.as_ref().map(|s| s.description.clone()));
         report["kind"] = json!(spec.as_ref().and_then(|s| s.kind).map(|k| k.as_str()));
+        report["network"] = json!(spec
+            .as_ref()
+            .map(|s| network::network_json(&s.network_or_default())));
         report["spec"] = json!(spec);
         if let (Some(id), Some(names)) = (report["agent"].as_str(), &self.settings.agents) {
             report["agent_name"] = json!(names.name_of(id));
@@ -2765,6 +2839,8 @@ impl UninstallApp {
         if read.namespace(&app).await.map_err(failed)?.is_none() {
             return Err(ToolError::Failed(format!("`{app}` is not installed")));
         }
+        // Its links' other sides go; deploy_app brings them back with the spec.
+        network::remove_link_targets(read.as_ref(), deploy.as_ref(), &app).await?;
         if delete_data {
             let deleted = deploy.delete_namespace(&app).await.map_err(failed)?;
             return Ok(json!({
@@ -3100,6 +3176,10 @@ impl Tool for WaitForApps {
         wait_args(args).map(|_| ())
     }
 }
+
+mod network;
+
+pub use network::network_tools;
 
 #[cfg(test)]
 mod tests;

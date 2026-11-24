@@ -24,6 +24,8 @@ fn minecraft() -> AppSpec {
         }],
         "volumes": [{"name": "data", "size": "5Gi"}],
         "secrets": [{"name": "rcon_password"}],
+        // The image downloads the server at its first start.
+        "network": {"internet": true},
     }))
     .unwrap()
 }
@@ -43,6 +45,7 @@ fn as_json(o: &AppObjects) -> Value {
         "files": o.files,
         "port_service": o.port_service,
         "ingress": o.ingress,
+        "network_policies": o.network_policies,
     })
 }
 
@@ -92,6 +95,7 @@ fn minecraft_renders_to_the_golden_objects() {
             &minecraft(),
             &Placement {
                 node_ports: &ports,
+                device_addresses: &["198.51.100.15".parse().unwrap()],
                 ..Placement::domain("melissa.home.arpa")
             },
         )),
