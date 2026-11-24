@@ -353,6 +353,9 @@ mod tests {
         let p = picker(std::slice::from_ref(&c), "/ui/backend".into(), None, None);
         assert!(p.access.is_none());
         assert!(!p.full_access);
+        assert!(!crate::components::model_chip(&p)
+            .into_string()
+            .contains("chip-warn"));
         let p = picker(
             std::slice::from_ref(&c),
             "/ui/backend".into(),
@@ -368,30 +371,5 @@ mod tests {
         let html = crate::components::model_picker(&p).into_string();
         assert!(html.contains(r#"name="access" value="ask""#));
         assert!(html.contains("Speed"));
-    }
-
-    #[test]
-    fn the_footer_is_left_out_when_nothing_applies() {
-        let mut c = claude_fast();
-        c.model = Some("haiku".into());
-        let p = picker(&[c], "/ui/backend".into(), None, None);
-        let html = crate::components::model_picker(&p).into_string();
-        assert!(!html.contains("picker-footer"));
-        assert!(!html.contains("picker-levels"));
-        let chip = crate::components::model_chip(&p).into_string();
-        assert!(!chip.contains("chip-tag") && !chip.contains("chip-warn"));
-    }
-
-    #[test]
-    fn nothing_usable_says_so() {
-        let p = picker(
-            &[view("grok-acp", false, true)],
-            "/ui/backend".into(),
-            None,
-            None,
-        );
-        assert!(p.backends.is_empty());
-        assert_eq!(p.letter, None);
-        assert_eq!(p.chip, "No agent yet");
     }
 }

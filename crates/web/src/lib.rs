@@ -783,6 +783,69 @@ mod tests {
             (router, lead)
         }
 
+        /// The full router behind the sign-in gate, with an owner (`ana`) and a member (`bob`).
+        struct TestBox {
+            app: Router,
+            owner: melissa_auth::NewSession,
+            member: melissa_auth::NewSession,
+            lead: Lead,
+        }
+
+        impl TestBox {
+            fn new() -> Self {
+                Self::with(Settings::detached(), false, |_, _| Vec::new())
+            }
+
+            /// `signed_out`: the lead agent's provider isn't signed in; `tools` (given the
+            /// owner and the member) replace the cluster tools of the same names.
+            fn with(
+                settings: Settings,
+                signed_out: bool,
+                tools: impl FnOnce(
+                    &melissa_auth::NewSession,
+                    &melissa_auth::NewSession,
+                ) -> Vec<Arc<dyn Tool>>,
+            ) -> Self {
+                let auth = crate::auth::Auth::in_memory().with_cost(melissa_auth::Cost::Test);
+                let (code, _) = auth.setup_code().unwrap().unwrap();
+                let owner = auth
+                    .claim(&code, "ana", "owner-password", "test", "Test")
+                    .unwrap();
+                let inv = auth.create_invite(&owner.view.person.id, "test").unwrap();
+                let member = auth
+                    .accept_invite(&inv.token, "bob", "member-password", "test", "Test")
+                    .unwrap();
+                let (board, mcp, lead) = lead_parts_with(None, signed_out, tools(&owner, &member));
+                let app = router_with_settings(board, mcp, lead.clone(), settings, auth);
+                Self {
+                    app,
+                    owner,
+                    member,
+                    lead,
+                }
+            }
+        }
+
+        /// A request as `s` through the sign-in gate: its cookie, its CSRF token and a
+        /// same-origin form post (harmless on a GET).
+        fn as_(
+            s: &melissa_auth::NewSession,
+            method: &str,
+            uri: &str,
+        ) -> axum::http::request::Builder {
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "melissa.example.com")
+                .header(
+                    header::COOKIE,
+                    format!("{}={}", crate::auth::COOKIE_PLAIN, s.token),
+                )
+                .header(crate::auth::CSRF_HEADER, s.view.csrf.clone())
+                .header("sec-fetch-site", "same-origin")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        }
+
         fn lead_parts(
             workspaces: Option<Arc<dyn melissa_agent::tools::WorkspaceStore>>,
             signed_out: bool,

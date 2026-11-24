@@ -605,6 +605,57 @@ async fn owner_only_sections_refuse_members() {
     assert!(page.contains("href=\"/settings/account\""));
 }
 
+/// PLAN 6c step 1: members share the chats (Melissa's and the helpers'), the file boxes and the
+/// approvals; only the owner, with the password fresh, approves what widens who can reach the
+/// box. Denying stays open to everyone signed in.
+#[tokio::test]
+async fn a_member_shares_chats_files_and_approvals_but_never_widens_access() {
+    let (auth, _) = store();
+    let owner = claimed(&auth);
+    let bob = member(&auth, &owner);
+    let (app, lead) = app_signed_out(auth);
+    for uri in [
+        "/chat",
+        "/chats",
+        "/approvals",
+        "/api/agents",
+        "/api/lead/chats",
+        "/api/confirmations",
+        "/api/files/melissa",
+    ] {
+        let (status, _, _) = send(&app, as_(&bob, "GET", uri).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+    }
+    let answer = |id: u64, verdict: &str| {
+        as_(&bob, "POST", &format!("/api/confirmations/{id}/{verdict}"))
+            .header(CSRF_HEADER, &bob.view.csrf)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let args = serde_json::json!({});
+    let (c, rx) = lead.confirmations().request(7, "touch", &args, "r");
+    assert_eq!(send(&app, answer(c.id, "approve")).await.0, StatusCode::OK);
+    assert_eq!(rx.await.unwrap(), melissa_agent::tools::Verdict::Approved);
+    for tool in ["set_app_access", "enable_tailscale", "set_app_network"] {
+        let (c, rx) = lead.confirmations().request(8, tool, &args, "r");
+        for verdict in ["approve", "always"] {
+            let (status, _, _) = send(&app, answer(c.id, verdict)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{tool} {verdict}");
+        }
+        assert!(
+            lead.confirmations().get(c.id).is_some(),
+            "{tool}: still waiting"
+        );
+        assert_eq!(send(&app, answer(c.id, "deny")).await.0, StatusCode::OK);
+        assert_eq!(
+            rx.await.unwrap(),
+            melissa_agent::tools::Verdict::Denied,
+            "{tool}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn sensitive_actions_need_the_password_again() {
     let (auth, clock) = store();
@@ -770,6 +821,33 @@ async fn people_invites_resets_and_removal() {
     let (_, _, region) = send(&app, post(&format!("/ui/people/{}/remove", bob.id))).await;
     assert!(region.contains("Removed bob."));
     assert_eq!(auth.people().len(), 1);
+}
+
+#[tokio::test]
+async fn an_invite_expires_on_the_clock() {
+    let (auth, clock) = store();
+    let owner = claimed(&auth);
+    let (app, _) = app_signed_out(auth.clone());
+    let body = "username=bob&password=member-password&again=member-password";
+    let join = |path: &str| form_post(path, body).body(Body::from(body)).unwrap();
+    let a = auth.create_invite(&owner.view.person.id, "test").unwrap();
+    let b = auth.create_invite(&owner.view.person.id, "test").unwrap();
+    let (a, b) = (
+        format!("/invite/{}", a.token),
+        format!("/invite/{}", b.token),
+    );
+    // Just before the end it still opens; once its time is up neither the page nor the form
+    // works, and nobody joined.
+    clock.fetch_add(melissa_auth::INVITE_SECS - 1, Ordering::SeqCst);
+    let (status, _, _) = send(&app, req("GET", &a).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    clock.fetch_add(1, Ordering::SeqCst);
+    let (status, _, _) = send(&app, req("GET", &a).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&app, join(&b)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(auth.people().len(), 1);
+    assert!(auth.invites().is_empty());
 }
 
 #[tokio::test]

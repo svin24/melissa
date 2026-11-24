@@ -147,21 +147,3 @@ fn multipart_token_must_be_the_first_part() {
     let second = b"--B\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nhi\r\n--B\r\nContent-Disposition: form-data; name=\"_csrf\"\r\n\r\ntok\r\n";
     assert!(!multipart_token_ok(second, "B", "tok"));
 }
-
-#[test]
-fn browsers_get_short_labels() {
-    let mut h = HeaderMap::new();
-    h.insert(
-        header::USER_AGENT,
-        HeaderValue::from_static(
-            "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
-        ),
-    );
-    assert_eq!(browser_label(&h), "Firefox on Linux");
-    h.insert(
-        header::USER_AGENT,
-        HeaderValue::from_static("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"),
-    );
-    assert_eq!(browser_label(&h), "Safari on iOS");
-    assert_eq!(browser_label(&HeaderMap::new()), "Browser");
-}

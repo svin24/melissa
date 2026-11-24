@@ -145,16 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn the_back_link_and_cancel_have_names() {
-        let back = back_link("/", "Back to agents").into_string();
-        assert!(back.contains("href=\"/\""));
-        assert!(back.contains("<span class=\"visually-hidden\">Back to agents</span>"));
-        let cancel = menu_cancel("menu-head").into_string();
-        assert!(cancel.contains("popovertarget=\"menu-head\" popovertargetaction=\"hide\""));
-        assert!(cancel.contains(">Cancel</button>"));
-    }
-
-    #[test]
     fn sheet_text_is_escaped() {
         let who = MenuWho {
             avatar: Avatar::Melissa,

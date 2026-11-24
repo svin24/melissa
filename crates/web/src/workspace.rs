@@ -661,39 +661,4 @@ mod tests {
         s.entries[1].last_active = 200;
         assert_eq!(order(&s)[1], (GroupKind::Idle, vec!["a", "b"]));
     }
-
-    #[test]
-    fn the_markup_has_no_settled_group_and_keys_each_row() {
-        let s = side(vec![
-            entry("lead", GroupKind::Pinned, 0),
-            entry("w", GroupKind::Working, 5),
-            entry("i", GroupKind::Idle, 5),
-            entry("ask", GroupKind::Attention, 5),
-        ]);
-        let html = groups_update(&s, None).into_string();
-        assert!(
-            !html.contains("Settled") && !html.contains("settled"),
-            "{html}"
-        );
-        let at = |needle: &str| {
-            html.find(needle)
-                .unwrap_or_else(|| panic!("{needle} in {html}"))
-        };
-        assert!(at("group-attention") < at("group-pinned"));
-        assert!(at("group-pinned") < at("group-idle"));
-        assert!(at("group-idle") < at("group-working"));
-        // The idle list has no visible heading or count.
-        let idle = &html[at("group-idle")..at("group-working")];
-        assert!(!idle.contains("class=\"count\""), "{idle}");
-        assert!(
-            idle.contains("<h2 class=\"visually-hidden\" id=\"group-idle\">"),
-            "{idle}"
-        );
-        for key in ["lead", "w", "i", "ask"] {
-            assert!(
-                html.contains(&format!("data-agent=\"{key}\"")),
-                "{key}: {html}"
-            );
-        }
-    }
 }

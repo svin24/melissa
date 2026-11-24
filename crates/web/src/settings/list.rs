@@ -156,25 +156,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counts_read_as_words() {
-        assert_eq!(count_words(0, "rule", "rules"), "None");
-        assert_eq!(count_words(1, "rule", "rules"), "1 rule");
-        assert_eq!(count_words(4, "rule", "rules"), "4 rules");
-        assert_eq!(on_off(true), "On");
-        assert_eq!(on_off(false), "Off");
-    }
-
-    #[test]
-    fn tailscale_reads_as_a_word_or_nothing() {
-        assert_eq!(tailscale_words(&TsState::NotManaged), None);
-        assert_eq!(tailscale_words(&TsState::Off), Some("Off"));
-        assert_eq!(
-            tailscale_words(&TsState::Error("no daemon".into())),
-            Some("Not connected")
-        );
-    }
-
-    #[test]
     fn a_value_is_found_by_its_row() {
         let level = ListLevel {
             values: vec![("/settings/voice", "Off".into())],

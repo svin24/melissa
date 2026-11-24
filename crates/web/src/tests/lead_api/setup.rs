@@ -1,10 +1,9 @@
 //! First-run setup (2026-11-21): the owner goes through Device → Provider → Model → Extras
 //! after the claim; members never see it; "Later" lets the chat open and lists the step.
 
-use melissa_auth::{Auth, Cost, NewSession};
+use melissa_auth::NewSession;
 
 use super::*;
-use crate::auth::{COOKIE_PLAIN, CSRF_HEADER};
 
 struct Box_ {
     app: Router,
@@ -18,38 +17,25 @@ struct Box_ {
 fn setup_box(name: &str, onboarding: bool, signed_out: bool) -> Box_ {
     let mut fx = SettingsFixture::new(name);
     fx.onboarding = onboarding;
-    let settings = fx.settings(HostKind::Container, false);
-    let auth = Auth::in_memory().with_cost(Cost::Test);
-    let (code, _) = auth.setup_code().unwrap().unwrap();
-    let owner = auth
-        .claim(&code, "ana", "owner-password", "test", "Test")
-        .unwrap();
-    let inv = auth.create_invite(&owner.view.person.id, "test").unwrap();
-    let member = auth
-        .accept_invite(&inv.token, "bob", "member-password", "test", "Test")
-        .unwrap();
-    let (board, mcp, lead) = lead_parts(None, signed_out);
-    let app = router_with_settings(board, mcp, lead, settings, auth);
+    let t = TestBox::with(
+        fx.settings(HostKind::Container, false),
+        signed_out,
+        |_, _| Vec::new(),
+    );
     Box_ {
-        app,
-        owner,
-        member,
+        app: t.app,
+        owner: t.owner,
+        member: t.member,
         fx,
     }
 }
 
 fn as_get(s: &NewSession, uri: &str) -> axum::http::Request<Body> {
-    axum::http::Request::get(uri)
-        .header(header::HOST, "127.0.0.1:8080")
-        .header(header::COOKIE, format!("{COOKIE_PLAIN}={}", s.token))
-        .body(Body::empty())
-        .unwrap()
+    as_(s, "GET", uri).body(Body::empty()).unwrap()
 }
 
 fn as_post(s: &NewSession, uri: &str) -> axum::http::request::Builder {
-    post(uri)
-        .header(header::COOKIE, format!("{COOKIE_PLAIN}={}", s.token))
-        .header(CSRF_HEADER, s.view.csrf.clone())
+    as_(s, "POST", uri)
 }
 
 async fn go(b: &Box_, s: &NewSession, uri: &str, body: &str) -> (StatusCode, HeaderMap, String) {

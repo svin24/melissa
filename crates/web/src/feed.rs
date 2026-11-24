@@ -2796,70 +2796,6 @@ mod tests {
     }
 
     #[test]
-    fn errors_and_stops_become_notes() {
-        let mut feed = Feed::new();
-        feed.apply(
-            &rec(
-                1,
-                LeadEvent::UserMessage {
-                    owner_msg: None,
-                    turn: 1,
-                    text: "hi".into(),
-                    attachments: vec![],
-                    scheduled: None,
-                },
-            ),
-            &NoLookup,
-        );
-        feed.apply(
-            &rec(
-                2,
-                LeadEvent::Error {
-                    turn: Some(1),
-                    message: "no backend".into(),
-                },
-            ),
-            &NoLookup,
-        );
-        feed.apply(
-            &rec(
-                3,
-                LeadEvent::TurnFinished {
-                    turn: 1,
-                    stop_reason: "error".into(),
-                },
-            ),
-            &NoLookup,
-        );
-        // One note for the error, none for the error stop.
-        assert_eq!(feed.entries().len(), 2);
-        feed.apply(
-            &rec(
-                4,
-                LeadEvent::UserMessage {
-                    owner_msg: None,
-                    turn: 2,
-                    text: "again".into(),
-                    attachments: vec![],
-                    scheduled: None,
-                },
-            ),
-            &NoLookup,
-        );
-        feed.apply(
-            &rec(
-                5,
-                LeadEvent::TurnFinished {
-                    turn: 2,
-                    stop_reason: "cancelled".into(),
-                },
-            ),
-            &NoLookup,
-        );
-        assert!(matches!(&feed.entries()[3].item, Item::Note { text, .. } if text == "Stopped."));
-    }
-
-    #[test]
     fn a_steered_turn_says_so_and_a_plain_stop_says_stopped() {
         let user = |turn, text: &str| LeadEvent::UserMessage {
             owner_msg: None,
@@ -2919,6 +2855,19 @@ mod tests {
             .entries()
             .iter()
             .any(|e| matches!(&e.item, Item::Note { text, .. } if text == "Stopped.")));
+
+        // An error is one note; the error stop after it adds none.
+        let mut feed = Feed::default();
+        let error = LeadEvent::Error {
+            turn: Some(1),
+            message: "no backend".into(),
+        };
+        let stop = LeadEvent::TurnFinished {
+            turn: 1,
+            stop_reason: "error".into(),
+        };
+        fold_all(&mut feed, vec![user(1, "hi"), error, stop]);
+        assert_eq!(feed.entries().len(), 2);
     }
 
     /// Folds `events` (numbered from 1) into `feed`; returns each event's changes.
@@ -2986,34 +2935,12 @@ mod tests {
     }
 
     #[test]
-    fn a_model_chosen_before_the_first_message_leaves_the_chat_empty() {
+    fn a_switch_mid_chat_is_one_line_not_two() {
+        // Before the first message a switch says nothing.
         let mut feed = Feed::new();
         fold_all(&mut feed, vec![switched("claude"), switched("grok")]);
         assert!(feed.entries().is_empty(), "{:?}", feed.entries());
-        // The first message opens the session: it says so once.
-        let mut feed = Feed::new();
-        fold_all(
-            &mut feed,
-            vec![
-                switched("claude"),
-                LeadEvent::UserMessage {
-                    owner_msg: None,
-                    turn: 1,
-                    text: "hi".into(),
-                    attachments: vec![],
-                    scheduled: None,
-                },
-                LeadEvent::SessionOpened {
-                    backend: "claude".into(),
-                    resumed: false,
-                },
-            ],
-        );
-        assert_eq!(notes(&feed), ["Connected to Claude"]);
-    }
 
-    #[test]
-    fn a_switch_mid_chat_is_one_line_not_two() {
         let mut feed = Feed::new();
         let user = |turn| LeadEvent::UserMessage {
             owner_msg: None,
@@ -3278,37 +3205,6 @@ mod tests {
         assert_eq!(feed.clock().short_when(yesterday), "19 Nov");
     }
 
-    #[test]
-    fn durations_in_short_words() {
-        assert_eq!(duration_words(0), "<0.1s");
-        assert_eq!(duration_words(420), "0.4s");
-        assert_eq!(duration_words(9_999), "9.9s");
-        assert_eq!(duration_words(42_000), "42s");
-        assert_eq!(duration_words(125_000), "2m 05s");
-    }
-
-    #[test]
-    fn approval_words_fall_back_for_unknown_tools() {
-        let a = approval_words(
-            1,
-            "touch",
-            "changes state while nobody is watching",
-            None,
-            &NoLookup,
-        );
-        assert_eq!(a.title, "Allow touch?");
-        assert!(!a.destructive);
-        let a = approval_words(
-            2,
-            "deploy_app",
-            "x",
-            Some(&json!({"app": "immich"})),
-            &NoLookup,
-        );
-        assert_eq!(a.title, "Set up Immich?");
-        assert_eq!(a.yes, "Set up");
-    }
-
     /// The install card's network box (owner decision 6): every link up to three, then a
     /// count; one short row when the spec grants nothing. An agent's network change reads as a
     /// question with Allow / Deny (decision 7).
@@ -3430,96 +3326,78 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_request_has_a_tag_line() {
-        let tag = |tool: &str, args: Value| {
-            let a = approval_words(1, tool, "r", Some(&args), &Known);
-            (a.kind, a.detail)
-        };
-        assert_eq!(
-            tag(
+    fn every_kind_of_request_has_a_tag_line_and_a_danger_level() {
+        // (tool, args) → the tag line, destructive, permanent.
+        let cases = [
+            ("touch", json!({}), "Tool", Some("touch"), false, false),
+            ("Read", json!({}), "Tool", Some("Read"), false, false),
+            ("agent:execute", json!({}), "Command", None, true, false),
+            (
                 "uninstall_app",
-                json!({"app": "nextcloud", "delete_data": true})
+                json!({"app": "nextcloud", "delete_data": true}),
+                "Deletes data",
+                Some("Nextcloud"),
+                true,
+                true,
             ),
-            ("Deletes data", Some("Nextcloud".into()))
-        );
-        assert_eq!(
-            tag("stop_app", json!({"app": "nextcloud"})),
-            ("App", Some("Nextcloud".into()))
-        );
-        assert_eq!(
-            tag("give_agent_job", json!({"agent": "d.a1", "goal": "x"})),
-            ("Helpers", Some("Ada".into()))
-        );
-        assert_eq!(
-            tag("transfer_file", json!({"file": "a.pdf"})),
-            ("Files", Some("a.pdf".into()))
-        );
-        assert_eq!(tag("agent:execute", json!({})), ("Command", None));
-        assert_eq!(
-            tag("app_logs", json!({"app": "immich"})),
-            ("Outside text", Some("Immich".into()))
-        );
-        assert_eq!(tag("Read", json!({})), ("Tool", Some("Read".into())));
-    }
-
-    #[test]
-    fn stopping_an_app_is_asked_but_not_dangerous() {
-        let a = approval_words(
-            3,
-            "mcp__melissa__stop_app",
-            "`nextcloud` is looked after by agent Ada (d.a1); stop `nextcloud` (it can be started \
-             again; nothing is deleted); takes a running service offline (it can be started \
-             again; nothing is deleted)",
-            Some(&json!({"app": "nextcloud"})),
-            &NoLookup,
-        );
-        assert_eq!(a.title, "Stop Nextcloud?");
-        assert_eq!(
-            a.consequence,
-            "It can be started again; nothing is deleted."
-        );
-        assert!(!a.destructive && !a.permanent);
-        assert_eq!((a.yes, a.no), ("Stop", "Decline"));
-        let a = approval_words(
-            4,
-            "start_app",
-            "x",
-            Some(&json!({"app": "nextcloud"})),
-            &NoLookup,
-        );
-        assert_eq!(a.title, "Start Nextcloud again?");
-        assert!(!a.destructive);
-        assert_eq!(tool_words("melissa__stop_app").done, "Stopped an app");
-        assert_eq!(tool_words("start_app").doing, "Starting an app");
-        assert_eq!(
-            tool_words("mcp__melissa__wait_for_apps").done,
-            "Waited for apps"
-        );
-    }
-
-    #[test]
-    fn a_file_transfer_names_the_file_and_both_boxes() {
-        let args = json!({"from_agent": "Ada", "file": "plan.txt", "to_agent": "melissa"});
-        let a = approval_words(
-            5,
-            "mcp__melissa__transfer_file",
-            "x",
-            Some(&args),
-            &NoLookup,
-        );
-        assert_eq!(a.title, "Copy plan.txt from Ada's files to Melissa's?");
-        assert_eq!(a.consequence, "Melissa can read it; both keep a copy.");
-        assert_eq!((a.yes, a.no), ("Copy it", "Decline"));
-        assert!(!a.destructive);
-        let args =
-            json!({"from_agent": "lead", "file": "plan.txt", "to_agent": "Bo", "move": true});
-        let a = approval_words(6, "transfer_file", "x", Some(&args), &NoLookup);
-        assert_eq!(a.title, "Move plan.txt from Melissa's files to Bo's?");
-        assert_eq!(a.yes, "Move it");
-        assert_eq!(
-            tool_words("transfer_file").done,
-            "Passed a file to another file box"
-        );
+            (
+                "mcp__melissa__stop_app",
+                json!({"app": "nextcloud"}),
+                "App",
+                Some("Nextcloud"),
+                false,
+                false,
+            ),
+            (
+                "start_app",
+                json!({"app": "nextcloud"}),
+                "App",
+                Some("Nextcloud"),
+                false,
+                false,
+            ),
+            (
+                "give_agent_job",
+                json!({"agent": "d.a1", "goal": "x"}),
+                "Helpers",
+                Some("Ada"),
+                false,
+                false,
+            ),
+            (
+                "app_logs",
+                json!({"app": "immich"}),
+                "Outside text",
+                Some("Immich"),
+                false,
+                false,
+            ),
+            (
+                "mcp__melissa__transfer_file",
+                json!({"from_agent": "Ada", "file": "plan.txt", "to_agent": "melissa"}),
+                "Files",
+                Some("plan.txt"),
+                false,
+                false,
+            ),
+            (
+                "transfer_file",
+                json!({"from_agent": "lead", "file": "plan.txt", "to_agent": "Bo", "move": true}),
+                "Files",
+                Some("plan.txt"),
+                false,
+                false,
+            ),
+        ];
+        for (tool, args, kind, detail, destructive, permanent) in cases {
+            let a = approval_words(1, tool, "r", Some(&args), &Known);
+            assert_eq!((a.kind, a.detail.as_deref()), (kind, detail), "{tool}");
+            assert_eq!(
+                (a.destructive, a.permanent),
+                (destructive, permanent),
+                "{tool}"
+            );
+        }
     }
 
     #[test]

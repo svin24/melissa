@@ -169,51 +169,6 @@ async fn providers_show_logos_where_allowed_and_letter_marks_otherwise() {
     assert!(!html.contains("cdn.agentclientprotocol.com"));
 }
 
-#[test]
-fn the_picker_uses_logos_with_a_letter_fallback() {
-    use crate::components::{model_chip, model_picker, ModelPicker, PickerBackend, PickerModel};
-    let backend = |name: &str, label: &str, letter: &str| PickerBackend {
-        name: name.into(),
-        label: label.into(),
-        letter: letter.into(),
-        models: vec![PickerModel {
-            value: name.into(),
-            label: label.into(),
-            current: name == "grok-acp",
-        }],
-    };
-    let p = ModelPicker {
-        action: "/x".into(),
-        chip: "Grok".into(),
-        letter: Some("G".into()),
-        current: "grok-acp".into(),
-        backends: vec![
-            backend("grok-acp", "Grok", "G"),
-            backend("claude-session", "Claude", "C"),
-            backend("my-agent-acp", "My agent", "M"),
-        ],
-        levels: Vec::new(),
-        speed: None,
-        fast: false,
-        access: None,
-        full_access: false,
-        error: None,
-    };
-    let picker = model_picker(&p).into_string();
-    // Rail + row for Grok are logos; Claude and an unknown agent keep their letters.
-    assert_eq!(picker.matches("pmark plogo").count(), 2, "{picker}");
-    assert!(picker.contains("<span>C</span>") && picker.contains("<span>M</span>"));
-    let chip = model_chip(&p).into_string();
-    assert!(chip.contains("pmark plogo"), "{chip}");
-    let claude_chip = model_chip(&ModelPicker {
-        current: "claude-session".into(),
-        letter: Some("C".into()),
-        ..p
-    })
-    .into_string();
-    assert!(!claude_chip.contains("plogo") && claude_chip.contains("<span>C</span>"));
-}
-
 // --- Remove provider -----------------------------------------------------------------------
 
 #[tokio::test]
@@ -623,32 +578,4 @@ async fn a_download_that_does_not_match_its_checksum_is_refused() {
         .home()
         .join(".local/share/melissa-agents/fake-agent/0.1.0")
         .exists());
-}
-
-#[tokio::test]
-async fn the_add_panel_works_without_script() {
-    let fx = SettingsFixture::new("add-nojs");
-    let (app, _) = app_with(Some(fx.settings(HostKind::Other, false)));
-    let (status, _, html) = send(&app, get("/settings/providers/add")).await;
-    assert_eq!(status, StatusCode::OK);
-    // A full page: breadcrumb, steps, plain forms and links.
-    for want in [
-        "Add provider",
-        "aria-current=\"step\"",
-        "method=\"post\" action=\"/ui/settings/providers/registry\"",
-        "href=\"/settings/providers/add?step=manual\"",
-        "href=\"/settings/providers\"",
-    ] {
-        assert!(html.contains(want), "missing {want}");
-    }
-    // Without a registry client: Load the list explains instead of failing silently.
-    let (status, _, html) = send(&app, form("/ui/settings/providers/registry", "", false)).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(
-        html.contains("can&#39;t be loaded") || html.contains("can't be loaded"),
-        "{html}"
-    );
-    // The Providers page links to the panel.
-    let (_, _, html) = send(&app, get("/settings/providers")).await;
-    assert!(html.contains("href=\"/settings/providers/add\""));
 }

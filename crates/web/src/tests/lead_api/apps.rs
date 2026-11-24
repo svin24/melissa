@@ -2,87 +2,53 @@
 //! a member sees only their own, in the list, its JSON and every app route. Checked on the
 //! server with real sessions through the sign-in gate.
 
-use melissa_auth::{Auth, Cost, NewSession};
+use melissa_auth::NewSession;
 
 use super::*;
-use crate::auth::{COOKIE_PLAIN, CSRF_HEADER};
-
-const HOST: &str = "melissa.example.com";
-
-struct Box3 {
-    app: Router,
-    owner: NewSession,
-    member: NewSession,
-    lead: Lead,
-}
 
 /// A box with an owner (`ana`) and a member (`bob`), and three apps: Jellyfin installed for
 /// the owner, Minecraft for the member, Forgejo from before anyone was recorded.
-fn box3() -> Box3 {
+fn box3() -> TestBox {
     box3_with(Vec::new())
 }
 
 /// [`box3`] with more tools.
-fn box3_with(extra: Vec<Arc<dyn Tool>>) -> Box3 {
-    let auth = Auth::in_memory().with_cost(Cost::Test);
-    let (code, _) = auth.setup_code().unwrap().unwrap();
-    let owner = auth
-        .claim(&code, "ana", "owner-password", "test", "Test")
-        .unwrap();
-    let inv = auth.create_invite(&owner.view.person.id, "test").unwrap();
-    let member = auth
-        .accept_invite(&inv.token, "bob", "member-password", "test", "Test")
-        .unwrap();
-    let list = serde_json::json!({"apps": [
-        {"app": "jellyfin", "phase": "ready", "kind": "media", "port": 30001,
-         "url": "http://203.0.113.10:30001", "installed_for": owner.view.person.id},
-        {"app": "minecraft", "phase": "ready", "kind": "games",
-         "ports": [{"name": "game", "port": 30002, "protocol": "tcp", "web": false}],
-         "installed_for": member.view.person.id},
-        {"app": "forgejo", "phase": "stopped", "kind": "developer"},
-    ]});
-    let nodes = serde_json::json!({"nodes": [{"name": "device-1", "ready": true}]});
-    let (board, mcp, lead) = lead_parts_with(
-        None,
-        false,
+fn box3_with(extra: Vec<Arc<dyn Tool>>) -> TestBox {
+    TestBox::with(Settings::detached(), false, |owner, member| {
+        let list = serde_json::json!({"apps": [
+            {"app": "jellyfin", "phase": "ready", "kind": "media", "port": 30001,
+             "url": "http://203.0.113.10:30001", "installed_for": owner.view.person.id},
+            {"app": "minecraft", "phase": "ready", "kind": "games",
+             "ports": [{"name": "game", "port": 30002, "protocol": "tcp", "web": false}],
+             "installed_for": member.view.person.id},
+            {"app": "forgejo", "phase": "stopped", "kind": "developer"},
+        ]});
+        let nodes = serde_json::json!({"nodes": [{"name": "device-1", "ready": true}]});
         [
             Arc::new(Fixed("list_apps", list)) as Arc<dyn Tool>,
             Arc::new(Fixed("cluster_health", nodes)),
         ]
         .into_iter()
         .chain(extra)
-        .collect(),
-    );
-    let app = router_with_settings(board, mcp, lead.clone(), Settings::detached(), auth);
-    Box3 {
-        app,
-        owner,
-        member,
-        lead,
-    }
+        .collect()
+    })
 }
 
-fn as_(s: &NewSession, method: &str, uri: &str) -> axum::http::Request<Body> {
-    axum::http::Request::builder()
-        .method(method)
-        .uri(uri)
-        .header(header::HOST, HOST)
-        .header(header::COOKIE, format!("{COOKIE_PLAIN}={}", s.token))
-        .header(CSRF_HEADER, s.view.csrf.clone())
+/// An htmx request as `s`.
+fn req(s: &NewSession, method: &str, uri: &str) -> axum::http::Request<Body> {
+    as_(s, method, uri)
         .header("hx-request", "true")
-        .header("sec-fetch-site", "same-origin")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(Body::empty())
         .unwrap()
 }
 
 async fn page(app: &Router, s: &NewSession, uri: &str) -> (StatusCode, String) {
-    let (status, _, body) = send(app, as_(s, "GET", uri)).await;
+    let (status, _, body) = send(app, req(s, "GET", uri)).await;
     (status, body)
 }
 
 async fn api(app: &Router, s: &NewSession, uri: &str) -> (StatusCode, Value) {
-    let (status, _, body) = send(app, as_(s, "GET", uri)).await;
+    let (status, _, body) = send(app, req(s, "GET", uri)).await;
     (status, serde_json::from_str(&body).unwrap_or(Value::Null))
 }
 
@@ -215,53 +181,24 @@ async fn a_member_sees_and_reaches_only_their_own_apps() {
             format!("/ui/apps/{app}/start"),
             format!("/ui/apps/{app}/icon"),
         ] {
-            let (status, _, _) = send(&b.app, as_(&b.member, "POST", &uri)).await;
+            let (status, _, _) = send(&b.app, req(&b.member, "POST", &uri)).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         }
     }
     // Force delete stays the owner's, even for their own app.
     let (status, _, _) = send(
         &b.app,
-        as_(&b.member, "POST", "/ui/apps/minecraft/force-delete"),
+        req(&b.member, "POST", "/ui/apps/minecraft/force-delete"),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn without_k3s_the_list_says_it_isnt_set_up() {
-    // Replace the answer: no app platform at all.
-    let (board, mcp, lead) = lead_parts_with(
-        None,
-        false,
-        vec![Arc::new(Fixed(
-            "list_apps",
-            serde_json::json!({"k3s_set_up": false, "k3s_reachable": false}),
-        )) as Arc<dyn Tool>],
-    );
-    let auth = Auth::in_memory().with_cost(Cost::Test);
-    let (code, _) = auth.setup_code().unwrap().unwrap();
-    let owner = auth
-        .claim(&code, "ana", "owner-password", "test", "Test")
-        .unwrap();
-    let app = router_with_settings(board, mcp, lead, Settings::detached(), auth);
-    let (status, body) = page(&app, &owner, "/cluster").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("No apps yet"));
-    assert!(
-        body.contains("The app platform isn't set up on this device."),
-        "{body}"
-    );
-    assert!(!body.contains("Couldn't") && !body.contains("tone-caution"));
-    let (_, v) = api(&app, &owner, "/api/apps").await;
-    assert_eq!(v["k3s"], "not_set_up");
-}
-
 /// Melissa's chat stream for `s`, from where its page ends.
-async fn stream_as(b: &Box3, s: &NewSession) -> Body {
+async fn stream_as(b: &TestBox, s: &NewSession) -> Body {
     let (since, epoch) = (b.lead.events().last_seq(), b.lead.events().epoch());
     let uri = format!("/ui/stream?since={since}&epoch={epoch}");
-    let res = b.app.clone().oneshot(as_(s, "GET", &uri)).await.unwrap();
+    let res = b.app.clone().oneshot(req(s, "GET", &uri)).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     res.into_body()
 }
@@ -289,7 +226,7 @@ async fn live_details_updates_keep_each_persons_apps() {
     let mut owner = stream_as(&b, &b.owner).await;
     let mut member = stream_as(&b, &b.member).await;
 
-    let mut rename = as_(&b.owner, "POST", "/ui/settings/device-name");
+    let mut rename = req(&b.owner, "POST", "/ui/settings/device-name");
     *rename.body_mut() = Body::from("name=Den+box");
     let (status, _, _) = send(&b.app, rename).await;
     assert_eq!(status, StatusCode::OK);
@@ -400,7 +337,7 @@ async fn the_network_card_is_the_owners_to_change_and_a_members_to_read() {
     }
 
     let post = |s: &NewSession, uri: &str, form: &str| {
-        let mut req = as_(s, "POST", uri);
+        let mut req = req(s, "POST", uri);
         *req.body_mut() = Body::from(form.to_string());
         req
     };

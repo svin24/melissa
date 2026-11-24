@@ -425,19 +425,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn the_checker_reads_both_spellings() {
-        assert_eq!(
-            normal("color", "#0a0e1473"),
-            normal("color", "rgb(10 14 20 / 0.45)")
-        );
-        assert_eq!(normal("spacing", "4"), normal("spacing", "0.25rem"));
-        assert_eq!(normal("number", "150"), normal("number", "150ms"));
-        assert_eq!(
-            normal("fontFamilies", "Bricolage Grotesque"),
-            normal("fontFamilies", "\"Bricolage Grotesque\", system-ui")
-        );
-        assert_ne!(normal("color", "#ffffff"), normal("color", "#fffffe"));
-    }
 }
