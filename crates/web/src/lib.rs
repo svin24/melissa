@@ -352,10 +352,11 @@ pub(crate) fn is_htmx(headers: &HeaderMap) -> bool {
 /// host socket). Sessions add their own CSRF token on top (see [`auth`]).
 async fn security(req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if !safe && !same_origin(req.headers()) {
-        return (StatusCode::FORBIDDEN, "cross-site request rejected").into_response();
-    }
-    let mut res = next.run(req).await;
+    let mut res = if !safe && !same_origin(req.headers()) {
+        (StatusCode::FORBIDDEN, "cross-site request rejected").into_response()
+    } else {
+        next.run(req).await
+    };
     let h = res.headers_mut();
     // A handler may set a stricter policy (attachments: `sandbox`).
     h.entry(header::CONTENT_SECURITY_POLICY)
@@ -1945,6 +1946,13 @@ mod tests {
                 (get("/api/settings/providers"), StatusCode::OK),
                 (get("/assets/melissa.css"), StatusCode::OK),
                 (get("/no-such-page"), StatusCode::NOT_FOUND),
+                (
+                    Request::post("/settings/voice")
+                        .header("sec-fetch-site", "cross-site")
+                        .body(Body::empty())
+                        .unwrap(),
+                    StatusCode::FORBIDDEN,
+                ),
             ] {
                 let uri = req.uri().to_string();
                 let (got, headers, _) = send(&app, req).await;
