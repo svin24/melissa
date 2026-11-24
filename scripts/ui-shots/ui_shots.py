@@ -241,7 +241,6 @@ def show_new(page):
 def open_thread(page):
     """Click the first event line ("Messaged Backup"): its thread opens in the panel's place."""
     show_new(page)
-    page.wait_for_timeout(1000)  # the chat's stream settles first (it may swap the panel)
     present(page, page.locator("a[data-thread-open]"), "event line").click()
     page.locator("#thread-slot .thread-view").wait_for()
     page.wait_for_timeout(250)
@@ -250,7 +249,6 @@ def open_thread(page):
 def open_conversation(page):
     """The details' Conversations, then its first row."""
     open_details(page)
-    page.wait_for_timeout(1000)  # the chat's stream settles first (it may swap the panel)
     present(page, page.locator(".conversation-row"), "conversation row").click()
     page.locator("#thread-slot .thread-view").wait_for()
     page.wait_for_timeout(250)

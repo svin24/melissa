@@ -1396,7 +1396,10 @@
   // page showDetails does nothing.
   if (WIDE && WIDE.addEventListener) {
     WIDE.addEventListener("change", function () {
-      showDetails(storedOpen(isWide()), false);
+      // An open thread stays open across the width change (column <-> sheet).
+      var p = detailsParts();
+      var thread = !!p && p.panel.hasAttribute("data-view");
+      showDetails(thread || storedOpen(isWide()), false);
     });
   }
 
