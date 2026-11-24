@@ -267,6 +267,14 @@ apply -f <privileged deployment>` → denied with the policy message.
 - **NixOS VM test** (`nix build .#checks.x86_64-linux.melissa-nixos -L`): the test app deployed with
   `deploy_app` (image pinned by the digest k3s reports), NodePort answered from the client VM, stop/start.
 
+## Verified: network permissions (2026-11-24, rootful test container, k3s v1.37.2, APP_PORT_BASE 35000)
+`SMOKE_APPS=1 container-run.sh smoke`: policies in every app namespace; a default app reaches neither another
+app, 1.1.1.1:443 nor the node's 6443; with `internet` it reaches 1.1.1.1:443 but not the node's 6443, the
+Kubernetes service 10.43.0.1, Melissa's UI forward (node:8081), the host's UI port via the gateway, or another
+app; the public port answers from the host through the NodePort; the owner's `POST /api/apps/{app}/network`
+link opens a→b (c still blocked) and removing it closes it again. DNS works under default deny. First run found
+that the API refuses `::ffff:0:0/96` in an ipBlock (removed). gVisor is not in the image yet: unverified there.
+
 ## Gotchas
 - CEL: Kubernetes 1.37 exposes a RoleBinding subject's `namespace` as `s.namespace`, never
   `__namespace__` (`rbac_manifests.rs` guards it).
