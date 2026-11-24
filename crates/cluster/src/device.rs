@@ -171,17 +171,14 @@ Local:
     }
 
     #[test]
-    fn host_names_are_plain_dns_names() {
+    fn host_names_are_plain_dns_names_and_urls_bracket_ipv6() {
         assert!(valid_host_name("melissa"));
         assert!(valid_host_name("box-1.lan"));
         assert!(!valid_host_name("localhost"));
         assert!(!valid_host_name("a b"));
         assert!(!valid_host_name("-x"));
         assert!(!valid_host_name(""));
-    }
-
-    #[test]
-    fn urls_bracket_ipv6() {
+        // URLs bracket IPv6.
         assert_eq!(url("192.0.2.15", 30000), "http://192.0.2.15:30000");
         assert_eq!(
             url("melissa.example.com", 30001),

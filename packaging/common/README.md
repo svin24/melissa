@@ -38,7 +38,7 @@ agents deploy apps from specs they write.
 Packages the host or image needs at runtime: systemd, bubblewrap (agent sandbox), nftables and
 iproute (k3s, egress), polkit (Restart in Settings → Updates), ca-certificates, curl (agent installers).
 
-Checks: `crates/cluster/tests/rbac_manifests.rs` parses the manifests here.
+Checks: `crates/cluster/src/render/rbac_tests.rs` parses the manifests here.
 
 **Release marker.** Each packaging writes `MELISSA_RUNTIME` in its release file (`/usr/lib/melissa/release`,
 or `$MELISSA_RELEASE_FILE`): `container` for the image, `nix` for the Nix package (`HostKind::Nix`).

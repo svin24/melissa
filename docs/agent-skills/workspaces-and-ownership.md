@@ -125,7 +125,7 @@ argument hash (`app_exec`: who, app, argv, stdin length, pod, container, exit co
   unassigned legacy workspaces; every install gets an agent; legacy migration + `assign` patch with a new
   `assigned-at` each time; fail closed), `agent/src/lead/tests.rs` (through real agent conversations:
   hidden lead agent tools, refusal audited on the agent's task, own workspace → "destructive action"; reassign by the
-  Lead agent denied/approved; user reassign without confirmation), `cluster/tests/rbac_manifests.rs`.
+  Lead agent denied/approved; user reassign without confirmation), `cluster/src/render/rbac_tests.rs`.
 - **Not yet verified live:** the new CEL rules against a real API server (VM): create without workspace/device →
   denied; patch owner-agent without a new assigned-at → denied; `workspace reassign` → allowed.
 

@@ -328,13 +328,7 @@ mod tests {
         assert_eq!(out["k3s_reachable"], false);
         assert!(out["reason"].as_str().unwrap().contains("not set up"));
         assert_eq!(out["k3s_set_up"], false);
-        assert_eq!(
-            out["app_platform"],
-            "not installed on this device: this copy of Melissa runs without the app platform \
-             (k3s), so it can't install or run apps here. Apps need the full install, the \
-             container or NixOS (see docs/QUICKSTART.md). Chat, helpers, schedules, files and \
-             describing this device still work."
-        );
+        assert_eq!(out["app_platform"], crate::cluster::NOT_INSTALLED);
     }
 
     #[tokio::test]
@@ -379,33 +373,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("connection refused"));
-        assert_eq!(
-            out["app_platform"],
-            "installed but not answering right now (starting or restarting). Melissa keeps \
-             trying; try again in a minute."
-        );
+        assert_eq!(out["app_platform"], crate::cluster::NOT_ANSWERING);
         assert!(out.get("k3s_set_up").is_none(), "{out}");
     }
 
     #[tokio::test]
-    async fn rbac_failures_are_tool_errors() {
-        let err = call(Fake {
-            pods_error: Some(ClusterError::Forbidden("pods is forbidden".into())),
+    async fn rbac_failures_are_tool_errors_and_a_vanished_api_is_unreachable() {
+        let with = |e| Fake {
+            pods_error: Some(e),
             ..Fake::default()
-        })
-        .await
-        .unwrap_err();
+        };
+        let err = call(with(ClusterError::Forbidden("pods is forbidden".into())))
+            .await
+            .unwrap_err();
         assert!(matches!(err, ToolError::Failed(m) if m.contains("forbidden")));
-    }
-
-    #[tokio::test]
-    async fn api_vanishing_mid_call_is_unreachable() {
-        let out = call(Fake {
-            pods_error: Some(ClusterError::Unreachable("connection reset".into())),
-            ..Fake::default()
-        })
-        .await
-        .unwrap();
+        let out = call(with(ClusterError::Unreachable("connection reset".into())))
+            .await
+            .unwrap();
         assert_eq!(out["k3s_reachable"], false);
     }
 
