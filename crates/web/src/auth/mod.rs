@@ -148,6 +148,7 @@ const OWNER_PREFIXES: &[&str] = &[
     "/ui/usage",
     // What agents said to each other (agent-to-agent threads).
     "/api/threads",
+    "/ui/threads",
 ];
 
 pub(crate) fn need(path: &str) -> Need {

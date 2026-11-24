@@ -26,6 +26,28 @@ pub(crate) const SIDEBAR_COOKIE: &str = "melissa_sidebar";
 pub(crate) const DETAILS_COOKIE: &str = "melissa_details";
 /// Cookie: light or dark chosen for this browser (`light`, `dark`); absent: follow the system.
 pub(crate) const THEME_COOKIE: &str = "melissa_theme";
+/// Cookie: the last event this browser showed of each chat, for the chat's "New" divider
+/// (agent threads, 2026-11-24). melissa.js writes it as the chat page loads and as its stream
+/// brings events: `<chat>~<epoch>-<seq>` per chat (`lead` or a helper's id), joined by `|`.
+pub(crate) const SEEN_COOKIE: &str = "melissa_seen";
+
+/// Where this browser last was in chat `key` ([`SEEN_COOKIE`]): (epoch, seq).
+pub(crate) fn seen(headers: &HeaderMap, key: &str) -> Option<(u64, u64)> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|text| text.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .filter(|(name, _)| *name == SEEN_COOKIE)
+        .flat_map(|(_, value)| value.split('|'))
+        .filter_map(|item| item.split_once('~'))
+        .filter(|(chat, _)| *chat == key)
+        .find_map(|(_, at)| {
+            let (epoch, seq) = at.split_once('-')?;
+            Some((epoch.parse().ok()?, seq.parse().ok()?))
+        })
+}
 
 /// A light/dark choice that overrides the system's (`data-theme` on `<html>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

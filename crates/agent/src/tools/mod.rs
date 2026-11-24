@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 pub use builtin::DeviceInfo;
 pub use confirm::{Confirmation, ConfirmationEvent, ConfirmationId, ConfirmationStore, Verdict};
-pub use owner::{you_asked, OwnerMessage, OwnerMessages};
+pub use owner::{quote_words, OwnerMessage, OwnerMessages};
 pub use permissions::{
     ActionKey, Grant, Permissions, PermissionsError, Principal, Rule, RuleOffer,
 };
@@ -415,7 +415,7 @@ impl ToolRegistry {
             Some(cited) => {
                 let found = cited.as_str().and_then(|id| self.verify_owner_message(id));
                 match found {
-                    Some(m) => Some(you_asked(&m.text)),
+                    Some(m) => Some(quote_words(&m.text)),
                     None => {
                         let e = ToolError::Refused(
                             "the cited message is not one the owner wrote (cite the id shown \

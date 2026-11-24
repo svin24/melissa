@@ -1810,6 +1810,10 @@ impl AgentPool {
             if from.is_some() { "relayed" } else { "data" },
             text,
         ));
+        self.inner.events.push(LeadEvent::AgentMessaged {
+            agent: agent.id.clone(),
+            name: agent.name.clone(),
+        });
         self.watch_conv(conv.clone());
         if ctx.tainted || source_tainted {
             conv.taint(crate::mcp::TaintSource {

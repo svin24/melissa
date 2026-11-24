@@ -27,6 +27,7 @@ use crate::{
         chat_who_update, composer_caption, composer_prefs, model_picker_oob, this_device_update,
         COMPOSER_CAPTION_ID, COMPOSER_NOTICE_ID,
     },
+    components::{event_line, EventLine, ThreadLink},
     components::{link_button, setting_row, setting_row_full, settings_form, Btn},
     components::{notice_link, setup_checklist, suggestion_chips, ChecklistItem, Suggestion},
     components::{phone_view, queued_messages, PhoneView, QueuedView, SheetWho, QUEUE_ID},
@@ -242,8 +243,19 @@ impl Who<'_> {
         format!("{}?before={before}", self.chat_page())
     }
 
+    /// The thread between Melissa and `helper`, opened from this chat: the page with the
+    /// thread in the details panel's place (without script) and the panel fragment.
+    /// `back`: opened from the details' Conversations (the panel has a back button).
+    pub fn thread_urls(self, helper: &str, back: bool) -> (String, String) {
+        let back = if back { "&back=1" } else { "" };
+        (
+            format!("{}?thread={helper}{back}", self.chat_page()),
+            format!("/ui/threads/{helper}?in={}{back}", self.key()),
+        )
+    }
+
     /// The chat's own page (Melissa's: `/chat`, as `/` is the agent list on phones).
-    fn chat_page(self) -> String {
+    pub fn chat_page(self) -> String {
         match self {
             Self::Lead => MELISSA_CHAT_URL.to_string(),
             Self::Agent(id) => agent_href(id),
@@ -349,6 +361,11 @@ pub struct EntryCtx<'a> {
     pub links: &'a FileLinks,
     pub speaker: Speaker<'a>,
     pub clock: &'a Clock,
+    /// The chat, when the viewer may open agent threads (the owner): event lines link to
+    /// them. None: plain lines.
+    pub threads: Option<Who<'a>>,
+    /// The first entry the browser hasn't shown yet: the "New" divider goes before it.
+    pub unread: Option<&'a str>,
 }
 
 /// The content of one feed entry (without its `li`).
@@ -408,6 +425,51 @@ pub fn entry_content(entry: &Entry, x: &EntryCtx<'_>) -> Markup {
             *state,
             agent.as_deref().map(agent_href).as_deref(),
         ),
+        Item::Event {
+            label,
+            agent,
+            icon,
+            state,
+            at,
+            head: h,
+        } => {
+            let time = head(*at, *h);
+            let mh = time.as_deref().map(|t| MessageHead {
+                avatar: x.speaker.avatar,
+                name: x.speaker.name,
+                time: t,
+            });
+            let avatar = match (agent, icon) {
+                (None, _) => Avatar::Melissa,
+                (Some(_), Some((shape, color))) => Avatar::Agent { shape, color },
+                // A helper deleted since: a plain circle.
+                (Some(_), None) => Avatar::Agent {
+                    shape: "",
+                    color: "",
+                },
+            };
+            // The thread is Melissa's with the helper: this chat's own helper in its chat.
+            let helper = match (agent, x.threads) {
+                (Some(a), _) => Some(a.as_str()),
+                (None, Some(Who::Agent(id))) => Some(id),
+                (None, _) => None,
+            };
+            let urls = x
+                .threads
+                .zip(helper)
+                .map(|(who, helper)| who.thread_urls(helper, false));
+            event_line(
+                mh.as_ref(),
+                &EventLine {
+                    label,
+                    avatar,
+                    state: *state,
+                    link: urls
+                        .as_ref()
+                        .map(|(href, fetch)| ThreadLink { href, fetch }),
+                },
+            )
+        }
         Item::Approval(a) => approval_content(a, &entry_id(&entry.key)),
         Item::SetupPassword { app, login } => crate::setup_password::card(
             app,
@@ -441,6 +503,7 @@ pub fn approval_content(a: &Approval, target: &str) -> Markup {
         no: a.no,
         state: a.state,
         always: a.always.as_deref(),
+        quote: a.quote.as_deref(),
         network: &network,
     })
 }
@@ -465,7 +528,12 @@ pub fn approval_gone() -> Markup {
 
 fn entries<'a>(list: impl IntoIterator<Item = &'a Entry>, x: &EntryCtx<'_>) -> Markup {
     html! {
-        @for e in list { (feed_entry(&entry_id(&e.key), entry_content(e, x))) }
+        @for e in list {
+            @if x.unread == Some(e.key.as_str()) {
+                li.entry.unread-divider { (chat_divider("New")) }
+            }
+            (feed_entry(&entry_id(&e.key), entry_content(e, x)))
+        }
     }
 }
 
@@ -651,6 +719,8 @@ pub struct ChatView<'a> {
     pub owner: bool,
     /// First-run setup's open steps, under Melissa's empty chat (owner only).
     pub checklist: &'a [ChecklistItem<'a>],
+    /// The first entry this browser hasn't shown yet (the "New" divider).
+    pub unread: Option<&'a str>,
 }
 
 /// The suggestions under Melissa's empty chat: fixed words, never written by an agent. Each
@@ -682,6 +752,8 @@ pub fn chat(f: &Frame<'_>, v: &ChatView<'_>, head: &ChatHead<'_>) -> Markup {
         links: v.links,
         speaker: v.speaker,
         clock: v.feed.clock(),
+        threads: v.owner.then_some(v.who),
+        unread: v.unread,
     };
     let empty = match v.who {
         Who::Lead => html! {
@@ -905,6 +977,8 @@ pub fn past_chat(f: &Frame<'_>, chat: &PastChat, feed: &Feed, links: &FileLinks)
         links,
         speaker: Speaker::lead(name),
         clock: feed.clock(),
+        threads: None,
+        unread: None,
     };
     shell(
         f,

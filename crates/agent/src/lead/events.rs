@@ -135,6 +135,9 @@ pub enum LeadEvent {
         name: String,
         goal: String,
     },
+    /// The lead agent passed an agent a message (`message_agent`, 2026-11-24): the chat shows
+    /// "Messaged <name>", a link to the pair's thread. The text is in the thread, not here.
+    AgentMessaged { agent: String, name: String },
     /// An agent's job ended (`succeeded`, `failed`, `cancelled`).
     AgentFinished {
         agent: String,

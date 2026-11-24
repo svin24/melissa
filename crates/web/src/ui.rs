@@ -171,6 +171,7 @@ pub(crate) fn routes(ui: Ui) -> Router {
         .route("/ui/agents/{agent}/pin", post(agent_pin))
         .route("/ui/older", get(lead_older))
         .route("/ui/agents/{agent}/older", get(agent_older))
+        .route("/ui/threads/{helper}", get(crate::threads::thread))
         .route("/chats", get(past_chats_page))
         .route("/ui/backend", post(lead_backend))
         .route("/ui/agents/{agent}/backend", post(agent_backend))
@@ -200,6 +201,13 @@ impl Lookup for Ui {
 
     fn agent_name(&self, agent: &str) -> Option<String> {
         self.lead.agents().get(agent).map(|b| b.name)
+    }
+
+    fn agent_icon(&self, agent: &str) -> Option<(String, String)> {
+        self.lead
+            .agents()
+            .get(agent)
+            .map(|b| (b.icon.shape, b.icon.color))
     }
 
     fn lead_name(&self) -> String {
@@ -349,10 +357,15 @@ impl Ui {
         agent: Option<&AgentView>,
         draft: &str,
         error: Option<&str>,
-        before: Option<usize>,
+        opts: &ChatOpts,
     ) -> Result<Markup, LeadError> {
+        let before = opts.before;
         let log = self.log(who)?;
         let feed = self.feed(who, &log);
+        let unread = feed
+            .first_unread(opts.seen, log.epoch())
+            .map(str::to_string);
+        let owner = crate::auth::signed_in().is_some_and(|p| p.is_owner());
         let backend = self.backend(who, &feed);
         // Learn the models of usable agents that never had a chat (rate-limited, no prompt);
         // they show in the menu from the next render.
@@ -362,7 +375,17 @@ impl Ui {
         let lead_name = self.lead.agents().lead_name();
         let details = self.details_of(&crate::files::owner_of(who), agent).await?;
         let files = details.files.view();
-        let panel = details.view(&files);
+        let rows = details.conversation_rows();
+        // A thread asked for by the page's address (without script): the owner's only.
+        let thread = opts
+            .thread
+            .as_deref()
+            .filter(|_| owner)
+            .and_then(|h| self.thread_data(who, h, opts.back));
+        let thread_msgs = thread.as_ref().map(|t| t.messages()).unwrap_or_default();
+        let thread_panel = thread.as_ref().map(|t| t.panel(&thread_msgs));
+        let mut panel = details.view(&files, &rows);
+        panel.thread = thread_panel.as_ref();
         // First-run setup's open steps under Melissa's empty chat (the owner's only).
         let lines = match who {
             Who::Lead => setup::checklist(self).await,
@@ -393,8 +416,9 @@ impl Ui {
             caption: !self.registry().permissions().bypass(),
             enter_steers: self.settings.prefs().enter_steers,
             no_provider: !setup::provider_ready(self),
-            owner: crate::auth::signed_in().is_some_and(|p| p.is_owner()),
+            owner,
             checklist: &checklist,
+            unread: unread.as_deref(),
         };
         Ok(self
             .framed(|f| {
@@ -477,27 +501,61 @@ struct HomeQuery {
     /// script).
     #[serde(default)]
     before: Option<usize>,
+    /// A thread in the details panel's place (agent threads; the owner's, without script).
+    #[serde(default)]
+    thread: Option<String>,
+    /// That thread was opened from the details' Conversations (it has a back button).
+    #[serde(default)]
+    back: Option<String>,
+}
+
+/// How a chat page opens, besides its draft and error.
+#[derive(Debug, Default)]
+pub(crate) struct ChatOpts {
+    /// A page of earlier entries (the ones before this entry; without script).
+    pub before: Option<usize>,
+    /// The last event this browser showed of the chat, as (epoch, seq): the "New" divider.
+    pub seen: Option<(u64, u64)>,
+    /// A helper's thread with Melissa, open in the details panel's place.
+    pub thread: Option<String>,
+    pub back: bool,
+}
+
+impl ChatOpts {
+    fn of(q: &HomeQuery, headers: &HeaderMap, who: Who<'_>) -> Self {
+        Self {
+            before: q.before,
+            seen: crate::looks::seen(headers, &who.key()),
+            thread: q.thread.clone(),
+            back: q.back.is_some(),
+        }
+    }
 }
 
 /// The home page: Melissa's chat; on phones the agent list (a draft or `before` asks for the
 /// chat itself, so those links still land in it).
-async fn home(state: State<Ui>, q: Query<HomeQuery>) -> Response {
-    if q.draft.is_empty() && q.before.is_none() {
-        pages::as_phone_home(melissa_chat(state, q)).await
+async fn home(state: State<Ui>, headers: HeaderMap, q: Query<HomeQuery>) -> Response {
+    if q.draft.is_empty() && q.before.is_none() && q.thread.is_none() {
+        pages::as_phone_home(melissa_chat(state, headers, q)).await
     } else {
-        melissa_chat(state, q).await
+        melissa_chat(state, headers, q).await
     }
 }
 
 /// Melissa's chat (`/chat`; also `/` on wide screens).
-async fn melissa_chat(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Response {
+async fn melissa_chat(
+    State(ui): State<Ui>,
+    headers: HeaderMap,
+    Query(q): Query<HomeQuery>,
+) -> Response {
     // The owner finishes (or puts off) first-run setup's required steps first.
     if let Some(to) = setup::redirect(&ui).await {
         return Redirect::to(&to).into_response();
     }
     // A draft is only a suggestion for the box; it is never sent by itself.
     let draft: String = q.draft.chars().take(300).collect();
-    match ui.chat_page(Who::Lead, None, &draft, None, q.before).await {
+    let opts = ChatOpts::of(&q, &headers, Who::Lead);
+    match ui.chat_page(Who::Lead, None, &draft, None, &opts).await {
         Ok(page) => page.into_response(),
         Err(e) => error_page(e),
     }
@@ -506,6 +564,7 @@ async fn melissa_chat(State(ui): State<Ui>, Query(q): Query<HomeQuery>) -> Respo
 async fn agent_page(
     State(ui): State<Ui>,
     Path(agent): Path<String>,
+    headers: HeaderMap,
     Query(q): Query<HomeQuery>,
 ) -> Response {
     let Some(agent) = ui.agent(&agent) else {
@@ -514,8 +573,9 @@ async fn agent_page(
     };
     // A draft is only a suggestion for the box ("Reference in chat" without script).
     let draft: String = q.draft.chars().take(300).collect();
+    let opts = ChatOpts::of(&q, &headers, Who::Agent(&agent.id));
     match ui
-        .chat_page(Who::Agent(&agent.id), Some(&agent), &draft, None, q.before)
+        .chat_page(Who::Agent(&agent.id), Some(&agent), &draft, None, &opts)
         .await
     {
         Ok(page) => page.into_response(),
@@ -765,6 +825,8 @@ impl StreamState {
                     avatar: look.avatar(),
                 },
                 clock: self.feed.clock(),
+                threads: self.owner.then_some(self.who()),
+                unread: None,
             };
             out.push_str(
                 &pages::feed_again(&self.feed, self.who(), self.log.epoch(), &x).into_string(),
@@ -1067,6 +1129,8 @@ fn stream(
                 links: &links,
                 speaker: speaker_of(agent_view.as_ref(), &lead_name),
                 clock: st.feed.clock(),
+                threads: st.owner.then_some(st.who()),
+                unread: None,
             };
             let mut html = pages::stream_update(
                 &st.feed,
@@ -1328,7 +1392,10 @@ async fn message_reply(
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, agent, draft, Some(&e), None).await {
+        Some(e) => match ui
+            .chat_page(who, agent, draft, Some(&e), &ChatOpts::default())
+            .await
+        {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -1372,6 +1439,7 @@ fn composer_reply(
         no_provider: !setup::provider_ready(ui),
         owner: crate::auth::signed_in().is_some_and(|p| p.is_owner()),
         checklist: &[],
+        unread: None,
     })
     .into_response()
 }
@@ -1563,7 +1631,10 @@ async fn picker_reply(
     };
     match error {
         None => Redirect::to(&back).into_response(),
-        Some(e) => match ui.chat_page(who, agent, "", Some(&e), None).await {
+        Some(e) => match ui
+            .chat_page(who, agent, "", Some(&e), &ChatOpts::default())
+            .await
+        {
             Ok(page) => (StatusCode::UNPROCESSABLE_ENTITY, page).into_response(),
             Err(e) => error_page(e),
         },
@@ -1656,7 +1727,10 @@ async fn queue_action(
             if is_htmx(headers) {
                 return composer_reply(ui, who, agent, &m.text, None);
             }
-            match ui.chat_page(who, agent, &m.text, None, None).await {
+            match ui
+                .chat_page(who, agent, &m.text, None, &ChatOpts::default())
+                .await
+            {
                 Ok(page) => page.into_response(),
                 Err(e) => error_page(e),
             }
@@ -1862,6 +1936,8 @@ fn older(ui: &Ui, who: Who<'_>, agent: Option<&AgentView>, q: &OlderQuery) -> Re
         links: &links,
         speaker: speaker_of(agent, &lead_name),
         clock: feed.clock(),
+        threads: crate::app_list::Looker::current().owner.then_some(who),
+        unread: None,
     };
     pages::feed_page(&feed, q.before, who, log.epoch(), false, &x).into_response()
 }

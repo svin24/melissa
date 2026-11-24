@@ -2428,6 +2428,18 @@ async fn a_lead_brokered_message_is_tagged_as_data_and_audited() {
     // Named by name: the result says which ids were used.
     let resolved = r["structuredContent"]["resolved"].as_str().unwrap();
     assert!(resolved.contains(ADA) && resolved.contains(BO), "{r}");
+    // Melissa's chat says who was messaged ("Messaged Bo"); the text stays in the thread.
+    let messaged = LeadEvent::AgentMessaged {
+        agent: BO.into(),
+        name: "Bo".into(),
+    };
+    assert!(s
+        .lead
+        .events()
+        .since(0, 100)
+        .events
+        .iter()
+        .any(|r| r.event == messaged));
     let turn = r["structuredContent"]["turn"].as_u64().unwrap();
     turn_events_in(&s.pool().events_of("Bo").unwrap(), 0, turn).await;
     let line = s

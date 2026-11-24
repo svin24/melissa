@@ -4,9 +4,13 @@
 Speaks just enough of ACP v1 (JSON-RPC over stdin/stdout) for Melissa to open sessions and
 run turns, and answers every prompt from a fixed script, so the chats in the screenshots are
 the same on every run and go through Melissa's real code paths (step cards, a permission
-card, a running turn, models for the picker). It never touches the network or the disk.
+card, a running turn, models for the picker). It never touches the disk; its only network use
+is Melissa's own MCP endpoint on localhost (the URL Melissa gives each session), to pass a
+helper a message the way a real agent does.
 
 The script is picked by a keyword in the user's message:
+  "backup" Melissa messages the Backup helper (`message_agent`) and says the answer will
+           follow; the helper answers a few seconds later (agent threads)
   "disk"   a thought, two finished steps and a Markdown reply
   "clean"  a step that asks for permission (Melissa shows the permission card) and waits;
            the turn keeps running until the request is answered or the turn is cancelled
@@ -16,6 +20,8 @@ The script is picked by a keyword in the user's message:
 import json
 import sys
 import threading
+import time
+import urllib.request
 
 MODELS = {
     "availableModels": [
@@ -40,7 +46,11 @@ Run `podman image prune` to free about **6 GB**, or ask me to do it. Details: [p
 
 SHORT_REPLY = "Sure. I keep an eye on the apps and the disk, and tell you when something needs you."
 
+BACKUP_QUESTION = "Is last night's photo backup done?"
+BACKUP_ANSWER = "Yes. Finished at 02:10: 1.7 GB, no errors."
+
 _out = threading.Lock()
+_mcp = {}  # session id -> (url, headers) of Melissa's MCP endpoint
 _pending = {}  # our request id -> (Event, [reply])
 _cancelled = threading.Event()
 _next_id = [0]
@@ -75,8 +85,28 @@ def request(method, params):
     return slot[0] if slot else None
 
 
+def prompt_text(params):
+    return "\n".join(b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text")
+
+
+def mcp_call(session, tool, arguments):
+    """Call one of Melissa's tools on the MCP endpoint (localhost) for this session."""
+    url, headers = _mcp.get(session, (None, {}))
+    if not url:
+        return None
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": tool, "arguments": arguments}}).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers=dict(headers, **{"Content-Type": "application/json"}))
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read() or b"null")
+    except OSError:
+        return None
+
+
 def user_message(params):
-    text = "\n".join(b.get("text", "") for b in params.get("prompt", []) if b.get("type") == "text")
+    text = prompt_text(params)
     marker = "The message:\n\n"
     if marker in text:
         text = text.rsplit(marker, 1)[1]
@@ -86,8 +116,23 @@ def user_message(params):
 def run_turn(rid, params):
     session = params.get("sessionId", "")
     message = user_message(params)
+    raw = prompt_text(params)
     stop = "end_turn"
-    if "disk" in message:
+    if "passes on a message" in raw and "backup" in message:
+        # The Backup helper, asked by Melissa: it takes a moment.
+        time.sleep(3)
+        chunk(session, "agent_message_chunk", BACKUP_ANSWER)
+    elif "answered your message" in raw:
+        # Melissa, when the helper's answer comes back.
+        chunk(session, "agent_message_chunk", "Yes. The backup finished at 02:10: 1.7 GB, no errors.")
+    elif "backup" in message:
+        call = {"toolCallId": "t4", "title": "mcp__melissa__message_agent", "kind": "other",
+                "status": "pending", "rawInput": {}}
+        update(session, dict(call, sessionUpdate="tool_call"))
+        mcp_call(session, "message_agent", {"agent": "Backup", "text": BACKUP_QUESTION})
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "t4", "status": "completed"})
+        chunk(session, "agent_message_chunk", "Backup looks after backups. I'll tell you when Backup replies.")
+    elif "disk" in message:
         chunk(session, "agent_thought_chunk", "The owner asks about disk space; check the usage first.")
         update(session, {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read /etc/fstab",
                          "kind": "read", "status": "pending", "rawInput": {"path": "/etc/fstab"}})
@@ -153,7 +198,14 @@ def main():
             }
         elif method == "session/new":
             sessions += 1
-            result = {"sessionId": f"shots-{sessions}", "models": MODELS}
+            sid = f"shots-{sessions}"
+            for server in params.get("mcpServers") or []:
+                if isinstance(server, dict) and server.get("url"):
+                    headers = {h.get("name"): h.get("value") for h in server.get("headers") or []
+                               if isinstance(h, dict)}
+                    _mcp[sid] = (server["url"], headers)
+                    break
+            result = {"sessionId": sid, "models": MODELS}
         elif method == "session/prompt":
             threading.Thread(target=run_turn, args=(rid, params), daemon=True).start()
             continue

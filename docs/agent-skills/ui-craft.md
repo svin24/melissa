@@ -371,6 +371,12 @@ may be a known exception (picker `kbd` hints). Say in your report which hits you
 - Menus: `[popover]`, min 13rem, radius 12px, items 40px, 0.9rem, a 16px glyph each.
 - Counts beside a heading (`.count`: group heads, the details' sections): 0.8rem/600, tabular figures, the
   heading's colour (muted in the details). No pill.
+- Agent threads (2026-11-24): event line = the activity row with the other agent's 16px icon and the honey
+  underline link; thread panel head as the details' (56px), parties 18px icon + 1rem/650, a muted 16px ⇄;
+  messages 1rem gap, head as a chat message's, text 0.9rem indented 28px; "↳ from Ivy" 0.8rem muted; Conversations
+  rows 56px in one sunken card (icon 18px, name 0.9rem/600 over the last message 0.8rem muted, time 0.8rem right,
+  16px chevron); approval quote: 2px `--color-border-control` rule, 0.9rem, "You asked:" muted, 2 lines max; the
+  phone sheet's close is 44px.
 - Sections bar (`section_bar`, one for every width): above 760px 44px icon links with an 18px glyph, muted, Updates
   on the right; on the phone's agent list a fixed four-column tab bar, 56px tabs, 20px glyph over a 0.8rem word.
 

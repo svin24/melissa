@@ -124,7 +124,7 @@ Owner decisions (DECISIONS 2026-11-24). Code: `lead/agents/talk.rs`, `lead/threa
   the `MAX_AUTO_TURNS` cap applies. A tainted helper taints the lead agent. Audited `agent.ask_lead` (actor: the
   helper's id; with the citation and whether it verified). At most `MAX_PENDING_ASKS` (3) per helper wait at once:
   each request holds a ticket that is freed when its lead turn ends or it never gets one (noted, dropped); the
-  fourth is refused and audited. In the helper's chat the tool step reads "Asked <lead name>".
+  fourth is refused and audited. In the helper's chat it is an event line, "Messaged <lead name>".
 - **Replies come back.** `message_agent` queues its message with a `TurnHook` (`Conversation::offer_hooked`): when
   the turn that message started ends (`finish_turn` calls the turn's hooks after `turn_finished`), the helper's
   reply goes back to the lead agent as data (`helper_report` with `message: "reply"`, status `replied`, `failed` or
@@ -144,9 +144,15 @@ Owner decisions (DECISIONS 2026-11-24). Code: `lead/agents/talk.rs`, `lead/threa
   `owner_msg`: agent text, brokered messages, reports and tool results never verify.
 - **Proof never approves.** `ask_lead` shows the lead agent the owner's words as verified, or that the claim failed.
   A tool that declares `Tool::owner_citation()` (the argument holding the id) is refused when the id does not verify,
-  and otherwise its confirmation carries `owner_quote` (`tools::you_asked`: `You asked: “…”`, 160 characters), shown
-  in the approval card's consequence line (`feed::Lookup::confirmation_quote`) and `/api/confirmations`. The owner
-  still answers it.
+  and otherwise its confirmation carries `owner_quote` (`tools::quote_words`: the owner's words, one line, 160
+  characters), shown on the approval card's own "You asked: “…”" line (`feed::Approval::quote`, owner design
+  2026-11-24) and in `/api/confirmations`. The owner still answers it.
+- **In the web UI (2026-11-24, owner design "Agent threads").** `message_agent` pushes `AgentMessaged {agent, name}`
+  into the lead agent's log: Melissa's chat shows "Messaged Ada" (the call itself shows only when it fails); a
+  helper's message for Melissa (`helper_report` with `message`) reads "Message from Ada"; in a helper's chat a message
+  Melissa passed in reads "Message from Melissa" and `ask_lead` "Messaged Melissa". Each is an event line (the other
+  agent's icon, a link to Melissa ⇄ helper's thread for the owner), never the text. The thread panel merges the pair's
+  thread with what Melissa relayed to the helper from others ("from Ivy"); see `crates/web/src/threads.rs`.
 
 ## Switching backend and model (2026-11-19)
 Code: `lead/backends.rs` (choice, model cache, views), `Conversation::{backends, check_choice, switch}`,

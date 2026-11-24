@@ -12,7 +12,7 @@ use crate::auth::{COOKIE_PLAIN, CSRF_HEADER};
 const HOST: &str = "melissa.example.com";
 
 /// A login store on a clock the test moves.
-fn store() -> (Auth, Arc<AtomicU64>) {
+pub(super) fn store() -> (Auth, Arc<AtomicU64>) {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = clock.clone();
     let auth = Auth::in_memory()
@@ -21,13 +21,13 @@ fn store() -> (Auth, Arc<AtomicU64>) {
     (auth, clock)
 }
 
-fn claimed(auth: &Auth) -> NewSession {
+pub(super) fn claimed(auth: &Auth) -> NewSession {
     let (code, _) = auth.setup_code().unwrap().unwrap();
     auth.claim(&code, "ana", "owner-password", "test", "Test")
         .unwrap()
 }
 
-fn member(auth: &Auth, owner: &NewSession) -> NewSession {
+pub(super) fn member(auth: &Auth, owner: &NewSession) -> NewSession {
     let inv = auth.create_invite(&owner.view.person.id, "test").unwrap();
     auth.accept_invite(&inv.token, "bob", "member-password", "test", "Test")
         .unwrap()
@@ -44,7 +44,7 @@ fn req(method: &str, uri: &str) -> axum::http::request::Builder {
         .header(header::HOST, HOST)
 }
 
-fn as_(s: &NewSession, method: &str, uri: &str) -> axum::http::request::Builder {
+pub(super) fn as_(s: &NewSession, method: &str, uri: &str) -> axum::http::request::Builder {
     req(method, uri).header(header::COOKIE, cookie(s))
 }
 
