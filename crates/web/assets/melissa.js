@@ -1314,6 +1314,19 @@
     p.panel.scrollTop = 0;
   });
 
+  // Live while open: the chat's stream replaces Conversations when a thread changes; the open
+  // thread then loads its messages again (its body's hx-get, on `thread-refresh`).
+  document.addEventListener("htmx:oobAfterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (!t || t.id !== "details-conversations" || !window.htmx) {
+      return;
+    }
+    var body = document.querySelector("#thread-slot .thread-body[hx-get]");
+    if (body) {
+      htmx.trigger(body, "thread-refresh");
+    }
+  });
+
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (!(t instanceof Element)) {

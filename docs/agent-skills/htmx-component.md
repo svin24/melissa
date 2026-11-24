@@ -191,6 +191,9 @@ new task): `card`, `table`, `badge`, `notice`, `code`, `link`, `truncated`, `liv
   re-rendering of the whole conversation (which would also steal focus from approval buttons).
 - Files: a box change pushes `files_changed` (memory only) into that conversation's log; the stream answers
   with the panel's body and count out of band, and re-renders sent messages so removed files show as expired.
+- Agent threads: an open thread panel follows too. When the stream replaces Conversations (a
+  thread changed), melissa.js fires `thread-refresh` on the panel's `.thread-body`, which loads
+  its messages again (`hx-get` of the panel, `hx-select=".thread-body"`). Owner only.
 - Apps change slowly: the details panel's services and the cluster's apps region poll (`/ui/details/{key}/apps`,
   `/ui/cluster/apps`, 15 s).
 
