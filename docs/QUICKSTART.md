@@ -191,6 +191,10 @@ Reboot first if k3s ran, so no pod mounts are left under `/var/lib/kubelet`.
 - Container: if installing an agent says "This container can't reach the internet", the host's firewall
   drops its traffic. Docker on the same host does that; install.sh fixes it for you (rerun it). See
   [Docker on the same host](../packaging/container/README.md#docker-on-the-same-host).
+- Container with firewalld (Fedora): install.sh only reads it. With firewalld's default
+  (`StrictForwardPorts=no`) nothing needs opening. With `StrictForwardPorts=yes` podman can't publish ports,
+  so the preflight stops and prints the commands to change it. See
+  [firewalld](../packaging/container/README.md#firewalld).
 - Container on Ubuntu (26.04): install.sh installs and loads Melissa's own AppArmor profile,
   `/etc/apparmor.d/melissa-container`, and runs the container under it (a NOTICE says so). It lets only
   Melissa's container create user namespaces; Ubuntu's restriction stays on for everything else, and

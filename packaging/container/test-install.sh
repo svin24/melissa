@@ -527,6 +527,57 @@ unset -f loaded ubuntu setup fake_parser
 APPARMOR_SYS=/sys/kernel/security/apparmor; APPARMOR_PARSER=apparmor_parser
 rm -rf "$aa"
 
+# --- firewalld: checked, never changed ----------------------------------------------------------
+# Stubs: systemctl (is firewalld.service active), firewall-cmd (logs its calls), busctl (the running
+# StrictForwardPorts), a firewalld.conf in a temp dir.
+fw=$(mktemp -d)
+FIREWALLD_CONF="$fw/firewalld.conf"
+systemctl() { [ "${FAKE_FIREWALLD:-no}" = yes ]; }
+fake_fwcmd() {
+    echo "firewall-cmd $*" >> "$fw/calls"
+    case "$1" in
+    --state) [ "${FAKE_FIREWALLD:-no}" = yes ] && echo running ;;
+    --get-default-zone) echo FedoraWorkstation ;;
+    esac
+}
+fake_busctl() { [ -z "${FAKE_BUS:-}" ] || echo "s \"$FAKE_BUS\""; }
+FIREWALL_CMD=fake_fwcmd BUSCTL=fake_busctl UI_BIND=127.0.0.1 UI_PORT=8080 APP_PORT_BASE=30000 APP_PORT_LAST=30079
+
+FAKE_FIREWALLD=no
+eq "no firewalld: preflight silent" "" "$(check_firewalld)"
+eq "no firewalld: preflight ok" yes "$(yes_no check_firewalld)"
+FAKE_FIREWALLD=yes
+printf '%s\n' 'DefaultZone=FedoraWorkstation' '# StrictForwardPorts=yes' 'StrictForwardPorts=no' > "$FIREWALLD_CONF"
+eq "Strict: from the config file" no "$(firewalld_strict)"
+eq "Strict: the running value wins" yes "$(FAKE_BUS=yes firewalld_strict)"
+eq "Strict: no file, no bus: firewalld's default" no "$(FIREWALLD_CONF=/nonexistent firewalld_strict)"
+out=$(check_firewalld); rc=$?
+eq "Strict=no: preflight ok" 0 "$rc"
+eq "Strict=no: names the zone and the setting" yes \
+    "$(yes_no grep -qF "ok: firewalld (default zone FedoraWorkstation, StrictForwardPorts=no) lets podman's published ports through;" <<<"$out")"
+eq "Strict=no: Melissa's filter decides" yes "$(yes_no grep -qF "Melissa's filter (Settings → Apps) decides" <<<"$out")"
+sed -i 's/^StrictForwardPorts=no/StrictForwardPorts=yes/' "$FIREWALLD_CONF"
+out=$(check_firewalld); rc=$?
+eq "Strict=yes: preflight fails" 1 "$rc"
+eq "Strict=yes: says podman refuses" yes "$(yes_no grep -qF "podman then refuses to start" <<<"$out")"
+eq "Strict=yes: names the ports" yes "$(yes_no grep -qF "web UI (127.0.0.1:8080) and app ports (30000-30079)" <<<"$out")"
+eq "Strict=yes: a zone service would not help" yes "$(yes_no grep -qF "Opening ports or a service in a zone does not help" <<<"$out")"
+eq "Strict=yes: the command" yes \
+    "$(yes_no grep -qxF "        sudo sed -i 's/^StrictForwardPorts=.*/StrictForwardPorts=no/' $FIREWALLD_CONF" <<<"$out")"
+eq "Strict=yes: then reload" yes "$(yes_no grep -qxF "        sudo firewall-cmd --reload" <<<"$out")"
+eq "Strict=yes: what it means" yes \
+    "$(yes_if 'grep -qF "every rootful container on this host" <<<"$out" && grep -qF "Melissa'"'"'s own filter still decides" <<<"$out"')"
+eq "Strict=yes: the command really changes it" no \
+    "$(cp "$FIREWALLD_CONF" "$fw/c2"; sed -i 's/^StrictForwardPorts=.*/StrictForwardPorts=no/' "$fw/c2"; FIREWALLD_CONF="$fw/c2" firewalld_strict)"
+eq "firewalld: only read, never changed" "" "$(grep -v -e '--state$' -e '--get-default-zone$' "$fw/calls")"
+eq "firewalld: config file untouched" yes "$(yes_no grep -qx 'StrictForwardPorts=yes' "$FIREWALLD_CONF")"
+eq "preflight runs the check" yes "$(yes_no grep -qx '    check_firewalld || ok=1' "$here/install.sh")"
+eq "the README has the section the message names" yes "$(yes_no grep -q '^### firewalld' "$here/README.md")"
+unset -f systemctl fake_fwcmd fake_busctl
+unset FAKE_FIREWALLD
+FIREWALL_CMD=firewall-cmd BUSCTL=busctl FIREWALLD_CONF=/etc/firewalld/firewalld.conf
+rm -rf "$fw"
+
 # --- which image: published by default, a reinstall keeps the recorded one ------------------
 tr_dir=$(mktemp -d)
 img() { # [VAR=value ...]: IMAGE and AUTO_UPDATE as install.sh picks them

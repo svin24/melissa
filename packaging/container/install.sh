@@ -49,6 +49,8 @@
 # (/etc/apparmor.d/melissa-container, apparmor.sh) and runs the container under it, so Ubuntu's
 # user-namespace restriction stays on for everything else. Only if that profile can't be loaded on a
 # restricting host does it stop, with the last-resort steps (README, "Ubuntu and AppArmor").
+# firewalld: checked, never changed. StrictForwardPorts=yes stops the preflight with the commands to
+# change it (podman can't publish ports then; README, "firewalld").
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -276,6 +278,62 @@ apparmor_setup() {
     say "  nothing restricts bwrap on this host, so the container runs unconfined as before."
 }
 
+# --- firewalld (Fedora, RHEL, openSUSE): checked, never changed ------------------------------
+# podman (netavark, nftables driver) publishes Melissa's ports with its own DNAT rules. firewalld
+# 2.x accepts DNAT'd traffic before any zone is looked at, unless StrictForwardPorts=yes: then it
+# only lets its own forward-ports through, and netavark refuses to start a container that
+# publishes ports at all. Zone ports and services play no part either way. README, "firewalld".
+FIREWALL_CMD=${FIREWALL_CMD:-firewall-cmd}
+FIREWALLD_CONF=${FIREWALLD_CONF:-/etc/firewalld/firewalld.conf}
+BUSCTL=${BUSCTL:-busctl}
+
+# firewalld_active: firewalld.service runs and answers.
+firewalld_active() {
+    systemctl is-active -q firewalld.service 2>/dev/null || return 1
+    "$FIREWALL_CMD" --state >/dev/null 2>&1
+}
+
+# firewalld_strict: yes or no. The running value (what netavark reads over D-Bus), else the
+# config file, else firewalld's default (no).
+firewalld_strict() {
+    local v
+    v=$("$BUSCTL" get-property org.fedoraproject.FirewallD1 /org/fedoraproject/FirewallD1/config \
+        org.fedoraproject.FirewallD1.config StrictForwardPorts 2>/dev/null | sed -n 's/^s "\(.*\)"$/\1/p')
+    [ -n "$v" ] || v=$(sed -n 's/^[[:space:]]*StrictForwardPorts[[:space:]]*=[[:space:]]*//p' "$FIREWALLD_CONF" 2>/dev/null | tail -n 1)
+    case "$(printf '%s' "$v" | tr 'A-Z' 'a-z' | tr -d '[:space:]')" in
+    yes|true) echo yes ;;
+    *) echo no ;;
+    esac
+}
+
+# check_firewalld: preflight step. Silent without firewalld; fails on StrictForwardPorts=yes
+# (podman would refuse to start the container) with the commands to change it.
+check_firewalld() {
+    firewalld_active || return 0
+    local zone
+    zone=$("$FIREWALL_CMD" --get-default-zone 2>/dev/null) || zone=unknown
+    if [ "$(firewalld_strict)" = no ]; then
+        echo "ok: firewalld (default zone $zone, StrictForwardPorts=no) lets podman's published ports through;"
+        echo "    zones don't apply to them, Melissa's filter (Settings → Apps) decides who opens apps"
+        return 0
+    fi
+    cat <<EOF
+FAIL: firewalld runs with StrictForwardPorts=yes (default zone $zone). podman then refuses to start
+      a container that publishes ports ("Port forwarding not possible as firewalld StrictForwardPorts
+      enabled"), and Melissa publishes its web UI ($UI_BIND:$UI_PORT) and app ports ($APP_PORT_BASE-$APP_PORT_LAST).
+      Opening ports or a service in a zone does not help: with this setting firewalld lets forwarded
+      container traffic through only for its own forward-ports. install.sh does not change your
+      firewall. To let podman publish ports again (firewalld's default):
+        sudo sed -i 's/^StrictForwardPorts=.*/StrictForwardPorts=no/' $FIREWALLD_CONF
+        sudo firewall-cmd --reload
+      That applies to every rootful container on this host: their published ports are accepted without
+      zone checks. Melissa's own filter still decides who may open apps (this device only until you
+      change Settings → Apps), and the web UI stays on $UI_BIND. Then run install.sh again.
+      See README, "firewalld".
+EOF
+    return 1
+}
+
 version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
 
 preflight() {
@@ -314,6 +372,7 @@ preflight() {
     done
     check_addresses "$(app_addresses)" || ok=1
     check_apparmor || ok=1
+    check_firewalld || ok=1
     case "$(host_tailscale)" in
     yes) echo "ok: Tailscale runs on this host; Melissa uses it (Settings → Tailscale says so)" ;;
     no) echo "ok: no Tailscale on this host; Settings → Tailscale can turn on Melissa's own (off by default)" ;;
@@ -727,7 +786,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,51p' "$0"; exit 2 ;;
+*) sed -n '2,53p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
