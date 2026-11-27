@@ -309,8 +309,14 @@ jobs:
           fi
 
       # Default flags check the Rekor transparency log entry too (--insecure-ignore-tlog=false).
+      # --new-bundle-format=false: check the legacy .sig signature `publish` made, which is what podman
+      # reads. Without it cosign 3 checks the sigstore bundles among the digest's OCI referrers instead,
+      # finds actions/attest's keyless provenance and fails ("expected key signature, not certificate");
+      # and with a key-signed bundle there it would accept that attestation in place of a signature.
       - name: cosign verify
-        run: cosign verify --key packaging/container/melissa-signing.pub "$REPO@$DIGEST"
+        run: |
+          cosign verify --new-bundle-format=false \
+            --key packaging/container/melissa-signing.pub "$REPO@$DIGEST"
 
       # The same policy install.sh writes (trust.sh), in temporary files; registries.d is the runner
       # user's, which rootless podman reads.
