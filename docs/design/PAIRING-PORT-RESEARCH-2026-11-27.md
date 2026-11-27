@@ -310,6 +310,10 @@ Two candidate designs; they can coexist (QR first, typed code as fallback).
   box first (the Home Assistant lesson, section 1); the CRA, ETSI EN 303 645 and PSTI rules (section 1) are
   about default passwords, so a keyless window needs checking against them; a short window that only opens
   after a button press or only on the setup Wi-Fi (2.5) narrows the risk.
+- OEM mode belongs to an OS image, not the container: Melissa started as an operating system (the bootc
+  images, archived at git tag `bootc-archive-2026-11-19`; PLAN §2 "Reference distro (paused)"). If an OEM
+  wants Melissa, there will be an OS image again, and the OEM flag, SoftAP and reset button live there.
+  Issue for later.
 
 ## 3. Open questions for the owner (PLAN question 105)
 
