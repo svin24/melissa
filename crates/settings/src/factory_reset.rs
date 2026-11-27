@@ -89,10 +89,18 @@ pub const WIPE: &[&str] = &[
     "/var/lib/melissa-container/etc-melissa/ui.toml",
     "/var/lib/melissa-container/etc-melissa/app-access.toml",
     "/var/lib/melissa-container/etc-melissa/tailscale.toml",
+    "/var/lib/melissa-container/etc-melissa/cluster.toml",
+    "/var/lib/melissa-container/etc-melissa/cluster-join.token",
     // Melissa's own Tailscale (never the host's: that one isn't in this container).
     "/var/lib/melissa-tailscale",
     // k3s: the datastore, every app's volumes, the pods' and the network's leftovers.
     "/var/lib/rancher/k3s",
+    // Multi-device (crate::cluster): root's cluster state (pinned node name, agent token) and
+    // the k3s data kept across role changes.
+    "/var/lib/melissa-container/cluster",
+    "/var/lib/rancher/k3s.single-node-backup",
+    "/var/lib/rancher/k3s.agent-backup",
+    "/run/melissa-cluster",
     "/var/lib/kubelet",
     "/var/lib/cni",
     "/run/k3s",
@@ -606,7 +614,7 @@ fn clear(root: &Path, host: &dyn Host, target: &str, whole: bool) -> Result<(), 
 
 /// Unmount everything mounted at (when `including`) or below `path`, deepest first; fail if
 /// anything stays mounted there (removing would reach into another file system).
-fn unmount_below(host: &dyn Host, path: &Path, including: bool) -> Result<(), String> {
+pub(crate) fn unmount_below(host: &dyn Host, path: &Path, including: bool) -> Result<(), String> {
     let under = |mounts: Vec<PathBuf>| -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = mounts
             .into_iter()

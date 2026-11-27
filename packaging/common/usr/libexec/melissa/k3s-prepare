@@ -1,9 +1,19 @@
 #!/bin/sh
 # Runs before k3s starts. Links the airgap images shipped in /usr into k3s's /var directory,
 # installs Melissa's deploy-on-start manifests, pins the node IP, and relabels k3s paths once
-# (SELinux).
+# (SELinux). In the container it first sets the cluster role and node name.
 set -eu
 . /usr/lib/melissa/k3s.lock
+# Container: this device's cluster role and node name (melissa_settings::cluster): renders
+# config.yaml.d/50-melissa-cluster.yaml (server) or the agent's own config, switches the data
+# directory when the role changed (kept as a backup), writes /run/melissa-cluster/k3s.env. First,
+# so the images and manifests below land in the data directory k3s will use; before k3s-node-ip,
+# which leaves the node IP alone when 50-melissa-cluster.yaml sets one. A failure
+# stops k3s (systemd retries) rather than start it in the wrong role.
+if [ -e /usr/lib/systemd/system/melissa-cluster.service ]; then
+    /usr/bin/melissa-server cluster prepare
+fi
+
 images=/var/lib/rancher/k3s/agent/images
 manifests=/var/lib/rancher/k3s/server/manifests
 mkdir -p "$images" "$manifests"

@@ -6,6 +6,8 @@
 //!   `$XDG_CONFIG_HOME/melissa/providers.toml`, merged over `server.toml` at startup.
 //! - [`app_access`]: who may open the apps on this device (`app-access.toml`), the nftables
 //!   filter that enforces it in the container, and the agents' `set_app_access` tool.
+//! - [`cluster`]: this device's place in a multi-device k3s cluster (`cluster.toml`: role,
+//!   peers), the node name, root's k3s config rendering and the owner's join/leave actions.
 //! - [`tailscale`]: Melissa's own Tailscale in the container (off by default, `tailscale.toml`),
 //!   its state, enable/disable and sign-in, and the agents' `tailscale_status` and
 //!   `enable_tailscale` tools.
@@ -18,6 +20,7 @@
 //!   the host helper writes; the fixed list of actions the lead agent may ask it for.
 
 pub mod app_access;
+pub mod cluster;
 pub mod factory_reset;
 pub mod install;
 pub mod prefs;

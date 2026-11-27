@@ -1,6 +1,10 @@
 # Shipped by every Melissa packaging (k3s reads config only from /etc/rancher/k3s).
 # SELinux is per packaging (the container sets `selinux: false` in 20-container.yaml).
-# The server writes 50-*.yaml here; put local overrides in 90-local.yaml.
+# Container: `melissa-server cluster prepare` writes 50-melissa-cluster.yaml here (node name; tailnet
+# node IP in a cluster). Put local overrides in 90-local.yaml. Server-only (write-kubeconfig-mode):
+# a k3s agent (container, cluster role agent) gets its own config without this file.
+# node-label: informational only. Nothing steers placement or trust by it: a kubelet may set any
+# label outside node-restriction.kubernetes.io/ (see docs/design/INTERCONNECT-2026-11-27.md).
 write-kubeconfig-mode: "0600"
 node-label:
   - "melissa.io/managed=true"

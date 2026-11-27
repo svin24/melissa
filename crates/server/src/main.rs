@@ -150,6 +150,11 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
                               filter in place for the setting in <file> (default
                               /etc/melissa/app-access.toml), verify it, write its status
   app-access status           what the filter lets in now
+  cluster prepare             (root, container: k3s-prepare) this device's k3s role and node
+                              name from /etc/melissa/cluster.toml: k3s config, data directory
+  cluster after-start         (root, container: k3s.service) delete the old node after a rename
+  cluster run                 (root, container: melissa-cluster.service) the server's request
+  cluster status              role and node name now (no secrets)
   tailscale enabled [<file>]  (root, container: melissa-tailscaled.service) exit 0 when
                               Melissa's own Tailscale should run (setting in <file>, default
                               /etc/melissa/tailscale.toml; never when the host runs Tailscale)";
@@ -238,6 +243,10 @@ async fn main() -> anyhow::Result<()> {
     if argv.first().is_some_and(|c| c == "factory-reset") && argv.get(1).is_some_and(|c| c == "run")
     {
         return reset::command(&argv[2..]);
+    }
+    // Root's cluster helper (k3s-prepare, k3s's ExecStartPost, melissa-cluster.service).
+    if argv.first().is_some_and(|c| c == "cluster") {
+        return cluster_command(&argv[1..]);
     }
     // Root's check before tailscaled starts (the unit's ExecCondition).
     if argv.first().is_some_and(|c| c == "tailscale") {
@@ -603,6 +612,44 @@ fn app_access_command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         _ => bail!("usage: melissa-server app-access apply [<setting file>] | app-access status"),
+    }
+}
+
+/// `cluster prepare|after-start|run|status` (root; see `melissa_settings::cluster`).
+fn cluster_command(args: &[String]) -> anyhow::Result<()> {
+    use melissa_settings::cluster;
+    let config_dir = PathBuf::from("/etc/melissa");
+    let root = std::path::Path::new("/");
+    match args {
+        [c] if c == "prepare" => {
+            let input = cluster::PrepareInput::system(&config_dir);
+            let host = melissa_settings::factory_reset::SystemHost::from_env();
+            let status = cluster::prepare(root, &config_dir, &input, &host, &mut |line| {
+                eprintln!("melissa-cluster: {line}")
+            })
+            .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            for e in &status.errors {
+                eprintln!("melissa-cluster: {e}");
+            }
+            Ok(())
+        }
+        [c] if c == "after-start" => {
+            cluster::after_start(root).map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
+        }
+        [c] if c == "run" => {
+            let answer = cluster::run_request(&config_dir, &cluster::SystemRunner);
+            match answer.error {
+                None => Ok(()),
+                Some(e) => bail!("melissa-cluster: {e}"),
+            }
+        }
+        [c] if c == "status" => {
+            let text = std::fs::read_to_string(cluster::STATUS_FILE)
+                .with_context(|| format!("no status yet ({})", cluster::STATUS_FILE))?;
+            println!("{text}");
+            Ok(())
+        }
+        _ => bail!("usage: melissa-server cluster prepare | after-start | run | status"),
     }
 }
 

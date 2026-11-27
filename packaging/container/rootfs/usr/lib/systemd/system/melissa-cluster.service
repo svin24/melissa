@@ -1,0 +1,16 @@
+# Melissa: the owner's cluster actions that need k3s's admin rights (melissa_settings::cluster):
+# a join token for an invitation (`k3s token create --ttl 1h`, handed to the server in a 0600 file,
+# never logged), draining and deleting a removed device's node, restarting k3s to apply a role
+# change from /etc/melissa/cluster.toml. The server (user melissa) writes one request to
+# /etc/melissa/cluster-request.json and starts this unit (polkit: 54-melissa-cluster.rules); the
+# request names only a fixed action and a checked node name. Container image only.
+[Unit]
+Description=Melissa: cluster actions (invitation, remove a device, role change)
+RequiresMountsFor=/var/lib/melissa-container
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/melissa-server cluster run
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStartSec=240
