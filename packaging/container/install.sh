@@ -1,6 +1,7 @@
 #!/bin/bash
 # Install Melissa as a rootful podman container started by systemd (Quadlet). Run as root.
-# Docs: packaging/container/README.md. Undo: packaging/container/uninstall.sh [--purge].
+# Docs: packaging/container/README.md. Undo: packaging/container/uninstall.sh [--purge] (also
+# installed as /usr/local/libexec/melissa/uninstall.sh).
 #
 #   sudo packaging/container/install.sh               preflight, install, start, print the UI URL
 #   sudo packaging/container/install.sh --preflight   only check the host
@@ -384,6 +385,8 @@ install_files() {
         -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
         "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
+    # uninstall.sh and what it sources, so it works without the checkout (get.sh deletes its copy).
+    install -m 0755 "$here/uninstall.sh" "$here/trust.sh" "$here/apparmor.sh" "$LIBEXEC/"
     install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
     install -m 0644 "$here/README.md" "$SHARE/README.md"
     local timer_ours=${TIMER_OURS:-no} docker_subnets=''
@@ -717,7 +720,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,50p' "$0"; exit 2 ;;
+*) sed -n '2,51p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
@@ -750,6 +753,7 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
   (HTTPS; sign-in sends passwords, so not plain HTTP across the network). See $SHARE/README.md.
   --privileged rootful container: it has root on this host.
+  Uninstall:  sudo $LIBEXEC/uninstall.sh            (--purge also deletes the data)
 
 $claim
 EOF

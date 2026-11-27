@@ -139,10 +139,11 @@ release-check tag="":
     scripts/release-check.sh {{quote(tag)}}
 
 # install.sh's address checks, server.toml edits and Docker rules; melissa-setup's network check
-# (no root, no podman, no network).
+# (no root, no podman, no network); get.sh with stubbed curl and podman.
 container-test:
     bash packaging/container/test-install.sh
     bash packaging/container/test-melissa-setup.sh
+    sh packaging/container/test-get.sh
 
 # Remove the installation (keeps the data volume unless purge=--purge).
 container-uninstall purge="":

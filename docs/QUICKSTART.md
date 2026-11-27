@@ -19,10 +19,28 @@ spend your subscription.
 
 ## 1. Container (rootful podman)
 
-Needs Linux with systemd, cgroup v2, podman 5+, root, `git`, and free ports 8080 and 30000-30079.
-Full guide, settings and what it changes on the host:
+Needs Linux with systemd, cgroup v2, podman 5+, root, `curl` (or `git`), and free ports 8080 and
+30000-30079. Full guide, settings and what it changes on the host:
 [packaging/container/README.md](../packaging/container/README.md).
 
+```
+curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo sh
+```
+
+Or download it, read it, then run it:
+```
+curl -fsSLO https://raw.githubusercontent.com/svin24/melissa/master/get.sh
+less get.sh
+sudo sh get.sh
+```
+
+[get.sh](../get.sh) checks the host (root, Linux, systemd, podman 5+, curl, tar), downloads Melissa's source
+from GitHub (master; with `CHANNEL=stable` the latest release tag) into a temporary directory, runs
+`packaging/container/install.sh` from it and deletes the directory. Settings go between `sudo` and `sh`:
+`curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo CHANNEL=stable UI_PORT=8090 sh`. (`CHANNEL=stable curl ... | sudo sh` does not
+work: sudo drops that environment.) Only check the host: `... | sudo sh -s -- --preflight`.
+
+Or from a git clone:
 ```
 git clone https://github.com/svin24/melissa.git melissa && cd melissa
 sudo packaging/container/install.sh   # pulls the signed image, installs the Quadlet, starts melissa.service
@@ -131,9 +149,12 @@ distribution. Details, options and gotchas: [agent-skills/nix-service.md](agent-
 ### Container
 
 ```
-sudo packaging/container/uninstall.sh            # or: just container-uninstall
-sudo packaging/container/uninstall.sh --purge    # or: just container-uninstall --purge
+sudo /usr/local/libexec/melissa/uninstall.sh            # any install, also get.sh's
+sudo /usr/local/libexec/melissa/uninstall.sh --purge
+sudo packaging/container/uninstall.sh [--purge]         # from a git clone; or: just container-uninstall
 ```
+install.sh puts a copy of uninstall.sh (with `trust.sh` and `apparmor.sh`, which it uses) in
+`/usr/local/libexec/melissa/`, and uninstall removes that copy too.
 
 Both stop Melissa and remove the Quadlet, the update helper and its units, `/etc/modules-load.d/melissa.conf`
 and the sysctl file (restoring the old values), remove the signature check for Melissa's image from
