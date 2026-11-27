@@ -274,6 +274,20 @@ the two disagree: a token on one side only, or a different value in the light or
   values) are listed in `crate::tokens::CSS_ONLY`; anything else in `:root` must be in
   `tokens.json`. Later `:root` blocks (themes, `pointer: coarse`) may only override tokens.
 
+## CI
+
+GitHub Actions, on GitHub's `ubuntu-26.04` runner:
+
+- `.github/workflows/check.yml` (every push to master, pull requests, manual): `cargo fmt --check` (both
+  workspaces), `just lint`, `just test` and `just container-test`. Rust 1.100.0, as in the dev shell. The
+  sandbox tests run with `MELISSA_SANDBOX_REQUIRED=1`, so a missing bwrap or user namespace fails them; the
+  job installs bubblewrap and uidmap and sets `kernel.apparmor_restrict_unprivileged_userns=0`.
+- `.github/workflows/container.yml`: builds the image, runs the release gate and publishes the signed image to
+  `ghcr.io/svin24/melissa` (packaging/container/README.md, "Published images and CI").
+
+Every third-party action is pinned to a commit SHA, with the version in a comment. Lint the workflows with
+`nix run nixpkgs#actionlint` (`.github/actionlint.yaml` adds the `ubuntu-26.04` label).
+
 ## Installing Nix (any Linux)
 
 Use the Determinate installer (flakes on by default): https://determinate.systems/nix-installer/, or the

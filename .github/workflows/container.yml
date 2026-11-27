@@ -1,0 +1,334 @@
+# Container image: build, release gate, publish, sign, verify.
+# Docs: packaging/container/README.md, "Published images and CI" and "Release gate".
+#
+#   push to master      build, gate, publish ghcr.io/svin24/melissa:sha-<rev>, then :edge
+#   push tag vX.Y.Z     build, gate, publish :X.Y.Z, then :X.Y and :stable
+#   workflow_dispatch   build and gate only; never publishes
+#
+# Only the image that passed the sandbox escape suite (localhost/melissa:escape-tested, same image ID) is
+# pushed, once, to its immutable tag. It is signed by digest with Melissa's cosign key (environment secrets
+# COSIGN_PRIVATE_KEY, COSIGN_PASSWORD; public half packaging/container/melissa-signing.pub) and gets a
+# build provenance attestation. Moving tags are added registry-side last, so they never point at an
+# unsigned digest.
+name: container
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/master' }}
+
+env:
+  REPO: ghcr.io/svin24/melissa
+
+jobs:
+  build-gate:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      image_id: ${{ steps.gate.outputs.image_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: scripts/release-check.sh "$GITHUB_REF_NAME"
+
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/CodeQL"
+          df -h /
+
+      # bwrap inside the image needs unprivileged user namespaces; Ubuntu's AppArmor restricts them.
+      - name: Allow user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          v=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+          if [ "$v" != 0 ]; then
+            echo "::error::kernel.apparmor_restrict_unprivileged_userns is $v, need 0"
+            exit 1
+          fi
+
+      # As `just container-build`: rootless, --layers, --network=host, SOURCE_DATE_EPOCH = last commit time.
+      - name: Build localhost/melissa:dev
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/server/Cargo.toml | head -n 1)
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) podman build --layers --network=host \
+            -f packaging/container/Containerfile \
+            --build-arg MELISSA_VERSION="$version" --build-arg MELISSA_REVISION="$(git rev-parse --short HEAD)" \
+            -t localhost/melissa:dev .
+          podman image inspect --format '{{.Id}} {{index .Labels "org.opencontainers.image.version"}} {{index .Labels "org.opencontainers.image.revision"}}' localhost/melissa:dev
+
+      # The hard gate (README "Release gate"): only a pass from the image's own revision tags
+      # localhost/melissa:escape-tested, and only that image may be published.
+      - name: Release gate (sandbox escape suite in the image)
+        id: gate
+        run: |
+          packaging/container/escape-test.sh localhost/melissa:dev
+          id=$(podman image inspect --format '{{.Id}}' localhost/melissa:dev)
+          tested=$(podman image inspect --format '{{.Id}}' localhost/melissa:escape-tested 2>/dev/null || true)
+          if [ -z "$tested" ] || [ "$tested" != "$id" ]; then
+            echo "::error::localhost/melissa:escape-tested is not the built image ($id); nothing to publish"
+            exit 1
+          fi
+          echo "image_id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the escape suite log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: escape-test-image-log
+          path: target/escape-test-image.log
+          if-no-files-found: warn
+
+      # Advisory for now: a failure shows in the run but does not block publishing.
+      - name: gVisor end to end (advisory)
+        continue-on-error: true
+        run: packaging/container/gvisor-test.sh localhost/melissa:dev
+
+      - name: Upload the gVisor log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gvisor-test-image-log
+          path: target/gvisor-test-image.log
+          if-no-files-found: ignore
+
+      - name: Save the tested image
+        if: github.event_name == 'push'
+        run: podman save --format oci-archive -o target/melissa.oci.tar localhost/melissa:escape-tested
+
+      - name: Hand it to the publish job
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: target/melissa.oci.tar
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: build-gate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    # GitHub environments (created by the owner) hold COSIGN_PRIVATE_KEY and COSIGN_PASSWORD.
+    environment:
+      name: ${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || 'edge' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      moving_tag: ${{ steps.tags.outputs.moving_tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+
+      # One auth file for podman, skopeo, cosign and actions/attest.
+      - name: Registry login
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/config.json" >> "$GITHUB_ENV"
+          printf '%s' "$GH_TOKEN" | podman login --authfile "$RUNNER_TEMP/docker/config.json" \
+            -u "$GITHUB_ACTOR" --password-stdin ghcr.io
+
+      - name: Load the tested image
+        env:
+          IMAGE_ID: ${{ needs.build-gate.outputs.image_id }}
+        run: |
+          podman load -q -i "$RUNNER_TEMP/image/melissa.oci.tar"
+          id=$(podman image inspect --format '{{.Id}}' localhost/melissa:escape-tested)
+          if [ "$id" != "$IMAGE_ID" ]; then
+            echo "::error::loaded image $id is not the tested one ($IMAGE_ID)"
+            exit 1
+          fi
+
+      - name: Tags
+        id: tags
+        run: |
+          rev=$(podman image inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' localhost/melissa:escape-tested)
+          version=$(podman image inspect --format '{{index .Labels "org.opencontainers.image.version"}}' localhost/melissa:escape-tested)
+          case "$GITHUB_REF" in
+          refs/tags/v*)
+            v=${GITHUB_REF_NAME#v}
+            if [ "$version" != "$v" ]; then
+              echo "::error::image version label $version is not the tag $v"
+              exit 1
+            fi
+            immutable=$v; moving="${v%.*} stable"; moving_tag=stable ;;
+          refs/heads/master)
+            [ -n "$rev" ] || { echo "::error::image has no revision label"; exit 1; }
+            immutable=sha-$rev; moving=edge; moving_tag=edge ;;
+          *) echo "::error::no publish for $GITHUB_REF"; exit 1 ;;
+          esac
+          { echo "immutable=$immutable"; echo "moving=$moving"; echo "moving_tag=$moving_tag"; } >> "$GITHUB_OUTPUT"
+          echo "publish $REPO:$immutable, then: $moving"
+
+      # Pushed once. An existing immutable tag is only accepted when it already holds this image
+      # (a re-run); a release tag is never moved to different bytes.
+      - name: Push the tested image
+        id: push
+        env:
+          IMAGE_ID: ${{ needs.build-gate.outputs.image_id }}
+          IMMUTABLE: ${{ steps.tags.outputs.immutable }}
+        run: |
+          if existing=$(skopeo inspect --raw "docker://$REPO:$IMMUTABLE" 2>/dev/null); then
+            config=$(printf '%s' "$existing" | jq -r '.config.digest // empty')
+            if [ "$config" != "sha256:$IMAGE_ID" ]; then
+              echo "::error::$REPO:$IMMUTABLE already exists with another image ($config)"
+              exit 1
+            fi
+            echo "$REPO:$IMMUTABLE already holds this image; pushing again"
+          fi
+          podman push --digestfile "$RUNNER_TEMP/digest" localhost/melissa:escape-tested "docker://$REPO:$IMMUTABLE"
+          digest=$(cat "$RUNNER_TEMP/digest")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "pushed $REPO@$digest"
+
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+        with:
+          cosign-release: v3.1.5
+
+      # Legacy signature format (a .sig tag next to the image): podman cannot read cosign 3 bundles yet.
+      # Recorded in the public Rekor transparency log.
+      - name: Sign the digest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          [ -n "$COSIGN_PRIVATE_KEY" ] || { echo "::error::secret COSIGN_PRIVATE_KEY is not set in this environment"; exit 1; }
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            --new-bundle-format=false --use-signing-config=false "$REPO@$DIGEST"
+
+      - name: Build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.REPO }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # Registry-side, so every tag is the same digest (no second push, no recompression).
+      - name: Moving tags
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          MOVING: ${{ steps.tags.outputs.moving }}
+        run: |
+          for tag in $MOVING; do
+            skopeo copy --preserve-digests "docker://$REPO@$DIGEST" "docker://$REPO:$tag"
+            got=$(skopeo inspect --format '{{.Digest}}' "docker://$REPO:$tag")
+            [ "$got" = "$DIGEST" ] || { echo "::error::$REPO:$tag is $got, expected $DIGEST"; exit 1; }
+            echo "$REPO:$tag -> $DIGEST"
+          done
+
+      - name: Log out
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/docker"
+
+  # As a device would: anonymous pull (the package must be public), cosign verify, and podman refusing
+  # anything not signed with Melissa's key.
+  verify:
+    needs: [build-gate, publish]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DIGEST: ${{ needs.publish.outputs.digest }}
+      TAG: ${{ needs.publish.outputs.moving_tag }}
+      IMAGE_ID: ${{ needs.build-gate.outputs.image_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+        with:
+          cosign-release: v3.1.5
+
+      # Empty auth file: nothing from earlier logins. A private package (the first publish creates it
+      # private) needs a login until the owner makes it public.
+      - name: Anonymous access
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          echo '{}' > "$RUNNER_TEMP/docker/config.json"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/config.json" >> "$GITHUB_ENV"
+          podman logout --all >/dev/null 2>&1 || true
+          if skopeo inspect --no-creds --raw "docker://$REPO@$DIGEST" >/dev/null; then
+            echo "anonymous pull works: the package is public"
+          else
+            echo "::notice title=Package is private::$REPO cannot be pulled anonymously. Devices cannot install it until the owner makes the package public (GitHub → Packages → melissa → Package settings → Change visibility). Verifying with the workflow's token instead."
+            printf '%s' "$GH_TOKEN" | podman login --authfile "$RUNNER_TEMP/docker/config.json" \
+              -u "$GITHUB_ACTOR" --password-stdin ghcr.io
+          fi
+
+      # Default flags check the Rekor transparency log entry too (--insecure-ignore-tlog=false).
+      - name: cosign verify
+        run: cosign verify --key packaging/container/melissa-signing.pub "$REPO@$DIGEST"
+
+      # The same policy install.sh writes (trust.sh), in temporary files; registries.d is the runner
+      # user's, which rootless podman reads.
+      - name: podman pull with the signature policy
+        run: |
+          default=/etc/containers/policy.json
+          [ -r "$default" ] || default=/usr/share/containers/policy.json
+          policy() { # NAME KEYFILE: write $RUNNER_TEMP/NAME.json requiring KEYFILE for $REPO
+            ( export SIGNED_REPO=$REPO POLICY="$RUNNER_TEMP/$1.json" POLICY_DEFAULT=$default \
+                REGISTRIES_D="$HOME/.config/containers/registries.d" SIGNING_KEY="$RUNNER_TEMP/pki/$1.pub"
+              . packaging/container/trust.sh
+              trust_install "$2" >/dev/null )
+          }
+          policy melissa packaging/container/melissa-signing.pub
+          jq '.transports.docker' "$RUNNER_TEMP/melissa.json"
+
+          podman pull --signature-policy "$RUNNER_TEMP/melissa.json" "$REPO:$TAG"
+          id=$(podman image inspect --format '{{.Id}}' "$REPO:$TAG")
+          if [ "$id" != "$IMAGE_ID" ]; then
+            echo "::error::$REPO:$TAG is image $id, the tested one is $IMAGE_ID"
+            exit 1
+          fi
+          echo "verified pull of $REPO:$TAG: image $id, the one the gate tested"
+
+          # Negative check: a policy with another key must refuse the same pull.
+          podman rmi -f "$REPO:$TAG" >/dev/null
+          mkdir -p "$RUNNER_TEMP/other"
+          (cd "$RUNNER_TEMP/other" && COSIGN_PASSWORD='' cosign generate-key-pair >/dev/null)
+          policy other "$RUNNER_TEMP/other/cosign.pub"
+          if podman pull --signature-policy "$RUNNER_TEMP/other.json" "$REPO:$TAG" 2> "$RUNNER_TEMP/refused.txt"; then
+            echo "::error::podman pulled $REPO:$TAG with a policy for a different key"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/refused.txt"
+          if ! grep -qi 'signature' "$RUNNER_TEMP/refused.txt"; then
+            echo "::error::the pull failed, but not on the signature check"
+            exit 1
+          fi
+          echo "refused with another key, as it should be"
+
+      - name: Log out
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/docker"

@@ -274,6 +274,7 @@ LABEL org.opencontainers.image.title="melissa" \
       org.opencontainers.image.version="${MELISSA_VERSION}" \
       org.opencontainers.image.revision="${MELISSA_REVISION}" \
       org.opencontainers.image.description="Melissa: server, k3s and agent sandbox under systemd (pre-alpha)" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/svin24/melissa"
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
