@@ -300,6 +300,17 @@ Two candidate designs; they can coexist (QR first, typed code as fallback).
 - **Q37** (loopback API auth) and **Q88** (onboarding): the OEM claim path reuses the claim and setup flow.
 - **§2 reference distro (paused):** SoftAP and button press only make sense there.
 
+### 2.7 Owner's follow-up (2026-11-27, not decided)
+
+- The owner may drop the per-device initial key for OEM mode altogether: the box is unclaimed only for the
+  short time between unboxing and setup, so a label secret may not be worth it.
+- OEMs could instead be told to add a physical reset button that wipes everything and returns the box to its
+  factory (OEM install) state. Melissa already has a factory reset (PLAN §6d) to build on.
+- To weigh when this comes back: without a key, anyone on the same network during that window can claim the
+  box first (the Home Assistant lesson, section 1); the CRA, ETSI EN 303 645 and PSTI rules (section 1) are
+  about default passwords, so a keyless window needs checking against them; a short window that only opens
+  after a button press or only on the setup Wi-Fi (2.5) narrows the risk.
+
 ## 3. Open questions for the owner (PLAN question 105)
 
 (a) Port 7380/tcp and `_melissa-pair._tcp`, or another number; configurable by `PAIR_PORT`?
