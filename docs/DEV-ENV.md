@@ -161,6 +161,14 @@ Pick one (not yet tested by us on Ubuntu; please tell us what worked):
 - Or switch the restriction off until the next reboot:
   `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` (system-wide; less safe).
 
+Agent users (each sandbox its own host user) also need capabilities inside bwrap, for `setpriv`. Ubuntu
+26.04 loads `/etc/apparmor.d/bwrap-userns-restrict`: its `bwrap` profile attaches to `/usr/bin/bwrap` (also
+inside an unconfined container, such as the installed image) and denies every capability to the programs
+bwrap runs (`unpriv_bwrap`). Every agent sandbox then fails with
+`setpriv: setresuid failed: Operation not permitted`; the sysctl above does not change that. Unload it until
+the next reboot with `sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`, or turn agent users off
+(`MELISSA_AGENT_USERS=off`). CI unloads it (see [CI](#ci)).
+
 ### Troubleshooting
 
 - **An agent shows "not installed".** Its command is not on the `PATH` of the shell you started
@@ -281,7 +289,10 @@ GitHub Actions, on GitHub's `ubuntu-26.04` runner:
 - `.github/workflows/check.yml` (every push to master, pull requests, manual): `cargo fmt --check` (both
   workspaces), `just lint`, `just test` and `just container-test`. Rust 1.100.0, as in the dev shell. The
   sandbox tests run with `MELISSA_SANDBOX_REQUIRED=1`, so a missing bwrap or user namespace fails them; the
-  job installs bubblewrap and uidmap and sets `kernel.apparmor_restrict_unprivileged_userns=0`.
+  job installs bubblewrap and uidmap, sets `kernel.apparmor_restrict_unprivileged_userns=0` and unloads the
+  AppArmor profiles that attach to `/usr/bin/bwrap` (`bwrap-userns-restrict`; see
+  [Ubuntu and AppArmor](#ubuntu-and-apparmor)). `/bin/sh` there is dash: test scripts must be POSIX sh (for
+  example `printf '%s\n'`, not `echo`, for text with backslashes).
 - `.github/workflows/container.yml`: builds the image, runs the release gate and publishes the signed image to
   `ghcr.io/svin24/melissa` (packaging/container/README.md, "Published images and CI").
 

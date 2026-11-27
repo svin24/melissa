@@ -1607,3 +1607,9 @@ Roadmap (rough, phases may overlap):
     server). (h) MTU: flannel over Tailscale gives pods about 1230, pods created before keep 1450. (i) Agent
     tokens: never hand out the server token (cluster root); use `k3s token create --ttl`. k3s `--vpn-auth` is
     skipped (experimental, fights Melissa's tailscaled).
+104. Ubuntu hosts and agent users (2026-11-27, found in CI). Ubuntu 26.04 loads the AppArmor profile
+    `bwrap-userns-restrict`, which attaches to `/usr/bin/bwrap` inside the unconfined container as well and
+    denies all capabilities to what bwrap runs: `setpriv` cannot switch to the agent user and every agent
+    sandbox fails. CI unloads the profile. For installs: should install.sh detect it and offer to unload it
+    (or add a `local/` override), should the image move bwrap off that path, or should the server detect it
+    and turn agent users off with a clear reason? Untested on a real Ubuntu install.

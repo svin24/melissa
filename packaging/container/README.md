@@ -314,6 +314,10 @@ tag from it, so a failing run revokes an earlier pass. CI runs this gate before 
   provenance attestation. The moving tags are added afterwards, registry-side, to the same digest.
 - A last job checks the result as a device would: `cosign verify` without credentials, and a podman pull
   with the policy install.sh writes; the same pull with another key must be refused.
+- Before the gate the job sets `kernel.apparmor_restrict_unprivileged_userns=0` and unloads Ubuntu's
+  `bwrap-userns-restrict` AppArmor profile. That profile attaches to `/usr/bin/bwrap` inside the unconfined
+  container too and denies the capabilities `setpriv` needs to switch to the agent user, so every agent-user
+  sandbox would fail (docs/DEV-ENV.md, "Ubuntu and AppArmor"). The suite itself is unchanged.
 - `gvisor-test.sh` also runs, but is advisory for now: a failure does not block publishing.
 - The signing key's private half lives in the GitHub environments `edge` and `stable`
   (`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`), never in the repo.
