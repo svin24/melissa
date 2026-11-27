@@ -602,6 +602,8 @@ async fn real_claude_transcript_replays() {
 
 /// A fake `claude`: logs its arguments, refuses `--resume`, answers the handshake and one
 /// prompt (with the text of the prompt's line count), then waits for stdin to close.
+/// `printf '%s\n'`, not `echo`, for the JSON escape `\n`: dash (`/bin/sh` on Debian and
+/// Ubuntu) expands backslashes in `echo` and would split the line.
 fn fake_claude(dir: &std::path::Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("claude");
@@ -615,7 +617,7 @@ done
 read -r init
 echo '{"type":"control_response","response":{"subtype":"success","request_id":"melissa-init","response":{"claude_code_version":"0.0.0-fake"}}}'
 while read -r line; do
-  echo '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello\n"}}}'
+  printf '%s\n' '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello\n"}}}'
   echo '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}'
 done
 "#,

@@ -40,8 +40,9 @@ jobs:
         with:
           tool: cargo-nextest,just
 
-      # The agent sandbox tests need bwrap, newuidmap and unprivileged user namespaces. Ubuntu's AppArmor
-      # restricts those by default (docs/DEV-ENV.md, "Ubuntu and AppArmor").
+      # The agent sandbox tests need bwrap, newuidmap and unprivileged user namespaces, and agent users
+      # need capabilities inside bwrap. Ubuntu's AppArmor restricts both by default (docs/DEV-ENV.md,
+      # "Ubuntu and AppArmor").
       - name: Sandbox prerequisites
         run: |
           sudo apt-get update -q
@@ -50,6 +51,17 @@ jobs:
           v=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
           if [ "$v" != 0 ]; then
             echo "::error::kernel.apparmor_restrict_unprivileged_userns is $v, need 0"
+            exit 1
+          fi
+          # Ubuntu's bwrap-userns-restrict profile attaches to /usr/bin/bwrap (also the image's: the container
+          # is unconfined) and denies every capability to what bwrap runs, so setpriv cannot become the agent
+          # user. Unload every profile that attaches to bwrap (docs/DEV-ENV.md, "Ubuntu and AppArmor").
+          for f in $(sudo grep -lE '^\s*profile\s+\S+\s+/usr/bin/bwrap' /etc/apparmor.d/* 2>/dev/null || true); do
+            echo "unloading AppArmor profiles in $f"
+            sudo apparmor_parser -R "$f"
+          done
+          if sudo grep -E '^(bwrap|unpriv_bwrap) ' /sys/kernel/security/apparmor/profiles; then
+            echo "::error::an AppArmor profile for bwrap is still loaded"
             exit 1
           fi
 
