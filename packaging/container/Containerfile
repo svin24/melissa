@@ -209,6 +209,11 @@ RUN set -eu; \
     # (`rpm -V shadow-utils` shows P; the server then logs "write to uid_map failed"). shadow's classic
     # install mode instead: setuid root, which survives any image storage.
     chmod 4755 /usr/bin/newuidmap /usr/bin/newgidmap; \
+    # The sandbox's bwrap, off /usr/bin: Ubuntu's bwrap-userns-restrict AppArmor profile attaches to
+    # /usr/bin/bwrap by path, inside this container too, and denies agent users their capabilities.
+    # Melissa's own profile (host/apparmor/melissa-container) covers the whole container instead;
+    # find_bwrap (crates/agent/src/sandbox.rs) tries this copy first. README, "Ubuntu and AppArmor".
+    install -m 0755 /usr/bin/bwrap /usr/libexec/melissa/bwrap; \
     ln -s /var/lib/melissa-container/rancher-node /etc/rancher/node; \
     ln -s /var/lib/melissa-container/etc-melissa /etc/melissa
 
@@ -223,7 +228,7 @@ RUN printf 'MELISSA_VERSION=%s\nMELISSA_REVISION=%s\nMELISSA_RUNTIME=container\n
 # Image lint: what this image must and must not contain.
 RUN set -eu; \
     for f in /usr/bin/melissa-server /usr/bin/melissa-device /usr/bin/melissa-netbridge /usr/bin/k3s \
-        /usr/bin/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
+        /usr/bin/bwrap /usr/libexec/melissa/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
         /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled \
         /usr/libexec/melissa/factory-reset /usr/bin/newuidmap /usr/bin/newgidmap /usr/bin/nsenter \
         /usr/bin/unshare /usr/bin/setpriv; do \

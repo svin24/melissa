@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the sandbox escape suite (crates/agent/tests/it/escape.rs) inside a built Melissa image, the way the
-# installed container runs: rootful podman, --privileged, systemd as PID 1, and the suite as the
+# installed container runs: rootful podman, --privileged, systemd as PID 1, Melissa's AppArmor profile on
+# AppArmor hosts (apparmor.sh; checked), and the suite as the
 # `melissa` user under the server unit's hardening (ProtectSystem=strict, ProtectHome, PrivateTmp; no
 # NoNewPrivileges, as in the unit: agent users need newuidmap). So bwrap, melissa-netbridge, newuidmap,
 # the agent-user range, /usr and the kernel view are the shipped image's.
@@ -25,6 +26,8 @@ BUILD_IMAGE=localhost/melissa-escape-build:dev
 TEST_IMAGE=localhost/melissa-escape-test:run
 TESTED_TAG=localhost/melissa:escape-tested
 cd "$(dirname "$0")/../.."
+# shellcheck source=packaging/container/apparmor.sh
+. packaging/container/apparmor.sh
 mkdir -p target
 LOG=target/escape-test-image.log
 
@@ -61,7 +64,14 @@ sudo podman rm -f -t 5 "$NAME" >/dev/null 2>&1 || true
 
 echo "== booting $IMAGE ($NAME: rootful, --privileged, systemd)"
 # As the Quadlet (melissa.container): --privileged --systemd=always, podman's network. No ports.
-sudo podman run -d --name "$NAME" --hostname melissa --privileged --systemd=always \
+# Hosts with AppArmor (Ubuntu): under Melissa's own profile, as install.sh runs the container
+# (apparmor.sh; README, "Ubuntu and AppArmor"). The host's restriction stays on.
+aa_args=()
+if apparmor_enabled; then
+    sudo packaging/container/apparmor.sh load
+    read -ra aa_args <<<"$(apparmor_podman_args)"
+fi
+sudo podman run -d --name "$NAME" --hostname melissa --privileged --systemd=always "${aa_args[@]}" \
     --network podman "$TEST_IMAGE" >/dev/null
 # "degraded" is fine (masked units, no k3s); only the boot has to be over. systemctl answers nothing
 # until systemd inside is up, so poll (2 minutes at most).
@@ -77,6 +87,15 @@ case "$state" in
     *) echo "FAIL: the image did not boot (systemd: ${state:-no answer})"; exit 1 ;;
 esac
 sudo podman exec "$NAME" id melissa >/dev/null
+# The suite must run under Melissa's profile where the host has AppArmor, not unconfined.
+if [ "${#aa_args[@]}" -gt 0 ]; then
+    label=$(sudo podman exec "$NAME" sh -c 'cat /proc/1/attr/apparmor/current 2>/dev/null || cat /proc/1/attr/current' | tr -d '\0')
+    echo "   AppArmor: $label"
+    case "$label" in
+        "$MELISSA_APPARMOR_PROFILE" | "$MELISSA_APPARMOR_PROFILE "*) ;;
+        *) echo "FAIL: the container is not under the AppArmor profile $MELISSA_APPARMOR_PROFILE (${label:-no label})"; exit 1 ;;
+    esac
+fi
 
 echo "== running the escape suite as melissa"
 set +e

@@ -93,6 +93,8 @@ sudo podman exec -it melissa melissa-server chat
 - Unless `AUTO_UPDATE=off`: enables `podman-auto-update.timer` (if it was off; uninstall turns it off again).
 - Only when Docker is on the host: `/etc/systemd/system/melissa-docker-forward.service` and two rules in
   Docker's `DOCKER-USER` chain (see "Docker on the same host"; uninstall removes both).
+- Only when the host has AppArmor (Ubuntu): Melissa's profile `/etc/apparmor.d/melissa-container`, loaded,
+  for the container alone (see "Ubuntu and AppArmor"; uninstall unloads and removes it).
 
 ## Uninstall
 ```
@@ -225,36 +227,53 @@ and stops at once: "This container can't reach the internet". Likely causes:
 Test: `sudo podman exec melissa getent ahosts example.com`.
 
 ### Ubuntu and AppArmor
-Ubuntu 26.04 (and 24.04 with the apparmor package's defaults) loads `/etc/apparmor.d/bwrap-userns-restrict`.
-Its `bwrap` profile attaches to `/usr/bin/bwrap` by path. That includes the image's bwrap, because the
-`--privileged` container is AppArmor-unconfined. It runs what bwrap starts as `unpriv_bwrap`, which denies
-every capability. `setpriv` then cannot switch to the agent's user, and every agent sandbox fails.
+Supported: Ubuntu 26.04 (the latest; other releases untested). Ubuntu restricts unprivileged user namespaces
+(`kernel.apparmor_restrict_unprivileged_userns = 1`) and loads `/etc/apparmor.d/bwrap-userns-restrict`. Its
+`bwrap` profile attaches to `/usr/bin/bwrap` by path, inside containers too, and runs what bwrap starts as
+`unpriv_bwrap`, which denies every capability: `setpriv` could not switch to the agent's user, and every agent
+sandbox would fail.
 
-install.sh never changes the host's AppArmor. While a `bwrap` (not `flags=(unconfined)`) or `unpriv_bwrap`
-profile is loaded, the preflight (also `--preflight`) fails and prints what to run. On a stock Ubuntu host:
+So on a host with AppArmor, install.sh installs Melissa's own profile and runs the container under it:
+- `/etc/apparmor.d/melissa-container` (from `host/apparmor/melissa-container`): `flags=(unconfined)` plus
+  `userns,`, the shape of Ubuntu's own profiles for programs that need user namespaces. It is attached by
+  name, not by path: only Melissa's container gets it (`PodmanArgs=--security-opt apparmor=melissa-container`
+  in the Quadlet; not `AppArmor=`, which Quadlet has only from podman 5.8). Local additions go in
+  `/etc/apparmor.d/local/melissa-container`.
+- install.sh loads it with `apparmor_parser -r`, checks that it is loaded, records `APPARMOR_PROFILE=yes` in
+  install.env and says so (NOTICE). It is loaded again at every boot like every profile there.
+  uninstall.sh unloads and deletes it.
+- The image's sandbox uses its own copy of bwrap, `/usr/libexec/melissa/bwrap`, which Ubuntu's path-attached
+  `bwrap` profile does not match (`find_bwrap` tries it first; `/usr/bin/bwrap` and `PATH` after it).
+- The host's restriction stays on for everything else: the sysctl stays 1 and `bwrap-userns-restrict` stays
+  loaded. Nothing in `/etc/apparmor.d/disable/` is touched.
+- CI's release gate runs the escape suite (and the gVisor test) on Ubuntu 26.04 this way, with the restriction
+  asserted on, and checks inside the container that it runs under `melissa-container` ("Release gate").
+- Not tried on a real Ubuntu install by us yet; only on the CI runners.
+
+Why the whole container and not a profile for `/usr/libexec/melissa/bwrap`: a path-attached profile would
+also match that path in any other container on the host, including pods from images someone crafted with a
+file at that path; a profile attached by name applies only where podman is told to use it (docs/DECISIONS.md,
+2026-11-27).
+
+Fallback, only when the host restricts and the profile cannot be loaded (no `apparmor_parser`, or it rejects
+the profile, e.g. an AppArmor older than 4): the preflight or the install stops, says why, and prints the last
+resort, turning Ubuntu's restriction off for the whole host. On a stock Ubuntu host that is:
 ```
 sudo ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
 sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
-# only while kernel.apparmor_restrict_unprivileged_userns is 1 (the profile was what let bwrap create user namespaces):
+# only while kernel.apparmor_restrict_unprivileged_userns is 1:
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-melissa-userns.conf
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
-Then run install.sh again. The `disable/` link keeps the profile off after reboots: `apparmor_parser` skips
-files linked there (as `aa-disable` does). The distribution's file is not edited.
-
 Undo:
 ```
 sudo rm /etc/apparmor.d/disable/bwrap-userns-restrict && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 sudo rm /etc/sysctl.d/60-melissa-userns.conf && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
 ```
-
-Caveats:
-- This turns off an Ubuntu security restriction for the whole host, not just for Melissa.
-- Any program can then use bwrap to create user namespaces, which is what the restriction prevents. With the
-  sysctl at 0, any program can create user namespaces.
-- The container is rootful and `--privileged` anyway: root in it is root on the host.
-- Not tested by us on an Ubuntu install. CI unloads the profile and sets the sysctl on its Ubuntu 26.04 runners.
-- uninstall.sh does not undo these steps; use the commands above.
+Caveats of the fallback: it turns off an Ubuntu security restriction for the whole host, not just for Melissa;
+any program can then use bwrap (with the sysctl at 0: anything) to create user namespaces; install.sh never
+runs these commands and uninstall.sh does not undo them. Either way the container is rootful and
+`--privileged`: root in it is root on the host.
 
 ## Data and persistence
 The container is **recreated from the image at every start** (and on updates). Everything kept lives on
@@ -322,7 +341,8 @@ just escape-test-image          # or: just escape-test-image localhost/melissa:<
 probe helper; the image itself never contains them, its lint checks that), adds them under
 `/opt/melissa-escape` to a throwaway copy of the image with k3s and the server masked, copies that into root's
 storage, boots it like the Quadlet (rootful, `--privileged --systemd=always`, podman's network, no published
-ports, container name `melissa-escape-test`, so an installed `melissa` keeps running) and runs the suite as
+ports, container name `melissa-escape-test`, so an installed `melissa` keeps running; on a host with AppArmor
+under Melissa's profile, loaded with `sudo packaging/container/apparmor.sh load` and checked) and runs the suite as
 `melissa` with the server unit's hardening. Needs sudo. Output: the probe table and
 `target/escape-test-image.log`.
 
@@ -347,10 +367,10 @@ tag from it, so a failing run revokes an earlier pass. CI runs this gate before 
   provenance attestation. The moving tags are added afterwards, registry-side, to the same digest.
 - A last job checks the result as a device would: `cosign verify` without credentials, and a podman pull
   with the policy install.sh writes; the same pull with another key must be refused.
-- Before the gate the job sets `kernel.apparmor_restrict_unprivileged_userns=0` and unloads Ubuntu's
-  `bwrap-userns-restrict` AppArmor profile. That profile attaches to `/usr/bin/bwrap` inside the unconfined
-  container too and denies the capabilities `setpriv` needs to switch to the agent user, so every agent-user
-  sandbox would fail ("Ubuntu and AppArmor" above). The suite itself is unchanged.
+- Before the gate the job loads Melissa's AppArmor profile (`apparmor.sh load`, what install.sh does) and
+  asserts that Ubuntu's restriction is still on (`kernel.apparmor_restrict_unprivileged_userns` is 1,
+  `bwrap-userns-restrict` loaded). escape-test.sh and gvisor-test.sh run the image under the profile and
+  check it applies, so a pass shows the image works on a stock Ubuntu 26.04 ("Ubuntu and AppArmor" above).
 - `gvisor-test.sh` also runs, but is advisory for now: a failure does not block publishing.
 - The signing key's private half lives in the GitHub environments `edge` and `stable`
   (`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`), never in the repo.

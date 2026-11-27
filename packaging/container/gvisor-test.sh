@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # gVisor end to end inside a built Melissa image (docs/DECISIONS.md 2026-11-23), the way the installed
-# container runs: rootful podman, --privileged, systemd as PID 1, /var on a volume, k3s inside.
+# container runs: rootful podman, --privileged, systemd as PID 1, /var on a volume, k3s inside, Melissa's
+# AppArmor profile on AppArmor hosts (apparmor.sh; checked).
 #
 #   packaging/container/gvisor-test.sh [IMAGE]      (default localhost/melissa:dev; `just gvisor-test-image`)
 #
@@ -29,6 +30,8 @@ VOLUME=$NAME-var
 TEST_IMAGE=localhost/melissa-gvisor-test:run
 BUSYBOX=docker.io/library/busybox:1.37
 cd "$(dirname "$0")/../.."
+# shellcheck source=packaging/container/apparmor.sh
+. packaging/container/apparmor.sh
 mkdir -p target
 LOG=target/gvisor-test-image.log
 exec > >(tee "$LOG") 2>&1
@@ -66,13 +69,27 @@ sudo podman load -q -i "$archive" >/dev/null
 rm -f "$archive"
 
 echo "== booting $NAME (rootful, --privileged, systemd, /var on $VOLUME, no ports)"
-sudo podman run -d --name "$NAME" --hostname "$NAME" --privileged --systemd=always \
+# Hosts with AppArmor (Ubuntu): under Melissa's own profile, as install.sh runs the container
+# (apparmor.sh; README, "Ubuntu and AppArmor"). The host's restriction stays on.
+aa_args=()
+if apparmor_enabled; then
+    sudo packaging/container/apparmor.sh load
+    read -ra aa_args <<<"$(apparmor_podman_args)"
+fi
+sudo podman run -d --name "$NAME" --hostname "$NAME" --privileged --systemd=always "${aa_args[@]}" \
     --tmpfs /dev/input -e XDG_CONFIG_HOME=/etc --network podman -v "$VOLUME:/var" \
     --stop-timeout 30 "$TEST_IMAGE" /sbin/init >/dev/null
 
 wait_for 300 "k3s.service active" in_ctr systemctl is-active -q k3s || exit 1
 wait_for 300 "node Ready" sh -c "sudo podman exec $NAME kubectl get nodes --no-headers | grep -q ' Ready '" || exit 1
 pass "k3s node Ready"
+if [ "${#aa_args[@]}" -gt 0 ]; then
+    label=$(in_ctr sh -c 'cat /proc/1/attr/apparmor/current 2>/dev/null || cat /proc/1/attr/current' | tr -d '\0')
+    case "$label" in
+        "$MELISSA_APPARMOR_PROFILE" | "$MELISSA_APPARMOR_PROFILE "*) pass "container under the AppArmor profile $MELISSA_APPARMOR_PROFILE ($label)" ;;
+        *) bad "container not under the AppArmor profile $MELISSA_APPARMOR_PROFILE (${label:-no label})" ;;
+    esac
+fi
 
 # ---- set-up ---------------------------------------------------------------------------------
 echo "== gVisor set-up"

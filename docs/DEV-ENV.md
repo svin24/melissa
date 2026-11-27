@@ -168,8 +168,14 @@ bwrap runs (`unpriv_bwrap`). Every agent sandbox then fails with
 `setpriv: setresuid failed: Operation not permitted`; the sysctl above does not change that. Unload it until
 the next reboot with `sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`, or turn agent users off
 (`MELISSA_AGENT_USERS=off`). To keep it off after reboots, also link it into `/etc/apparmor.d/disable/`.
-Without it, bwrap needs the sysctl above at 0. CI unloads it (see [CI](#ci)). The container's install.sh
-stops and prints these steps and their caveats; it never changes AppArmor itself
+Without it, bwrap needs the sysctl above at 0. CI's `check.yml` does that on its throwaway runner (see
+[CI](#ci)).
+
+The installed container does not need any of this: on a host with AppArmor, install.sh loads Melissa's own
+profile `melissa-container` for the container alone (`flags=(unconfined)` plus `userns,`), and the image's
+sandbox uses its own bwrap at `/usr/libexec/melissa/bwrap` (`find_bwrap` tries it before `/usr/bin/bwrap`
+and `PATH`), which Ubuntu's path-attached profile does not match. The host's restriction stays on. Only when
+that profile can't be loaded does install.sh stop and print the steps above with their caveats
 ([packaging/container/README.md](../packaging/container/README.md#ubuntu-and-apparmor)).
 
 ### Troubleshooting
@@ -294,10 +300,14 @@ GitHub Actions, on GitHub's `ubuntu-26.04` runner:
   sandbox tests run with `MELISSA_SANDBOX_REQUIRED=1`, so a missing bwrap or user namespace fails them; the
   job installs bubblewrap and uidmap, sets `kernel.apparmor_restrict_unprivileged_userns=0` and unloads the
   AppArmor profiles that attach to `/usr/bin/bwrap` (`bwrap-userns-restrict`; see
-  [Ubuntu and AppArmor](#ubuntu-and-apparmor)). `/bin/sh` there is dash: test scripts must be POSIX sh (for
-  example `printf '%s\n'`, not `echo`, for text with backslashes).
+  [Ubuntu and AppArmor](#ubuntu-and-apparmor)). These tests run straight on the runner, where Melissa's
+  container profile doesn't apply, so this job keeps that workaround. `/bin/sh` there is dash: test scripts
+  must be POSIX sh (for example `printf '%s\n'`, not `echo`, for text with backslashes).
 - `.github/workflows/container.yml`: builds the image, runs the release gate and publishes the signed image to
-  `ghcr.io/svin24/melissa` (packaging/container/README.md, "Published images and CI").
+  `ghcr.io/svin24/melissa` (packaging/container/README.md, "Published images and CI"). It changes nothing in
+  Ubuntu's AppArmor: it loads Melissa's own container profile (`packaging/container/apparmor.sh load`), asserts
+  that the restriction is still on (sysctl 1, `bwrap-userns-restrict` loaded), and the gate checks that the
+  container runs under `melissa-container`. That is what proves Ubuntu support.
 
 Every third-party action is pinned to a commit SHA, with the version in a comment. Lint the workflows with
 `nix run nixpkgs#actionlint` (`.github/actionlint.yaml` adds the `ubuntu-26.04` label).

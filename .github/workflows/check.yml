@@ -42,7 +42,10 @@ jobs:
 
       # The agent sandbox tests need bwrap, newuidmap and unprivileged user namespaces, and agent users
       # need capabilities inside bwrap. Ubuntu's AppArmor restricts both by default (docs/DEV-ENV.md,
-      # "Ubuntu and AppArmor").
+      # "Ubuntu and AppArmor"). These tests run straight on the runner, not in Melissa's container, so
+      # Melissa's container profile doesn't apply here: this job turns the restriction off on its
+      # throwaway runner. Ubuntu support as shipped (restriction on, Melissa's profile) is proven by
+      # the image gate in container.yml.
       - name: Sandbox prerequisites
         run: |
           sudo apt-get update -q

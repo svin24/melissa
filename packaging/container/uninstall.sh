@@ -9,6 +9,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=packaging/container/trust.sh
 . "$here/trust.sh"
+# shellcheck source=packaging/container/apparmor.sh
+. "$here/apparmor.sh"
 STATE=/var/lib/melissa-container
 QUADLET=/etc/containers/systemd/melissa.container
 UNITDIR=/etc/systemd/system
@@ -38,6 +40,14 @@ remove_docker_forward() {
     say "removed $DOCKER_FORWARD_UNIT and its DOCKER-USER rules for $1"
 }
 
+# remove_apparmor RECORDED: install.sh's AppArmor profile for the container (install.env
+# APPARMOR_PROFILE=yes; anything else: install.sh loaded none, nothing is touched).
+remove_apparmor() {
+    [ "$1" = yes ] && [ -e "$APPARMOR_DIR/$MELISSA_APPARMOR_PROFILE" ] || return 0
+    apparmor_unload
+    say "unloaded and removed the AppArmor profile $MELISSA_APPARMOR_PROFILE ($APPARMOR_DIR/$MELISSA_APPARMOR_PROFILE)"
+}
+
 # Sourced (packaging/container/test-install.sh): only the functions.
 [ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
@@ -45,7 +55,7 @@ PURGE=no
 case "${1:-}" in --purge) PURGE=yes ;; "") ;; *) sed -n '2,8p' "$0"; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo "melissa-uninstall: run as root" >&2; exit 1; }
 
-IMAGE=; TIMER_OURS=no; DOCKER_FORWARD_SUBNETS=; POLICY_CREATED=no
+IMAGE=; TIMER_OURS=no; DOCKER_FORWARD_SUBNETS=; POLICY_CREATED=no; APPARMOR_PROFILE=no
 # shellcheck source=/dev/null
 [ -r "$STATE/install.env" ] && . "$STATE/install.env"
 
@@ -68,6 +78,8 @@ if [ "$TIMER_OURS" = yes ]; then
     say "disabled podman-auto-update.timer (install.sh had enabled it)"
 fi
 remove_docker_forward "$DOCKER_FORWARD_SUBNETS"
+# After the container is gone: nothing runs under the profile any more.
+remove_apparmor "$APPARMOR_PROFILE"
 # The signature check for the published image (install.sh, trust.sh); install adds it again.
 if [ -e "$REGISTRIES_D/melissa.yaml" ] || [ -e "$SIGNING_KEY" ]; then
     if trust_remove "$POLICY_CREATED"; then

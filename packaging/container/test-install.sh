@@ -359,64 +359,162 @@ eq "the README has the sections the messages name" yes \
 unset -f iptables systemctl podman timeout sysctl
 rm -rf "$dk"
 
-# --- Ubuntu's bwrap AppArmor profile: preflight stops with instructions, never changes AppArmor ---
+# --- AppArmor (Ubuntu): Melissa's own profile for its container; fallback steps only if it fails ---
+# Stubs: APPARMOR_SYS is a directory (AppArmor on), the profiles list a file, apparmor_parser a
+# function that loads/unloads by writing that file (FAKE_PARSE=fail: the parser refuses).
 aa=$(mktemp -d)
-APPARMOR_PROFILES="$aa/profiles"; APPARMOR_DIR="$aa/apparmor.d"; USERNS_SYSCTL="$aa/userns"
-mkdir -p "$APPARMOR_DIR/disable"
+APPARMOR_SYS="$aa/sys"; APPARMOR_PROFILES="$aa/sys/profiles"; APPARMOR_DIR="$aa/apparmor.d"; USERNS_SYSCTL="$aa/userns"
+mkdir -p "$APPARMOR_SYS" "$APPARMOR_DIR/disable"
+fake_parser() {
+    echo "apparmor_parser $*" >> "$aa/calls"
+    case "$1" in
+    -r) [ "${FAKE_PARSE:-ok}" = ok ] || { echo "AppArmor parser error at line 1"; return 1; }
+        grep -q '^profile melissa-container flags=(unconfined)' "$2" && echo 'melissa-container (unconfined)' >> "$APPARMOR_PROFILES" ;;
+    -R) sed -i '/^melissa-container /d' "$APPARMOR_PROFILES" ;;
+    esac
+}
+APPARMOR_PARSER=fake_parser
 printf '%s\n' 'abi <abi/4.0>,' 'profile bwrap /usr/bin/bwrap flags=(attach_disconnected,mediate_deleted) {' '}' \
     'profile unpriv_bwrap flags=(attach_disconnected,mediate_deleted) {' '  audit deny capability,' '}' \
     > "$APPARMOR_DIR/bwrap-userns-restrict"
 printf '%s\n' 'profile chrome /opt/google/chrome/chrome flags=(unconfined) {' '  userns,' '}' > "$APPARMOR_DIR/chrome"
-printf '%s\n' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' > "$aa/own-bwrap"
 echo 1 > "$USERNS_SYSCTL"
 loaded() { printf '%s\n' "$@" > "$APPARMOR_PROFILES"; }
+ubuntu() { loaded 'chrome (unconfined)' 'unpriv_bwrap (enforce)' 'bwrap (enforce)'; rm -f "$aa/calls" "$APPARMOR_DIR/melissa-container"; }
+# setup: apparmor_setup's output, then APPARMOR_PROFILE|APPARMOR_LINE (unless it stopped), then rc=N.
+setup() { local o rc; o=$( (apparmor_setup && echo "$APPARMOR_PROFILE|$APPARMOR_LINE") 2>&1 ); rc=$?; printf '%s\nrc=%s\n' "$o" "$rc"; }
 
-loaded 'chrome (unconfined)' 'unpriv_bwrap (enforce)' 'bwrap (enforce)'
-eq "AppArmor: Ubuntu's bwrap profile is seen" yes "$(yes_no bwrap_profile_loaded)"
-eq "AppArmor: its file is found" "$APPARMOR_DIR/bwrap-userns-restrict" "$(bwrap_profile_files)"
-out=$(check_bwrap_apparmor); rc=$?
-eq "AppArmor: preflight fails" 1 "$rc"
-eq "AppArmor: says what is blocked" yes "$(yes_no grep -q "agents can't run as their own users" <<<"$out")"
-eq "AppArmor: the disable command" yes \
+# The profile itself: whole container, unconfined apart from Ubuntu's userns mediation, local overrides.
+prof="$here/host/apparmor/melissa-container"
+eq "profile: abi 4.0 (userns rule)" yes "$(yes_no grep -qx 'abi <abi/4.0>,' "$prof")"
+eq "profile: by name, no path attachment" yes "$(yes_no grep -qx 'profile melissa-container flags=(unconfined) {' "$prof")"
+eq "profile: allows user namespaces" yes "$(yes_no grep -qx '  userns,' "$prof")"
+eq "profile: local additions" yes "$(yes_no grep -qx '  include if exists <local/melissa-container>' "$prof")"
+eq "profile: the only rules" 2 "$(grep -cE '^  [a-z]' "$prof")"
+
+# Ubuntu (restriction and bwrap profile on): preflight ok, the profile is installed and loaded.
+ubuntu
+eq "AppArmor: Ubuntu's restriction is seen" yes "$(yes_no apparmor_restricts)"
+eq "AppArmor: preflight ok (the profile will be loaded)" \
+    "ok: AppArmor: install.sh loads Melissa's profile melissa-container for its container" "$(check_apparmor)"
+out=$(setup)
+eq "AppArmor: profile file installed" yes "$(yes_no cmp -s "$prof" "$APPARMOR_DIR/melissa-container")"
+eq "AppArmor: loaded with apparmor_parser -r" yes "$(yes_no grep -qx "apparmor_parser -r $APPARMOR_DIR/melissa-container" "$aa/calls")"
+eq "AppArmor: verified loaded" yes "$(yes_no apparmor_profile_loaded)"
+eq "AppArmor: recorded, Quadlet line set" "yes|PodmanArgs=--security-opt apparmor=melissa-container" "$(tail -n 2 <<<"$out" | head -n 1)"
+eq "AppArmor: NOTICE says what and why" yes \
+    "$(yes_if 'grep -qF "NOTICE: installed and loaded the AppArmor profile melissa-container" <<<"$out" && grep -qF "lets only that container create user namespaces" <<<"$out" && grep -qF "stay on for everything else" <<<"$out"')"
+eq "AppArmor: the host's restriction is left alone" yes \
+    "$(yes_if '[ "$(cat "$USERNS_SYSCTL")" = 1 ] && [ -z "$(ls -A "$APPARMOR_DIR/disable")" ] && grep -qx "bwrap (enforce)" "$APPARMOR_PROFILES"')"
+eq "AppArmor: nothing else unloaded" "apparmor_parser -r $APPARMOR_DIR/melissa-container" "$(sort -u "$aa/calls")"
+
+# install_files: the Quadlet line and install.env (paths moved to the temp dir, systemctl stubbed).
+(
+    set +e
+    fails=0
+    STATE="$aa/state"; QUADLET="$aa/quadlet/melissa.container"; QUADLET_GENERATED="$aa/generated"
+    UNITDIR="$aa/units"; LIBEXEC="$aa/libexec"; SHARE="$aa/share"; MODULES_FILE="$aa/modules"
+    AUTO_UPDATE=off HOST_TAILSCALE=no APPARMOR_PROFILE=yes
+    APPARMOR_LINE="PodmanArgs=$(apparmor_podman_args)"
+    systemctl() { :; }
+    mkdir -p "$UNITDIR"; : > "$QUADLET_GENERATED"
+    install_files
+    eq "install_files: Quadlet runs the container under the profile" yes \
+        "$(yes_no grep -qx 'PodmanArgs=--security-opt apparmor=melissa-container' "$QUADLET")"
+    eq "install_files: no placeholder left" no "$(yes_no grep -qE '^[^#]*@[A-Z_]+@' "$QUADLET")"
+    eq "install_files: recorded in install.env" yes "$(. "$STATE/install.env"; [ "$APPARMOR_PROFILE" = yes ] && echo yes)"
+    APPARMOR_PROFILE=no APPARMOR_LINE=
+    install_files
+    eq "install_files, no AppArmor: an empty line" "" "$(grep -n 'apparmor\|^@' "$QUADLET" | grep -v '^[0-9]*:#')"
+    eq "install_files, no AppArmor: recorded no" yes "$(. "$STATE/install.env"; [ "$APPARMOR_PROFILE" = no ] && echo yes)"
+    exit "$fails"
+) || fails=$((fails + $?))
+
+# Uninstall: unloads and deletes it when install.sh recorded it, else touches nothing.
+(
+    # shellcheck source=packaging/container/uninstall.sh
+    . "$here/uninstall.sh"
+    set +e
+    fails=0
+    APPARMOR_PARSER=fake_parser
+    rm -f "$aa/calls"
+    out=$(remove_apparmor no)
+    eq "uninstall, not recorded: nothing done" "" "$out$(cat "$aa/calls" 2>/dev/null)"
+    eq "uninstall, not recorded: profile kept" yes "$(yes_no test -e "$APPARMOR_DIR/melissa-container")"
+    out=$(remove_apparmor yes)
+    eq "uninstall: apparmor_parser -R" yes "$(yes_no grep -qx "apparmor_parser -R $APPARMOR_DIR/melissa-container" "$aa/calls")"
+    eq "uninstall: profile unloaded" no "$(yes_no apparmor_profile_loaded)"
+    eq "uninstall: file deleted" no "$(yes_no test -e "$APPARMOR_DIR/melissa-container")"
+    eq "uninstall: says so" yes "$(yes_no grep -qF 'unloaded and removed the AppArmor profile melissa-container' <<<"$out")"
+    eq "uninstall: again: silent" "" "$(remove_apparmor yes)"
+    eq "uninstall: Ubuntu's profiles stay" yes "$(yes_no grep -qx 'bwrap (enforce)' "$APPARMOR_PROFILES")"
+    exit "$fails"
+) || fails=$((fails + $?))
+eq "uninstall.sh reads the record" yes "$(yes_no grep -qx 'remove_apparmor "$APPARMOR_PROFILE"' "$here/uninstall.sh")"
+
+# The load fails on a restricting host: stop with the fallback steps and caveats.
+ubuntu; APPARMOR_PROFILE=no; APPARMOR_LINE=
+out=$(FAKE_PARSE=fail setup)
+eq "load fails: install stops" yes "$(yes_no grep -qx 'rc=1' <<<"$out")"
+eq "load fails: nothing recorded" no "$(yes_no grep -q '^yes|' <<<"$out")"
+eq "load fails: says why" yes "$(yes_no grep -qF "profile could not be loaded: apparmor_parser -r $APPARMOR_DIR/melissa-container failed: AppArmor parser error" <<<"$out")"
+eq "load fails: says what is blocked" yes "$(yes_no grep -qF "agents can't run in their sandbox as their own users" <<<"$out")"
+eq "load fails: the fix first" yes "$(yes_no grep -qF "Fix that (the profile needs AppArmor 4" <<<"$out")"
+eq "load fails: last resort, disable command" yes \
     "$(yes_no grep -qxF "    sudo ln -s $APPARMOR_DIR/bwrap-userns-restrict $APPARMOR_DIR/disable/" <<<"$out")"
-eq "AppArmor: the unload command" yes \
+eq "load fails: last resort, unload command" yes \
     "$(yes_no grep -qxF "    sudo apparmor_parser -R $APPARMOR_DIR/bwrap-userns-restrict" <<<"$out")"
-eq "AppArmor: how to undo it" yes \
+eq "load fails: how to undo it" yes \
     "$(yes_no grep -qxF "    sudo rm $APPARMOR_DIR/disable/bwrap-userns-restrict && sudo apparmor_parser -r $APPARMOR_DIR/bwrap-userns-restrict" <<<"$out")"
-eq "AppArmor: userns restricted: the sysctl, persisted" yes \
+eq "load fails: userns restricted: the sysctl, persisted" yes \
     "$(yes_if 'grep -qF "/etc/sysctl.d/60-melissa-userns.conf" <<<"$out" && grep -qxF "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" <<<"$out"')"
-eq "AppArmor: caveat, host-wide" yes "$(yes_no grep -qF "for the whole host" <<<"$out")"
-eq "AppArmor: caveat, any program can use bwrap" yes \
+eq "load fails: caveat, host-wide" yes "$(yes_no grep -qF "for the whole host" <<<"$out")"
+eq "load fails: caveat, any program can use bwrap" yes \
     "$(yes_no grep -qF "Any program can then use bwrap to create user namespaces" <<<"$out")"
-eq "AppArmor: caveat, privileged container" yes "$(yes_no grep -qF "rootful and --privileged anyway" <<<"$out")"
-eq "AppArmor: caveat, untested" yes "$(yes_no grep -qF "Not tested by us on an Ubuntu install" <<<"$out")"
-eq "AppArmor: run install.sh again" yes "$(yes_no grep -qF "Then run install.sh again" <<<"$out")"
-eq "AppArmor: nothing changed" "" "$(ls -A "$APPARMOR_DIR/disable")"
-eq "AppArmor: install.sh never runs apparmor_parser or writes disable/" no \
-    "$(yes_no grep -qE '^[[:space:]]*(apparmor_parser|ln|aa-disable|aa-complain) ' "$here/install.sh")"
-echo 0 > "$USERNS_SYSCTL"
-out=$(check_bwrap_apparmor)
-eq "AppArmor: userns not restricted: no sysctl step" no "$(yes_no grep -qF sysctl.d <<<"$out")"
-# Only unpriv_bwrap loaded is enough.
-loaded 'unpriv_bwrap (enforce)'
-eq "AppArmor: unpriv_bwrap alone is seen" yes "$(yes_no bwrap_profile_loaded)"
-# The unconfined bwrap profile docs/DEV-ENV.md suggests is not Ubuntu's restriction.
-rm "$APPARMOR_DIR/bwrap-userns-restrict"; mv "$aa/own-bwrap" "$APPARMOR_DIR/bwrap"
-loaded 'bwrap (unconfined)' 'chrome (unconfined)'
-eq "AppArmor: an unconfined bwrap profile is fine" no "$(yes_no bwrap_profile_loaded)"
-eq "AppArmor: ...and its file is not listed" "" "$(bwrap_profile_files)"
-eq "AppArmor: ...preflight ok" "ok: no AppArmor profile restricts bwrap" "$(check_bwrap_apparmor)"
+eq "load fails: caveat, privileged container" yes "$(yes_no grep -qF "rootful and --privileged anyway" <<<"$out")"
+eq "load fails: run install.sh again" yes "$(yes_no grep -qF "Then run install.sh again" <<<"$out")"
+eq "load fails: the host's AppArmor is not changed" "" "$(ls -A "$APPARMOR_DIR/disable")"
+# No apparmor_parser on a restricting host: preflight already stops, with the same steps.
+out=$(APPARMOR_PARSER=/nonexistent/apparmor_parser check_apparmor); rc=$?
+eq "no apparmor_parser: preflight fails" 1 "$rc"
+eq "no apparmor_parser: says so" yes "$(yes_no grep -qF "could not be loaded: apparmor_parser is not installed" <<<"$out")"
+eq "no apparmor_parser: how to get it" yes "$(yes_no grep -qF "sudo apt install apparmor" <<<"$out")"
+# Restricted only by the sysctl (no bwrap profile): no bwrap commands, only the sysctl.
+loaded 'chrome (unconfined)'
+out=$(APPARMOR_PARSER=/nonexistent/apparmor_parser check_apparmor)
+eq "sysctl only: no bwrap step" no "$(yes_no grep -qF 'sudo ln -s' <<<"$out")"
+eq "sysctl only: the sysctl step" yes "$(yes_no grep -qF 'apparmor_restrict_unprivileged_userns=0' <<<"$out")"
+# Only bwrap's profile (sysctl 0): no sysctl step.
+echo 0 > "$USERNS_SYSCTL"; loaded 'unpriv_bwrap (enforce)'
+out=$(APPARMOR_PARSER=/nonexistent/apparmor_parser check_apparmor)
+eq "unpriv_bwrap alone restricts" yes "$(yes_no apparmor_restricts)"
+eq "bwrap profile only: no sysctl step" no "$(yes_no grep -qF sysctl.d <<<"$out")"
 # Loaded, but no file found: a find command instead of a path.
-loaded 'bwrap (enforce)'
-eq "AppArmor: no file: says how to find it" yes "$(yes_no grep -qF "find it with" <<<"$(check_bwrap_apparmor)")"
-# No AppArmor at all (Fedora): silent, ok.
-APPARMOR_PROFILES="$aa/none"
-eq "no AppArmor: preflight ok, silent" "" "$(check_bwrap_apparmor)"
-eq "no AppArmor: ok status" yes "$(yes_no check_bwrap_apparmor)"
-eq "preflight runs the check" yes "$(yes_no grep -qx '    check_bwrap_apparmor || ok=1' "$here/install.sh")"
+rm "$APPARMOR_DIR/bwrap-userns-restrict"; loaded 'bwrap (enforce)'
+eq "no file: says how to find it" yes "$(yes_no grep -qF "find it with" <<<"$(APPARMOR_PARSER=/nonexistent/x check_apparmor)")"
+# AppArmor without restrictions (an unconfined bwrap profile, sysctl 0) and no parser: ok, unconfined.
+loaded 'bwrap (unconfined)' 'chrome (unconfined)'
+eq "unconfined bwrap profile: no restriction" no "$(yes_no apparmor_restricts)"
+eq "AppArmor, not restricting, no parser: preflight ok" yes "$(APPARMOR_PARSER=/nonexistent/x yes_no check_apparmor)"
+out=$(FAKE_PARSE=fail setup)
+eq "not restricting, load fails: install goes on" no "$(yes_no grep -qx 'rc=1' <<<"$out")"
+eq "not restricting, load fails: a warning" yes "$(yes_no grep -qF 'WARNING: could not load the AppArmor profile' <<<"$out")"
+eq "not restricting, load fails: no Quadlet line" "no|" "$(tail -n 2 <<<"$out" | head -n 1)"
+# No AppArmor at all (Fedora): silent, nothing loaded, no Quadlet line.
+APPARMOR_SYS="$aa/none"; rm -f "$aa/calls"
+eq "no AppArmor: preflight silent" "" "$(check_apparmor)"
+eq "no AppArmor: preflight ok" yes "$(yes_no check_apparmor)"
+eq "no AppArmor: nothing loaded, no line" "no|" "$(setup | tail -n 2 | head -n 1)"
+eq "no AppArmor: apparmor_parser not run" no "$(yes_no test -e "$aa/calls")"
+eq "preflight runs the check" yes "$(yes_no grep -qx '    check_apparmor || ok=1' "$here/install.sh")"
+eq "install runs the setup after the preflight" yes "$(yes_no grep -qx 'apparmor_setup' "$here/install.sh")"
+eq "melissa.container has the placeholder" yes "$(yes_no grep -qx '@APPARMOR_LINE@' "$here/melissa.container")"
 eq "the README has the section the message names" yes "$(yes_no grep -q '^### Ubuntu and AppArmor' "$here/README.md")"
 eq "usage text covers the header" yes "$(yes_no grep -q "sed -n '2,$(($(grep -n '^set -euo pipefail' "$here/install.sh" | cut -d: -f1) - 1))p'" "$here/install.sh")"
-unset -f loaded
+eq "the test scripts run under the profile" yes \
+    "$(yes_if 'grep -qF "\"\${aa_args[@]}\"" "$here/escape-test.sh" && grep -qF "\"\${aa_args[@]}\"" "$here/gvisor-test.sh"')"
+unset -f loaded ubuntu setup fake_parser
+APPARMOR_SYS=/sys/kernel/security/apparmor; APPARMOR_PARSER=apparmor_parser
 rm -rf "$aa"
 
 # --- which image: published by default, a reinstall keeps the recorded one ------------------

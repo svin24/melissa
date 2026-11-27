@@ -2054,3 +2054,24 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   and disables the profile itself with an opt-out (an earlier proposal, overruled by the owner), moving bwrap
   off `/usr/bin/bwrap` in the image (dodges the host's policy), turning agent users off (weaker isolation).
   PLAN question 104.
+- **2026-11-27 — Ubuntu: Melissa's own AppArmor profile for its container (owner; replaces the entry above).**
+  Ubuntu (latest, 26.04 only for now) is supported properly instead of asking people to turn off host
+  restrictions. On a host with AppArmor, install.sh installs and loads `/etc/apparmor.d/melissa-container`
+  (`flags=(unconfined)` with `userns,`, the shape of Ubuntu's own profiles for programs that need user
+  namespaces), and the Quadlet runs the container under it (`PodmanArgs=--security-opt
+  apparmor=melissa-container`; podman honours an explicit profile with `--privileged`; Quadlet's `AppArmor=`
+  key exists only from podman 5.8). The image's sandbox uses its own bwrap at `/usr/libexec/melissa/bwrap`,
+  because Ubuntu's `bwrap` profile attaches to `/usr/bin/bwrap` by path even inside the container (also under
+  an unconfined-mode profile, which still does exec attachment). Ubuntu's restriction stays on for everything
+  else; uninstall.sh removes the profile. The earlier instructions remain only as the fallback when the host
+  restricts and the profile can't be loaded. CI's image gate loads the profile and asserts the restriction is
+  still on. Why the whole container and not a path-attached profile for `/usr/libexec/melissa/bwrap`: a
+  path-attached profile would follow that path into any container on the host, including runc pods from
+  crafted images that put a file there, and grant them user namespaces; a profile attached by name applies
+  only where podman is told to use it. Confining the container itself is what AppArmor's maintainer suggests
+  for containers that need user namespaces
+  (https://lists.ubuntu.com/archives/apparmor/2026-January/013962.html); background:
+  https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces and
+  https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007. Alternatives:
+  the stop-with-instructions approach (kept as fallback), install.sh disabling Ubuntu's profile (host-wide),
+  a path-attached profile (above). PLAN question 104.
