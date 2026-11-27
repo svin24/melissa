@@ -2042,3 +2042,15 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   k3s cluster for every device (rejected as the default for that reason), k3s `--vpn-auth` (experimental, would
   fight Melissa's control of tailscaled). Research, findings and runbook:
   `docs/design/INTERCONNECT-2026-11-27.md`. Open items: PLAN questions 102 and 103.
+- **2026-11-27 — Ubuntu's bwrap AppArmor profile: install.sh stops with instructions (owner).** On a host with
+  Ubuntu's `bwrap-userns-restrict` loaded (a `bwrap` or `unpriv_bwrap` profile), install.sh's preflight fails.
+  The profile catches the image's bwrap too and denies the capabilities `setpriv` needs, so agents can't run as
+  their own users. The message says what is blocked, gives the commands to turn it off now and after reboots
+  (link in `/etc/apparmor.d/disable/`, `apparmor_parser -R`; the userns sysctl at 0 when it is 1), how to undo
+  them, and the caveats: a host-wide Ubuntu restriction goes off, any program can then use bwrap to create user
+  namespaces, the container is rootful and `--privileged` anyway, untested by us on Ubuntu. Then the owner
+  reruns install.sh. The installer never changes the host's AppArmor, and there is no override. Why: turning
+  off a distribution security control is the owner's call, made knowingly. Alternatives: install.sh unloads
+  and disables the profile itself with an opt-out (an earlier proposal, overruled by the owner), moving bwrap
+  off `/usr/bin/bwrap` in the image (dodges the host's policy), turning agent users off (weaker isolation).
+  PLAN question 104.

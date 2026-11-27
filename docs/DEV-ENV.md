@@ -167,7 +167,10 @@ inside an unconfined container, such as the installed image) and denies every ca
 bwrap runs (`unpriv_bwrap`). Every agent sandbox then fails with
 `setpriv: setresuid failed: Operation not permitted`; the sysctl above does not change that. Unload it until
 the next reboot with `sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`, or turn agent users off
-(`MELISSA_AGENT_USERS=off`). CI unloads it (see [CI](#ci)).
+(`MELISSA_AGENT_USERS=off`). To keep it off after reboots, also link it into `/etc/apparmor.d/disable/`.
+Without it, bwrap needs the sysctl above at 0. CI unloads it (see [CI](#ci)). The container's install.sh
+stops and prints these steps and their caveats; it never changes AppArmor itself
+([packaging/container/README.md](../packaging/container/README.md#ubuntu-and-apparmor)).
 
 ### Troubleshooting
 

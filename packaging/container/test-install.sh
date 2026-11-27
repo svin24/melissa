@@ -359,6 +359,66 @@ eq "the README has the sections the messages name" yes \
 unset -f iptables systemctl podman timeout sysctl
 rm -rf "$dk"
 
+# --- Ubuntu's bwrap AppArmor profile: preflight stops with instructions, never changes AppArmor ---
+aa=$(mktemp -d)
+APPARMOR_PROFILES="$aa/profiles"; APPARMOR_DIR="$aa/apparmor.d"; USERNS_SYSCTL="$aa/userns"
+mkdir -p "$APPARMOR_DIR/disable"
+printf '%s\n' 'abi <abi/4.0>,' 'profile bwrap /usr/bin/bwrap flags=(attach_disconnected,mediate_deleted) {' '}' \
+    'profile unpriv_bwrap flags=(attach_disconnected,mediate_deleted) {' '  audit deny capability,' '}' \
+    > "$APPARMOR_DIR/bwrap-userns-restrict"
+printf '%s\n' 'profile chrome /opt/google/chrome/chrome flags=(unconfined) {' '  userns,' '}' > "$APPARMOR_DIR/chrome"
+printf '%s\n' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' > "$aa/own-bwrap"
+echo 1 > "$USERNS_SYSCTL"
+loaded() { printf '%s\n' "$@" > "$APPARMOR_PROFILES"; }
+
+loaded 'chrome (unconfined)' 'unpriv_bwrap (enforce)' 'bwrap (enforce)'
+eq "AppArmor: Ubuntu's bwrap profile is seen" yes "$(yes_no bwrap_profile_loaded)"
+eq "AppArmor: its file is found" "$APPARMOR_DIR/bwrap-userns-restrict" "$(bwrap_profile_files)"
+out=$(check_bwrap_apparmor); rc=$?
+eq "AppArmor: preflight fails" 1 "$rc"
+eq "AppArmor: says what is blocked" yes "$(yes_no grep -q "agents can't run as their own users" <<<"$out")"
+eq "AppArmor: the disable command" yes \
+    "$(yes_no grep -qxF "    sudo ln -s $APPARMOR_DIR/bwrap-userns-restrict $APPARMOR_DIR/disable/" <<<"$out")"
+eq "AppArmor: the unload command" yes \
+    "$(yes_no grep -qxF "    sudo apparmor_parser -R $APPARMOR_DIR/bwrap-userns-restrict" <<<"$out")"
+eq "AppArmor: how to undo it" yes \
+    "$(yes_no grep -qxF "    sudo rm $APPARMOR_DIR/disable/bwrap-userns-restrict && sudo apparmor_parser -r $APPARMOR_DIR/bwrap-userns-restrict" <<<"$out")"
+eq "AppArmor: userns restricted: the sysctl, persisted" yes \
+    "$(yes_if 'grep -qF "/etc/sysctl.d/60-melissa-userns.conf" <<<"$out" && grep -qxF "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" <<<"$out"')"
+eq "AppArmor: caveat, host-wide" yes "$(yes_no grep -qF "for the whole host" <<<"$out")"
+eq "AppArmor: caveat, any program can use bwrap" yes \
+    "$(yes_no grep -qF "Any program can then use bwrap to create user namespaces" <<<"$out")"
+eq "AppArmor: caveat, privileged container" yes "$(yes_no grep -qF "rootful and --privileged anyway" <<<"$out")"
+eq "AppArmor: caveat, untested" yes "$(yes_no grep -qF "Not tested by us on an Ubuntu install" <<<"$out")"
+eq "AppArmor: run install.sh again" yes "$(yes_no grep -qF "Then run install.sh again" <<<"$out")"
+eq "AppArmor: nothing changed" "" "$(ls -A "$APPARMOR_DIR/disable")"
+eq "AppArmor: install.sh never runs apparmor_parser or writes disable/" no \
+    "$(yes_no grep -qE '^[[:space:]]*(apparmor_parser|ln|aa-disable|aa-complain) ' "$here/install.sh")"
+echo 0 > "$USERNS_SYSCTL"
+out=$(check_bwrap_apparmor)
+eq "AppArmor: userns not restricted: no sysctl step" no "$(yes_no grep -qF sysctl.d <<<"$out")"
+# Only unpriv_bwrap loaded is enough.
+loaded 'unpriv_bwrap (enforce)'
+eq "AppArmor: unpriv_bwrap alone is seen" yes "$(yes_no bwrap_profile_loaded)"
+# The unconfined bwrap profile docs/DEV-ENV.md suggests is not Ubuntu's restriction.
+rm "$APPARMOR_DIR/bwrap-userns-restrict"; mv "$aa/own-bwrap" "$APPARMOR_DIR/bwrap"
+loaded 'bwrap (unconfined)' 'chrome (unconfined)'
+eq "AppArmor: an unconfined bwrap profile is fine" no "$(yes_no bwrap_profile_loaded)"
+eq "AppArmor: ...and its file is not listed" "" "$(bwrap_profile_files)"
+eq "AppArmor: ...preflight ok" "ok: no AppArmor profile restricts bwrap" "$(check_bwrap_apparmor)"
+# Loaded, but no file found: a find command instead of a path.
+loaded 'bwrap (enforce)'
+eq "AppArmor: no file: says how to find it" yes "$(yes_no grep -qF "find it with" <<<"$(check_bwrap_apparmor)")"
+# No AppArmor at all (Fedora): silent, ok.
+APPARMOR_PROFILES="$aa/none"
+eq "no AppArmor: preflight ok, silent" "" "$(check_bwrap_apparmor)"
+eq "no AppArmor: ok status" yes "$(yes_no check_bwrap_apparmor)"
+eq "preflight runs the check" yes "$(yes_no grep -qx '    check_bwrap_apparmor || ok=1' "$here/install.sh")"
+eq "the README has the section the message names" yes "$(yes_no grep -q '^### Ubuntu and AppArmor' "$here/README.md")"
+eq "usage text covers the header" yes "$(yes_no grep -q "sed -n '2,$(($(grep -n '^set -euo pipefail' "$here/install.sh" | cut -d: -f1) - 1))p'" "$here/install.sh")"
+unset -f loaded
+rm -rf "$aa"
+
 # --- which image: published by default, a reinstall keeps the recorded one ------------------
 tr_dir=$(mktemp -d)
 img() { # [VAR=value ...]: IMAGE and AUTO_UPDATE as install.sh picks them
