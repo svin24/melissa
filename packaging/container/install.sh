@@ -6,9 +6,16 @@
 #   sudo packaging/container/install.sh --preflight   only check the host
 #
 # Environment (all optional):
-#   IMAGE=localhost/melissa:latest  image to run. A registry image is pulled; a localhost/ image must
-#                                   be in root's storage (podman load) or come from IMAGE_ARCHIVE.
+#   CHANNEL=edge                    which published image to follow: edge (every master commit that
+#                                   passed the release gate) or stable (tagged releases)
+#   IMAGE=ghcr.io/svin24/melissa:$CHANNEL
+#                                   image to run. Default: the one in install.env (a reinstall keeps
+#                                   it), else the published one. A registry image is pulled; a
+#                                   localhost/ image (a local build) must be in root's storage
+#                                   (podman load) or come from IMAGE_ARCHIVE.
 #   IMAGE_ARCHIVE=path.tar          `podman save` archive to load first (tagged as IMAGE)
+#   VERIFY=yes                      published images: podman refuses them unless they carry Melissa's
+#                                   signature (melissa-signing.pub, trust.sh). no: skip the check.
 #   UI_PORT=8080                    host port of the web UI (on UI_BIND)
 #   UI_BIND=127.0.0.1               keep it on loopback: sign-in runs over plain HTTP (README, "Remote")
 #   APP_PORT_BASE=30000             host port of app NodePort 30000 (80 ports: base..base+79)
@@ -39,7 +46,19 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-IMAGE=${IMAGE:-localhost/melissa:latest}
+# shellcheck source=packaging/container/trust.sh
+. "$here/trust.sh"
+STATE=/var/lib/melissa-container
+INSTALL_ENV=${INSTALL_ENV:-$STATE/install.env}
+CHANNEL=${CHANNEL:-edge}
+case "$CHANNEL" in edge | stable) ;; *) echo "melissa-install: CHANNEL must be edge or stable" >&2; exit 2 ;; esac
+# A reinstall keeps the image (and its update mode) it was installed with, unless IMAGE says otherwise.
+if [ -z "${IMAGE:-}" ] && [ -r "$INSTALL_ENV" ]; then
+    IMAGE=$(sed -n 's/^IMAGE=//p' "$INSTALL_ENV" | tr -d '"' | tail -n 1)
+    [ -n "${AUTO_UPDATE:-}" ] || AUTO_UPDATE=$(sed -n 's/^AUTO_UPDATE=//p' "$INSTALL_ENV" | tr -d '"' | tail -n 1)
+fi
+IMAGE=${IMAGE:-$SIGNED_REPO:$CHANNEL}
+VERIFY=${VERIFY:-yes}
 UI_PORT=${UI_PORT:-8080}
 UI_BIND=${UI_BIND:-127.0.0.1}
 APP_PORT_BASE=${APP_PORT_BASE:-30000}
@@ -54,7 +73,6 @@ SYS_NET=${SYS_NET:-/sys/class/net}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
 
-STATE=/var/lib/melissa-container
 QUADLET=/etc/containers/systemd/melissa.container
 UNITDIR=/etc/systemd/system
 LIBEXEC=/usr/local/libexec/melissa
@@ -249,6 +267,24 @@ preflight() {
     return "$ok"
 }
 
+# POLICY_CREATED: did install.sh create /etc/containers/policy.json (uninstall.sh then deletes it
+# again when it is back to the distribution's default)? Kept across reinstalls.
+POLICY_CREATED=no
+
+# signatures: before the first pull, make podman require Melissa's signature on the published image.
+signatures() {
+    is_published "$IMAGE" || return 0
+    if [ "$VERIFY" != yes ]; then
+        say "VERIFY=$VERIFY: $IMAGE is NOT signature-checked (only TLS to the registry)"
+        return 0
+    fi
+    local out
+    out=$(trust_install "$here/melissa-signing.pub") || die "could not set up the signature check (VERIFY=no skips it)"
+    [ "$(env_get POLICY_CREATED)" = yes ] && POLICY_CREATED=yes
+    [ "$out" = created ] && POLICY_CREATED=yes
+    say "podman now requires Melissa's signature on $SIGNED_REPO ($POLICY, key $SIGNING_KEY)"
+}
+
 image() {
     if [ -n "${IMAGE_ARCHIVE:-}" ]; then
         say "loading $IMAGE_ARCHIVE"
@@ -313,6 +349,8 @@ install_files() {
 # Written by packaging/container/install.sh; read by melissa-host-update and uninstall.sh.
 IMAGE=$IMAGE
 AUTO_UPDATE=$AUTO_UPDATE
+VERIFY=$VERIFY
+POLICY_CREATED=$POLICY_CREATED
 UI_PORT=$UI_PORT
 UI_BIND=$UI_BIND
 BIND=$BIND
@@ -627,11 +665,12 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,38p' "$0"; exit 2 ;;
+*) sed -n '2,45p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
 mkdir -p "$STATE"
+signatures
 image
 sysctls
 install_files

@@ -118,15 +118,25 @@ container-build version=melissa_version:
         --build-arg MELISSA_VERSION={{version}} --build-arg MELISSA_REVISION=$(git rev-parse --short HEAD) \
         -t localhost/melissa:dev .
 
-# Install it rootful with the Quadlet (sudo): copies localhost/melissa:dev into root's storage as
-# localhost/melissa:latest. Extra settings as env, e.g. `UI_PORT=8090 just container-install`.
+# Install the local build rootful with the Quadlet (sudo): copies localhost/melissa:dev into root's storage
+# as localhost/melissa:latest. Extra settings as env, e.g. `UI_PORT=8090 just container-install`.
 container-install:
     mkdir -p target
     rm -f target/melissa-image.tar
     podman save -o target/melissa-image.tar localhost/melissa:dev
     sudo --preserve-env=UI_PORT,UI_BIND,APP_PORT_BASE,BIND,APP_ADDRESSES,AUTO_UPDATE,SET_SYSCTLS \
-        IMAGE_ARCHIVE=target/melissa-image.tar packaging/container/install.sh
+        IMAGE=localhost/melissa:latest IMAGE_ARCHIVE=target/melissa-image.tar packaging/container/install.sh
     rm -f target/melissa-image.tar
+
+# Install the published, signed image (ghcr.io/svin24/melissa:edge; `CHANNEL=stable just install` for
+# releases) rootful with the Quadlet (sudo). No local build. Settings as env, as for container-install.
+install:
+    sudo --preserve-env=CHANNEL,VERIFY,UI_PORT,UI_BIND,APP_PORT_BASE,BIND,APP_ADDRESSES,AUTO_UPDATE,SET_SYSCTLS \
+        packaging/container/install.sh
+
+# Release check: all crate versions equal, and equal to the tag if given (`just release-check v0.0.3`).
+release-check tag="":
+    scripts/release-check.sh {{quote(tag)}}
 
 # install.sh's address checks, server.toml edits and Docker rules; melissa-setup's network check
 # (no root, no podman, no network).

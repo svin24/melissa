@@ -359,5 +359,56 @@ eq "the README has the sections the messages name" yes \
 unset -f iptables systemctl podman timeout sysctl
 rm -rf "$dk"
 
+# --- which image: published by default, a reinstall keeps the recorded one ------------------
+tr_dir=$(mktemp -d)
+img() { # [VAR=value ...]: IMAGE and AUTO_UPDATE as install.sh picks them
+    (unset IMAGE AUTO_UPDATE; export INSTALL_ENV="$tr_dir/install.env"
+     for kv in "$@"; do export "${kv?}"; done
+     . "$here/install.sh"; echo "$IMAGE $AUTO_UPDATE")
+}
+eq "fresh install: published edge, registry updates" "ghcr.io/svin24/melissa:edge registry" "$(img)"
+eq "CHANNEL=stable" "ghcr.io/svin24/melissa:stable registry" "$(img CHANNEL=stable)"
+eq "CHANNEL must be edge or stable" no "$(yes_if '(export INSTALL_ENV=/nonexistent CHANNEL=nightly; . "$here/install.sh")')"
+printf 'IMAGE=localhost/melissa:latest\nAUTO_UPDATE=off\n' > "$tr_dir/install.env"
+eq "reinstall keeps a local build and its update mode" "localhost/melissa:latest off" "$(img)"
+eq "IMAGE moves a local build to the published one" "ghcr.io/svin24/melissa:edge registry" \
+    "$(img IMAGE=ghcr.io/svin24/melissa:edge)"
+eq "published image is recognised" yes "$(yes_no is_published ghcr.io/svin24/melissa:edge)"
+eq "by digest too" yes "$(yes_no is_published ghcr.io/svin24/melissa@sha256:abc)"
+eq "a fork's image is not" no "$(yes_no is_published ghcr.io/svin24/melissa-fork:edge)"
+eq "a local build is not" no "$(yes_no is_published localhost/melissa:latest)"
+
+# --- signature policy (trust.sh): one entry added and removed, the rest untouched ---------------
+for tool in jq python3; do
+    command -v "$tool" >/dev/null || { echo "skip: $tool not installed"; continue; }
+    (
+        export POLICY_TOOL=$tool POLICY="$tr_dir/$tool/etc/policy.json" POLICY_DEFAULT="$tr_dir/default.json" \
+            REGISTRIES_D="$tr_dir/$tool/registries.d" SIGNING_KEY="$tr_dir/$tool/pki/melissa.pub"
+        printf '{"default":[{"type":"insecureAcceptAnything"}],"transports":{"docker-daemon":{"":[{"type":"insecureAcceptAnything"}]}}}\n' > "$POLICY_DEFAULT"
+        eq "$tool: no policy yet: created from the default" created "$(trust_install "$here/melissa-signing.pub")"
+        eq "$tool: entry requires our key" "sigstoreSigned $SIGNING_KEY matchRepository" \
+            "$(jq -r '.transports.docker["ghcr.io/svin24/melissa"][0] | "\(.type) \(.keyPath) \(.signedIdentity.type)"' "$POLICY")"
+        eq "$tool: default kept" insecureAcceptAnything "$(jq -r '.default[0].type' "$POLICY")"
+        eq "$tool: key installed" yes "$(yes_no cmp -s "$here/melissa-signing.pub" "$SIGNING_KEY")"
+        eq "$tool: sigstore attachments on" yes "$(yes_no grep -q 'use-sigstore-attachments: true' "$REGISTRIES_D/melissa.yaml")"
+        eq "$tool: second run changes nothing new" "" "$(trust_install "$here/melissa-signing.pub")"
+        trust_remove yes
+        eq "$tool: created and back to default: deleted" no "$(yes_no test -e "$POLICY")"
+        eq "$tool: key and registries.d file gone" no "$(yes_if 'test -e "$SIGNING_KEY" || test -e "$REGISTRIES_D/melissa.yaml"')"
+        # An existing policy with the owner's own entries.
+        mkdir -p "$(dirname "$POLICY")"
+        printf '{"default":[{"type":"reject"}],"transports":{"docker":{"example.com/x":[{"type":"insecureAcceptAnything"}]}}}\n' > "$POLICY"
+        eq "$tool: existing policy is edited, not created" "" "$(trust_install "$here/melissa-signing.pub")"
+        eq "$tool: the owner's entries stay" "reject insecureAcceptAnything" \
+            "$(jq -r '"\(.default[0].type) \(.transports.docker["example.com/x"][0].type)"' "$POLICY")"
+        trust_remove no
+        eq "$tool: removal keeps the owner's policy" '["example.com/x"]' "$(jq -c '.transports.docker | keys' "$POLICY")"
+        [ "$fails" = 0 ]
+    ) || fails=$((fails + 1))
+done
+eq "uninstall.sh removes the check" yes "$(yes_no grep -q 'trust_remove "$POLICY_CREATED"' "$here/uninstall.sh")"
+eq "the public key is a cosign (PEM) key" yes "$(yes_no grep -q 'BEGIN PUBLIC KEY' "$here/melissa-signing.pub")"
+rm -rf "$tr_dir"
+
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"

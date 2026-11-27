@@ -6,6 +6,9 @@
 #                                                   agent logins, config) and the Melissa images
 set -euo pipefail
 
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=packaging/container/trust.sh
+. "$here/trust.sh"
 STATE=/var/lib/melissa-container
 QUADLET=/etc/containers/systemd/melissa.container
 UNITDIR=/etc/systemd/system
@@ -42,7 +45,7 @@ PURGE=no
 case "${1:-}" in --purge) PURGE=yes ;; "") ;; *) sed -n '2,8p' "$0"; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo "melissa-uninstall: run as root" >&2; exit 1; }
 
-IMAGE=; TIMER_OURS=no; DOCKER_FORWARD_SUBNETS=
+IMAGE=; TIMER_OURS=no; DOCKER_FORWARD_SUBNETS=; POLICY_CREATED=no
 # shellcheck source=/dev/null
 [ -r "$STATE/install.env" ] && . "$STATE/install.env"
 
@@ -65,6 +68,14 @@ if [ "$TIMER_OURS" = yes ]; then
     say "disabled podman-auto-update.timer (install.sh had enabled it)"
 fi
 remove_docker_forward "$DOCKER_FORWARD_SUBNETS"
+# The signature check for the published image (install.sh, trust.sh); install adds it again.
+if [ -e "$REGISTRIES_D/melissa.yaml" ] || [ -e "$SIGNING_KEY" ]; then
+    if trust_remove "$POLICY_CREATED"; then
+        say "removed the signature check for $SIGNED_REPO from $POLICY"
+    else
+        say "could not edit $POLICY: remove the $SIGNED_REPO entry by hand"
+    fi
+fi
 systemctl daemon-reload
 
 if [ -e "$SYSCTL_FILE" ]; then

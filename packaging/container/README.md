@@ -7,7 +7,8 @@ host starts it through a Quadlet, so `systemctl start|stop|status melissa` works
 Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files on top of
 `packaging/common/`, e.g. the Settings → Providers Install/Sign-in units and their polkit rule
 `51-melissa-agent-install.rules`), `melissa.container` (Quadlet template), `install.sh`, `uninstall.sh`,
-`host/` (the update helper and its path unit, installed on the host), `escape-test.sh` and
+`host/` (the update helper and its path unit, installed on the host), `trust.sh` and `melissa-signing.pub`
+(the signature check for the published image; see "Updates"), `escape-test.sh` and
 `Containerfile.escape-test` (the sandbox escape suite inside the image; see "Release gate").
 
 ## Requirements
@@ -19,25 +20,49 @@ Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files 
   when it runs it; otherwise the image carries its own, off until the owner enables it (Settings → Tailscale).
 
 ## Install
-From a source checkout (until a published image exists):
+From a source checkout, the published image (no local build):
+```
+sudo packaging/container/install.sh          # or: just install
+just container-smoke                         # sudo: k3s, Traefik, policies, RBAC, NodePort, pod-can't-reach-UI, UI
+```
+It pulls `ghcr.io/svin24/melissa:edge` (`CHANNEL=edge`, the default): every master commit that passed the
+release gate. `CHANNEL=stable` follows tagged releases (`vX.Y.Z`) once there are any. Before the first pull,
+install.sh makes podman require Melissa's signature on that repository (see "Updates"). `VERIFY=no` skips
+that; then only TLS to the registry protects the download.
+
+Check a signature by hand with [cosign](https://github.com/sigstore/cosign):
+```
+cosign verify --key packaging/container/melissa-signing.pub ghcr.io/svin24/melissa:edge
+```
+
+A local build instead:
 ```
 just container-build          # rootless build: localhost/melissa:dev
 just container-install        # sudo: loads it into root's storage as localhost/melissa:latest, runs install.sh
-just container-smoke          # sudo: k3s, Traefik, policies, RBAC, NodePort, pod-can't-reach-UI, UI
 ```
 Or by hand:
 ```
 podman save -o melissa.tar localhost/melissa:dev
-sudo IMAGE_ARCHIVE=melissa.tar packaging/container/install.sh
-sudo IMAGE=registry.example.com/melissa:latest packaging/container/install.sh   # a registry image
+sudo IMAGE=localhost/melissa:latest IMAGE_ARCHIVE=melissa.tar packaging/container/install.sh
 ```
-Settings (environment of install.sh): `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `APP_PORT_BASE`
+A reinstall keeps the image recorded in `/var/lib/melissa-container/install.env` unless `IMAGE` is set.
+
+Settings (environment of install.sh): `CHANNEL` (edge), `IMAGE` (`ghcr.io/svin24/melissa:$CHANNEL`),
+`VERIFY` (yes), `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `APP_PORT_BASE`
 (30000), `BIND` (0.0.0.0: every address; who may open apps is Settings → Apps, see "Who may open
 apps"), `APP_ADDRESSES`
 (see "Network"), `ALLOW_ADDRESS_MISMATCH` (no), `AUTO_UPDATE` (`registry` | `local` | `off`),
 `SET_SYSCTLS` (yes), `DOCKER_FORWARD` (auto; see "Docker on the same host"), `NET_CHECK` (yes).
 `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
+
+### Migrating a local-build install
+```
+sudo IMAGE=ghcr.io/svin24/melissa:edge packaging/container/install.sh
+```
+switches an installation from `localhost/melissa:latest` to the published image. It keeps the `melissa-var`
+volume (apps, chats, logins, config) and sets automatic updates to `registry` (add `AUTO_UPDATE=off` to
+keep them off).
 
 Then open the web UI and claim it (see "Signing in"): the first-run setup installs a provider and signs
 it in on the page (OpenCode works with free models and no account). Later ones: Settings → Providers.
@@ -54,6 +79,11 @@ sudo podman exec -it melissa melissa-server chat
   `/usr/local/share/melissa/README.md`, `/var/lib/melissa-container/` (install settings, update status
   and requests).
 - `/etc/modules-load.d/melissa.conf` (br_netfilter, overlay).
+- Published image only (unless `VERIFY=no`): one entry for `ghcr.io/svin24/melissa` in
+  `/etc/containers/policy.json` (created from `/usr/share/containers/policy.json` if missing; the rest of
+  the file is kept), the key at `/etc/pki/containers/melissa.pub` and
+  `/etc/containers/registries.d/melissa.yaml` (read the signatures stored next to the image). uninstall
+  removes all three, and deletes `policy.json` again if install.sh created it and it is back to the default.
 - **Host sysctls** in `/etc/sysctl.d/90-melissa-kubelet.conf`: `vm.overcommit_memory=1`,
   `vm.panic_on_oom=0`, `kernel.panic=10`, `kernel.panic_on_oops=1`, `kernel.keys.root_maxkeys=1000000`,
   `kernel.keys.root_maxbytes=25000000`. These are not namespaced: the kubelet inside the privileged
@@ -237,6 +267,11 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
     timer update); rollback retags it and restarts. With automatic updates on, the next timer run may
     install the newer image again.
 - Same from the host: `sudo /usr/local/libexec/melissa/melissa-host-update check|apply|rollback|status`.
+- **Signature check** (published image): podman's `/etc/containers/policy.json` requires a `sigstoreSigned`
+  signature by Melissa's key (`keyPath`, `matchRepository`) for `ghcr.io/svin24/melissa`. It applies to every
+  pull of that repository: install, Settings → Updates and `podman-auto-update`. If the signature is missing
+  or does not match, podman refuses the pull, the running image stays, and Settings → Updates shows the error.
+  Other images are not affected. Local builds (`localhost/`) are not signed and not checked.
 - Version: `/usr/lib/melissa/release` in the image (`MELISSA_VERSION`, `MELISSA_REVISION`) and the
   image labels; Settings shows them with the image digest from the helper (or the image name and ID from
   `/run/.containerenv` without it).
@@ -260,8 +295,28 @@ ports, container name `melissa-escape-test`, so an installed `melissa` keeps run
 
 On a pass, and only when the image's revision label is the commit the suite was built from (no local changes
 under `crates/`), it tags the image `localhost/melissa:escape-tested`. Any run on an image first removes that
-tag from it, so a failing run revokes an earlier pass. There is no publish step yet; whatever pushes images
-later must push only `:escape-tested` (PLAN open question 95).
+tag from it, so a failing run revokes an earlier pass. CI runs this gate before every publish and pushes only
+`:escape-tested`, and only when its image ID is the one it built (see "Published images and CI").
+
+## Published images and CI
+`.github/workflows/container.yml` builds the image on GitHub's `ubuntu-26.04` runner the same way as
+`just container-build`, runs the release gate, then publishes to `ghcr.io/svin24/melissa`:
+
+| Trigger | Tags |
+|---|---|
+| push to `master` | `sha-<rev>` (never moved), then `edge` |
+| tag `vX.Y.Z` | `X.Y.Z` (never moved), then `X.Y` and `stable` |
+| manual run | none: build and gate only |
+
+- A tag `vX.Y.Z` must equal the version of every crate (`scripts/release-check.sh`, `just release-check`).
+- The image is pushed once, to the immutable tag. It is signed by digest with Melissa's cosign key (legacy
+  signature format, which podman reads; recorded in the Rekor transparency log) and gets a GitHub build
+  provenance attestation. The moving tags are added afterwards, registry-side, to the same digest.
+- A last job checks the result as a device would: `cosign verify` without credentials, and a podman pull
+  with the policy install.sh writes; the same pull with another key must be refused.
+- `gvisor-test.sh` also runs, but is advisory for now: a failure does not block publishing.
+- The signing key's private half lives in the GitHub environments `edge` and `stable`
+  (`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`), never in the repo.
 
 ## gVisor for apps
 Apps run under gVisor by default (the app spec's `isolation`, docs/agent-skills/app-deploy.md): the image

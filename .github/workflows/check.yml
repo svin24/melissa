@@ -1,0 +1,72 @@
+# Rust checks: the same as `just check` (fmt in check mode, clippy, tests) plus `just container-test`.
+# Docs: docs/DEV-ENV.md, "CI".
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # podman 5.7 and Rust 1.100 preinstalled.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Same toolchain as the dev shell (devenv.nix: stable).
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: 1.100.0
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
+        with:
+          tool: cargo-nextest,just
+
+      # The agent sandbox tests need bwrap, newuidmap and unprivileged user namespaces. Ubuntu's AppArmor
+      # restricts those by default (docs/DEV-ENV.md, "Ubuntu and AppArmor").
+      - name: Sandbox prerequisites
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y bubblewrap uidmap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          v=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+          if [ "$v" != 0 ]; then
+            echo "::error::kernel.apparmor_restrict_unprivileged_userns is $v, need 0"
+            exit 1
+          fi
+
+      - name: Format (just fmt, check mode)
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path crates/escape-probe/Cargo.toml --check
+
+      - name: Lint (just lint)
+        run: just lint
+
+      # MELISSA_SANDBOX_REQUIRED: the sandbox tests fail instead of skipping when bwrap or user
+      # namespaces are missing (crates/agent/tests/it/support.rs).
+      - name: Tests (just test)
+        env:
+          MELISSA_SANDBOX_REQUIRED: "1"
+        run: just test
+
+      - name: install.sh and melissa-setup tests (just container-test)
+        run: just container-test

@@ -19,14 +19,28 @@ spend your subscription.
 
 ## 1. Container (rootful podman)
 
-Needs Linux with systemd, cgroup v2, podman 5+, root, `git`, `just`, and free ports 8080 and 30000-30079.
+Needs Linux with systemd, cgroup v2, podman 5+, root, `git`, and free ports 8080 and 30000-30079.
 Full guide, settings and what it changes on the host:
 [packaging/container/README.md](../packaging/container/README.md).
 
 ```
 git clone https://github.com/svin24/melissa.git melissa && cd melissa
-just container-build           # builds localhost/melissa:dev (no root; compiles inside podman)
-just container-install         # sudo: installs the Quadlet, starts melissa.service, prints the setup code
+sudo packaging/container/install.sh   # pulls the signed image, installs the Quadlet, starts melissa.service
+```
+
+It pulls `ghcr.io/svin24/melissa:edge`: the latest master commit that passed the release gate. Nothing is
+built on your machine. Once releases exist, `sudo CHANNEL=stable packaging/container/install.sh` follows
+tagged releases instead. install.sh makes podman refuse the image unless it carries Melissa's signature
+(key: `packaging/container/melissa-signing.pub`). To check a signature by hand, with
+[cosign](https://github.com/sigstore/cosign):
+```
+cosign verify --key packaging/container/melissa-signing.pub ghcr.io/svin24/melissa:edge
+```
+
+Or build the image yourself (needs `just`; compiles inside podman, no root for the build):
+```
+just container-build           # builds localhost/melissa:dev
+just container-install         # sudo: installs it as localhost/melissa:latest, starts melissa.service
 ```
 
 Open **http://127.0.0.1:8080** and enter the setup code, a username and a password: you become the owner
@@ -47,7 +61,7 @@ just container-smoke           # sudo: checks k3s, Traefik, policies, an app por
   and netfilter): root in it is root on your machine. The kubelet needs a few host sysctls; install.sh sets them in
   `/etc/sysctl.d/90-melissa-kubelet.conf`, tells you, and uninstall restores the old values.
 - **Updates:** Settings → Updates (check, apply, roll back) and a daily automatic update (`AUTO_UPDATE=off` to
-  skip). Apps, chats and agent sign-ins live on the `melissa-var` volume and survive updates and reinstalls.
+  skip). An image without Melissa's signature is refused. Apps, chats and agent sign-ins live on the `melissa-var` volume and survive updates and reinstalls.
 - **Apps** (web UIs and other ports such as a game server's, TCP or UDP) answer on ports 30000-30079.
   Who may open them is a setting, Settings → Apps: this device (default), your tailnet, or your home
   network. Agents ask you before they open apps to more devices. App links follow the setting.
@@ -122,14 +136,14 @@ sudo packaging/container/uninstall.sh --purge    # or: just container-uninstall 
 ```
 
 Both stop Melissa and remove the Quadlet, the update helper and its units, `/etc/modules-load.d/melissa.conf`
-and the sysctl file (restoring the old values), and turn `podman-auto-update.timer` off again if install.sh
-turned it on.
+and the sysctl file (restoring the old values), remove the signature check for Melissa's image from
+`/etc/containers/policy.json`, and turn `podman-auto-update.timer` off again if install.sh turned it on.
 
 - **Without `--purge`** it keeps the `melissa-var` volume (apps, chats, sign-ins, config), root's images
-  (`localhost/melissa:latest` and `localhost/melissa-rollback:previous`) and
+  (the installed one, e.g. `ghcr.io/svin24/melissa:edge`, and `localhost/melissa-rollback:previous`) and
   `/var/lib/melissa-container/install.env`, so installing again continues where you were.
 - **`--purge`** deletes those too (it signs Melissa's own Tailscale node out first).
-- **Either way** your own build stays in your rootless podman: `podman rmi localhost/melissa:dev` (and
+- **Either way** a local build stays in your rootless podman: `podman rmi localhost/melissa:dev` (and
   `podman image prune` for the build layers). The kernel modules stay loaded until the next reboot.
 
 ### NixOS
