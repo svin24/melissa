@@ -61,8 +61,8 @@ A reinstall keeps the image recorded in `/var/lib/melissa-container/install.env`
 
 Settings (environment of install.sh): `CHANNEL` (edge), `IMAGE` (`ghcr.io/svin24/melissa:$CHANNEL`),
 `VERIFY` (yes), `UI_PORT` (8080), `UI_BIND` (127.0.0.1), `APP_PORT_BASE`
-(30000), `BIND` (0.0.0.0: every address; who may open apps is Settings → Apps, see "Who may open
-apps"), `APP_ADDRESSES`
+(30000), `BIND` (0.0.0.0: app ports on every address; Melissa's filter lets only this device in until you
+change Settings → Apps, see "Who may open apps"), `APP_ADDRESSES`
 (see "Network"), `ALLOW_ADDRESS_MISMATCH` (no), `AUTO_UPDATE` (`registry` | `local` | `off`),
 `SET_SYSCTLS` (yes), `DOCKER_FORWARD` (auto; see "Docker on the same host"), `NET_CHECK` (yes).
 `install.sh --preflight` only checks.

@@ -27,6 +27,9 @@ eq "the override lets it pass" yes "$(yes_no check_addresses 100.64.0.10)"
 ALLOW_ADDRESS_MISMATCH=no
 BIND=0.0.0.0
 eq "0.0.0.0 covers everything" "" "$(uncovered 100.64.0.10,203.0.113.5,localhost)"
+eq "preflight ok line names the links, not 0.0.0.0" \
+    "ok: app links can use 192.168.1.20, 127.0.0.1 (app ports are published on all addresses; Melissa's filter decides who gets in)" \
+    "$(check_addresses 192.168.1.20,127.0.0.1)"
 BIND=100.64.0.10
 eq "one address covers itself" yes "$(yes_no bind_covers 100.64.0.10)"
 eq "one address does not cover another" no "$(yes_no bind_covers 203.0.113.5)"

@@ -81,8 +81,8 @@ just container-smoke           # sudo: checks k3s, Traefik, policies, an app por
 - **Updates:** Settings → Updates (check, apply, roll back) and a daily automatic update (`AUTO_UPDATE=off` to
   skip). An image without Melissa's signature is refused. Apps, chats and agent sign-ins live on the `melissa-var` volume and survive updates and reinstalls.
 - **Apps** (web UIs and other ports such as a game server's, TCP or UDP) answer on ports 30000-30079.
-  Who may open them is a setting, Settings → Apps: this device (default), your tailnet, or your home
-  network. Agents ask you before they open apps to more devices. App links follow the setting.
+  The ports are published on all host addresses, but Melissa's own filter decides who gets in: Settings →
+  Apps, this device (default), your tailnet, or your home network. Agents ask you before they open apps to more devices. App links follow the setting.
 - Rootless podman is not supported.
 
 ### Use it from another machine

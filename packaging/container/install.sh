@@ -178,7 +178,14 @@ uncovered() {
 check_addresses() {
     local bad
     bad=$(uncovered "$1")
-    if [ -z "$bad" ]; then echo "ok: app addresses ${1:-(found at run time)} are covered by BIND=$BIND"; return 0; fi
+    if [ -z "$bad" ]; then
+        local list=${1:-(found at run time)}
+        case "$BIND" in
+        0.0.0.0|::|'') echo "ok: app links can use ${list//,/, } (app ports are published on all addresses; Melissa's filter decides who gets in)" ;;
+        *) echo "ok: app links can use ${list//,/, } (app ports are published on $BIND; Melissa's filter decides who gets in)" ;;
+        esac
+        return 0
+    fi
     if [ "$ALLOW_ADDRESS_MISMATCH" = yes ]; then
         echo "WARNING: app addresses $bad are not covered by BIND=$BIND (ALLOW_ADDRESS_MISMATCH=yes: going on)"
         return 0
@@ -742,9 +749,9 @@ claim=$(claim_line "$(setup_code_output)")
 cat <<EOF
 
 Melissa is running (systemctl status melissa). k3s needs a minute or two on the first start.
-  Web UI:     http://$UI_BIND:$UI_PORT/
-  Apps:       ports $APP_PORT_BASE-$APP_PORT_LAST on $BIND; who may open them: Settings → Apps
-              (this device only until you change it; agents ask you first)
+  Web UI:     http://$UI_BIND:$UI_PORT/$(is_loopback "$UI_BIND" && echo " (this machine only)")
+  Apps:       ports $APP_PORT_BASE-$APP_PORT_LAST$(case "$BIND" in 0.0.0.0|'') ;; *) echo " on $BIND" ;; esac); only this device can open them until you change
+              Settings → Apps (agents ask you first)
   Agents:     sudo podman exec -it melissa melissa-setup            (e.g. agent opencode)
   Chat:       sudo podman exec -it melissa melissa-server chat
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
