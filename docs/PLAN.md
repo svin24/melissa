@@ -77,6 +77,10 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   `/etc/sysctl.d/90-melissa-kubelet.conf` with a notice (restored by `uninstall.sh`). Data: the `melissa-var`
   volume (`/var`, with `/etc/melissa` and k3s's node password symlinked onto it); the container is recreated
   from the image at every start. `uninstall.sh` keeps the volume unless `--purge`.
+  One-line install (owner, 2026-11-27): `get.sh` at the repo root (`curl ... | sudo sh`) checks the host,
+  downloads the source tarball from codeload.github.com (master; `CHANNEL=stable`: the latest `v*` release
+  tag) into a temporary directory and runs install.sh from it. install.sh keeps `uninstall.sh`, `trust.sh` and
+  `apparmor.sh` in `/usr/local/libexec/melissa/`, so uninstall works without a checkout.
 - **Network:** podman's default bridge. UI: host `127.0.0.1:8080` → container `:8081` → lead agent on its own
   loopback, nftables-filtered so pods can't reach it. Apps: NodePorts 30000–30079 published on `BIND`
   (0.0.0.0 by default since 2026-11-21); **who may open apps is Melissa's setting** (Settings → Apps, "Apps open

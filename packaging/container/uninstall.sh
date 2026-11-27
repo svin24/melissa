@@ -1,12 +1,13 @@
 #!/bin/bash
 # Remove Melissa's container installation (packaging/container/install.sh). Run as root.
+# install.sh also installs it as /usr/local/libexec/melissa/uninstall.sh (with trust.sh, apparmor.sh).
 #
 #   sudo packaging/container/uninstall.sh           stop and remove; keep the data volume and images
 #   sudo packaging/container/uninstall.sh --purge   also delete the data (melissa-var: apps, chats,
 #                                                   agent logins, config) and the Melissa images
 set -euo pipefail
 
-here=$(cd "$(dirname "$0")" && pwd)
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=packaging/container/trust.sh
 . "$here/trust.sh"
 # shellcheck source=packaging/container/apparmor.sh
@@ -52,7 +53,7 @@ remove_apparmor() {
 [ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 PURGE=no
-case "${1:-}" in --purge) PURGE=yes ;; "") ;; *) sed -n '2,8p' "$0"; exit 2 ;; esac
+case "${1:-}" in --purge) PURGE=yes ;; "") ;; *) sed -n '2,7p' "$0"; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo "melissa-uninstall: run as root" >&2; exit 1; }
 
 IMAGE=; TIMER_OURS=no; DOCKER_FORWARD_SUBNETS=; POLICY_CREATED=no; APPARMOR_PROFILE=no
@@ -71,7 +72,8 @@ fi
 podman rm -f -i melissa >/dev/null 2>&1 || true
 systemctl disable -q --now melissa-update.path 2>/dev/null || true
 rm -f "$QUADLET" "$UNITDIR/melissa-update.path" "$UNITDIR/melissa-update.service" \
-    "$LIBEXEC/melissa-host-update" "$SHARE/README.md" "$MODULES_FILE"
+    "$LIBEXEC/melissa-host-update" "$SHARE/README.md" "$MODULES_FILE" \
+    "$LIBEXEC/uninstall.sh" "$LIBEXEC/trust.sh" "$LIBEXEC/apparmor.sh"
 rmdir "$LIBEXEC" "$SHARE" 2>/dev/null || true
 if [ "$TIMER_OURS" = yes ]; then
     systemctl disable -q --now podman-auto-update.timer || true

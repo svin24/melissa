@@ -184,6 +184,7 @@ eq "the marker directory belongs to root and the server's group" yes \
 eq "the image enables the reset units" yes \
     "$(yes_no grep -q 'melissa-factory-reset.path melissa-factory-reset.service; ' "$here/Containerfile")"
 eq "uninstall.sh never runs a reset" no "$(yes_no grep -q factory-reset "$here/uninstall.sh")"
+eq "uninstall.sh removes its LIBEXEC copies" yes "$(yes_no grep -qF '"$LIBEXEC/uninstall.sh" "$LIBEXEC/trust.sh" "$LIBEXEC/apparmor.sh"' "$here/uninstall.sh")"
 # --- The claim line at the end of the install -------------------------------------------------
 case "$(claim_line "$(printf 'Setup code: ABCDE-FGHJK\nOpen Melissa...\n')")" in
     *"Setup code: ABCDE-FGHJK "*) eq "the setup code is printed" ok ok ;;
@@ -427,6 +428,12 @@ eq "AppArmor: nothing else unloaded" "apparmor_parser -r $APPARMOR_DIR/melissa-c
     install_files
     eq "install_files, no AppArmor: an empty line" "" "$(grep -n 'apparmor\|^@' "$QUADLET" | grep -v '^[0-9]*:#')"
     eq "install_files, no AppArmor: recorded no" yes "$(. "$STATE/install.env"; [ "$APPARMOR_PROFILE" = no ] && echo yes)"
+    # get.sh deletes its checkout: uninstall.sh and what it sources stay on the host.
+    eq "install_files: uninstall.sh, trust.sh, apparmor.sh in LIBEXEC" yes \
+        "$(yes_if 'for f in uninstall.sh trust.sh apparmor.sh; do [ -x "$LIBEXEC/$f" ] && cmp -s "$here/$f" "$LIBEXEC/$f" || exit 1; done')"
+    eq "installed uninstall.sh loads from LIBEXEC" yes \
+        "$(yes_if 'bash -c ". \"\$1/uninstall.sh\"; declare -F remove_apparmor && declare -F trust_remove && declare -F apparmor_unload" _ "$LIBEXEC"')"
+    eq "installed uninstall.sh: usage works" yes "$(yes_if 'grep -q "uninstall.sh --purge" <<<"$(bash "$LIBEXEC/uninstall.sh" --bad)"')"
     exit "$fails"
 ) || fails=$((fails + $?))
 

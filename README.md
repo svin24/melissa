@@ -24,6 +24,21 @@ internet, and open source so others can build on top.
 
 ## Install
 
+On Linux with systemd, podman 5+ and curl, as root:
+```
+curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo sh
+```
+To read the script before it runs:
+```
+curl -fsSLO https://raw.githubusercontent.com/svin24/melissa/master/get.sh
+less get.sh
+sudo sh get.sh
+```
+[get.sh](get.sh) downloads Melissa's source from GitHub into a temporary directory and runs
+`packaging/container/install.sh` from it. Settings go between `sudo` and `sh`, e.g.
+`curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo CHANNEL=stable sh`.
+From a git clone instead: [docs/QUICKSTART.md](docs/QUICKSTART.md#1-container-rootful-podman).
+
 1. **Container** (the main way): rootful podman started by systemd, with k3s for apps. Any Linux with
    podman 5+.
 2. **NixOS** (experimental): the `services.melissa` module, with k3s. Tested in a NixOS VM, not yet on real

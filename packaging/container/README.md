@@ -21,6 +21,17 @@ Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files 
 - Ubuntu: no AppArmor profile that restricts `bwrap` (see "Ubuntu and AppArmor"; the preflight checks it).
 
 ## Install
+Without a checkout (see [get.sh](../../get.sh); `curl -fsSLO` it first to read it):
+```
+curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo CHANNEL=stable sh       # settings between sudo and sh
+curl -fsSL https://raw.githubusercontent.com/svin24/melissa/master/get.sh | sudo sh -s -- --preflight    # only check the host
+```
+get.sh checks for root, Linux, systemd, podman 5+, curl and tar, downloads the source tarball from
+codeload.github.com (`master`, or with `CHANNEL=stable` the tag that github.com/svin24/melissa/releases/latest
+redirects to; `MELISSA_REF` overrides both) into a `mktemp -d` directory, extracts `packaging/container/`
+and runs install.sh from there with the same environment. It stops when there is no stable release yet.
+
 From a source checkout, the published image (no local build):
 ```
 sudo packaging/container/install.sh          # or: just install
@@ -77,6 +88,7 @@ sudo podman exec -it melissa melissa-server chat
 ## What install.sh changes on the host
 - `/etc/containers/systemd/melissa.container` (Quadlet → `melissa.service`), the volume `melissa-var`.
 - `/etc/systemd/system/melissa-update.{path,service}`, `/usr/local/libexec/melissa/melissa-host-update`,
+  `/usr/local/libexec/melissa/{uninstall,trust,apparmor}.sh` (uninstall without the checkout),
   `/usr/local/share/melissa/README.md`, `/var/lib/melissa-container/` (install settings, update status
   and requests).
 - `/etc/modules-load.d/melissa.conf` (br_netfilter, overlay).
@@ -101,6 +113,8 @@ sudo podman exec -it melissa melissa-server chat
 sudo packaging/container/uninstall.sh            # keeps the data volume and the images
 sudo packaging/container/uninstall.sh --purge    # also deletes melissa-var (apps, chats, logins, config) and the images
 ```
+Without a checkout (get.sh installs): `sudo /usr/local/libexec/melissa/uninstall.sh [--purge]`, the copy
+install.sh keeps there.
 
 ## Network and the web UI
 The container sits on podman's default bridge (`podman`, 10.88.0.0/16; must not overlap k3s's
