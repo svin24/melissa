@@ -90,6 +90,9 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   covered by `BIND`: install.sh refuses a mismatch and rewrites a stale key on reinstall; at run time the app
   tools leave out of links addresses the publish bind (`MELISSA_PUBLISH_BIND`) doesn't cover or the access
   setting in force doesn't let in, and only note failed probes where no bind is known (DECISIONS 2026-11-20).
+  firewalld (2026-11-27): install.sh only reads it. With `StrictForwardPorts=no` (default) firewalld accepts
+  podman's DNAT'd traffic before zones; with `yes` netavark refuses published ports, so the preflight stops
+  with the commands to change it (README "firewalld"; Q106).
 - **Updates:** Quadlet `AutoUpdate=` with `podman-auto-update.timer` (daily), plus Settings → Updates
   Check/Apply/Roll back through a host helper (`melissa-host-update`) that the lead agent triggers with fixed-name
   request files in a bind-mounted directory; the previous image is kept for a rollback (DECISIONS 2026-11-19).
@@ -1634,3 +1637,10 @@ Roadmap (rough, phases may overlap):
     who may open it. (d) OEM flag form (cargo feature plus install flag?), per-device label secret, button
     press. (e) Who is the CRA manufacturer for a box sold with Melissa. (f) SoftAP only on an appliance image.
     (g) LAN and tailnet listeners for layer 0 (Q102a). (h) A paired client app gets the CA (Q22, Q14, Q87h).
+106. firewalld with `StrictForwardPorts=yes` (2026-11-27; verified in netavark and firewalld 2.5 source). netavark
+    refuses published ports, and a zone service (`melissa-apps`) can't help: firewalld accepts only its own
+    forward-ports for DNAT'd traffic. So install.sh ships no service file and stops with the commands to turn
+    the setting off. Open: (a) support strict hosts by publishing through firewalld forward-ports to the
+    container's address (or netavark's experimental `firewall_driver = "firewalld"`) instead of `PublishPort`?
+    (b) Offer `netavark-firewalld-reload.service` (restores podman's trusted-zone entry after a reload) as a
+    printed hint at install time? (c) Not yet tested on a real host with Strict on.

@@ -167,8 +167,8 @@ only addresses the filter in force lets in, and the page says what went wrong. C
 Limits: the container can't see the host's interfaces, so it matches by source range: a host directly on
 a carrier-grade NAT network (100.64.0.0/10 outside Tailscale) or on an untrusted private network (hotel
 Wi-Fi) lets those peers in under Tailnet or Home network. podman's default network has no IPv6, so IPv6
-clients can't reach apps whatever the setting. A host firewall still applies on top (firewalld on Fedora
-accepts podman's forwarded DNAT traffic; others may need 30000–30079 opened). For a restriction at the host as well, set
+clients can't reach apps whatever the setting. A host firewall may still apply on top (firewalld lets
+podman's published ports through by default, see "firewalld"; others may need 30000–30079 opened). For a restriction at the host as well, set
 `BIND` (e.g. `BIND=127.0.0.1`); the server then leaves out addresses `BIND` doesn't cover, and
 `set_app_access` can't widen past it.
 
@@ -212,7 +212,8 @@ Sign-in runs over plain HTTP, which sends passwords readable on the network. Kee
 - Tailscale on the host: `sudo tailscale serve --bg 8080` serves it on your tailnet over HTTPS. (Melissa's
   own Tailscale doesn't serve the UI yet.)
   Only for a tailnet of people you trust (no Funnel).
-- For apps on the tailnet or the LAN: Settings → Apps (the host firewall must allow 30000–30079).
+- For apps on the tailnet or the LAN: Settings → Apps (a host firewall other than firewalld must allow
+  30000–30079; see "firewalld").
 
 ### Docker on the same host
 Docker sets the iptables `FORWARD` policy to DROP and accepts only its own bridges. An nftables accept
@@ -239,6 +240,26 @@ and stops at once: "This container can't reach the internet". Likely causes:
 - Another firewall whose forward policy drops podman's network (10.88.0.0/16 by default).
 - IP forwarding off on the host: `sysctl net.ipv4.ip_forward` should be 1 (podman turns it on).
 Test: `sudo podman exec melissa getent ahosts example.com`.
+
+### firewalld
+install.sh only reads firewalld (Fedora, RHEL, openSUSE); it never changes it. podman (netavark, nftables
+driver) publishes the web UI and the app ports with its own DNAT rules, and firewalld 2.x
+(`StrictForwardPorts`, `/etc/firewalld/firewalld.conf`) decides what happens to them before any zone does:
+- **`StrictForwardPorts=no`** (the default): firewalld accepts all DNAT'd traffic, so zone ports and services
+  play no part. Melissa's own filter (Settings → Apps) decides who may open apps. The preflight prints the
+  default zone and this setting.
+- **`StrictForwardPorts=yes`**: firewalld lets through only its own forward-ports, and netavark refuses to
+  start any container that publishes ports ("Port forwarding not possible as firewalld StrictForwardPorts
+  enabled"), Melissa's included (also the loopback web UI). Adding ports or a service to a zone does not help.
+  The preflight stops and prints the commands: set `StrictForwardPorts=no` in `firewalld.conf`, then
+  `sudo firewall-cmd --reload`. That holds for every rootful container on the host. The alternative,
+  `firewall_driver = "firewalld"` in `containers.conf`, is marked experimental by podman, changes all podman
+  networks, and is not tested with Melissa.
+
+netavark puts podman's subnet (10.88.0.0/16) in the `trusted` zone as a runtime-only change, so
+`firewall-cmd --reload` drops that entry (netavark's own nftables table stays) until Melissa's container
+restarts. To have netavark restore it on every reload: `sudo systemctl enable --now
+netavark-firewalld-reload.service` (off by default on Fedora).
 
 ### Ubuntu and AppArmor
 Supported: Ubuntu 26.04 (the latest; other releases untested). Ubuntu restricts unprivileged user namespaces
