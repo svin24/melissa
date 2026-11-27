@@ -153,16 +153,22 @@ jobs:
           name: image
           path: ${{ runner.temp }}/image
 
-      # One auth file for podman, skopeo, cosign and actions/attest.
+      # One auth file for podman, skopeo, cosign and actions/attest. It has to be ~/.docker/config.json:
+      # actions/attest reads only that path (os.homedir(), ignores DOCKER_CONFIG) and wants
+      # auths["ghcr.io"].auth = base64(user:pass), which is the format podman login writes. Started
+      # fresh so nothing else (credsStore, other logins) is in it; removed again by "Log out".
       - name: Registry login
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p "$RUNNER_TEMP/docker"
-          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
-          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/config.json" >> "$GITHUB_ENV"
-          printf '%s' "$GH_TOKEN" | podman login --authfile "$RUNNER_TEMP/docker/config.json" \
+          mkdir -p "$HOME/.docker"
+          rm -f "$HOME/.docker/config.json"
+          echo "DOCKER_CONFIG=$HOME/.docker" >> "$GITHUB_ENV"
+          echo "REGISTRY_AUTH_FILE=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+          printf '%s' "$GH_TOKEN" | podman login --authfile "$HOME/.docker/config.json" \
             -u "$GITHUB_ACTOR" --password-stdin ghcr.io
+          jq -e '.auths["ghcr.io"].auth | length > 0' "$HOME/.docker/config.json" >/dev/null \
+            || { echo "::error::no ghcr.io auth entry in ~/.docker/config.json"; exit 1; }
 
       - name: Load the tested image
         env:
@@ -197,7 +203,8 @@ jobs:
           echo "publish $REPO:$immutable, then: $moving"
 
       # Pushed once. An existing immutable tag is only accepted when it already holds this image
-      # (a re-run); a release tag is never moved to different bytes.
+      # (a re-run), and then it is not pushed again: a second push could recompress to another manifest
+      # digest. A release tag is never moved to different bytes.
       - name: Push the tested image
         id: push
         env:
@@ -210,12 +217,15 @@ jobs:
               echo "::error::$REPO:$IMMUTABLE already exists with another image ($config)"
               exit 1
             fi
-            echo "$REPO:$IMMUTABLE already holds this image; pushing again"
+            digest=$(skopeo inspect --format '{{.Digest}}' "docker://$REPO:$IMMUTABLE")
+            echo "$REPO:$IMMUTABLE already holds this image ($digest); not pushing again"
+          else
+            podman push --digestfile "$RUNNER_TEMP/digest" localhost/melissa:escape-tested "docker://$REPO:$IMMUTABLE"
+            digest=$(cat "$RUNNER_TEMP/digest")
+            echo "pushed $REPO@$digest"
           fi
-          podman push --digestfile "$RUNNER_TEMP/digest" localhost/melissa:escape-tested "docker://$REPO:$IMMUTABLE"
-          digest=$(cat "$RUNNER_TEMP/digest")
+          [ -n "$digest" ] || { echo "::error::no digest for $REPO:$IMMUTABLE"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "pushed $REPO@$digest"
 
       - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
         with:
@@ -255,7 +265,7 @@ jobs:
 
       - name: Log out
         if: always()
-        run: rm -rf "$RUNNER_TEMP/docker"
+        run: rm -f "$HOME/.docker/config.json"
 
   # As a device would: anonymous pull (the package must be public), cosign verify, and podman refusing
   # anything not signed with Melissa's key.
