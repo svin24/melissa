@@ -2002,3 +2002,43 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   let Melissa read a dismissed setup password again and needs new RBAC), refusing `env`-style commands (easy to
   get around, blocks real use). Limits: apps whose secrets predate this are not covered; anyone with the state
   directory can test 8-character guesses offline (that identity can already exec). Steps 2-4: PLAN question 100.
+- **2026-11-27 — Publishing images from GitHub Actions (owner).** Go-ahead to publish to `ghcr.io/svin24/melissa`
+  and make the package public. **Signing:** a cosign key pair; the private key is in GitHub environment secrets,
+  the public key is in the repo (`packaging/container/melissa-signing.pub`). install.sh writes a podman
+  `policy.json` entry (`sigstoreSigned`, `keyPath`, `matchRepository`) for that repository only, so podman
+  refuses unsigned images on install, in Settings → Updates and in `podman-auto-update`. Signatures use cosign's
+  legacy format. Keyless provenance (`actions/attest`) is published as well. **Channels:** `:edge` (every master
+  commit that passes the gate; the install default for now, pre-alpha), `:stable` (`vX.Y.Z` tags; becomes the
+  default at the first release), plus `:X.Y.Z`, `:X.Y` and `:sha-<rev>`; no `:latest`. **CI:** a check workflow
+  (fmt, clippy, nextest with pinned Rust, not the Nix shell) and a container workflow on `ubuntu-26.04`
+  (podman 5.7): build, the escape suite inside the image as a hard gate (the runner needs
+  `kernel.apparmor_restrict_unprivileged_userns=0`), push once by digest, sign, attest, verify. The gVisor test
+  is advisory at first. GitHub environments `edge` (master) and `stable` (tags, owner approval). **Network
+  calls:** devices pull updates from ghcr.io and GitHub's blob host (owner-approved, PLAN §2). **Next phase,
+  not now:** no-clone install (host files shipped inside the image), helper-driven verified updates, a channel
+  switch in Settings and richer Updates page states; the Updates page changes need the owner's UI review and a
+  Penpot design first. Why keys and not keyless: podman's `policy.json` can't check GitHub keyless certificates
+  (the fulcio block matches only `subjectEmail`; a `buildSignerURI` PR is open) and can't read cosign 3's
+  default bundle format, so a key is the only way podman enforces signatures today. Alternatives: keyless plus
+  Melissa's own on-device verifier (the 2026-11-24 research's recommendation; deferred, more code), no
+  signature check on devices (rejected). Revisit keyless when containers/image supports URI identities.
+  Research: `docs/design/RELEASES-AND-UPDATES-2026-11-24.md` (section 7 answered). Follow-ups: PLAN question 101.
+- **2026-11-27 — Device interconnect: three layers, federation first (owner).** Goal: a network of smart and dumb
+  devices where some go offline. **Layer 0, mesh and pairing:** every device gets a Melissa identity through an
+  owner-approved one-time join code (proposal: about 50 bits, 1 hour, single use, carrying the pairing address
+  and the device CA fingerprint; the joining device sends an Ed25519 key, id, name, specs and a CSR over TLS
+  pinned to that CA; the owner approves with the password; the device gets a signed certificate). Transport is
+  the tailnet (Melissa's built-in tailscaled or the host's), behind a swappable mesh trait. Join codes and tokens
+  never reach agents, chats or logs. **Layer 1, federation (built first):** every smart device keeps its own k3s
+  and lead agent; lead agents talk over an authenticated device-to-device API (capacity view, "run this there"
+  brokered by the receiving device's lead agent and its own approval flow). Dumb devices and client apps run only
+  `melissa-device` or a client app: they report capacity and take simple jobs, with no AI and no k3s. Offline is
+  normal. **Layer 2, cluster (later, opt-in):** groups of always-on smart devices form one k3s cluster, joined
+  with short-lived bootstrap tokens (`k3s token create --ttl`) issued against the layer-0 identity, never the
+  server token (the cluster root). Offline-prone devices stay in layer 1. Next session: a manual k3s agent join
+  of the owner's laptop over the tailnet, to measure the shared network problems, not as the architecture.
+  Why: federation survives devices going offline, keeps approvals and audit per device and matches the agent
+  model (one lead agent per device); a single k3s cluster across sleeping laptops would flap. Alternatives: one
+  k3s cluster for every device (rejected as the default for that reason), k3s `--vpn-auth` (experimental, would
+  fight Melissa's control of tailscaled). Research, findings and runbook:
+  `docs/design/INTERCONNECT-2026-11-27.md`. Open items: PLAN questions 102 and 103.

@@ -1,5 +1,14 @@
 # Releases and updates built by GitHub (research, 2026-11-24)
 
+> **Update 2026-11-27 (owner decisions; DECISIONS.md, PLAN §2):** publishing is approved
+> (`ghcr.io/svin24/melissa`, public package). Two things differ from this research's recommendation: **signing
+> is key-based** (a cosign key pair, enforced by the podman `policy.json` entry install.sh writes, legacy
+> signature format; keyless provenance via `actions/attest` is published too), and **builds go out from master
+> first** as `:edge` (the install default for now, pre-alpha), with `:stable` from `vX.Y.Z` tags; also
+> `:X.Y.Z`, `:X.Y`, `:sha-<rev>`, no `:latest`. Section 7 marks what is answered. The on-device verifier
+> (phase 2 below) is deferred; helper-driven verified updates, a channel switch and richer Updates page states
+> are the next phase. Follow-ups: PLAN question 101.
+
 PLAN open question 50 (owner goal, 2026-11-24): people can just grab updates, built by GitHub. For now only
 **stable releases** are built and served; nightly builds are researched here for later. Nothing in this
 document is built: no workflow exists in `.github/workflows`, nothing was pushed, tagged or published. The
@@ -411,21 +420,30 @@ if containers/image gains URI identities or bundle support (then podman enforces
 
 ## 7. Owner decisions needed
 
-1. **Go-ahead for publishing** at all: a public GHCR package `ghcr.io/svin24/melissa`, GitHub Releases, and
-   a workflow that pushes on tags (AGENTS.md: nothing published without an explicit yes).
-2. **Channel tag name:** `:stable` (recommended) or `:latest` as in question 50, or both pointing at the
-   same digest?
-3. **First release number:** re-release 0.0.2 as the first published image, or start at 0.0.3?
-4. **Gates that block a release:** escape suite and gVisor test (recommended blocking), container smoke
-   (blocking), NixOS VM test (blocking only for the Nix track, or advisory)? And which manual checks
-   (real agent logins, Tailscale) stay required before tagging?
-5. **Approval step:** tag + environment approval by the owner (two clicks), or tag only?
-6. **Signing approach:** keyless + Melissa's own on-device verifier (recommended, no long-lived key), or a
-   key-based cosign key in GitHub secrets so podman's `policy.json` enforces it today?
-7. **Phase 1 without on-device verification:** acceptable for the first releases (TLS to GHCR only), or
-   automatic updates off by default until phase 2?
-8. **Device network calls:** approve the daily call to ghcr.io (and GitHub's blob host). Should Nix installs
-   ever check GitHub for a newer release, or never call out?
+Answered items are marked with the date; the original question follows in brackets.
+
+1. **Answered 2026-11-27: yes.** GitHub Actions publishes to `ghcr.io/svin24/melissa`; the package is public.
+   [Go-ahead for publishing at all: a public GHCR package, GitHub Releases, and a workflow that pushes on tags.]
+2. **Answered 2026-11-27:** `:stable` (`vX.Y.Z` tags; the default from the first release) and `:edge` (every
+   master commit that passes the gate; the install default for now, pre-alpha), plus `:X.Y.Z`, `:X.Y`,
+   `:sha-<rev>`; no `:latest`. [Channel tag name: `:stable` or `:latest`, or both?]
+3. **First release number:** re-release 0.0.2 as the first published image, or start at 0.0.3? (Open.)
+4. **Partly answered 2026-11-27:** the escape suite inside the image is a hard gate (the runner needs
+   `kernel.apparmor_restrict_unprivileged_userns=0`); the gVisor test is advisory at first; a separate check
+   workflow runs fmt, clippy and nextest with pinned Rust (not the Nix shell). Container smoke, NixOS VM test and
+   manual checks before tagging are still open. [Gates that block a release.]
+5. **Answered 2026-11-27:** GitHub environments `edge` (master) and `stable` (tags, owner approval).
+   [Approval step: tag + environment approval, or tag only?]
+6. **Answered 2026-11-27: key-based, not the recommendation.** A cosign key pair (private key in GitHub
+   environment secrets, public key at `packaging/container/melissa-signing.pub`), legacy signature format,
+   enforced by a podman `policy.json` entry (`sigstoreSigned`, `keyPath`, `matchRepository`) for this repository
+   only; keyless provenance (`actions/attest`) is published too. Revisit keyless when containers/image supports
+   URI identities. [Keyless + on-device verifier, or a key so podman enforces it today?]
+7. **Answered 2026-11-27 (follows from 6):** podman checks the key signature on install, Settings → Updates and
+   `podman-auto-update`, so automatic updates stay on with a signature check. Helper-driven verified updates are
+   the next phase. [Phase 1 without on-device verification?]
+8. **Partly answered 2026-11-27:** devices pulling from ghcr.io and GitHub's blob host is approved (PLAN §2).
+   Whether Nix installs ever check GitHub is still open. [Device network calls.]
 9. **Licenses in releases:** attach only the Rust report + SBOM, or also collect notices for k3s, gVisor,
    Tailscale, whisper.cpp and Fedora packages as a release asset (legal check, ties to PLAN §8)?
 10. **Dry run:** OK to create a throwaway fork/private repo for measuring the workflow (small cost if

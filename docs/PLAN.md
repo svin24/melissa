@@ -38,6 +38,13 @@ Melissa, never replacing the owner's yes; DECISIONS 2026-11-24). Since
 2026-11-20 new apps are always created by a helper: the lead agent hands "make/install/set up X" to one (`create_agent`
 with its first `job`, or `give_agent_job`) and its own `deploy_app` of a new app is refused (AGENT-MODEL rule 10). Mapping table in
 AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `lead-loop.md`. Multi-device is M3.
+**Interconnect (owner, 2026-11-27; DECISIONS):** devices are **smart** (full Melissa: lead agent, k3s, apps) or
+**dumb** (only `melissa-device`, a stub in `crates/device` today, or a desktop/Android client app: report capacity,
+take simple jobs, no AI, no k3s). Offline is normal. Three layers: (0) mesh and pairing, an owner-approved
+one-time join code gives each device a Melissa identity; (1) federation, built first: each smart device keeps its
+own k3s and lead agent, and lead agents talk over an authenticated device-to-device API ("run this there" is
+brokered by the receiving device's lead agent and its approvals); (2) later and opt-in, always-on smart devices
+form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.md`.
 
 ## 2. Packaging: container first (host-first)
 
@@ -82,11 +89,26 @@ AGENT-MODEL.md; details in `docs/agent-skills/workspaces-and-ownership.md` and `
 - **Updates:** Quadlet `AutoUpdate=` with `podman-auto-update.timer` (daily), plus Settings → Updates
   Check/Apply/Roll back through a host helper (`melissa-host-update`) that the lead agent triggers with fixed-name
   request files in a bind-mounted directory; the previous image is kept for a rollback (DECISIONS 2026-11-19).
+  Since 2026-11-27 (owner; DECISIONS): install.sh writes a podman `policy.json` entry (`sigstoreSigned`,
+  `keyPath` to the public key from `packaging/container/melissa-signing.pub`, `matchRepository`) for
+  `ghcr.io/svin24/melissa` only, so podman refuses unsigned images there on install, in Settings → Updates and in
+  `podman-auto-update`. Next phase (not now): no-clone install (host files shipped inside the image),
+  helper-driven verified updates, a channel switch in Settings and richer Updates page states (owner's UI review
+  and a Penpot design first). Open items: Q101.
 - **Rootless podman: unsupported** (it worked with the earlier image; needs cpuset delegation and pasta; no longer
   tested). `scripts/container-run.sh` keeps it for experiments and is the dev/test driver (`build`, `smoke`).
-- **Update distribution:** images are published first to `ghcr.io` (not yet; nothing is published without the
-  owner's yes). Later a Cloudflare-fronted or custom registry domain; clients migrate through `registries.conf`
-  mirrors. Sign images (cosign) before any public release.
+- **Update distribution (owner, 2026-11-27; DECISIONS):** GitHub Actions publishes to `ghcr.io/svin24/melissa`
+  (public package). Channels: `:edge` (every master commit that passes the gate; the install default for now,
+  pre-alpha), `:stable` (`vX.Y.Z` tags; becomes the default at the first release), plus `:X.Y.Z`, `:X.Y` and
+  `:sha-<rev>`; no `:latest`. Signed with a cosign key pair (private key in GitHub environment secrets, public key
+  in the repo; legacy signature format, because podman can't check GitHub keyless certificates or read cosign 3
+  bundles); keyless provenance (`actions/attest`) is published too. Revisit keyless when containers/image supports
+  URI identities. CI: a check workflow (fmt, clippy, nextest with pinned Rust) and a container workflow on
+  `ubuntu-26.04`: build → escape suite inside the image (hard gate) → push once by digest → sign → attest →
+  verify; the gVisor test is advisory at first. GitHub environments `edge` (master) and `stable` (tags, owner
+  approval). Later a Cloudflare-fronted or custom registry domain; clients migrate through `registries.conf`
+  mirrors. **Owner-approved third-party network calls:** devices pull images and signatures from ghcr.io and
+  GitHub's blob host when they install, check or apply updates (daily with automatic updates on).
 - **BuildStream:** a cleaner reproducible build is "later later". Not before the product works.
 
 ### Reference distro (paused)
@@ -152,6 +174,13 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   and RuntimeClass from `k3s-prepare`; NixOS: `k3s.gvisor.enable`. `just gvisor-test-image` checks it.
   Details: `docs/agent-skills/app-deploy.md` ("Isolation").
 - **Orchestrator:** k3s (single binary, fits small boxes). Node labels describe roles (`melissa.io/role=storage|gpu|edge|gaming`, final label domain TBD).
+  Kubelets can set their own labels, so labels that steer placement need a protected prefix
+  (`node-restriction.kubernetes.io/`) or an admission check (Q103).
+- **Multi-device (owner, 2026-11-27; section 1b):** each smart device keeps its own k3s (federation, layer 1).
+  A shared k3s cluster is a later, opt-in layer 2 for always-on devices: one control plane, the others k3s
+  agents, joined with short-lived tokens (`k3s token create --ttl`), never the server token. Today's code is not
+  ready for a second node (same node name `melissa`, cluster ports closed on `tailscale0`, k3s config and node IP
+  lost at restart, no placement field): `docs/design/INTERCONNECT-2026-11-27.md` section 3, Q103.
 - **App links (2026-11-19):** by default `http://<device address>:<port>`: an app's web port and each public
   TCP/UDP port get their own NodePort from 30000-30079 (`<app>-port` Service, recorded in `melissa.io/port` and
   `melissa.io/ports`), reachable on the LAN and over Tailscale with no DNS; the web UI builds links from the
@@ -165,7 +194,12 @@ Kept separate from the container-first text above on purpose (two tracks, two au
 
 ## 4. Networking and access
 
-- **Mesh:** Tailscale with pre-auth keys by default; Headscale (self-hosted control server) or NetBird as alternatives. Abstract it behind a small Rust trait so the mesh is swappable.
+- **Mesh:** Tailscale by default (interactive sign-in for now, Q85a); Headscale (self-hosted control server) or NetBird as alternatives. Abstract it behind a small Rust trait so the mesh is swappable.
+- **Pairing (owner, 2026-11-27; proposal, Q102):** a device joins with an owner-approved one-time join code
+  (about 50 bits, 1 hour, single use, carrying the pairing address and the device CA fingerprint). The joining
+  device sends its Ed25519 key, id, name, specs and a CSR over TLS pinned to that CA; the owner approves with the
+  password; it gets a signed device certificate, used for the device-to-device API over the tailnet. Join codes
+  and tokens never reach agents, chats or logs.
 - **Two access modes for remote use:**
   1. *Hosted relay with login* — user signs in to a hosted service that relays to their cluster (like T3 Connect with an auth provider such as Clerk). Easiest for non-technical users.
   2. *Bring your own Tailscale* — the user joins their own tailnet; no Melissa-run service involved.
@@ -796,8 +830,12 @@ Roadmap (rough, phases may overlap):
   same loop works by chatting with the lead agent (grok-acp and claude-session, 2026-11-18). Open: LAN
   DNS + TLS for `*.melissa.home.arpa` (Q22), Immich, the UI (owner's design), per-app NetworkPolicy.
 - **M3 — Multi-agent:** cluster of VMs, mesh via Tailscale, agent join flow, node labels, lead agent failover design, shared storage (Longhorn).
+  Since 2026-11-27 (owner): in this order, a manual k3s agent join over the tailnet as a measurement
+  (`docs/design/INTERCONNECT-2026-11-27.md` runbook), layer-0 pairing, layer-1 federation between lead agents
+  and `melissa-device` for dumb devices; a shared k3s cluster (layer 2) only after that, opt-in.
 - **M4 — VPS agent + backups:** edge/ingress agent, offsite backups with restic or Kopia, restore drills, VPN exit, seedbox as optional apps.
-- **M5 — Published image:** the container image signed and on an update channel (ghcr.io, owner's yes first); later
+- **M5 — Published image:** the container image signed and on an update channel (ghcr.io; owner's yes given
+  2026-11-27, `:edge` from master first, `:stable` from tags); later
   the reference distro (bootc, archived) with an installer/first-boot flow.
 - **Later:** gaming node (KubeVirt + GPU + Sunshine/Moonlight), Cloudflare/custom registry mirror, BuildStream, hosted relay access mode, Ceph.
 
@@ -807,8 +845,11 @@ Roadmap (rough, phases may overlap):
 2. Trademark clearance for "Melissa" and the fallback name; confirm domain/org choices.
 3. Hosted relay mode: build our own or integrate an existing service? Who runs it and what does it store?
 4. Mesh default: Tailscale (easy, third-party control plane) vs. Headscale/NetBird (self-hosted). What is the default for new users?
+   2026-11-27: Tailscale (built-in or the host's) for the interconnect, behind a swappable trait (Q102).
 5. Longhorn vs. Ceph thresholds; minimum hardware for an agent.
 6. Lead agent placement and failover: pinned to one agent, or elected? What happens with no LLM backend available?
+   Narrowed 2026-11-27 (interconnect, DECISIONS): every smart device keeps its own lead agent and k3s
+   (federation); control plane placement only matters for an opt-in layer-2 k3s group (Q103c).
 7. Agent permission model: which actions are autonomous vs. need confirmation? Audit log format.
 8. Can T3 Code code be reused (license is MIT today)? Or only used as a design reference?
 9. App manifest schema: own format vs. Helm/Compose-based? How are app updates and data migrations handled?
@@ -976,6 +1017,11 @@ Roadmap (rough, phases may overlap):
     from the running image, with the host helper (not `podman-auto-update`) applying registry updates. Open:
     the 13 owner decisions in section 7 there (publishing yes, `:stable` vs `:latest`, gates, signing,
     device network calls, NixOS path, arm64, nightly).
+    **Owner 2026-11-27 (DECISIONS):** publish to `ghcr.io/svin24/melissa` from GitHub Actions, public package;
+    channels `:edge` (master, the install default for now) and `:stable` (tags), plus `:X.Y.Z`, `:X.Y`,
+    `:sha-<rev>`, no `:latest`; key-based cosign signatures enforced by podman's `policy.json` (not keyless plus
+    an on-device verifier); escape suite as a hard gate, gVisor test advisory. Section 2 has the details;
+    remaining items are Q101.
 51. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
     services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
     Consumer Terms. Is "the user installs the official CLI and logs in with their own account on their own box"
@@ -998,7 +1044,9 @@ Roadmap (rough, phases may overlap):
     tailnet. Decided 2026-11-19: plain HTTP is fine for pre-alpha; TLS comes later via Tailscale certificates
     (`*.ts.net`), together with hardening; ports stay per device (per device) until multi-device exists. Still open:
     per-app access limits (ties to 22 and 38); is 80 apps per device enough; at multi-device, should the port be
-    unique cluster-wide so a link survives an app moving devices?
+    unique cluster-wide so a link survives an app moving devices? Narrowed 2026-11-27: with federation (each
+    device its own k3s) ports stay per device; NodePorts are cluster-wide only inside an opt-in layer-2 k3s
+    group (Q103).
 57. Nextcloud's trusted hosts are the device's addresses at install time (no wildcards). If the address changes
     (DHCP, new tailnet) Nextcloud refuses it until the next `update_app`. Decided 2026-11-19: later the lead agent
     refreshes apps' trusted addresses when the device's addresses change; until then owners set `[apps]
@@ -1312,7 +1360,8 @@ Roadmap (rough, phases may overlap):
     tailscaled inside the Melissa container from pinned static binaries, off by default, detect the host's
     first, interactive sign-in through a server-to-browser URL. Still open: (a) **Auth keys:** no auth-key
     field for now (interactive sign-in only); add one (stored like a secret, never shown to agents) for
-    headless setups? (b) **UI over the tailnet:** `tailscale serve` (HTTPS with a ts.net certificate) for the
+    headless setups? Owner 2026-11-27: interactive sign-in suffices for now; device pairing (Q102) doesn't need
+    auth keys. (b) **UI over the tailnet:** `tailscale serve` (HTTPS with a ts.net certificate) for the
     web UI is the next step, once logins exist (6c); it would also give the secure context passkeys and
     notifications need (Q22, Q83). Not exposed today: `tailscale0` can reach only the app ports. (c) Detection
     happens at install: a host that starts or stops running Tailscale later needs install.sh again (or
@@ -1526,3 +1575,35 @@ Roadmap (rough, phases may overlap):
     have no fingerprints and are not redacted (none were installed outside tests). (g) Masking is best effort:
     an agent that runs commands can transform the value (`rev`, one character per call, `od`) or read it
     some other way; only (a)-(d) shrink that.
+101. Publishing follow-ups (owner, 2026-11-27; DECISIONS "Publishing images from GitHub Actions"; research
+    `docs/design/RELEASES-AND-UPDATES-2026-11-24.md` section 7). Next phase, not started: (a) no-clone install
+    (host files shipped inside the image, install.sh fetched or extracted from it); (b) helper-driven verified
+    updates instead of `podman-auto-update`; (c) a channel switch (`:edge`/`:stable`) in Settings; (d) richer
+    Updates page states; (c) and (d) need the owner's UI review and a Penpot design first. Still open: (e) when
+    the gVisor test becomes a hard gate; (f) key rotation and what a device does when the key in
+    `melissa-signing.pub` changes (old installs only trust the old key); (g) moving to keyless once
+    containers/image supports URI identities (`buildSignerURI`) or cosign 3 bundles; (h) the first release number,
+    licenses in releases, NixOS path, arm64 and nightly retention (section 7 items 3, 9, 11-13 there); (i) the
+    `policy.json` entry covers only `ghcr.io/svin24/melissa`; a later custom registry domain or mirror needs its
+    own entry.
+102. Device pairing and federation (owner, 2026-11-27; DECISIONS "Device interconnect";
+    `docs/design/INTERCONNECT-2026-11-27.md`). (a) Pairing endpoint: which port and listener (tailnet only?),
+    who runs the device CA (each smart device, or the primary's), certificate lifetime, renewal and revocation;
+    is ~50 bits for a 1-hour single-use code enough with rate limits? (b) The device-to-device API: transport
+    (mutual TLS over the tailnet), capacity view contents, the "run this there" request format and how the
+    receiving lead agent's approval reaches the owner. (c) `melissa-device` and client apps: job types a dumb
+    device may take, how it reports when it comes back online (ties to Q14). (d) Does the owner's desktop use the
+    host's Tailscale or Melissa's built-in one, and should it move to the built-in one? (e) May a device that
+    already runs the host's Tailscale get a second tailnet node for Melissa?
+103. Multi-node k3s (layer 2, later; findings from code reading, untested; INTERCONNECT section 3). (a) Unique
+    node names: every container is `HostName=melissa` with no `node-name`, so a second node is rejected ("Node
+    password rejected"); derive from the device id or name? (b) Persist k3s config and the tailnet node IP:
+    `/etc/rancher/k3s/config.yaml.d` is not on the volume and the node IP is the podman bridge address, which
+    changes per start. (c) Server or agent mode per device, chosen how, and where the control plane runs (Q6).
+    (d) Tailnet input rules for 6443/tcp, 10250/tcp and 8472/udp in `crates/settings/src/app_access.rs`, limited
+    to paired devices. (e) A protected prefix (`node-restriction.kubernetes.io/`) or admission check for role
+    labels that steer placement. (f) A placement field in the app spec (node selector, tolerations). (g) A device
+    that joins as a k3s agent loses its lead agent's cluster access (`melissa-kubeconfig` targets a local
+    server). (h) MTU: flannel over Tailscale gives pods about 1230, pods created before keep 1450. (i) Agent
+    tokens: never hand out the server token (cluster root); use `k3s token create --ttl`. k3s `--vpn-auth` is
+    skipped (experimental, fights Melissa's tailscaled).
