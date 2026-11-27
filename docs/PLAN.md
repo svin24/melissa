@@ -1610,6 +1610,9 @@ Roadmap (rough, phases may overlap):
 104. Ubuntu hosts and agent users (2026-11-27, found in CI). Ubuntu 26.04 loads the AppArmor profile
     `bwrap-userns-restrict`, which attaches to `/usr/bin/bwrap` inside the unconfined container as well and
     denies all capabilities to what bwrap runs: `setpriv` cannot switch to the agent user and every agent
-    sandbox fails. CI unloads the profile. For installs: should install.sh detect it and offer to unload it
-    (or add a `local/` override), should the image move bwrap off that path, or should the server detect it
-    and turn agent users off with a clear reason? Untested on a real Ubuntu install.
+    sandbox fails. CI unloads the profile. **Decided by the owner 2026-11-27:** install.sh's preflight
+    detects a loaded `bwrap` or `unpriv_bwrap` profile and stops. It prints the commands (a link in
+    `/etc/apparmor.d/disable/`, `apparmor_parser -R`, and the userns sysctl at 0 when it is 1), how to undo
+    them, and clear caveats. The installer never changes the host's AppArmor; there is no override.
+    Still open: on Ubuntu 24.04 without that profile, `kernel.apparmor_restrict_unprivileged_userns=1` alone
+    stops bwrap, and install.sh does not check for it. Untested on a real Ubuntu install.

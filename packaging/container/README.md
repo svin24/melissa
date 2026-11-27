@@ -18,6 +18,7 @@ Files: `Containerfile` (image), `packages.txt`, `rootfs/` (container-only files 
 - Free host ports: the UI port (8080) and the app range (30000–30079).
 - The host provides networking, DNS, time and SSH. None of that is in the image. Tailscale is the host's
   when it runs it; otherwise the image carries its own, off until the owner enables it (Settings → Tailscale).
+- Ubuntu: no AppArmor profile that restricts `bwrap` (see "Ubuntu and AppArmor"; the preflight checks it).
 
 ## Install
 From a source checkout, the published image (no local build):
@@ -223,6 +224,38 @@ and stops at once: "This container can't reach the internet". Likely causes:
 - IP forwarding off on the host: `sysctl net.ipv4.ip_forward` should be 1 (podman turns it on).
 Test: `sudo podman exec melissa getent ahosts example.com`.
 
+### Ubuntu and AppArmor
+Ubuntu 26.04 (and 24.04 with the apparmor package's defaults) loads `/etc/apparmor.d/bwrap-userns-restrict`.
+Its `bwrap` profile attaches to `/usr/bin/bwrap` by path. That includes the image's bwrap, because the
+`--privileged` container is AppArmor-unconfined. It runs what bwrap starts as `unpriv_bwrap`, which denies
+every capability. `setpriv` then cannot switch to the agent's user, and every agent sandbox fails.
+
+install.sh never changes the host's AppArmor. While a `bwrap` (not `flags=(unconfined)`) or `unpriv_bwrap`
+profile is loaded, the preflight (also `--preflight`) fails and prints what to run. On a stock Ubuntu host:
+```
+sudo ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+# only while kernel.apparmor_restrict_unprivileged_userns is 1 (the profile was what let bwrap create user namespaces):
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-melissa-userns.conf
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+Then run install.sh again. The `disable/` link keeps the profile off after reboots: `apparmor_parser` skips
+files linked there (as `aa-disable` does). The distribution's file is not edited.
+
+Undo:
+```
+sudo rm /etc/apparmor.d/disable/bwrap-userns-restrict && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+sudo rm /etc/sysctl.d/60-melissa-userns.conf && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+```
+
+Caveats:
+- This turns off an Ubuntu security restriction for the whole host, not just for Melissa.
+- Any program can then use bwrap to create user namespaces, which is what the restriction prevents. With the
+  sysctl at 0, any program can create user namespaces.
+- The container is rootful and `--privileged` anyway: root in it is root on the host.
+- Not tested by us on an Ubuntu install. CI unloads the profile and sets the sysctl on its Ubuntu 26.04 runners.
+- uninstall.sh does not undo these steps; use the commands above.
+
 ## Data and persistence
 The container is **recreated from the image at every start** (and on updates). Everything kept lives on
 the `melissa-var` volume (`/var`): k3s and app data, the server's state, chats, agent installs and logins
@@ -317,7 +350,7 @@ tag from it, so a failing run revokes an earlier pass. CI runs this gate before 
 - Before the gate the job sets `kernel.apparmor_restrict_unprivileged_userns=0` and unloads Ubuntu's
   `bwrap-userns-restrict` AppArmor profile. That profile attaches to `/usr/bin/bwrap` inside the unconfined
   container too and denies the capabilities `setpriv` needs to switch to the agent user, so every agent-user
-  sandbox would fail (docs/DEV-ENV.md, "Ubuntu and AppArmor"). The suite itself is unchanged.
+  sandbox would fail ("Ubuntu and AppArmor" above). The suite itself is unchanged.
 - `gvisor-test.sh` also runs, but is advisory for now: a failure does not block publishing.
 - The signing key's private half lives in the GitHub environments `edge` and `stable`
   (`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`), never in the repo.

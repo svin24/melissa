@@ -170,6 +170,11 @@ Reboot first if k3s ran, so no pod mounts are left under `/var/lib/kubelet`.
 - Container: if installing an agent says "This container can't reach the internet", the host's firewall
   drops its traffic. Docker on the same host does that; install.sh fixes it for you (rerun it). See
   [Docker on the same host](../packaging/container/README.md#docker-on-the-same-host).
+- Container on Ubuntu: if Ubuntu's AppArmor profile for `bwrap` (`bwrap-userns-restrict`) is loaded, install.sh
+  stops before changing anything. Agents can't run as their own users inside the sandbox while it is loaded.
+  It prints the commands to turn the profile off, how to undo them and the caveats (a host-wide security
+  restriction is turned off). It never does this itself. Untested by us on an Ubuntu install. See
+  [Ubuntu and AppArmor](../packaging/container/README.md#ubuntu-and-apparmor).
 - Sign-ins are refreshed by the agents inside the sandbox; this is not well tested yet. If an agent suddenly
   says it is not signed in, sign in again in Settings → Providers (NixOS: `sudo melissa-setup login <name>`).
 

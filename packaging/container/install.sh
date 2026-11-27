@@ -43,6 +43,10 @@
 #                                   prints them (README, "Docker on the same host")
 #   NET_CHECK=yes                   after the start, check that the container can look up
 #                                   NET_CHECK_HOST=example.com (a DNS lookup; no: skip it)
+#
+# Ubuntu: when the host's AppArmor has Ubuntu's bwrap profile loaded (bwrap-userns-restrict), the
+# preflight stops and prints the commands to turn it off, with the caveats. install.sh never changes
+# the host's AppArmor itself (README, "Ubuntu and AppArmor").
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -70,6 +74,10 @@ DOCKER_FORWARD=${DOCKER_FORWARD:-auto}
 NET_CHECK=${NET_CHECK:-yes}
 NET_CHECK_HOST=${NET_CHECK_HOST:-example.com}
 SYS_NET=${SYS_NET:-/sys/class/net}
+# AppArmor on the host (overridable for test-install.sh).
+APPARMOR_PROFILES=${APPARMOR_PROFILES:-/sys/kernel/security/apparmor/profiles}
+APPARMOR_DIR=${APPARMOR_DIR:-/etc/apparmor.d}
+USERNS_SYSCTL=${USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
 
@@ -218,6 +226,90 @@ toml_set_addresses() {
         }'
 }
 
+# --- Ubuntu's AppArmor profile for bwrap ---------------------------------------------------
+# Ubuntu (26.04; 24.04 with the apparmor package's defaults) loads bwrap-userns-restrict. Its
+# `bwrap` profile attaches to /usr/bin/bwrap by path, also to the image's bwrap (the --privileged
+# container is AppArmor-unconfined), and runs what bwrap starts as `unpriv_bwrap`, which denies
+# every capability. setpriv then can't become the agent's user: every agent sandbox fails.
+# install.sh only detects it and says what to do; it never changes the host's AppArmor.
+
+# bwrap_profile_loaded: a restricting bwrap profile is loaded (`unpriv_bwrap`, or a `bwrap` that
+# isn't flags=(unconfined), e.g. the one docs/DEV-ENV.md suggests for user namespaces).
+bwrap_profile_loaded() {
+    [ -r "$APPARMOR_PROFILES" ] || return 1
+    grep -E '^unpriv_bwrap |^bwrap ' "$APPARMOR_PROFILES" 2>/dev/null | grep -qv '(unconfined)$'
+}
+
+# bwrap_profile_files: the files in APPARMOR_DIR with a profile that attaches to /usr/bin/bwrap
+# and isn't unconfined, one per line.
+bwrap_profile_files() {
+    local f
+    for f in "$APPARMOR_DIR"/*; do
+        [ -f "$f" ] || continue
+        grep -E '^[[:space:]]*profile[[:space:]]+[^[:space:]]+[[:space:]]+/usr/bin/bwrap([[:space:]]|$)' "$f" 2>/dev/null \
+            | grep -qv 'unconfined' && echo "$f"
+    done
+    return 0
+}
+
+# bwrap_apparmor_message: why the install stops, the commands, how to undo them, the caveats.
+bwrap_apparmor_message() {
+    local files f userns=''
+    files=$(bwrap_profile_files)
+    [ -r "$USERNS_SYSCTL" ] && userns=$(cat "$USERNS_SYSCTL")
+    cat <<EOF
+FAIL: this host's AppArmor has Ubuntu's bwrap profile loaded (bwrap-userns-restrict).
+  What is blocked: Melissa's agents can't run as their own users inside the sandbox. The profile
+  attaches to /usr/bin/bwrap by path, so it also catches the image's bwrap (the container is
+  AppArmor-unconfined), and it denies every capability to what bwrap runs: setpriv can't switch
+  to the agent's user and every agent sandbox fails.
+  install.sh does not change the host's AppArmor. To turn the profile off now and after reboots
+  (the supported way: apparmor_parser skips files listed in $APPARMOR_DIR/disable/):
+EOF
+    if [ -z "$files" ]; then
+        echo "    (no file in $APPARMOR_DIR attaches to /usr/bin/bwrap; find it with:"
+        echo "     grep -lE 'profile +[^ ]+ +/usr/bin/bwrap' -r /etc/apparmor.d)"
+        files="$APPARMOR_DIR/<that file>"
+    fi
+    for f in $files; do
+        echo "    sudo ln -s $f $APPARMOR_DIR/disable/"
+        echo "    sudo apparmor_parser -R $f"
+    done
+    if [ "$userns" = 1 ]; then
+        cat <<EOF
+  That profile was also what let bwrap create user namespaces here
+  (kernel.apparmor_restrict_unprivileged_userns = 1). Allow them again, now and after reboots:
+    echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-melissa-userns.conf
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+EOF
+    fi
+    echo "  Undo later:"
+    for f in $files; do
+        echo "    sudo rm $APPARMOR_DIR/disable/${f##*/} && sudo apparmor_parser -r $f"
+    done
+    if [ "$userns" = 1 ]; then
+        echo "    sudo rm /etc/sysctl.d/60-melissa-userns.conf && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1"
+    fi
+    cat <<EOF
+  Caveats:
+  - This turns off an Ubuntu security restriction for the whole host, not just for Melissa.
+  - Any program can then use bwrap to create user namespaces, which is what the restriction prevents.
+EOF
+    [ "$userns" = 1 ] && echo "  - With the sysctl at 0, any program can create user namespaces, with or without bwrap."
+    cat <<EOF
+  - Melissa's container is rootful and --privileged anyway: root in it is root on this host.
+  - Not tested by us on an Ubuntu install (only on Ubuntu CI runners).
+  Then run install.sh again. Details: packaging/container/README.md, "Ubuntu and AppArmor".
+EOF
+}
+
+# check_bwrap_apparmor: preflight step; fails (with the message) while the profile is loaded.
+check_bwrap_apparmor() {
+    if bwrap_profile_loaded; then bwrap_apparmor_message; return 1; fi
+    [ -r "$APPARMOR_PROFILES" ] && echo "ok: no AppArmor profile restricts bwrap"
+    return 0
+}
+
 version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
 
 preflight() {
@@ -255,6 +347,7 @@ preflight() {
         done
     done
     check_addresses "$(app_addresses)" || ok=1
+    check_bwrap_apparmor || ok=1
     case "$(host_tailscale)" in
     yes) echo "ok: Tailscale runs on this host; Melissa uses it (Settings → Tailscale says so)" ;;
     no) echo "ok: no Tailscale on this host; Settings → Tailscale can turn on Melissa's own (off by default)" ;;
@@ -665,7 +758,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,45p' "$0"; exit 2 ;;
+*) sed -n '2,49p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
