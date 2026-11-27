@@ -50,8 +50,14 @@ use serde::{Deserialize, Serialize};
 use crate::egress::HostRule;
 pub use crate::egress::NetworkMode;
 
-/// Where bubblewrap is expected on Fedora (and the Melissa images).
+/// Where bubblewrap is expected on Fedora.
 pub const BWRAP_PATH: &str = "/usr/bin/bwrap";
+
+/// The Melissa image's own copy of bubblewrap, found before [`BWRAP_PATH`]. Off `/usr/bin` because
+/// Ubuntu's `bwrap-userns-restrict` AppArmor profile attaches to `/usr/bin/bwrap` by path, also
+/// inside the container, and denies the capabilities agent users need
+/// (packaging/container/README.md, "Ubuntu and AppArmor").
+pub const MELISSA_BWRAP_PATH: &str = "/usr/libexec/melissa/bwrap";
 
 /// Host name inside the sandbox (hides the real one).
 const SANDBOX_HOSTNAME: &str = "melissa-agent";
@@ -1257,14 +1263,23 @@ pub struct SandboxChild {
     pub cgroup: Option<limits::SandboxCgroup>,
 }
 
-/// Find bubblewrap: the Fedora location first, then `PATH`.
+/// Find bubblewrap: the image's own copy ([`MELISSA_BWRAP_PATH`]), then the Fedora location,
+/// then `PATH` (NixOS and other distributions).
 pub fn find_bwrap() -> Option<PathBuf> {
-    let fixed = Path::new(BWRAP_PATH);
-    if fixed.is_file() {
-        return Some(fixed.to_path_buf());
+    find_bwrap_in(
+        &[Path::new(MELISSA_BWRAP_PATH), Path::new(BWRAP_PATH)],
+        std::env::var_os("PATH").as_deref(),
+    )
+}
+
+/// [`find_bwrap`] with the fixed candidates and `PATH` given: the first fixed one that is a file,
+/// else the first `bwrap` in `path`.
+fn find_bwrap_in(fixed: &[&Path], path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    if let Some(found) = fixed.iter().find(|p| p.is_file()) {
+        return Some(found.to_path_buf());
     }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
+    path.and_then(|paths| {
+        std::env::split_paths(paths)
             .map(|dir| dir.join("bwrap"))
             .find(|candidate| candidate.is_file())
     })
@@ -1273,6 +1288,30 @@ pub fn find_bwrap() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_bwrap_prefers_the_images_copy_then_fedoras_then_path() {
+        let dir = std::env::temp_dir().join(format!("melissa-find-bwrap-{}", std::process::id()));
+        let ours = dir.join("libexec/bwrap");
+        let fedora = dir.join("bin/bwrap");
+        let on_path = dir.join("path");
+        for f in [&ours, &fedora, &on_path.join("bwrap")] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, "").unwrap();
+        }
+        let path = std::env::join_paths([dir.join("empty"), on_path.clone()]).unwrap();
+        let find = |fixed: &[&Path]| find_bwrap_in(fixed, Some(&path));
+        assert_eq!(find(&[&ours, &fedora]), Some(ours.clone()));
+        std::fs::remove_file(&ours).unwrap();
+        assert_eq!(find(&[&ours, &fedora]), Some(fedora.clone()));
+        std::fs::remove_file(&fedora).unwrap();
+        assert_eq!(find(&[&ours, &fedora]), Some(on_path.join("bwrap")));
+        assert_eq!(find_bwrap_in(&[&ours, &fedora], None), None);
+        // A directory named bwrap is not bubblewrap.
+        std::fs::create_dir_all(&ours).unwrap();
+        assert_eq!(find(&[&ours]), Some(on_path.join("bwrap")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn plan(mounts: Vec<Mount>, program: &str) -> SandboxPlan {
         SandboxPlan {

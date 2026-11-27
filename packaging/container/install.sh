@@ -44,14 +44,17 @@
 #   NET_CHECK=yes                   after the start, check that the container can look up
 #                                   NET_CHECK_HOST=example.com (a DNS lookup; no: skip it)
 #
-# Ubuntu: when the host's AppArmor has Ubuntu's bwrap profile loaded (bwrap-userns-restrict), the
-# preflight stops and prints the commands to turn it off, with the caveats. install.sh never changes
-# the host's AppArmor itself (README, "Ubuntu and AppArmor").
+# AppArmor (Ubuntu): install.sh installs and loads Melissa's own profile for its container
+# (/etc/apparmor.d/melissa-container, apparmor.sh) and runs the container under it, so Ubuntu's
+# user-namespace restriction stays on for everything else. Only if that profile can't be loaded on a
+# restricting host does it stop, with the last-resort steps (README, "Ubuntu and AppArmor").
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=packaging/container/trust.sh
 . "$here/trust.sh"
+# shellcheck source=packaging/container/apparmor.sh
+. "$here/apparmor.sh"
 STATE=/var/lib/melissa-container
 INSTALL_ENV=${INSTALL_ENV:-$STATE/install.env}
 CHANNEL=${CHANNEL:-edge}
@@ -74,14 +77,12 @@ DOCKER_FORWARD=${DOCKER_FORWARD:-auto}
 NET_CHECK=${NET_CHECK:-yes}
 NET_CHECK_HOST=${NET_CHECK_HOST:-example.com}
 SYS_NET=${SYS_NET:-/sys/class/net}
-# AppArmor on the host (overridable for test-install.sh).
-APPARMOR_PROFILES=${APPARMOR_PROFILES:-/sys/kernel/security/apparmor/profiles}
-APPARMOR_DIR=${APPARMOR_DIR:-/etc/apparmor.d}
-USERNS_SYSCTL=${USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
 
-QUADLET=/etc/containers/systemd/melissa.container
+QUADLET=${QUADLET:-/etc/containers/systemd/melissa.container}
+# What Quadlet generates from it (checked after daemon-reload).
+QUADLET_GENERATED=${QUADLET_GENERATED:-/run/systemd/generator/melissa.service}
 UNITDIR=/etc/systemd/system
 LIBEXEC=/usr/local/libexec/melissa
 SHARE=/usr/local/share/melissa
@@ -226,88 +227,45 @@ toml_set_addresses() {
         }'
 }
 
-# --- Ubuntu's AppArmor profile for bwrap ---------------------------------------------------
-# Ubuntu (26.04; 24.04 with the apparmor package's defaults) loads bwrap-userns-restrict. Its
-# `bwrap` profile attaches to /usr/bin/bwrap by path, also to the image's bwrap (the --privileged
-# container is AppArmor-unconfined), and runs what bwrap starts as `unpriv_bwrap`, which denies
-# every capability. setpriv then can't become the agent's user: every agent sandbox fails.
-# install.sh only detects it and says what to do; it never changes the host's AppArmor.
+# --- AppArmor: Melissa's own profile for its container (apparmor.sh) -------------------------
+# APPARMOR_PROFILE: did install.sh load it (yes: melissa.container runs the container under it,
+# uninstall.sh removes it)? APPARMOR_LINE: the Quadlet line for it (empty: none).
+APPARMOR_PROFILE=no
+APPARMOR_LINE=
 
-# bwrap_profile_loaded: a restricting bwrap profile is loaded (`unpriv_bwrap`, or a `bwrap` that
-# isn't flags=(unconfined), e.g. the one docs/DEV-ENV.md suggests for user namespaces).
-bwrap_profile_loaded() {
-    [ -r "$APPARMOR_PROFILES" ] || return 1
-    grep -E '^unpriv_bwrap |^bwrap ' "$APPARMOR_PROFILES" 2>/dev/null | grep -qv '(unconfined)$'
+# check_apparmor: preflight step. Fails only when the host restricts and the profile can't be loaded.
+check_apparmor() {
+    apparmor_enabled || return 0
+    if apparmor_parser_found && [ -r "$MELISSA_APPARMOR_SRC" ]; then
+        echo "ok: AppArmor: install.sh loads Melissa's profile $MELISSA_APPARMOR_PROFILE for its container"
+        return 0
+    fi
+    if apparmor_restricts; then
+        apparmor_fallback_message "apparmor_parser is not installed (package apparmor)"
+        return 1
+    fi
+    echo "ok: AppArmor without apparmor_parser; nothing restricts bwrap here (the container runs unconfined)"
 }
 
-# bwrap_profile_files: the files in APPARMOR_DIR with a profile that attaches to /usr/bin/bwrap
-# and isn't unconfined, one per line.
-bwrap_profile_files() {
-    local f
-    for f in "$APPARMOR_DIR"/*; do
-        [ -f "$f" ] || continue
-        grep -E '^[[:space:]]*profile[[:space:]]+[^[:space:]]+[[:space:]]+/usr/bin/bwrap([[:space:]]|$)' "$f" 2>/dev/null \
-            | grep -qv 'unconfined' && echo "$f"
-    done
-    return 0
-}
-
-# bwrap_apparmor_message: why the install stops, the commands, how to undo them, the caveats.
-bwrap_apparmor_message() {
-    local files f userns=''
-    files=$(bwrap_profile_files)
-    [ -r "$USERNS_SYSCTL" ] && userns=$(cat "$USERNS_SYSCTL")
-    cat <<EOF
-FAIL: this host's AppArmor has Ubuntu's bwrap profile loaded (bwrap-userns-restrict).
-  What is blocked: Melissa's agents can't run as their own users inside the sandbox. The profile
-  attaches to /usr/bin/bwrap by path, so it also catches the image's bwrap (the container is
-  AppArmor-unconfined), and it denies every capability to what bwrap runs: setpriv can't switch
-  to the agent's user and every agent sandbox fails.
-  install.sh does not change the host's AppArmor. To turn the profile off now and after reboots
-  (the supported way: apparmor_parser skips files listed in $APPARMOR_DIR/disable/):
-EOF
-    if [ -z "$files" ]; then
-        echo "    (no file in $APPARMOR_DIR attaches to /usr/bin/bwrap; find it with:"
-        echo "     grep -lE 'profile +[^ ]+ +/usr/bin/bwrap' -r /etc/apparmor.d)"
-        files="$APPARMOR_DIR/<that file>"
+# apparmor_setup: load the profile and set APPARMOR_PROFILE and APPARMOR_LINE. Stops the install
+# when it can't be loaded and the host restricts (the container's sandbox would fail).
+apparmor_setup() {
+    local reason
+    apparmor_enabled || return 0
+    if reason=$(apparmor_load); then
+        APPARMOR_PROFILE=yes
+        APPARMOR_LINE="PodmanArgs=$(apparmor_podman_args)"
+        say "NOTICE: installed and loaded the AppArmor profile $MELISSA_APPARMOR_PROFILE ($APPARMOR_DIR/$MELISSA_APPARMOR_PROFILE)."
+        say "  Melissa's container runs under it: it lets only that container create user namespaces (agent"
+        say "  sandboxes); the host's AppArmor restrictions stay on for everything else. uninstall.sh removes it."
+        return 0
     fi
-    for f in $files; do
-        echo "    sudo ln -s $f $APPARMOR_DIR/disable/"
-        echo "    sudo apparmor_parser -R $f"
-    done
-    if [ "$userns" = 1 ]; then
-        cat <<EOF
-  That profile was also what let bwrap create user namespaces here
-  (kernel.apparmor_restrict_unprivileged_userns = 1). Allow them again, now and after reboots:
-    echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-melissa-userns.conf
-    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-EOF
+    if apparmor_restricts; then
+        apparmor_fallback_message "$reason" >&2
+        die "preflight failed (AppArmor, see above)"
     fi
-    echo "  Undo later:"
-    for f in $files; do
-        echo "    sudo rm $APPARMOR_DIR/disable/${f##*/} && sudo apparmor_parser -r $f"
-    done
-    if [ "$userns" = 1 ]; then
-        echo "    sudo rm /etc/sysctl.d/60-melissa-userns.conf && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1"
-    fi
-    cat <<EOF
-  Caveats:
-  - This turns off an Ubuntu security restriction for the whole host, not just for Melissa.
-  - Any program can then use bwrap to create user namespaces, which is what the restriction prevents.
-EOF
-    [ "$userns" = 1 ] && echo "  - With the sysctl at 0, any program can create user namespaces, with or without bwrap."
-    cat <<EOF
-  - Melissa's container is rootful and --privileged anyway: root in it is root on this host.
-  - Not tested by us on an Ubuntu install (only on Ubuntu CI runners).
-  Then run install.sh again. Details: packaging/container/README.md, "Ubuntu and AppArmor".
-EOF
-}
-
-# check_bwrap_apparmor: preflight step; fails (with the message) while the profile is loaded.
-check_bwrap_apparmor() {
-    if bwrap_profile_loaded; then bwrap_apparmor_message; return 1; fi
-    [ -r "$APPARMOR_PROFILES" ] && echo "ok: no AppArmor profile restricts bwrap"
-    return 0
+    say "WARNING: could not load the AppArmor profile $MELISSA_APPARMOR_PROFILE ($reason);"
+    say "  nothing restricts bwrap on this host, so the container runs unconfined as before."
 }
 
 version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
@@ -347,7 +305,7 @@ preflight() {
         done
     done
     check_addresses "$(app_addresses)" || ok=1
-    check_bwrap_apparmor || ok=1
+    check_apparmor || ok=1
     case "$(host_tailscale)" in
     yes) echo "ok: Tailscale runs on this host; Melissa uses it (Settings → Tailscale says so)" ;;
     no) echo "ok: no Tailscale on this host; Settings → Tailscale can turn on Melissa's own (off by default)" ;;
@@ -417,13 +375,13 @@ sysctls() {
 install_files() {
     local auto_line=
     [ "$AUTO_UPDATE" = off ] || auto_line="AutoUpdate=$AUTO_UPDATE"
-    mkdir -p "$STATE/status" "$STATE/request" /etc/containers/systemd "$LIBEXEC" "$SHARE"
+    mkdir -p "$STATE/status" "$STATE/request" "$(dirname "$QUADLET")" "$LIBEXEC" "$SHARE"
     chmod 0755 "$STATE" "$STATE/status"; chmod 0700 "$STATE/request"
     printf '%s\n' br_netfilter overlay > "$MODULES_FILE"
     sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
         -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
-        -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
+        -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
         "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
@@ -444,6 +402,7 @@ IMAGE=$IMAGE
 AUTO_UPDATE=$AUTO_UPDATE
 VERIFY=$VERIFY
 POLICY_CREATED=$POLICY_CREATED
+APPARMOR_PROFILE=$APPARMOR_PROFILE
 UI_PORT=$UI_PORT
 UI_BIND=$UI_BIND
 BIND=$BIND
@@ -452,7 +411,7 @@ TIMER_OURS=${timer_ours:-no}
 DOCKER_FORWARD_SUBNETS="$docker_subnets"
 EOF
     systemctl daemon-reload
-    [ -e /run/systemd/generator/melissa.service ] \
+    [ -e "$QUADLET_GENERATED" ] \
         || die "Quadlet did not generate melissa.service (check: /usr/libexec/podman/quadlet -dryrun)"
     systemctl enable -q --now melissa-update.path
 }
@@ -758,11 +717,12 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,49p' "$0"; exit 2 ;;
+*) sed -n '2,50p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
 mkdir -p "$STATE"
+apparmor_setup
 signatures
 image
 sysctls

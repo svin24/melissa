@@ -23,6 +23,10 @@ Image=@IMAGE@
 # k3s mounts, writes netfilter rules and creates pod network namespaces; the agent sandbox needs
 # nested namespaces. Rootful, this is root on the host (docs: "Security").
 PodmanArgs=--privileged --systemd=always
+# Hosts with AppArmor (Ubuntu): Melissa's own profile (/etc/apparmor.d/melissa-container, install.sh)
+# instead of unconfined, so the agent sandbox may create user namespaces while the host's restriction
+# stays on for everything else. PodmanArgs, not AppArmor=: Quadlet has that key only from podman 5.8.
+@APPARMOR_LINE@
 # --privileged shares the host's /dev. Hide input devices (lid switch, power key, keyboards): nothing
 # in Melissa needs them, and logind (masked in the image) must never act on them.
 Tmpfs=/dev/input

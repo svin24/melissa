@@ -1,0 +1,8 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Melissa's container (packaging/container/install.sh, docs: README "Ubuntu and AppArmor").
+profile melissa-container flags=(unconfined) {
+  userns,
+  include if exists <local/melissa-container>
+}

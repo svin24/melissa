@@ -1607,12 +1607,17 @@ Roadmap (rough, phases may overlap):
     server). (h) MTU: flannel over Tailscale gives pods about 1230, pods created before keep 1450. (i) Agent
     tokens: never hand out the server token (cluster root); use `k3s token create --ttl`. k3s `--vpn-auth` is
     skipped (experimental, fights Melissa's tailscaled).
-104. Ubuntu hosts and agent users (2026-11-27, found in CI). Ubuntu 26.04 loads the AppArmor profile
-    `bwrap-userns-restrict`, which attaches to `/usr/bin/bwrap` inside the unconfined container as well and
-    denies all capabilities to what bwrap runs: `setpriv` cannot switch to the agent user and every agent
-    sandbox fails. CI unloads the profile. **Decided by the owner 2026-11-27:** install.sh's preflight
-    detects a loaded `bwrap` or `unpriv_bwrap` profile and stops. It prints the commands (a link in
-    `/etc/apparmor.d/disable/`, `apparmor_parser -R`, and the userns sysctl at 0 when it is 1), how to undo
-    them, and clear caveats. The installer never changes the host's AppArmor; there is no override.
-    Still open: on Ubuntu 24.04 without that profile, `kernel.apparmor_restrict_unprivileged_userns=1` alone
-    stops bwrap, and install.sh does not check for it. Untested on a real Ubuntu install.
+104. Ubuntu hosts and agent users (2026-11-27, found in CI). Ubuntu 26.04 restricts unprivileged user
+    namespaces and loads `bwrap-userns-restrict`, whose `bwrap` profile attaches to `/usr/bin/bwrap` inside the
+    container as well and denies all capabilities to what bwrap runs: `setpriv` cannot switch to the agent
+    user and every agent sandbox fails. **Decided by the owner 2026-11-27 (second decision, replaces the
+    stop-with-instructions one the same day):** support Ubuntu (latest, 26.04 only for now) with Melissa's own
+    AppArmor profile. install.sh installs `/etc/apparmor.d/melissa-container` (`flags=(unconfined)`, `userns,`)
+    on hosts with AppArmor, loads it and runs the container under it (Quadlet `PodmanArgs=--security-opt
+    apparmor=melissa-container`); the image's sandbox uses `/usr/libexec/melissa/bwrap`, off Ubuntu's
+    path-attached profile. The host's restriction stays on; uninstall.sh removes the profile. The old
+    instructions (disable link, `apparmor_parser -R`, sysctl 0, caveats) remain only as the fallback when the
+    host restricts and the profile can't be loaded. CI's image gate runs this way with the restriction
+    asserted on; check.yml (tests straight on the runner) keeps turning it off. Still open: not tried on a real
+    Ubuntu install; Ubuntu 24.04 and other AppArmor distributions untested (an AppArmor older than 4 rejects the
+    profile: then install.sh warns and runs unconfined, or stops if the host restricts).
