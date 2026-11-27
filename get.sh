@@ -124,6 +124,7 @@ main() {
     say "Melissa container install: check this host, download Melissa's source from GitHub"
     say "  (codeload.github.com) into a temporary directory, run packaging/container/install.sh${1:+ $1}"
     say "  from it, then delete the directory. Undo later: sudo /usr/local/libexec/melissa/uninstall.sh"
+    case "${UI_BIND:-127.0.0.1}" in 127.0.0.1) say "  The web UI stays on this machine (127.0.0.1); apps open only from this device until you change Settings → Apps." ;; esac
 
     problems=$(host_problems)
     if [ -n "$problems" ]; then
