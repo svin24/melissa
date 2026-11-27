@@ -1625,3 +1625,12 @@ Roadmap (rough, phases may overlap):
     asserted on; check.yml (tests straight on the runner) keeps turning it off. Still open: not tried on a real
     Ubuntu install; Ubuntu 24.04 and other AppArmor distributions untested (an AppArmor older than 4 rejects the
     profile: then install.sh warns and runs unconfined, or stops if the host restricts).
+105. Pairing port and OEM setup (owner idea, 2026-11-27; research notes, nothing built:
+    `docs/design/PAIRING-PORT-RESEARCH-2026-11-27.md`). Owner constraints: pairing before the claim exists only
+    behind an explicit OEM build/install flag (everyone else is warned against it); otherwise the pairing port
+    opens only from Settings by the owner, never by itself or by an agent. (a) Port (7380/tcp proposed, IANA
+    unassigned) and `_melissa-pair._tcp`, advertised only while a window is open. (b) QR with certificate
+    fingerprint and secret, a PAKE with a typed code, or both; which PAKE crate. (c) Window length, attempts,
+    who may open it. (d) OEM flag form (cargo feature plus install flag?), per-device label secret, button
+    press. (e) Who is the CRA manufacturer for a box sold with Melissa. (f) SoftAP only on an appliance image.
+    (g) LAN and tailnet listeners for layer 0 (Q102a). (h) A paired client app gets the CA (Q22, Q14, Q87h).
