@@ -164,7 +164,7 @@ eq "netns-sysctl: podman bridge sets every key" "rc=0 $(grep -v -e '^#' -e '^$' 
     "$(netns_sysctl podman "$bridge_route" veth | tr '\n' ' ')"
 eq "netns-sysctl: not in a container, nothing" "rc=0" "$(netns_sysctl none "$bridge_route" veth)"
 eq "netns-sysctl: the host's network (default via enp1s0), nothing" "rc=0" \
-    "$(netns_sysctl podman "default via 192.168.1.1 dev enp1s0 proto dhcp" ether)"
+    "$(netns_sysctl podman "default via 192.0.2.1 dev enp1s0 proto dhcp" ether)"
 eq "netns-sysctl: eth0 that is not a veth, nothing" "rc=0" "$(netns_sysctl podman "$bridge_route" ether)"
 eq "netns-sysctl: no default route, nothing" "rc=0" "$(netns_sysctl podman "" veth)"
 printf '%s\n' 'kernel.core_pattern=|/bin/false' 'vm.max_map_count=1' 'net.ipv4.conf.wlan9.rp_filter=2' \
