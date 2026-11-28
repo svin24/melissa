@@ -98,6 +98,10 @@ for u in systemd-udevd.service systemd-udevd-kernel.socket systemd-udevd-control
     fi
 done
 echo "   host devices: udev and sysctl units masked, not running"
+# The data volume is owned by fixed ids; a shift here breaks every existing install on update.
+ids="$(sudo podman exec "$NAME" id -u melissa 2>/dev/null):$(sudo podman exec "$NAME" getent group melissa-kube 2>/dev/null | cut -d: -f3)"
+[ "$ids" = "994:995" ] || { echo "FAIL: melissa/melissa-kube ids are $ids, must be 994:995"; exit 1; }
+echo "   ids: melissa 994, melissa-kube 995"
 # The suite must run under Melissa's profile where the host has AppArmor, not unconfined.
 if [ "${#aa_args[@]}" -gt 0 ]; then
     label=$(sudo podman exec "$NAME" sh -c 'cat /proc/1/attr/apparmor/current 2>/dev/null || cat /proc/1/attr/current' | tr -d '\0')
