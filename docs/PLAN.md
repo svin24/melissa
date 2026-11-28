@@ -1745,6 +1745,7 @@ Roadmap (rough, phases may overlap):
 111. Updates page on phones (2026-11-28, design review of the Updates page). The phone board (Penpot
     "Updates", 11) shows "Checked 2 min ago" under the title next to Check now, but the shared settings head
     hides that text below 600px (owner board D2b) for every section. Show it on phones for Updates only, for
-    every section (a second head line), or keep it hidden? Also open from the same board: the status badge and
-    "Update Melissa" under the version, and left-aligned controls when a row wraps (today: the shared
-    setting-row layout keeps them in the right slot).
+    every section (a second head line), or keep it hidden? Also open from the same board: left-aligned
+    controls when a row wraps (today: the shared setting-row layout keeps them in the right slot). Decided
+    2026-11-28 (owner): on phones the status badge sits under the version and "Update Melissa" under the
+    explaining text, left-aligned, as on board 11 (`wide_only`/`narrow_only`); desktop unchanged.

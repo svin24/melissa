@@ -10,14 +10,14 @@ use crate::{
         code, command_block, confirm_card, danger_confirm, detail_head, disclosure,
         external_button, facts, group, inline_form, inline_number, inline_select,
         inline_select_with, inline_text_form, license_text, lines_field, link, link_button,
-        live_region, log_view, markdown_document, new_tab_button, notice, one_field_form,
-        people::password_checked, pick_list, plain_action, progress_bar, provider_logo, region,
-        select_field_at, setting_card, setting_card_with, setting_row, setting_row_details,
-        setting_row_full, setting_row_with, settings_form, settings_frame_at, settings_head,
-        settings_head_busy, settings_tools_oob, split_card, status_badge, text_field,
-        text_field_checked, toggle, update_tab_state, var_list, Btn, Choice, ConfirmCard,
-        DangerConfirm, Glyph, LogLine, Mark, Nav, PickRow, SettingsHead, SettingsSection, Toggle,
-        Tone, VarRow,
+        live_region, log_view, markdown_document, narrow_only, new_tab_button, notice,
+        one_field_form, people::password_checked, pick_list, plain_action, progress_bar,
+        provider_logo, region, select_field_at, setting_card, setting_card_with, setting_row,
+        setting_row_details, setting_row_full, setting_row_with, settings_form, settings_frame_at,
+        settings_head, settings_head_busy, settings_tools_oob, split_card, status_badge,
+        text_field, text_field_checked, toggle, update_tab_state, var_list, wide_only, Btn, Choice,
+        ConfirmCard, DangerConfirm, Glyph, LogLine, Mark, Nav, PickRow, SettingsHead,
+        SettingsSection, Toggle, Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -931,19 +931,26 @@ fn updates_body(v: &UpdatesView) -> Markup {
             },
         ));
     }
+    let badge = v.badge.map(|(word, tone, spin)| {
+        status_badge(word, tone, if spin { Mark::Spin } else { Mark::None })
+    });
+    let primary = v
+        .primary
+        .map(|label| plain_action(APPLY_URL, UPDATES_ID, label, true));
     let content = html! {
         @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
         @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
         (setting_card(None, setting_row_with(
             html! { "Melissa" },
             Some(html! { (v.version) }),
-            html! {
-                @if let Some((word, tone, spin)) = v.badge {
-                    (status_badge(word, tone, if spin { Mark::Spin } else { Mark::None }))
-                }
-                @if let Some(label) = v.primary { (plain_action(APPLY_URL, UPDATES_ID, label, true)) }
-            },
+            // Wide: the badge and the button beside the name. Phones (owner, 2026-11-28; board
+            // 11): the badge under the version and the button under the text, left-aligned.
+            wide_only(html! {
+                @if let Some(b) = &badge { (b) }
+                @if let Some(button) = &primary { (button) }
+            }),
             Some(html! {
+                @if let Some(b) = &badge { (narrow_only(b.clone())) }
                 @if let Some(b) = &v.busy {
                     (progress_bar(&b.label, &b.text, b.done, b.total))
                     p.quiet { (b.below) }
@@ -952,7 +959,12 @@ fn updates_body(v: &UpdatesView) -> Markup {
                 @if let Some(n) = v.note { p.quiet { (n) } }
                 @if let Some(l) = &v.line { p.quiet { (l) } }
                 @if let Some(u) = &v.whats_new {
-                    (actions(new_tab_button(Btn::link(), u, "What\u{2019}s new", Some(Glyph::Expand))))
+                    (actions(html! {
+                        @if let Some(button) = &primary { (narrow_only(button.clone())) }
+                        (new_tab_button(Btn::link(), u, "What\u{2019}s new", Some(Glyph::Expand)))
+                    }))
+                } @else if let Some(button) = &primary {
+                    (narrow_only(actions(button.clone())))
                 }
                 @if v.commands_open { (commands) }
                 (disclosure("Details", false, html! {

@@ -2765,6 +2765,18 @@ pub fn plain_action(action: &str, target: &str, label: &str, primary: bool) -> M
 }
 
 /// A row of buttons.
+/// Shown only where a Settings section is wider than a phone (above 600px), as if not wrapped.
+/// With [`narrow_only`] a part can sit elsewhere on phones (owner board "Updates" 11: the badge
+/// and the button under the text); the hidden copy is out of the page for everyone.
+pub fn wide_only(content: Markup) -> Markup {
+    html! { span.wide-only { (content) } }
+}
+
+/// Shown only where a Settings section is phone-narrow (600px or less); see [`wide_only`].
+pub fn narrow_only(content: Markup) -> Markup {
+    html! { span.narrow-only { (content) } }
+}
+
 pub fn actions(items: Markup) -> Markup {
     html! { div.action-row { (items) } }
 }

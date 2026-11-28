@@ -5005,6 +5005,30 @@ form.inline {
   white-space: nowrap;
 }
 
+/* wide_only / narrow_only: one part placed differently on phones (Updates' badge and button). */
+.wide-only {
+  display: contents;
+}
+
+.narrow-only {
+  display: none;
+}
+
+@container settings-main (max-width: 600px) {
+  .wide-only {
+    display: none;
+  }
+
+  .narrow-only {
+    display: contents;
+  }
+
+  /* A row control holding only wide parts takes no space on phones. */
+  .setting-control:has(> .wide-only):not(:has(> :not(.wide-only))) {
+    display: none;
+  }
+}
+
 /* A narrow section (768px): the tools without "Checked just now" (owner board D2b). */
 @container settings-main (max-width: 600px) {
   .settings-tools .checked > span {
@@ -5113,12 +5137,13 @@ main:empty {
 
 /* A row (owner decision 5, 2026-11-23): 40px with one line, 56px with a description; the
    control on the right (32px), wrapping below the text only when there is no room beside it.
-   The text has its own 4px above and below, so a control and the text both sit 8px in. */
+   The text and the control each have their own 4px above and below, so both sit 8px in, beside
+   each other or wrapped (a wrapped last row keeps 8px to the card's edge; 2026-11-28). */
 .setting-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-4);
+  gap: 0 var(--space-4);
   min-height: var(--size-row-md);
   padding: var(--space-1) var(--space-4);
 }
@@ -5155,6 +5180,7 @@ main:empty {
 }
 
 .setting-control {
+  padding-block: var(--space-1);
   display: flex;
   flex: 0 1 auto;
   flex-wrap: wrap;
@@ -5177,6 +5203,8 @@ main:empty {
 .setting-extra {
   flex: 1 0 100%;
   min-width: 0;
+  /* The row has no gap between lines: 4px under the text + 8px here, as before. */
+  padding-top: var(--space-2);
   padding-bottom: var(--space-2);
 }
 
