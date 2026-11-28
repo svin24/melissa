@@ -110,6 +110,21 @@ RUN set -eu; . /gvisor.lock; mkdir -p /out/gvisor-bin /src; cd /src; \
     install -m 0644 LICENSE /out/LICENSE; \
     [ "$(/out/runsc --version | head -n1)" = "runsc version release-${GVISOR_VERSION}" ]
 
+# ---- stage 2d: fetch and verify restic (version and hashes in restic.lock) ----------------
+# Backups (melissa-backup.service, root): the official static release binary, driven by
+# melissa-server with --json (crates/backup).
+FROM ${BUILDER} AS restic
+RUN dnf -y install --setopt=install_weak_deps=False bzip2 && dnf clean all
+COPY packaging/container/restic.lock /restic.lock
+RUN set -eu; . /restic.lock; mkdir -p /out /src; cd /src; \
+    bz="restic_${RESTIC_VERSION}_linux_amd64.bz2"; \
+    curl -fsSL --retry 3 -o "$bz" "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/$bz"; \
+    curl -fsSL --retry 3 -o LICENSE "https://raw.githubusercontent.com/restic/restic/v${RESTIC_VERSION}/LICENSE"; \
+    printf '%s  %s\n%s  LICENSE\n' "$RESTIC_SHA256_AMD64" "$bz" "$RESTIC_LICENSE_SHA256" | sha256sum -c -; \
+    bunzip2 -c "$bz" > /out/restic; chmod 0755 /out/restic; \
+    install -m 0644 LICENSE /out/LICENSE; \
+    /out/restic version | grep -q "^restic ${RESTIC_VERSION} "
+
 # ---- stage 3: build whisper.cpp's CLI for voice input (version and hash in whisper.lock) ----
 # whisper-build.sh has the recipe (CPU only, all x86-64 variants loaded at runtime) and keeps the result
 # in a cache mount keyed on whisper.lock and itself, so it compiles once per version, not on every build.
@@ -154,6 +169,11 @@ COPY packaging/container/gvisor.lock /usr/lib/melissa/gvisor.lock
 RUN ln -s ../lib/melissa/gvisor/runsc /usr/bin/runsc \
  && ln -s ../lib/melissa/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
 
+# restic (rarely changes): backups, run only by root's melissa-backup.service.
+COPY --from=restic /out/restic /usr/bin/restic
+COPY --from=restic /out/LICENSE /usr/share/licenses/restic/LICENSE
+COPY packaging/container/restic.lock /usr/lib/melissa/restic.lock
+
 # whisper.cpp's CLI for voice input (rarely changes): found by melissa-server at this path.
 COPY --from=whisper /out/ /usr/lib/melissa/whisper/
 COPY --from=whisper /licenses/LICENSE /usr/share/licenses/whisper.cpp/LICENSE
@@ -169,6 +189,8 @@ RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
         melissa-secrets-encrypt.service melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
         melissa-netns-sysctl.service melissa-factory-reset.path melissa-factory-reset.service; \
+    # Backups (root, crates/backup): requests from the server, and the hourly schedule check.
+    systemctl enable melissa-backup.path melissa-backup.timer; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
         systemd-networkd-wait-online.service 2>/dev/null || true; \
@@ -230,7 +252,7 @@ RUN set -eu; \
         /usr/bin/bwrap /usr/libexec/melissa/bwrap /usr/sbin/nft /usr/sbin/iptables /usr/lib/systemd/systemd-socket-proxyd /usr/bin/melissa-setup \
         /usr/lib/melissa/whisper/whisper-cli /usr/bin/tailscale /usr/sbin/tailscaled \
         /usr/libexec/melissa/factory-reset /usr/bin/newuidmap /usr/bin/newgidmap /usr/bin/nsenter \
-        /usr/bin/unshare /usr/bin/setpriv; do \
+        /usr/bin/unshare /usr/bin/setpriv /usr/bin/restic /usr/bin/sqlite3; do \
         test -x "$f" || { echo "lint: missing $f"; exit 1; }; done; \
     for f in /etc/subuid /etc/subgid; do \
         grep -qx 'melissa:1879048192:65536' "$f" || { echo "lint: no agent-user range in $f"; exit 1; }; done; \
@@ -250,6 +272,10 @@ RUN set -eu; \
         /usr/lib/melissa/k3s/gvisor/runsc.toml /usr/lib/melissa/k3s/gvisor/config-v3.toml.tmpl \
         /usr/lib/melissa/k3s/gvisor/runtimeclass.yaml /usr/share/licenses/gvisor/LICENSE; do \
         test -s "$f" || { echo "lint: gVisor: missing $f"; exit 1; }; done; \
+    . /usr/lib/melissa/restic.lock; \
+    /usr/bin/restic version | grep -q "^restic ${RESTIC_VERSION} " \
+        || { echo "lint: restic is not $RESTIC_VERSION"; exit 1; }; \
+    test -s /usr/share/licenses/restic/LICENSE || { echo "lint: restic's license missing"; exit 1; }; \
     /usr/lib/melissa/whisper/whisper-cli --help >/dev/null 2>&1 || { echo "lint: whisper-cli doesn't run"; exit 1; }; \
     # npm-only agent CLIs (Gemini CLI, Pi) run on the image's Node; their packages need >= 20.6.
     node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || { echo "lint: node >= 22 missing"; exit 1; }; \
@@ -260,7 +286,8 @@ RUN set -eu; \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-secrets-encrypt.service melissa-ui-forward.socket \
         melissa-app-access.service melissa-tailscaled.service melissa-factory-reset.path \
-        melissa-factory-reset.service melissa-netns-sysctl.service; \
+        melissa-factory-reset.service melissa-netns-sysctl.service melissa-backup.path \
+        melissa-backup.timer; \
     # The container netns's sysctls (fallback for an old Quadlet): net.* keys only, never host-wide ones.
     test -x /usr/libexec/melissa-container/netns-sysctl || { echo "lint: netns-sysctl missing"; exit 1; }; \
     ! grep -v -e '^#' -e '^$' -e '^net\.' /usr/lib/melissa/netns-sysctl.conf \
@@ -283,7 +310,10 @@ RUN set -eu; \
         /usr/lib/systemd/system/melissa-cluster-label.timer \
         /usr/lib/systemd/system/melissa-factory-reset.path \
         /usr/lib/systemd/system/melissa-factory-reset.service \
-        /usr/lib/systemd/system/melissa-netns-sysctl.service; \
+        /usr/lib/systemd/system/melissa-netns-sysctl.service \
+        /usr/lib/systemd/system/melissa-backup.service \
+        /usr/lib/systemd/system/melissa-backup.path \
+        /usr/lib/systemd/system/melissa-backup.timer; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
     # Secrets encrypted at rest (k3s-secrets-encrypt migrates older datastores).
     grep -qx 'secrets-encryption: true' /etc/rancher/k3s/config.yaml.d/10-melissa.yaml \

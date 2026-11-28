@@ -856,6 +856,11 @@ Roadmap (rough, phases may overlap):
   (`docs/design/INTERCONNECT-2026-11-27.md` runbook), layer-0 pairing, layer-1 federation between lead agents
   and `melissa-device` for dumb devices; a shared k3s cluster (layer 2) only after that, opt-in.
 - **M4 — VPS agent + backups:** edge/ingress agent, offsite backups with restic or Kopia, restore drills, VPN exit, seedbox as optional apps.
+  Progress (2026-11-28): local backups, core built (docs/design/BACKUPS-2026-11-28.md): restic (pinned in the
+  image) behind a `BackupEngine` trait, a root `melissa-backup` unit driven by fixed-name requests, Melissa's
+  state + a raw k3s snapshot + every app's export (spec, labels, Secret values, volumes) with app-aware hooks
+  (the spec's `backup` field), weekly by default, optional encryption with a recovery key, marker-checked
+  drive, one-app restore. Open: the drive helper, the Settings UI, the first-run restore flow (Q113).
 - **M5 — Published image:** the container image signed and on an update channel (ghcr.io; owner's yes given
   2026-11-27, `:edge` from master first, `:stable` from tags); later
   the reference distro (bootc, archived) with an installer/first-boot flow.
@@ -919,6 +924,8 @@ Roadmap (rough, phases may overlap):
     say so in Settings → Updates before a rollback? (b) a snapshot is not a backup (same disk, pruned after
     3 updates); the backup feature must take its own. (c) Downtime grows by the copy (seconds for a small
     datastore). (d) Snapshots hold Secrets (plain text in ones from before 2026-11-28) and the key: root only.
+    Backups (Q113) also take their own raw k3s snapshot (`item:k3s`: `VACUUM INTO` of state.db, token, tls,
+    cred, the k3s version; `melissa_backup::k3s`), restorable for the same k3s version only.
 24. Agent CLI logins under the sandbox: the user's credential file is bind-mounted read-write. Does OAuth token
     refresh work there (rename onto a bind mount fails with EBUSY)? Or should Melissa keep its own CLI logins
     (e.g. `CLAUDE_CONFIG_DIR`), and on headless agents (DynamicUser) where do those logins come from?
@@ -978,9 +985,15 @@ Roadmap (rough, phases may overlap):
     kine compacts them and SQLite reuses the pages (no VACUUM is run); (b) key rotation on a schedule? Backups of
     app data must include the Secret (or the owner's copy), or a restore gets data with unknown credentials.
     Rotation (e.g. admin password) is app-specific and not modelled.
+    2026-11-28: encrypted backups include each app's Secret values (`secrets.json` in the app's snapshot, read
+    only by root's backup unit with k3s's admin kubeconfig; left out of unencrypted backups, owner) and put
+    them back on a restore; the raw k3s snapshot carries `server/cred` (the key) with the datastore.
 36. Disk: images and app data share `/var` with the OS (8.6 GiB in the test VM filled up once). Should
     `deploy_app` check free space against the image size + volume sizes first, and should apps get their
     own volume/quota (local-path does not enforce PVC sizes)?
+    2026-11-28: a one-app restore needs room for the restored copy and keeps the replaced data as
+    `<volume>.pre-restore-<UTC time>` for 7 days (every restore adds one); backup staging (k3s datastore
+    copy) is on `/var` too.
 37. `POST /api/tools/{name}` and the confirmation inbox are reachable by any local process until the
     loopback API has auth. Sandboxed agents no longer reach it (2026-11-18: deny-by-default egress, each
     sandbox only sees its own MCP socket), except backends configured with `network = "host"`; other local
@@ -1795,3 +1808,28 @@ Roadmap (rough, phases may overlap):
     over the tailnet. (g) Do not bump any settings TOML to format 2 or later while images from before
     2026-11-28 are still in the rollback window: they read the settings with `deny_unknown_fields` and would
     reject the `format` key (and move `providers.toml` aside as `.broken`).
+113. Backups, open items (2026-11-28; docs/design/BACKUPS-2026-11-28.md; core built in `crates/backup`).
+    Decided 2026-11-28 (owner): (a) **a restored device keeps its name and settings** (device id, people,
+    chats, Melissa's settings) **and gets a fresh cluster and Tailscale identity** (node key, cluster
+    tokens and `cluster.toml` are never backed up; apps come back through their logical export).
+    App Secret values go into a backup **only when it is encrypted** (an unencrypted run leaves them out
+    and its status says so). Provider sign-ins (the agents' CLI logins in the home directory) are never
+    backed up: after a restore, agents sign in again. A backup missed because the drive was away runs as
+    soon as the drive is back (the hourly check), not at the next slot. Before every restore the app's
+    current data is kept as `<volume>.pre-restore-<UTC time>` for 7 days.
+    Open: what happens when the old device is still around (two devices with one device id). (b) The
+    drive helper: who mounts a drive the owner picks below `/run/melissa-backup/<name>` (host helper vs
+    inside the container), labels, safe unplug, refusing a target on the same disk as `/var` (root
+    already refuses a target that is not a mounted filesystem). (c) Settings UI: set up (encryption on by
+    default, the recovery key shown once with "I have written it down" → `ack-key`), schedule, retention,
+    last run per item, restore one app (pick a run). (d) First-run "restore this device": enter the key,
+    `adopt`, `restore_state`, redeploy each app from its backed-up spec, restore it; whether to offer the
+    raw k3s rollback there. (e) Unencrypted backups still hold k3s's keys (the raw snapshot) and
+    Melissa's settings in the clear: say so plainly in the UI. (f) A periodic `restic check` and telling
+    the owner when backups fail or are overdue. (g) Nix packaging of the root unit (container only
+    today). (h) Offsite (M4): a second repository on a VPS (rest-server or sftp) with the same engine.
+    (i) Q112 (d): whether backups should keep rotated transcript files. (j) From
+    `docs/design/STATE-INVENTORY-2026-11-28.md` "For the backup feature", not done yet: record the Melissa
+    release with the state snapshot and refuse a restore into an older image; and the state copy is taken
+    while the server runs (every store writes whole files atomically, so files may be of different moments,
+    never half written): stop the server or hold its store locks for the copy?

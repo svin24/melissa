@@ -1,0 +1,27 @@
+[package]
+name = "melissa-backup"
+version = "0.0.2"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Melissa backups: Melissa's state, k3s and every app's data to a drive the owner picks (restic)"
+
+[dependencies]
+melissa-agent = { workspace = true }
+melissa-appspec = { workspace = true }
+melissa-cluster = { workspace = true }
+melissa-settings = { workspace = true }
+# Secret values in the app export (base64, as Kubernetes stores them). Already in the build.
+base64 = { workspace = true }
+# Times of runs and the schedule in the device's zone. Already in the build (scheduled jobs).
+jiff = { workspace = true }
+k8s-openapi = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+# restic pinned for backups (melissa_backup, docs/design/BACKUPS-2026-11-28.md). Sourced as shell by the
+# image build, which ships the official static release binary (BSD-2-Clause) from the GitHub release.
+# Melissa needs restic >= 0.17.1: `--insecure-no-password` and `backup --stdin-from-command` (0.17.0),
+# exit code 12 for a wrong password (0.17.1). 0.20.0 (2026-11-19) also fixes two restore security bugs.
+# Update: bump the version, then take the hashes for restic_<version>_linux_{amd64,arm64}.bz2 from
+#   curl -fsSL https://github.com/restic/restic/releases/download/v<version>/SHA256SUMS
+# (check SHA256SUMS.asc against the restic signing key), and the license at the release tag:
+#   curl -fsSL https://raw.githubusercontent.com/restic/restic/v<version>/LICENSE | sha256sum
+# If a hash differs, read the diff before updating it. Then run the backup integration test against the
+# new binary (MELISSA_TEST_RESTIC=<path> cargo nextest run -p melissa-backup) and read the release notes
+# for changes to the JSON output (docs/075_scripting.rst at the tag).
+RESTIC_VERSION=0.20.0
+RESTIC_SHA256_AMD64=0ccd9fa7885074a24603b051e01bf9bd8b5e45d6a1791e9d9887e9e9372107f7
+RESTIC_SHA256_ARM64=1188daded239bccb5952a01d2ad33e77a0d3dc34f9d9fc1e7fdda618d44938ef
+RESTIC_LICENSE_SHA256=6f08a01a9fab5b24e139a09f15cc24a73087c7bc09e3bacf099fdf2d767bf897

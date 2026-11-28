@@ -384,7 +384,21 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
   starts everything again. A marker left by a crash is finished at the next start. Progress:
   `sudo podman exec melissa journalctl -u melissa-factory-reset`. The new setup code:
   `sudo podman exec melissa melissa-server setup-code`.
+- Backups: the backup settings and the device's copy of the recovery key are erased too; the backups on
+  the drive stay, and the recovery key opens them again.
 - To remove everything instead (the volume too), see Uninstall.
+
+## Backups (core only; docs/design/BACKUPS-2026-11-28.md)
+Root's `melissa-backup.service` (restic pinned in `restic.lock`) backs up Melissa's state, k3s and every
+app's data to a drive, weekly by default. Started by `melissa-backup.path` (server requests in
+`/var/lib/melissa-container/backup-request`) and hourly by `melissa-backup.timer` (the schedule). No
+Settings page and no drive helper yet; by hand, as root in the container (the target must be a
+mounted drive's mount point; an unencrypted backup leaves the apps' secrets out, and provider sign-ins
+are never backed up):
+- `melissa-server backup setup <empty dir> [--no-encryption]`: set up a drive (prints the recovery key once);
+- `melissa-server backup now`, `... snapshots`, `... restore-app <app> [<time>]`, `... status`;
+- `melissa-server backup adopt <dir>`: use backups already on a drive (asks for the key).
+- A restore keeps the data it replaced next to it as `<volume>.pre-restore-<UTC time>` for 7 days.
 
 ## Updates (Settings → Updates)
 - **Automatic**: `melissa-auto-update.timer` runs `melissa-host-update auto` at the owner's time

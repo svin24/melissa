@@ -1,0 +1,26 @@
+# Melissa's backups (crates/backup, docs/design/BACKUPS-2026-11-28.md). Root: it reads Melissa's state,
+# k3s's datastore, every app's volumes and Secret values, and writes the backup drive with restic.
+# Started by melissa-backup.path when the server leaves a request in
+# /var/lib/melissa-container/backup-request (fixed file names, plus one settings file root checks), and
+# by melissa-backup.timer every hour (it backs up only when the owner's schedule says so). Writes its
+# status to /var/lib/melissa-container/backup-status for the server; never takes a path or a command
+# from a request. Nothing happens until the owner sets up a drive. Container image only.
+[Unit]
+Description=Melissa: backups (requests and the schedule)
+RequiresMountsFor=/var/lib/melissa-container
+After=k3s.service
+# Started by the path unit for every request: no start limit, or a burst of requests would fail
+# the service and leave the path unit dead. ExecStopPost paces the starts instead.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/melissa-server backup unit
+# At most one start every two seconds, also when the run fails.
+ExecStopPost=/usr/bin/sleep 2
+NoNewPrivileges=yes
+PrivateTmp=yes
+# A first backup of big app volumes takes a while; stay out of the apps' way.
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=idle

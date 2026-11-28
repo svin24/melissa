@@ -38,6 +38,9 @@ in
     pkgs.cargo-watch
     pkgs.just
     pkgs.pkg-config
+    # The backup integration test (crates/backup/tests/restic.rs) runs the real restic; without it
+    # those tests skip. The image pins its own (packaging/container/restic.lock).
+    pkgs.restic
     shotsPython
   ];
 
