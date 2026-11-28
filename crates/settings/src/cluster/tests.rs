@@ -266,7 +266,10 @@ fn default_is_a_single_node_server_with_a_unique_name() {
     // No device name yet: the Tailscale name from install.sh, not the shared `melissa`.
     assert_eq!(st.node_name, "melissa-desktop");
     let dropin = t.read(SERVER_DROPIN);
-    assert!(dropin.contains("node-name: \"melissa-desktop\""), "{dropin}");
+    assert!(
+        dropin.contains("node-name: \"melissa-desktop\""),
+        "{dropin}"
+    );
     assert!(
         !dropin.contains("node-ip"),
         "single node: k3s-node-ip picks it"
@@ -617,7 +620,13 @@ fn root_itself_joins_and_invites() {
             address: addr.parse().unwrap(),
         },
     };
-    assert!(root_invite(&t.root, Origin::Root, &invite("desktop", "100.64.0.2"), &rec).is_err());
+    assert!(root_invite(
+        &t.root,
+        Origin::Root,
+        &invite("desktop", "100.64.0.2"),
+        &rec
+    )
+    .is_err());
     let token = root_invite(&t.root, Origin::Root, &invite("laptop", "100.64.0.2"), &rec).unwrap();
     assert_eq!(token, "K10tok::abc.def");
     assert_eq!(trusted(&t), server_setting());
