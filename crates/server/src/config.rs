@@ -42,6 +42,36 @@ pub struct ServerConfig {
     pub apps: AppsSection,
     /// Sandboxed agents' network beyond their backends' allowlists.
     pub egress: EgressSection,
+    /// The web UI's listeners behind HTTPS proxies.
+    pub web: WebSection,
+}
+
+/// `[web]`: HTTPS from other devices (DECISIONS 2026-11-28 "HTTPS access from other devices";
+/// `melissa_web::front`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebSection {
+    /// The loopback listener only Melissa's own `tailscale serve` forwards to: the one place
+    /// `X-Forwarded-*` is believed (HTTPS, the client's address). Must be loopback and differ
+    /// from `listen`.
+    pub proxy_listen: SocketAddr,
+    /// Believe `X-Forwarded-*` on `listen` too: an HTTPS proxy on this computer forwards to it
+    /// (the host's own `tailscale serve`, as the docs said before Melissa served HTTPS
+    /// herself). Unset: yes unless Melissa runs Tailscale herself (then no).
+    pub trust_forwarded: Option<bool>,
+    /// More host names the web UI answers to besides loopback and this device's MagicDNS
+    /// name (e.g. a name your own HTTPS proxy uses). Sign-in still needs HTTPS or loopback.
+    pub hosts: Vec<String>,
+}
+
+impl Default for WebSection {
+    fn default() -> Self {
+        Self {
+            proxy_listen: SocketAddr::from(([127, 0, 0, 1], 8082)),
+            trust_forwarded: None,
+            hosts: Vec::new(),
+        }
+    }
 }
 
 /// `[egress]`: what sandboxed agents may reach besides their backend's own service.
@@ -133,6 +163,7 @@ impl Default for ServerConfig {
             lead: LeadSection::default(),
             apps: AppsSection::default(),
             egress: EgressSection::default(),
+            web: WebSection::default(),
         }
     }
 }
@@ -487,6 +518,19 @@ impl ServerConfig {
                 self.listen
             );
         }
+        if !self.web.proxy_listen.ip().is_loopback() {
+            bail!(
+                "[web] proxy_listen = {} is not a loopback address (only Melissa's own \
+                 `tailscale serve` may reach it)",
+                self.web.proxy_listen
+            );
+        }
+        if self.web.proxy_listen == self.listen {
+            bail!("[web] proxy_listen must differ from listen");
+        }
+        if let Some(bad) = self.web.hosts.iter().find(|h| !valid_address(h)) {
+            bail!("[web] hosts: `{bad}` is not a host name or IP address");
+        }
         if self.task_timeout_secs == 0 {
             bail!("task_timeout_secs must be greater than 0");
         }
@@ -744,6 +788,27 @@ mod tests {
             let config: ServerConfig =
                 toml::from_str(&format!("[apps]\naddresses = [\"{bad}\"]")).unwrap();
             assert!(config.validate().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn web_section() {
+        let d = ServerConfig::default();
+        assert_eq!(d.web.proxy_listen.to_string(), "127.0.0.1:8082");
+        assert_eq!(d.web.trust_forwarded, None, "decided by who runs Tailscale");
+        assert!(d.validate().is_ok());
+        let c: ServerConfig = toml::from_str(
+            "[web]\ntrust_forwarded = false\nhosts = [\"box.example.com\", \"192.0.2.7\"]",
+        )
+        .unwrap();
+        assert!(c.validate().is_ok());
+        for bad in [
+            "[web]\nproxy_listen = \"0.0.0.0:8082\"",
+            "[web]\nproxy_listen = \"127.0.0.1:8080\"",
+            "[web]\nhosts = [\"bad host\"]",
+        ] {
+            let c: ServerConfig = toml::from_str(bad).unwrap();
+            assert!(c.validate().is_err(), "{bad}");
         }
     }
 

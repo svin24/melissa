@@ -9,7 +9,8 @@ use melissa_auth::{Auth, Cost, NewSession};
 use super::*;
 use crate::auth::{COOKIE_PLAIN, CSRF_HEADER};
 
-const HOST: &str = "melissa.example.com";
+/// A browser on this device (or through an SSH tunnel): plain HTTP may carry passwords.
+const HOST: &str = "localhost:8080";
 
 /// A login store on a clock the test moves.
 pub(super) fn store() -> (Auth, Arc<AtomicU64>) {
@@ -168,6 +169,74 @@ async fn claim_needs_the_code_and_works_once() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(headers[header::LOCATION], "/login");
     assert_eq!(auth.people().len(), 1);
+}
+
+#[tokio::test]
+async fn passwords_over_plain_http_only_from_this_device() {
+    let (auth, _) = store();
+    claimed(&auth);
+    let (app, _) = app_signed_out(auth.clone());
+    let body = "username=ana&password=owner-password";
+    let post_at = |path: &str, host: &str, https: bool| {
+        let mut b = axum::http::Request::post(path)
+            .header(header::HOST, host)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ACCEPT, "text/html");
+        if https {
+            b = b.header("x-forwarded-proto", "https");
+        }
+        b.body(Body::from(body)).unwrap()
+    };
+    let from = |host: &str, https: bool| post_at("/login", host, https);
+    // Another device over plain HTTP: refused before the password is looked at.
+    let (status, _, page) = send(&app, from("box.example.com:8080", false)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(page.contains("needs HTTPS"), "{page}");
+    for path in [
+        "/claim",
+        "/reauth",
+        "/invite/x",
+        "/ui/account/password",
+        "/ui/settings/tailscale/serve",
+    ] {
+        let (status, _, _) = send(&app, post_at(path, "192.0.2.7:8080", false)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
+    // Through an HTTPS proxy Melissa trusts (crate::front), or on this device: fine.
+    let (status, _, _) = send(&app, from("box.example-tailnet.ts.net", true)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (status, _, _) = send(&app, from("127.0.0.1:8080", false)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn over_https_only_the_host_prefixed_cookie_counts() {
+    let (auth, _) = store();
+    let owner = claimed(&auth);
+    let (app, _) = app_signed_out(auth.clone());
+    // A plain cookie (any page on the host name could have set it over HTTP) means nothing.
+    let (status, _, _) = send(
+        &app,
+        as_(&owner, "GET", "/api/lead/status")
+            .header("x-forwarded-proto", "https")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(
+        &app,
+        req("GET", "/api/lead/status")
+            .header("x-forwarded-proto", "https")
+            .header(
+                header::COOKIE,
+                format!("{}={}", crate::auth::COOKIE_SECURE, owner.token),
+            )
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]

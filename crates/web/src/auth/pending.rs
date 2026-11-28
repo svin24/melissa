@@ -69,13 +69,25 @@ impl Action {
     /// `via` (the password form's post, which passed the same-origin check).
     fn into_request(self, via: &HeaderMap, token: &str, csrf: &str) -> Option<Request> {
         let mut b = Request::builder().method(self.method).uri(self.uri);
-        for name in ["host", "origin", "sec-fetch-site", "x-forwarded-proto"] {
+        for name in [
+            "host",
+            "origin",
+            "sec-fetch-site",
+            "x-forwarded-proto",
+            crate::front::VIA,
+        ] {
             if let Some(v) = via.get(name) {
                 b = b.header(name, v);
             }
         }
+        // Over HTTPS only the `__Host-` cookie counts (`super::session_cookie`).
+        let cookie = if super::https(via) {
+            super::COOKIE_SECURE
+        } else {
+            COOKIE_PLAIN
+        };
         b = b
-            .header(header::COOKIE, format!("{COOKIE_PLAIN}={token}"))
+            .header(header::COOKIE, format!("{cookie}={token}"))
             .header(CSRF_HEADER, csrf);
         if let Some(ct) = self.content_type {
             b = b.header(header::CONTENT_TYPE, ct);

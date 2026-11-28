@@ -17,6 +17,7 @@ mod fake_apps;
 mod fake_usage;
 mod feed;
 mod files;
+mod front;
 mod logos;
 mod looks;
 mod markdown;
@@ -49,6 +50,7 @@ use serde::Deserialize;
 
 pub use auth::{bind_host, pages::log_setup_code, serve_host, Auth, Gate, Viewer};
 pub use axum::Router;
+pub use front::{serve, Front};
 pub use settings::{Catalog, CheckFn, ProbeFn, ProbeRequest, Settings, SettingsParts};
 pub use setup_password::{RevealedPassword, SetupError, SetupPasswords, SetupState};
 
@@ -206,15 +208,6 @@ async fn mcp_post(
 /// No server-initiated event stream is offered.
 async fn mcp_get() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
-}
-
-/// Serve the UI on TCP. The peer address feeds the failed sign-in limits and the audit.
-pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await
 }
 
 /// `?task=new` on Settings → Developer: the New task form shows (opened in place).
@@ -1444,7 +1437,19 @@ mod tests {
         struct FakeTailscale {
             running: std::sync::Mutex<bool>,
             json: std::sync::Mutex<String>,
+            /// `tailscale serve status --json`.
+            serve: std::sync::Mutex<String>,
+            /// The tailnet has HTTPS off: `tailscale serve` prints the page and waits; the
+            /// sender finishes it.
+            https_off: bool,
+            /// `tailscale serve` never finishes (Turning on…), or fails.
+            stall: bool,
+            fail: bool,
+            waiting: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>,
         }
+
+        const ALLOW_HTTPS: &str = "https://login.tailscale.com/f/serve?node=n0000000000001";
+        const SERVING: &str = r#"{"TCP":{"443":{"HTTPS":true}},"Web":{"melissa-box.tail0000.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8082"}}}}}"#;
 
         const TS_URL: &str = "https://login.tailscale.com/a/feedface0123";
 
@@ -1483,6 +1488,42 @@ mod tests {
                     Ok(())
                 })
             }
+            fn serve_status(&self) -> melissa_agent::BoxFuture<'_, Result<String, String>> {
+                Box::pin(async move { Ok(self.serve.lock().unwrap().clone()) })
+            }
+            fn serve_reset(&self) -> melissa_agent::BoxFuture<'_, Result<(), String>> {
+                Box::pin(async move {
+                    *self.serve.lock().unwrap() = "{}".into();
+                    Ok(())
+                })
+            }
+            fn serve_start<'a>(
+                &'a self,
+                _target: &'a str,
+            ) -> melissa_agent::BoxFuture<'a, Result<melissa_settings::tailscale::ServeStart, String>>
+            {
+                use melissa_settings::tailscale::{LoginUrl, ServeStart};
+                Box::pin(async move {
+                    if self.stall {
+                        std::future::pending::<()>().await;
+                    }
+                    if self.fail {
+                        return Err("`tailscale serve` failed (exit status: 1)".into());
+                    }
+                    if !self.https_off {
+                        *self.serve.lock().unwrap() = SERVING.into();
+                        return Ok(ServeStart::Done);
+                    }
+                    let (done_tx, done) = tokio::sync::oneshot::channel();
+                    let (cancel, _cancelled) = tokio::sync::oneshot::channel();
+                    *self.waiting.lock().unwrap() = Some(done_tx);
+                    Ok(ServeStart::Waiting {
+                        url: LoginUrl::parse(ALLOW_HTTPS),
+                        done,
+                        cancel,
+                    })
+                })
+            }
         }
 
         impl melissa_settings::tailscale::Service for FakeTailscale {
@@ -1511,11 +1552,291 @@ mod tests {
                 management,
                 setting: fx.dir.join("config").join(ts::FILE_NAME),
                 node_name: "melissa-box".into(),
+                serve_target: Some("http://127.0.0.1:8082".into()),
+                ui_port: 8080,
                 cli: fake.clone(),
                 service: fake,
                 audit: Some(melissa_agent::AuditLog::new(fx.dir.join("audit.jsonl"))),
                 wait: std::time::Duration::from_millis(300),
             })
+        }
+
+        /// Enabled and signed in.
+        async fn ts_connected(tag: &str, fake: Arc<FakeTailscale>) -> (SettingsFixture, Router) {
+            use melissa_settings::tailscale::Management;
+            let mut fx = SettingsFixture::new(tag);
+            let c = ts_control(&fx, Management::Melissa, fake.clone());
+            c.enable("ui").await.unwrap();
+            *fake.json.lock().unwrap() = ts_status("Running", "");
+            *fake.serve.lock().unwrap() = "{}".into();
+            fx.tailscale = Some(c);
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            (fx, app)
+        }
+
+        #[tokio::test]
+        async fn settings_tailscale_open_from_other_devices() {
+            let fake = Arc::new(FakeTailscale::default());
+            let (fx, app) = ts_connected("ts-serve", fake.clone()).await;
+
+            // Off: one row more, with Turn on (a link to the form; works without script).
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(
+                html.contains("Open Melissa from your other devices"),
+                "{html}"
+            );
+            assert!(html.contains("Off. Gives Melissa an HTTPS address on your tailnet."));
+            assert!(
+                html.contains("href=\"/settings/tailscale?serve=1\""),
+                "{html}"
+            );
+
+            // The form: the certificate log notice, the name and the password.
+            let (_, h, html) = send(&app, get("/settings/tailscale?serve=1")).await;
+            assert_eq!(h.get(header::CACHE_CONTROL).unwrap(), "no-store");
+            assert!(html.contains("public certificate logs"), "{html}");
+            assert!(html.contains("value=\"melissa-box\""), "{html}");
+            assert!(
+                html.contains("Address: https://melissa-box.tail0000.ts.net"),
+                "{html}"
+            );
+            assert!(html.contains("autocomplete=\"current-password\""), "{html}");
+            assert!(html.contains("action=\"/ui/settings/tailscale/serve\""));
+
+            // A bad name: said at the field, the typed name kept, nothing done.
+            let (_, _, region) = send(
+                &app,
+                htmx_post(
+                    "/ui/settings/tailscale/serve",
+                    "name=Living+Room&password=x",
+                ),
+            )
+            .await;
+            assert!(
+                region.contains("Use letters, digits and dashes."),
+                "{region}"
+            );
+            assert!(region.contains("value=\"Living Room\""), "{region}");
+            assert!(region.contains("aria-invalid=\"true\""), "{region}");
+            // A wrong password.
+            let (_, _, region) = send(
+                &app,
+                htmx_post(
+                    "/ui/settings/tailscale/serve",
+                    "name=melissa-box&password=nope",
+                ),
+            )
+            .await;
+            assert!(region.contains("That password is not right."), "{region}");
+            assert!(!fx.audit().contains("tailscale.serve_on"));
+
+            // Right: on, said once, the address with Copy.
+            let body = format!(
+                "name=melissa-box&password={}",
+                crate::auth::testing::PASSWORD
+            );
+            let (status, h, region) =
+                send(&app, htmx_post("/ui/settings/tailscale/serve", &body)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(h.get(header::CACHE_CONTROL).unwrap(), "no-store");
+            assert!(
+                region.contains("Turned on. Melissa opens from your other devices."),
+                "{region}"
+            );
+            assert!(
+                region.contains("https://melissa-box.tail0000.ts.net"),
+                "{region}"
+            );
+            assert!(region.contains("Copy"), "{region}");
+            assert!(region.contains("action=\"/ui/settings/tailscale/serve/off\""));
+            assert!(
+                region.contains("HTTPS address stops working"),
+                "Disable says the address goes: {region}"
+            );
+            assert!(fx.audit().contains("tailscale.serve_on"));
+            // The flash is once: the page alone doesn't repeat it.
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(!html.contains("Turned on."), "{html}");
+            assert!(html.contains("On."), "{html}");
+
+            // Turn off: no confirmation.
+            let (_, _, region) =
+                send(&app, htmx_post("/ui/settings/tailscale/serve/off", "")).await;
+            assert!(region.contains("Off. Gives Melissa"), "{region}");
+            assert!(fx.audit().contains("tailscale.serve_off"));
+            assert_eq!(*fake.serve.lock().unwrap(), "{}");
+        }
+
+        #[tokio::test]
+        async fn settings_tailscale_https_off_on_the_tailnet() {
+            let fake = Arc::new(FakeTailscale {
+                https_off: true,
+                ..FakeTailscale::default()
+            });
+            let (_fx, app) = ts_connected("ts-https", fake.clone()).await;
+            let body = format!(
+                "name=melissa-box&password={}",
+                crate::auth::testing::PASSWORD
+            );
+            let (_, _, region) = send(&app, htmx_post("/ui/settings/tailscale/serve", &body)).await;
+            assert!(
+                region.contains("HTTPS is off for your tailnet."),
+                "{region}"
+            );
+            assert!(
+                region.contains(&format!("href=\"{}\"", ALLOW_HTTPS.replace('&', "&amp;"))),
+                "{region}"
+            );
+            assert!(region.contains("(opens in a new tab)"), "{region}");
+            assert!(region.contains("hx-get=\"/ui/settings/tailscale?https=1\""));
+            let (status, _, _) = send(&app, get("/ui/settings/tailscale?https=1")).await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "no swap while waiting");
+            // Coming back to the page: Melissa says she waits.
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(
+                html.contains("Waiting for HTTPS to be allowed in Tailscale…"),
+                "{html}"
+            );
+
+            // Allowed: the CLI finishes, the poll swaps in On.
+            *fake.serve.lock().unwrap() = SERVING.into();
+            let done = fake.waiting.lock().unwrap().take().unwrap();
+            done.send(Ok(())).unwrap();
+            let mut region = String::new();
+            for _ in 0..50 {
+                let (status, _, body) = send(&app, get("/ui/settings/tailscale?https=1")).await;
+                if status == StatusCode::OK {
+                    region = body;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(region.contains("On."), "{region}");
+        }
+
+        /// For the visual check of the Tailscale page (not run by default): writes each state
+        /// of "Open Melissa from your other devices" as a page to `MELISSA_SHOTS_DIR`. Serve
+        /// them over HTTP at `/settings/tailscale` with `/assets/` from `crates/web/assets`
+        /// (melissa.js reads the path).
+        #[tokio::test]
+        #[ignore]
+        async fn dump_tailscale_serve_states() {
+            let Ok(out) = std::env::var("MELISSA_SHOTS_DIR") else {
+                return;
+            };
+            let out = std::path::PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            let save = |name: &str, html: &str| {
+                std::fs::write(out.join(format!("{name}.html")), html).unwrap();
+            };
+            let pw = format!(
+                "name=melissa-box&password={}",
+                crate::auth::testing::PASSWORD
+            );
+            let plain = |uri: &str, body: &str| {
+                post(uri)
+                    .header("sec-fetch-site", "same-origin")
+                    .body(Body::from(body.to_string()))
+                    .unwrap()
+            };
+
+            let fake = Arc::new(FakeTailscale::default());
+            let (_fx, app) = ts_connected("shot-1", fake.clone()).await;
+            save("01-off", &send(&app, get("/settings/tailscale")).await.2);
+            save(
+                "02-form",
+                &send(&app, get("/settings/tailscale?serve=1")).await.2,
+            );
+            save(
+                "08b-wrong-password",
+                &send(
+                    &app,
+                    plain(
+                        "/ui/settings/tailscale/serve",
+                        "name=melissa-box&password=x",
+                    ),
+                )
+                .await
+                .2,
+            );
+            save(
+                "06-on",
+                &send(&app, plain("/ui/settings/tailscale/serve", &pw))
+                    .await
+                    .2,
+            );
+            save(
+                "06b-on-later",
+                &send(&app, get("/settings/tailscale")).await.2,
+            );
+
+            let fake = Arc::new(FakeTailscale {
+                https_off: true,
+                ..FakeTailscale::default()
+            });
+            let (_fx, app) = ts_connected("shot-3", fake).await;
+            save(
+                "03-https-off",
+                &send(&app, plain("/ui/settings/tailscale/serve", &pw))
+                    .await
+                    .2,
+            );
+            save(
+                "04-waiting",
+                &send(&app, get("/settings/tailscale")).await.2,
+            );
+
+            let fake = Arc::new(FakeTailscale {
+                stall: true,
+                ..FakeTailscale::default()
+            });
+            let (_fx, app) = ts_connected("shot-5", fake).await;
+            save(
+                "05-turning-on",
+                &send(&app, plain("/ui/settings/tailscale/serve", &pw))
+                    .await
+                    .2,
+            );
+
+            let fake = Arc::new(FakeTailscale {
+                fail: true,
+                ..FakeTailscale::default()
+            });
+            let (_fx, app) = ts_connected("shot-8", fake).await;
+            let _ = send(&app, plain("/ui/settings/tailscale/serve", &pw)).await;
+            save("08a-error", &send(&app, get("/settings/tailscale")).await.2);
+
+            use melissa_settings::tailscale::Management;
+            let mut fx = SettingsFixture::new("shot-9");
+            fx.tailscale = Some(ts_control(
+                &fx,
+                Management::Host,
+                Arc::new(FakeTailscale::default()),
+            ));
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            save("09-host", &send(&app, get("/settings/tailscale")).await.2);
+        }
+
+        #[tokio::test]
+        async fn settings_tailscale_host_runs_its_own_shows_the_command() {
+            use melissa_settings::tailscale::Management;
+            let mut fx = SettingsFixture::new("ts-serve-host");
+            fx.tailscale = Some(ts_control(
+                &fx,
+                Management::Host,
+                Arc::new(FakeTailscale::default()),
+            ));
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, false)));
+            let (_, _, html) = send(&app, get("/settings/tailscale")).await;
+            assert!(
+                html.contains("sudo tailscale serve --bg http://127.0.0.1:8080"),
+                "{html}"
+            );
+            assert!(
+                html.contains("isn&#39;t Melissa&#39;s") || html.contains("isn't Melissa's"),
+                "{html}"
+            );
+            assert!(!html.contains("/ui/settings/tailscale/serve"), "{html}");
         }
 
         #[tokio::test]

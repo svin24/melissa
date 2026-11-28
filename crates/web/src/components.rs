@@ -2553,6 +2553,46 @@ pub fn text_field(
     }
 }
 
+/// [`text_field`] (text) with the server's verdict (COMPONENT-SPEC 2.16, invalid): with an
+/// `error`, the field is `aria-invalid`, takes the focus, and the error line (caution glyph)
+/// shows in place of the hint (owner's Penpot draft, 2026-11-28). The typed value is kept.
+pub fn text_field_checked(
+    name: &str,
+    label: &str,
+    value: &str,
+    hint: Option<&str>,
+    error: Option<&str>,
+) -> Markup {
+    html! {
+        label.field {
+            span { (label) }
+            input.input type="text" name=(name) value=(value) autocomplete="off"
+                autocapitalize="none" spellcheck="false" maxlength="4096"
+                aria-invalid=[error.map(|_| "true")] autofocus[error.is_some()];
+            (field_note(hint, error))
+        }
+    }
+}
+
+/// Under a field: its error (caution glyph) or else its hint.
+pub(crate) fn field_note(hint: Option<&str>, error: Option<&str>) -> Markup {
+    html! {
+        @if let Some(e) = error {
+            small.field-error { (glyph(Glyph::Warn)) (e) }
+        } @else if let Some(h) = hint {
+            small.hint { (h) }
+        }
+    }
+}
+
+/// A button for a job the server is doing ("Turning on…"; COMPONENT-SPEC 2.1, busy): the
+/// `-ing…` label, `aria-disabled`, not clickable.
+pub fn busy_button(look: Btn, label: &str) -> Markup {
+    html! {
+        button.(look) type="button" disabled aria-disabled="true" { (label) }
+    }
+}
+
 /// A multi-line input with a value, one item per line.
 pub fn lines_field(name: &str, label: &str, value: &str, hint: Option<&str>) -> Markup {
     html! {

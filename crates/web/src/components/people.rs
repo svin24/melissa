@@ -62,6 +62,32 @@ fn credential_input(
     }
 }
 
+/// The password asked again inside a form ([`credential_field`], `current-password`) with the
+/// server's verdict (COMPONENT-SPEC 2.16): with an `error` it is `aria-invalid`, takes the
+/// focus, and the error line shows in place of the hint. Always empty.
+pub fn password_checked(
+    name: &str,
+    label: &str,
+    hint: Option<&str>,
+    error: Option<&str>,
+) -> Markup {
+    html! {
+        div.field-pw {
+            label.field {
+                span { (label) }
+                input.input type="password" name=(name) value="" autocomplete="current-password"
+                    autocapitalize="none" spellcheck="false" required maxlength="256"
+                    aria-invalid=[error.map(|_| "true")] autofocus[error.is_some()];
+                (super::field_note(hint, error))
+            }
+            label.check.show-password {
+                input type="checkbox" data-show-password;
+                span { "Show password" }
+            }
+        }
+    }
+}
+
 /// Several password fields with one "Show passwords" switch for all of them (Change password,
 /// 2026-11-23): (name, label, autocomplete, hint) each.
 pub fn password_fields(fields: &[(&str, &str, &str, Option<&str>)]) -> Markup {

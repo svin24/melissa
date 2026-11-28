@@ -94,6 +94,9 @@ use melissa_settings::{
 /// The lead agent's system prompt and every agent's (reviewed text files).
 const LEAD_PROMPT: &str = include_str!("../prompts/lead.md");
 const AGENT_PROMPT: &str = include_str!("../prompts/agent.md");
+/// Set by install.sh in the Quadlet: the web UI's port on the host (UI_PORT). Unset: the
+/// port of `listen` (a server running on the host itself).
+const UI_PORT_ENV: &str = "MELISSA_UI_PORT";
 
 const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
   (none)                      serve the web UI, the lead agent and agents
@@ -427,7 +430,18 @@ async fn main() -> anyhow::Result<()> {
         .then(|| AppAccessControl::system(&dirs.config, Some(audit.clone())));
     // Melissa's own Tailscale (container image; off by default), or "not managed by Melissa"
     // when the host runs Tailscale or this install has none (docs/DECISIONS.md, 2026-11-21).
-    let tailscale = TailscaleControl::system(&dirs.config, Some(audit.clone()));
+    // `tailscale serve` forwards to the second listener; the host's own `tailscale serve` (when
+    // the host runs Tailscale) to the UI's port on the host (install.sh's UI_PORT).
+    let ui_port = std::env::var(UI_PORT_ENV)
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .unwrap_or(config.listen.port());
+    let tailscale = TailscaleControl::system(
+        &dirs.config,
+        Some(audit.clone()),
+        Some(format!("http://{}", config.web.proxy_listen)),
+        ui_port,
+    );
     tracing::info!(
         managed_by = tailscale.management().as_str(),
         node = tailscale.node_name(),
@@ -1084,7 +1098,7 @@ async fn serve(
         catalog: melissa_web::Catalog::new(&dirs.state),
         app_access: start.app_access,
         setup_passwords: Some(start.setup_passwords),
-        tailscale: Some(start.tailscale),
+        tailscale: Some(start.tailscale.clone()),
         // The container's root unit erases and restarts (Settings → Reset); elsewhere none.
         factory_reset: melissa_settings::factory_reset::Requester::system(Some(
             audit_for_auth.clone(),
@@ -1111,7 +1125,39 @@ async fn serve(
             "no host CLI socket (melissa-server chat, ask, confirm won't reach this daemon): {e}"
         ),
     }
-    melissa_web::serve(listener, app).await?;
+    // HTTPS from other devices (DECISIONS 2026-11-28; `melissa_web::front`). With Melissa's
+    // own Tailscale, a second loopback listener is `tailscale serve`'s target and the only
+    // one that believes X-Forwarded-*; the main one then believes nothing. Otherwise the
+    // host may run `tailscale serve` in front of the main listener (as the docs said before):
+    // it keeps believing its HTTPS proxy unless `[web] trust_forwarded = false`.
+    let ts = start.tailscale;
+    let own_ts = ts.management() == Management::Melissa;
+    let trust_main = config.web.trust_forwarded.unwrap_or(!own_ts);
+    if own_ts {
+        match tokio::net::TcpListener::bind(config.web.proxy_listen).await {
+            Ok(proxy) => {
+                tracing::info!(listen = %config.web.proxy_listen, "listener for tailscale serve");
+                let (app, front) = (app.clone(), melissa_web::Front::tailscale_serve(ts.clone()));
+                tokio::spawn(async move {
+                    if let Err(e) = melissa_web::serve(proxy, app, front).await {
+                        tracing::error!("tailscale serve listener stopped: {e}");
+                    }
+                });
+                let ts = ts.clone();
+                tokio::spawn(async move { ts.resume_serve().await });
+            }
+            Err(e) => tracing::error!(
+                listen = %config.web.proxy_listen,
+                "no listener for tailscale serve (Open Melissa from your other devices won't work): {e}"
+            ),
+        }
+    }
+    let front = melissa_web::Front::direct(
+        trust_main,
+        config.web.hosts.clone(),
+        own_ts.then(|| ts.clone()),
+    );
+    melissa_web::serve(listener, app, front).await?;
     lead.close().await;
     Ok(())
 }
