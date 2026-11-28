@@ -153,8 +153,8 @@ placeholders from section 5.
 Follow-ups built on the `multi-device-groundwork` branch (parked, multi-device is post-MVP):
 
 - Unique node names, pinned under `/var/lib/melissa-container/cluster`; the server or agent role, server URL,
-  node IP and peers in root's own setting there (root only; an older install's `/etc/melissa/cluster.toml` is
-  taken over once); an agent gets its own k3s config without server-only keys; the join token lives in a
+  node IP and peers in root's own setting there (root only; nothing the server's user writes in `/etc/melissa` is
+  read); an agent gets its own k3s config without server-only keys; the join token lives in a
   root-only file under `/var` (finding 3, finding 1). Joining and invitations run only as root for now
   (`podman exec ... melissa-server cluster join|invite`); the server may only remove a device or leave (PLAN
   Q108).

@@ -1678,11 +1678,13 @@ Roadmap (rough, phases may overlap):
     screen; not built yet. **Done (2026-11-28, groundwork branch, parked):** root keeps the trusted cluster
     state itself in `/var/lib/melissa-container/cluster` (0700 root: the setting with role, server URL,
     node IP, flannel interface and peers; the agent's token); `cluster prepare`, the firewall
-    (`melissa-app-access`) and the node labeller read only that. An older install's `cluster.toml` (and a
-    handed join token) is taken over once, at the first k3s start after the update, then removed; later
-    files there are ignored. Widening actions (join, invitation with a join token) pass one root-side gate,
+    (`melissa-app-access`) and the node labeller read only that. Root never reads `/etc/melissa/cluster.toml` or
+    `cluster-join.token` (where the server's user kept them earlier on the branch; never released, the two
+    test devices are back at the default): a missing root setting is the default single-node server, and
+    `cluster prepare` removes those stale files unread. No migration. Widening actions (join, invitation with a join token) pass one root-side gate,
     `cluster::allow_widening`, which for now accepts only root itself (`podman exec -it melissa
-    melissa-server cluster join|invite ...`); requests from the server (`melissa-cluster.service`) are
+    melissa-server cluster join|invite ...`; the CLI's uid check is only a usability check, the boundary is
+    the 0700 root state directory and root's k3s admin credentials); requests from the server (`melissa-cluster.service`) are
     refused. Narrowing actions (remove a device, leave) stay open to the server via polkit, checked against
     root's setting; removing the last peer or leaving also clears the node IP and flannel interface (k3s
     starts without Tailscale). Factory reset wipes the state directory. **Remaining:** the root

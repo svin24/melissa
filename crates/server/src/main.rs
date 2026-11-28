@@ -590,16 +590,9 @@ fn app_access_command(args: &[String]) -> anyhow::Result<()> {
                 PathBuf::from,
             );
             let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
-            // Cluster peers (multi-device) from root's own cluster setting (an install from
-            // before: the old cluster.toml next to the setting, until k3s's next start takes it
-            // over); unreadable: none get in.
-            let config_dir = setting
-                .parent()
-                .unwrap_or(std::path::Path::new("/etc/melissa"));
-            let peers = match melissa_settings::cluster::read_trusted(
-                std::path::Path::new("/"),
-                config_dir,
-            ) {
+            // Cluster peers (multi-device) from root's own cluster setting (never a file the
+            // server's user writes); unreadable: none get in.
+            let peers = match melissa_settings::cluster::read_trusted(std::path::Path::new("/")) {
                 Ok(c) => access::ClusterPeers::of(&c),
                 Err(e) => {
                     eprintln!("melissa-app-access: {e}; no cluster peers let in");
@@ -668,13 +661,13 @@ fn cluster_command(args: &[String]) -> anyhow::Result<()> {
         }
         [c] if c == "after-start" => {
             // Best effort: the timer labels again within a minute.
-            if let Err(e) = cluster::label_nodes(root, &config_dir, &cluster::SystemRunner) {
+            if let Err(e) = cluster::label_nodes(root, &cluster::SystemRunner) {
                 eprintln!("melissa-cluster: node roles not labelled: {e}");
             }
             cluster::after_start(root).map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
         }
         [c] if c == "label" => {
-            let n = cluster::label_nodes(root, &config_dir, &cluster::SystemRunner)
+            let n = cluster::label_nodes(root, &cluster::SystemRunner)
                 .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
             if n > 0 {
                 println!("melissa-cluster: labelled {n} node(s) with their role");
@@ -725,16 +718,15 @@ fn cluster_command(args: &[String]) -> anyhow::Result<()> {
                     address,
                 },
             };
-            let token =
-                cluster::root_invite(root, &config_dir, origin, &invite, &cluster::SystemRunner)
-                    .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            let token = cluster::root_invite(root, origin, &invite, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
             println!("server: {}", cluster::server_url_for(own));
             println!("token (valid {}): {token}", cluster::INVITATION_TTL);
             Ok(())
         }
         [c, name] if c == "remove" => {
             root_origin()?;
-            cluster::root_remove(root, &config_dir, name, &cluster::SystemRunner)
+            cluster::root_remove(root, name, &cluster::SystemRunner)
                 .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
         }
         [c] if c == "leave" => {
@@ -756,8 +748,13 @@ fn cluster_command(args: &[String]) -> anyhow::Result<()> {
     }
 }
 
-/// The owner's cluster actions run here only as root (the host's admin through `podman exec`):
-/// the server's user reaches root's cluster code only through `melissa-cluster.service`.
+/// The owner's cluster actions run here only as root (the host's admin through `podman exec`).
+/// A usability check (a clear message instead of permission errors halfway), **not** the
+/// security boundary: `/proc/self`'s owner is 0 also for root inside a user namespace. The
+/// boundary is that root's state directory is 0700 root and k3s's admin credentials are
+/// root's, so a process that isn't really root fails at the first write or `k3s` call; the
+/// server's user reaches root's cluster code only through `melissa-cluster.service`, which
+/// always runs requests as `Origin::Server`.
 fn root_origin() -> anyhow::Result<melissa_settings::cluster::Origin> {
     use std::os::unix::fs::MetadataExt;
     if std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0) {

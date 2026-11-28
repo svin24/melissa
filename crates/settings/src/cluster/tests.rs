@@ -483,7 +483,7 @@ fn set_status(root: &Path, name: &str) {
 }
 
 fn trusted(t: &Tree) -> Setting {
-    read_setting(&at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap()
+    read_trusted(&t.root).unwrap()
 }
 
 #[test]
@@ -541,17 +541,17 @@ fn label_nodes_reads_roots_setting_and_this_nodes_name() {
         labelled: RefCell::default(),
     };
     // No setting: a single device, no kubectl at all (node_roles would be called otherwise).
-    assert_eq!(label_nodes(&t.root, &t.config, &runner), Ok(0));
+    assert_eq!(label_nodes(&t.root, &runner), Ok(0));
     // The server's user's file is not root's setting.
     std::fs::write(
         t.config.join(FILE_NAME),
         toml::to_string(&server_setting()).unwrap(),
     )
     .unwrap();
-    assert_eq!(label_nodes(&t.root, &t.config, &runner), Ok(0));
+    assert_eq!(label_nodes(&t.root, &runner), Ok(0));
     t.set(&server_setting());
     set_status(&t.root, "desktop");
-    assert_eq!(label_nodes(&t.root, &t.config, &runner), Ok(2));
+    assert_eq!(label_nodes(&t.root, &runner), Ok(2));
     assert_eq!(
         *runner.labelled.borrow(),
         vec![
@@ -600,21 +600,6 @@ fn the_servers_user_can_neither_join_nor_invite() {
         before
     );
     assert!(!t.token().exists());
-    // Writing the old files and restarting k3s changes nothing either.
-    std::fs::write(
-        t.config.join(FILE_NAME),
-        toml::to_string(&agent_setting()).unwrap(),
-    )
-    .unwrap();
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10join::x.y").unwrap();
-    let st = t.prepare(None).unwrap();
-    assert_eq!((st.role, st.peers), (Role::Server, 0));
-    assert!(!t.token().exists());
-    assert_eq!(trusted(&t), Setting::default());
-    assert_eq!(
-        read_trusted(&t.root, &t.config).unwrap(),
-        Setting::default()
-    );
     // A bad request, or none: refused.
     assert!(!ask(&t, r#"{"action":"restart"}"#, &rec).ok);
     assert!(!run_request(&t.root, &t.config, &rec).ok, "no request");
@@ -632,22 +617,8 @@ fn root_itself_joins_and_invites() {
             address: addr.parse().unwrap(),
         },
     };
-    assert!(root_invite(
-        &t.root,
-        &t.config,
-        Origin::Root,
-        &invite("desktop", "100.64.0.2"),
-        &rec
-    )
-    .is_err());
-    let token = root_invite(
-        &t.root,
-        &t.config,
-        Origin::Root,
-        &invite("laptop", "100.64.0.2"),
-        &rec,
-    )
-    .unwrap();
+    assert!(root_invite(&t.root, Origin::Root, &invite("desktop", "100.64.0.2"), &rec).is_err());
+    let token = root_invite(&t.root, Origin::Root, &invite("laptop", "100.64.0.2"), &rec).unwrap();
     assert_eq!(token, "K10tok::abc.def");
     assert_eq!(trusted(&t), server_setting());
     assert!(
@@ -657,14 +628,7 @@ fn root_itself_joins_and_invites() {
     // The token from the running server, then the restart that moves the node IP.
     assert_eq!(rec.calls(), ["firewall", "token", "restart"]);
     // A second device: no restart (the node IP is already on the tailnet).
-    root_invite(
-        &t.root,
-        &t.config,
-        Origin::Root,
-        &invite("tablet", "100.64.0.3"),
-        &rec,
-    )
-    .unwrap();
+    root_invite(&t.root, Origin::Root, &invite("tablet", "100.64.0.3"), &rec).unwrap();
     assert_eq!(rec.calls().len(), 5);
     assert_eq!(trusted(&t).peers.len(), 2);
 
@@ -707,14 +671,7 @@ fn root_itself_joins_and_invites() {
     }
     assert_eq!(rec.calls(), ["firewall", "restart"]);
     // An agent invites nobody.
-    assert!(root_invite(
-        &t.root,
-        &t.config,
-        Origin::Root,
-        &invite("tablet", "100.64.0.3"),
-        &rec
-    )
-    .is_err());
+    assert!(root_invite(&t.root, Origin::Root, &invite("tablet", "100.64.0.3"), &rec).is_err());
 }
 
 #[test]
@@ -776,52 +733,87 @@ fn the_servers_user_may_remove_devices_and_leave() {
     assert_eq!(trusted(&t), Setting::default());
 }
 
+/// What the server's user may plant in /etc/melissa (the files root read earlier on this branch).
+fn plant(t: &Tree, setting: &str) {
+    std::fs::write(t.config.join(FILE_NAME), setting).unwrap();
+    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10evil::x.y").unwrap();
+}
+
 #[test]
-fn an_older_install_is_taken_over_once() {
-    // k3s ran under the old code (a pinned name) as an agent set up the old way: cluster.toml
-    // and the handed token in /etc/melissa, root's token already moved.
-    let t = server_with_app("cluster-takeover");
-    std::fs::remove_file(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
-    std::fs::write(
-        t.config.join(FILE_NAME),
-        toml::to_string(&agent_setting()).unwrap(),
-    )
-    .unwrap();
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret\n").unwrap();
-    // Before k3s's start takes it over, the firewall already sees it.
-    assert_eq!(read_trusted(&t.root, &t.config).unwrap(), agent_setting());
-    let st = t.prepare(Some("Laptop")).unwrap();
-    assert_eq!(st.role, Role::Agent);
-    assert_eq!(trusted(&t), agent_setting());
-    assert_eq!(
-        std::fs::read_to_string(t.token()).unwrap(),
-        "K10abc::server:secret"
-    );
-    assert!(!t.config.join(FILE_NAME).exists());
-    assert!(!t.config.join(JOIN_TOKEN_FILE).exists());
-    // From now on the old file is ignored: another server written there changes nothing.
-    let mut other = agent_setting();
-    other.server_url = Some("https://100.64.0.66:6443".into());
-    std::fs::write(t.config.join(FILE_NAME), toml::to_string(&other).unwrap()).unwrap();
-    let st = t.prepare(Some("Laptop")).unwrap();
-    assert_eq!(st.server_url.as_deref(), Some("https://100.64.0.1:6443"));
-    assert!(t.read(AGENT_CONFIG).contains("100.64.0.1:6443"));
-
-    // A server with the defaults (no cluster.toml): just works, root keeps the default.
-    let t = server_with_app("cluster-takeover-server");
-    std::fs::remove_file(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
-    let st = t.prepare(Some("Laptop")).unwrap();
-    assert_eq!((st.role, st.node_name.as_str()), (Role::Server, "melissa"));
-    assert_eq!(trusted(&t), Setting::default());
-
-    // An older install with an unreadable cluster.toml: not taken over until it is fixed.
-    let t = server_with_app("cluster-takeover-broken");
-    std::fs::remove_file(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
-    std::fs::write(t.config.join(FILE_NAME), "peers = 3\n").unwrap();
-    let st = t.prepare(Some("Laptop")).unwrap();
-    assert_eq!(st.role, Role::Server);
-    assert!(!st.errors.is_empty());
-    assert!(!at(&t.root, STATE_DIR).join(STATE_SETTING).exists());
+fn files_planted_by_the_servers_user_have_no_effect() {
+    let mut with_peers = server_setting();
+    with_peers.peers.push(Peer {
+        name: "stranger".into(),
+        address: "100.64.0.66".parse().unwrap(),
+    });
+    let planted = [
+        (
+            "a valid agent role",
+            toml::to_string(&agent_setting()).unwrap(),
+        ),
+        ("a broken file", "role = \"agent\"\n".to_string()),
+        ("peers", toml::to_string(&with_peers).unwrap()),
+    ];
+    for (what, text) in planted {
+        // A single device, and a server that already has a pinned name and app data.
+        for t in [
+            Tree::new("cluster-planted"),
+            server_with_app("cluster-planted-app"),
+        ] {
+            plant(&t, &text);
+            // Firewall, labels: root's (missing) setting, the default.
+            assert_eq!(trusted(&t), Setting::default(), "{what}");
+            assert_eq!(
+                crate::app_access::ClusterPeers::of(&trusted(&t)),
+                crate::app_access::ClusterPeers::default(),
+                "{what}"
+            );
+            let labels = LabelRunner {
+                listed: "desktop \nlaptop \nstranger \n",
+                labelled: RefCell::default(),
+            };
+            assert_eq!(label_nodes(&t.root, &labels), Ok(0), "{what}");
+            // k3s's start: a single-node server; the stale files go, unread.
+            let st = t.prepare(Some("Laptop")).unwrap();
+            assert_eq!((st.role, st.peers), (Role::Server, 0), "{what}");
+            assert!(st.errors.is_empty(), "{what}: {:?}", st.errors);
+            assert!(!t.token().exists(), "{what}");
+            assert!(!t.read(SERVER_DROPIN).contains("node-ip"), "{what}");
+            assert!(!t.config.join(FILE_NAME).exists(), "{what}");
+            assert!(!t.config.join(JOIN_TOKEN_FILE).exists(), "{what}");
+            assert_eq!(t.read(&format!("{K3S_DATA}/{DATA_MARK}")), "server");
+            // Removing one of the planted peers: refused, and nothing is saved from the file.
+            plant(&t, &text);
+            set_status(&t.root, "desktop");
+            let rec = Rec::default();
+            let a = ask(&t, r#"{"action":"remove_node","name":"laptop"}"#, &rec);
+            assert!(!a.ok, "{what}");
+            assert!(rec.calls().is_empty(), "{what}");
+            assert!(
+                !at(&t.root, STATE_DIR).join(STATE_SETTING).exists(),
+                "{what}"
+            );
+            // An invitation from root itself starts from root's setting, not the file.
+            root_invite(
+                &t.root,
+                Origin::Root,
+                &Invite {
+                    own_address: "100.64.0.1".parse().unwrap(),
+                    peer: Peer {
+                        name: "tablet".into(),
+                        address: "100.64.0.3".parse().unwrap(),
+                    },
+                },
+                &rec,
+            )
+            .unwrap();
+            assert_eq!(
+                trusted(&t).peer_addresses(),
+                vec!["100.64.0.3".parse::<IpAddr>().unwrap()],
+                "{what}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -906,7 +898,6 @@ async fn control_asks_root_and_audits() {
     // Root's own invitation; then the owner removes the device from the server's side.
     root_invite(
         &t.root,
-        &t.config,
         Origin::Root,
         &Invite {
             own_address: "100.64.0.1".parse().unwrap(),

@@ -9,9 +9,9 @@
 //!   interface, the cluster peers the firewall lets in; no secret) is **root's**: it lives in
 //!   [`STATE_DIR`] ([`STATE_SETTING`], 0700 root), and only root's own code writes it. Nothing
 //!   root does reads what the server's user `melissa` writes to decide *who* this device trusts
-//!   (Q108): that uid also runs unsandboxed agent backends. `/etc/melissa/cluster.toml`
-//!   ([`FILE_NAME`]) is read once, to migrate an install from before ([`read_trusted`]), then
-//!   removed.
+//!   (Q108): that uid also runs unsandboxed agent backends. A missing setting is the default.
+//!   `/etc/melissa/cluster.toml` ([`FILE_NAME`]), where the server's user kept the setting
+//!   earlier on this branch (never released), is never read: `prepare` only removes it.
 //! - **Widening actions** (joining another cluster, an invitation with a join token) pass
 //!   [`allow_widening`]: for now only root itself (`melissa-server cluster join|invite`, run as
 //!   root from the host through `podman exec`) passes it; a request from the server is refused
@@ -58,8 +58,8 @@ use crate::{factory_reset::at, write_private, SettingsError};
 #[cfg(test)]
 mod tests;
 
-/// The setting as the server's user wrote it before root kept it (`/etc/melissa`): read once
-/// by root to migrate an older install ([`read_trusted`]), then removed. Never trusted after.
+/// Where the server's user kept the setting earlier on this branch (`/etc/melissa`; never
+/// released). Root never reads it; `prepare` removes a stale one.
 pub const FILE_NAME: &str = "cluster.toml";
 /// Root's setting in [`STATE_DIR`] (0600 root): the only one root acts on.
 pub const STATE_SETTING: &str = "setting.toml";
@@ -317,23 +317,12 @@ fn ensure_state_dir(root: &Path) -> Result<PathBuf, String> {
     Ok(state)
 }
 
-/// An install from before root kept the setting: k3s started under that code (it pinned a node
-/// name) and root has no setting of its own yet. Only then is `cluster.toml` read, once.
-fn legacy_install(state: &Path) -> bool {
-    state.join(STATE_SETTING).symlink_metadata().is_err()
-        && state.join("node-name").symlink_metadata().is_ok()
-}
-
-/// The setting root acts on: its own ([`STATE_SETTING`]); on an install from before, until the
-/// first `prepare` takes it over, the old `cluster.toml` in `config_dir`; else the default (a
-/// single-node server). A `cluster.toml` on a new install, or after the takeover, is ignored.
-pub fn read_trusted(root: &Path, config_dir: &Path) -> Result<Setting, String> {
-    let state = at(root, STATE_DIR);
-    let own = state.join(STATE_SETTING);
+/// The setting root acts on: its own ([`STATE_SETTING`]); missing, the default (a single-node
+/// server). Nothing the server's user writes is read here.
+pub fn read_trusted(root: &Path) -> Result<Setting, String> {
+    let own = at(root, STATE_DIR).join(STATE_SETTING);
     if own.symlink_metadata().is_ok() {
         read_setting(&own)
-    } else if legacy_install(&state) {
-        read_setting(&config_dir.join(FILE_NAME))
     } else {
         Ok(Setting::default())
     }
@@ -685,10 +674,10 @@ pub fn prepare(
     say: &mut dyn FnMut(&str),
 ) -> Result<Status, String> {
     let state = ensure_state_dir(root)?;
-    // Root has no setting of its own yet: this start takes one over (the old cluster.toml once,
-    // on an install from before; else the default).
-    let taking_over = state.join(STATE_SETTING).symlink_metadata().is_err();
-    let legacy = legacy_install(&state);
+    // Stale files from earlier on this branch (the server's user's setting and handed token):
+    // removed unread, never acted on.
+    let _ = std::fs::remove_file(config_dir.join(FILE_NAME));
+    let _ = std::fs::remove_file(config_dir.join(JOIN_TOKEN_FILE));
     let mut errors = Vec::new();
     let data = at(root, K3S_DATA);
     let pin_file = state.join("node-name");
@@ -716,12 +705,8 @@ pub fn prepare(
     };
     let _ = std::fs::remove_file(&legacy_role_file);
 
-    let source = if legacy {
-        config_dir.join(FILE_NAME)
-    } else {
-        state.join(STATE_SETTING)
-    };
-    let setting = match read_trusted(root, config_dir) {
+    let source = state.join(STATE_SETTING);
+    let setting = match read_trusted(root) {
         Ok(s) => Some(s),
         Err(e) => {
             say(&format!("cluster: {e}"));
@@ -755,29 +740,6 @@ pub fn prepare(
             ));
         }
     };
-
-    // 1. Taking the setting over (once): from here on only root's own copy counts. An install
-    //    from before also hands over a join token its server left (the old way of joining).
-    if taking_over && !broken {
-        if legacy {
-            let handed = config_dir.join(JOIN_TOKEN_FILE);
-            match read_small(&handed, MAX_TOKEN_BYTES) {
-                Ok(Some(t)) if !t.trim().is_empty() => {
-                    write_root(&token, t.trim().as_bytes(), 0o600)
-                        .map_err(|e| format!("saving the join token: {e}"))?;
-                    say("cluster: took the join token left for the old way of joining");
-                }
-                Ok(_) => {}
-                Err(e) => errors.push(e),
-            }
-        }
-        write_trusted(root, &setting)?;
-        if legacy {
-            let _ = std::fs::remove_file(config_dir.join(JOIN_TOKEN_FILE));
-            let _ = std::fs::remove_file(config_dir.join(FILE_NAME));
-            say("cluster: took the setting over from cluster.toml (root keeps it now)");
-        }
-    }
 
     // 2. Role switch. Every step is idempotent and the data's role travels with it (its mark),
     //    so a run cut short anywhere is finished by the next one; nothing that may hold a
@@ -1180,8 +1142,8 @@ pub fn role_labels_needed(setting: &Setting, own: &str, listed: &str) -> Vec<(St
 /// `melissa-cluster-label.timer`): label this device's and the joined devices' nodes with their
 /// role ([`ROLE_LABEL`]). Returns how many were labelled. Cheap when there is nothing to do: no
 /// peers, no kubectl.
-pub fn label_nodes(root: &Path, config_dir: &Path, runner: &dyn Runner) -> Result<usize, String> {
-    let setting = read_trusted(root, config_dir)?;
+pub fn label_nodes(root: &Path, runner: &dyn Runner) -> Result<usize, String> {
+    let setting = read_trusted(root)?;
     if setting.role != Role::Server || setting.peers.is_empty() {
         return Ok(0);
     }
@@ -1278,7 +1240,6 @@ pub fn root_join(
 /// flannel move to the tailnet, the address goes into the API certificate).
 pub fn root_invite(
     root: &Path,
-    config_dir: &Path,
     origin: Origin,
     invite: &Invite,
     runner: &dyn Runner,
@@ -1291,7 +1252,7 @@ pub fn root_invite(
     if own_names(root).contains(&peer.name) {
         return Err("that is this device's name: rename one of the two first".into());
     }
-    let mut s = read_trusted(root, config_dir)?;
+    let mut s = read_trusted(root)?;
     if s.role != Role::Server {
         return Err("this device is an agent in another cluster".into());
     }
@@ -1319,16 +1280,11 @@ pub fn root_invite(
 /// node. Drains and deletes its node, drops it from the peers (the firewall closes to it). The
 /// last peer gone: back to the default single-node config (no tailnet node IP or flannel
 /// interface, so k3s starts with Tailscale off too), applied by a restart.
-pub fn root_remove(
-    root: &Path,
-    config_dir: &Path,
-    name: &str,
-    runner: &dyn Runner,
-) -> Result<(), String> {
+pub fn root_remove(root: &Path, name: &str, runner: &dyn Runner) -> Result<(), String> {
     if node_label(name).as_deref() != Some(name) {
         return Err("not a node name".into());
     }
-    let mut s = read_trusted(root, config_dir)?;
+    let mut s = read_trusted(root)?;
     if s.role != Role::Server || !s.peers.iter().any(|p| p.name == name) {
         return Err(format!("{name} is not a device in this cluster"));
     }
@@ -1368,7 +1324,7 @@ pub fn run_request(root: &Path, config_dir: &Path, runner: &dyn Runner) -> Answe
     let handed = config_dir.join(JOIN_TOKEN_FILE);
     let result = request.and_then(|r| match r {
         Request::Invite(invite) => {
-            let token = root_invite(root, config_dir, Origin::Server, &invite, runner)?;
+            let token = root_invite(root, Origin::Server, &invite, runner)?;
             hand_over(config_dir, INVITATION_TOKEN_FILE, token.as_bytes())
         }
         Request::Join(join) => {
@@ -1377,7 +1333,7 @@ pub fn run_request(root: &Path, config_dir: &Path, runner: &dyn Runner) -> Answe
             let token = read_small(&handed, MAX_TOKEN_BYTES)?.ok_or("no join token")?;
             root_join(root, Origin::Server, &join, &token, runner)
         }
-        Request::RemoveNode { name } => root_remove(root, config_dir, &name, runner),
+        Request::RemoveNode { name } => root_remove(root, &name, runner),
         Request::Leave => root_leave(root, runner),
     });
     let _ = std::fs::remove_file(&handed);
