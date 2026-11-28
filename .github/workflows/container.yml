@@ -8,10 +8,11 @@
 #
 # Build cache: the Containerfile's cache mounts (cargo registry and target, cargo-about, whisper.cpp) are
 # kept between runs with actions/cache. Only pushes to master save it; other refs may read master's but never
-# write one master reads; release tags build without it. The gVisor check runs beside publish.
+# write one master reads; release tags build without it.
 #
-# Only the image that passed the sandbox escape suite (localhost/melissa:escape-tested, same image ID) is
-# pushed, once, to its immutable tag. It is signed by digest with Melissa's cosign key (environment secrets
+# Two hard gates: the sandbox escape suite (in build-gate) and the gVisor end-to-end test (its own job, on its
+# own runner, started as soon as the image is built). Only the image that passed both
+# (localhost/melissa:escape-tested, same image ID) is pushed, once, to its immutable tag. It is signed by digest with Melissa's cosign key (environment secrets
 # COSIGN_PRIVATE_KEY, COSIGN_PASSWORD; public half packaging/container/melissa-signing.pub) and gets a
 # build provenance attestation. Moving tags are added registry-side last, so they never point at an
 # unsigned digest.
@@ -199,8 +200,8 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-  # Advisory for now: a failure shows in the run but does not block publishing. On its own runner, beside
-  # publish, with the image the gate passed.
+  # Hard gate (2026-11-28; it passed every run since it was added): publish waits for it. On its own runner
+  # with the image the escape gate passed, so it adds only its own ~2 minutes after build-gate.
   gvisor:
     needs: build-gate
     runs-on: ubuntu-26.04
@@ -230,8 +231,7 @@ jobs:
           fi
 
       # As in build-gate: Ubuntu's restriction stays on; gvisor-test.sh loads Melissa's profile and checks it.
-      - name: gVisor end to end (advisory)
-        continue-on-error: true
+      - name: gVisor end to end
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
           packaging/container/gvisor-test.sh localhost/melissa:escape-tested
@@ -245,7 +245,7 @@ jobs:
           if-no-files-found: ignore
 
   publish:
-    needs: build-gate
+    needs: [build-gate, gvisor]
     if: github.event_name == 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 30

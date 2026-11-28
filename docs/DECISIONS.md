@@ -2141,3 +2141,31 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   "Updated from … to …" notice. The device name moved to About → This device, with a new time format
   preference (Follow browser by default, 24-hour, 12-hour) that every page showing a time of day uses.
   Alternatives: keep podman-auto-update (no schedule, no skip, no progress, no check without download).
+- **2026-11-28 — k3s Secrets encrypted at rest.** `secrets-encryption: true` in the shared server config
+  (AES-CBC, k3s's default provider). Datastores from before: `melissa-secrets-encrypt.service`
+  (`k3s-secrets-encrypt`) runs k3s's single-server `k3s secrets-encrypt rotate-keys` once, decided by k3s's
+  own rotation stage (`start` → rotate, `reencrypt_*` → wait, `reencrypt_finished` → nothing), no restart and
+  no Melissa state. Checked with k3s v1.37.2+k3s1 on a copy of an old image's datastore: the first start with
+  the flag writes the key and keeps old Secrets readable (identity provider), the rotation re-encrypts them in
+  about a minute, a second run is a no-op. The key (`server/cred/encryption-config.json`, root 0600) must go
+  into every backup with the datastore and token (PLAN Q35). Why: Secrets hold app passwords; a copied disk
+  or volume should not hand them over. Alternatives: `kubectl get secrets -A -o json | kubectl replace -f -`
+  (the generic Kubernetes way; Secrets pass through a script), k3s's documented `enable` + restart +
+  `rotate-keys` + restart (two extra restarts for the same result on one server), secretbox provider (fine too;
+  AES-CBC is k3s's default and documented path).
+- **2026-11-28 — k3s datastore snapshot before every update (PLAN Q23).** `melissa-host-update` stops Melissa
+  after the download, copies `server/db`, `server/cred` and `server/token` off the stopped `melissa-var`
+  volume into the host's `/var/lib/melissa-container/snapshots/` (0700, newest 3), then starts the new image.
+  Stopped, so the SQLite files are consistent; k3s documents a copy of `server/db` plus the token as the SQLite
+  backup (`k3s etcd-snapshot` is for embedded etcd only). No snapshot room: no update, Melissa back on her image.
+  Going back (rollback, or a new image that never came up) to an image whose datastore format differs
+  (Kubernetes minor from its `k3s.lock`, Secrets encryption on or off from its config) restores that image's
+  snapshot and its keys; the replaced datastore stays beside it. Same format: the datastore is kept (no lost
+  changes). Why: an older Kubernetes can't be trusted with objects a newer one migrated, and an image without
+  secrets-encryption can't read encrypted Secrets. Alternatives: a live `sqlite3 .backup` inside the container
+  (needs sqlite3 in the image, no shorter downtime worth having), restore on every rollback (loses changes for
+  no reason), snapshot only on a minor bump (misses the encryption switch and costs little to do always).
+- **2026-11-28 — The gVisor end-to-end test is a hard CI gate.** `publish` needs `gvisor` as well as
+  `build-gate`; the job still starts as soon as the image is built, on its own runner, so a publish waits about
+  two more minutes. It had passed all 10 runs it ran in (advisory). Its one outside dependency, the busybox pull
+  from Docker Hub, is done first with retries.

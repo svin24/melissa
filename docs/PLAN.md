@@ -117,7 +117,7 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   bundles); keyless provenance (`actions/attest`) is published too. Revisit keyless when containers/image supports
   URI identities. CI: a check workflow (fmt, clippy, nextest with pinned Rust) and a container workflow on
   `ubuntu-26.04`: build → escape suite inside the image (hard gate) → push once by digest → sign → attest →
-  verify; the gVisor test is advisory at first. GitHub environments `edge` (master) and `stable` (tags, owner
+  verify; the gVisor test is a hard gate too since 2026-11-28 (its own job; publish waits for it). GitHub environments `edge` (master) and `stable` (tags, owner
   approval). Later a Cloudflare-fronted or custom registry domain; clients migrate through `registries.conf`
   mirrors. **Owner-approved third-party network calls:** devices pull images and signatures from ghcr.io and
   GitHub's blob host when they install, check or apply updates (daily with automatic updates on).
@@ -900,7 +900,16 @@ Roadmap (rough, phases may overlap):
     **Answered for the UI (owner, 2026-11-28; DECISIONS "HTTPS access from other devices"):** phase 1 is
     Melissa's own `tailscale serve` (built); phase 2 is a root-held, name-constrained local CA for
     `<host>.local` on port 7383 (not built; the Android app pins the CA). App TLS stays open (Q56).
-23. Datastore snapshots before staging an update that bumps k3s's Kubernetes minor (rollback restores binaries, not /var).
+23. ~~Datastore snapshots before staging an update that bumps k3s's Kubernetes minor (rollback restores binaries, not
+    /var).~~ Built 2026-11-28 (DECISIONS): `melissa-host-update` stops Melissa before every update's image switch
+    and copies k3s's `server/db`, `server/cred` (with the Secrets key) and `server/token` off the volume into
+    `/var/lib/melissa-container/snapshots/<time>-<image>` (host, root, 0700; newest 3). A rollback (or a failed
+    update) to an image whose datastore format differs (Kubernetes minor, Secrets encrypted or not) restores the
+    snapshot taken when that image was left; the replaced datastore is kept in the snapshot's `replaced-*`.
+    Open: (a) restoring loses cluster changes made since the update (apps deployed or removed; app volumes stay):
+    say so in Settings → Updates before a rollback? (b) a snapshot is not a backup (same disk, pruned after
+    3 updates); the backup feature must take its own. (c) Downtime grows by the copy (seconds for a small
+    datastore). (d) Snapshots hold Secrets (plain text in ones from before 2026-11-28) and the key: root only.
 24. Agent CLI logins under the sandbox: the user's credential file is bind-mounted read-write. Does OAuth token
     refresh work there (rename onto a bind mount fails with EBUSY)? Or should Melissa keep its own CLI logins
     (e.g. `CLAUDE_CONFIG_DIR`), and on headless agents (DynamicUser) where do those logins come from?
@@ -948,10 +957,18 @@ Roadmap (rough, phases may overlap):
     (the proxy's resolver override exists in code, not in config)?
 34. DNS-over-HTTPS or hard-coded IPs inside a CLI: with an allowlisted DoH host or a CONNECT to an IP literal the
     proxy still decides by name (IP literals never match a rule), so this fails closed; keep it that way?
-35. App secrets: generated once into a k8s Secret (no reads by Melissa). Secrets in k3s's SQLite datastore are
-    not encrypted at rest; enable k3s `secrets-encryption`? Backups of app data must include the Secret (or
-    the owner's copy), or a restore gets data with unknown credentials. Rotation (e.g. admin password) is
-    app-specific and not modelled.
+35. App secrets: generated once into a k8s Secret (no reads by Melissa). **Secrets at rest (2026-11-28,
+    DECISIONS):** k3s runs with `secrets-encryption: true` (shared `10-melissa.yaml`, server only), AES-CBC;
+    `melissa-secrets-encrypt.service` (`k3s-secrets-encrypt`, container and NixOS) runs k3s's single-server
+    `k3s secrets-encrypt rotate-keys` once when the rotation stage is `start`, so a datastore from before gets
+    its existing Secrets re-encrypted (idempotent: k3s's own stage decides, `reencrypt_finished` = done).
+    **The key is `/var/lib/rancher/k3s/server/cred/encryption-config.json` (root, 0600): BACKUPS MUST INCLUDE IT**
+    together with `server/db` and `server/token`, or the Secrets in a restored datastore are unreadable. Keep it
+    root-only in backups too. Agents never read it (the sandbox never binds `/var/lib/rancher`; the server runs
+    as `melissa` and can't). Open: (a) after the migration, old plain-text revisions stay in the SQLite file until
+    kine compacts them and SQLite reuses the pages (no VACUUM is run); (b) key rotation on a schedule? Backups of
+    app data must include the Secret (or the owner's copy), or a restore gets data with unknown credentials.
+    Rotation (e.g. admin password) is app-specific and not modelled.
 36. Disk: images and app data share `/var` with the OS (8.6 GiB in the test VM filled up once). Should
     `deploy_app` check free space against the image size + volume sizes first, and should apps get their
     own volume/quota (local-path does not enforce PVC sizes)?
@@ -1042,7 +1059,8 @@ Roadmap (rough, phases may overlap):
     **Owner 2026-11-27 (DECISIONS):** publish to `ghcr.io/svin24/melissa` from GitHub Actions, public package;
     channels `:edge` (master, the install default for now) and `:stable` (tags), plus `:X.Y.Z`, `:X.Y`,
     `:sha-<rev>`, no `:latest`; key-based cosign signatures enforced by podman's `policy.json` (not keyless plus
-    an on-device verifier); escape suite as a hard gate, gVisor test advisory. Section 2 has the details;
+    an on-device verifier); escape suite as a hard gate, gVisor test advisory (a hard gate since 2026-11-28).
+    Section 2 has the details;
     remaining items are Q101.
 51. Agent CLI terms for the demo: Anthropic's legal page says running Claude Code inside your own products or
     services needs the Commercial Terms unless agreed otherwise, and consumer (Free/Pro/Max) logins fall under the
@@ -1607,8 +1625,9 @@ Roadmap (rough, phases may overlap):
     updates instead of `podman-auto-update`: done 2026-11-28 (pull, compare, apply, health wait, roll back,
     skip; signature checks stay podman's `policy.json`); (c) a channel switch (`:edge`/`:stable`) in Settings:
     the Channel row is there (Edge only; Beta and Stable "not available yet"), switching is not built; (d)
-    richer Updates page states: done 2026-11-28 (owner's Penpot design). Still open: (e) when
-    the gVisor test becomes a hard gate; (f) key rotation and what a device does when the key in
+    richer Updates page states: done 2026-11-28 (owner's Penpot design); (e) the gVisor test
+    is a hard gate: done 2026-11-28 (passed all 10 CI runs it had run in; publish waits for it; the test pre-pulls
+    its busybox image with retries so a Docker Hub hiccup is not a failure). Still open: (f) key rotation and what a device does when the key in
     `melissa-signing.pub` changes (old installs only trust the old key); (g) moving to keyless once
     containers/image supports URI identities (`buildSignerURI`) or cosign 3 bundles; (h) the first release number,
     licenses in releases, NixOS path, arm64 and nightly retention (section 7 items 3, 9, 11-13 there); (i) the

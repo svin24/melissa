@@ -347,6 +347,15 @@ the `melissa-var` volume (`/var`): k3s and app data, the server's state, chats, 
 (`/var/lib/melissa/home`). Two things from `/etc` are symlinked onto it: `/etc/melissa` (server.toml,
 Settings' providers.toml) and `/etc/rancher/node` (k3s's node password).
 
+### Secrets encryption
+k3s encrypts Secrets in its datastore (`secrets-encryption: true` in `10-melissa.yaml`, AES-CBC). The key is
+`/var/lib/rancher/k3s/server/cred/encryption-config.json` (root, 0600): a copy of the datastore without it has
+unreadable Secrets, so **a backup must include it** with `server/db` and `server/token`, and keep it root-only.
+A datastore from before (an update from an older image) is migrated by `melissa-secrets-encrypt.service`: k3s's
+`k3s secrets-encrypt rotate-keys` once, while the rotation stage is `start`; `k3s secrets-encrypt status`
+inside shows `Current Rotation Stage: reencrypt_finished` when done. An image from before this change can't
+read the encrypted Secrets: a rollback to one restores the datastore snapshot (see "Updates").
+
 ### Factory reset (Settings → Reset)
 Erases Melissa's data and starts her again **unclaimed**, with a new device id and a new setup code.
 - **Erased:** people and sign-ins, helpers, chats, files, schedules and permissions, every app and its data
@@ -387,11 +396,20 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
   `/var/lib/melissa-container/status` (read-only inside at `/run/melissa-update`): `status.json` (images,
   schedule, next run, held version, last update), `last.json` (the last action's outcome) and, while one
   runs, `action.json` (step and download progress, about once a second). One action at a time (`flock`).
-  - apply: pull (registry; progress from podman's temporary download directory), restart on the new image,
-    wait for the server; if it doesn't come up within 3 minutes, retag the old image, restart on it and
-    hold the new version (automatic updates skip it; Settings offers Try again).
+  - apply: pull (registry; progress from podman's temporary download directory), stop Melissa and snapshot
+    k3s's datastore (below), start the new image, wait for the server; if it doesn't come up within 3
+    minutes, retag the old image, restart on it and hold the new version (automatic updates skip it;
+    Settings offers Try again).
   - rollback: the image Melissa ran before is kept as `localhost/melissa-rollback:previous`; rollback
     retags it, restarts and holds the version it left until a newer one comes out.
+  - datastore snapshots: before every image switch the helper copies k3s's `server/db`, `server/cred` (with
+    the Secrets encryption key) and `server/token` off the stopped `melissa-var` volume into
+    `/var/lib/melissa-container/snapshots/<UTC time>-<image id>` (root, 0700; the newest 3; `meta` records
+    the image and its datastore format). Not enough disk for it: no update. Going back to an image whose k3s
+    needs another datastore format (another Kubernetes minor, or Secrets encryption on or off) restores that
+    image's snapshot: cluster changes since the update (apps deployed or removed) are lost, app data stays,
+    and the replaced datastore is kept in the snapshot's `replaced-<time>/`. Same format: nothing restored.
+    A snapshot is not a backup (same disk, pruned).
   - local image (`localhost/`): nothing to look up; apply and auto restart on a newer image loaded under
     the same name.
 - Same from the host: `sudo /usr/local/libexec/melissa/melissa-host-update check|apply|rollback|status`.
@@ -447,8 +465,8 @@ tag from it, so a failing run revokes an earlier pass. CI runs this gate before 
   asserts that Ubuntu's restriction is still on (`kernel.apparmor_restrict_unprivileged_userns` is 1,
   `bwrap-userns-restrict` loaded). escape-test.sh and gvisor-test.sh run the image under the profile and
   check it applies, so a pass shows the image works on a stock Ubuntu 26.04 ("Ubuntu and AppArmor" above).
-- `gvisor-test.sh` also runs, on its own runner beside publishing, with the image the gate passed. It is
-  advisory for now: a failure does not block publishing.
+- `gvisor-test.sh` is the second hard gate: it runs on its own runner as soon as the escape gate passed,
+  with that image, and publishing waits for it (about two minutes).
 - Build cache: the Containerfile's cache mounts (cargo registry and target dir, cargo-about, the whisper.cpp
   build; rootless buildah keeps them in `/var/tmp/buildah-cache-<uid>`) are kept between runs with
   `actions/cache`, keyed on the builder's `rustc -vV` and the build inputs (Cargo.lock, Cargo.toml files,
