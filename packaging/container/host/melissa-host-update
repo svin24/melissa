@@ -110,12 +110,17 @@ status() { # status [available-json]
         | write status.json
 }
 
+# A command inside the container, for health probes that poll every few seconds. Quiet: otherwise
+# each one writes two long podman events (exec, exec_died) and a harmless conmon warning to this
+# unit's journal and buries the real lines. conmon errors still reach the journal; the exit code
+# is the answer. (One exec: `systemctl is-active` with several units is 0 when any is active.)
+probe() { podman --events-backend=none --log-level=error exec "$NAME" "$@" 2>/dev/null; }
+
 wait_up() { # wait until Melissa runs <image id> and its server is active (or time out)
     local want=$1 end=$(( $(date +%s) + 180 ))
     while [ "$(date +%s)" -lt "$end" ]; do
         if systemctl is-active -q "$UNIT" && [ "$(running_id)" = "$want" ] \
-            && { podman exec "$NAME" systemctl is-active -q melissa-server.service 2>/dev/null \
-                || podman exec "$NAME" systemctl is-active -q melissa-queen.service 2>/dev/null; }; then
+            && probe systemctl is-active -q melissa-server.service melissa-queen.service; then
             return 0
         fi
         sleep 3

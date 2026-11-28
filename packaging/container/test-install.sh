@@ -629,5 +629,12 @@ eq "uninstall.sh removes the check" yes "$(yes_no grep -q 'trust_remove "$POLICY
 eq "the public key is a cosign (PEM) key" yes "$(yes_no grep -q 'BEGIN PUBLIC KEY' "$here/melissa-signing.pub")"
 rm -rf "$tr_dir"
 
+# --- melissa-host-update: health probes stay out of the update unit's journal ---------------
+hu="$here/host/melissa-host-update"
+eq "host-update probes without podman events" yes \
+    "$(yes_no grep -q 'podman --events-backend=none --log-level=error exec' "$hu")"
+eq "host-update has no other podman exec" no "$(yes_no grep -qE '^[^#]*podman exec' "$hu")"
+eq "host-update parses" yes "$(yes_no bash -n "$hu")"
+
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"
