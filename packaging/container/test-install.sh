@@ -169,6 +169,16 @@ eq "the same port as melissa-tailscaled.service" yes \
     "$(yes_no grep -q -- '--port=41641' "$here/rootfs/usr/lib/systemd/system/melissa-tailscaled.service")"
 eq "melissa.container has the port placeholder" yes \
     "$(yes_no grep -qx '@TAILSCALE_PORT_LINE@' "$here/melissa.container")"
+eq "Melissa's own: open from other devices in Settings" yes \
+    "$(yes_if 'from_elsewhere | grep -q "Settings → Tailscale"')"
+HOST_TAILSCALE=yes
+eq "the host's Tailscale: the one serve command, with the real UI port" \
+    "sudo tailscale serve --bg http://127.0.0.1:9090 (HTTPS on your tailnet), or ssh -L" \
+    "$(UI_PORT=9090 from_elsewhere)"
+eq "melissa.container tells the server the UI port" yes \
+    "$(yes_no grep -qx 'Environment=MELISSA_UI_PORT=@UI_PORT@' "$here/melissa.container")"
+eq "the server's unit takes the UI port" yes \
+    "$(yes_no grep -qx 'PassEnvironment=MELISSA_UI_PORT' "$here/rootfs/usr/lib/systemd/system/melissa-server.service.d/10-container.conf")"
 HOST_TAILSCALE=maybe
 eq "a bad HOST_TAILSCALE fails" no "$(yes_no host_tailscale)"
 HOST_TAILSCALE=auto

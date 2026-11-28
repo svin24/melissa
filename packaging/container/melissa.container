@@ -52,6 +52,9 @@ Environment=MELISSA_PUBLISH_BIND=@PUBLISH_BIND@
 # starts its own), and the node name Melissa's own gets when the owner enables it (off by default).
 Environment=MELISSA_HOST_TAILSCALE=@HOST_TAILSCALE@
 Environment=MELISSA_TAILSCALE_NAME=@TAILSCALE_NAME@
+# The web UI's port on the host (UI_PORT): Settings → Tailscale shows the host's own
+# `tailscale serve` command with it when the host runs Tailscale.
+Environment=MELISSA_UI_PORT=@UI_PORT@
 # Melissa's own Tailscale (host doesn't run it): tailscaled's UDP port (41641, fixed in
 # melissa-tailscaled.service), so peers can connect directly instead of through DERP relays behind
 # podman's NAT. Empty when the host runs Tailscale (its own tailscaled holds that port).

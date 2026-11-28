@@ -176,6 +176,16 @@ tailscale_port_line() {
     echo "PublishPort=$TAILSCALE_PORT:$TAILSCALE_PORT/udp"
 }
 
+# from_elsewhere: how to open the web UI from another device. The host's own Tailscale: the one
+# command to run (Melissa never changes the host's Tailscale); Melissa's own: Settings → Tailscale.
+from_elsewhere() {
+    if [ "$(host_tailscale 2>/dev/null)" = yes ]; then
+        echo "sudo tailscale serve --bg http://127.0.0.1:$UI_PORT (HTTPS on your tailnet), or ssh -L"
+    else
+        echo "Settings → Tailscale → Open Melissa from your other devices (HTTPS), or ssh -L"
+    fi
+}
+
 # tailscale_name HOSTNAME: the node name of Melissa's own Tailscale: melissa-<short host name>,
 # lower case letters, digits and dashes, at most 63 (TAILSCALE_NAME overrides it).
 tailscale_name() {
@@ -836,8 +846,8 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
               (automatic: $AUTO_UPDATE)
   Tailscale:  $(case "$(host_tailscale)" in yes) echo "the host's (Melissa uses it)" ;; *) echo "Settings → Tailscale (Melissa's own, off until you enable it)" ;; esac)
-  From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
-  (HTTPS; sign-in sends passwords, so not plain HTTP across the network). See $SHARE/README.md.
+  From another machine: $(from_elsewhere)
+  (sign-in sends passwords, so only HTTPS or this machine). See $SHARE/README.md.
   --privileged rootful container: it has root on this host.
   Uninstall:  sudo $LIBEXEC/uninstall.sh            (--purge also deletes the data)
 
