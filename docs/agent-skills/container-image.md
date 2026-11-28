@@ -8,8 +8,11 @@ User docs: `packaging/container/README.md` (read it first; this file is the deve
 - `packaging/common/` — files every packaging installs, paths = install paths (`packaging/common/README.md`). The
   Nix packaging (`packaging/nix/`) uses them too: **don't rename or move them**; put container-only changes in
   `packaging/container/rootfs/` as overrides (same name) or drop-ins.
-- `packaging/container/Containerfile` — 3 stages: Rust build (+ cargo-about report), k3s fetch (sha256-checked from
-  `k3s.lock`), runtime `FROM registry.fedoraproject.org/fedora:45` + `packages.txt` + common + `rootfs/`.
+- `packaging/container/Containerfile` — stages: toolchain, Rust build (+ cargo-about report), escape-build (test
+  only), k3s, Tailscale and gVisor fetches (sha256-checked from their `.lock` files), whisper.cpp
+  (`whisper-build.sh`, compiled once per version into a cache mount), runtime `FROM
+  registry.fedoraproject.org/fedora:45` + `packages.txt` + common + `rootfs/`. The cache mounts (cargo, cargo-about,
+  whisper.cpp) are what CI keeps between runs (README, "Published images and CI").
 - `packaging/container/rootfs/` — k3s `20-container.yaml`, tmpfiles (`/etc/melissa` and the node password on the
   volume, the update request dir), the UI forward socket/service/filter, the lead agent drop-in
   (`ReadWritePaths=-/run/melissa-update-request`).
