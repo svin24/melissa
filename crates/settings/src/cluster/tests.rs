@@ -337,7 +337,9 @@ fn join_and_leave_keep_the_single_node_data() {
         std::fs::read_to_string(at(&t.root, SERVER_BACKUP).join("storage/pvc-app/file")).unwrap(),
         "app data"
     );
-    assert!(!data.exists());
+    // A fresh agent data directory, marked as the agent's.
+    assert_eq!(t.read(&format!("{K3S_DATA}/{DATA_MARK}")), "agent");
+    assert!(!data.join("storage").exists());
     // Agent config: own file, no server-only keys, no token value.
     assert!(!at(&t.root, SERVER_DROPIN).exists());
     let cfg = t.read(AGENT_CONFIG);
@@ -391,15 +393,16 @@ fn a_broken_setting_never_makes_an_agent() {
 #[test]
 fn an_existing_backup_stops_the_switch() {
     let t = Tree::new("cluster-backup");
-    std::fs::create_dir_all(at(&t.root, K3S_DATA)).unwrap();
-    std::fs::create_dir_all(at(&t.root, SERVER_BACKUP)).unwrap();
+    std::fs::create_dir_all(at(&t.root, K3S_DATA).join("server")).unwrap();
+    std::fs::create_dir_all(at(&t.root, SERVER_BACKUP).join("server")).unwrap();
     t.set(&agent_setting());
     write_private(&t.config.join(JOIN_TOKEN_FILE), b"t").unwrap();
     assert!(
         t.prepare(None).is_err(),
         "never overwrite a kept server's data"
     );
-    assert!(at(&t.root, K3S_DATA).exists());
+    assert!(at(&t.root, K3S_DATA).join("server").exists());
+    assert!(at(&t.root, SERVER_BACKUP).join("server").exists());
 }
 
 struct FakeRunner;
@@ -580,6 +583,35 @@ async fn control_invites_joins_removes_and_leaves() {
         starter.clone(),
         Some(audit),
     );
+    // Two devices of one name can't be in one cluster.
+    let status = Status {
+        node_name: "desktop".into(),
+        ..Status::default()
+    };
+    std::fs::write(
+        dir.join("status.json"),
+        serde_json::to_vec(&status).unwrap(),
+    )
+    .unwrap();
+    let same = Peer {
+        name: "desktop".into(),
+        address: "100.64.0.2".parse().unwrap(),
+    };
+    assert!(c
+        .create_invitation("100.64.0.1".parse().unwrap(), same, "owner")
+        .await
+        .is_err());
+    assert!(c
+        .join(
+            "https://100.64.0.9:6443",
+            "Desktop",
+            "100.64.0.1".parse().unwrap(),
+            Secret("K10join::x.y".into()),
+            "owner",
+        )
+        .await
+        .is_err());
+    std::fs::remove_file(dir.join("status.json")).unwrap();
     let inv = c
         .create_invitation(
             "100.64.0.1".parse().unwrap(),
@@ -705,4 +737,213 @@ fn the_switch_from_inside_k3s_never_kills_its_caller() {
         .calls
         .borrow()
         .contains(&"kill /system.slice/k3s.service".to_string()));
+}
+
+// --- a role switch cut short anywhere -----------------------------------------------------------
+
+/// A step of a switch, and the state a crash right after it leaves.
+type Cut = (&'static str, fn(&Tree));
+
+/// A server with an app's data and the pinned name `melissa` (from before pinning).
+fn server_with_app(name: &str) -> Tree {
+    let t = Tree::new(name);
+    let data = at(&t.root, K3S_DATA);
+    std::fs::create_dir_all(data.join("storage/pvc-app")).unwrap();
+    std::fs::write(data.join("storage/pvc-app/file"), "app data").unwrap();
+    assert_eq!(t.prepare(Some("Laptop")).unwrap().node_name, "melissa");
+    t
+}
+
+impl Tree {
+    fn app_data_at(&self, abs: &str) -> bool {
+        std::fs::read_to_string(at(&self.root, abs).join("storage/pvc-app/file")).ok()
+            == Some("app data".into())
+    }
+
+    fn join(&self) {
+        self.set(&agent_setting());
+        write_private(&self.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret").unwrap();
+    }
+
+    /// Back to a server: the app's data in place, its old name, nothing of it anywhere else.
+    fn assert_server_again(&self) {
+        self.set(&Setting::default());
+        let st = self.prepare(Some("Laptop")).unwrap();
+        assert_eq!((st.role, st.node_name.as_str()), (Role::Server, "melissa"));
+        assert!(self.app_data_at(K3S_DATA));
+        assert!(!at(&self.root, SERVER_BACKUP).exists());
+        assert!(!self.app_data_at(AGENT_BACKUP));
+        assert!(!at(&self.root, STATE_DIR).join("agent-token").exists());
+    }
+}
+
+#[test]
+fn joining_cut_short_at_any_step_finishes_or_goes_back() {
+    let state = |t: &Tree| at(&t.root, STATE_DIR);
+    // Each step of server → agent, as a crash would leave it.
+    let steps: [Cut; 4] = [
+        ("token taken, nothing moved", |_| {}),
+        ("server name saved", |t| {
+            std::fs::write(at(&t.root, STATE_DIR).join("server-node-name"), "melissa").unwrap();
+        }),
+        ("data moved to the backup", |t| {
+            std::fs::write(at(&t.root, STATE_DIR).join("server-node-name"), "melissa").unwrap();
+            std::fs::rename(at(&t.root, K3S_DATA), at(&t.root, SERVER_BACKUP)).unwrap();
+        }),
+        ("an empty data directory made, not marked", |t| {
+            std::fs::write(at(&t.root, STATE_DIR).join("server-node-name"), "melissa").unwrap();
+            std::fs::rename(at(&t.root, K3S_DATA), at(&t.root, SERVER_BACKUP)).unwrap();
+            std::fs::create_dir_all(at(&t.root, K3S_DATA)).unwrap();
+        }),
+    ];
+    for (what, cut) in steps {
+        for finish in [true, false] {
+            let t = server_with_app("cluster-cut-join");
+            t.join();
+            // The token as step 1 leaves it.
+            write_root(
+                &state(&t).join("agent-token"),
+                b"K10abc::server:secret",
+                0o600,
+            )
+            .unwrap();
+            let _ = std::fs::remove_file(t.config.join(JOIN_TOKEN_FILE));
+            cut(&t);
+            if finish {
+                let st = t.prepare(Some("Laptop")).unwrap();
+                assert_eq!(
+                    (st.role, st.node_name.as_str()),
+                    (Role::Agent, "laptop"),
+                    "{what}"
+                );
+                assert!(t.app_data_at(SERVER_BACKUP), "{what}");
+                assert!(!t.app_data_at(K3S_DATA), "{what}");
+            }
+            // Leaving afterwards (or instead) brings everything back.
+            t.assert_server_again();
+        }
+    }
+}
+
+#[test]
+fn leaving_cut_short_at_any_step_never_loses_the_servers_data() {
+    let steps: [Cut; 4] = [
+        ("nothing done", |_| {}),
+        ("an old agent backup removed", |_| {}),
+        ("agent data moved to its backup", |t| {
+            std::fs::rename(at(&t.root, K3S_DATA), at(&t.root, AGENT_BACKUP)).unwrap();
+        }),
+        // The step that lost data before: the server's data is back, its name and the role
+        // file not yet.
+        ("server data restored", |t| {
+            std::fs::rename(at(&t.root, K3S_DATA), at(&t.root, AGENT_BACKUP)).unwrap();
+            std::fs::rename(at(&t.root, SERVER_BACKUP), at(&t.root, K3S_DATA)).unwrap();
+            std::fs::write(at(&t.root, STATE_DIR).join("data-role"), "agent").unwrap();
+        }),
+    ];
+    for (what, cut) in steps {
+        let t = server_with_app("cluster-cut-leave");
+        t.join();
+        assert_eq!(t.prepare(Some("Laptop")).unwrap().role, Role::Agent);
+        std::fs::create_dir_all(at(&t.root, K3S_DATA).join("agent/images")).unwrap();
+        cut(&t);
+        t.assert_server_again();
+        assert!(
+            at(&t.root, AGENT_BACKUP).join("agent/images").exists(),
+            "{what}: the agent's data is the backup"
+        );
+        // Join and leave again: the old agent backup goes, the server's data never does.
+        t.join();
+        assert_eq!(
+            t.prepare(Some("Laptop")).unwrap().role,
+            Role::Agent,
+            "{what}"
+        );
+        t.assert_server_again();
+    }
+}
+
+#[test]
+fn an_unmarked_agent_backup_is_kept_aside_not_deleted() {
+    let t = server_with_app("cluster-unmarked-backup");
+    t.join();
+    t.prepare(Some("Laptop")).unwrap();
+    // A backup from before marks, maybe a server's data: never removed.
+    let backup = at(&t.root, AGENT_BACKUP);
+    std::fs::create_dir_all(backup.join("storage")).unwrap();
+    std::fs::write(backup.join("storage/only-copy"), "x").unwrap();
+    t.set(&Setting::default());
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!(st.role, Role::Server);
+    assert!(
+        st.errors.iter().any(|e| e.contains("kept as")),
+        "{:?}",
+        st.errors
+    );
+    let kept: Vec<_> = std::fs::read_dir(backup.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .contains("agent-backup.kept-")
+        })
+        .collect();
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].path().join("storage/only-copy").exists());
+}
+
+#[test]
+fn an_agent_never_leaves_by_itself() {
+    let t = server_with_app("cluster-agent-stays");
+    t.join();
+    assert_eq!(t.prepare(Some("Laptop")).unwrap().role, Role::Agent);
+    let token = at(&t.root, STATE_DIR).join("agent-token");
+    // A broken setting: k3s waits; nothing moves, the token stays.
+    std::fs::write(t.config.join(FILE_NAME), "role = \"agent\"\n").unwrap();
+    let e = t.prepare(Some("Laptop")).unwrap_err();
+    assert!(e.contains("unreadable"), "{e}");
+    assert!(token.exists());
+    assert!(t.app_data_at(SERVER_BACKUP));
+    assert_eq!(t.read(&format!("{K3S_DATA}/{DATA_MARK}")), "agent");
+    // A missing token: still an agent, and it says why.
+    t.set(&agent_setting());
+    std::fs::remove_file(&token).unwrap();
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!(st.role, Role::Agent);
+    assert!(!st.errors.is_empty());
+    assert!(t.app_data_at(SERVER_BACKUP));
+}
+
+#[test]
+fn a_broken_setting_on_a_clustered_server_changes_nothing() {
+    let t = Tree::new("cluster-broken-server");
+    std::fs::create_dir_all(at(&t.root, K3S_DATA).join("server")).unwrap();
+    t.set(&server_setting());
+    assert_eq!(t.prepare(Some("Desktop")).unwrap().node_name, "melissa");
+    std::fs::write(t.config.join(FILE_NAME), "peers = 3\n").unwrap();
+    let st = t.prepare(Some("Desktop")).unwrap();
+    assert_eq!(st.role, Role::Server);
+    assert_eq!(
+        st.node_name, "melissa",
+        "no rename while the peers are unknown"
+    );
+    assert!(!st.errors.is_empty());
+}
+
+#[test]
+fn joining_under_the_servers_own_name_is_refused() {
+    let t = server_with_app("cluster-same-name");
+    let mut s = agent_setting();
+    s.peers[0].name = "laptop".into();
+    t.set(&s);
+    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret").unwrap();
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!(st.role, Role::Server);
+    assert!(
+        st.errors.iter().any(|e| e.contains("rename this device")),
+        "{:?}",
+        st.errors
+    );
+    assert!(t.app_data_at(K3S_DATA), "nothing moved");
 }

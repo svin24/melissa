@@ -18,8 +18,10 @@
 //!   name changes only while that is harmless (a server with no app volumes and no peers), or
 //!   when the device joins a cluster (a fresh agent data directory).
 //! - **`melissa-server cluster prepare`** (root, from k3s-prepare before every k3s start): reads
-//!   all that, switches the k3s data directory when the role changed (kept as a backup, never
-//!   deleted), and renders k3s's configuration: a server gets
+//!   all that, switches the k3s data directory when the role changed (kept as a backup; each
+//!   directory carries a mark, [`DATA_MARK`], saying whose data it is, so a switch cut short
+//!   anywhere is finished by the next start and a server's data is never deleted; an unreadable
+//!   setting switches nothing), and renders k3s's configuration: a server gets
 //!   `/etc/rancher/k3s/config.yaml.d/50-melissa-cluster.yaml`; an agent gets its own config
 //!   directory ([`AGENT_CONFIG`]) without the server-only keys. It writes the mode for the unit
 //!   ([`ENV_FILE`]) and a status for the server ([`STATUS_FILE`]: role and node name, no secret).
@@ -547,6 +549,48 @@ fn non_empty_dir(dir: &Path) -> bool {
     std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some())
 }
 
+/// The mark in a k3s data directory (and its backups) saying whose data it is: it moves with
+/// the directory, so a role switch cut short anywhere can't mistake a server's data for an
+/// agent's.
+pub const DATA_MARK: &str = ".melissa-data-role";
+
+/// What a k3s data directory (or a backup) holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataDir {
+    Absent,
+    Empty,
+    Marked(Role),
+    /// Data without a mark (from before marks).
+    Unmarked,
+}
+
+fn data_dir(dir: &Path) -> Result<DataDir, String> {
+    match std::fs::metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DataDir::Absent),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+        Ok(m) if !m.is_dir() => return Err(format!("{} is not a directory", dir.display())),
+        Ok(_) => {}
+    }
+    if let Some(role) = read_line_file(&dir.join(DATA_MARK)).and_then(|r| Role::parse(&r)) {
+        return Ok(DataDir::Marked(role));
+    }
+    if non_empty_dir(dir) {
+        Ok(DataDir::Unmarked)
+    } else {
+        Ok(DataDir::Empty)
+    }
+}
+
+/// k3s ran with `dir` before: it holds more than the mark.
+fn has_data(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|d| d.flatten().any(|e| e.file_name() != DATA_MARK))
+}
+
+fn mark(dir: &Path, role: Role) -> Result<(), String> {
+    write_root(&dir.join(DATA_MARK), role.as_str().as_bytes(), 0o600)
+        .map_err(|e| format!("marking {}: {e}", dir.display()))
+}
+
 /// Get k3s's data directory out of the way: kill what the last k3s left running and unmount
 /// below it, then rename it to `to` (never deleted).
 fn move_data(host: &dyn crate::factory_reset::Host, from: &Path, to: &Path) -> Result<(), String> {
@@ -581,27 +625,63 @@ pub fn prepare(
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("{}: {e}", state.display()))?;
     let mut errors = Vec::new();
-    let setting = match read_setting(&config_dir.join(FILE_NAME)) {
-        Ok(s) => s,
-        Err(e) => {
-            // Never guess a cluster from a broken file: stay what the data directory is, alone.
-            say(&format!("cluster: {e}; staying a single-node server"));
-            errors.push(e);
-            Setting::default()
-        }
-    };
     let data = at(root, K3S_DATA);
-    let role_file = state.join("data-role");
-    let data_role = read_line_file(&role_file)
-        .and_then(|r| Role::parse(&r))
-        .unwrap_or_default();
     let pin_file = state.join("node-name");
+    let server_name_file = state.join("server-node-name");
     let token = state.join("agent-token");
     let desired = desired_name(
         input.device_name.as_deref(),
         input.tailscale_name.as_deref(),
         input.host_name.as_deref(),
     );
+
+    // 0. Whose data is in k3s's directory: its mark, else (from before marks) root's old
+    //    `data-role` file, else a server's. Marked now, so no later step or crash can mistake it.
+    let legacy_role_file = state.join("data-role");
+    let current = match data_dir(&data)? {
+        DataDir::Absent | DataDir::Empty => None,
+        DataDir::Marked(r) => Some(r),
+        DataDir::Unmarked => {
+            let r = read_line_file(&legacy_role_file)
+                .and_then(|r| Role::parse(&r))
+                .unwrap_or_default();
+            mark(&data, r)?;
+            Some(r)
+        }
+    };
+    let _ = std::fs::remove_file(&legacy_role_file);
+
+    let setting = match read_setting(&config_dir.join(FILE_NAME)) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            say(&format!("cluster: {e}"));
+            errors.push(e);
+            None
+        }
+    };
+    // A broken setting never switches anything and never drops the agent's token: a server
+    // stays one (its peers and name kept as they are); anything else waits for a fixed file.
+    let (setting, broken) = match setting {
+        Some(s) => (s, false),
+        // A server, or a first start (no data anywhere): a server.
+        None if current == Some(Role::Server)
+            || (current.is_none() && data_dir(&at(root, SERVER_BACKUP))? == DataDir::Absent) =>
+        {
+            say("cluster: staying a server, nothing changed; fix cluster.toml");
+            (Setting::default(), true)
+        }
+        None => {
+            return Err(format!(
+                "{} is unreadable and this device is {}: k3s waits until it is fixed (nothing was \
+                 moved or removed)",
+                config_dir.join(FILE_NAME).display(),
+                match current {
+                    Some(r) => format!("a k3s {}", r.as_str()),
+                    None => "between roles".into(),
+                }
+            ));
+        }
+    };
 
     // 1. A new join token from the server: root's, 0600.
     let handed = config_dir.join(JOIN_TOKEN_FILE);
@@ -616,44 +696,117 @@ pub fn prepare(
         Err(e) => errors.push(e),
     }
 
-    // 2. Role switch.
-    let mut role = setting.role;
-    if role == Role::Agent && !token.exists() {
-        let e = "no join token: staying a server".to_string();
+    // 2. Role switch. Every step is idempotent and the data's role travels with it (its mark),
+    //    so a run cut short anywhere is finished by the next one; nothing that may hold a
+    //    server's data is ever deleted.
+    let mut role = if broken { Role::Server } else { setting.role };
+    if role == Role::Agent && current != Some(Role::Agent) {
+        let stay = if !token.exists() {
+            Some("no join token: staying a server".to_string())
+        } else if setting.peers.iter().any(|p| p.name == desired) {
+            Some(format!(
+                "this device's name {desired} is the server's too: rename this device, then join \
+                 again; staying a server"
+            ))
+        } else {
+            None
+        };
+        if let Some(e) = stay {
+            say(&format!("cluster: {e}"));
+            errors.push(e);
+            role = Role::Server;
+        }
+    } else if role == Role::Agent && !token.exists() {
+        // Already an agent: never leave by itself; k3s says why it can't connect.
+        let e = "no join token for this agent: join again".to_string();
         say(&format!("cluster: {e}"));
         errors.push(e);
-        role = Role::Server;
     }
     let mut fresh_agent = false;
-    if role != data_role {
-        match role {
-            Role::Agent => {
-                // The single-node server's data (apps, volumes) waits in the backup.
+    match role {
+        Role::Agent => {
+            if current == Some(Role::Server) {
+                // The single-node server's data (apps, volumes) and its node name wait.
+                // (Empty: no pinned name; k3s's old default comes back with the data.)
+                let name = read_line_file(&pin_file).unwrap_or_default();
+                write_root(&server_name_file, name.as_bytes(), 0o600).map_err(|e| e.to_string())?;
                 move_data(host, &data, &at(root, SERVER_BACKUP))?;
-                if let Some(name) = read_line_file(&pin_file) {
-                    write_root(&state.join("server-node-name"), name.as_bytes(), 0o600)
-                        .map_err(|e| e.to_string())?;
-                }
-                let _ = std::fs::remove_file(&pin_file);
-                fresh_agent = true;
                 say("cluster: becoming a k3s agent; the server's data is kept in k3s.single-node-backup");
             }
-            Role::Server => {
+            if !matches!(data_dir(&data)?, DataDir::Marked(Role::Agent)) {
+                let _ = std::fs::remove_file(&pin_file);
+                fresh_agent = true;
+                std::fs::create_dir_all(&data)
+                    .map_err(|e| format!("creating {}: {e}", data.display()))?;
+                mark(&data, Role::Agent)?;
+            }
+        }
+        Role::Server => {
+            if current == Some(Role::Agent) {
                 let backup = at(root, AGENT_BACKUP);
-                if backup.symlink_metadata().is_ok() {
-                    std::fs::remove_dir_all(&backup)
-                        .map_err(|e| format!("removing the old {}: {e}", backup.display()))?;
+                match data_dir(&backup)? {
+                    DataDir::Absent => {}
+                    // The last agent's data: images and caches, nothing of the owner's.
+                    DataDir::Marked(Role::Agent) | DataDir::Empty => {
+                        std::fs::remove_dir_all(&backup)
+                            .map_err(|e| format!("removing the old {}: {e}", backup.display()))?
+                    }
+                    // Not known to be an agent's: kept under another name.
+                    _ => {
+                        let mut aside = backup.as_os_str().to_os_string();
+                        aside.push(format!(".kept-{}", now()));
+                        std::fs::rename(&backup, &aside)
+                            .map_err(|e| format!("moving {} aside: {e}", backup.display()))?;
+                        let e = format!(
+                            "{} was not marked as an agent's; kept as {}",
+                            backup.display(),
+                            Path::new(&aside).display()
+                        );
+                        say(&format!("cluster: {e}"));
+                        errors.push(e);
+                    }
                 }
                 move_data(host, &data, &backup)?;
-                let server = at(root, SERVER_BACKUP);
-                if server.exists() {
-                    std::fs::rename(&server, &data)
-                        .map_err(|e| format!("restoring the server's data: {e}"))?;
-                    say("cluster: back to a server; restored the single-node data");
-                } else {
-                    say("cluster: back to a server (no single-node data kept: a fresh one)");
+            }
+            match data_dir(&data)? {
+                DataDir::Marked(Role::Server) => {}
+                DataDir::Marked(Role::Agent) | DataDir::Unmarked => {
+                    return Err(format!("{} changed while switching", data.display()))
                 }
-                match read_line_file(&state.join("server-node-name")) {
+                DataDir::Absent | DataDir::Empty => {
+                    let server = at(root, SERVER_BACKUP);
+                    match data_dir(&server)? {
+                        DataDir::Absent | DataDir::Empty => {
+                            say("cluster: a server (no single-node data kept: a fresh one)");
+                            if server.symlink_metadata().is_ok() {
+                                let _ = std::fs::remove_dir(&server);
+                            }
+                            std::fs::create_dir_all(&data)
+                                .map_err(|e| format!("creating {}: {e}", data.display()))?;
+                        }
+                        DataDir::Marked(Role::Agent) => {
+                            return Err(format!(
+                                "{} holds an agent's data; move it by hand",
+                                server.display()
+                            ))
+                        }
+                        DataDir::Marked(Role::Server) | DataDir::Unmarked => {
+                            // An empty directory (made by nothing of ours, or before a crash).
+                            if data.symlink_metadata().is_ok() {
+                                std::fs::remove_dir(&data)
+                                    .map_err(|e| format!("{}: {e}", data.display()))?;
+                            }
+                            std::fs::rename(&server, &data)
+                                .map_err(|e| format!("restoring the server's data: {e}"))?;
+                            say("cluster: back to a server; restored the single-node data");
+                        }
+                    }
+                    mark(&data, Role::Server)?;
+                }
+            }
+            // The server's data is in place: its node name comes back, the agent's token goes.
+            if server_name_file.exists() {
+                match read_line_file(&server_name_file) {
                     Some(name) => {
                         write_root(&pin_file, name.as_bytes(), 0o600).map_err(|e| e.to_string())?
                     }
@@ -661,11 +814,15 @@ pub fn prepare(
                         let _ = std::fs::remove_file(&pin_file);
                     }
                 }
-                let _ = std::fs::remove_file(state.join("server-node-name"));
+                let _ = std::fs::remove_file(&server_name_file);
+            } else if current == Some(Role::Agent) {
+                let _ = std::fs::remove_file(&pin_file);
+            }
+            // Only when the owner left (not when joining was refused above).
+            if !broken && setting.role == Role::Server {
                 let _ = std::fs::remove_file(&token);
             }
         }
-        write_root(&role_file, role.as_str().as_bytes(), 0o600).map_err(|e| e.to_string())?;
     }
 
     // 3. The node name.
@@ -680,9 +837,10 @@ pub fn prepare(
                 .as_deref()
                 .and_then(node_label)
                 .unwrap_or_else(|| "melissa".into()),
-            data_exists: data.exists(),
+            data_exists: has_data(&data),
             app_volumes: non_empty_dir(&data.join("storage")),
-            clustered: setting.clustered(),
+            // Unknown (a broken setting): as if clustered, so the name stays.
+            clustered: broken || setting.clustered(),
         })
     };
     let stale = state.join("stale-node");
@@ -1208,6 +1366,18 @@ impl ClusterControl {
         self.status().map(|s| s.node_name).filter(|n| !n.is_empty())
     }
 
+    /// The names this device has or will take as a node (pinned, and wanted).
+    fn own_names(&self) -> Vec<String> {
+        self.status()
+            .map(|s| {
+                [Some(s.node_name), s.wanted_name]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     async fn request(&self, request: &Request) -> Result<(), ClusterError> {
         let dir = &self.inner.config_dir;
         let _ = std::fs::remove_file(dir.join(ANSWER_FILE));
@@ -1270,6 +1440,11 @@ impl ClusterControl {
         if node_label(&peer.name).as_deref() != Some(peer.name.as_str()) {
             return Err(ClusterError::Invalid("not a device name".into()));
         }
+        if self.own_names().contains(&peer.name) {
+            return Err(ClusterError::Invalid(
+                "that is this device's name: rename one of the two first".into(),
+            ));
+        }
         let moved = s.node_ip != Some(own_address)
             || s.flannel_iface.as_deref() != Some(crate::tailscale::INTERFACE);
         s.node_ip = Some(own_address);
@@ -1330,6 +1505,12 @@ impl ClusterControl {
         })?;
         let server_name = node_label(server_name)
             .ok_or_else(|| ClusterError::Invalid("not a device name".into()))?;
+        // k3s refuses a second node of the same name (and retries forever).
+        if self.own_names().contains(&server_name) {
+            return Err(ClusterError::Invalid(
+                "the server has this device's name: rename one of the two first".into(),
+            ));
+        }
         let t = token.expose().trim();
         if t.is_empty() || t.len() > MAX_TOKEN_BYTES as usize || t.contains(char::is_whitespace) {
             return Err(ClusterError::Invalid("that is not a join token".into()));
