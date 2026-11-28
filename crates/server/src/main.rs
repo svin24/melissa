@@ -17,6 +17,8 @@
 //!   `melissa-server factory-reset --confirm melissa`         erase Melissa's data, start again
 //!                                                            unclaimed (container install)
 //!   `melissa-server factory-reset run [--unit|--confirm melissa]` the root side of it
+//!   `melissa-server backup unit|status|now|setup|adopt|snapshots|restore-app`  backups (root;
+//!                                                            `status` for the melissa group)
 //!   `melissa-server [--config <path>] chat [--agent <agent>]`      talk to the lead agent or an agent
 //!   `melissa-server [--config <path>] fresh-start [--agent <agent>]` clear an agent's memory
 //!   `melissa-server [--config <path>] ask [--agent <agent>] <message>`  one message, stream it
@@ -42,6 +44,7 @@
 //! never waits for k3s and attaches to it without a restart. Downloaded data (the speech model
 //! for voice input): `$XDG_DATA_HOME/melissa/`.
 
+mod backup;
 mod client;
 mod config;
 mod credentials;
@@ -275,6 +278,10 @@ async fn main() -> anyhow::Result<()> {
     if argv.first().is_some_and(|c| c == "factory-reset") && argv.get(1).is_some_and(|c| c == "run")
     {
         return reset::command(&argv[2..]);
+    }
+    // Root's backups (melissa-backup.service, or by hand); `backup status` for the group too.
+    if argv.first().is_some_and(|c| c == "backup") {
+        return backup::command(&argv[1..]);
     }
     // Root's cluster helper (k3s-prepare, k3s's ExecStartPost, melissa-cluster.service).
     if argv.first().is_some_and(|c| c == "cluster") {

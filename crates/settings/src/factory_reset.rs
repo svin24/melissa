@@ -107,6 +107,10 @@ pub const WIPE: &[&str] = &[
     "/var/lib/kubelet",
     "/var/lib/cni",
     "/run/k3s",
+    // Backups (melissa_backup): root's settings and the device's copy of the recovery key, and
+    // what the server reads. The backups on the drive stay; the owner's recovery key opens them.
+    "/var/lib/melissa-container/backup",
+    "/var/lib/melissa-container/backup-status",
 ];
 
 /// Emptied (the directory itself stays, with its owner and mode).
@@ -115,6 +119,8 @@ pub const EMPTY: &[&str] = &[
     "/var/log/journal",
     // The server's cluster credentials for the old cluster.
     "/run/melissa-kube",
+    // Backup requests not yet handled.
+    "/var/lib/melissa-container/backup-request",
 ];
 
 /// Swept: everything inside goes except the [`KEEP`] entries directly in it. A catch-all behind
@@ -151,6 +157,7 @@ pub const STOP: &[&str] = &[
 pub const STOP_JOBS: &[&str] = &[
     "melissa-agent-install@*.service",
     "melissa-agent-login@*.service",
+    "melissa-backup.service",
 ];
 
 /// Started again afterwards (`restart --no-block`: the app filter goes back to its default,
@@ -171,6 +178,51 @@ pub const TMPFILES: &[&str] = &[
     "melissa-container.conf",
     "melissa-tailscale.conf",
     "melissa-agent-install.conf",
+];
+
+// --- what a backup of Melissa's own state holds (melissa_backup) -----------------------------
+//
+// One inventory for both: a backup copies what a reset erases, minus what is regenerated or
+// bound to this device. Every [`WIPE`] entry is either inside a [`BACKUP_STATE`] directory or
+// listed in [`BACKUP_ELSEWHERE`] (checked by the tests), so a new state file is covered by
+// both or neither.
+
+/// Melissa's state in a backup: the swept directories (the server's state and settings), whole,
+/// without [`BACKUP_EXCLUDE`] and [`KEEP`].
+pub const BACKUP_STATE: &[&str] = SWEEP;
+
+/// Inside [`BACKUP_STATE`] but never backed up: temporary files, caches, the voice model
+/// (downloaded again), the install's own `server.toml`, and the cluster's tokens and requests
+/// (a restored device gets a fresh cluster identity).
+pub const BACKUP_EXCLUDE: &[&str] = &[
+    "/var/lib/melissa/tmp",
+    "/var/lib/melissa/models",
+    "/var/lib/melissa/home/.cache",
+    "/var/lib/melissa/home/.npm",
+    "/var/lib/melissa-container/etc-melissa/server.toml",
+    "/var/lib/melissa-container/etc-melissa/providers.toml.broken",
+    "/var/lib/melissa-container/etc-melissa/cluster.toml",
+    "/var/lib/melissa-container/etc-melissa/cluster-join.token",
+    "/var/lib/melissa-container/etc-melissa/cluster-invitation.token",
+    "/var/lib/melissa-container/etc-melissa/cluster-request.json",
+    "/var/lib/melissa-container/etc-melissa/cluster-answer.json",
+];
+
+/// Erased by a reset, not part of the state backup: k3s (backed up as its own parts: a raw
+/// snapshot of its datastore and each app's export), Melissa's Tailscale node key, the cluster
+/// identity, runtime leftovers and the backup settings themselves.
+pub const BACKUP_ELSEWHERE: &[&str] = &[
+    "/var/lib/melissa-tailscale",
+    "/var/lib/rancher/k3s",
+    "/var/lib/melissa-container/cluster",
+    "/var/lib/rancher/k3s.single-node-backup",
+    "/var/lib/rancher/k3s.agent-backup",
+    "/run/melissa-cluster",
+    "/var/lib/kubelet",
+    "/var/lib/cni",
+    "/run/k3s",
+    "/var/lib/melissa-container/backup",
+    "/var/lib/melissa-container/backup-status",
 ];
 
 /// What the owner reads before confirming (short; the page and the CLI use the same words).

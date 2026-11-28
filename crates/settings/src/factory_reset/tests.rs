@@ -57,6 +57,7 @@ fn the_lists_never_reach_what_stays() {
                 "/run/k3s",
                 "/var/log/journal",
                 "/run/melissa-kube",
+                "/var/lib/melissa-container/backup",
             ]
             .iter()
             .any(|p| t.starts_with(p)),
@@ -83,6 +84,35 @@ fn the_owner_decisions_are_in_the_lists() {
     }
     assert!(EMPTY.contains(&"/var/log/journal"));
     assert!(SWEEP.contains(&"/var/lib/melissa"));
+}
+
+#[test]
+fn every_erased_path_is_backed_up_or_said_why_not() {
+    let under_state = |t: &str| BACKUP_STATE.iter().any(|d| Path::new(t).starts_with(d));
+    for t in WIPE {
+        assert!(
+            under_state(t) != BACKUP_ELSEWHERE.contains(t),
+            "{t}: inside the state backup or in BACKUP_ELSEWHERE (exactly one)"
+        );
+    }
+    for t in BACKUP_EXCLUDE {
+        assert!(under_state(t), "{t} is not inside the state backup");
+    }
+    for t in BACKUP_ELSEWHERE {
+        assert!(WIPE.contains(t), "{t} is not erased by a reset");
+    }
+    // Kept entries inside the backup are excluded (the voice model, server.toml).
+    for k in KEEP.iter().filter(|k| under_state(k)) {
+        assert!(BACKUP_EXCLUDE.contains(k), "{k}");
+    }
+    // Device-bound identities never travel.
+    for t in [
+        "/var/lib/melissa-tailscale",
+        "/var/lib/melissa-container/cluster",
+        "/var/lib/melissa-container/etc-melissa/cluster-join.token",
+    ] {
+        assert!(!under_state(t) || BACKUP_EXCLUDE.contains(&t), "{t}");
+    }
 }
 
 #[test]

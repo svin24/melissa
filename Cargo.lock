@@ -1318,6 +1318,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "melissa-backup"
+version = "0.0.2"
+dependencies = [
+ "base64 0.22.1",
+ "jiff",
+ "k8s-openapi",
+ "melissa-agent",
+ "melissa-appspec",
+ "melissa-cluster",
+ "melissa-settings",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "melissa-cluster"
 version = "0.0.2"
 dependencies = [
@@ -1346,11 +1365,13 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "jiff",
  "k8s-openapi",
  "kube",
  "melissa-agent",
  "melissa-appspec",
  "melissa-auth",
+ "melissa-backup",
  "melissa-cluster",
  "melissa-settings",
  "melissa-voice",
