@@ -29,8 +29,10 @@
 //! - **Taint survives.** Once the conversation's MCP session has read untrusted content (app
 //!   logs, an agent that did, a message from a tainted lead agent), every later session of this
 //!   conversation starts tainted too: a resumed session still has that content, and a new
-//!   one is primed from the transcript. The flag is saved in `session.json`, so it also
-//!   survives a daemon restart.
+//!   one is primed from the transcript. The flag is saved in `session.json` and as a
+//!   `tainted` marker file beside it (which any Melissa can write, even while `session.json`
+//!   is a newer Melissa's), so it also survives a daemon restart. A `session.json` this
+//!   version cannot read, or a newer Melissa's, counts as tainted.
 //! - **Backend switch.** The user may choose another backend (and model) at any time; it
 //!   takes effect when the next turn starts, never during one ([`super::backends`]). The
 //!   old session closes like at shutdown; the new one resumes it (same backend, other
@@ -438,18 +440,44 @@ pub(crate) struct Conversation {
 
 /// Saved between daemon runs so the next session can try to resume the agent's session.
 #[derive(Debug, Serialize, Deserialize)]
-struct SavedSession {
-    backend: String,
-    session_id: String,
+pub(crate) struct SavedSession {
+    pub(crate) backend: String,
+    pub(crate) session_id: String,
     /// The conversation read untrusted content; the next session starts tainted.
     #[serde(default)]
-    tainted: bool,
+    pub(crate) tainted: bool,
 }
 
-fn load_session(path: &std::path::Path) -> Option<SavedSession> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
+pub(crate) fn load_session(path: &std::path::Path) -> Option<SavedSession> {
+    match melissa_statefile::read_json(path, &crate::formats::SESSION) {
+        Ok(loaded) => loaded.map(|l| l.value),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), "not resuming the saved session: {e}");
+            None
+        }
+    }
+}
+
+/// Beside `session.json`: the conversation is tainted. Its content does not matter; only a
+/// fresh start removes it. Every later Melissa must keep honouring it.
+const TAINT_MARKER: &str = "tainted";
+
+/// Whether the conversation in `state_dir` was tainted when it was last saved. Fails closed:
+/// a `session.json` that cannot be read, or that a newer Melissa wrote (it may know of taint
+/// in ways this version does not read), counts as tainted.
+pub(crate) fn saved_taint(state_dir: &std::path::Path) -> bool {
+    if state_dir.join(TAINT_MARKER).exists() {
+        return true;
+    }
+    let path = state_dir.join("session.json");
+    match melissa_statefile::read_json::<SavedSession>(&path, &crate::formats::SESSION) {
+        Ok(None) => false,
+        Ok(Some(l)) => l.value.tainted || l.read_only,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), "{e}; the conversation counts as tainted");
+            true
+        }
+    }
 }
 
 impl Conversation {
@@ -461,7 +489,7 @@ impl Conversation {
         events: EventLog,
         audit: Option<AuditLog>,
     ) -> Self {
-        let tainted = load_session(&spec.state_dir.join("session.json")).is_some_and(|s| s.tainted);
+        let tainted = saved_taint(&spec.state_dir);
         // Turn ids continue after the restored earlier conversation.
         let turn = TurnState {
             last: events.restored_turns(),
@@ -797,13 +825,15 @@ impl Conversation {
             }
         }
         self.close().await;
-        let saved = self.inner.spec.state_dir.join("session.json");
-        if let Err(e) = std::fs::remove_file(&saved) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(LeadError::Failed(format!(
-                    "cannot forget the old session ({}): {e}",
-                    saved.display()
-                )));
+        for name in ["session.json", TAINT_MARKER] {
+            let saved = self.inner.spec.state_dir.join(name);
+            if let Err(e) = std::fs::remove_file(&saved) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(LeadError::Failed(format!(
+                        "cannot forget the old session ({}): {e}",
+                        saved.display()
+                    )));
+                }
             }
         }
         // Only now: closing the session above may still have noted its taint.
@@ -1887,6 +1917,10 @@ impl Conversation {
             tool: source.tool,
             subject: source.subject,
         });
+        let marker = self.inner.spec.state_dir.join(TAINT_MARKER);
+        if let Err(e) = melissa_statefile::write_private(&marker, b"") {
+            tracing::error!(path = %marker.display(), "cannot save the taint: {e}");
+        }
         let path = self.inner.spec.state_dir.join("session.json");
         if let Some(mut saved) = load_session(&path) {
             saved.tainted = true;
@@ -2174,17 +2208,10 @@ async fn pump(conv: Weak<Inner>, gen: u64, mut events: mpsc::UnboundedReceiver<S
     }
 }
 
-fn save_session(path: &std::path::Path, saved: &SavedSession) {
-    let write = || -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(
-            path,
-            serde_json::to_vec(saved).map_err(std::io::Error::other)?,
-        )
-    };
-    if let Err(e) = write() {
+pub(crate) fn save_session(path: &std::path::Path, saved: &SavedSession) {
+    // Atomic: a crash mid-write used to leave a truncated file, and the next start then lost
+    // the session (and its taint).
+    if let Err(e) = melissa_statefile::save_json(path, &crate::formats::SESSION, saved, false) {
         tracing::warn!(path = %path.display(), "cannot save the session id: {e}");
     }
 }
@@ -2254,5 +2281,63 @@ pub(crate) fn with_owner_msg(owner_msg: Option<&str>, text: String) -> String {
     match owner_msg {
         Some(id) => format!("[owner message {id}]\n{text}"),
         None => text,
+    }
+}
+
+#[cfg(test)]
+mod taint_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("melissa-taint-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_session_file_this_version_cannot_trust_counts_as_tainted() {
+        let d = dir("saved");
+        let path = d.join("session.json");
+        assert!(!saved_taint(&d), "nothing saved: untainted");
+        std::fs::write(&path, r#"{"format":1,"backend":"b","session_id":"s"}"#).unwrap();
+        assert!(!saved_taint(&d));
+        std::fs::write(&path, r#"{"backend":"b","session_id":"s","tainted":true}"#).unwrap();
+        assert!(saved_taint(&d), "from before formats, tainted");
+        // A newer Melissa's file, even one that says untainted: it may record taint
+        // differently.
+        let newer = r#"{"format":9,"backend":"b","session_id":"s","tainted":false}"#;
+        std::fs::write(&path, newer).unwrap();
+        assert!(saved_taint(&d));
+        std::fs::write(&path, r#"{"format":9,"taint":{"sources":[]}}"#).unwrap();
+        assert!(saved_taint(&d));
+        // Unreadable (cut short by a crash of an old version).
+        std::fs::write(&path, r#"{"backend":"b","sess"#).unwrap();
+        assert!(saved_taint(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_taint_marker_holds_while_session_json_is_a_newer_melissas() {
+        let d = dir("marker");
+        let path = d.join("session.json");
+        let newer = r#"{"format":9,"backend":"b","session_id":"s","tainted":false}"#;
+        std::fs::write(&path, newer).unwrap();
+        // This version cannot write session.json: the marker carries the taint.
+        save_session(
+            &path,
+            &SavedSession {
+                backend: "b".into(),
+                session_id: "s".into(),
+                tainted: true,
+            },
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        melissa_statefile::write_private(&d.join(TAINT_MARKER), b"").unwrap();
+        // Back to a session file this version wrote, saying untainted: the marker wins.
+        std::fs::write(&path, r#"{"format":1,"backend":"b","session_id":"s"}"#).unwrap();
+        assert!(saved_taint(&d));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

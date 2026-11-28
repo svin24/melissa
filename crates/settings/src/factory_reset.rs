@@ -705,7 +705,8 @@ fn write_audit_line(root: &Path, marker: &Marker) -> Result<(), ResetError> {
         ),
     )
     .by("host");
-    let mut line = serde_json::to_string(&record).map_err(|e| ResetError::Failed(e.to_string()))?;
+    let mut line = melissa_statefile::encode_line(&melissa_agent::formats::AUDIT_LINE, &record)
+        .map_err(|e| ResetError::Failed(e.to_string()))?;
     line.push('\n');
     let mut f = OpenOptions::new()
         .write(true)

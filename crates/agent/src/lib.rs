@@ -21,6 +21,7 @@ pub mod device;
 mod echo;
 pub mod egress;
 pub mod files;
+pub mod formats;
 pub mod lead;
 pub mod mcp;
 pub mod migrate;

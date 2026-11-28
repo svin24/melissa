@@ -1285,6 +1285,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "libc",
+ "melissa-statefile",
  "rustix",
  "serde",
  "serde_json",
@@ -1310,6 +1311,7 @@ version = "0.0.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
+ "melissa-statefile",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1369,12 +1371,24 @@ version = "0.0.2"
 dependencies = [
  "melissa-agent",
  "melissa-auth",
+ "melissa-statefile",
  "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "melissa-statefile"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
  "toml",
  "tracing",
 ]

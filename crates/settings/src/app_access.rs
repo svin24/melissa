@@ -49,7 +49,7 @@ use std::{
 use melissa_agent::{AuditLog, AuditRecord, BoxFuture};
 use serde::{Deserialize, Serialize};
 
-use crate::{write_private, SettingsError};
+use crate::SettingsError;
 
 pub mod tool;
 
@@ -230,24 +230,24 @@ pub fn read_setting(path: &Path) -> Result<AppAccess, String> {
     if text.len() as u64 > MAX_SETTING_BYTES {
         return Err(format!("{shown} is too big"));
     }
-    toml::from_str::<SettingFile>(&text)
-        .map(|f| f.apps)
-        .map_err(|_| format!("{shown} is not a valid setting"))
+    // A newer Melissa's setting is an error like any unreadable one (the filter fails closed).
+    crate::parse_versioned(path, &crate::formats::APP_ACCESS, &text, |t| {
+        toml::from_str::<SettingFile>(t)
+            .map_err(|_| SettingsError::Invalid(format!("{shown} is not a valid setting")))
+    })
+    .map(|f| f.apps)
+    .map_err(|e| e.to_string())
 }
 
+/// Write the setting; refused for a newer Melissa's file.
 fn write_setting(path: &Path, access: AppAccess) -> Result<(), SettingsError> {
-    let mut text = String::from(
+    crate::save_versioned(
+        path,
+        &crate::formats::APP_ACCESS,
         "# Who may open apps on this device (Settings → Apps), written by Melissa.\n\
          # this_device, tailnet or home_network.\n",
-    );
-    text.push_str(
-        &toml::to_string(&SettingFile { apps: access })
-            .map_err(|e| SettingsError::Failed(e.to_string()))?,
-    );
-    write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {
-        path: path.display().to_string(),
-        source,
-    })
+        &SettingFile { apps: access },
+    )
 }
 
 // --- rules ---------------------------------------------------------------------------------

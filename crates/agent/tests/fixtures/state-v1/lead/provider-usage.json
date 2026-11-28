@@ -1,0 +1,1 @@
+{"claude":{"windows":{"five_hour":{"id":"five_hour","label":"5-hour","kind":"session","used_pct":42.0,"resets_at":1764300000,"window_secs":18000,"source":"claude.stream","observed_at":1764290000}},"models":{"opus":{"tokens":{"input":1200,"output":340,"cache_read":9000,"cache_write":0,"reasoning":0}}},"since":1764200000}}

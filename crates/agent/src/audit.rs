@@ -2,8 +2,6 @@
 //! recorded: dispatch, cancel and the final outcome of each task.
 
 use std::{
-    fs::OpenOptions,
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -115,19 +113,14 @@ impl AuditLog {
         &self.path
     }
 
-    /// Append one record. Writes are small and serialized by a mutex.
+    /// Append one record. Writes are small and serialized by a mutex. Each line carries its
+    /// format ([`crate::formats::AUDIT_LINE`]); a new file is mode 0640 (as the factory reset
+    /// writes it).
     pub fn append(&self, record: &AuditRecord) -> std::io::Result<()> {
-        let mut line = serde_json::to_string(record).map_err(std::io::Error::other)?;
-        line.push('\n');
+        let line = melissa_statefile::encode_line(&crate::formats::AUDIT_LINE, record)
+            .map_err(std::io::Error::other)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        file.write_all(line.as_bytes())
+        melissa_statefile::append_line(&self.path, &line, 0o640)
     }
 }
 

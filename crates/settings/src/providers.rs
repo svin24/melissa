@@ -42,7 +42,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{sha256_hex, write_private, SettingsError};
+use crate::{sha256_hex, SettingsError};
 
 /// The settings file's name in Melissa's config directory.
 pub const FILE_NAME: &str = "providers.toml";
@@ -494,20 +494,25 @@ impl ProviderFile {
                 })
             }
         };
-        let mut file: Self = toml::from_str(&text).map_err(|e| {
-            // toml's and serde's messages quote the offending value, which may be a
-            // secret: say only where.
-            let line = e
-                .span()
-                .map(|s| text[..s.start.min(text.len())].lines().count().max(1));
-            SettingsError::Parse {
-                path: path.display().to_string(),
-                message: match line {
-                    Some(l) => format!("line {l}: wrong name or type of value"),
-                    None => "wrong name or type of value".into(),
-                },
-            }
-        })?;
+        // A newer Melissa's file (after a rollback): `SettingsError::Newer`, and the caller
+        // must leave it where it is (never move it aside as broken).
+        let mut file: Self =
+            crate::parse_versioned(path, &crate::formats::PROVIDERS, &text, |text| {
+                toml::from_str(text).map_err(|e| {
+                    // toml's and serde's messages quote the offending value, which may be a
+                    // secret: say only where.
+                    let line = e
+                        .span()
+                        .map(|s| text[..s.start.min(text.len())].lines().count().max(1));
+                    SettingsError::Parse {
+                        path: path.display().to_string(),
+                        message: match line {
+                            Some(l) => format!("line {l}: wrong name or type of value"),
+                            None => "wrong name or type of value".into(),
+                        },
+                    }
+                })
+            })?;
         for (id, o) in &file.providers {
             o.validate(id).map_err(|e| SettingsError::Parse {
                 path: path.display().to_string(),
@@ -536,16 +541,15 @@ impl ProviderFile {
         Ok(file)
     }
 
+    /// Save to `path`; refused for a newer Melissa's file ([`SettingsError::Newer`]).
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
-        let mut text = String::from(
+        crate::save_versioned(
+            path,
+            &crate::formats::PROVIDERS,
             "# Melissa provider settings, written by the web UI and `melissa-server provider`.\n\
              # Merged over server.toml when Melissa starts. Holds secrets: keep it mode 0600.\n\n",
-        );
-        text.push_str(&toml::to_string(self).map_err(|e| SettingsError::Failed(e.to_string()))?);
-        write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {
-            path: path.display().to_string(),
-            source,
-        })
+            self,
+        )
     }
 
     pub fn get(&self, id: &str) -> ProviderOverride {

@@ -1,0 +1,14 @@
+{
+  "next_id": 2,
+  "rules": [
+    {
+      "id": 1,
+      "principal": "lead",
+      "tool": "restart_app",
+      "target": "nextcloud",
+      "verb": "restart",
+      "created": 1763600000
+    }
+  ],
+  "bypass": false
+}

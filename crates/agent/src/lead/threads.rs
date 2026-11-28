@@ -10,8 +10,6 @@
 //! Read-only for clients (`GET /api/threads`, owner only); nothing here reaches an agent.
 
 use std::{
-    fs::OpenOptions,
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -115,21 +113,16 @@ impl Threads {
     }
 
     fn append(&self, path: &Path, entry: &ThreadEntry) -> std::io::Result<()> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
-        line.push('\n');
+        // Each line carries its format, like the transcripts.
+        let line = melissa_statefile::encode_line(&crate::formats::THREAD_LINE, entry)
+            .map_err(std::io::Error::other)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         std::fs::create_dir_all(&self.dir)?;
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        if size > 0 && size + line.len() as u64 > MAX_BYTES {
+        if size > 0 && size + line.len() as u64 + 1 > MAX_BYTES {
             std::fs::rename(path, rotated(path))?;
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(line.as_bytes())
+        melissa_statefile::append_line(path, &line, 0o600)
     }
 
     /// The thread between `a` and `b`, oldest first (empty if they never talked; None if
@@ -139,14 +132,17 @@ impl Threads {
         let text = {
             let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
             let mut text = std::fs::read_to_string(rotated(&path)).unwrap_or_default();
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
             text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
             text
         };
-        Some(
-            text.lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect(),
-        )
+        Some(melissa_statefile::decode_lines(
+            &crate::formats::THREAD_LINE,
+            &text,
+            &path,
+        ))
     }
 
     /// Every thread, the most recent first.

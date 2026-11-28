@@ -4,11 +4,11 @@
 //!
 //! Bounded: when the file grows past its limit it is renamed to `transcript.jsonl.1`
 //! (replacing the previous one) and a new file starts, so at most twice the limit is kept.
-//! Files are mode 0600: they hold the conversation.
+//! Files are mode 0600: they hold the conversation. Each line carries its format
+//! ([`crate::formats::TRANSCRIPT_LINE`]): an older Melissa (after a rollback) appends its own
+//! lines and skips a newer one's, and the newer one reads both.
 
 use std::{
-    fs::OpenOptions,
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -67,23 +67,19 @@ impl Transcript {
     }
 
     fn try_append(&self, record: &EventRecord) -> std::io::Result<()> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut line = serde_json::to_string(record).map_err(std::io::Error::other)?;
-        line.push('\n');
+        // Each line carries its format: after a rollback an older Melissa appends its own
+        // lines and skips (never removes) a newer one's.
+        let line = melissa_statefile::encode_line(&crate::formats::TRANSCRIPT_LINE, record)
+            .map_err(std::io::Error::other)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let size = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
-        if size > 0 && size + line.len() as u64 > self.max_bytes {
+        if size > 0 && size + line.len() as u64 + 1 > self.max_bytes {
             std::fs::rename(&self.path, self.rotated())?;
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&self.path)?;
-        file.write_all(line.as_bytes())
+        melissa_statefile::append_line(&self.path, &line, 0o600)
     }
 
     /// Where "New chat" archived this transcript (before 2026-11-20).
@@ -96,6 +92,10 @@ impl Transcript {
     /// Both files' contents, oldest first. Caller holds the lock.
     fn read_all(&self) -> String {
         let mut text = std::fs::read_to_string(self.rotated()).unwrap_or_default();
+        // A last line cut short by a crash stays its own (bad) line.
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
         text.push_str(&std::fs::read_to_string(&self.path).unwrap_or_default());
         text
     }
@@ -120,7 +120,7 @@ impl Transcript {
         text.lines()
             // Cheap filter first: most lines are not it.
             .filter(|l| l.contains(id))
-            .filter_map(|l| serde_json::from_str::<EventRecord>(l).ok())
+            .filter_map(decode_record)
             .find_map(|r| match r.event {
                 LeadEvent::UserMessage {
                     owner_msg: Some(m),
@@ -306,10 +306,7 @@ impl Transcript {
             let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
             self.read_all()
         };
-        let mut records: Vec<EventRecord> = text
-            .lines()
-            .filter_map(|l| serde_json::from_str::<EventRecord>(l).ok())
-            .collect();
+        let mut records: Vec<EventRecord> = text.lines().filter_map(decode_record).collect();
         if let Some(i) = records
             .iter()
             .rposition(|r| matches!(r.event, LeadEvent::FreshStart | LeadEvent::NewChat))
@@ -337,13 +334,23 @@ fn one_line(text: &str) -> String {
 /// Events kept when a chat is read back (the in-memory log's size).
 const MAX_EVENTS: usize = 1500;
 
+/// One transcript line as a record: older formats migrated; a newer Melissa's line (after a
+/// rollback), a line cut short by a crash or an event this version does not know: None
+/// (skipped, never removed from the file).
+fn decode_record(line: &str) -> Option<EventRecord> {
+    match melissa_statefile::decode_line(&crate::formats::TRANSCRIPT_LINE, line) {
+        melissa_statefile::Line::Record(r) => Some(r),
+        _ => None,
+    }
+}
+
 /// The events of one chat from transcript lines: those after the last `new_chat`, from the
 /// start of the last `max_turns` turns, at most [`MAX_EVENTS`]. Sequence numbers are
 /// renumbered from 1 and turn ids from 1 (each daemon run counted turns from 1 again).
 fn parse_chat(text: &str, max_turns: usize) -> Vec<EventRecord> {
     let mut records: Vec<EventRecord> = text
         .lines()
-        .filter_map(|l| serde_json::from_str::<EventRecord>(l).ok())
+        .filter_map(decode_record)
         .filter(|r| {
             !matches!(
                 r.event,
@@ -708,6 +715,98 @@ mod tests {
         // Over budget: the oldest lines go first.
         let short = t.condense(2, 60).unwrap();
         assert!(short.contains("later 1"), "{short}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn says(text: &str, turn: TurnId) -> LeadEvent {
+        LeadEvent::UserMessage {
+            owner_msg: None,
+            turn,
+            text: text.into(),
+            attachments: vec![],
+            scheduled: None,
+        }
+    }
+
+    /// A transcript written before formats existed (no `format` on its lines; a fixture of
+    /// that shape) loads, and new lines carry the format.
+    #[test]
+    fn an_old_transcript_loads_and_new_lines_carry_their_format() {
+        let dir = crate::test_support::fresh_path("transcript-old");
+        let path = dir.join("lead/transcript.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"seq":1,"ts":1700000000,"type":"user_message","turn":1,"text":"hello"}"#,
+                "\n",
+                r#"{"seq":2,"ts":1700000001,"type":"turn_finished","turn":1,"stop_reason":"end_turn"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let t = Transcript::new(&path, 64 * 1024);
+        t.append(&record(3, says("again", 2)));
+        let chat = t.load_chat(10);
+        assert_eq!(chat.len(), 3);
+        assert_eq!(chat[0].event, says("hello", 1));
+        assert_eq!(chat[2].event, says("again", 2));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let last = text.lines().last().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(last).unwrap()["format"],
+            1,
+            "{last}"
+        );
+        // The images from before formats existed read the new lines too (an extra key is
+        // ignored), so a rollback past this change still shows the chat.
+        for line in text.lines() {
+            serde_json::from_str::<EventRecord>(line).unwrap();
+        }
+        let unit: EventRecord = serde_json::from_str(
+            &melissa_statefile::encode_line(
+                &crate::formats::TRANSCRIPT_LINE,
+                &record(4, LeadEvent::NewChat),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unit.event, LeadEvent::NewChat);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// After a rollback: a newer Melissa's lines are skipped, never removed; this version
+    /// keeps appending; a line cut short by a crash spoils nothing after it.
+    #[test]
+    fn newer_and_torn_lines_are_kept_and_skipped() {
+        let dir = crate::test_support::fresh_path("transcript-newer");
+        let path = dir.join("transcript.jsonl");
+        std::fs::create_dir_all(&dir).unwrap();
+        let newer = r#"{"format":99,"seq":2,"ts":0,"type":"user_message","turn":1,"text":"from the future","parts":[]}"#;
+        let torn = r#"{"seq":3,"ts":0,"type":"user_mess"#;
+        let first = melissa_statefile::encode_line(
+            &crate::formats::TRANSCRIPT_LINE,
+            &record(1, says("before", 1)),
+        )
+        .unwrap();
+        std::fs::write(&path, format!("{first}\n{newer}\n{torn}")).unwrap();
+        let t = Transcript::new(&path, 64 * 1024);
+        t.append(&record(4, says("after", 2)));
+        let texts: Vec<String> = t
+            .load_chat(10)
+            .into_iter()
+            .filter_map(|r| match r.event {
+                LeadEvent::UserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["before", "after"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(newer), "the newer line is still there");
+        assert!(
+            text.contains(&format!("{torn}\n")),
+            "the torn line was ended"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -66,24 +66,18 @@ impl Usage {
 
     /// Read `<dir>/usage.json`; a missing or unreadable file reads as nothing counted yet.
     pub fn load(dir: &Path) -> Option<Self> {
-        let text = std::fs::read_to_string(path(dir)).ok()?;
-        serde_json::from_str(&text).ok()
+        melissa_statefile::read_json(&path(dir), &crate::formats::USAGE)
+            .ok()
+            .flatten()
+            .map(|l| l.value)
     }
 
-    /// Write `<dir>/usage.json` (a failure is logged: counters are not worth failing a turn).
+    /// Write `<dir>/usage.json` (a failure is logged: counters are not worth failing a turn;
+    /// a newer Melissa's file is never replaced).
     pub fn save(&self, dir: &Path) {
         let file = path(dir);
-        let write = || -> std::io::Result<()> {
-            std::fs::create_dir_all(dir)?;
-            let tmp = dir.join(".usage.json.tmp");
-            std::fs::write(
-                &tmp,
-                serde_json::to_vec(self).map_err(std::io::Error::other)?,
-            )?;
-            std::fs::rename(&tmp, &file)
-        };
-        if let Err(e) = write() {
-            tracing::warn!(path = %file.display(), "cannot save usage counters: {e}");
+        if let Err(e) = melissa_statefile::save_json(&file, &crate::formats::USAGE, self, false) {
+            tracing::warn!("cannot save usage counters: {e}");
         }
     }
 

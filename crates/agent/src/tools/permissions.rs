@@ -198,19 +198,32 @@ impl Permissions {
 
     /// Load from `path` (a missing file: nothing granted). Changes are saved there.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PermissionsError> {
+        use melissa_statefile::FormatError;
         let path = path.into();
-        let state = match std::fs::read(&path) {
-            Ok(data) => serde_json::from_slice(&data).map_err(|e| PermissionsError::Parse {
-                path: path.display().to_string(),
-                message: e.to_string(),
-            })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::default(),
-            Err(source) => {
+        let parse = |message: String| PermissionsError::Parse {
+            path: path.display().to_string(),
+            message,
+        };
+        let state = match melissa_statefile::read_json::<State>(&path, &crate::formats::PERMISSIONS)
+        {
+            // Grants a newer Melissa saved are not read leniently: a field this version does
+            // not know may narrow them. The caller starts with none (fails closed).
+            Ok(Some(l)) if l.read_only => {
+                return Err(parse(format!(
+                    "saved by a newer version of Melissa (format {}; this version reads up to \
+                     {}), left as it is",
+                    l.found,
+                    crate::formats::PERMISSIONS.current
+                )))
+            }
+            Ok(l) => l.map(|l| l.value).unwrap_or_default(),
+            Err(FormatError::Read { source, .. }) => {
                 return Err(PermissionsError::Read {
                     path: path.display().to_string(),
                     source,
                 })
             }
+            Err(e) => return Err(parse(e.to_string())),
         };
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
@@ -236,18 +249,12 @@ impl Permissions {
         next: State,
     ) -> Result<(), PermissionsError> {
         if let Some(path) = &self.path {
-            // Serializing plain data cannot fail; an error would only mean a bug, so it is
-            // reported as a write error rather than unwrapped.
-            let data = serde_json::to_vec_pretty(&next).map_err(|e| PermissionsError::Write {
-                path: path.display().to_string(),
-                source: std::io::Error::other(e),
-            })?;
-            crate::device::write_private(path, &data).map_err(|source| {
-                PermissionsError::Write {
+            melissa_statefile::save_json(path, &crate::formats::PERMISSIONS, &next, true).map_err(
+                |e| PermissionsError::Write {
                     path: path.display().to_string(),
-                    source,
-                }
-            })?;
+                    source: std::io::Error::other(e),
+                },
+            )?;
         }
         **guard = next;
         Ok(())

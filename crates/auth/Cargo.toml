@@ -9,6 +9,7 @@ description = "Melissa logins: accounts (Argon2id), owner claim, invites, sessio
 [dependencies]
 argon2 = { workspace = true }
 base64 = { workspace = true }
+melissa-statefile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

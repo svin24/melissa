@@ -99,7 +99,11 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   Settings → Updates Check/Update/Roll back and the switch and time, all through a host helper
   (`melissa-host-update`) that the lead agent triggers with fixed-name request files in a bind-mounted
   directory; the previous image is kept for a rollback, a version that didn't start or was rolled back from
-  is skipped by automatic updates (DECISIONS 2026-11-19, 2026-11-28 "Updates: Melissa's own schedule"). The
+  is skipped by automatic updates (DECISIONS 2026-11-19, 2026-11-28 "Updates: Melissa's own schedule").
+  Chats, sessions, settings, accounts, the audit log and schedules survive an update or rollback: every
+  persisted file has a format version, older ones are migrated forward, a newer one is never written by an
+  older image, and writes are atomic (`melissa-statefile`; DECISIONS 2026-11-28 "Chats and state survive
+  upgrades"; inventory and backup classes in `docs/design/STATE-INVENTORY-2026-11-28.md`; Q112). The
   Quadlet has no `AutoUpdate=` any more; `podman-auto-update.timer` is left alone.
   Since 2026-11-27 (owner; DECISIONS): install.sh writes a podman `policy.json` entry (`sigstoreSigned`,
   `keyPath` to the public key from `packaging/container/melissa-signing.pub`, `matchRepository`) for
@@ -1749,3 +1753,21 @@ Roadmap (rough, phases may overlap):
     controls when a row wraps (today: the shared setting-row layout keeps them in the right slot). Decided
     2026-11-28 (owner): on phones the status badge sits under the version and "Update Melissa" under the
     explaining text, left-aligned, as on board 11 (`wide_only`/`narrow_only`); desktop unchanged.
+112. State after a rollback (2026-11-28, DECISIONS "Chats and state survive upgrades"; inventory in
+    `docs/design/STATE-INVENTORY-2026-11-28.md`). Open: (a) the UI does not say yet that a store is
+    read-only (a newer Melissa's file): today only the log and the failed action's error do; a notice
+    component (Settings or the chat head) is a human-reviewed UI change. (b) A newer login store keeps
+    existing sessions but refuses new sign-ins; should sessions be kept in memory then, so the owner can
+    still sign in to update again? (c) A rollback to an image from before 2026-11-28 is not protected: those
+    images don't know formats (they read today's files, since format 1 adds nothing they reject, but would
+    overwrite a format 2 file). (d) Rotated transcript and thread files (`.1`) are still dropped at the size
+    limit by design; the backup feature should decide whether to keep more history. (e) Server-side
+    snapshot before an update (copy `<state>` and `<config>` aside, like Q23 for k3s) for a full rollback of
+    the state too. (f) Before the first format bump of `auth.json`, `tailscale.toml` or `app-access.toml`:
+    either split what an older image must still write (sessions) into its own file, or document that a
+    rollback across that bump needs local access. Sign-outs already have their own file (`revoked.json`,
+    which every image from 2026-11-28 on writes and honours), but new sign-ins fail; and a newer
+    `tailscale.toml` reads as "off" on an older image, which could lock out an owner who only reaches the box
+    over the tailnet. (g) Do not bump any settings TOML to format 2 or later while images from before
+    2026-11-28 are still in the rollback window: they read the settings with `deny_unknown_fields` and would
+    reject the `format` key (and move `providers.toml` aside as `.broken`).

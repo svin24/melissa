@@ -242,10 +242,10 @@ impl Tools {
 
 /// The table: which slot of the range each key has. Slots are never handed to another key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Table {
+pub(crate) struct Table {
     uid_start: u32,
     gid_start: u32,
-    slots: BTreeMap<String, u32>,
+    pub(crate) slots: BTreeMap<String, u32>,
 }
 
 /// Agent users are on: the server's ids, its subordinate ranges, the helpers, the table.
@@ -656,19 +656,26 @@ pub fn cleanup_maps(
     )
 }
 
-fn load_table(path: &Path, uids: Range, gids: Range) -> Result<Table, String> {
+pub(crate) fn load_table(path: &Path, uids: Range, gids: Range) -> Result<Table, String> {
     let fresh = Table {
         uid_start: uids.start,
         gid_start: gids.start,
         slots: BTreeMap::new(),
     };
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(fresh),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    let table: Table = match melissa_statefile::read_json(path, &crate::formats::AGENT_USERS) {
+        Ok(None) => return Ok(fresh),
+        // Which ids are taken decides isolation: a newer Melissa's table is not guessed at.
+        Ok(Some(l)) if l.read_only => {
+            return Err(format!(
+                "{} was written by a newer version of Melissa (format {}); it is left as it is \
+                 until Melissa is updated again",
+                path.display(),
+                l.found
+            ))
+        }
+        Ok(Some(l)) => l.value,
+        Err(e) => return Err(e.to_string()),
     };
-    let table: Table =
-        serde_json::from_str(&text).map_err(|e| format!("{} is invalid: {e}", path.display()))?;
     let fits = table.uid_start == uids.start
         && table.gid_start == gids.start
         && table
@@ -686,20 +693,10 @@ fn load_table(path: &Path, uids: Range, gids: Range) -> Result<Table, String> {
 }
 
 fn save_table(path: &Path, table: &Table) -> io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let body = serde_json::to_vec_pretty(table).map_err(io::Error::other)?;
-    // One temporary name per process: two processes sharing a state dir (the escape suite's
-    // parallel tests) would otherwise rename each other's file away.
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(&body)?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)
+    // The temporary name is unique per process and call: two processes sharing a state dir
+    // (the escape suite's parallel tests) never rename each other's file away.
+    melissa_statefile::save_json(path, &crate::formats::AGENT_USERS, table, true)
+        .map_err(io::Error::other)
 }
 
 /// The state directory takes ACLs (a throw-away file, granted to an id of the range).

@@ -22,6 +22,7 @@
 pub mod app_access;
 pub mod cluster;
 pub mod factory_reset;
+pub mod formats;
 pub mod install;
 pub mod prefs;
 pub mod providers;
@@ -53,29 +54,97 @@ pub enum SettingsError {
     },
     #[error("{0}")]
     Failed(String),
+    /// The file was written by a newer Melissa (after a rollback): left as it is, not saved
+    /// over (melissa-statefile).
+    #[error("{0}")]
+    Newer(String),
 }
 
-/// Write `data` to `path` atomically (temp file + rename), mode 0600, creating the parent.
+impl SettingsError {
+    pub fn is_newer(&self) -> bool {
+        matches!(self, Self::Newer(_))
+    }
+}
+
+/// Write `data` to `path` atomically (a fresh temp file, fsync, rename, directory fsync),
+/// mode 0600, creating the parent.
 pub(crate) fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+    melissa_statefile::write_private(path, data)
+}
+
+/// Read the TOML settings file `text` (from `path`) of format `fmt`: its format checked and
+/// migrated, then parsed by `parse` (each file's own parser keeps its own error messages,
+/// which never quote a value). A newer Melissa's file: [`SettingsError::Newer`].
+pub(crate) fn parse_versioned<T>(
+    path: &std::path::Path,
+    fmt: &melissa_statefile::TomlFormat,
+    text: &str,
+    parse: impl FnOnce(&str) -> Result<T, SettingsError>,
+) -> Result<T, SettingsError> {
+    let Ok(mut table) = text.parse::<toml::Table>() else {
+        // Not TOML at all: the file's own parser says where.
+        return parse(text);
+    };
+    let found = match melissa_statefile::Doc::version(&table) {
+        Ok(v) => v,
+        Err(message) => {
+            return Err(SettingsError::Parse {
+                path: path.display().to_string(),
+                message,
+            })
+        }
+    };
+    if found > fmt.current {
+        return Err(SettingsError::Newer(
+            melissa_statefile::FormatError::Newer {
+                path: path.display().to_string(),
+                name: fmt.name,
+                found,
+                supported: fmt.current,
+            }
+            .to_string(),
+        ));
     }
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    // A leftover temp file may have another mode; start fresh so 0600 applies.
-    let _ = std::fs::remove_file(&tmp);
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(data)?;
-        f.sync_all()?;
+    if found == fmt.current && !table.contains_key(melissa_statefile::KEY) {
+        return parse(text);
     }
-    std::fs::rename(&tmp, path)
+    for from in found..fmt.current {
+        let step = usize::try_from(from - 1)
+            .ok()
+            .and_then(|i| fmt.migrations.get(i))
+            .ok_or_else(|| SettingsError::Failed(format!("no migration for {}", fmt.name)))?;
+        step(&mut table).map_err(|message| SettingsError::Parse {
+            path: path.display().to_string(),
+            message: format!(
+                "cannot bring it from format {from} to {}: {message}",
+                from + 1
+            ),
+        })?;
+    }
+    melissa_statefile::Doc::strip_version(&mut table);
+    let text = toml::to_string(&table).map_err(|e| SettingsError::Failed(e.to_string()))?;
+    parse(&text)
+}
+
+/// Save TOML settings text `body` to `path` (0600) in format `fmt` after `header`, unless a
+/// newer Melissa wrote the file ([`SettingsError::Newer`]).
+pub(crate) fn save_versioned<T: serde::Serialize>(
+    path: &std::path::Path,
+    fmt: &melissa_statefile::TomlFormat,
+    header: &str,
+    value: &T,
+) -> Result<(), SettingsError> {
+    match melissa_statefile::save_toml(path, fmt, header, value) {
+        Ok(()) => Ok(()),
+        Err(e @ melissa_statefile::FormatError::Newer { .. }) => {
+            Err(SettingsError::Newer(e.to_string()))
+        }
+        Err(melissa_statefile::FormatError::Write { source, .. }) => Err(SettingsError::Write {
+            path: path.display().to_string(),
+            source,
+        }),
+        Err(e) => Err(SettingsError::Failed(e.to_string())),
+    }
 }
 
 /// SHA-256 of `data` in hex (audit records carry hashes of values, never values).
