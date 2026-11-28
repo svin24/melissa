@@ -2100,3 +2100,15 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   rejected), trusting forwarded headers on the main listener (anything on the host could forge them).
   A future root confirm service (Q108) needs its own hostname: ts.net is on the Public Suffix List, but the
   `melissa` uid can rewrite the serve config. Design: `docs/design/HTTPS-ACCESS-2026-11-28.md`.
+- **2026-11-28 — The container never touches the host's devices: no udev inside, its units masked.** Found
+  by the owner: at every Melissa start the host desktop (KDE) announced an external USB drive as just plugged
+  in. The image installed `systemd-udev`, whose `systemd-udevd` and `systemd-udev-trigger` run in sysinit
+  (`ConditionPathIsReadWrite=/sys`, true under `--privileged`), so udevd inside replayed "add" uevents for
+  every device on the host's shared `/dev` and `/sys`; host udev rules and desktop daemons reacted. The same
+  package's `systemd-sysctl` applied the image's `sysctl.d` (e.g. `kernel.core_pattern`) to the host's kernel.
+  Nothing inside needs udev: k3s, containerd, kubelet, local-path-provisioner, gVisor and tailscaled use
+  device nodes and `/sys` directly, which the host's udev already maintains (`/dev/disk/by-*`, `/dev/net/tun`).
+  So `packages.txt` drops `systemd-udev`, the Containerfile masks the udev units and `systemd-sysctl`
+  anyway (a later dependency cannot bring them back to life), the image lint fails on the package, its
+  binaries or an unmasked unit, and the escape-test gate checks the booted container. Alternative: keep the
+  package masked (no benefit; it also ships sysupdate, repart, TPM and hwdb units Melissa has no use for).

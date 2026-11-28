@@ -103,6 +103,16 @@ eq "the server may start the filter" yes \
     "$(yes_no grep -q '"melissa-app-access.service"' "$here/rootfs/usr/share/polkit-1/rules.d/52-melissa-app-access.rules")"
 eq "the image enables the filter" yes "$(yes_no grep -q 'melissa-ui-forward.socket melissa-app-access.service' "$here/Containerfile")"
 
+# --- host devices: no udevd inside (it shares the host's /dev; uevent replay at every start) ----
+eq "packages.txt does not install systemd-udev" no \
+    "$(yes_no grep -qE '^systemd-udev([[:space:]]|$)' "$here/packages.txt")"
+for u in systemd-udevd.service systemd-udevd-kernel.socket systemd-udevd-control.socket \
+    systemd-udev-trigger.service systemd-udev-settle.service systemd-sysctl.service; do
+    # Masked in the build step and checked by the image lint (is-enabled = masked).
+    eq "the image masks $u" yes "$(yes_if "[ \$(grep -c -- '$u' '$here/Containerfile') -ge 2 ]")"
+done
+eq "the image lint refuses systemd-udev" yes "$(yes_no grep -qE 'for p in .* systemd-udev; do' "$here/Containerfile")"
+
 # --- server.toml: read and rewrite [apps] addresses, nothing else ---------------------------
 toml='listen = "127.0.0.1:8080"
 

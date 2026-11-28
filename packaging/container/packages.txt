@@ -1,6 +1,9 @@
 # Installed into the container image on top of fedora (no weak deps). One per line; '#' starts a comment.
 systemd             # PID 1; systemd-socket-proxyd for the UI forward; sysusers/tmpfiles
-systemd-udev        # udev rules k3s/containerd expect (/dev setup); small
+# No systemd-udev: --privileged shares the host's /dev and /sys, so a udevd inside would replay "add"
+# for every host device at each start (desktops saw USB drives as just plugged in) and its
+# systemd-sysctl would write the host's kernel settings. Nothing inside needs it: the host's udev
+# makes the device nodes and /dev/disk/by-* links. Its units are masked too (Containerfile, lint).
 bubblewrap          # sandbox for agent CLIs (crates/agent/src/sandbox.rs)
 nftables            # UI forward filter (ui-forward-filter); agent egress
 iptables-nft        # k3s (kube-proxy, flannel, network policy) uses it from PATH; its bundled one
