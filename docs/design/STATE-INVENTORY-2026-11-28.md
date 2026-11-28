@@ -34,9 +34,13 @@ replaces only the image. The Nix service uses the same paths on the host.
 - **Marker at format 1** ("v1 key" column): written as `"format": 1` where the images from before formats
   existed ignore an extra key; left out where they would reject it (TOML read with `deny_unknown_fields`,
   JSON arrays, maps keyed by data). From format 2 on every file is a JSON object / TOML table with the key.
+  In a map keyed by data a `format` entry whose value is not a whole number is data (a backend called
+  "format"); those maps' values are never whole numbers.
 - **Writes** ("atomic" below): a fresh temporary file in the same directory (`.<name>.<pid>-<n>.tmp`),
   fsync, rename over the file, fsync of the directory; a failed write removes its temporary file. A crash
-  leaves the old file or the new one. Leftover `*.tmp` files are junk (never read). Appends are single
+  leaves the old file or the new one. Leftover `*.tmp` files are never read, and the next save of the same
+  file removes them (process gone and older than 2 s, or older than 60 s): they may hold a copy of a secret
+  (`auth.json`, a join token). Appends are single
   `write` calls in append mode; a last line a crash cut short is ended first, so it stays one bad line.
 
 ## Inventory
@@ -52,7 +56,8 @@ noticeable: history, counters, logins to providers), **cache** (rebuilt or re-fe
 | `device.json` | JSON `{id, name}` | server, once | server, CLI | yes (key) | atomic | read; never rewritten | **must** (agent ids, workspace labels hang on the id) |
 | `agents/registry.json` | JSON: device, next number, agents, lead name, deleted | server (agent create/rename/stop/delete) | server, UI | yes (key) | atomic | read-only: agents shown, every change fails with the message | **must** |
 | `agents/<id>/transcript.jsonl` (+ `.1` rotated) | JSON Lines, one event per line | server (each event) | server (chat view, recap), UI | per line (key) | append | newer lines skipped, own lines appended | **must** (the chats) |
-| `agents/<id>/session.json` | JSON `{backend, session_id, tainted}` | server (session opened) | server (resume, taint) | yes (key) | atomic (was a plain write until 2026-11-28) | read leniently | **should** (resume + sticky taint) |
+| `agents/<id>/session.json` | JSON `{backend, session_id, tainted}` | server (session opened) | server (resume, taint) | yes (key) | atomic (was a plain write until 2026-11-28) | read leniently for resume; counts as **tainted** (so does an unreadable one) | **should** (resume + sticky taint) |
+| `agents/<id>/tainted` | empty marker: the conversation read untrusted content | server (when tainted) | server (start) | no (its presence is the data) | atomic | n/a (any version writes it) | **should** (sticky taint; removed only by a fresh start) |
 | `agents/<id>/usage.json` | JSON counters | server (each turn) | UI | yes (key) | atomic (no fsync until 2026-11-28) | read; saves refused (counters stop) | should |
 | `agents/<id>/agent-sessions/<backend>/` | the provider CLI's own session store (opaque, e.g. Codex rollouts) | the agent CLI | the agent CLI (resume), usage collector | not ours | the CLI's | n/a | should (resume; without it the chat is primed from the transcript) |
 | `agents/<id>/chats/*.jsonl` | JSON Lines (chats archived by "New chat" before 2026-11-20, read-only) | nothing now | server (past chats) | per line | — | — | **must** |
@@ -70,6 +75,7 @@ noticeable: history, counters, logins to providers), **cache** (rebuilt or re-fe
 | `audit.jsonl` | JSON Lines, one record per action (0640) | server; root's factory reset (one line) | owner, support; nothing parses it in code | per line (key) | append | lines kept as they are | **must** (history; never rewritten) |
 | `agent-users.json` | JSON: id ranges, slot per agent key | server | server (sandbox users) | yes (key) | atomic | **refused** (agent users not set up; slots decide isolation) | **must** if the files agents made are restored (their owners are these ids) |
 | `auth/auth.json` (dir 0700) | JSON: accounts (Argon2id hashes), invites, sessions (token hashes) | server | server | yes (key) | atomic | read-only: existing sessions work, sign-ins and account changes fail | **must**, encrypted (password hashes) |
+| `auth/revoked.json` | JSON `{sessions: [token hash], invites: [id]}`: sign-outs and withdrawn invites made while `auth.json` was read-only | server (only while `auth.json` is a newer Melissa's) | server (applied at every start; removed after the next save of `auth.json`) | yes (key) | atomic | read; not saved over (the sign-out then lasts until a restart, logged as an error) | **must** with `auth.json` |
 | `auth/setup-code.json` | JSON: unclaimed box's code | server | server | yes (key) | atomic | read; not saved over | no |
 | `app-secret-prints/<app>.json` | JSON map field → fingerprints of generated app secrets (no values) | cluster crate on install | redaction of app logs | no (data-keyed map; a change must rename the directory) | atomic (no dir fsync) | — | should (without it generated secrets of existing apps are not redacted in logs) |
 | `work/lead/`, `work/agents/<id>/` | the agents' working directories (their files) | agents | agents | not ours | — | — | **must** (work products) |

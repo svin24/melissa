@@ -1763,4 +1763,11 @@ Roadmap (rough, phases may overlap):
     overwrite a format 2 file). (d) Rotated transcript and thread files (`.1`) are still dropped at the size
     limit by design; the backup feature should decide whether to keep more history. (e) Server-side
     snapshot before an update (copy `<state>` and `<config>` aside, like Q23 for k3s) for a full rollback of
-    the state too.
+    the state too. (f) Before the first format bump of `auth.json`, `tailscale.toml` or `app-access.toml`:
+    either split what an older image must still write (sessions) into its own file, or document that a
+    rollback across that bump needs local access. Sign-outs already have their own file (`revoked.json`,
+    which every image from 2026-11-28 on writes and honours), but new sign-ins fail; and a newer
+    `tailscale.toml` reads as "off" on an older image, which could lock out an owner who only reaches the box
+    over the tailnet. (g) Do not bump any settings TOML to format 2 or later while images from before
+    2026-11-28 are still in the rollback window: they read the settings with `deny_unknown_fields` and would
+    reject the `format` key (and move `providers.toml` aside as `.broken`).
