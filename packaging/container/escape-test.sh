@@ -102,6 +102,12 @@ echo "   host devices: udev and sysctl units masked, not running"
 ids="$(sudo podman exec "$NAME" id -u melissa 2>/dev/null):$(sudo podman exec "$NAME" getent group melissa-kube 2>/dev/null | cut -d: -f3)"
 [ "$ids" = "994:995" ] || { echo "FAIL: melissa/melissa-kube ids are $ids, must be 994:995"; exit 1; }
 echo "   ids: melissa 994, melissa-kube 995"
+# The host's UI port is this socket; an ordering cycle once made systemd drop it silently.
+st=$(sudo podman exec "$NAME" systemctl is-active melissa-ui-forward.socket 2>/dev/null || true)
+[ "$st" = active ] || { echo "FAIL: melissa-ui-forward.socket is ${st:-?} after boot (the host UI port is dead)"; exit 1; }
+cyc=$(sudo podman exec "$NAME" journalctl -b -o cat 2>/dev/null | grep -i 'ordering cycle' || true)
+[ -z "$cyc" ] || { echo "FAIL: systemd found an ordering cycle at boot:"; echo "$cyc"; exit 1; }
+echo "   UI socket active, no ordering cycles"
 # The suite must run under Melissa's profile where the host has AppArmor, not unconfined.
 if [ "${#aa_args[@]}" -gt 0 ]; then
     label=$(sudo podman exec "$NAME" sh -c 'cat /proc/1/attr/apparmor/current 2>/dev/null || cat /proc/1/attr/current' | tr -d '\0')

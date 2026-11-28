@@ -289,7 +289,11 @@ RUN set -eu; \
     # The data volume is owned by these numbers: melissa 994, melissa-kube 995 (sysusers.d/melissa.conf).
     grep -qx 'u melissa 994 .*' /usr/lib/sysusers.d/melissa.conf \
         && grep -qx 'g melissa-kube 995 - -' /usr/lib/sysusers.d/melissa.conf \
-        || { echo "lint: melissa/melissa-kube ids must stay pinned to 994/995"; exit 1; }
+        || { echo "lint: melissa/melissa-kube ids must stay pinned to 994/995"; exit 1; }; \
+    # No ordering cycles in the boot graph: systemd breaks one by dropping a job, silently at boot
+    # (2026-11-28: the host UI socket never started).
+    if systemd-analyze verify multi-user.target 2>&1 | grep -i 'ordering cycle'; then \
+        echo "lint: ordering cycle in the boot graph"; exit 1; fi
 
 LABEL org.opencontainers.image.title="melissa" \
       org.opencontainers.image.version="${MELISSA_VERSION}" \

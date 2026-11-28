@@ -6,7 +6,9 @@
 [Unit]
 Description=Melissa: container network sysctls
 ConditionVirtualization=container
-Before=k3s.service melissa-tailscaled.service melissa-server.service melissa-ui-forward.socket
+# Not before melissa-ui-forward.socket: sockets start before basic.target and this service after it, so
+# that order was a cycle and systemd dropped the socket (the host UI port went dead, 2026-11-28).
+Before=k3s.service melissa-tailscaled.service melissa-server.service melissa-ui-forward.service
 
 [Service]
 Type=oneshot
