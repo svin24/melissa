@@ -852,6 +852,11 @@ Roadmap (rough, phases may overlap):
   (`docs/design/INTERCONNECT-2026-11-27.md` runbook), layer-0 pairing, layer-1 federation between lead agents
   and `melissa-device` for dumb devices; a shared k3s cluster (layer 2) only after that, opt-in.
 - **M4 — VPS agent + backups:** edge/ingress agent, offsite backups with restic or Kopia, restore drills, VPN exit, seedbox as optional apps.
+  Progress (2026-11-28): local backups, core built (docs/design/BACKUPS-2026-11-28.md): restic (pinned in the
+  image) behind a `BackupEngine` trait, a root `melissa-backup` unit driven by fixed-name requests, Melissa's
+  state + a raw k3s snapshot + every app's export (spec, labels, Secret values, volumes) with app-aware hooks
+  (the spec's `backup` field), weekly by default, optional encryption with a recovery key, marker-checked
+  drive, one-app restore. Open: the drive helper, the Settings UI, the first-run restore flow (Q112).
 - **M5 — Published image:** the container image signed and on an update channel (ghcr.io; owner's yes given
   2026-11-27, `:edge` from master first, `:stable` from tags); later
   the reference distro (bootc, archived) with an installer/first-boot flow.
@@ -901,6 +906,9 @@ Roadmap (rough, phases may overlap):
     Melissa's own `tailscale serve` (built); phase 2 is a root-held, name-constrained local CA for
     `<host>.local` on port 7383 (not built; the Android app pins the CA). App TLS stays open (Q56).
 23. Datastore snapshots before staging an update that bumps k3s's Kubernetes minor (rollback restores binaries, not /var).
+    2026-11-28: backups now take a raw k3s snapshot (`item:k3s`: `VACUUM INTO` of state.db, token, tls, cred,
+    the k3s version; `melissa_backup::k3s`) and can put it back for the same version only. Open: the updater
+    asking for one before a minor bump (a `run` request, or a k3s-only one), and wiring the rollback into it.
 24. Agent CLI logins under the sandbox: the user's credential file is bind-mounted read-write. Does OAuth token
     refresh work there (rename onto a bind mount fails with EBUSY)? Or should Melissa keep its own CLI logins
     (e.g. `CLAUDE_CONFIG_DIR`), and on headless agents (DynamicUser) where do those logins come from?
@@ -952,9 +960,14 @@ Roadmap (rough, phases may overlap):
     not encrypted at rest; enable k3s `secrets-encryption`? Backups of app data must include the Secret (or
     the owner's copy), or a restore gets data with unknown credentials. Rotation (e.g. admin password) is
     app-specific and not modelled.
+    2026-11-28: backups include each app's Secret values (`secrets.json` in the app's snapshot, read only by
+    root's backup unit with k3s's admin kubeconfig) and put them back on a restore; the raw k3s snapshot
+    carries `server/cred` (the secrets-encryption key) with the datastore.
 36. Disk: images and app data share `/var` with the OS (8.6 GiB in the test VM filled up once). Should
     `deploy_app` check free space against the image size + volume sizes first, and should apps get their
     own volume/quota (local-path does not enforce PVC sizes)?
+    2026-11-28: a one-app restore needs room for the restored copy and keeps the replaced data as
+    `<volume>.pre-restore` until the next restore; backup staging (k3s datastore copy) is on `/var` too.
 37. `POST /api/tools/{name}` and the confirmation inbox are reachable by any local process until the
     loopback API has auth. Sandboxed agents no longer reach it (2026-11-18: deny-by-default egress, each
     sandbox only sees its own MCP socket), except backends configured with `network = "host"`; other local
@@ -1749,3 +1762,18 @@ Roadmap (rough, phases may overlap):
     controls when a row wraps (today: the shared setting-row layout keeps them in the right slot). Decided
     2026-11-28 (owner): on phones the status badge sits under the version and "Update Melissa" under the
     explaining text, left-aligned, as on board 11 (`wide_only`/`narrow_only`); desktop unchanged.
+112. Backups, open items (2026-11-28; docs/design/BACKUPS-2026-11-28.md; core built in `crates/backup`).
+    (a) **Identity of a restored device.** Default built in: it keeps its name and settings (device id,
+    people, chats, providers, Melissa's settings) and gets a fresh cluster and Tailscale identity (node
+    key, cluster tokens and `cluster.toml` are never backed up; apps come back through their logical
+    export). Confirm, and decide what happens when the old device is still around (two devices with one
+    device id). (b) The drive helper: who mounts a drive the owner picks below `/run/melissa-backup/<name>`
+    (host helper vs inside the container), labels, safe unplug, refusing a target on the same disk as
+    `/var`. (c) Settings UI: set up (encryption on by default, the recovery key shown once with "I have
+    written it down" → `ack-key`), schedule, retention, last run per item, restore one app (pick a run).
+    (d) First-run "restore this device": enter the key, `adopt`, `restore_state`, redeploy each app from
+    its backed-up spec, restore it; whether to offer the raw k3s rollback there. (e) Unencrypted backups
+    hold sign-ins, app secrets and k3s's keys in the clear: keep the option (owner decision) with a plain
+    warning, or leave secrets out when unencrypted? (f) A periodic `restic check` and telling the owner
+    when backups fail or are overdue. (g) Nix packaging of the root unit (container only today).
+    (h) Offsite (M4): a second repository on a VPS (rest-server or sftp) with the same engine.
