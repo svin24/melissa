@@ -177,7 +177,7 @@ RUN rm -f /README.md
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
         melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
-        melissa-factory-reset.path melissa-factory-reset.service; \
+        melissa-netns-sysctl.service melissa-factory-reset.path melissa-factory-reset.service; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
         systemd-networkd-wait-online.service 2>/dev/null || true; \
@@ -269,7 +269,11 @@ RUN set -eu; \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket \
         melissa-app-access.service melissa-tailscaled.service melissa-factory-reset.path \
-        melissa-factory-reset.service; \
+        melissa-factory-reset.service melissa-netns-sysctl.service; \
+    # The container netns's sysctls (fallback for an old Quadlet): net.* keys only, never host-wide ones.
+    test -x /usr/libexec/melissa-container/netns-sysctl || { echo "lint: netns-sysctl missing"; exit 1; }; \
+    ! grep -v -e '^#' -e '^$' -e '^net\.' /usr/lib/melissa/netns-sysctl.conf \
+        || { echo "lint: netns-sysctl.conf may hold only net.* keys"; exit 1; }; \
     test ! -e /usr/lib/systemd/system/tailscaled.service || { echo "lint: tailscaled.service must not exist"; exit 1; }; \
     # Nothing may replay uevents on the host's devices (see the masks above).
     for f in /usr/bin/udevadm /usr/lib/systemd/systemd-udevd /usr/lib/systemd/systemd-sysctl; do \
@@ -286,7 +290,8 @@ RUN set -eu; \
         /usr/lib/systemd/system/melissa-cluster-label.service \
         /usr/lib/systemd/system/melissa-cluster-label.timer \
         /usr/lib/systemd/system/melissa-factory-reset.path \
-        /usr/lib/systemd/system/melissa-factory-reset.service; \
+        /usr/lib/systemd/system/melissa-factory-reset.service \
+        /usr/lib/systemd/system/melissa-netns-sysctl.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }

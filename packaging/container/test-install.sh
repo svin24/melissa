@@ -121,6 +121,58 @@ done
 eq "melissa.container sets only net.* sysctls (never host-wide ones)" "" "$(printf '%s\n' "$sysctl_keys" | grep -v '^net\.')"
 eq "ping_group_range keeps its two numbers" yes \
     "$(yes_no grep -qx 'Sysctl="net.ipv4.ping_group_range=0 2147483647"' "$here/melissa.container")"
+nsconf="$here/rootfs/usr/lib/melissa/netns-sysctl.conf"
+eq "netns-sysctl.conf has the Quadlet's keys and values" \
+    "$(sed -n 's/^Sysctl=//p' "$here/melissa.container" | tr -d '"' | sed 's/ \(net\.\)/\n\1/g' | sort)" \
+    "$(grep -v -e '^#' -e '^$' "$nsconf" | sort)"
+eq "netns-sysctl.conf holds only net.* keys" "" "$(grep -v -e '^#' -e '^$' -e '^net\.' "$nsconf")"
+eq "the image enables melissa-netns-sysctl" yes \
+    "$(yes_no grep -q 'melissa-netns-sysctl.service melissa-factory-reset.path melissa-factory-reset.service; ' "$here/Containerfile")"
+eq "melissa-netns-sysctl runs before k3s and Tailscale" yes \
+    "$(yes_no grep -qE '^Before=k3s.service melissa-tailscaled.service' "$here/rootfs/usr/lib/systemd/system/melissa-netns-sysctl.service")"
+
+# netns-sysctl with stand-ins for systemd-detect-virt, ip and sysctl (they log what they're asked).
+ns=$(mktemp -d)
+mkdir -p "$ns/bin" "$ns/proc/net/ipv4/conf/default" "$ns/proc/net/ipv4/conf/eth0"
+for k in rp_filter accept_source_route promote_secondaries; do
+    : > "$ns/proc/net/ipv4/conf/default/$k"; : > "$ns/proc/net/ipv4/conf/eth0/$k"; done
+: > "$ns/proc/net/ipv4/ping_group_range"
+cat > "$ns/bin/systemd-detect-virt" <<'STUB'
+#!/bin/sh
+[ "$NS_VIRT" = podman ]
+STUB
+cat > "$ns/bin/ip" <<'STUB'
+#!/bin/sh
+case "$*" in
+    *"route show default"*) echo "$NS_ROUTE" ;;
+    *"link show dev eth0"*) echo "2: eth0@if21: <UP> mtu 1500 \    link/ether 02:00:00:00:00:01 \    $NS_KIND addrgenmode eui64" ;;
+esac
+STUB
+cat > "$ns/bin/sysctl" <<'STUB'
+#!/bin/sh
+echo "$3" >> "$NS_LOG"
+STUB
+chmod +x "$ns/bin/"*
+netns_sysctl() { # virt, default route, eth0 kind, [conf] -> keys written, one per line
+    : > "$ns/log"
+    PATH="$ns/bin:$PATH" NS_VIRT=$1 NS_ROUTE=$2 NS_KIND=$3 NS_LOG="$ns/log" NETNS_SYSCTL_PROC="$ns/proc" \
+        NETNS_SYSCTL_CONF=${4:-$nsconf} sh "$here/rootfs/usr/libexec/melissa-container/netns-sysctl" >/dev/null
+    echo "rc=$?"; cat "$ns/log"
+}
+bridge_route="default via 10.88.0.1 dev eth0 proto static metric 100"
+eq "netns-sysctl: podman bridge sets every key" "rc=0 $(grep -v -e '^#' -e '^$' "$nsconf" | tr '\n' ' ')" \
+    "$(netns_sysctl podman "$bridge_route" veth | tr '\n' ' ')"
+eq "netns-sysctl: not in a container, nothing" "rc=0" "$(netns_sysctl none "$bridge_route" veth)"
+eq "netns-sysctl: the host's network (default via enp1s0), nothing" "rc=0" \
+    "$(netns_sysctl podman "default via 192.168.1.1 dev enp1s0 proto dhcp" ether)"
+eq "netns-sysctl: eth0 that is not a veth, nothing" "rc=0" "$(netns_sysctl podman "$bridge_route" ether)"
+eq "netns-sysctl: no default route, nothing" "rc=0" "$(netns_sysctl podman "" veth)"
+printf '%s\n' 'kernel.core_pattern=|/bin/false' 'vm.max_map_count=1' 'net.ipv4.conf.wlan9.rp_filter=2' \
+    'net.ipv4.conf.eth0.rp_filter=2' > "$ns/bad.conf"
+eq "netns-sysctl: refuses host-wide keys, skips missing ones, sets the rest" "rc=0 net.ipv4.conf.eth0.rp_filter=2" \
+    "$(netns_sysctl podman "$bridge_route" veth "$ns/bad.conf" | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$ns"
+
 q=$(command -v /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2>/dev/null | head -n1)
 if [ -n "$q" ]; then
     qd=$(mktemp -d)

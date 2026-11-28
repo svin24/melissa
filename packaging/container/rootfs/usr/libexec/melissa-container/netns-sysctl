@@ -1,0 +1,45 @@
+#!/bin/sh
+# Container: set the container network namespace's net.* sysctls from NETNS_SYSCTL_CONF (default
+# /usr/lib/melissa/netns-sysctl.conf), as the Quadlet's Sysctl= lines do; a fallback for an install
+# whose Quadlet predates them (image-only update). Run by melissa-netns-sysctl.service.
+#
+# Never touches the host: it runs only in a container whose default route goes through eth0 and eth0
+# is a veth, i.e. podman's bridge network (its own namespace). With the host's network (--network
+# host) the default route is the host's own interface, never a veth named eth0, so it skips. Keys other
+# than net.* are refused. Fails safe: a missing key or a failed write is logged and skipped; the exit
+# status is always 0, so boot never waits on it.
+set -u
+conf=${NETNS_SYSCTL_CONF:-/usr/lib/melissa/netns-sysctl.conf}
+say() { echo "netns-sysctl: $*"; }
+
+if ! systemd-detect-virt --container --quiet; then
+    say "not in a container; skipped"; exit 0
+fi
+# shellcheck disable=SC2046 # split the route into words on purpose
+set -- $(ip -4 route show default 2>/dev/null)
+if [ "${4:-}" != dev ] || [ "${5:-}" != eth0 ]; then
+    say "default route is not via eth0 (${*:-none}); may be the host's network; skipped"; exit 0
+fi
+case "$(ip -d -o link show dev eth0 2>/dev/null)" in
+    *" veth "*) ;;
+    *) say "eth0 is not a veth; may be the host's network; skipped"; exit 0 ;;
+esac
+[ -r "$conf" ] || { say "no $conf; skipped"; exit 0; }
+
+set=0 skipped=0
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | '#'*) continue ;; esac
+    key=${line%%=*} value=${line#*=}
+    case "$key" in
+        net.*) ;;
+        *) say "refused $key: only net.* (the container's own namespace)"; skipped=$((skipped + 1)); continue ;;
+    esac
+    path=${NETNS_SYSCTL_PROC:-/proc/sys}/$(printf %s "$key" | tr . /)
+    if [ ! -e "$path" ]; then
+        say "no $key here; skipped"; skipped=$((skipped + 1)); continue
+    fi
+    if sysctl -q -w "$key=$value" >/dev/null 2>&1; then set=$((set + 1))
+    else say "could not set $key=$value; skipped"; skipped=$((skipped + 1)); fi
+done < "$conf"
+say "set $set, skipped $skipped"
+exit 0

@@ -2116,7 +2116,12 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   there (`50-default.conf`: `rp_filter`=2, `accept_source_route`=0, `promote_secondaries`=1 on `default` and
   `eth0`; `ping_group_range` for agents on the container's network) now come from `Sysctl=` lines in the
   Quadlet: podman applies them to the container's namespace only and refuses `net.*` with the host's
-  network. No other sysctl file was in the image (none from k3s, Tailscale or Melissa). k3s sets
+  network. So an image-only update (an older Quadlet without those lines) keeps them, the image also sets
+  them at boot: `melissa-netns-sysctl.service` (before k3s, Tailscale and the server) applies
+  `/usr/lib/melissa/netns-sysctl.conf` (the same keys, `net.*` only, deliberately outside any `sysctl.d`). It
+  runs only when the default route goes through `eth0` and `eth0` is a veth (podman's bridge; with the host's
+  network the default route is the host's own interface), refuses non-`net.*` keys, and logs and skips a
+  missing key without failing the boot. No other sysctl file was in the image (none from k3s, Tailscale or Melissa). k3s sets
   `ip_forward`, `bridge-nf-call-ip(6)tables` and IPv6 forwarding itself (its agent's system setup) and
   kube-proxy `route_localnet`; containerd sets `ping_group_range` in pods. Host-wide keys (`kernel.*`, `vm.*`,
   `fs.*`) are never set from inside; install.sh writes the kubelet's to the host's `/etc/sysctl.d`.
