@@ -154,6 +154,10 @@ impl Scheduler {
         let schedules = &self.inner.schedules;
         let tz = schedules.time_zone().clone();
         let now = schedules.now();
+        if schedules.read_only() {
+            // A newer Melissa's schedules: runs could not be recorded (see `Schedules::open`).
+            return MAX_SLEEP;
+        }
         for s in schedules.list() {
             if !s.enabled {
                 continue;
@@ -168,7 +172,10 @@ impl Scheduler {
             if at <= s.handled_until {
                 continue;
             }
-            schedules.mark_handled(s.id, at);
+            if !schedules.mark_handled(s.id, at) {
+                // Not saved: running it would run it again at the next look.
+                continue;
+            }
             let late = due.duration_until(now);
             if Duration::try_from(late).is_ok_and(|l| l > self.inner.grace) {
                 schedules.record(

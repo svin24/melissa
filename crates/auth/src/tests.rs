@@ -469,6 +469,59 @@ fn setup_code_survives_a_restart_until_used_or_expired() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// After a rollback: a login store a newer Melissa saved is read (signed-in people stay
+/// signed in), never written (a new sign-in says why it cannot be saved), byte for byte.
+#[test]
+fn a_newer_melissas_login_store_is_read_and_never_written() {
+    let dir = std::env::temp_dir().join(format!("melissa-auth-newer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let f = Fixture::with(Auth::open(&dir).unwrap());
+    let s = f.claimed();
+    let file = dir.join(FILE_NAME);
+    let text = std::fs::read_to_string(&file).unwrap();
+    // Written in the current format, which the older images read too (an extra key).
+    let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(doc["format"], 1, "{text}");
+    doc["format"] = 7.into();
+    doc["passkeys"] = serde_json::json!([]);
+    let newer = serde_json::to_string_pretty(&doc).unwrap();
+    std::fs::write(&file, &newer).unwrap();
+
+    let again = Fixture::with(Auth::open(&dir).unwrap());
+    assert!(again.auth.has_owner());
+    assert!(again.auth.session(&s.token).is_some());
+    let err = again
+        .auth
+        .login("Ana", "owner-password", "198.51.100.1", "Firefox")
+        .unwrap_err();
+    assert!(
+        matches!(&err, AuthError::Io(m) if m.contains("newer version of Melissa")),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A login store from before formats existed (no `format` key) loads.
+#[test]
+fn a_login_store_from_before_formats_loads() {
+    let dir = std::env::temp_dir().join(format!("melissa-auth-old-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let f = Fixture::with(Auth::open(&dir).unwrap());
+    let s = f.claimed();
+    let file = dir.join(FILE_NAME);
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    doc.as_object_mut().unwrap().remove("format");
+    let old = serde_json::to_string_pretty(&doc).unwrap();
+    assert!(!old.contains("format"));
+    std::fs::write(&file, &old).unwrap();
+    let again = Fixture::with(Auth::open(&dir).unwrap());
+    assert!(again.auth.has_owner());
+    assert!(again.auth.session(&s.token).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_stale_setup_code_file_is_removed_once_claimed() {
     let dir = std::env::temp_dir().join(format!("melissa-auth-stale-{}", std::process::id()));

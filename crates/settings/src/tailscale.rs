@@ -39,7 +39,7 @@ use std::{
 use melissa_agent::{AuditLog, AuditRecord, BoxFuture};
 use serde::{Deserialize, Serialize};
 
-use crate::{write_private, SettingsError};
+use crate::SettingsError;
 
 pub mod serve;
 pub mod tool;
@@ -178,20 +178,22 @@ fn read_file(path: &Path) -> Result<SettingFile, String> {
     if text.len() as u64 > MAX_SETTING_BYTES {
         return Err(format!("{shown} is too big"));
     }
-    toml::from_str::<SettingFile>(&text).map_err(|_| format!("{shown} is not a valid setting"))
+    crate::parse_versioned(path, &crate::formats::TAILSCALE, &text, |t| {
+        toml::from_str::<SettingFile>(t)
+            .map_err(|_| SettingsError::Invalid(format!("{shown} is not a valid setting")))
+    })
+    .map_err(|e| e.to_string())
 }
 
+/// Write the setting; refused for a newer Melissa's file (an unreadable file read as the
+/// default in [`update_file`] is never saved over then).
 fn write_file(path: &Path, file: &SettingFile) -> Result<(), SettingsError> {
-    let body = toml::to_string(file).map_err(|e| SettingsError::Write {
-        path: path.display().to_string(),
-        source: std::io::Error::other(e.to_string()),
-    })?;
-    let text =
-        format!("# Melissa's own Tailscale (Settings → Tailscale), written by Melissa.\n{body}");
-    write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {
-        path: path.display().to_string(),
-        source,
-    })
+    crate::save_versioned(
+        path,
+        &crate::formats::TAILSCALE,
+        "# Melissa's own Tailscale (Settings → Tailscale), written by Melissa.\n",
+        file,
+    )
 }
 
 /// Change the setting file, keeping what else it says (an unreadable one starts over).

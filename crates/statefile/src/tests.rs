@@ -68,7 +68,11 @@ fn a_file_without_a_format_is_format_1_and_is_migrated() {
     );
     save_json(&path, &PET_V2, &loaded.value, false).unwrap();
     let text = fs::read_to_string(&path).unwrap();
-    assert!(text.starts_with(r#"{"format":2,"#), "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap()["format"],
+        2,
+        "{text}"
+    );
     let again: Loaded<Pet> = read_json(&path, &PET_V2).unwrap().unwrap();
     assert_eq!((again.found, again.value.legs), (2, 4));
 }
@@ -294,7 +298,11 @@ fn log_lines_carry_their_format_and_newer_lines_are_skipped_not_lost() {
         },
     )
     .unwrap();
-    assert!(line.starts_with(r#"{"format":2,"#), "{line}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap()["format"],
+        2,
+        "{line}"
+    );
     append_line(&path, &line, 0o600).unwrap();
     append_line(&path, r#"{"format":3,"seq":3,"words":["new"]}"#, 0o600).unwrap();
     let text = fs::read_to_string(&path).unwrap();

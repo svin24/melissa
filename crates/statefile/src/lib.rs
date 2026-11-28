@@ -355,7 +355,8 @@ pub fn guard<D: Doc>(path: &Path, fmt: &Format<D>) -> Result<(), FormatError> {
     }
 }
 
-/// `value` as JSON in format `fmt` (the `format` key first).
+/// `value` as JSON in format `fmt`, with the `format` key (first where serde_json keeps key
+/// order; sorted with the others where it doesn't: readers never depend on where it is).
 pub fn to_json<T: Serialize>(
     fmt: &JsonFormat,
     value: &T,
@@ -500,7 +501,7 @@ pub fn write_atomic_with(
 }
 
 /// `value` as one log line (no newline) in format `fmt`: a JSON object with the `format` key
-/// first. `value` must serialize to an object.
+/// ([`to_json`]). `value` must serialize to an object.
 pub fn encode_line<T: Serialize>(fmt: &JsonFormat, value: &T) -> Result<String, serde_json::Error> {
     let bytes = to_json(fmt, value, false)?;
     // serde_json writes UTF-8.
@@ -580,14 +581,23 @@ pub fn append_line(path: &Path, line: &str, mode: u32) -> io::Result<()> {
             fs::create_dir_all(parent)?;
         }
     }
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .mode(mode)
-        .open(path)?;
+    let open = |read: bool| {
+        fs::OpenOptions::new()
+            .read(read)
+            .append(true)
+            .create(true)
+            .mode(mode)
+            .open(path)
+    };
+    // Reading the last byte needs read access; a file this process may only append to is
+    // appended to as it is.
+    let (mut file, readable) = match open(true) {
+        Ok(f) => (f, true),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => (open(false)?, false),
+        Err(e) => return Err(e),
+    };
     let mut out = String::with_capacity(line.len() + 2);
-    if file.metadata()?.len() > 0 {
+    if readable && file.metadata()?.len() > 0 {
         let mut last = [0u8; 1];
         file.seek(SeekFrom::End(-1))?;
         file.read_exact(&mut last)?;

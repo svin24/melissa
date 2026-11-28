@@ -447,9 +447,13 @@ struct SavedSession {
 }
 
 fn load_session(path: &std::path::Path) -> Option<SavedSession> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
+    match melissa_statefile::read_json(path, &crate::formats::SESSION) {
+        Ok(loaded) => loaded.map(|l| l.value),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), "not resuming the saved session: {e}");
+            None
+        }
+    }
 }
 
 impl Conversation {
@@ -2175,16 +2179,9 @@ async fn pump(conv: Weak<Inner>, gen: u64, mut events: mpsc::UnboundedReceiver<S
 }
 
 fn save_session(path: &std::path::Path, saved: &SavedSession) {
-    let write = || -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(
-            path,
-            serde_json::to_vec(saved).map_err(std::io::Error::other)?,
-        )
-    };
-    if let Err(e) = write() {
+    // Atomic: a crash mid-write used to leave a truncated file, and the next start then lost
+    // the session (and its taint).
+    if let Err(e) = melissa_statefile::save_json(path, &crate::formats::SESSION, saved, false) {
         tracing::warn!(path = %path.display(), "cannot save the session id: {e}");
     }
 }

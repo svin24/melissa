@@ -1,0 +1,28 @@
+{
+  "device": "d-0a1b2c3d",
+  "next": 3,
+  "agents": [
+    {
+      "id": "d-0a1b2c3d.a1",
+      "name": "Ada",
+      "backend": "claude-session",
+      "model": "opus",
+      "tools": null,
+      "created_by": "the user",
+      "created_at": 1763600000,
+      "stopped": false
+    },
+    {
+      "id": "d-0a1b2c3d.a2",
+      "name": "Bo",
+      "backend": "grok-acp",
+      "tools": ["list_apps", "app_status"],
+      "created_by": "the lead agent (task 3)",
+      "created_at": 1763600100,
+      "stopped": true,
+      "former_names": ["Bee"]
+    }
+  ],
+  "lead_name": "Mel",
+  "lead_former_names": ["Melissa"]
+}

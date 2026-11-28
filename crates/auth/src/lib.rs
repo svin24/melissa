@@ -18,7 +18,6 @@ mod password;
 mod secret;
 
 use std::{
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
@@ -278,21 +277,36 @@ fn io(e: impl std::fmt::Display) -> AuthError {
     AuthError::Io(e.to_string())
 }
 
-/// Write `bytes` to `path` atomically (a 0600 temporary file renamed over it).
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), AuthError> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension("json.tmp");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(io)?;
-    f.write_all(bytes).map_err(io)?;
-    f.sync_all().map_err(io)?;
-    std::fs::rename(&tmp, path).map_err(io)?;
-    Ok(())
+/// `auth.json`'s format (melissa-statefile). A newer Melissa's file (after a rollback) is read
+/// as well as this version can and never written: existing sessions keep working, anything
+/// that must be saved (a sign-in, a new password) fails with a message saying why.
+///
+/// So a change that takes access away (an account switched off, a narrower role) must not
+/// rely on a new field an older Melissa would ignore: bump the format **and** make the file
+/// unreadable to the older version (e.g. change a required field's type), so it refuses to
+/// start instead of letting someone in.
+pub const AUTH_FORMAT: melissa_statefile::JsonFormat = melissa_statefile::Format {
+    name: "login store",
+    current: 1,
+    migrations: &[],
+    v1_marker: true,
+};
+
+/// `setup-code.json`'s format.
+pub const SETUP_CODE_FORMAT: melissa_statefile::JsonFormat = melissa_statefile::Format {
+    name: "setup code",
+    current: 1,
+    migrations: &[],
+    v1_marker: true,
+};
+
+/// Save `value` to `path` (atomically, 0600) in format `fmt`, unless a newer Melissa wrote it.
+fn save_json<T: Serialize>(
+    path: &Path,
+    fmt: &melissa_statefile::JsonFormat,
+    value: &T,
+) -> Result<(), AuthError> {
+    melissa_statefile::save_json(path, fmt, value, true).map_err(io)
 }
 
 impl Auth {
@@ -310,8 +324,9 @@ impl Auth {
             Ok(bytes) => {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
                     .map_err(io)?;
-                serde_json::from_slice(&bytes)
-                    .map_err(|e| io(format!("{}: {e}", path.display())))?
+                melissa_statefile::parse_json::<Data>(&path, &AUTH_FORMAT, &bytes)
+                    .map_err(io)?
+                    .value
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Data::default(),
             Err(e) => return Err(io(e)),
@@ -338,11 +353,10 @@ impl Auth {
     /// The saved setup code, if there is a readable one.
     fn read_setup_code(&self) -> Option<SetupCode> {
         let path = self.setup_path()?;
-        let bytes = std::fs::read(&path).ok()?;
-        match serde_json::from_slice(&bytes) {
-            Ok(code) => Some(code),
+        match melissa_statefile::read_json(&path, &SETUP_CODE_FORMAT) {
+            Ok(code) => code.map(|l| l.value),
             Err(e) => {
-                tracing::warn!("{}: {e}; a new setup code is made", path.display());
+                tracing::warn!("{e}; a new setup code is made");
                 None
             }
         }
@@ -359,7 +373,7 @@ impl Auth {
                 _ => Ok(()),
             };
         };
-        write_private(&path, &serde_json::to_vec(code).map_err(io)?)
+        save_json(&path, &SETUP_CODE_FORMAT, code)
     }
 
     fn forget_setup_code(&self) -> Result<(), AuthError> {
@@ -432,8 +446,7 @@ impl Auth {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let bytes = serde_json::to_vec_pretty(&inner.data).map_err(io)?;
-        write_private(path, &bytes)
+        save_json(path, &AUTH_FORMAT, &inner.data)
     }
 
     fn hash(&self, password: &str) -> Result<String, AuthError> {

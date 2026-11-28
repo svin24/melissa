@@ -72,11 +72,14 @@ impl DeviceIdentity {
         let shown = path.display().to_string();
         match std::fs::read_to_string(path) {
             Ok(text) => {
+                // Only written when made: a newer format is read as well as it can be.
                 let device: Self =
-                    serde_json::from_str(&text).map_err(|e| DeviceError::Invalid {
-                        path: shown.clone(),
-                        reason: e.to_string(),
-                    })?;
+                    melissa_statefile::parse_json(path, &crate::formats::DEVICE, text.as_bytes())
+                        .map_err(|e| DeviceError::Invalid {
+                            path: shown.clone(),
+                            reason: e.to_string(),
+                        })?
+                        .value;
                 if !valid_device_id(&device.id) {
                     return Err(DeviceError::Invalid {
                         path: shown,
@@ -97,14 +100,11 @@ impl DeviceIdentity {
                     name: "this device".into(),
                     id,
                 };
-                let json = serde_json::to_vec_pretty(&device).map_err(|e| DeviceError::Write {
-                    path: shown.clone(),
-                    source: std::io::Error::other(e),
-                })?;
-                write_private(path, &json).map_err(|source| DeviceError::Write {
-                    path: shown,
-                    source,
-                })?;
+                melissa_statefile::save_json(path, &crate::formats::DEVICE, &device, true)
+                    .map_err(|e| DeviceError::Write {
+                        path: shown,
+                        source: std::io::Error::other(e),
+                    })?;
                 Ok(device)
             }
             Err(source) => Err(DeviceError::Read {
@@ -123,26 +123,10 @@ pub(crate) fn random_hex(n: usize) -> std::io::Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Write `data` to `path` atomically (temp file + rename), mode 0600, creating the parent.
+/// Write `data` to `path` atomically (temp file, fsync, rename, directory fsync), mode 0600,
+/// creating the parent.
 pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(data)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
+    melissa_statefile::write_private(path, data)
 }
 
 #[cfg(test)]
