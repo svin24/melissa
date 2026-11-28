@@ -36,6 +36,15 @@ Environment=XDG_CONFIG_HOME=/etc
 # The default rootful bridge. The UI: host 127.0.0.1:UI_PORT → container :8081
 # (melissa-ui-forward, nftables-filtered so pods can't reach it) → server on 127.0.0.1:8080.
 Network=podman
+# The container's own network namespace, as the image's systemd-sysctl left it until the image dropped
+# systemd-udev (DECISIONS 2026-11-28): loose reverse-path filter, no source routing, secondary addresses
+# promoted, unprivileged ping (agents on the container's network). Only net.* keys, which podman applies
+# to this namespace and refuses with the host's network; never kernel.*, vm.* or fs.* (host-wide).
+# k3s sets ip_forward, bridge-nf-call-ip(6)tables and route_localnet itself.
+Sysctl=net.ipv4.conf.default.rp_filter=2 net.ipv4.conf.eth0.rp_filter=2
+Sysctl=net.ipv4.conf.default.accept_source_route=0 net.ipv4.conf.eth0.accept_source_route=0
+Sysctl=net.ipv4.conf.default.promote_secondaries=1 net.ipv4.conf.eth0.promote_secondaries=1
+Sysctl="net.ipv4.ping_group_range=0 2147483647"
 PublishPort=@UI_BIND@:@UI_PORT@:8081
 # App NodePorts 30000-30079 (first app port on the host: APP_PORT_BASE), TCP and UDP (game servers).
 # BIND is 0.0.0.0 by default: Melissa's own filter decides who may open apps (Settings → Apps,

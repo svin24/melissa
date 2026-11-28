@@ -2112,3 +2112,11 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   anyway (a later dependency cannot bring them back to life), the image lint fails on the package, its
   binaries or an unmasked unit, and the escape-test gate checks the booted container. Alternative: keep the
   package masked (no benefit; it also ships sysupdate, repart, TPM and hwdb units Melissa has no use for).
+  The container has its own network namespace (podman bridge), so the namespaced keys systemd-sysctl set
+  there (`50-default.conf`: `rp_filter`=2, `accept_source_route`=0, `promote_secondaries`=1 on `default` and
+  `eth0`; `ping_group_range` for agents on the container's network) now come from `Sysctl=` lines in the
+  Quadlet: podman applies them to the container's namespace only and refuses `net.*` with the host's
+  network. No other sysctl file was in the image (none from k3s, Tailscale or Melissa). k3s sets
+  `ip_forward`, `bridge-nf-call-ip(6)tables` and IPv6 forwarding itself (its agent's system setup) and
+  kube-proxy `route_localnet`; containerd sets `ping_group_range` in pods. Host-wide keys (`kernel.*`, `vm.*`,
+  `fs.*`) are never set from inside; install.sh writes the kubelet's to the host's `/etc/sysctl.d`.

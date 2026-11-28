@@ -112,6 +112,27 @@ for u in systemd-udevd.service systemd-udevd-kernel.socket systemd-udevd-control
     eq "the image masks $u" yes "$(yes_if "[ \$(grep -c -- '$u' '$here/Containerfile') -ge 2 ]")"
 done
 eq "the image lint refuses systemd-udev" yes "$(yes_no grep -qE 'for p in .* systemd-udev; do' "$here/Containerfile")"
+# Without systemd-sysctl inside, the Quadlet sets the container netns's keys; only net.* (namespaced).
+sysctl_keys=$(sed -n 's/^Sysctl=//p' "$here/melissa.container" | tr -d '"' | tr ' ' '\n' | grep '=' | cut -d= -f1)
+for k in net.ipv4.conf.default.rp_filter net.ipv4.conf.eth0.rp_filter \
+    net.ipv4.conf.default.accept_source_route net.ipv4.ping_group_range; do
+    eq "melissa.container sets $k in the container netns" yes "$(yes_if "printf '%s\n' '$sysctl_keys' | grep -qx '$k'")"
+done
+eq "melissa.container sets only net.* sysctls (never host-wide ones)" "" "$(printf '%s\n' "$sysctl_keys" | grep -v '^net\.')"
+eq "ping_group_range keeps its two numbers" yes \
+    "$(yes_no grep -qx 'Sysctl="net.ipv4.ping_group_range=0 2147483647"' "$here/melissa.container")"
+q=$(command -v /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2>/dev/null | head -n1)
+if [ -n "$q" ]; then
+    qd=$(mktemp -d)
+    sed -e 's/@[A-Z_]*_LINE@//' -e 's/@[A-Z_]*@/1/g' "$here/melissa.container" > "$qd/melissa.container"
+    gen=$(QUADLET_UNIT_DIRS="$qd" "$q" -dryrun 2>/dev/null)
+    eq "Quadlet passes the sysctls to podman" 7 "$(printf '%s\n' "$gen" | grep '^ExecStart=' | grep -o -- '--sysctl' | wc -l | tr -d ' ')"
+    eq "Quadlet keeps ping_group_range as one value" yes \
+        "$(yes_if "printf '%s\n' \"\$gen\" | grep -qF 'net.ipv4.ping_group_range=0\\x202147483647'")"
+    rm -rf "$qd"
+else
+    echo "skip: no quadlet here (Quadlet dry run of melissa.container)"
+fi
 
 # --- server.toml: read and rewrite [apps] addresses, nothing else ---------------------------
 toml='listen = "127.0.0.1:8080"

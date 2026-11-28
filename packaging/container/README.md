@@ -460,7 +460,9 @@ just gvisor-test-image          # or: just gvisor-test-image localhost/melissa:<
 - The host's devices and power stay the host's: `--privileged` shares `/dev` and a writable `/sys`, so the
   image has no udev (a udevd inside replayed "add" for every host device, such as USB drives, at each start),
   and masks udev, `systemd-sysctl`, logind and the sleep targets; `/dev/input` is hidden. The image lint and
-  the escape-test gate check this.
+  the escape-test gate check this. The container's own network namespace gets its few `net.*` settings
+  (loose `rp_filter`, no source routing, unprivileged ping) from `Sysctl=` lines in the Quadlet; nothing
+  inside sets host-wide sysctls.
 - The update channel carries three fixed words as file names; the host helper takes no arguments from
   the container.
 
