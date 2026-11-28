@@ -22,8 +22,8 @@
 //! level, replies to the container's own connections excepted, and k3s's ports from the
 //! **cluster peers** ([`ClusterPeers`], `cluster.toml`, multi-device): a server lets its peers
 //! reach 6443/tcp (API), 10250/tcp (kubelet) and 8472/udp (flannel VXLAN), an agent lets its
-//! server reach 10250/tcp and 8472/udp. Only those addresses, only on `tailscale0`; never in the
-//! closed table. The container itself (`lo`)
+//! server reach 10250/tcp and 8472/udp (not the other agents yet: pods on two agents can't talk,
+//! PLAN Q109). Only those addresses, only on `tailscale0`; never in the closed table. The container itself (`lo`)
 //! and k3s's pods (`cni0`) are not filtered. A drop is final in nftables whatever other tables (kube-proxy,
 //! flannel, network policies) say, so the table takes precedence without ordering tricks.
 //!

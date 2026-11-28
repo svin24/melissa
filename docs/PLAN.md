@@ -1656,3 +1656,29 @@ Roadmap (rough, phases may overlap):
     first). (d) Peers are let in by tailnet address; a device that re-registers on the tailnet gets a new
     address and must be invited again. (e) The role label's kubectl query has not run against a real k3s
     yet. (f) Image updates on an agent device: test that the join survives (state is under `/var` now).
+108. Who may make root join a cluster or mint a join token (2026-11-28, review of the multi-device groundwork).
+    Root (`melissa-cluster.service`, `k3s-prepare`) trusts what the server's uid `melissa` writes to
+    `/etc/melissa` (`cluster.toml`, `cluster-join.token`, `cluster-request.json`) and may be started by that
+    uid through polkit. Unsandboxed agent backends also run as that uid (Q85h), so such an agent could make
+    root join this device to an arbitrary k3s server (with its data kept, but the device's workloads and
+    secrets then scheduled by a stranger's control plane) or mint a join token for this server and read it
+    from `cluster-invitation.token`. The owner-only gate lives only in `ClusterControl` (the server's code).
+    Root now refuses removing anything that isn't an invited peer or is this device's own node, never blocks
+    on a FIFO, and keeps copied drop-ins 0600, but that doesn't close the above. Options considered: (a) an
+    on-screen owner confirmation that root verifies through a path the `melissa` uid can't forge; (b) a
+    separate uid for the cluster setting; (c) no unsandboxed backends while clustered. **DECIDED (owner,
+    2026-11-28): (a).** Joining another cluster and creating an invitation happen only after the owner
+    confirms on screen in the UI, and root verifies that confirmation through a path the `melissa` uid (and
+    so unsandboxed agents) cannot forge. The mechanism is designed together with the Tailscale + Devices
+    screen; not built yet.
+109. Flannel between agents (2026-11-28, review of the multi-device groundwork). With three or more devices,
+    pods on two agents talk over flannel's VXLAN (8472/udp) directly, agent to agent. An agent's firewall lets
+    in only its server (its peer list holds the server alone: `ClusterControl::join`), so agent-to-agent pod
+    traffic is dropped; two devices (server plus one agent) are unaffected. Not fixed in the groundwork (not
+    small). Options: (a) the server publishes every node's tailnet address to its agents (e.g. a ConfigMap
+    root on the agent reads with the kubelet's credentials, or the node objects' InternalIP, which the
+    kubelet may list) and the agent's root adds them to the peers for 8472/udp only, re-applying the firewall
+    on change; (b) agents accept 8472/udp from the whole tailnet range on `tailscale0` (simple, but anyone on
+    the tailnet could then inject VXLAN into the pod network: not without encryption); (c) flannel's
+    WireGuard backend between nodes instead of VXLAN (one more port, peers authenticated by key). Until then,
+    the Devices screen should not offer a third device, or say that apps across two agents can't talk.
