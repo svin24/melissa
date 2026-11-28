@@ -3,8 +3,9 @@
 Owner goal (2026-11-27): a cluster network of "smart" and "dumb" devices, where some devices can go offline,
 that scales a long way with AI. A dumb device can be, for example, a desktop or Android client app that connects
 to a Melissa server. This document records the agreed direction, what the current code would do with a second
-device (code reading only, **untested**), and a runbook for a first manual experiment. Nothing here is built.
-Decision record: DECISIONS.md, 2026-11-27. Open items: PLAN.md questions 102 and 103.
+device (code reading only, **untested** when written), and a runbook for a first manual experiment. Section 6
+has the experiment's results and the follow-ups built since.
+Decision record: DECISIONS.md, 2026-11-27. Open items: PLAN.md questions 102, 103 and 107.
 
 ## 1. Terms
 
@@ -127,6 +128,42 @@ Steps marked **[C]** change a machine or the tailnet: confirm with the owner fir
 Rollback: `systemctl restart melissa` on each host (the container is recreated from the image, so the drop-ins,
 nftables rules and unit override are gone), then `kubectl delete node <laptop node name>` on the desktop. The laptop's k3s data on the volume still holds
 agent state; whether its server comes back cleanly is **unverified** (check `kubectl get nodes` on the laptop).
+
+## 6. Experiment results 2026-11-27
+
+The manual join from section 5 was run on the owner's two devices. Names and addresses here are the
+placeholders from section 5.
+
+- **Join:** the laptop joined the desktop as a k3s agent over Melissa's own Tailscale (built-in tailscaled on
+  both, `HOST_TAILSCALE=no`), with the temporary nftables rules from step 4 and a `k3s token create --ttl`
+  token.
+- **Workload:** a small app pinned to the laptop (`nodeSelector` plus toleration) ran under gVisor (`runsc`);
+  its pod was Ready 4 s after it was scheduled. The desktop reached it 3 times out of 3, in 0.18 to 0.26 s.
+- **Logs:** `kubectl logs` from the desktop worked through the laptop's kubelet (10250/tcp over the tailnet).
+- **Offline:** with the laptop's Wi-Fi off, its node turned `Unknown` (Ready condition) after about 1 minute.
+  About 3 minutes after Wi-Fi came back the node was `Ready` again by itself. The pod survived with 0
+  restarts (it came back before the default 5-minute eviction).
+- **Path:** `tailscale ping` showed a DERP relay, never a direct connection: behind podman's NAT nothing
+  forwarded tailscaled's UDP port.
+- **k3s config:** an agent refuses server-only keys such as `write-kubeconfig-mode` from the shared
+  `config.yaml.d`, so an agent needs its own config.
+- **Persistence:** an image update recreates the container and drops `/etc` and `/run` (outside the
+  `melissa-var` volume), so join state (token, role, node name) must live under `/var`.
+
+Follow-ups built on the `multi-device-groundwork` branch (not merged; not yet tried on two devices):
+
+- Unique node names, pinned under `/var/lib/melissa-container/cluster`; a persistent server or agent role in
+  `/etc/melissa/cluster.toml` (on the volume); an agent gets its own k3s config without server-only keys;
+  the join token lives in a root-only file under `/var` (finding 3, finding 1).
+- The app access filter lets the peers in `cluster.toml` reach k3s's ports on `tailscale0`, rebuilt at every
+  k3s start (finding 2).
+- install.sh publishes tailscaled's port 41641/udp when the host doesn't run Tailscale (the DERP-only path).
+- The server labels nodes `node-restriction.kubernetes.io/melissa-role=server|agent`, a prefix a kubelet may
+  not set on itself (finding 4).
+- The web UI finds this device's own node by its pinned name and shows a node whose Ready condition is
+  `Unknown` as Offline, apart from Not ready.
+
+Still open: PLAN questions 103 and 107.
 
 ## Sources (read 2026-11-27)
 

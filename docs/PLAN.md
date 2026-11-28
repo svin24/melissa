@@ -1614,6 +1614,9 @@ Roadmap (rough, phases may overlap):
     server). (h) MTU: flannel over Tailscale gives pods about 1230, pods created before keep 1450. (i) Agent
     tokens: never hand out the server token (cluster root); use `k3s token create --ttl`. k3s `--vpn-auth` is
     skipped (experimental, fights Melissa's tailscaled).
+    Progress 2026-11-28 (branch `multi-device-groundwork`, not merged): (a), (b), (c) server/agent role, (d),
+    (e) and (i) have first implementations (INTERCONNECT section 6); (f), (g), (h) and where the control plane
+    runs are still open.
 104. Ubuntu hosts and agent users (2026-11-27, found in CI). Ubuntu 26.04 restricts unprivileged user
     namespaces and loads `bwrap-userns-restrict`, whose `bwrap` profile attaches to `/usr/bin/bwrap` inside the
     container as well and denies all capabilities to what bwrap runs: `setpriv` cannot switch to the agent
@@ -1644,3 +1647,12 @@ Roadmap (rough, phases may overlap):
     container's address (or netavark's experimental `firewall_driver = "firewalld"`) instead of `PublishPort`?
     (b) Offer `netavark-firewalld-reload.service` (restores podman's trusted-zone entry after a reload) as a
     printed hint at install time? (c) Not yet tested on a real host with Strict on.
+107. Two-device experiment follow-ups (2026-11-28; INTERCONNECT section 6). (a) Direct connections: install.sh
+    now publishes 41641/udp, but whether peers then connect directly (not through DERP) is unverified, and a host
+    firewall may still block it. (b) Offline devices: a node is `Unknown` after about 1 minute and pods are
+    evicted after the default 5 minutes; should apps placed on laptops tolerate longer, and what does the
+    owner see meanwhile (the UI says Offline)? (c) The owner's actions (invite, join, remove a device, leave)
+    exist only as `ClusterControl` in `crates/settings`; no UI or agent tool calls them yet (UI change: owner
+    first). (d) Peers are let in by tailnet address; a device that re-registers on the tailnet gets a new
+    address and must be invited again. (e) The role label's kubectl query has not run against a real k3s
+    yet. (f) Image updates on an agent device: test that the join survives (state is under `/var` now).
