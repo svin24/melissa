@@ -17,6 +17,8 @@
 # - fail closed: a pod or Deployment labelled gvisor without the RuntimeClass is refused by admission,
 #   another RuntimeClass is refused, and with the RuntimeClass gone a gVisor deploy fails with the reason
 #   (nothing runs on runc instead);
+# - Secrets at rest: k3s secrets-encryption on and the rotation finished, the key root-only, a Secret's value
+#   not in the datastore's files in plain text;
 # - start time and memory of both pods (printed, not judged).
 #
 # Separate from the installed `melissa` container: its own name, volume and image tag in root's storage,
@@ -111,7 +113,41 @@ wait_for 180 "melissa-kubeconfig" in_ctr test -s /run/melissa-kube/apps.kubeconf
 # The server's API and its owner exist once it answers.
 wait_for 120 "server API" in_ctr melissa-server confirm list || exit 1
 
+# ---- Secrets at rest --------------------------------------------------------------------------
+# k3s's secrets-encryption (10-melissa.yaml) and melissa-secrets-encrypt.service (k3s-secrets-encrypt):
+# the rotation finished, the key is root's alone, and a Secret's value never lands in the datastore's
+# files in plain text.
+echo "== Secrets encrypted at rest"
+key=/var/lib/rancher/k3s/server/cred/encryption-config.json
+wait_for 300 "melissa-secrets-encrypt finished" \
+    sh -c "sudo podman exec $NAME systemctl show -p ActiveState --value melissa-secrets-encrypt.service | grep -qx active" \
+    || in_ctr journalctl -u melissa-secrets-encrypt --no-pager | tail -n 20
+st=$(in_ctr k3s secrets-encrypt status 2>&1 || true)
+if grep -q '^Encryption Status: Enabled' <<<"$st" && grep -q '^Current Rotation Stage: reencrypt_finished' <<<"$st"; then
+    pass "k3s secrets-encryption on, existing Secrets re-encrypted"
+else bad "secrets-encrypt status: $(paste -sd'|' - <<<"$st")"; fi
+[ "$(in_ctr stat -c '%a %U' "$key" 2>&1)" = "600 root" ] && pass "encryption key is root's alone (0600)" \
+    || bad "encryption key: $(in_ctr stat -c '%a %U' "$key" 2>&1)"
+if in_ctr setpriv --reuid=melissa --regid=melissa --clear-groups cat "$key" >/dev/null 2>&1; then
+    bad "the melissa user can read the encryption key"
+else pass "the melissa user can't read the encryption key"; fi
+canary="melissa-at-rest-canary-$RANDOM$RANDOM"
+kc create secret generic at-rest-canary -n default --from-literal=v="$canary" >/dev/null
+sleep 2
+if in_ctr sh -c "cat /var/lib/rancher/k3s/server/db/state.db* | grep -aqF '$canary'"; then
+    bad "a Secret's value is in the datastore in plain text"
+else pass "a Secret's value is not in the datastore in plain text"; fi
+kc delete secret at-rest-canary -n default >/dev/null
+
 # ---- deploy through the product -------------------------------------------------------------
+# The test image from Docker Hub first, with retries: a registry hiccup is not a gVisor failure (the
+# deploys below wait 240 s for a pod, and kubelet's pull back-off can eat most of that).
+pulled=no
+for _ in 1 2 3 4 5; do
+    if in_ctr k3s crictl pull "$BUSYBOX" >/dev/null 2>&1; then pulled=yes; break; fi
+    sleep 15
+done
+[ "$pulled" = yes ] || { echo "FAIL: could not pull $BUSYBOX (registry unreachable?)"; exit 1; }
 # deploy <app> <isolation or ''>: tool --wait in the background, check and approve its confirmation.
 deploy() {
     local app=$1 iso=$2 spec args id reason
@@ -250,7 +286,7 @@ mem() { # namespace pod -> the pod cgroup's memory.current and memory.max
     in_ctr sh -c "awk '{ printf \"%.1f MiB\", \$1 / 1048576 }' $cg/memory.current; printf ' (limit '; \
         awk '{ printf \"%.0f MiB)\", \$1 / 1048576 }' $cg/memory.max"
 }
-echo "   deploy to Ready: gvisor $(secs "$gv_ready" "$start") s, standard $(secs "$std_ready" "$start_std") s (image pull in the first)"
+echo "   deploy to Ready: gvisor $(secs "$gv_ready" "$start") s, standard $(secs "$std_ready" "$start_std") s (image pulled before)"
 echo "   pod memory.current: gvisor $(mem app-gv "$gvpod"), standard $(mem app-std "$stdpod")"
 # The same pod again, image cached: just the sandbox start.
 ready_other() { # namespace app old-pod: a pod other than old-pod is Ready

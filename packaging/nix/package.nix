@@ -5,6 +5,7 @@
 #   bin/melissa-setup                                     agent CLI installer (vendor installers)
 #   libexec/melissa/melissa-kubeconfig                    root helper: the server's k3s credentials
 #   libexec/melissa/k3s-node-ip                           pins k3s's node IP (shared with k3s-prepare)
+#   libexec/melissa/k3s-secrets-encrypt                   root helper: encrypts older Secrets once
 #   lib/systemd/system/melissa-server.service              the shared unit, ExecStart in the store
 #   lib/tmpfiles.d/melissa-{config,home,kube}.conf        the shared tmpfiles rules
 #   share/melissa/k3s/manifests/*.yaml                    RBAC, admission policies, Traefik config
@@ -166,6 +167,19 @@ stdenvNoCC.mkDerivation {
         lib.makeBinPath [
           coreutils
           gnugrep
+        ]
+      }
+
+    # k3s-secrets-encrypt: encrypts the Secrets an older datastore holds, once (`k3s secrets-encrypt`
+    # with the k3s on the unit's PATH).
+    install -Dm0755 ${root + "/usr/libexec/melissa/k3s-secrets-encrypt"} \
+      $out/libexec/melissa/k3s-secrets-encrypt
+    patchShebangs $out/libexec/melissa/k3s-secrets-encrypt
+    wrapProgram $out/libexec/melissa/k3s-secrets-encrypt \
+      --suffix PATH : ${
+        lib.makeBinPath [
+          coreutils
+          gnused
         ]
       }
 
