@@ -1656,6 +1656,11 @@ Roadmap (rough, phases may overlap):
     first). (d) Peers are let in by tailnet address; a device that re-registers on the tailnet gets a new
     address and must be invited again. (e) The role label's kubectl query has not run against a real k3s
     yet. (f) Image updates on an agent device: test that the join survives (state is under `/var` now).
+    (g) LAN-direct path between devices on one LAN (2026-11-28 test): the connection is direct but goes
+    through the router's hairpin NAT (about 100 to 125 ms), because the tailscaled in the container sees only
+    its container address and never offers the LAN address as an endpoint. Options: advertise the host's
+    LAN address and port to tailscaled (static endpoints), host networking for tailscaled, or use the
+    host's Tailscale when present. Two-device timings are in INTERCONNECT section 6.
 108. Who may make root join a cluster or mint a join token (2026-11-28, review of the multi-device groundwork).
     Root (`melissa-cluster.service`, `k3s-prepare`) trusts what the server's uid `melissa` writes to
     `/etc/melissa` (`cluster.toml`, `cluster-join.token`, `cluster-request.json`) and may be started by that

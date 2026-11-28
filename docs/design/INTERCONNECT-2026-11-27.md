@@ -150,12 +150,15 @@ placeholders from section 5.
 - **Persistence:** an image update recreates the container and drops `/etc` and `/run` (outside the
   `melissa-var` volume), so join state (token, role, node name) must live under `/var`.
 
-Follow-ups built on the `multi-device-groundwork` branch (not merged; not yet tried on two devices):
+Follow-ups built on the `multi-device-groundwork` branch (parked, multi-device is post-MVP):
 
-- Unique node names, pinned under `/var/lib/melissa-container/cluster`; a persistent server or agent role in
-  `/etc/melissa/cluster.toml` (on the volume); an agent gets its own k3s config without server-only keys;
-  the join token lives in a root-only file under `/var` (finding 3, finding 1).
-- The app access filter lets the peers in `cluster.toml` reach k3s's ports on `tailscale0`, rebuilt at every
+- Unique node names, pinned under `/var/lib/melissa-container/cluster`; the server or agent role, server URL,
+  node IP and peers in root's own setting there (root only; an older install's `/etc/melissa/cluster.toml` is
+  taken over once); an agent gets its own k3s config without server-only keys; the join token lives in a
+  root-only file under `/var` (finding 3, finding 1). Joining and invitations run only as root for now
+  (`podman exec ... melissa-server cluster join|invite`); the server may only remove a device or leave (PLAN
+  Q108).
+- The app access filter lets the peers in root's setting reach k3s's ports on `tailscale0`, rebuilt at every
   k3s start (finding 2).
 - install.sh publishes tailscaled's port 41641/udp when the host doesn't run Tailscale (the DERP-only path).
 - The server labels nodes `node-restriction.kubernetes.io/melissa-role=server|agent`, a prefix a kubelet may
@@ -163,7 +166,20 @@ Follow-ups built on the `multi-device-groundwork` branch (not merged; not yet tr
 - The web UI finds this device's own node by its pinned name and shows a node whose Ready condition is
   `Unknown` as Offline, apart from Not ready.
 
-Still open: PLAN questions 103 and 107.
+Two-device test of the groundwork branch, 2026-11-28 (same two devices, tailnet addresses 100.64.0.x):
+
+- **Timings:** join 16 s; rejoin after a restart 12 to 21 s; leave 9 s.
+- **Workload:** the gVisor pod was Ready 1.2 s after it was scheduled; the desktop reached it 6 times out of 6,
+  in 0.15 to 0.25 s.
+- **Path:** now direct (no DERP), but through the router's hairpin NAT (about 100 to 125 ms): the tailscaled in
+  the container sees only its container address, so it never offers the LAN address as an endpoint. A
+  LAN-direct path is a follow-up (PLAN Q107).
+- **Node IP change:** when the node IP moves to the tailnet address (the first invitation), k3s exits once
+  with status 1 (kube-proxy: "NodeIPs changed") and systemd restarts it; nothing to do.
+- **Removing a device:** pods bound to the deleted node were garbage-collected by Kubernetes by itself within
+  about 2.5 minutes; nothing needed force-deleting.
+
+Still open: PLAN questions 103, 107, 108 and 109.
 
 ## Sources (read 2026-11-27)
 
