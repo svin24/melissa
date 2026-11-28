@@ -978,6 +978,103 @@ eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL
     eq "clean: ASCII only, no quotes" 'x y' "$(clean $'\xc3\xa9x "y\\')"
     exit "$fails"
 ) || fails=$((fails + $?))
+# k3s datastore snapshots (PLAN Q23): every update copies the stopped datastore first (newest 3 kept);
+# going back to an image that needs another datastore format restores the copy, keeping what it replaces.
+(
+    # shellcheck source=packaging/container/host/melissa-host-update
+    . "$hu"
+    set +e
+    fails=0
+    STATE="$hu_t/snap" UNITDIR="$hu_t/units3"
+    paths
+    mkdir -p "$REQUESTS" "$STATUS"
+    calls="$hu_t/scalls"; : > "$calls"
+    vol="$hu_t/vol"; srv="$vol/lib/rancher/k3s/server"
+    mkdir -p "$srv/db" "$srv/cred"
+    echo OLD > "$srv/db/state.db"; echo pw > "$srv/cred/passwd"; echo tok > "$srv/token"
+    echo cur > "$hu_t/srunning"; echo cur > "$hu_t/stagged"
+    IMAGE=ghcr.io/svin24/melissa:edge AUTO_UPDATE=registry SCHEDULE=daily-03 START_WAIT=60
+    FMT_cur="v1.37.2+k3s1 plain" FMT_new="v1.38.0+k3s1 encrypted"
+    systemctl() {
+        echo "systemctl $*" >> "$calls"
+        case "$1" in
+        restart|start) cp "$hu_t/stagged" "$hu_t/srunning" ;;
+        stop) echo stopped > "$hu_t/srunning" ;;
+        is-active) [ "$(cat "$hu_t/srunning")" != stopped ] ;;
+        esac
+    }
+    podman() {
+        case "$*" in
+        "volume inspect melissa-var --format {{.Mountpoint}}") echo "$vol" ;;
+        "run --rm --pull=never --network=none --entrypoint /bin/sh "*)
+            case "$7" in cur) echo "$FMT_cur" ;; new) echo "$FMT_new" ;; *) return 1 ;; esac ;;
+        "container inspect melissa --format {{.Image}}") cat "$hu_t/srunning" ;;
+        "image inspect ghcr.io/svin24/melissa:edge --format {{.Id}}") cat "$hu_t/stagged" ;;
+        "image inspect localhost/melissa-rollback:previous --format {{.Id}}") echo cur ;;
+        "image inspect "*"{{.Id}}") echo "${3}" ;;
+        "image inspect cur --format {{range .RepoDigests}}{{.}} {{end}}") echo "ghcr.io/svin24/melissa@sha256:aaa1 " ;;
+        "image inspect new --format {{range .RepoDigests}}{{.}} {{end}}") echo "ghcr.io/svin24/melissa@sha256:bbb2 " ;;
+        "image inspect "*"--format {{index .Labels"*) echo 0.0.x ;;
+        "image inspect "*) echo "$3|sha256:x|2026-11-26T10:00:00Z|0.0.x|abc1234" ;;
+        "pull -q ghcr.io/svin24/melissa:edge") echo new > "$hu_t/stagged" ;;
+        "tag cur ghcr.io/svin24/melissa:edge") echo cur > "$hu_t/stagged" ;;
+        "tag new ghcr.io/svin24/melissa:edge") echo new > "$hu_t/stagged" ;;
+        "--events-backend=none --log-level=error exec melissa systemctl is-active -q "*) [ "$(cat "$hu_t/srunning")" != stopped ] ;;
+        "image exists "*) return 0 ;;
+        *) echo "podman $*" >> "$calls"; return 1 ;;
+        esac
+    }
+    skopeo() { echo "sha256:bbb2|0.0.4|9e2b5f1|100 "; }
+    sleep() { :; }
+    # Four older snapshots: after this update only the newest three remain (this one among them).
+    for t in 20260101T000000Z 20260102T000000Z 20260103T000000Z 20260104T000000Z; do
+        mkdir -p "$SNAPSHOTS/$t-old"; done
+    update apply > /dev/null
+    snap=$(snapshot_for cur)
+    eq "snapshot: running the new image" new "$(cat "$hu_t/srunning")"
+    eq "snapshot: taken for the image left" yes "$(yes_no test -n "$snap")"
+    eq "snapshot: Melissa stopped for the copy, before the restart" "stop restart" \
+        "$(grep -oE 'systemctl (stop|restart) melissa.service' "$calls" | cut -d' ' -f2 | paste -sd ' ')"
+    eq "snapshot: the datastore, keys and token copied" "OLD pw tok" \
+        "$(cat "$snap/db/state.db" "$snap/cred/passwd" "$snap/token" 2>/dev/null | paste -sd ' ')"
+    eq "snapshot: its datastore format recorded" "format=1.37 plain" "$(grep '^format=' "$snap/meta")"
+    eq "snapshot: root only" 700 "$(stat -c %a "$SNAPSHOTS")"
+    eq "snapshot: the newest three kept" "20260103T000000Z-old 20260104T000000Z-old ${snap##*/}" \
+        "$(find "$SNAPSHOTS" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')"
+    # The new image's k3s migrated the datastore and encrypted its Secrets.
+    echo NEW > "$srv/db/state.db"; echo KEY > "$srv/cred/encryption-config.json"
+    : > "$calls"
+    rollback > /dev/null
+    eq "restore: back on the previous image" cur "$(cat "$hu_t/srunning")"
+    eq "restore: the datastore from before the update" OLD "$(cat "$srv/db/state.db")"
+    eq "restore: its keys (no encryption key then)" no "$(yes_no test -e "$srv/cred/encryption-config.json")"
+    eq "restore: the replaced datastore and key kept" "NEW KEY" \
+        "$(cat "$snap"/replaced-*/db/state.db "$snap"/replaced-*/cred/encryption-config.json 2>/dev/null | paste -sd ' ')"
+    eq "restore: stopped before the copy" "stop restart" \
+        "$(grep -oE 'systemctl (stop|restart) melissa.service' "$calls" | cut -d' ' -f2 | paste -sd ' ')"
+    eq "restore: last says so" yes "$(yes_no grep -q 'datastore restored from before the update' "$STATUS/last.json")"
+    # Same format both ways (a Melissa-only update): the datastore stays as it is.
+    FMT_new="v1.37.4+k3s1 plain"
+    podman tag new ghcr.io/svin24/melissa:edge; systemctl restart melissa.service
+    echo LATEST > "$srv/db/state.db"
+    rm -f "$STATE/held.json"
+    rollback > /dev/null
+    eq "same format: rolled back" cur "$(cat "$hu_t/srunning")"
+    eq "same format: datastore kept" LATEST "$(cat "$srv/db/state.db")"
+    eq "same format: last has no restore" no "$(yes_no grep -q 'restored' "$STATUS/last.json")"
+    # No room for a copy: no update, Melissa started again on the image she ran.
+    df() { printf 'Filesystem 1-blocks Used Available Use%% Mounted\nx 100 100 0 100%% /\n'; }
+    rm -f "$STATE/held.json"; : > "$calls"
+    update apply > /dev/null
+    eq "no room: still on the old image" cur "$(cat "$hu_t/srunning")"
+    eq "no room: started again, never switched" "stop start" \
+        "$(grep -oE 'systemctl (stop|start|restart) melissa.service' "$calls" | cut -d' ' -f2 | paste -sd ' ')"
+    eq "no room: last says snapshot" "false snapshot" \
+        "$(sed -n 's/.*"ok":\([a-z]*\),.*"kind":"\([^"]*\)".*/\1 \2/p' "$STATUS/last.json")"
+    eq "no room: marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    unset -f df
+    exit "$fails"
+) || fails=$((fails + $?))
 # Migration: podman-auto-update.timer goes off only if install.sh had turned it on, and no other
 # container uses it.
 (

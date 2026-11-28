@@ -5,8 +5,9 @@
 #   melissa-host-update status     write the image status for Settings (also after every start)
 #   melissa-host-update check      look for a newer image without downloading it (the registry's
 #                                  digest for the image's tag; melissa-check.timer, daily)
-#   melissa-host-update apply      download the newer image and restart Melissa on it; if it does not
-#                                  come up, go back to the image it ran before
+#   melissa-host-update apply      download the newer image, snapshot k3s's datastore and restart
+#                                  Melissa on it; if it does not come up, go back to the image it ran
+#                                  before
 #   melissa-host-update auto       apply, unless the newer image is one that failed or was rolled
 #                                  back from (melissa-auto-update.timer, at the owner's time)
 #   melissa-host-update rollback   restart Melissa on the previous image
@@ -31,6 +32,10 @@
 # While an update or rollback switches images, $STATE/in-progress says which (mode, old and new
 # image id, their versions): starts in between don't move the rollback tag, and a cut-off one is
 # finished or undone by `resume`.
+# Before every image switch of an update, k3s's datastore is copied off the stopped volume into
+# $STATE/snapshots (root only, the newest 3; docs/PLAN.md Q23). Going back to an image whose k3s needs
+# another datastore format (another Kubernetes minor, or Secrets encrypted or not) restores the copy
+# taken when that image was left; the datastore it replaces is kept beside it.
 set -u
 umask 022
 
@@ -44,6 +49,9 @@ CHECK_TIMER=melissa-check.timer
 PREVIOUS=localhost/melissa-rollback:previous
 # How long a new image may take to start before Melissa goes back (seconds).
 START_WAIT=${START_WAIT:-180}
+# Melissa's /var (Quadlet Volume=melissa-var:/var) and how many datastore snapshots to keep.
+VOLUME=melissa-var
+KEEP_SNAPSHOTS=3
 
 # install.sh records the settings it used (IMAGE, AUTO_UPDATE, SCHEDULE, ...).
 IMAGE=
@@ -55,6 +63,7 @@ paths() {
     REQUESTS=$STATE/request
     ENV_FILE=$STATE/install.env
     DROPIN=$UNITDIR/$TIMER.d/schedule.conf
+    SNAPSHOTS=$STATE/snapshots
 }
 paths
 
@@ -91,6 +100,8 @@ last() { # last <action> <ok:true|false> <kind> [message] [version]
 # --- What runs now (action.json, for the page's progress) ----------------------------------------
 
 ACT_STARTED=0
+RESTORED=
+SNAP_ERR=
 act() { # act <action> <step> [version] [bytes done] [bytes total]
     [ "$ACT_STARTED" = 0 ] && ACT_STARTED=$(now)
     printf '{"action":"%s","step":"%s","version":"%s","bytes_done":%s,"bytes_total":%s,"started":%s,"updated":%s}\n' \
@@ -288,6 +299,128 @@ wait_up() { # wait_up <image id> [action version]: Melissa runs it and her serve
     return 1
 }
 
+# --- k3s datastore snapshots ----------------------------------------------------------------------
+
+# k3s's server state on the volume, as the host sees it (fails without the volume).
+k3s_server_dir() {
+    local m
+    m=$(podman volume inspect "$VOLUME" --format '{{.Mountpoint}}' 2>/dev/null) || return 1
+    [ -n "$m" ] && [ -d "$m" ] || return 1
+    echo "$m/lib/rancher/k3s/server"
+}
+
+# datastore_format <image>: what the image's k3s makes of the datastore, "<Kubernetes minor>
+# <encrypted|plain>" (e.g. "1.37 encrypted"), read from its files without booting it. A newer
+# Kubernetes minor migrates stored objects (an older one can't be trusted to read them back), and
+# k3s without secrets-encryption can't read encrypted Secrets.
+datastore_format() {
+    local out v e
+    # shellcheck disable=SC2016 # expanded by the image's shell
+    out=$(podman run --rm --pull=never --network=none --entrypoint /bin/sh "$1" -c \
+        '. /usr/lib/melissa/k3s.lock; e=plain
+         grep -qx "secrets-encryption: true" /etc/rancher/k3s/config.yaml.d/10-melissa.yaml && e=encrypted
+         echo "$K3S_VERSION $e"' 2>/dev/null) || return 1
+    read -r v e <<<"$out"
+    [[ ${v#v} =~ ^([0-9]+\.[0-9]+)\. ]] || return 1
+    case "$e" in encrypted|plain) ;; *) return 1 ;; esac
+    echo "${BASH_REMATCH[1]} $e"
+}
+
+# The snapshot taken when <image id> was left (the newest), or nothing.
+snapshot_for() {
+    local d id=$1 found=
+    [ -n "$id" ] && [ -d "$SNAPSHOTS" ] || return 1
+    for d in "$SNAPSHOTS"/*-"${id:0:12}"; do
+        [ -d "$d" ] && [ "$(sed -n 's/^image=//p' "$d/meta" 2>/dev/null)" = "$id" ] && found=$d
+    done
+    [ -n "$found" ] && echo "$found"
+}
+
+# The newest KEEP_SNAPSHOTS (names start with their UTC time); half-written ones go.
+prune_snapshots() {
+    local all n
+    rm -rf "$SNAPSHOTS"/*.partial
+    mapfile -t all < <(find "$SNAPSHOTS" -mindepth 1 -maxdepth 1 -type d -name '2*Z-*' ! -name '*.partial' | sort)
+    n=$(( ${#all[@]} - KEEP_SNAPSHOTS ))
+    if [ "$n" -gt 0 ]; then rm -rf -- "${all[@]:0:n}"; fi
+    return 0
+}
+
+# snapshot <action> <image id> <version>: stop Melissa and copy k3s's datastore (server/db), its token
+# and keys (server/cred, with the Secrets encryption key) off the volume into
+# $SNAPSHOTS/<UTC time>-<image id>. Stopped, so the copy is consistent (k3s's documented SQLite backup
+# is a copy of server/db plus the token; the key decrypts its Secrets). Nothing to copy (an agent
+# node, no datastore): 0, Melissa left running. SNAP_ERR says why it failed.
+snapshot() {
+    local dir need free dst tmp fmt
+    SNAP_ERR=
+    dir=$(k3s_server_dir) || { echo "melissa-host-update: no volume $VOLUME, no datastore snapshot"; return 0; }
+    [ -d "$dir/db" ] || { echo "melissa-host-update: no k3s datastore on $VOLUME, no snapshot"; return 0; }
+    fmt=$(datastore_format "$2") || fmt=unknown
+    act "$1" snapshot "$3"
+    systemctl stop "$UNIT" || { SNAP_ERR="could not stop Melissa"; return 1; }
+    if ! ( umask 077; mkdir -p "$SNAPSHOTS" ) || ! chmod 0700 "$SNAPSHOTS"; then
+        SNAP_ERR="could not create $SNAPSHOTS"; return 1
+    fi
+    prune_snapshots
+    need=$(du -sb "$dir/db" "$dir/cred" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+    free=$(df -PB1 "$SNAPSHOTS" | awk 'NR == 2 { print $4 }')
+    # Room for the copy and as much again (the datastore keeps growing on the same disk).
+    if [ "$(( need * 2 ))" -gt "${free:-0}" ]; then
+        SNAP_ERR="not enough disk space for a datastore snapshot ($(( need / 1048576 )) MiB, twice that needed)"
+        return 1
+    fi
+    dst=$SNAPSHOTS/$(date -u +%Y%m%dT%H%M%SZ)-${2:0:12}; tmp=$dst.partial
+    rm -rf "$tmp"
+    if ( umask 077; mkdir "$tmp" ) && cp -a "$dir/db" "$tmp/db" \
+        && { [ ! -e "$dir/cred" ] || cp -a "$dir/cred" "$tmp/cred"; } \
+        && { [ ! -e "$dir/token" ] || cp -a "$dir/token" "$tmp/token"; } \
+        && printf 'image=%s\nformat=%s\nversion=%s\nat=%s\n' "$2" "$fmt" "$(clean "$3" 64)" "$(now)" > "$tmp/meta" \
+        && mv "$tmp" "$dst"; then
+        prune_snapshots
+        echo "melissa-host-update: k3s datastore ($fmt) saved in $dst"
+        return 0
+    fi
+    rm -rf "$tmp"
+    SNAP_ERR="could not copy k3s's datastore to $SNAPSHOTS"
+    return 1
+}
+
+# restore_if_needed <action> <image going back to> <image leaving> <version>: when the image going
+# back needs another datastore format than the one leaving left (a Kubernetes minor bump, or Secrets
+# encryption switched), stop Melissa and put back the snapshot taken when it was left. Changes to the
+# cluster since then (apps deployed or removed) go with it; app data volumes stay. The datastore it
+# replaces is kept in the snapshot's replaced-<time>/. RESTORED says what was done (for last.json).
+restore_if_needed() {
+    local snap want have dir keep f
+    RESTORED=
+    snap=$(snapshot_for "$2") || { echo "melissa-host-update: no datastore snapshot for ${2:0:12}"; return 0; }
+    want=$(sed -n 's/^format=//p' "$snap/meta")
+    have=$(datastore_format "$3") || have=unknown
+    if [ "$want" = unknown ] || [ "$have" = unknown ] || [ "$want" = "$have" ]; then
+        echo "melissa-host-update: k3s datastore kept ($have, ${2:0:12} needs $want)"
+        return 0
+    fi
+    dir=$(k3s_server_dir) || { echo "melissa-host-update: no volume $VOLUME, datastore not restored" >&2; return 1; }
+    echo "melissa-host-update: ${3:0:12} left the datastore as $have, ${2:0:12} needs $want: restoring $snap"
+    act "$1" restore "$4"
+    systemctl stop "$UNIT" || return 1
+    keep=$snap/replaced-$(date -u +%Y%m%dT%H%M%SZ)
+    ( umask 077; mkdir -p "$keep" ) || return 1
+    if [ -e "$dir/db" ]; then mv "$dir/db" "$keep/db" || return 1; fi
+    if [ -e "$dir/cred" ]; then cp -a "$dir/cred" "$keep/cred" || return 1; fi
+    cp -a "$snap/db" "$dir/db" || return 1
+    # The keys that go with that datastore (the Secrets encryption key and its rotation state).
+    if [ -d "$snap/cred" ] && [ -d "$dir/cred" ]; then
+        rm -f "$dir/cred/encryption-config.json" "$dir/cred/encryption-state.json"
+        for f in "$snap/cred/encryption-config.json" "$snap/cred/encryption-state.json"; do
+            if [ -e "$f" ]; then cp -a "$f" "$dir/cred/" || return 1; fi
+        done
+    fi
+    RESTORED="; k3s's datastore restored from before the update (${snap##*/})"
+    return 0
+}
+
 # --- Switching images -----------------------------------------------------------------------------
 
 # restart_unit <action> <step> [version]: restart Melissa, refreshing action.json meanwhile (a start
@@ -323,16 +456,17 @@ update_done() {
 update_undo() {
     hold "$3" failed "$7"
     podman tag "$2" "$6"
+    restore_if_needed rollback "$2" "$3" "$4" || RESTORED="; restoring k3s's datastore failed (see the journal)"
     restart_unit rollback restart "$4"
     wait_up "$2" rollback "$4" || true
     unmark; act_done; status
-    last "$1" false no_start "the new image (${3:0:12}) did not start; back on ${2:0:12}" "$5"
+    last "$1" false no_start "the new image (${3:0:12}) did not start; back on ${2:0:12}$RESTORED" "$5"
 }
 
 # rollback_done <old id> <new id> <old version> <new version>: back on the previous image.
 rollback_done() {
     rm -f "$STATE/available.json" "$STATE/updated.json"
-    unmark; act_done; status; last rollback true rolled_back "running ${2:0:12}" "$4"
+    unmark; act_done; status; last rollback true rolled_back "running ${2:0:12}$RESTORED" "$4"
 }
 
 # rollback_undo <old id> <new id> <old version> <new version> <ref>: the previous image did not
@@ -472,8 +606,18 @@ update() {
         act_done; status; last "$mode" true up_to_date "already up to date"; return 0
     fi
     to=$(label "$new" org.opencontainers.image.version)
-    echo "melissa-host-update: restarting Melissa on ${new:0:12} (was ${cur:0:12})"
     mark "$mode" "$cur" "$new" "$from" "$to"
+    # The datastore as the running image left it (stops Melissa for the copy; the restart starts her).
+    if ! snapshot "$mode" "$cur" "$from"; then
+        # The name points at the new image since the pull: back to the one that ran, then start.
+        podman tag "$cur" "$r"
+        systemctl start "$UNIT"
+        wait_up "$cur" "$mode" "$to" || true
+        unmark; act_done; status
+        last "$mode" false snapshot "not updated: $SNAP_ERR" "$to"
+        return 1
+    fi
+    echo "melissa-host-update: restarting Melissa on ${new:0:12} (was ${cur:0:12})"
     restart_unit "$mode" restart "$to"
     if wait_up "$new" "$mode" "$to"; then
         update_done "$mode" "$cur" "$new" "$from" "$to"
@@ -504,6 +648,10 @@ rollback() {
     mark rollback "$cur" "$prev" "$from" "$to"
     [ -n "$cur" ] && hold "$cur" rolled_back
     podman tag "$prev" "$r"
+    RESTORED=
+    if [ -n "$cur" ] && ! restore_if_needed rollback "$prev" "$cur" "$to"; then
+        RESTORED="; restoring k3s's datastore failed (see the journal)"
+    fi
     restart_unit rollback restart "$to"
     if wait_up "$prev" rollback "$to"; then
         rollback_done "$cur" "$prev" "$from" "$to"
@@ -605,5 +753,5 @@ check|requests)
 apply|auto|rollback|timers|resume|resume-later)
     [ "$(id -u)" = 0 ] || { echo "melissa-host-update: run as root" >&2; exit 1; }
     "${1//-/_}" ;;
-*) sed -n '2,34p' "$0"; exit 2 ;;
+*) sed -n '2,39p' "$0"; exit 2 ;;
 esac
