@@ -30,7 +30,6 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    device::write_private,
     session::{
         ModelList, ModelOption, NotReady, OpenSession, PermissionDecision, PermissionHandler,
         PermissionRequest, SessionBackend,
@@ -164,19 +163,25 @@ impl ModelCache {
     /// Kept in `path` (a JSON object: backend name → `{models: [{id, label}], updated}`,
     /// mode 0600). Also reads the older form (backend name → `[{id, label}]`).
     pub fn open(path: PathBuf) -> Self {
-        let lists = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<BTreeMap<String, OnDisk>>(&t).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(k, v)| {
-                let stored = match v {
-                    OnDisk::Stored(s) => s,
-                    OnDisk::Bare(models) => Stored { models, updated: 0 },
-                };
-                (k, stored)
-            })
-            .collect();
+        // A cache: unreadable (or a newer Melissa's) reads as empty; a newer file is never
+        // replaced (`put` fails with a warning).
+        let lists = melissa_statefile::read_json::<BTreeMap<String, OnDisk>>(
+            &path,
+            &crate::formats::MODELS,
+        )
+        .ok()
+        .flatten()
+        .map(|l| l.value)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| {
+            let stored = match v {
+                OnDisk::Stored(s) => s,
+                OnDisk::Bare(models) => Stored { models, updated: 0 },
+            };
+            (k, stored)
+        })
+        .collect();
         Self {
             inner: Arc::new(ModelCacheInner {
                 path: Some(path),
@@ -229,13 +234,10 @@ impl ModelCache {
             },
         );
         if let Some(path) = &self.inner.path {
-            match serde_json::to_vec_pretty(&*lists) {
-                Ok(json) => {
-                    if let Err(e) = write_private(path, &json) {
-                        tracing::warn!(path = %path.display(), "cannot save the model list: {e}");
-                    }
-                }
-                Err(e) => tracing::warn!("cannot save the model list: {e}"),
+            if let Err(e) =
+                melissa_statefile::save_json(path, &crate::formats::MODELS, &*lists, true)
+            {
+                tracing::warn!("cannot save the model list: {e}");
             }
         }
     }
@@ -395,9 +397,8 @@ fn unix_now() -> u64 {
 
 /// The lead agent's saved choice, if any.
 pub(crate) fn load_choice(path: &Path) -> Option<BackendChoice> {
-    let text = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&text) {
-        Ok(c) => Some(c),
+    match melissa_statefile::read_json(path, &crate::formats::BACKEND_CHOICE) {
+        Ok(c) => c.map(|l| l.value),
         Err(e) => {
             tracing::warn!(path = %path.display(), "ignoring the saved backend choice: {e}");
             None
@@ -406,8 +407,8 @@ pub(crate) fn load_choice(path: &Path) -> Option<BackendChoice> {
 }
 
 pub(crate) fn save_choice(path: &Path, choice: &BackendChoice) -> std::io::Result<()> {
-    let json = serde_json::to_vec_pretty(choice).map_err(std::io::Error::other)?;
-    write_private(path, &json)
+    melissa_statefile::save_json(path, &crate::formats::BACKEND_CHOICE, choice, true)
+        .map_err(std::io::Error::other)
 }
 
 pub(crate) fn reason(r: Option<NotReady>) -> Option<&'static str> {

@@ -1,0 +1,2 @@
+{"ts":1764290000,"actor":"ui","person":"owner","action":"task.dispatch","task":3,"backend":"claude-session","detail":"Check the logs."}
+{"ts":1764290050,"actor":"agent","action":"tool.call","task":3,"backend":"claude-session","detail":"ok","tool":"app_logs","args_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}

@@ -99,7 +99,11 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   Settings → Updates Check/Update/Roll back and the switch and time, all through a host helper
   (`melissa-host-update`) that the lead agent triggers with fixed-name request files in a bind-mounted
   directory; the previous image is kept for a rollback, a version that didn't start or was rolled back from
-  is skipped by automatic updates (DECISIONS 2026-11-19, 2026-11-28 "Updates: Melissa's own schedule"). The
+  is skipped by automatic updates (DECISIONS 2026-11-19, 2026-11-28 "Updates: Melissa's own schedule").
+  Chats, sessions, settings, accounts, the audit log and schedules survive an update or rollback: every
+  persisted file has a format version, older ones are migrated forward, a newer one is never written by an
+  older image, and writes are atomic (`melissa-statefile`; DECISIONS 2026-11-28 "Chats and state survive
+  upgrades"; inventory and backup classes in `docs/design/STATE-INVENTORY-2026-11-28.md`; Q112). The
   Quadlet has no `AutoUpdate=` any more; `podman-auto-update.timer` is left alone.
   Since 2026-11-27 (owner; DECISIONS): install.sh writes a podman `policy.json` entry (`sigstoreSigned`,
   `keyPath` to the public key from `packaging/container/melissa-signing.pub`, `matchRepository`) for
@@ -1762,18 +1766,42 @@ Roadmap (rough, phases may overlap):
     controls when a row wraps (today: the shared setting-row layout keeps them in the right slot). Decided
     2026-11-28 (owner): on phones the status badge sits under the version and "Update Melissa" under the
     explaining text, left-aligned, as on board 11 (`wide_only`/`narrow_only`); desktop unchanged.
-112. Backups, open items (2026-11-28; docs/design/BACKUPS-2026-11-28.md; core built in `crates/backup`).
-    (a) **Identity of a restored device.** Default built in: it keeps its name and settings (device id,
-    people, chats, providers, Melissa's settings) and gets a fresh cluster and Tailscale identity (node
-    key, cluster tokens and `cluster.toml` are never backed up; apps come back through their logical
-    export). Confirm, and decide what happens when the old device is still around (two devices with one
-    device id). (b) The drive helper: who mounts a drive the owner picks below `/run/melissa-backup/<name>`
-    (host helper vs inside the container), labels, safe unplug, refusing a target on the same disk as
-    `/var`. (c) Settings UI: set up (encryption on by default, the recovery key shown once with "I have
-    written it down" → `ack-key`), schedule, retention, last run per item, restore one app (pick a run).
-    (d) First-run "restore this device": enter the key, `adopt`, `restore_state`, redeploy each app from
-    its backed-up spec, restore it; whether to offer the raw k3s rollback there. (e) Unencrypted backups
-    hold sign-ins, app secrets and k3s's keys in the clear: keep the option (owner decision) with a plain
-    warning, or leave secrets out when unencrypted? (f) A periodic `restic check` and telling the owner
-    when backups fail or are overdue. (g) Nix packaging of the root unit (container only today).
-    (h) Offsite (M4): a second repository on a VPS (rest-server or sftp) with the same engine.
+112. State after a rollback (2026-11-28, DECISIONS "Chats and state survive upgrades"; inventory in
+    `docs/design/STATE-INVENTORY-2026-11-28.md`). Open: (a) the UI does not say yet that a store is
+    read-only (a newer Melissa's file): today only the log and the failed action's error do; a notice
+    component (Settings or the chat head) is a human-reviewed UI change. (b) A newer login store keeps
+    existing sessions but refuses new sign-ins; should sessions be kept in memory then, so the owner can
+    still sign in to update again? (c) A rollback to an image from before 2026-11-28 is not protected: those
+    images don't know formats (they read today's files, since format 1 adds nothing they reject, but would
+    overwrite a format 2 file). (d) Rotated transcript and thread files (`.1`) are still dropped at the size
+    limit by design; the backup feature should decide whether to keep more history. (e) Server-side
+    snapshot before an update (copy `<state>` and `<config>` aside, like Q23 for k3s) for a full rollback of
+    the state too. (f) Before the first format bump of `auth.json`, `tailscale.toml` or `app-access.toml`:
+    either split what an older image must still write (sessions) into its own file, or document that a
+    rollback across that bump needs local access. Sign-outs already have their own file (`revoked.json`,
+    which every image from 2026-11-28 on writes and honours), but new sign-ins fail; and a newer
+    `tailscale.toml` reads as "off" on an older image, which could lock out an owner who only reaches the box
+    over the tailnet. (g) Do not bump any settings TOML to format 2 or later while images from before
+    2026-11-28 are still in the rollback window: they read the settings with `deny_unknown_fields` and would
+    reject the `format` key (and move `providers.toml` aside as `.broken`).
+113. Backups, open items (2026-11-28; docs/design/BACKUPS-2026-11-28.md; core built in `crates/backup`).
+    Decided 2026-11-28 (owner): (a) **a restored device keeps its name and settings** (device id, people,
+    chats, Melissa's settings) **and gets a fresh cluster and Tailscale identity** (node key, cluster
+    tokens and `cluster.toml` are never backed up; apps come back through their logical export).
+    App Secret values go into a backup **only when it is encrypted** (an unencrypted run leaves them out
+    and its status says so). Provider sign-ins (the agents' CLI logins in the home directory) are never
+    backed up: after a restore, agents sign in again. A backup missed because the drive was away runs as
+    soon as the drive is back (the hourly check), not at the next slot. Before every restore the app's
+    current data is kept as `<volume>.pre-restore-<UTC time>` for 7 days.
+    Open: what happens when the old device is still around (two devices with one device id). (b) The
+    drive helper: who mounts a drive the owner picks below `/run/melissa-backup/<name>` (host helper vs
+    inside the container), labels, safe unplug, refusing a target on the same disk as `/var` (root
+    already refuses a target that is not a mounted filesystem). (c) Settings UI: set up (encryption on by
+    default, the recovery key shown once with "I have written it down" → `ack-key`), schedule, retention,
+    last run per item, restore one app (pick a run). (d) First-run "restore this device": enter the key,
+    `adopt`, `restore_state`, redeploy each app from its backed-up spec, restore it; whether to offer the
+    raw k3s rollback there. (e) Unencrypted backups still hold k3s's keys (the raw snapshot) and
+    Melissa's settings in the clear: say so plainly in the UI. (f) A periodic `restic check` and telling
+    the owner when backups fail or are overdue. (g) Nix packaging of the root unit (container only
+    today). (h) Offsite (M4): a second repository on a VPS (rest-server or sftp) with the same engine.
+    (i) Q112 (d): whether backups should keep rotated transcript files.

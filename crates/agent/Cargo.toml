@@ -25,6 +25,7 @@ hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
 hyper-rustls = { workspace = true }
 jiff = { workspace = true }
+melissa-statefile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # `net`: the sandbox's DNS socket is handed from the bridge to the lead agent (SCM_RIGHTS).

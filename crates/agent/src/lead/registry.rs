@@ -21,7 +21,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::icon::AgentIcon;
-use crate::device::{agent_id, valid_agent_id, valid_device_id, write_private};
+use crate::device::{agent_id, valid_agent_id, valid_device_id};
 use crate::tools::AgentNames;
 
 /// Longest agent name, in characters.
@@ -204,25 +204,22 @@ impl AgentRegistry {
                 reason: format!("`{device}` is not a device id"),
             });
         }
-        let mut file = match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                serde_json::from_str::<RegistryFile>(&text).map_err(|e| RegistryError::Io {
-                    path: shown.clone(),
-                    reason: e.to_string(),
-                })?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => RegistryFile {
+        // A registry from a newer Melissa (after a rollback) is read as well as this version
+        // can and never written: every change fails with a message saying why.
+        let loaded = melissa_statefile::read_json::<RegistryFile>(&path, &crate::formats::REGISTRY)
+            .map_err(|e| RegistryError::Io {
+                path: shown.clone(),
+                reason: e.to_string(),
+            })?;
+        let read_only = loaded.as_ref().is_some_and(|l| l.read_only);
+        let mut file = match loaded {
+            Some(l) => l.value,
+            None => RegistryFile {
                 device: device.into(),
                 next: 1,
                 agents: Vec::new(),
                 ..RegistryFile::default()
             },
-            Err(e) => {
-                return Err(RegistryError::Io {
-                    path: shown,
-                    reason: e.to_string(),
-                })
-            }
         };
         if file.device != device {
             return Err(RegistryError::WrongDevice {
@@ -259,7 +256,7 @@ impl AgentRegistry {
                 changed: tokio::sync::watch::Sender::new(0),
             }),
         };
-        if migrated {
+        if migrated && !read_only {
             let file = lock(&registry.inner.file);
             registry.save(&file)?;
         }
@@ -601,8 +598,8 @@ impl AgentRegistry {
             path: self.inner.path.display().to_string(),
             reason,
         };
-        let json = serde_json::to_vec_pretty(file).map_err(|e| io(e.to_string()))?;
-        write_private(&self.inner.path, &json).map_err(|e| io(e.to_string()))?;
+        melissa_statefile::save_json(&self.inner.path, &crate::formats::REGISTRY, file, true)
+            .map_err(|e| io(e.to_string()))?;
         self.touch();
         Ok(())
     }

@@ -359,15 +359,29 @@ impl FileBoxes {
     /// `<root>/retention.json` (missing or broken: the default, 5 days).
     pub fn open(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let retention = match fs::read(root.join("retention.json")) {
-            Ok(data) => serde_json::from_slice(&data).unwrap_or_else(|e| {
-                tracing::error!(
-                    "{}: {e}; keeping files for the default time",
-                    root.display()
-                );
+        let retention = match melissa_statefile::read_json(
+            &root.join("retention.json"),
+            &crate::formats::RETENTION,
+        ) {
+            // A newer Melissa's setting (after a rollback) may mean something this version
+            // cannot tell: nothing is removed until Melissa is updated again (saving it is
+            // refused too).
+            Ok(Some(l)) if l.read_only => Retention {
+                default: Keep::Forever,
+                overrides: BTreeMap::new(),
+            },
+            Err(e) if e.is_newer() => {
+                tracing::error!("{e}; no files are removed meanwhile");
+                Retention {
+                    default: Keep::Forever,
+                    overrides: BTreeMap::new(),
+                }
+            }
+            Ok(l) => l.map(|l| l.value).unwrap_or_default(),
+            Err(e) => {
+                tracing::error!("{e}; keeping files for the default time");
                 Retention::default()
-            }),
-            Err(_) => Retention::default(),
+            }
         };
         Self {
             inner: Arc::new(Inner {
@@ -457,21 +471,23 @@ impl FileBoxes {
         boxes: &'a mut HashMap<String, Vec<BoxFile>>,
         key: &str,
     ) -> &'a mut Vec<BoxFile> {
+        // Unreadable (or a newer Melissa's, never replaced): the box is indexed again from its
+        // files, each counted as added now, so nothing expires early.
         boxes.entry(key.to_string()).or_insert_with(|| {
-            fs::read(self.index_path(key))
+            melissa_statefile::read_json(&self.index_path(key), &crate::formats::FILE_INDEX)
                 .ok()
-                .and_then(|d| serde_json::from_slice(&d).ok())
+                .flatten()
+                .map(|l| l.value)
                 .unwrap_or_default()
         })
     }
 
     fn save_index(&self, key: &str, files: &[BoxFile]) {
         let path = self.index_path(key);
-        let result = serde_json::to_vec_pretty(files)
-            .map_err(io::Error::other)
-            .and_then(|data| crate::device::write_private(&path, &data));
-        if let Err(e) = result {
-            tracing::error!(path = %path.display(), "saving a file box index: {e}");
+        if let Err(e) =
+            melissa_statefile::save_json(&path, &crate::formats::FILE_INDEX, &files, true)
+        {
+            tracing::error!("saving a file box index: {e}");
         }
     }
 
@@ -824,8 +840,13 @@ impl FileBoxes {
     }
 
     fn save_retention(&self, next: Retention) -> Result<(), FileBoxError> {
-        let data = serde_json::to_vec_pretty(&next).map_err(|e| FileBoxError::Io(e.to_string()))?;
-        crate::device::write_private(&self.inner.root.join("retention.json"), &data)?;
+        melissa_statefile::save_json(
+            &self.inner.root.join("retention.json"),
+            &crate::formats::RETENTION,
+            &next,
+            true,
+        )
+        .map_err(|e| FileBoxError::Io(e.to_string()))?;
         *lock(&self.inner.retention) = next;
         Ok(())
     }

@@ -415,6 +415,60 @@ fn changes_are_audited_with_who_made_them() {
 
 // --- the scheduler ------------------------------------------------------------------------
 
+/// After a rollback, schedules a newer Melissa saved are shown but never run (a run could
+/// not be recorded, so it would run again at every look), and the file stays as it was.
+#[tokio::test(start_paused = true)]
+async fn a_newer_melissas_schedules_do_not_run() {
+    let dir = scratch("schedules-newer");
+    let path = dir.join("schedules.json");
+    let clock = FakeClock::at(local(2026, 11, 20, 2, 0));
+    let s = Schedules::open(&path, tz())
+        .unwrap()
+        .with_clock(clock.clone());
+    s.create(&input("Nightly updates", "0 3 * * *"), &Creator::Owner)
+        .unwrap();
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    doc["format"] = 2.into();
+    let newer = serde_json::to_string(&doc).unwrap();
+    std::fs::write(&path, &newer).unwrap();
+
+    let s = Schedules::open(&path, tz())
+        .unwrap()
+        .with_clock(clock.clone());
+    assert!(s.read_only());
+    assert_eq!(s.list().len(), 1);
+    let runner = Arc::new(FakeRunner::default());
+    let scheduler = Scheduler::new(s.clone(), runner.clone(), DEFAULT_GRACE);
+    clock.set(local(2026, 11, 20, 3, 0));
+    scheduler.tick();
+    scheduler.tick();
+    assert_eq!(runner.started(), 0);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+}
+
+/// A due time that cannot be saved as handled is not run: otherwise it would run again at
+/// the next look (the file turned newer under a running Melissa, or the disk failed).
+#[tokio::test(start_paused = true)]
+async fn a_due_time_that_cannot_be_saved_does_not_run() {
+    let dir = scratch("schedules-unsaved");
+    let path = dir.join("schedules.json");
+    let clock = FakeClock::at(local(2026, 11, 20, 2, 0));
+    let s = Schedules::open(&path, tz())
+        .unwrap()
+        .with_clock(clock.clone());
+    s.create(&input("Nightly updates", "0 3 * * *"), &Creator::Owner)
+        .unwrap();
+    let runner = Arc::new(FakeRunner::default());
+    let scheduler = Scheduler::new(s.clone(), runner.clone(), DEFAULT_GRACE);
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    doc["format"] = 2.into();
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    clock.set(local(2026, 11, 20, 3, 0));
+    scheduler.tick();
+    scheduler.tick();
+    assert_eq!(runner.started(), 0);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_due_job_runs_once_with_its_name_and_instruction() {
     let (s, clock, runner, scheduler) = setup(local(2026, 11, 20, 2, 0));

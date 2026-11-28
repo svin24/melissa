@@ -2141,3 +2141,31 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   "Updated from … to …" notice. The device name moved to About → This device, with a new time format
   preference (Follow browser by default, 24-hour, 12-hour) that every page showing a time of day uses.
   Alternatives: keep podman-auto-update (no schedule, no skip, no progress, no check without download).
+- **2026-11-28 — Chats and state survive upgrades: format versions, forward migrations, never overwrite a
+  newer file.** MVP item. Every file Melissa persists (inventory and backup classes:
+  `docs/design/STATE-INVENTORY-2026-11-28.md`) goes through the new `melissa-statefile` crate. Whole files
+  carry a top-level `format` number (absent: 1, every file written before); log lines (transcripts,
+  threads, the audit log) carry it per line. Older formats are migrated forward in memory, one step per
+  version, and written in the current one at the next change. A file of a newer format (an older image
+  after a rollback) is never written: every save checks the file on disk first and refuses with a clear
+  log/error message ("written by a newer version of Melissa ..."), so even a store that forgets to check
+  cannot destroy newer data. What each store does meanwhile is chosen by what is safe: the agent registry,
+  backend choice, counters and the login store are read leniently and read-only (signed-in people stay
+  signed in; new sign-ins fail with the message); schedules are shown but none run (a run could not be
+  recorded); standing permissions and the agent user table are not guessed at (fail closed); file
+  retention keeps everything; settings start from the defaults; a newer `providers.toml` is no longer
+  moved aside as broken. Log lines of a newer format are skipped and kept, and the older image keeps
+  appending its own, so chats go on after a rollback. Format 1 is written without the key where the images
+  from before formats existed would reject it (TOML read with `deny_unknown_fields`, JSON arrays and maps
+  keyed by data), so rolling back past this change still reads today's files. Bump a format whenever an
+  older Melissa would misread a file (removed, renamed or retyped fields; any new key under
+  `deny_unknown_fields`); a change that takes access away in the login store must also make the file
+  unreadable to the older version. Writes: a unique temporary file, fsync, rename, directory fsync, for
+  every whole file (`session.json` was a plain write that a crash could truncate, losing the session and
+  its taint; `usage.json` and `provider-usage.json` had no fsync); appends end a line a crash cut short
+  first. A due schedule whose "handled" mark cannot be saved no longer runs (it would run again at every
+  look). No UI change (Q112a: a read-only notice needs a reviewed component). Alternatives: a schema
+  version per directory (one bump rewrites everything, and a rollback can't tell which files changed),
+  SQLite (a migration and a dependency for a few small files; revisit if the stores grow), snapshots of
+  the state before each update only (protects a rollback but not a crash mid-write; still worth doing,
+  Q112e).

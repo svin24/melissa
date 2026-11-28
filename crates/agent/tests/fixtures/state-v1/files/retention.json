@@ -1,0 +1,8 @@
+{
+  "default": {
+    "days": 7
+  },
+  "overrides": {
+    "lead": "forever"
+  }
+}

@@ -290,8 +290,13 @@ pub fn read_setting(path: &Path) -> Result<Setting, String> {
     let Some(text) = read_small(path, MAX_SETTING_BYTES)? else {
         return Ok(Setting::default());
     };
-    let setting: Setting =
-        toml::from_str(&text).map_err(|_| format!("{} is not a valid setting", path.display()))?;
+    // A newer Melissa's setting is refused like any unreadable one (left as it is).
+    let setting: Setting = crate::parse_versioned(path, &crate::formats::CLUSTER, &text, |t| {
+        toml::from_str(t).map_err(|_| {
+            SettingsError::Invalid(format!("{} is not a valid setting", path.display()))
+        })
+    })
+    .map_err(|e| e.to_string())?;
     setting
         .validate()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -300,12 +305,13 @@ pub fn read_setting(path: &Path) -> Result<Setting, String> {
 
 fn setting_text(setting: &Setting) -> Result<String, String> {
     setting.validate()?;
-    let mut text = String::from(
+    melissa_statefile::to_toml(
+        &crate::formats::CLUSTER,
         "# This device's place in a Melissa cluster, written by root (no secrets here).\n\
          # Default (empty): a single-node k3s server.\n",
-    );
-    text.push_str(&toml::to_string(setting).map_err(|e| e.to_string())?);
-    Ok(text)
+        setting,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Root's state directory under `root`, made if missing, 0700.
@@ -332,7 +338,9 @@ pub fn read_trusted(root: &Path) -> Result<Setting, String> {
 pub fn write_trusted(root: &Path, setting: &Setting) -> Result<(), String> {
     let text = setting_text(setting)?;
     let state = ensure_state_dir(root)?;
-    write_root(&state.join(STATE_SETTING), text.as_bytes(), 0o600)
+    let own = state.join(STATE_SETTING);
+    melissa_statefile::guard(&own, &crate::formats::CLUSTER).map_err(|e| e.to_string())?;
+    write_root(&own, text.as_bytes(), 0o600)
         .map_err(|e| format!("saving the cluster setting: {e}"))?;
     let marker = state.join(HAS_PEERS);
     if setting.role == Role::Server && !setting.peers.is_empty() {
@@ -549,7 +557,9 @@ impl PrepareInput {
         let device_name = read_small(&config_dir.join(crate::prefs::FILE_NAME), 64 * 1024)
             .ok()
             .flatten()
-            .and_then(|t| toml::from_str::<crate::prefs::Prefs>(&t).ok())
+            .and_then(|t| {
+                crate::prefs::Prefs::parse(&config_dir.join(crate::prefs::FILE_NAME), &t).ok()
+            })
             .and_then(|p| p.device_name);
         Self {
             device_name,

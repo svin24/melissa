@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{write_private, SettingsError};
+use crate::SettingsError;
 
 pub const FILE_NAME: &str = "ui.toml";
 
@@ -122,19 +122,27 @@ impl Prefs {
                 })
             }
         };
-        toml::from_str(&text).map_err(|e| SettingsError::Parse {
-            path: path.display().to_string(),
-            message: e.message().to_string(),
+        Self::parse(path, &text)
+    }
+
+    /// Parse the text of `path` (its format checked and migrated).
+    pub fn parse(path: &Path, text: &str) -> Result<Self, SettingsError> {
+        crate::parse_versioned(path, &crate::formats::PREFS, text, |t| {
+            toml::from_str(t).map_err(|e| SettingsError::Parse {
+                path: path.display().to_string(),
+                message: e.message().to_string(),
+            })
         })
     }
 
+    /// Save to `path`; refused for a newer Melissa's file ([`SettingsError::Newer`]).
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
-        let mut text = String::from("# Melissa display preferences, written by the web UI.\n\n");
-        text.push_str(&toml::to_string(self).map_err(|e| SettingsError::Failed(e.to_string()))?);
-        write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {
-            path: path.display().to_string(),
-            source,
-        })
+        crate::save_versioned(
+            path,
+            &crate::formats::PREFS,
+            "# Melissa display preferences, written by the web UI.\n\n",
+            self,
+        )
     }
 }
 

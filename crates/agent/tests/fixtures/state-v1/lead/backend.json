@@ -1,0 +1,5 @@
+{
+  "backend": "claude-session",
+  "model": "opus",
+  "effort": "high"
+}

@@ -71,9 +71,10 @@ impl UsageHub {
     /// unreadable file starts empty).
     pub fn open(dir: &Path) -> Self {
         let path = dir.join(FILE);
-        let providers = std::fs::read_to_string(&path)
+        let providers = melissa_statefile::read_json(&path, &crate::formats::PROVIDER_USAGE)
             .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
+            .flatten()
+            .map(|l| l.value)
             .unwrap_or_default();
         Self {
             state: Arc::new(Mutex::new(State {
@@ -157,17 +158,13 @@ impl UsageHub {
 
     fn save(&self, state: &State) {
         let Some(path) = &self.path else { return };
-        let write = || -> std::io::Result<()> {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            let tmp = path.with_extension("json.tmp");
-            let text = serde_json::to_vec(&state.providers).map_err(std::io::Error::other)?;
-            std::fs::write(&tmp, text)?;
-            std::fs::rename(&tmp, path)
-        };
-        if let Err(e) = write() {
-            tracing::warn!(path = %path.display(), "cannot save provider usage: {e}");
+        if let Err(e) = melissa_statefile::save_json(
+            path,
+            &crate::formats::PROVIDER_USAGE,
+            &state.providers,
+            false,
+        ) {
+            tracing::warn!("cannot save provider usage: {e}");
         }
     }
 }

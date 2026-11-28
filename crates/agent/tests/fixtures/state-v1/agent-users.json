@@ -1,0 +1,8 @@
+{
+  "uid_start": 1000,
+  "gid_start": 1000,
+  "slots": {
+    "d-0a1b2c3d.a1": 1,
+    "lead": 0
+  }
+}

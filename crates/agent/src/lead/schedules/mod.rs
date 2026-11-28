@@ -476,6 +476,9 @@ pub struct Schedules {
     tz: TimeZone,
     clock: Arc<dyn Clock>,
     audit: Option<AuditLog>,
+    /// The file is a newer Melissa's (after a rollback): shown, never written, nothing runs
+    /// (a run could not be recorded, so it would run again).
+    read_only: bool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -495,6 +498,7 @@ impl Schedules {
             tz,
             clock: Arc::new(SystemClock),
             audit: None,
+            read_only: false,
         }
     }
 
@@ -506,22 +510,42 @@ impl Schedules {
     /// Load from `path` (a missing file: no schedules). Changes are saved there. Due times
     /// are evaluated in `tz` (the box's: [`TimeZone::system`]).
     pub fn open(path: impl Into<PathBuf>, tz: TimeZone) -> Result<Self, ScheduleError> {
+        use melissa_statefile::FormatError;
         let path = path.into();
         let shown = path.display().to_string();
-        let state = match std::fs::read(&path) {
-            Ok(data) => serde_json::from_slice(&data).map_err(|e| ScheduleError::Parse {
-                path: shown,
-                message: e.to_string(),
-            })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::default(),
-            Err(e) => {
+        let loaded = match melissa_statefile::read_json::<State>(&path, &crate::formats::SCHEDULES)
+        {
+            Ok(l) => l,
+            Err(FormatError::Read { source, .. }) => {
                 return Err(ScheduleError::Read {
+                    path: shown,
+                    message: source.to_string(),
+                })
+            }
+            Err(e) => {
+                return Err(ScheduleError::Parse {
                     path: shown,
                     message: e.to_string(),
                 })
             }
         };
-        Ok(Self::with_state(state, Some(path), tz))
+        let read_only = loaded.as_ref().is_some_and(|l| l.read_only);
+        if read_only {
+            tracing::warn!(
+                path = %shown,
+                "the schedules were saved by a newer version of Melissa: they are shown but do \
+                 not run and cannot be changed until Melissa is updated again"
+            );
+        }
+        let state = loaded.map(|l| l.value).unwrap_or_default();
+        let mut s = Self::with_state(state, Some(path), tz);
+        s.read_only = read_only;
+        Ok(s)
+    }
+
+    /// Saved by a newer Melissa: nothing runs and nothing can be changed.
+    pub fn read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Use `clock` for "now" (tests).
@@ -639,17 +663,13 @@ impl Schedules {
     /// Save `next` and only then make it current (a failed save changes nothing).
     fn commit(&self, guard: &mut MutexGuard<'_, State>, next: State) -> Result<(), ScheduleError> {
         if let Some(path) = &self.path {
-            let shown = || path.display().to_string();
-            // Serializing plain data cannot fail; an error would only mean a bug, so it is
-            // reported as a write error rather than unwrapped.
-            let data = serde_json::to_vec_pretty(&next).map_err(|e| ScheduleError::Write {
-                path: shown(),
-                message: e.to_string(),
-            })?;
-            crate::device::write_private(path, &data).map_err(|e| ScheduleError::Write {
-                path: shown(),
-                message: e.to_string(),
-            })?;
+            // Refused for a newer Melissa's file (whether or not it was read-only at open).
+            melissa_statefile::save_json(path, &crate::formats::SCHEDULES, &next, true).map_err(
+                |e| ScheduleError::Write {
+                    path: path.display().to_string(),
+                    message: e.to_string(),
+                },
+            )?;
         }
         **guard = next;
         self.shared.changed.notify_one();
@@ -806,17 +826,25 @@ impl Schedules {
         self.audit(action, "schedule", &detail);
     }
 
-    /// Mark due times up to `until` (Unix seconds) as dealt with.
-    fn mark_handled(&self, id: u64, until: u64) {
-        if let Err(e) = self.change(id, |s| s.handled_until = s.handled_until.max(until)) {
-            if !matches!(e, ScheduleError::NotFound(_)) {
-                tracing::error!("saving a schedule: {e}");
+    /// Mark due times up to `until` (Unix seconds) as dealt with. False if that could not be
+    /// saved: the caller must not run it (it would run again at the next look).
+    fn mark_handled(&self, id: u64, until: u64) -> bool {
+        match self.change(id, |s| s.handled_until = s.handled_until.max(until)) {
+            Ok(_) => true,
+            Err(e) => {
+                if !matches!(e, ScheduleError::NotFound(_)) {
+                    tracing::error!("saving a schedule: {e}");
+                }
+                false
             }
         }
     }
 
     /// Runs recorded as going when Melissa stopped: interrupted.
     fn recover_interrupted(&self) {
+        if self.read_only {
+            return;
+        }
         let ids: Vec<(u64, LastRun)> = self
             .list()
             .into_iter()

@@ -604,6 +604,12 @@ async fn relabel_old_namespaces(workspaces: Arc<Workspaces>) {
 fn load_providers(path: &std::path::Path) -> ProviderFile {
     match ProviderFile::load(path) {
         Ok(f) => f,
+        // A newer Melissa's file (after a rollback) is not broken: it stays where it is, for
+        // when Melissa is updated again; saving over it is refused meanwhile.
+        Err(e) if e.is_newer() => {
+            tracing::error!("{e}; starting without the provider settings");
+            ProviderFile::default()
+        }
         Err(e) => {
             let aside = path.with_extension("toml.broken");
             let moved = std::fs::rename(path, &aside).is_ok();

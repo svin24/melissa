@@ -1,0 +1,21 @@
+{
+  "claude-session": {
+    "models": [
+      {
+        "id": "opus",
+        "label": "Opus"
+      },
+      {
+        "id": "sonnet",
+        "label": "Sonnet"
+      }
+    ],
+    "updated": 1763600000
+  },
+  "grok-acp": [
+    {
+      "id": "grok-4",
+      "label": "Grok 4"
+    }
+  ]
+}

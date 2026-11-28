@@ -1,0 +1,24 @@
+{
+  "next_id": 2,
+  "schedules": [
+    {
+      "id": 1,
+      "name": "Nightly check",
+      "agent": "lead",
+      "instruction": "Check the apps and tell me what changed.",
+      "cron": "0 3 * * *",
+      "enabled": true,
+      "max_minutes": 30,
+      "created_by": "owner",
+      "created_at": 1763600000,
+      "handled_until": 1763700000,
+      "last_run": {
+        "at": 1763690000,
+        "outcome": "done",
+        "turn": 4,
+        "ended": 1763690100
+      }
+    }
+  ],
+  "approval_wait_minutes": 20
+}

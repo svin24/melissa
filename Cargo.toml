@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agent", "crates/auth", "crates/appspec", "crates/backup", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/voice", "crates/web"]
+members = ["crates/agent", "crates/auth", "crates/appspec", "crates/backup", "crates/cluster", "crates/server", "crates/device", "crates/settings", "crates/statefile", "crates/voice", "crates/web"]
 
 [workspace.package]
 edition = "2021"
@@ -15,6 +15,7 @@ melissa-cluster = { path = "crates/cluster" }
 melissa-appspec = { path = "crates/appspec" }
 melissa-backup = { path = "crates/backup" }
 melissa-settings = { path = "crates/settings" }
+melissa-statefile = { path = "crates/statefile" }
 melissa-voice = { path = "crates/voice" }
 # ACP (Agent Client Protocol) client: long-lived agent sessions (Grok `agent stdio`). Apache-2.0.
 agent-client-protocol = { version = "5.3", default-features = false }
