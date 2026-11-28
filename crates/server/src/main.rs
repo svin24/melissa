@@ -580,11 +580,31 @@ fn app_access_command(args: &[String]) -> anyhow::Result<()> {
                 PathBuf::from,
             );
             let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
-            let status = access::apply(
+            // Cluster peers (multi-device) from cluster.toml next to the setting; unreadable:
+            // none get in.
+            let cluster_file = setting
+                .parent()
+                .unwrap_or(std::path::Path::new("/etc/melissa"))
+                .join(melissa_settings::cluster::FILE_NAME);
+            let peers = match melissa_settings::cluster::read_setting(&cluster_file) {
+                Ok(c) => access::ClusterPeers::of(&c),
+                Err(e) => {
+                    eprintln!("melissa-app-access: {e}; no cluster peers let in");
+                    access::ClusterPeers::default()
+                }
+            };
+            let status = access::apply_with(
                 &NftCommand::default(),
                 access::read_setting(&setting),
                 access::default_gateway(&route),
+                &peers,
             );
+            if !peers.addresses.is_empty() {
+                println!(
+                    "melissa-app-access: {} cluster peer(s) may reach k3s on tailscale0",
+                    peers.addresses.len()
+                );
+            }
             access::write_status(&status_path, &status)
                 .with_context(|| format!("cannot write {}", status_path.display()))?;
             for e in &status.errors {

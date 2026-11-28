@@ -19,7 +19,11 @@
 //!
 //! Everything else to those ports is dropped. Traffic from `tailscale0` to the container
 //! itself (not the app ports: the UI forward, k3s's API, the kubelet) is dropped at every
-//! level, replies to the container's own connections excepted. The container itself (`lo`)
+//! level, replies to the container's own connections excepted, and k3s's ports from the
+//! **cluster peers** ([`ClusterPeers`], `cluster.toml`, multi-device): a server lets its peers
+//! reach 6443/tcp (API), 10250/tcp (kubelet) and 8472/udp (flannel VXLAN), an agent lets its
+//! server reach 10250/tcp and 8472/udp. Only those addresses, only on `tailscale0`; never in the
+//! closed table. The container itself (`lo`)
 //! and k3s's pods (`cni0`) are not filtered. A drop is final in nftables whatever other tables (kube-proxy,
 //! flannel, network policies) say, so the table takes precedence without ordering tricks.
 //!
@@ -83,6 +87,7 @@ const DROP: &str = "melissa:drop";
 const TAILSCALE_IF: &str = crate::tailscale::INTERFACE;
 const TAILNET_REPLIES: &str = "melissa:tailnet_replies";
 const TAILNET_INPUT: &str = "melissa:tailnet_input";
+const CLUSTER_PEERS: &str = "melissa:cluster_peers";
 /// Largest setting file read (it holds one line).
 const MAX_SETTING_BYTES: u64 = 4096;
 
@@ -247,6 +252,75 @@ fn write_setting(path: &Path, access: AppAccess) -> Result<(), SettingsError> {
 
 // --- rules ---------------------------------------------------------------------------------
 
+/// Cluster peers the input chain lets reach k3s's ports on `tailscale0` (multi-device,
+/// `crate::cluster`). Empty: none (a single device, as before).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClusterPeers {
+    pub role: crate::cluster::Role,
+    pub addresses: Vec<IpAddr>,
+}
+
+impl ClusterPeers {
+    /// From the cluster setting.
+    pub fn of(setting: &crate::cluster::Setting) -> Self {
+        Self {
+            role: setting.role,
+            addresses: setting.peer_addresses(),
+        }
+    }
+
+    /// The input rules (accepts, before the tailnet drop).
+    fn rules(&self) -> Vec<String> {
+        use crate::cluster::{Role, API_PORT, KUBELET_PORT, VXLAN_PORT};
+        let tcp = match self.role {
+            Role::Server => format!("{{ {API_PORT}, {KUBELET_PORT} }}"),
+            Role::Agent => KUBELET_PORT.to_string(),
+        };
+        let mut out = Vec::new();
+        for (family, addrs) in [("ip", self.v4()), ("ip6", self.v6())] {
+            if addrs.is_empty() {
+                continue;
+            }
+            let set = format!("{{ {} }}", addrs.join(", "));
+            out.push(format!(
+                "iifname \"{TAILSCALE_IF}\" {family} saddr {set} tcp dport {tcp} accept comment \"{CLUSTER_PEERS}\""
+            ));
+            out.push(format!(
+                "iifname \"{TAILSCALE_IF}\" {family} saddr {set} udp dport {VXLAN_PORT} accept comment \"{CLUSTER_PEERS}\""
+            ));
+        }
+        out
+    }
+
+    fn v4(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .addresses
+            .iter()
+            .filter_map(|a| match a.to_canonical() {
+                IpAddr::V4(v4) => Some(v4.to_string()),
+                IpAddr::V6(_) => None,
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    fn v6(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .addresses
+            .iter()
+            .filter_map(|a| match a.to_canonical() {
+                IpAddr::V6(v6) => Some(v6.to_string()),
+                IpAddr::V4(_) => None,
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+}
+
 /// The default route's gateway in `/proc/net/route` text (the podman bridge address, where
 /// the host's loopback connections come from). The kernel prints addresses as native-endian
 /// hex of the network-order bytes.
@@ -265,6 +339,17 @@ pub fn default_gateway(proc_net_route: &str) -> Option<Ipv4Addr> {
 /// `None` for the closed table (nothing from outside the container). One transaction:
 /// it replaces the table atomically, or changes nothing.
 pub fn ruleset(open: Option<(AppAccess, Ipv4Addr)>) -> String {
+    ruleset_with(open, &ClusterPeers::default())
+}
+
+/// [`ruleset`] that also lets the cluster `peers` reach k3s's ports (not when closed).
+pub fn ruleset_with(open: Option<(AppAccess, Ipv4Addr)>, peers: &ClusterPeers) -> String {
+    let peer_rules = if open.is_some() {
+        peers.rules()
+    } else {
+        Vec::new()
+    };
+    let peer_rules: String = peer_rules.iter().map(|r| format!("\t\t{r}\n")).collect();
     let inside = INSIDE.map(|i| format!("\"{i}\"")).join(", ");
     let ports = format!("{FIRST_PORT}-{LAST_PORT}");
     let mut allow = Vec::new();
@@ -308,6 +393,7 @@ pub fn ruleset(open: Option<(AppAccess, Ipv4Addr)>) -> String {
          \tchain input {{\n\
          \t\ttype filter hook input priority -150; policy accept;\n\
          \t\tiifname \"{TAILSCALE_IF}\" ct state established,related accept comment \"{TAILNET_REPLIES}\"\n\
+         {peer_rules}\
          \t\tiifname \"{TAILSCALE_IF}\" counter drop comment \"{TAILNET_INPUT}\"\n\
          \t}}\n\
          \tchain app_ports {{\n",
@@ -320,6 +406,16 @@ pub fn ruleset(open: Option<(AppAccess, Ipv4Addr)>) -> String {
     out
 }
 
+/// `addr` appears in `listing` as a whole address (`100.64.0.2` is not in `100.64.0.21`).
+fn lists_address(listing: &str, addr: &str) -> bool {
+    let part = |c: char| c.is_ascii_hexdigit() || c == '.' || c == ':';
+    listing.match_indices(addr).any(|(i, _)| {
+        let before = listing[..i].chars().next_back();
+        let after = listing[i + addr.len()..].chars().next();
+        !before.is_some_and(part) && !after.is_some_and(part)
+    })
+}
+
 fn comment(level: AppAccess) -> String {
     format!("melissa:{}", level.as_str())
 }
@@ -328,6 +424,31 @@ fn comment(level: AppAccess) -> String {
 /// loaded for `open`: both hooks on the app ports, the final drop, an accept for each level
 /// that is open (the gateway for this device) and none for a level that isn't.
 pub fn verify(listing: &str, open: Option<(AppAccess, Ipv4Addr)>) -> Result<(), String> {
+    verify_with(listing, open, &ClusterPeers::default())
+}
+
+/// [`verify`], also checking the cluster peers' accepts: there when wanted, absent otherwise.
+pub fn verify_with(
+    listing: &str,
+    open: Option<(AppAccess, Ipv4Addr)>,
+    peers: &ClusterPeers,
+) -> Result<(), String> {
+    let wanted = open.is_some() && !peers.addresses.is_empty();
+    let found = listing
+        .matches(&format!("comment \"{CLUSTER_PEERS}\""))
+        .count();
+    match (wanted, found) {
+        (false, 0) => {}
+        (false, _) => return Err("the filter also lets in cluster peers".into()),
+        (true, n) if n == peers.rules().len() => {
+            for a in peers.v4().iter().chain(&peers.v6()) {
+                if !lists_address(listing, a) {
+                    return Err(format!("the filter lacks cluster peer {a}"));
+                }
+            }
+        }
+        (true, _) => return Err("the filter lacks the cluster peers' rules".into()),
+    }
     let ports = format!("{FIRST_PORT}-{LAST_PORT}");
     let mut missing = Vec::new();
     for want in [
@@ -478,9 +599,13 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn load_verified(nft: &dyn Nft, open: Option<(AppAccess, Ipv4Addr)>) -> Result<(), String> {
-    nft.load(&ruleset(open))?;
-    verify(&nft.list()?, open)
+fn load_verified(
+    nft: &dyn Nft,
+    open: Option<(AppAccess, Ipv4Addr)>,
+    peers: &ClusterPeers,
+) -> Result<(), String> {
+    nft.load(&ruleset_with(open, peers))?;
+    verify_with(&nft.list()?, open, peers)
 }
 
 /// Put the filter in place, failing closed: the wanted level, else this device, else the
@@ -490,6 +615,17 @@ pub fn apply(
     nft: &dyn Nft,
     wanted: Result<AppAccess, String>,
     gateway: Option<Ipv4Addr>,
+) -> Status {
+    apply_with(nft, wanted, gateway, &ClusterPeers::default())
+}
+
+/// [`apply`] with the cluster peers. (An unreadable cluster setting means no peers: the caller
+/// logs it; it doesn't make the app setting fail.)
+pub fn apply_with(
+    nft: &dyn Nft,
+    wanted: Result<AppAccess, String>,
+    gateway: Option<Ipv4Addr>,
+    peers: &ClusterPeers,
 ) -> Status {
     let (wanted, mut errors) = match wanted {
         Ok(a) => (a, Vec::new()),
@@ -509,7 +645,7 @@ pub fn apply(
                 tries.push(AppAccess::ThisDevice);
             }
             for level in tries {
-                match load_verified(nft, Some((level, gw))) {
+                match load_verified(nft, Some((level, gw)), peers) {
                     Ok(()) => return status(Some(level), true, errors),
                     Err(e) => errors.push(e),
                 }
@@ -518,7 +654,7 @@ pub fn apply(
         None => errors
             .push("no default route in the container: the host's bridge address is unknown".into()),
     }
-    match load_verified(nft, None) {
+    match load_verified(nft, None, peers) {
         Ok(()) => status(None, true, errors),
         Err(e) => {
             errors.push(e);

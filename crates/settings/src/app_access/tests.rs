@@ -547,3 +547,87 @@ fn verify_checks_the_tailnet_interface() {
         assert!(verify(&no_input, open).is_err(), "{no_input}");
     }
 }
+
+// --- cluster peers (multi-device) ---------------------------------------------------------------
+
+fn peers(role: crate::cluster::Role, addrs: &[&str]) -> ClusterPeers {
+    ClusterPeers {
+        role,
+        addresses: addrs.iter().map(|a| a.parse().unwrap()).collect(),
+    }
+}
+
+#[test]
+fn cluster_peers_reach_k3s_ports_only_on_the_tailnet() {
+    use crate::cluster::Role;
+    let server = peers(
+        Role::Server,
+        &["100.64.0.3", "100.64.0.2", "fd7a:115c:a1e0::2"],
+    );
+    let r = ruleset_with(Some((AppAccess::ThisDevice, GW)), &server);
+    assert!(
+        r.contains(
+            "iifname \"tailscale0\" ip saddr { 100.64.0.2, 100.64.0.3 } tcp dport { 6443, 10250 } accept comment \"melissa:cluster_peers\""
+        ),
+        "{r}"
+    );
+    assert!(r.contains(
+        "iifname \"tailscale0\" ip saddr { 100.64.0.2, 100.64.0.3 } udp dport 8472 accept comment \"melissa:cluster_peers\""
+    ));
+    assert!(r.contains("ip6 saddr { fd7a:115c:a1e0::2 } tcp dport { 6443, 10250 } accept"));
+    // Before the tailnet drop (first match wins in the chain).
+    let accept = r.find("melissa:cluster_peers").unwrap();
+    assert!(accept < r.find("melissa:tailnet_input").unwrap());
+    // The app level is unchanged: at "this device" tailscale0 still can't open apps.
+    assert!(!r.contains("iifname \"tailscale0\" accept"), "{r}");
+
+    // An agent: only the kubelet and VXLAN, from its server; no API port.
+    let agent = peers(Role::Agent, &["100.64.0.1"]);
+    let r = ruleset_with(Some((AppAccess::Tailnet, GW)), &agent);
+    assert!(
+        r.contains(
+            "iifname \"tailscale0\" ip saddr { 100.64.0.1 } tcp dport 10250 accept comment \"melissa:cluster_peers\""
+        ),
+        "{r}"
+    );
+    assert!(!r.contains("6443"));
+
+    // Closed: no peers either. No peers: no rule.
+    assert!(!ruleset_with(None, &server).contains("cluster_peers"));
+    assert!(
+        !ruleset_with(Some((AppAccess::Tailnet, GW)), &ClusterPeers::default())
+            .contains("cluster_peers")
+    );
+}
+
+#[test]
+fn verify_checks_the_cluster_peers() {
+    use crate::cluster::Role;
+    let open = Some((AppAccess::ThisDevice, GW));
+    let p = peers(Role::Server, &["100.64.0.2"]);
+    let with = listed(&ruleset_with(open, &p));
+    assert_eq!(verify_with(&with, open, &p), Ok(()));
+    // A stale table with peers when none are wanted, or a missing peer, fails.
+    assert!(verify(&with, open).is_err());
+    let without = listed(&ruleset(open));
+    assert!(verify_with(&without, open, &p).is_err());
+    let other = peers(Role::Server, &["100.64.0.9"]);
+    assert!(verify_with(&with, open, &other).is_err());
+    // A whole address, not a prefix of another one.
+    let longer = listed(&ruleset_with(open, &peers(Role::Server, &["100.64.0.21"])));
+    assert!(verify_with(&longer, open, &p).is_err());
+    // The closed table never has them.
+    assert_eq!(
+        verify_with(&listed(&ruleset_with(None, &p)), None, &p),
+        Ok(())
+    );
+}
+
+#[test]
+fn apply_with_peers_loads_and_verifies_them() {
+    let nft = FakeNft::default();
+    let p = peers(crate::cluster::Role::Server, &["100.64.0.2"]);
+    let s = apply_with(&nft, Ok(AppAccess::ThisDevice), Some(GW), &p);
+    assert!(s.ok(), "{s:?}");
+    assert!(nft.list().unwrap().contains("melissa:cluster_peers"));
+}
