@@ -1375,8 +1375,8 @@ Roadmap (rough, phases may overlap):
     `HOST_TAILSCALE=`); should the host helper report it at each start? An install from before the check has
     no flag and is treated as not Melissa's. (d) Image size: the two static binaries add about 78 MB; a
     single combined binary (`tailscaled` with the CLI built in, from source) would roughly halve it. (e)
-    tailscaled's UDP port (41641) isn't published by podman: direct connections rely on NAT traversal
-    through podman's masquerade, else DERP relays (slower); publish it? (f) App links name the node's
+    Done 2026-11-28: install.sh publishes tailscaled's UDP port (41641) when the host doesn't run Tailscale
+    (the 2026-11-27 experiment went through DERP relays only); still unverified that peers now connect directly. (f) App links name the node's
     MagicDNS name and IPv4 address, not its IPv6 one. (g) Headscale or another control server (custom login
     server URL; the sign-in URL check accepts only tailscale.com) and Tailscale identity for logins (Q80f).
     (h) Unsandboxed agent backends (an explicit owner setting) run as the server's user and could read

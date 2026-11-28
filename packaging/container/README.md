@@ -192,6 +192,10 @@ container (the web UI, k3s's API, the kubelet) is dropped (`melissa_app_access`'
 setting. Melissa's own Tailscale doesn't serve the web UI on the tailnet yet (use the host's `tailscale serve`,
 below).
 
+tailscaled listens on 41641/udp, which install.sh publishes on the host (only when the host doesn't run
+Tailscale) so other devices can connect directly instead of through DERP relays behind podman's NAT. A host
+firewall may still need that port opened for direct connections from other networks.
+
 While it is enabled, tailscaled talks to Tailscale's coordination server and DERP relays; no logs are sent to
 Tailscale (`--no-logs-no-support`). Check it with `sudo podman exec melissa tailscale status`.
 `uninstall.sh --purge` logs the node out before deleting its state. Changing `HOST_TAILSCALE` later needs

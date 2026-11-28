@@ -160,6 +160,14 @@ host_tailscale() {
     fi
 }
 
+# tailscale_port_line: publish Melissa's own tailscaled's UDP port (direct connections, not only
+# DERP relays) unless the host runs Tailscale, whose tailscaled has that port.
+TAILSCALE_PORT=41641
+tailscale_port_line() {
+    local host; host=$(host_tailscale) || return 1
+    [ "$host" = yes ] || echo "PublishPort=$TAILSCALE_PORT:$TAILSCALE_PORT/udp"
+}
+
 # tailscale_name HOSTNAME: the node name of Melissa's own Tailscale: melissa-<short host name>,
 # lower case letters, digits and dashes, at most 63 (TAILSCALE_NAME overrides it).
 tailscale_name() {
@@ -449,6 +457,7 @@ install_files() {
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
         -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
         -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
+        -e "s#@TAILSCALE_PORT_LINE@#$(tailscale_port_line)#" \
         "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     # uninstall.sh and what it sources, so it works without the checkout (get.sh deletes its copy).
