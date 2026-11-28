@@ -361,7 +361,7 @@ in
           images = lib.optional cfg.k3s.airgapImages airgapImages ++ cfg.k3s.images;
         };
 
-        # The shared k3s config (kubeconfig mode, node label); no SELinux setting (per packaging).
+        # The shared k3s config (kubeconfig mode, node label, Secrets encrypted at rest); no SELinux setting (per packaging).
         environment.etc."rancher/k3s/config.yaml.d/10-melissa.yaml".source =
           (import ./common.nix).root + "/etc/rancher/k3s/config.yaml.d/10-melissa.yaml";
 
@@ -398,6 +398,23 @@ in
             TimeoutStartSec = 330;
             Restart = "on-failure";
             RestartSec = "15s";
+          };
+        };
+
+        # Secrets at rest: the shared config turns on k3s's secrets-encryption; this encrypts the
+        # Secrets a datastore from before already holds (once, decided by k3s's rotation stage).
+        systemd.services.melissa-secrets-encrypt = {
+          description = "Encrypt the Secrets already in k3s's datastore (once)";
+          after = [ "k3s.service" ];
+          wantedBy = [ "k3s.service" ];
+          path = [ cfg.k3s.package ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${cfg.package}/libexec/melissa/k3s-secrets-encrypt";
+            TimeoutStartSec = 630;
+            Restart = "on-failure";
+            RestartSec = "30s";
           };
         };
       })

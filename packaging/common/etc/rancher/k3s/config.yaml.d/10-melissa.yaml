@@ -8,3 +8,7 @@
 write-kubeconfig-mode: "0600"
 node-label:
   - "melissa.io/managed=true"
+# Secrets encrypted at rest (AES-CBC key in /var/lib/rancher/k3s/server/cred/encryption-config.json,
+# root only; a datastore backup needs it). Older datastores: melissa-secrets-encrypt.service encrypts
+# the Secrets they already hold (k3s-secrets-encrypt). Server only, like the rest of this file.
+secrets-encryption: true

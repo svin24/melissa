@@ -167,7 +167,7 @@ RUN rm -f /README.md
 # an app is deployed.
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
-        melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
+        melissa-secrets-encrypt.service melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
         melissa-netns-sysctl.service melissa-factory-reset.path melissa-factory-reset.service; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
@@ -258,7 +258,7 @@ RUN set -eu; \
     # pinned binaries, run by melissa-tailscaled.service while the owner has it on.
     for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld systemd-udev; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
-    systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket \
+    systemctl is-enabled -q melissa-server.service k3s.service melissa-secrets-encrypt.service melissa-ui-forward.socket \
         melissa-app-access.service melissa-tailscaled.service melissa-factory-reset.path \
         melissa-factory-reset.service melissa-netns-sysctl.service; \
     # The container netns's sysctls (fallback for an old Quadlet): net.* keys only, never host-wide ones.
@@ -275,6 +275,7 @@ RUN set -eu; \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket \
+        /usr/lib/systemd/system/melissa-secrets-encrypt.service \
         /usr/lib/systemd/system/melissa-app-access.service \
         /usr/lib/systemd/system/melissa-tailscaled.service \
         /usr/lib/systemd/system/melissa-cluster.service \
@@ -284,6 +285,11 @@ RUN set -eu; \
         /usr/lib/systemd/system/melissa-factory-reset.service \
         /usr/lib/systemd/system/melissa-netns-sysctl.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
+    # Secrets encrypted at rest (k3s-secrets-encrypt migrates older datastores).
+    grep -qx 'secrets-encryption: true' /etc/rancher/k3s/config.yaml.d/10-melissa.yaml \
+        || { echo "lint: k3s secrets-encryption must be on"; exit 1; }; \
+    test -x /usr/libexec/melissa/k3s-secrets-encrypt || { echo "lint: k3s-secrets-encrypt missing"; exit 1; }; \
+    test -x /usr/libexec/melissa-container/k3s-encryption-hold || { echo "lint: k3s-encryption-hold missing"; exit 1; }; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }; \
     # The data volume is owned by these numbers: melissa 994, melissa-kube 995 (sysusers.d/melissa.conf).

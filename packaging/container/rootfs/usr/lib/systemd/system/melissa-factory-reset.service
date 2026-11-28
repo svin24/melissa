@@ -9,7 +9,7 @@
 Description=Melissa: factory reset (erase Melissa's data, start again unclaimed)
 ConditionPathExists=/var/lib/melissa-container/reset/factory-reset.json
 RequiresMountsFor=/var/lib/melissa-container /var/lib/melissa
-Before=melissa-server.service k3s.service melissa-kubeconfig.service melissa-tailscaled.service melissa-app-access.service
+Before=melissa-server.service k3s.service melissa-kubeconfig.service melissa-secrets-encrypt.service melissa-tailscaled.service melissa-app-access.service
 
 [Service]
 Type=oneshot

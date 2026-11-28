@@ -11,6 +11,6 @@ FROM ${TESTS} AS tests
 
 FROM ${IMAGE}
 COPY --from=tests /out/escape/ /opt/melissa-escape/
-RUN systemctl mask k3s.service melissa-server.service melissa-kubeconfig.service \
+RUN systemctl mask k3s.service melissa-server.service melissa-kubeconfig.service melissa-secrets-encrypt.service \
         melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
         melissa-factory-reset.path melissa-factory-reset.service

@@ -14,6 +14,12 @@ if [ -e /usr/lib/systemd/system/melissa-cluster.service ]; then
     /usr/bin/melissa-server cluster prepare
 fi
 
+# Container: Secrets encryption waits for a host helper that snapshots the datastore before updates
+# (a rollback to an image without encryption needs that snapshot).
+if [ -x /usr/libexec/melissa-container/k3s-encryption-hold ]; then
+    /usr/libexec/melissa-container/k3s-encryption-hold
+fi
+
 images=/var/lib/rancher/k3s/agent/images
 manifests=/var/lib/rancher/k3s/server/manifests
 mkdir -p "$images" "$manifests"

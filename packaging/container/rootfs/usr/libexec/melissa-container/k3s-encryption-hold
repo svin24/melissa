@@ -1,0 +1,27 @@
+#!/bin/sh
+# Container, from k3s-prepare (before every k3s start): keep k3s's Secrets encryption off for a
+# datastore that predates it until the host's update helper snapshots the datastore before updates.
+# Without that snapshot a rollback to an older image (which can't read encrypted Secrets) would have
+# nothing to restore. The helper says so in /run/melissa-update/helper (`snapshots=1`); hosts get the
+# new helper by re-running install.sh (packaging/container/README.md, "Upgrading").
+#
+# Holds (writes config.yaml.d/15-melissa-encryption-hold.yaml: `secrets-encryption: false`) only when
+# the datastore exists, was never encrypted (no encryption-config.json) and the helper is older.
+# A new datastore, or one already encrypted, is never held. /etc is new at every container start.
+# MELISSA_ROOT: tests only.
+set -eu
+root=${MELISSA_ROOT:-}
+server=$root/var/lib/rancher/k3s/server
+hold=$root/etc/rancher/k3s/config.yaml.d/15-melissa-encryption-hold.yaml
+helper=$root/run/melissa-update/helper
+
+rm -f "$hold"
+[ -e "$server/db" ] || exit 0
+[ ! -e "$server/cred/encryption-config.json" ] || exit 0
+if grep -qx 'snapshots=1' "$helper" 2>/dev/null; then exit 0; fi
+mkdir -p "$(dirname "$hold")"
+printf '%s\n' \
+    "# Written by k3s-encryption-hold: the host's melissa-host-update takes no datastore snapshots yet." \
+    "# Re-run install.sh on the host; the next start turns Secrets encryption on." \
+    "secrets-encryption: false" > "$hold"
+echo "k3s-encryption-hold: Secrets encryption held off: the host's update helper is older (re-run install.sh on the host)" >&2
