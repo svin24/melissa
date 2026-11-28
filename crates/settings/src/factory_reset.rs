@@ -89,10 +89,21 @@ pub const WIPE: &[&str] = &[
     "/var/lib/melissa-container/etc-melissa/ui.toml",
     "/var/lib/melissa-container/etc-melissa/app-access.toml",
     "/var/lib/melissa-container/etc-melissa/tailscale.toml",
+    "/var/lib/melissa-container/etc-melissa/cluster.toml",
+    "/var/lib/melissa-container/etc-melissa/cluster-join.token",
+    "/var/lib/melissa-container/etc-melissa/cluster-invitation.token",
+    "/var/lib/melissa-container/etc-melissa/cluster-request.json",
+    "/var/lib/melissa-container/etc-melissa/cluster-answer.json",
     // Melissa's own Tailscale (never the host's: that one isn't in this container).
     "/var/lib/melissa-tailscale",
     // k3s: the datastore, every app's volumes, the pods' and the network's leftovers.
     "/var/lib/rancher/k3s",
+    // Multi-device (crate::cluster): root's cluster state (pinned node name, agent token) and
+    // the k3s data kept across role changes.
+    "/var/lib/melissa-container/cluster",
+    "/var/lib/rancher/k3s.single-node-backup",
+    "/var/lib/rancher/k3s.agent-backup",
+    "/run/melissa-cluster",
     "/var/lib/kubelet",
     "/var/lib/cni",
     "/run/k3s",
@@ -416,9 +427,16 @@ pub trait Host {
     fn tailscale_logout(&self) -> Result<(), String>;
     /// Stop these units and wait for them.
     fn stop_units(&self, units: &[&str]) -> Result<(), String>;
-    /// Kill what k3s leaves running after its unit stops (pods, shims) and drop its network
-    /// leftovers.
-    fn kill_leftovers(&self);
+    /// The caller's own cgroup (v2, as in `/proc/self/cgroup`: `/system.slice/k3s.service`),
+    /// `None` when unknown.
+    fn own_cgroup(&self) -> Option<String>;
+    /// Kill every process in a cgroup (`cgroup.kill`; a missing cgroup is fine). `cgroup` as
+    /// [`Host::own_cgroup`] gives it. Only through [`kill_leftovers`], which never names the
+    /// caller's own cgroup or one above it.
+    fn kill_cgroup(&self, cgroup: &str);
+    /// Kill k3s's containerd shims by name and drop k3s's network leftovers (pods' network
+    /// namespaces, flannel's and CNI's interfaces).
+    fn kill_shims(&self);
     /// Every mount point now.
     fn mounts(&self) -> Result<Vec<PathBuf>, String>;
     fn unmount(&self, path: &Path) -> Result<(), String>;
@@ -431,6 +449,33 @@ pub trait Host {
     /// Start (restart) these units without waiting.
     fn start_units(&self, units: &[&str]) -> Result<(), String>;
     fn sleep(&self, d: Duration);
+}
+
+/// Where k3s's leftovers run after its unit stops: the pods (kubepods, cgroupfs or systemd
+/// driver) and the shims (k3s.service's own cgroup, `KillMode=process`).
+pub const LEFTOVER_CGROUPS: [&str; 3] = ["/kubepods", "/kubepods.slice", K3S_CGROUP];
+/// k3s.service's cgroup. `melissa-server cluster prepare` runs in it (k3s-prepare is an
+/// `ExecStartPre`; with `Delegate=yes` in its `.control` child).
+pub const K3S_CGROUP: &str = "/system.slice/k3s.service";
+
+/// `cgroup` is `own` or above it (killing it would kill the caller).
+fn holds(cgroup: &str, own: &str) -> bool {
+    let cgroup = cgroup.trim_end_matches('/');
+    cgroup.is_empty() || own == cgroup || own.starts_with(&format!("{cgroup}/"))
+}
+
+/// Kill what k3s leaves running after its unit stops (pods, shims) and drop its network
+/// leftovers, never the caller: a cgroup that holds the caller is skipped (its shims go by
+/// name, [`Host::kill_shims`]). An unknown own cgroup counts as k3s.service's (the cluster
+/// switch runs there).
+pub fn kill_leftovers(host: &dyn Host) {
+    let own = host.own_cgroup().unwrap_or_else(|| K3S_CGROUP.to_string());
+    for cg in LEFTOVER_CGROUPS {
+        if !holds(cg, &own) {
+            host.kill_cgroup(cg);
+        }
+    }
+    host.kill_shims();
 }
 
 /// What [`run`] did.
@@ -511,7 +556,7 @@ pub fn run_with(
     if let Err(e) = host.stop_units(STOP_JOBS) {
         say(&format!("factory reset: install jobs: {e}"));
     }
-    host.kill_leftovers();
+    kill_leftovers(host);
 
     // 3. Remove.
     advance(&marker_path, &mut marker, Step::Wiping)?;
@@ -606,7 +651,7 @@ fn clear(root: &Path, host: &dyn Host, target: &str, whole: bool) -> Result<(), 
 
 /// Unmount everything mounted at (when `including`) or below `path`, deepest first; fail if
 /// anything stays mounted there (removing would reach into another file system).
-fn unmount_below(host: &dyn Host, path: &Path, including: bool) -> Result<(), String> {
+pub(crate) fn unmount_below(host: &dyn Host, path: &Path, including: bool) -> Result<(), String> {
     let under = |mounts: Vec<PathBuf>| -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = mounts
             .into_iter()
@@ -824,20 +869,26 @@ impl Host for SystemHost {
         command("systemctl", &args, Duration::from_secs(300), false)
     }
 
-    fn kill_leftovers(&self) {
-        // Pods run in kubepods' cgroups, the shims in k3s.service's (KillMode=process).
-        for cg in [
-            "/sys/fs/cgroup/kubepods",
-            "/sys/fs/cgroup/kubepods.slice",
-            "/sys/fs/cgroup/system.slice/k3s.service",
-        ] {
-            let kill = Path::new(cg).join("cgroup.kill");
-            if kill.exists() {
-                if let Err(e) = std::fs::write(&kill, "1") {
-                    tracing::warn!(cgroup = cg, "cgroup.kill: {e}");
-                }
+    fn own_cgroup(&self) -> Option<String> {
+        let text = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        text.lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .map(|p| p.trim().to_string())
+            .filter(|p| p.starts_with('/'))
+    }
+
+    fn kill_cgroup(&self, cgroup: &str) {
+        let kill = Path::new("/sys/fs/cgroup")
+            .join(cgroup.trim_start_matches('/'))
+            .join("cgroup.kill");
+        if kill.exists() {
+            if let Err(e) = std::fs::write(&kill, "1") {
+                tracing::warn!(cgroup, "cgroup.kill: {e}");
             }
         }
+    }
+
+    fn kill_shims(&self) {
         let _ = command(
             "pkill",
             &["-KILL", "-f", "/k3s/data/[^/]+/bin/containerd-shim"],

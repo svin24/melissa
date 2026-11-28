@@ -1375,8 +1375,8 @@ Roadmap (rough, phases may overlap):
     `HOST_TAILSCALE=`); should the host helper report it at each start? An install from before the check has
     no flag and is treated as not Melissa's. (d) Image size: the two static binaries add about 78 MB; a
     single combined binary (`tailscaled` with the CLI built in, from source) would roughly halve it. (e)
-    tailscaled's UDP port (41641) isn't published by podman: direct connections rely on NAT traversal
-    through podman's masquerade, else DERP relays (slower); publish it? (f) App links name the node's
+    Done 2026-11-28: install.sh publishes tailscaled's UDP port (41641) when the host doesn't run Tailscale
+    (the 2026-11-27 experiment went through DERP relays only); still unverified that peers now connect directly. (f) App links name the node's
     MagicDNS name and IPv4 address, not its IPv6 one. (g) Headscale or another control server (custom login
     server URL; the sign-in URL check accepts only tailscale.com) and Tailscale identity for logins (Q80f).
     (h) Unsandboxed agent backends (an explicit owner setting) run as the server's user and could read
@@ -1614,6 +1614,9 @@ Roadmap (rough, phases may overlap):
     server). (h) MTU: flannel over Tailscale gives pods about 1230, pods created before keep 1450. (i) Agent
     tokens: never hand out the server token (cluster root); use `k3s token create --ttl`. k3s `--vpn-auth` is
     skipped (experimental, fights Melissa's tailscaled).
+    Progress 2026-11-28 (branch `multi-device-groundwork`, not merged): (a), (b), (c) server/agent role, (d),
+    (e) and (i) have first implementations (INTERCONNECT section 6); (f), (g), (h) and where the control plane
+    runs are still open.
 104. Ubuntu hosts and agent users (2026-11-27, found in CI). Ubuntu 26.04 restricts unprivileged user
     namespaces and loads `bwrap-userns-restrict`, whose `bwrap` profile attaches to `/usr/bin/bwrap` inside the
     container as well and denies all capabilities to what bwrap runs: `setpriv` cannot switch to the agent
@@ -1644,3 +1647,59 @@ Roadmap (rough, phases may overlap):
     container's address (or netavark's experimental `firewall_driver = "firewalld"`) instead of `PublishPort`?
     (b) Offer `netavark-firewalld-reload.service` (restores podman's trusted-zone entry after a reload) as a
     printed hint at install time? (c) Not yet tested on a real host with Strict on.
+107. Two-device experiment follow-ups (2026-11-28; INTERCONNECT section 6). (a) Direct connections: install.sh
+    now publishes 41641/udp, but whether peers then connect directly (not through DERP) is unverified, and a host
+    firewall may still block it. (b) Offline devices: a node is `Unknown` after about 1 minute and pods are
+    evicted after the default 5 minutes; should apps placed on laptops tolerate longer, and what does the
+    owner see meanwhile (the UI says Offline)? (c) The owner's actions (invite, join, remove a device, leave)
+    exist only as `ClusterControl` in `crates/settings`; no UI or agent tool calls them yet (UI change: owner
+    first). (d) Peers are let in by tailnet address; a device that re-registers on the tailnet gets a new
+    address and must be invited again. (e) The role label's kubectl query has not run against a real k3s
+    yet. (f) Image updates on an agent device: test that the join survives (state is under `/var` now).
+    (g) LAN-direct path between devices on one LAN (2026-11-28 test): the connection is direct but goes
+    through the router's hairpin NAT (about 100 to 125 ms), because the tailscaled in the container sees only
+    its container address and never offers the LAN address as an endpoint. Options: advertise the host's
+    LAN address and port to tailscaled (static endpoints), host networking for tailscaled, or use the
+    host's Tailscale when present. Two-device timings are in INTERCONNECT section 6.
+108. Who may make root join a cluster or mint a join token (2026-11-28, review of the multi-device groundwork).
+    Root (`melissa-cluster.service`, `k3s-prepare`) trusts what the server's uid `melissa` writes to
+    `/etc/melissa` (`cluster.toml`, `cluster-join.token`, `cluster-request.json`) and may be started by that
+    uid through polkit. Unsandboxed agent backends also run as that uid (Q85h), so such an agent could make
+    root join this device to an arbitrary k3s server (with its data kept, but the device's workloads and
+    secrets then scheduled by a stranger's control plane) or mint a join token for this server and read it
+    from `cluster-invitation.token`. The owner-only gate lives only in `ClusterControl` (the server's code).
+    Root now refuses removing anything that isn't an invited peer or is this device's own node, never blocks
+    on a FIFO, and keeps copied drop-ins 0600, but that doesn't close the above. Options considered: (a) an
+    on-screen owner confirmation that root verifies through a path the `melissa` uid can't forge; (b) a
+    separate uid for the cluster setting; (c) no unsandboxed backends while clustered. **DECIDED (owner,
+    2026-11-28): (a).** Joining another cluster and creating an invitation happen only after the owner
+    confirms on screen in the UI, and root verifies that confirmation through a path the `melissa` uid (and
+    so unsandboxed agents) cannot forge. The mechanism is designed together with the Tailscale + Devices
+    screen; not built yet. **Done (2026-11-28, groundwork branch, parked):** root keeps the trusted cluster
+    state itself in `/var/lib/melissa-container/cluster` (0700 root: the setting with role, server URL,
+    node IP, flannel interface and peers; the agent's token); `cluster prepare`, the firewall
+    (`melissa-app-access`) and the node labeller read only that. Root never reads `/etc/melissa/cluster.toml` or
+    `cluster-join.token` (where the server's user kept them earlier on the branch; never released, the two
+    test devices are back at the default): a missing root setting is the default single-node server, and
+    `cluster prepare` removes those stale files unread. No migration. Widening actions (join, invitation with a join token) pass one root-side gate,
+    `cluster::allow_widening`, which for now accepts only root itself (`podman exec -it melissa
+    melissa-server cluster join|invite ...`; the CLI's uid check is only a usability check, the boundary is
+    the 0700 root state directory and root's k3s admin credentials); requests from the server (`melissa-cluster.service`) are
+    refused. Narrowing actions (remove a device, leave) stay open to the server via polkit, checked against
+    root's setting; removing the last peer or leaving also clears the node IP and flannel interface (k3s
+    starts without Tailscale). Factory reset wipes the state directory. **Remaining:** the root
+    `melissa-confirm` service issuing single-use tickets bound to one action (kind, server URL or peer),
+    shown and approved on screen by the owner; `allow_widening` then accepts a `Server` request carrying a
+    valid ticket (the TODO in the code), and the Devices screen calls `ClusterControl::join` and
+    `create_invitation`.
+109. Flannel between agents (2026-11-28, review of the multi-device groundwork). With three or more devices,
+    pods on two agents talk over flannel's VXLAN (8472/udp) directly, agent to agent. An agent's firewall lets
+    in only its server (its peer list holds the server alone: `ClusterControl::join`), so agent-to-agent pod
+    traffic is dropped; two devices (server plus one agent) are unaffected. Not fixed in the groundwork (not
+    small). Options: (a) the server publishes every node's tailnet address to its agents (e.g. a ConfigMap
+    root on the agent reads with the kubelet's credentials, or the node objects' InternalIP, which the
+    kubelet may list) and the agent's root adds them to the peers for 8472/udp only, re-applying the firewall
+    on change; (b) agents accept 8472/udp from the whole tailnet range on `tailscale0` (simple, but anyone on
+    the tailnet could then inject VXLAN into the pod network: not without encryption); (c) flannel's
+    WireGuard backend between nodes instead of VXLAN (one more port, peers authenticated by key). Until then,
+    the Devices screen should not offer a third device, or say that apps across two agents can't talk.

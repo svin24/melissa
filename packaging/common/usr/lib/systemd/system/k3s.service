@@ -1,5 +1,5 @@
 [Unit]
-Description=k3s Kubernetes server (Melissa)
+Description=k3s Kubernetes server or agent (Melissa)
 Documentation=https://docs.k3s.io
 Wants=network-online.target
 After=network-online.target
@@ -11,9 +11,14 @@ EnvironmentFile=-/etc/default/k3s
 ExecStartPre=/usr/libexec/melissa/k3s-prepare
 # Written by k3s-prepare (systemd re-reads it for each command): MELISSA_K3S_ARGS pins the node IP.
 EnvironmentFile=-/run/melissa/k3s.env
+# Container: this device's cluster role (`melissa-server cluster prepare`, from k3s-prepare):
+# MELISSA_K3S_MODE=server|agent, and for an agent its own --config (replaces the node IP above).
+# Without the file: a server, as always.
+Environment=MELISSA_K3S_MODE=server
+EnvironmentFile=-/run/melissa-cluster/k3s.env
 ExecStartPre=-/usr/sbin/modprobe br_netfilter
 ExecStartPre=-/usr/sbin/modprobe overlay
-ExecStart=/usr/bin/k3s server $MELISSA_K3S_ARGS
+ExecStart=/usr/bin/k3s ${MELISSA_K3S_MODE} $MELISSA_K3S_ARGS
 # k3s manages its own container processes inside this cgroup.
 KillMode=process
 Delegate=yes

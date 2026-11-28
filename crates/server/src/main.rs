@@ -150,6 +150,21 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
                               filter in place for the setting in <file> (default
                               /etc/melissa/app-access.toml), verify it, write its status
   app-access status           what the filter lets in now
+  cluster prepare             (root, container: k3s-prepare) this device's k3s role and node
+                              name from root's cluster setting: k3s config, data directory
+  cluster after-start         (root, container: k3s.service) delete the old node after a rename
+  cluster label               (root, container: melissa-cluster-label.timer) label this
+                              device's and the joined devices' nodes with their role
+  cluster run                 (root, container: melissa-cluster.service) the server's request
+  cluster join <server-url> <server-name> <own-tailnet-address>
+                              (root, container) make this device an agent of that Melissa;
+                              the join token is read from stdin (keeps it out of shell history)
+  cluster invite <own-tailnet-address> <device-name> <device-tailnet-address>
+                              (root, container) let that device join; prints the server URL and
+                              a join token valid 1 h
+  cluster remove <device-name>  (root, container) remove a joined device
+  cluster leave               (root, container) back to a single-node server
+  cluster status              role and node name now (no secrets)
   tailscale enabled [<file>]  (root, container: melissa-tailscaled.service) exit 0 when
                               Melissa's own Tailscale should run (setting in <file>, default
                               /etc/melissa/tailscale.toml; never when the host runs Tailscale)";
@@ -238,6 +253,10 @@ async fn main() -> anyhow::Result<()> {
     if argv.first().is_some_and(|c| c == "factory-reset") && argv.get(1).is_some_and(|c| c == "run")
     {
         return reset::command(&argv[2..]);
+    }
+    // Root's cluster helper (k3s-prepare, k3s's ExecStartPost, melissa-cluster.service).
+    if argv.first().is_some_and(|c| c == "cluster") {
+        return cluster_command(&argv[1..]);
     }
     // Root's check before tailscaled starts (the unit's ExecCondition).
     if argv.first().is_some_and(|c| c == "tailscale") {
@@ -571,11 +590,27 @@ fn app_access_command(args: &[String]) -> anyhow::Result<()> {
                 PathBuf::from,
             );
             let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
-            let status = access::apply(
+            // Cluster peers (multi-device) from root's own cluster setting (never a file the
+            // server's user writes); unreadable: none get in.
+            let peers = match melissa_settings::cluster::read_trusted(std::path::Path::new("/")) {
+                Ok(c) => access::ClusterPeers::of(&c),
+                Err(e) => {
+                    eprintln!("melissa-app-access: {e}; no cluster peers let in");
+                    access::ClusterPeers::default()
+                }
+            };
+            let status = access::apply_with(
                 &NftCommand::default(),
                 access::read_setting(&setting),
                 access::default_gateway(&route),
+                &peers,
             );
+            if !peers.addresses.is_empty() {
+                println!(
+                    "melissa-app-access: {} cluster peer(s) may reach k3s on tailscale0",
+                    peers.addresses.len()
+                );
+            }
             access::write_status(&status_path, &status)
                 .with_context(|| format!("cannot write {}", status_path.display()))?;
             for e in &status.errors {
@@ -603,6 +638,129 @@ fn app_access_command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         _ => bail!("usage: melissa-server app-access apply [<setting file>] | app-access status"),
+    }
+}
+
+/// `cluster prepare|after-start|run|status` (root; see `melissa_settings::cluster`).
+fn cluster_command(args: &[String]) -> anyhow::Result<()> {
+    use melissa_settings::cluster;
+    let config_dir = PathBuf::from("/etc/melissa");
+    let root = std::path::Path::new("/");
+    match args {
+        [c] if c == "prepare" => {
+            let input = cluster::PrepareInput::system(&config_dir);
+            let host = melissa_settings::factory_reset::SystemHost::from_env();
+            let status = cluster::prepare(root, &config_dir, &input, &host, &mut |line| {
+                eprintln!("melissa-cluster: {line}")
+            })
+            .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            for e in &status.errors {
+                eprintln!("melissa-cluster: {e}");
+            }
+            Ok(())
+        }
+        [c] if c == "after-start" => {
+            // Best effort: the timer labels again within a minute.
+            if let Err(e) = cluster::label_nodes(root, &cluster::SystemRunner) {
+                eprintln!("melissa-cluster: node roles not labelled: {e}");
+            }
+            cluster::after_start(root).map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
+        }
+        [c] if c == "label" => {
+            let n = cluster::label_nodes(root, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            if n > 0 {
+                println!("melissa-cluster: labelled {n} node(s) with their role");
+            }
+            Ok(())
+        }
+        [c] if c == "run" => {
+            let answer = cluster::run_request(root, &config_dir, &cluster::SystemRunner);
+            match answer.error {
+                None => Ok(()),
+                Some(e) => bail!("melissa-cluster: {e}"),
+            }
+        }
+        // The owner's actions as root itself (the host's admin, `podman exec`): the only way to
+        // join or invite until the on-screen confirmation exists (PLAN Q108).
+        [c, url, name, own] if c == "join" => {
+            let origin = root_origin()?;
+            let own = own
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{own} is not an IP address"))?;
+            let join = cluster::Join {
+                server_url: url.clone(),
+                server_name: name.clone(),
+                own_address: own,
+            };
+            eprintln!("join token (one line, from the server's invitation):");
+            let mut token = String::new();
+            std::io::stdin()
+                .read_line(&mut token)
+                .context("reading the join token")?;
+            cluster::root_join(root, origin, &join, &token, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            println!("joining {name} as an agent; k3s is restarting");
+            Ok(())
+        }
+        [c, own, name, address] if c == "invite" => {
+            let origin = root_origin()?;
+            let own = own
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{own} is not an IP address"))?;
+            let address = address
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{address} is not an IP address"))?;
+            let invite = cluster::Invite {
+                own_address: own,
+                peer: cluster::Peer {
+                    name: name.clone(),
+                    address,
+                },
+            };
+            let token = cluster::root_invite(root, origin, &invite, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            println!("server: {}", cluster::server_url_for(own));
+            println!("token (valid {}): {token}", cluster::INVITATION_TTL);
+            Ok(())
+        }
+        [c, name] if c == "remove" => {
+            root_origin()?;
+            cluster::root_remove(root, name, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
+        }
+        [c] if c == "leave" => {
+            root_origin()?;
+            cluster::root_leave(root, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
+        }
+        [c] if c == "status" => {
+            let text = std::fs::read_to_string(cluster::STATUS_FILE)
+                .with_context(|| format!("no status yet ({})", cluster::STATUS_FILE))?;
+            println!("{text}");
+            Ok(())
+        }
+        _ => bail!(
+            "usage: melissa-server cluster prepare | after-start | label | run | status | \
+             join <server-url> <server-name> <own-address> | \
+             invite <own-address> <device-name> <device-address> | remove <device-name> | leave"
+        ),
+    }
+}
+
+/// The owner's cluster actions run here only as root (the host's admin through `podman exec`).
+/// A usability check (a clear message instead of permission errors halfway), **not** the
+/// security boundary: `/proc/self`'s owner is 0 also for root inside a user namespace. The
+/// boundary is that root's state directory is 0700 root and k3s's admin credentials are
+/// root's, so a process that isn't really root fails at the first write or `k3s` call; the
+/// server's user reaches root's cluster code only through `melissa-cluster.service`, which
+/// always runs requests as `Origin::Server`.
+fn root_origin() -> anyhow::Result<melissa_settings::cluster::Origin> {
+    use std::os::unix::fs::MetadataExt;
+    if std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0) {
+        Ok(melissa_settings::cluster::Origin::Root)
+    } else {
+        bail!("run this as root inside the container: podman exec -it melissa melissa-server cluster …")
     }
 }
 

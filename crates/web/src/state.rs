@@ -174,6 +174,9 @@ pub struct Device {
     pub name: String,
     /// The node is ready (None: not known, e.g. no cluster).
     pub ready: Option<bool>,
+    /// The node still reports in (`false`: its Ready condition is Unknown, e.g. the device is
+    /// off or asleep). None: not known.
+    pub reachable: Option<bool>,
     pub os: Option<String>,
     pub kernel: Option<String>,
     pub cpus: Option<String>,
@@ -182,6 +185,18 @@ pub struct Device {
     pub uptime_secs: Option<u64>,
     /// Space where apps keep their data (`/var`, else `/`), from `device_info`'s `disks`.
     pub disk: Option<Disk>,
+}
+
+impl Device {
+    /// Its status dot and word: Online, Offline (stopped reporting in), Not ready.
+    pub fn health(&self) -> (Health, &'static str) {
+        match (self.ready, self.reachable) {
+            (Some(true), _) => (Health::Ok, "Online"),
+            (Some(false), Some(false)) => (Health::Idle, "Offline"),
+            (Some(false), _) => (Health::Problem, "Not ready"),
+            (None, _) => (Health::Idle, "Status unknown"),
+        }
+    }
 }
 
 /// Space on one filesystem.
@@ -246,11 +261,23 @@ pub fn phase_words(phase: &str) -> (Health, &'static str) {
 }
 
 impl ClusterSnapshot {
-    /// Build from the tools' answers (None: tool missing or failed).
+    /// Build from the tools' answers (None: tool missing or failed); tests.
+    #[cfg(test)]
     pub fn from_tools(
         list_apps: Option<&Value>,
         cluster: Option<&Value>,
         agent: Option<&Value>,
+    ) -> Self {
+        Self::from_tools_on(list_apps, cluster, agent, None)
+    }
+
+    /// [`Self::from_tools`] knowing this device's k3s node name (`own_node`, pinned by
+    /// `melissa-server cluster prepare`). This device always comes first in `devices`.
+    pub fn from_tools_on(
+        list_apps: Option<&Value>,
+        cluster: Option<&Value>,
+        agent: Option<&Value>,
+        own_node: Option<&str>,
     ) -> Self {
         let apps = match list_apps {
             None => Apps::Unknown,
@@ -296,22 +323,31 @@ impl ClusterSnapshot {
             .map(|n| Device {
                 name: n["name"].as_str().unwrap_or("Device").to_string(),
                 ready: n["ready"].as_bool(),
+                reachable: n["reachable"].as_bool(),
                 cpus: n["allocatable"]["cpu"].as_str().map(str::to_string),
                 ..Device::default()
             })
             .collect();
+        // This device first: its own node by name; else the only node; else (no cluster, or
+        // several nodes and no name) an entry of its own.
+        let own = match own_node {
+            Some(name) => devices.iter().position(|d| d.name == name),
+            None if devices.len() == 1 => Some(0),
+            None => None,
+        };
+        match own {
+            Some(i) => devices[..=i].rotate_right(1),
+            None if agent.is_some() => devices.insert(
+                0,
+                Device {
+                    name: own_node.unwrap_or("This device").into(),
+                    ..Device::default()
+                },
+            ),
+            None => {}
+        }
         if let Some(b) = agent {
-            // device_info describes the device this daemon runs on. With one node that is it;
-            // with several we can't tell which, so it becomes its own entry.
-            if devices.len() != 1 {
-                devices.insert(
-                    0,
-                    Device {
-                        name: "This device".into(),
-                        ..Device::default()
-                    },
-                );
-            }
+            // device_info describes the device this daemon runs on: the first entry.
             let d = &mut devices[0];
             d.os = b["os"].as_str().map(str::to_string);
             d.kernel = b["kernel"].as_str().map(str::to_string);
@@ -467,9 +503,20 @@ impl ClusterCache {
             self.call("device_info"),
             self.workspaces(),
         );
+        // This device's node name, as root last applied it (container; elsewhere none).
+        let own_node = melissa_settings::cluster::read_status(std::path::Path::new(
+            melissa_settings::cluster::STATUS_FILE,
+        ))
+        .map(|s| s.node_name)
+        .filter(|n| !n.is_empty());
         let snap = Arc::new(
-            ClusterSnapshot::from_tools(apps.as_ref(), cluster.as_ref(), agent.as_ref())
-                .with_keepers(keepers(&workspaces)),
+            ClusterSnapshot::from_tools_on(
+                apps.as_ref(),
+                cluster.as_ref(),
+                agent.as_ref(),
+                own_node.as_deref(),
+            )
+            .with_keepers(keepers(&workspaces)),
         );
         let woke = {
             let mut c = lock(&self.cached);
@@ -659,6 +706,37 @@ mod tests {
             web.link(Some("melissa-box.example.ts.net:8080")).as_deref(),
             Some("http://melissa-box.example.ts.net:30000")
         );
+    }
+
+    #[test]
+    fn this_device_is_its_own_node_without_a_duplicate() {
+        let cluster = json!({"nodes": [
+            {"name": "desktop", "ready": true, "reachable": true},
+            {"name": "laptop", "ready": false, "reachable": false},
+            {"name": "spare", "ready": false, "reachable": true},
+        ]});
+        let agent = json!({"os": "Fedora Linux 45"});
+        let s = ClusterSnapshot::from_tools_on(None, Some(&cluster), Some(&agent), Some("laptop"));
+        let names: Vec<&str> = s.devices.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["laptop", "desktop", "spare"]);
+        assert_eq!(s.devices[0].os.as_deref(), Some("Fedora Linux 45"));
+        assert_eq!(s.devices[1].os, None);
+        assert_eq!(s.devices[0].health(), (Health::Idle, "Offline"));
+        assert_eq!(s.devices[1].health(), (Health::Ok, "Online"));
+        assert_eq!(s.devices[2].health(), (Health::Problem, "Not ready"));
+        // Older cluster_health without `reachable`: not ready.
+        let old = json!({"nodes": [{"name": "laptop", "ready": false}]});
+        let s = ClusterSnapshot::from_tools_on(None, Some(&old), None, Some("laptop"));
+        assert_eq!(s.devices[0].health(), (Health::Problem, "Not ready"));
+        // Its node isn't registered (yet): an entry of its own, by that name.
+        let s = ClusterSnapshot::from_tools_on(None, Some(&cluster), Some(&agent), Some("new"));
+        assert_eq!(s.devices.len(), 4);
+        assert_eq!(s.devices[0].name, "new");
+        assert_eq!(s.devices[0].health(), (Health::Idle, "Status unknown"));
+        // No name and several nodes: can't tell which, so an entry of its own.
+        let s = ClusterSnapshot::from_tools_on(None, Some(&cluster), Some(&agent), None);
+        assert_eq!(s.devices[0].name, "This device");
+        assert_eq!(s.devices.len(), 4);
     }
 
     #[test]

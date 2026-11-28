@@ -13,9 +13,9 @@ use crate::{
         feed_entry, link, live_region, log_view, main_part, markdown, note, oob_inner, page,
         page_header, permission_card, plain_text, post_form, relayed_message, scheduled_message,
         section, select_field, steps_card, table, textarea_field, truncated, user_message_with,
-        AppGroup, AppList, AppRow, AppsEmpty, Avatar, Choice, DeviceCard, Health, LogLine,
-        MessageHead, Meter, Nav, PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID,
-        COMPOSER_STATUS_ID, FEED_ID,
+        AppGroup, AppList, AppRow, AppsEmpty, Avatar, Choice, DeviceCard, LogLine, MessageHead,
+        Meter, Nav, PermissionCard, ShowChoice, StepLine, Tone, APPROVALS_ID, COMPOSER_STATUS_ID,
+        FEED_ID,
     },
     components::{
         chat_head, composer_closed, details_panel, details_toggle, feed_archive, file_count,
@@ -44,14 +44,6 @@ pub const TASKS_ID: &str = "tasks";
 pub const TASK_ID: &str = "task";
 
 // --- Shared pieces --------------------------------------------------------------------------
-
-fn device_health(d: &Device) -> (Health, &'static str) {
-    match d.ready {
-        Some(true) => (Health::Ok, "Online"),
-        Some(false) => (Health::Problem, "Not ready"),
-        None => (Health::Idle, "Status unknown"),
-    }
-}
 
 /// What every page with the sidebar needs.
 pub struct Frame<'a> {
@@ -1042,7 +1034,7 @@ pub(crate) fn format_uptime(secs: u64) -> String {
 
 /// One device's card; `name`: what the UI calls it (the owner's name for this device).
 fn device(d: &Device, name: &str) -> Markup {
-    let (health, status) = device_health(d);
+    let (health, status) = d.health();
     let mut facts = Vec::new();
     if let Some(os) = &d.os {
         facts.push(os.clone());

@@ -93,7 +93,8 @@ impl Tool for ClusterHealth {
             name: "cluster_health",
             description:
                 "Health of this cluster's k3s cluster: whether the API is reachable, server \
-                version, nodes (ready, roles, kubelet version, allocatable CPU/memory), pod counts \
+                version, nodes (ready, reachable: false when the node \
+                stopped reporting in, roles, kubelet version, allocatable CPU/memory), pod counts \
                 by phase per namespace, and pods that are not Running/Succeeded with the reason. \
                 When k3s can't be used, `app_platform` says why in words for the user.",
             // Only names, counts and kubelet-set reason codes are returned (sanitized below);
@@ -117,10 +118,13 @@ fn pod_phase(pod: &Pod) -> String {
 
 fn node_summary(node: &Node) -> Value {
     let status = node.status.as_ref();
-    let ready = status
+    let condition = status
         .and_then(|s| s.conditions.as_ref())
-        .and_then(|c| c.iter().find(|c| c.type_ == "Ready"))
-        .is_some_and(|c| c.status == "True");
+        .and_then(|c| c.iter().find(|c| c.type_ == "Ready"));
+    let ready = condition.is_some_and(|c| c.status == "True");
+    // "Unknown": the node controller stopped hearing from the kubelet (the device is off,
+    // asleep or out of the network). "False": the kubelet reports in but isn't ready.
+    let reachable = condition.is_none_or(|c| c.status != "Unknown");
     let roles: Vec<&str> = node
         .metadata
         .labels
@@ -133,6 +137,7 @@ fn node_summary(node: &Node) -> Value {
     json!({
         "name": node.metadata.name,
         "ready": ready,
+        "reachable": reachable,
         "roles": roles,
         "kubelet_version": status.and_then(|s| s.node_info.as_ref()).map(|i| &i.kubelet_version),
         "allocatable": {"cpu": quantity("cpu"), "memory": quantity("memory")},
@@ -396,7 +401,11 @@ mod tests {
     #[tokio::test]
     async fn summarizes_nodes_and_pods() {
         let out = call(Fake {
-            nodes: vec![node("agent-1", "True"), node("agent-2", "Unknown")],
+            nodes: vec![
+                node("agent-1", "True"),
+                node("agent-2", "Unknown"),
+                node("agent-3", "False"),
+            ],
             namespaces: vec![namespace("kube-system"), namespace("empty-app")],
             pods: vec![
                 pod("kube-system", "coredns", "Running", None),
@@ -415,10 +424,14 @@ mod tests {
         let n = &out["nodes"][0];
         assert_eq!(n["name"], "agent-1");
         assert_eq!(n["ready"], true);
+        assert_eq!(n["reachable"], true);
         assert_eq!(n["roles"], json!(["control-plane"]));
         assert_eq!(n["kubelet_version"], "v1.37.2+k3s1");
         assert_eq!(n["allocatable"], json!({"cpu": "2", "memory": "2867000Ki"}));
         assert_eq!(out["nodes"][1]["ready"], false);
+        assert_eq!(out["nodes"][1]["reachable"], false);
+        assert_eq!(out["nodes"][2]["ready"], false);
+        assert_eq!(out["nodes"][2]["reachable"], true);
 
         assert_eq!(out["pods"]["total"], 5);
         assert_eq!(

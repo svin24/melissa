@@ -160,6 +160,22 @@ host_tailscale() {
     fi
 }
 
+# tailscale_port_line: publish Melissa's own tailscaled's UDP port (direct connections, not only
+# DERP relays) unless the host runs Tailscale, whose tailscaled has that port. Also not with
+# HOST_TAILSCALE=no on a host that runs it anyway: podman reserves a published UDP port on the
+# host, so the container would not start while the host's tailscaled holds it.
+TAILSCALE_PORT=41641
+tailscale_port_line() {
+    local host; host=$(host_tailscale) || return 1
+    [ "$host" = yes ] && return 0
+    if [ "$(HOST_TAILSCALE=auto host_tailscale)" = yes ]; then
+        echo "melissa-install: NOTICE: the host runs Tailscale too (its tailscaled holds $TAILSCALE_PORT/udp):" \
+            "not published; Melissa's own Tailscale connects through other ports or DERP relays" >&2
+        return 0
+    fi
+    echo "PublishPort=$TAILSCALE_PORT:$TAILSCALE_PORT/udp"
+}
+
 # tailscale_name HOSTNAME: the node name of Melissa's own Tailscale: melissa-<short host name>,
 # lower case letters, digits and dashes, at most 63 (TAILSCALE_NAME overrides it).
 tailscale_name() {
@@ -440,7 +456,10 @@ sysctls() {
 }
 
 install_files() {
-    local auto_line=
+    local auto_line= host_ts ts_port_line
+    # Outside the sed below: a failure there would silently drop the PublishPort line.
+    host_ts=$(host_tailscale) || die "cannot tell whether the host runs Tailscale (HOST_TAILSCALE)"
+    ts_port_line=$(tailscale_port_line) || die "cannot decide whether to publish Tailscale's port"
     [ "$AUTO_UPDATE" = off ] || auto_line="AutoUpdate=$AUTO_UPDATE"
     mkdir -p "$STATE/status" "$STATE/request" "$(dirname "$QUADLET")" "$LIBEXEC" "$SHARE"
     chmod 0755 "$STATE" "$STATE/status"; chmod 0700 "$STATE/request"
@@ -448,7 +467,8 @@ install_files() {
     sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
         -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
-        -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
+        -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$host_ts#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
+        -e "s#@TAILSCALE_PORT_LINE@#$ts_port_line#" \
         "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     # uninstall.sh and what it sources, so it works without the checkout (get.sh deletes its copy).

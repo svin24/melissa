@@ -1,0 +1,13 @@
+# Melissa: every minute, label newly joined devices' k3s nodes with their role
+# (melissa-cluster-label.service). k3s.service wants it (30-cluster.conf); it runs only while
+# root's cluster setting has peers (root keeps the marker below with the setting; the first
+# invitation restarts k3s), so a single device never ticks.
+[Unit]
+Description=Melissa: label cluster nodes with their role (every minute)
+ConditionPathExists=/var/lib/melissa-container/cluster/has-peers
+RequiresMountsFor=/var/lib/melissa-container
+
+[Timer]
+OnActiveSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=10s

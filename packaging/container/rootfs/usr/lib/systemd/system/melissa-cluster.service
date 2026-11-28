@@ -1,0 +1,19 @@
+# Melissa: the owner's cluster actions that need root (melissa_settings::cluster). The server
+# (user melissa) writes one request to /etc/melissa/cluster-request.json and starts this unit
+# (polkit: 54-melissa-cluster.rules). Root checks it against its own setting in
+# /var/lib/melissa-container/cluster (never what the server's user wrote) and runs only narrowing
+# actions: drain and delete a joined device's node (only a peer root itself let in, never this
+# device's), or leave the cluster; then it re-applies the firewall and restarts k3s when needed.
+# Joining another cluster and invitations (a join token) are refused here until the owner's
+# on-screen confirmation exists (PLAN Q108); for now root runs them only from the host:
+# `podman exec -it melissa melissa-server cluster join|invite ...`. Container image only.
+[Unit]
+Description=Melissa: cluster actions (remove a device, leave)
+RequiresMountsFor=/var/lib/melissa-container
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/melissa-server cluster run
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStartSec=240

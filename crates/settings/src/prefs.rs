@@ -26,8 +26,9 @@ pub struct Prefs {
     /// While an agent works, Enter in the chat composer steers the message into the running
     /// turn (double Enter queues it); off: Enter queues it (double Enter steers).
     pub enter_steers: bool,
-    /// The name the UI shows for this device (first-run setup). Display only: it does not
-    /// rename the Tailscale or cluster node. `None`: the cluster's node name.
+    /// The name the UI shows for this device (first-run setup). It does not rename the
+    /// Tailscale node. The k3s node takes it (sanitized) while that is harmless
+    /// (`crate::cluster::decide_name`). `None`: the cluster's node name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
     /// First-run setup: the steps the owner put off, and whether the checklist is hidden.

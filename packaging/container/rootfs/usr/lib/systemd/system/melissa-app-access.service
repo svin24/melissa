@@ -6,6 +6,10 @@
 # app ports) starts only once the table exists (k3s.service.d/20-app-access.conf).
 # Runs at every start, and when the server starts it after a change (polkit:
 # 52-melissa-app-access.rules allows the server's user to start this unit and nothing else).
+# Multi-device: it also lets the cluster peers in root's cluster setting
+# (/var/lib/melissa-container/cluster, root only) reach k3s's ports
+# (6443/tcp, 10250/tcp, 8472/udp; agent: 10250 and 8472 from its server), only on tailscale0, so
+# the table, rebuilt at every start, keeps them (melissa_settings::cluster).
 # Container image only. Code: melissa_settings::app_access; docs: DECISIONS.md 2026-11-21.
 [Unit]
 Description=Melissa: who may open apps (app port filter)

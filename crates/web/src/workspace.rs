@@ -287,11 +287,7 @@ impl Ui {
             .devices
             .iter()
             .map(|d| {
-                let (h, w) = match d.ready {
-                    Some(true) => (Health::Ok, "Online"),
-                    Some(false) => (Health::Problem, "Not ready"),
-                    None => (Health::Idle, "Status unknown"),
-                };
+                let (h, w) = d.health();
                 (d.name.clone(), h, w)
             })
             .collect();
