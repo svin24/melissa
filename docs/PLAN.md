@@ -1727,4 +1727,10 @@ Roadmap (rough, phases may overlap):
     names not in `[web] hosts` and can't sign in over plain HTTP: should install.sh add the LAN name to
     `[web] hosts` when `UI_BIND` is wider? (g) The busy button and the field-error state are new component
     states built from the Penpot draft: owner review. (h) The device row's "Problem" dot now uses the
-    attention tone, the same as "Busy".
+    attention tone, the same as "Busy". (i) **Owner accepted 2026-11-28:** signing in over plain HTTP from
+    another device on the LAN is refused (only HTTPS or this device); LAN HTTPS (phase 2, Q22) is the fix.
+    (j) Security review 2026-11-28, not done: the serve listener is bound whenever Melissa runs Tailscale,
+    not only while serve is on; with the host's own Tailscale the main listener accepts any `*.ts.net` name
+    over HTTPS (the container can't read the host's node name). `[web] trust_forwarded` is now off by
+    default (install.sh sets it for the host's serve with a loopback UI): an image update without
+    install.sh breaks an existing host serve until it is set.

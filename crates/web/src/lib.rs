@@ -1653,7 +1653,14 @@ mod tests {
                 region.contains("HTTPS address stops working"),
                 "Disable says the address goes: {region}"
             );
-            assert!(fx.audit().contains("tailscale.serve_on"));
+            let log = fx.audit();
+            assert!(log.contains("tailscale.serve_on"), "{log}");
+            assert!(
+                log.lines()
+                    .filter(|l| l.contains("tailscale.serve_on"))
+                    .all(|l| l.contains("\"actor\":\"owner\"")),
+                "the owner's name, not \"ui\": {log}"
+            );
             // The flash is once: the page alone doesn't repeat it.
             let (_, _, html) = send(&app, get("/settings/tailscale")).await;
             assert!(!html.contains("Turned on."), "{html}");
@@ -1663,7 +1670,12 @@ mod tests {
             let (_, _, region) =
                 send(&app, htmx_post("/ui/settings/tailscale/serve/off", "")).await;
             assert!(region.contains("Off. Gives Melissa"), "{region}");
-            assert!(fx.audit().contains("tailscale.serve_off"));
+            let log = fx.audit();
+            assert!(
+                log.lines()
+                    .any(|l| l.contains("tailscale.serve_off") && l.contains("\"actor\":\"owner\"")),
+                "{log}"
+            );
             assert_eq!(*fake.serve.lock().unwrap(), "{}");
         }
 

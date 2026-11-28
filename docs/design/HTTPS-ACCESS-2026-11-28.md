@@ -37,8 +37,13 @@ host 127.0.0.1:UI_PORT --> container :8081 (socket proxy)
 - **Every start.** When the setting is on, the server applies the target again (`serve reset`, then serve).
   When the status shows a config that isn't exactly Melissa's (only TCP 443 HTTPS, one handler `/` to the
   target, no Funnel), it applies it again.
-- **Turning it off.** Turn off (no confirmation: easy to undo) runs `tailscale serve reset`; Disable does
-  that first and says the HTTPS address stops working. Audited `tailscale.serve_off`.
+- **Turning it off.** Turn off (no confirmation: easy to undo) saves the setting as off, then runs
+  `tailscale serve reset`; Disable does that first and says the HTTPS address stops working. Audited
+  `tailscale.serve_off`.
+- **Something served while it is off.** Melissa's tailscaled serves her UI alone. While the setting is
+  off, every read of the state (the Settings page, `tailscale_status`) checks `tailscale serve status` and
+  resets anything configured (e.g. an agent, as the `melissa` uid, serving an app port on the node's ts.net
+  name), audited `tailscale.serve_off` by `melissa`. A config with Tailscale Services is never "ours".
 - **Agents.** `tailscale_status` says whether it is on and the address; there is no tool to turn it on.
 - **The host runs its own Tailscale** (`HOST_TAILSCALE=yes`): Melissa doesn't touch it. The row shows
   `sudo tailscale serve --bg http://127.0.0.1:<UI port>` with Copy (an approved exception to "no host commands
@@ -61,7 +66,17 @@ host 127.0.0.1:UI_PORT --> container :8081 (socket proxy)
 - **HSTS** only on the ts.net origin through the serve listener: `max-age=86400`, no `includeSubDomains`, no
   `preload`.
 - **Sign-in limits** (Q87a) count per client address (the last `X-Forwarded-For` entry) only on a trusting
-  listener; elsewhere every request still comes from loopback.
+  listener; elsewhere every request still comes from loopback. A full table (10,000 keys) drops stale
+  counters and addresses first and never a username's counter that still has failures; only at a hard cap
+  (100,000) do usernames go, those with the fewest failures first, so flooding it with made-up names or
+  addresses can't reset the counter of a username being guessed.
+- **`[web] trust_forwarded`** (the main listener believes `X-Forwarded-*`) is off by default. install.sh
+  sets it only when the host runs Tailscale and `UI_BIND` is loopback (the host's `tailscale serve` in
+  front of the UI), marked as its own line, and removes that line again when either stops being true. The
+  server ignores it when the container publishes the UI beyond loopback (`MELISSA_UI_BIND`): every
+  connection through the UI forward arrives as 127.0.0.1, so a LAN client could name any address and never
+  fill the per-address limit. Local users on the host can still do that with the setting on (accepted:
+  the per-username limit still holds).
 - **Tailscale identity headers** are shown with the browser's name in Account → sessions and audited, never
   used to sign in.
 - **Apps are never served over HTTPS on the UI hostname.** HSTS would turn their `http://<name>:<port>`
@@ -70,12 +85,23 @@ host 127.0.0.1:UI_PORT --> container :8081 (socket proxy)
 
 ## Migration
 
-- **Host `tailscale serve` → 127.0.0.1:UI_PORT** keeps working. `[web] trust_forwarded` defaults to on unless
-  Melissa manages Tailscale itself, and the main listener accepts `*.ts.net` names only when the proxy says
-  HTTPS. Set `trust_forwarded = false` when nothing on the host proxies to the UI.
+- **Host `tailscale serve` → 127.0.0.1:UI_PORT** keeps working after running install.sh again (it writes
+  `[web] trust_forwarded = true` when the host runs Tailscale and `UI_BIND` is loopback). An image update
+  alone doesn't run install.sh: until then, or on a Nix/host install, set it by hand (`[web]
+  trust_forwarded = true` in server.toml; NixOS: `services.melissa.settings.web.trust_forwarded = true`).
+  The main listener accepts `*.ts.net` names only when the proxy says HTTPS.
 - **Plain-HTTP LAN access** (`UI_BIND` not loopback) now gets 421 for names Melissa doesn't know, and sign-in
   is refused over plain HTTP. Add the name to `[web] hosts` to browse; sign in through SSH, Tailscale serve
-  or (later) phase 2.
+  or (later) phase 2. **Owner accepted (2026-11-28)** that signing in over plain HTTP from another device on
+  the LAN is refused; LAN HTTPS (phase 2) is the fix (PLAN Q110 (i)).
+
+## Not done (security review 2026-11-28)
+
+- The serve listener (`proxy_listen`) is bound at every start when Melissa runs Tailscale, not only while
+  serve is on. It is loopback only; anything that reaches it (root, the `melissa` uid, an unsandboxed
+  agent) can already do more. Binding it on demand needs the listener to follow the setting.
+- The main listener with the host's own Tailscale accepts any `*.ts.net` name over HTTPS, not only the
+  host's node name: the container can't read the host's tailscaled.
 
 ## Unverified (needs a real tailnet)
 

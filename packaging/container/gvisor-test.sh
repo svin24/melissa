@@ -191,7 +191,7 @@ probe "mount tmpfs" 'mkdir -p /tmp/m && mount -t tmpfs x /tmp/m'
 probe "write /proc/sys" 'echo 1 > /proc/sys/kernel/sysrq'
 probe "write /sys" 'echo x > /sys/kernel/uevent_helper'
 node=$(kc get node "$NAME" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
-for a in "$node:8080" "$node:8081"; do
+for a in "$node:8080" "$node:8081" "$node:8082"; do
     probe "the server UI at $a" "wget -q -T 3 -O /dev/null http://$a/"
 done
 

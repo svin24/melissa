@@ -700,6 +700,30 @@ async fn each_start_sets_it_up_again_or_removes_a_leftover() {
     assert_eq!(*fake.serve_config.lock().unwrap(), "{}");
 }
 
+/// Security review 2026-11-28 (S2): while the setting is off, something served on this node's
+/// name (an agent running the CLI as the melissa uid) is removed at the next state read, never
+/// shown as Off while it is served.
+#[tokio::test]
+async fn while_off_a_configuration_melissa_didnt_set_up_is_removed() {
+    let fake = Arc::new(Fake::default());
+    let (dir, c) = connected("serve-foreign", fake.clone()).await;
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert!(
+        !fake.calls().iter().any(|c| c == "serve reset"),
+        "nothing to remove"
+    );
+    let app = OURS.replace("8082", "30001");
+    *fake.serve_config.lock().unwrap() = app;
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert_eq!(*fake.serve_config.lock().unwrap(), "{}", "removed");
+    let log = audit(&dir);
+    assert!(log.contains("didn't set up"), "{log}");
+    // Even Melissa's own target is removed while the setting is off.
+    *fake.serve_config.lock().unwrap() = OURS.into();
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert_eq!(*fake.serve_config.lock().unwrap(), "{}");
+}
+
 #[test]
 fn the_setting_file_keeps_the_other_fields() {
     let dir = scratch("serve-file");

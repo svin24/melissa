@@ -18,7 +18,7 @@
 //! to run there instead (owner-approved exception to "no host commands").
 
 use axum::{
-    extract::{Form, Query, State},
+    extract::{Extension, Form, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
@@ -35,7 +35,7 @@ use super::{
 use crate::{
     auth::{
         pages::{blocking, say, src, Source},
-        session_cookie,
+        session_cookie, Viewer,
     },
     components::Tone,
     is_htmx,
@@ -355,10 +355,16 @@ pub(super) struct ServeIn {
     password: String,
 }
 
+/// Who turned it on or off, for the audit: the signed-in person ("ui" without a session).
+fn actor(viewer: Option<&Extension<Viewer>>) -> String {
+    viewer.map_or_else(|| "ui".to_string(), |Extension(v)| v.name().to_string())
+}
+
 /// Turn on: the name (renamed first when it differs) and the password again, checked here
 /// (it counts like any sign-in try and refreshes the 5-minute window).
 pub(super) async fn serve_on(
     State(ui): State<Ui>,
+    viewer: Option<Extension<Viewer>>,
     source: Source,
     headers: HeaderMap,
     Form(form): Form<ServeIn>,
@@ -404,7 +410,7 @@ pub(super) async fn serve_on(
         v.serve = Some(form_again(None, Some(text)).await);
         return serve_answer(&ui, &headers, v).await;
     }
-    match c.serve_on("ui", Some(&name)).await {
+    match c.serve_on(&actor(viewer.as_ref()), Some(&name)).await {
         Ok(s) => {
             v = view(&c.state().await, None);
             serve_row(&c, &mut v, true).await;
@@ -439,11 +445,15 @@ async fn serve_answer(ui: &Ui, headers: &HeaderMap, v: TailscaleView) -> Respons
 }
 
 /// Turn off (no confirmation: turning it on again is easy).
-pub(super) async fn serve_off(State(ui): State<Ui>, headers: HeaderMap) -> Response {
+pub(super) async fn serve_off(
+    State(ui): State<Ui>,
+    viewer: Option<Extension<Viewer>>,
+    headers: HeaderMap,
+) -> Response {
     let Some(c) = control(&ui) else {
         return (StatusCode::NOT_FOUND, "Not available on this device.").into_response();
     };
-    let flash = match c.serve_off("ui").await {
+    let flash = match c.serve_off(&actor(viewer.as_ref())).await {
         Ok(_) => None,
         Err(e) => {
             tracing::warn!("tailscale serve off: {e}");

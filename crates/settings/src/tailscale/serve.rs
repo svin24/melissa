@@ -14,8 +14,11 @@
 //!   the page goes to the owner's browser only (like the sign-in page), the CLI keeps waiting
 //!   in the background and finishes by itself ([`Serve::NeedsHttps`]).
 //! - **Every start** re-applies it while the setting says so, and removes a leftover
-//!   configuration while it doesn't ([`TailscaleControl::resume_serve`]). Turn off and Disable
-//!   remove it (`tailscale serve reset`; Melissa's tailscaled serves nothing else).
+//!   configuration while it doesn't ([`TailscaleControl::resume_serve`]). So does every read
+//!   of the state while it is off ([`TailscaleControl::serve_state`]): something the melissa
+//!   uid (an agent) set up on this node's ts.net name never shows as Off while it is served.
+//!   Turn off and Disable remove it (`tailscale serve reset`; Melissa's tailscaled serves
+//!   nothing else).
 //! - **Agents** see the state read-only (`tailscale_status`), never a way to turn it on.
 //! - **Never Funnel**: a configuration that opens it to the internet is not counted as on and
 //!   is replaced. The melissa uid can still rewrite it (like Q108); see the research note.
@@ -111,7 +114,7 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// How a serve configuration (`tailscale serve status --json`) looks to Melissa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServeConfig {
-    /// HTTPS on 443 to `target` and nothing else (no Funnel, no other port).
+    /// HTTPS on 443 to `target` and nothing else (no Funnel, no other port, no Services).
     pub ours: bool,
     /// Nothing configured.
     pub empty: bool,
@@ -121,7 +124,8 @@ pub struct ServeConfig {
 pub fn parse_serve_config(json: &str, target: &str) -> ServeConfig {
     let v: serde_json::Value = serde_json::from_str(json.trim()).unwrap_or_default();
     let nonempty = |key: &str| v[key].as_object().is_some_and(|o| !o.is_empty());
-    let empty = !nonempty("TCP") && !nonempty("Web") && !nonempty("Services");
+    let services = nonempty("Services");
+    let empty = !nonempty("TCP") && !nonempty("Web") && !services;
     let funnel = v["AllowFunnel"]
         .as_object()
         .is_some_and(|o| o.values().any(|b| b == true));
@@ -138,7 +142,7 @@ pub fn parse_serve_config(json: &str, target: &str) -> ServeConfig {
             })
     });
     ServeConfig {
-        ours: only_443 && proxied && !funnel,
+        ours: only_443 && proxied && !funnel && !services,
         empty,
     }
 }
@@ -257,6 +261,8 @@ impl TailscaleControl {
             Pending::Idle | Pending::Failed(_) => {}
         }
         if !self.serve_setting() {
+            self.remove_foreign("removed a configuration Melissa didn't set up (found while off)")
+                .await;
             return Serve::Off;
         }
         let ours = match (&self.inner.serve_target, &node.dns_name) {
@@ -367,6 +373,9 @@ impl TailscaleControl {
         if !(self.serve_setting() || was_pending) {
             return;
         }
+        // The setting first: a state read in between must not see "on" with nothing
+        // configured and set it up again.
+        let saved = update_file(&self.inner.setting, |f| f.serve = false);
         let reset = match self.inner.cli.serve_reset().await {
             Ok(()) => "removed".to_string(),
             Err(e) => {
@@ -374,7 +383,7 @@ impl TailscaleControl {
                 format!("not removed: {e}")
             }
         };
-        if let Err(e) = update_file(&self.inner.setting, |f| f.serve = false) {
+        if let Err(e) = saved {
             tracing::error!("{e}; the HTTPS address may come back after a restart");
         }
         self.audit("tailscale.serve_off", actor, &reset);
@@ -415,15 +424,47 @@ impl TailscaleControl {
         } else if !config.empty {
             tracing::info!("removing a tailscale serve configuration Melissa didn't set up");
             let _one = self.inner.lock.lock().await;
-            if let Err(e) = self.inner.cli.serve_reset().await {
-                tracing::warn!("tailscale serve reset: {e}");
-            }
-            self.audit(
-                "tailscale.serve_off",
-                "melissa",
-                "leftover configuration removed",
-            );
+            self.reset_foreign("leftover configuration removed").await;
         }
+    }
+
+    /// While the setting is off nothing may be served on this node's ts.net name (Melissa's
+    /// tailscaled serves her UI alone): remove whatever is configured. Skipped while
+    /// something else holds the control's lock or a turn-on runs (it starts from a reset).
+    async fn remove_foreign(&self, why: &str) {
+        let Some(target) = self.inner.serve_target.as_deref() else {
+            return;
+        };
+        let configured = match self.inner.cli.serve_status().await {
+            Ok(j) => !parse_serve_config(&j, target).empty,
+            Err(e) => {
+                tracing::warn!("tailscale serve status: {e}");
+                false
+            }
+        };
+        if !configured {
+            return;
+        }
+        let Ok(_one) = self.inner.lock.try_lock() else {
+            return;
+        };
+        if self.serve_setting() || self.pending().id().is_some() {
+            return; // turned on meanwhile
+        }
+        tracing::warn!("removing a tailscale serve configuration Melissa didn't set up");
+        self.reset_foreign(why).await;
+    }
+
+    /// `tailscale serve reset`, audited as Melissa's own doing. Holds the control's lock.
+    async fn reset_foreign(&self, why: &str) {
+        let detail = match self.inner.cli.serve_reset().await {
+            Ok(()) => why.to_string(),
+            Err(e) => {
+                tracing::warn!("tailscale serve reset: {e}");
+                format!("{why}; not removed: {e}")
+            }
+        };
+        self.audit("tailscale.serve_off", "melissa", &detail);
     }
 
     /// Start setting it up in the background unless that already runs.
@@ -548,6 +589,12 @@ mod tests {
             r#""TCP":{"22":{"TCPForward":"127.0.0.1:22"},"#,
         );
         assert!(!parse_serve_config(&more, TARGET).ours, "another port too");
+        let services = ours.replace(
+            r#""TCP":{"#,
+            r#""Services":{"svc:x":{"TCP":{"443":{"HTTPS":true}}}},"TCP":{"#,
+        );
+        let s = parse_serve_config(&services, TARGET);
+        assert!(!s.ours && !s.empty, "a Service too");
         let path = ours.replace(r#""/":"#, r#""/x":{"Path":"/"},"/":"#);
         assert!(
             !parse_serve_config(&path, TARGET).ours,
