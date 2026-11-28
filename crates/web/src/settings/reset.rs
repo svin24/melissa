@@ -49,8 +49,15 @@ pub(super) fn available(ui: &Ui) -> bool {
 /// Why a reset can't start now.
 fn blocked(ui: &Ui) -> Option<&'static str> {
     let updates = &ui.settings.parts().updates;
-    let staged =
-        updates.helper_installed() && updates.state().status.is_some_and(|s| s.staged.is_some());
+    if !updates.helper_installed() {
+        return None;
+    }
+    let state = updates.state();
+    // Nothing that restarts Melissa while a check, an update or a rollback runs.
+    if state.busy().is_some() {
+        return Some("An update runs right now. Try again when it's done.");
+    }
+    let staged = state.status.is_some_and(|s| s.staged.is_some());
     staged.then_some("An update is waiting. Install it first.")
 }
 

@@ -238,8 +238,8 @@ async fn the_chat_says_when_no_provider_works() {
     assert_eq!(status, StatusCode::OK);
 }
 
-/// Settings → Updates → "This device": the owner renames the device after setup, with the
-/// setup step's rules; members can't.
+/// Settings → About → "This device" (moved from Updates, 2026-11-28): the owner renames the
+/// device after setup, with the setup step's rules; members can't, and don't see the field.
 #[tokio::test]
 async fn the_owner_renames_the_device_in_settings() {
     let b = setup_box("device-rename", false, false);
@@ -252,7 +252,7 @@ async fn the_owner_renames_the_device_in_settings() {
     let saved = || std::fs::read_to_string(b.fx.dir.join("config/ui.toml")).unwrap_or_default();
 
     // Never named: the field holds what setup would offer, the host's name.
-    let (status, _, page) = send(&b.app, as_get(&b.owner, "/settings/updates")).await;
+    let (status, _, page) = send(&b.app, as_get(&b.owner, "/settings/about")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         page.contains("Device name") && page.contains(">Save</button>"),
@@ -266,9 +266,16 @@ async fn the_owner_renames_the_device_in_settings() {
         assert!(page.contains(&format!("value=\"{h}\"")), "{page}");
     }
 
-    // Members: no Updates page, and the server refuses the form.
-    let (status, _, _) = send(&b.app, as_get(&b.member, "/settings/updates")).await;
-    assert_ne!(status, StatusCode::OK);
+    // Members: About without the field, and the server refuses the form.
+    let (status, _, page) = send(&b.app, as_get(&b.member, "/settings/about")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!page.contains("id=\"device-name\"") && !page.contains("id=\"time-format\""));
+    let (status, _, page) = send(&b.app, as_get(&b.owner, "/settings/updates")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !page.contains("id=\"device-name\""),
+        "the name moved to About"
+    );
     let (status, _, _) = send(&b.app, hx(&b.member, "name=Mine")).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _, _) = go(&b, &b.member, "/ui/settings/device-name", "name=Mine").await;
@@ -298,11 +305,11 @@ async fn the_owner_renames_the_device_in_settings() {
     assert!(page.contains("Give the device a name.") && page.contains("<html"));
     let (status, h, _) = go(&b, &b.owner, "/ui/settings/device-name", "name=Attic").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(location(&h), "/settings/updates");
+    assert_eq!(location(&h), "/settings/about");
 
     // The new name shows the next time a page renders: the field, and wherever the UI names
     // the device, for members too.
-    let (_, _, page) = send(&b.app, as_get(&b.owner, "/settings/updates")).await;
+    let (_, _, page) = send(&b.app, as_get(&b.owner, "/settings/about")).await;
     assert!(page.contains("value=\"Attic\""), "{page}");
     // The chat (header, sidebar, details panel) and Usage name it instead of the k3s node
     // (`device-1`); an app's details instead of the device id.
@@ -326,4 +333,43 @@ async fn the_owner_renames_the_device_in_settings() {
     // Setup's Device step offers the saved name.
     let (_, _, page) = send(&b.app, as_get(&b.owner, "/setup/device")).await;
     assert!(page.contains("value=\"Attic\""), "{page}");
+}
+
+/// Settings → About → "This device" → Time format: a fixed list, saved to `ui.toml`, the owner
+/// only; Follow browser is the default and isn't written.
+#[tokio::test]
+async fn the_owner_picks_the_time_format() {
+    let b = setup_box("time-format", false, false);
+    let hx = |s: &NewSession, body: &str| {
+        as_post(s, "/ui/settings/time-format")
+            .header("hx-request", "true")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let saved = || std::fs::read_to_string(b.fx.dir.join("config/ui.toml")).unwrap_or_default();
+    let (_, _, page) = send(&b.app, as_get(&b.owner, "/settings/about")).await;
+    assert!(
+        page.contains("Time format") && page.contains("Follow browser"),
+        "{page}"
+    );
+    let (status, _, _) = send(&b.app, hx(&b.member, "time_format=h12")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, body) = send(&b.app, hx(&b.owner, "time_format=h13")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Pick one from the list."), "{body}");
+    assert!(!saved().contains("time_format"));
+    let (status, _, body) = send(&b.app, hx(&b.owner, "time_format=h12")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("id=\"time-format\"") && !body.contains("<html"));
+    assert!(saved().contains("time_format = \"h12\""), "{}", saved());
+    let (status, h, _) = go(
+        &b,
+        &b.owner,
+        "/ui/settings/time-format",
+        "time_format=browser",
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location(&h), "/settings/about");
+    assert!(!saved().contains("time_format"), "{}", saved());
 }

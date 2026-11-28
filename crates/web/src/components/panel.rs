@@ -11,7 +11,7 @@
 
 use maud::{html, Markup};
 
-use super::{badge, Btn, Nav, Tone};
+use super::{badge, Btn, Choice, Nav, Tone};
 
 /// DOM id of the modal that holds a panel.
 pub const OVERLAY_ID: &str = "overlay";
@@ -399,9 +399,16 @@ pub fn setting_row_details(
 
 /// A card of setting rows with an optional heading above it.
 pub fn setting_card(heading: Option<&str>, rows: Markup) -> Markup {
+    setting_card_with(heading, None, rows)
+}
+
+/// [`setting_card`] with one quiet line between the heading and the card (why its settings
+/// can't be changed right now: "You can change these when the update is done").
+pub fn setting_card_with(heading: Option<&str>, lead: Option<&str>, rows: Markup) -> Markup {
     html! {
         section.setting-group {
             @if let Some(h) = heading { h2.setting-heading { (h) } }
+            @if let Some(l) = lead { p.setting-lead { (l) } }
             div.setting-card { (rows) }
         }
     }
@@ -464,6 +471,28 @@ pub fn inline_select(
     }
 }
 
+/// [`inline_select`] with choices that may be shown but not picked ("Beta (not available yet)"),
+/// and the whole select `disabled` while it can't be changed (an update runs).
+pub fn inline_select_with(
+    name: &str,
+    label: &str,
+    choices: &[Choice<'_>],
+    selected: &str,
+    disabled: bool,
+) -> Markup {
+    let id = format!("f-{name}");
+    html! {
+        label.visually-hidden for=(id) { (label) }
+        span.select-wrap {
+            select.input id=(id) name=(name) disabled[disabled] {
+                @for c in choices {
+                    option value=(c.value) selected[c.value == selected] disabled[!c.enabled] { (c.label) }
+                }
+            }
+        }
+    }
+}
+
 /// A number input for [`inline_form`].
 pub fn inline_number(name: &str, label: &str, value: &str, min: u32, max: u32) -> Markup {
     let id = format!("f-{name}");
@@ -484,6 +513,9 @@ pub struct UpdateHint {
     pub label: &'static str,
     /// Show the dot: an update is available.
     pub available: bool,
+    /// A check, update or rollback runs: the spinner in place of the glyph (no dot), this as
+    /// its label, and the link asks [`UPDATE_HINT_URL`] again every few seconds until it ends.
+    pub busy: Option<&'static str>,
 }
 
 impl UpdateHint {
@@ -492,7 +524,53 @@ impl UpdateHint {
         href: "/settings/updates",
         label: "Updates",
         available: false,
+        busy: None,
     };
+}
+
+impl Default for UpdateHint {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// Where the sections bar's Updates link asks for itself again while something runs.
+pub const UPDATE_HINT_URL: &str = "/ui/update-hint";
+/// DOM id of the sections bar's Updates link.
+pub const UPDATE_TAB_ID: &str = "tab-update";
+
+/// The sections bar's Updates link alone: idle, with the dot (an update is available) or with
+/// the spinner (busy; it polls [`UPDATE_HINT_URL`] then). `oob`: as an out-of-band update (the
+/// Updates page's region carries it while it polls).
+pub fn update_tab(update: &UpdateHint, oob: bool) -> Markup {
+    let busy = update.busy;
+    let title = busy.unwrap_or(update.label);
+    let state = match (busy, update.available) {
+        (Some(_), _) => "busy",
+        (None, true) => "available",
+        (None, false) => "none",
+    };
+    html! {
+        a.tab.tab-update.has-update[update.available && busy.is_none()] id=(UPDATE_TAB_ID)
+            href=(update.href) title=(title) data-update=(state)
+            hx-get=[busy.map(|_| UPDATE_HINT_URL)] hx-trigger=[busy.map(|_| "every 5s")]
+            hx-swap=[busy.map(|_| "outerHTML")] hx-swap-oob=[oob.then_some("true")] {
+            span.tab-icon {
+                @if busy.is_some() {
+                    span.icon.spin aria-hidden="true" {}
+                } @else {
+                    (glyph(Glyph::Refresh))
+                }
+                @if update.available && busy.is_none() { span.update-dot aria-hidden="true" {} }
+            }
+            span.tab-label { "Updates" }
+            @if let Some(b) = busy {
+                span.visually-hidden { ": " (b) }
+            } @else if update.available {
+                span.visually-hidden { ": " (update.label) }
+            }
+        }
+    }
 }
 
 /// The sections bar at the bottom of the sidebar: Settings, Apps, Usage and resources, and
@@ -514,15 +592,7 @@ pub fn section_bar(current: Nav, update: &UpdateHint) -> Markup {
             (tab("/settings", "Settings", "Settings", Glyph::Gear, current == Nav::Settings))
             (tab("/cluster", "Apps", "Apps", Glyph::Hexagon, current == Nav::Cluster))
             (tab("/usage", "Usage", "Usage and resources", Glyph::Chart, current == Nav::Usage))
-            a class={ "tab tab-update" @if update.available { " has-update" } } href=(update.href)
-                title=(update.label) data-update=(if update.available { "available" } else { "none" }) {
-                span.tab-icon {
-                    (glyph(Glyph::Refresh))
-                    @if update.available { span.update-dot aria-hidden="true" {} }
-                }
-                span.tab-label { "Updates" }
-                @if update.available { span.visually-hidden { ": " (update.label) } }
-            }
+            (update_tab(update, false))
         }
     }
 }
@@ -652,5 +722,35 @@ mod tests {
         assert!(!html.contains("href=\"/settings\" title=\"Settings\" aria-current"));
         let html = section_bar(Nav::Settings, &UpdateHint::NONE).into_string();
         assert!(html.contains("href=\"/settings\" title=\"Settings\" aria-current=\"page\""));
+    }
+
+    #[test]
+    fn the_updates_link_shows_the_dot_or_the_spinner() {
+        let idle = update_tab(&UpdateHint::NONE, false).into_string();
+        assert!(idle.contains("data-update=\"none\"") && !idle.contains("hx-get"));
+        let available = UpdateHint {
+            label: "Melissa update available",
+            available: true,
+            ..UpdateHint::NONE
+        };
+        let html = update_tab(&available, false).into_string();
+        assert!(
+            html.contains("update-dot") && html.contains("has-update"),
+            "{html}"
+        );
+        // Busy: the spinner, no dot, a poll until it ends; out of band for the region's answer.
+        let busy = UpdateHint {
+            busy: Some("Updating Melissa"),
+            ..available
+        };
+        let html = update_tab(&busy, true).into_string();
+        assert!(
+            html.contains("spin") && !html.contains("update-dot"),
+            "{html}"
+        );
+        assert!(
+            html.contains("hx-get=\"/ui/update-hint\"") && html.contains("hx-swap-oob=\"true\"")
+        );
+        assert!(html.contains("title=\"Updating Melissa\""));
     }
 }

@@ -21,10 +21,16 @@
 //!   Remove (`remove_provider.rs`): `POST /ui/settings/providers/{id}/remove`.
 //! - `POST /ui/settings/providers/{id}/{install|login}`; Claude's sign-in then takes the
 //!   pasted code at `POST .../login/code` (`code`) or stops at `POST .../login/cancel`.
-//! - `POST /ui/settings/updates/{check|apply|rollback}`: apply and rollback first return a
-//!   confirmation card; only a post with `confirm=yes` starts them.
-//! - `POST /ui/settings/device-name` (`name`): this device's name, shown on the Updates page
-//!   under "This device" (`device.rs`; owner only; the same rules as setup's Device step).
+//! - `GET /ui/settings/updates`: the Updates region (it polls itself while a check, an update or
+//!   a rollback runs); `POST /ui/settings/updates/{check|apply|rollback}` start them (no
+//!   confirmation card: Update can be rolled back, Roll back asks in the page first);
+//!   `POST /ui/settings/updates/auto` (`enabled=on` or nothing) and `.../when` (`day` =
+//!   daily|mon..sun, `hour` = 00..23) ask the host helper to switch automatic updates and set
+//!   their time. While something runs these, Restart and Reset are refused (409 in the API).
+//!   `GET /ui/update-hint`: the sections bar's Updates link (polled while something runs).
+//! - `POST /ui/settings/device-name` (`name`) and `POST /ui/settings/time-format`
+//!   (`time_format` = browser|h24|h12): Settings → About → This device (`device.rs`; owner only;
+//!   the name has the same rules as setup's Device step).
 //! - `POST /ui/settings/restart`: restart Melissa now (saved settings also apply by
 //!   themselves once she is idle, see `apply.rs`).
 //! - `GET /settings/reset`, `POST /ui/settings/reset` (`confirm`), `POST /api/settings/reset`
@@ -522,7 +528,12 @@ pub(crate) fn ui_routes() -> Router<Ui> {
             post(voice::transcribe).layer(DefaultBodyLimit::max(voice::MAX_UPLOAD)),
         )
         .route("/settings/updates", get(updates::page))
+        .route(pages::UPDATES_REGION_URL, get(updates::region))
+        .route("/ui/settings/updates/auto", post(updates::auto))
+        .route("/ui/settings/updates/when", post(updates::when))
+        .route(crate::components::UPDATE_HINT_URL, get(updates::hint_link))
         .route(device::SAVE_URL, post(device::save))
+        .route(pages::TIME_FORMAT_URL, post(device::save_time_format))
         .route("/ui/settings/updates/{action}", post(updates::action))
         .route("/ui/settings/restart", post(updates::restart))
         .route(pages::ABOUT_URL, get(about::page))

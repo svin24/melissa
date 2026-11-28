@@ -1854,6 +1854,13 @@ details.menu-confirm > summary::-webkit-details-marker {
   height: var(--size-icon-sm);
 }
 
+/* The Updates link while a check, an update or a rollback runs: the spinner in the glyph's
+   slot (the same .spin, dotted and still under reduced motion). */
+.tab-icon > .spin {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+}
+
 .tab[aria-current="page"],
 .tab.has-update {
   color: var(--color-text-default);
@@ -3056,6 +3063,28 @@ progress {
   width: 100%;
   height: 10px;
   accent-color: var(--color-action-bg);
+}
+
+/* A step without a known size (a restart, a health check): a still, partly filled bar in the
+   middle; no animation, so nothing to reduce. */
+.meter progress:indeterminate {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: linear-gradient(
+    to right,
+    var(--color-border-default) 0 35%,
+    var(--color-action-bg) 35% 60%,
+    var(--color-border-default) 60%
+  );
+}
+
+.meter progress:indeterminate::-moz-progress-bar {
+  background: transparent;
+}
+
+.meter progress:indeterminate::-webkit-progress-bar {
+  background: transparent;
 }
 
 .composer.dropping .composer-box {
@@ -4664,6 +4693,12 @@ th {
   vertical-align: -0.2em;
 }
 
+/* Neutral: a fact, not a warning (Updates' "Back on 0.0.3 since 09:14"); COMPONENT-SPEC 2.10
+   fills every notice with its tone's soft colour. */
+.notice.tone-neutral {
+  background: var(--color-bg-sunken);
+}
+
 .notice.tone-info {
   background: var(--color-action-soft);
 }
@@ -4965,7 +5000,7 @@ form.inline {
 
 /* A narrow section (768px): the tools without "Checked just now" (owner board D2b). */
 @container settings-main (max-width: 600px) {
-  .settings-tools .checked span {
+  .settings-tools .checked > span {
     display: none;
   }
 }
@@ -5047,6 +5082,13 @@ main:empty {
 .setting-heading {
   margin: 0 0 var(--space-2);
   font-size: var(--font-size-md);
+}
+
+/* Why a card's settings can't be changed right now (between its heading and the card). */
+.setting-lead {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .setting-card {
@@ -5270,6 +5312,25 @@ main:empty {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* On a narrow phone the fields give way instead of pushing out of the card (320px). */
+.inline-form > .select-wrap,
+.inline-form > .inline-text {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.inline-form > .select-wrap > select.input {
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+/* Two selects (Updates → When: day, hour): the short second one keeps its width. */
+.inline-form > .select-wrap ~ .select-wrap {
+  flex-shrink: 0;
 }
 
 .inline-number {
@@ -5323,7 +5384,7 @@ table.usage th[scope="row"] {
   font-size: var(--font-size-control-md);
 }
 
-.checked span::after {
+.checked > span::after {
   content: " ·";
 }
 
@@ -7155,7 +7216,8 @@ ol.steps > li::marker {
     margin-left: 0;
   }
 
-  .tab .glyph {
+  .tab .glyph,
+  .tab-icon > .spin {
     width: var(--size-icon-md);
     height: var(--size-icon-md);
   }
@@ -7844,7 +7906,7 @@ a.suggestion {
   .settings-parent,
   .settings-sep,
   .settings-lead,
-  .settings-tools .checked span {
+  .settings-tools .checked > span {
     display: none;
   }
 

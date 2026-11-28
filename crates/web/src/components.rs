@@ -2275,11 +2275,12 @@ fn inline_confirm(look: Btn, label: &str, question: &str, form: Markup) -> Marku
 // header, and each section's content. Built for more sections than Providers and Updates.
 
 pub use panel::{
-    glyph, inline_form, inline_number, inline_select, inline_text_form, overlay_dialog, panel,
-    section_bar, setting_card, setting_row, setting_row_details, setting_row_full,
-    setting_row_with, settings_frame_at, settings_tools_oob, usage_table, Glyph, SettingsHead,
-    SettingsSection, UpdateHint, UsageRow, OVERLAY_BODY_ID, OVERLAY_ID, SETTINGS_MAIN_ID,
-    SETTINGS_TOOLS_ID,
+    glyph, inline_form, inline_number, inline_select, inline_select_with, inline_text_form,
+    overlay_dialog, panel, section_bar, setting_card, setting_card_with, setting_row,
+    setting_row_details, setting_row_full, setting_row_with, settings_frame_at, settings_tools_oob,
+    update_tab, usage_table, Glyph, SettingsHead, SettingsSection, UpdateHint, UsageRow,
+    OVERLAY_BODY_ID, OVERLAY_ID, SETTINGS_MAIN_ID, SETTINGS_TOOLS_ID, UPDATE_HINT_URL,
+    UPDATE_TAB_ID,
 };
 
 /// When a section last looked, and the button that looks again, e.g. "Checked just now ·
@@ -2298,6 +2299,21 @@ pub fn settings_head(
             (crate::components::csrf_field())
             @if !checked.is_empty() { span { (checked) } }
             button.(look) type="submit" { (action) }
+        }
+    }
+}
+
+/// [`settings_head`] while its job can't start: the same button, not pressable. `spin`: the
+/// section's own job runs ("Checking…" with the spinner); otherwise another one does and the
+/// button keeps its label, disabled (COMPONENT-SPEC 2.1, busy and disabled).
+pub fn settings_head_busy(checked: &str, label: &str, look: Btn, spin: bool) -> Markup {
+    html! {
+        div.checked {
+            @if !checked.is_empty() { span { (checked) } }
+            button.(look) type="button" disabled aria-disabled="true" {
+                @if spin { span.icon.spin aria-hidden="true" {} }
+                (label)
+            }
         }
     }
 }
@@ -2711,12 +2727,17 @@ pub fn confirm_card(c: &ConfirmCard<'_>) -> Markup {
 }
 
 /// A long step with a known size (a download): what it is, how far ("45 of 141 MB") and a
-/// native progress bar.
+/// native progress bar. `total` 0: the size is unknown (a restart, a health check), and the bar
+/// has no value: a still, partly filled line, no animation.
 pub fn progress_bar(label: &str, text: &str, done: u64, total: u64) -> Markup {
     html! {
         div.meter {
             div.meter-head { span { (label) } span.meter-text { (text) } }
-            progress max=(total.max(1)) value=(done.min(total)) aria-label=(label) { (text) }
+            @if total == 0 {
+                progress aria-label=(label) { (text) }
+            } @else {
+                progress max=(total) value=(done.min(total)) aria-label=(label) { (text) }
+            }
         }
     }
 }

@@ -90,7 +90,10 @@ pub(super) fn schedule(ui: &Ui) {
                 .apply_lock()
                 .last_change
                 .is_none_or(|t| t.elapsed() >= QUIET);
-            if !quiet || ui.busy() || s.jobs_running().await {
+            // Not while a check, an update or a rollback runs on the host either.
+            let updating =
+                s.parts().updates.helper_installed() && s.parts().updates.state().busy().is_some();
+            if !quiet || updating || ui.busy() || s.jobs_running().await {
                 continue;
             }
             s.apply_lock().state = ApplyState::Restarting;
