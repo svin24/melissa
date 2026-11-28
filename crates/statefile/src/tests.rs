@@ -184,6 +184,29 @@ fn format_1_without_a_marker_keeps_the_old_shape() {
     assert!(to_json(&ARRAY_V2, &list, false).is_err());
 }
 
+/// In a map keyed by data, `format` can be an ordinary key (a backend called "format").
+#[test]
+fn a_data_key_called_format_is_data() {
+    let d = dir("keyed");
+    let path = d.join("models.json");
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("format".to_string(), vec!["a".to_string()]);
+    map.insert("other".to_string(), vec!["b".to_string()]);
+    save_json(&path, &NO_MARKER, &map, false).unwrap();
+    let loaded = read_json::<std::collections::BTreeMap<String, Vec<String>>>(&path, &NO_MARKER)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.value, map);
+    assert!(!loaded.read_only);
+    save_json(&path, &NO_MARKER, &map, false).unwrap();
+    // A newer Melissa's number is still told apart.
+    fs::write(&path, r#"{"format": 2, "lists": {}}"#).unwrap();
+    assert_eq!(newer_on_disk(&path, &NO_MARKER), Some(2));
+    assert!(save_json(&path, &NO_MARKER, &map, false)
+        .unwrap_err()
+        .is_newer());
+}
+
 static PREFS: TomlFormat = Format {
     name: "preferences",
     current: 1,
@@ -248,11 +271,46 @@ fn an_interrupted_write_leaves_the_old_file_intact() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(names, vec![std::ffi::OsString::from("state.json")]);
-    // A temporary file from a crash (never renamed) does not change what is read.
-    fs::write(d.join(".state.json.1-0.tmp"), "half").unwrap();
+    // Temporary files from a crash (never renamed) do not change what is read...
+    let aged = |name: &str, secs: u64| {
+        let p = d.join(name);
+        fs::write(&p, "half").unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    };
+    // Above any pid_max: never a running process.
+    let gone = 4_294_967_u32;
+    let me = std::process::id();
+    aged(&format!(".state.json.{gone}-0.tmp"), 10);
+    aged(&format!(".state.json.{me}-90.tmp"), 120);
+    aged(&format!(".state.json.{gone}-1.tmp"), 0);
+    aged(&format!(".state.json.{me}-91.tmp"), 0);
+    aged(".state.json.notes.tmp", 120);
+    aged(&format!(".other.json.{gone}-0.tmp"), 120);
     assert_eq!(fs::read(&path).unwrap(), b"old and complete");
+    // ... and the next save removes them: its process gone, or older than a minute. Not one
+    // just made (a writer in another PID namespace) nor one a live writer is filling now.
     write_private(&path, b"new").unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"new");
+    let mut names: Vec<_> = fs::read_dir(&d)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    let mut expected = vec![
+        format!(".other.json.{gone}-0.tmp"),
+        format!(".state.json.{gone}-1.tmp"),
+        format!(".state.json.{me}-91.tmp"),
+        ".state.json.notes.tmp".to_string(),
+        "state.json".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(names, expected);
 }
 
 #[test]

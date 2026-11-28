@@ -77,6 +77,23 @@ impl<D> Format<D> {
     }
 }
 
+impl<D: Doc> Format<D> {
+    /// The format of `doc`, and whether its `format` key held it (then it is removed before
+    /// the document is deserialized).
+    ///
+    /// Without a format-1 marker the file may be a map keyed by data (`models.json` is keyed by
+    /// backend name), where `format` can be an ordinary key: a `format` value that is not a
+    /// format number is then data, and the file is format 1. Such maps' values are never whole
+    /// numbers, so a newer Melissa's `"format": 2` is still told apart.
+    fn found(&self, doc: &D) -> Result<(u32, bool), String> {
+        match doc.version() {
+            Ok(n) => Ok((n, true)),
+            Err(_) if !self.v1_marker => Ok((1, false)),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// A file read with [`read_json`] or [`read_toml`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Loaded<T> {
@@ -208,7 +225,7 @@ where
         name: fmt.name,
         message,
     };
-    let found = doc.version().map_err(invalid)?;
+    let (found, keyed) = fmt.found(&doc).map_err(invalid)?;
     if found > fmt.current {
         doc.strip_version();
         return match doc.into_value::<T>() {
@@ -264,7 +281,9 @@ where
             fmt.current
         );
     }
-    doc.strip_version();
+    if keyed {
+        doc.strip_version();
+    }
     let value = doc.into_value::<T>().map_err(invalid)?;
     Ok(Loaded {
         value,
@@ -338,7 +357,7 @@ fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, FormatError> {
 /// A missing or unparseable file is not newer (an unparseable one is the store's to handle).
 pub fn newer_on_disk<D: Doc>(path: &Path, fmt: &Format<D>) -> Option<u32> {
     let bytes = fs::read(path).ok()?;
-    let found = D::parse(&bytes).ok()?.version().ok()?;
+    let (found, _) = fmt.found(&D::parse(&bytes).ok()?).ok()?;
     (found > fmt.current).then_some(found)
 }
 
@@ -468,6 +487,7 @@ pub fn write_atomic_with(
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+    remove_stale_temps(&dir, name);
     // Unique per process and call: two writers (threads, or processes sharing a state dir in
     // tests) never rename each other's half-written file.
     let mut tmp_name = std::ffi::OsString::from(".");
@@ -498,6 +518,57 @@ pub fn write_atomic_with(
         let _ = d.sync_all();
     }
     Ok(())
+}
+
+/// A temporary file [`write_atomic_with`] left behind is removed after this long, even if the
+/// process that made it still runs (no write takes this long).
+const STALE_TEMP: std::time::Duration = std::time::Duration::from_secs(60);
+/// ... and not before this, even if its process is gone: a process in another PID namespace
+/// (a container sharing the directory) may be writing it right now.
+const FRESH_TEMP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Remove `.<name>.<pid>-<seq>.tmp` files in `dir` that a crashed (or killed) write left
+/// behind: they can hold a copy of a secret (`auth.json`, a join token). Best effort.
+fn remove_stale_temps(dir: &Path, name: &std::ffi::OsStr) {
+    let Some(name) = name.to_str() else { return };
+    let prefix = format!(".{name}.");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(rest) = file_name
+            .to_str()
+            .and_then(|f| f.strip_prefix(&prefix))
+            .and_then(|f| f.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let Some(pid) = rest
+            .split_once('-')
+            .filter(|(pid, seq)| seq.parse::<u64>().is_ok() && pid.parse::<u32>().is_ok())
+            .map(|(pid, _)| pid)
+        else {
+            continue;
+        };
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .unwrap_or_default();
+        let alive = || Path::new("/proc").join(pid).exists() || !Path::new("/proc/self").exists();
+        if age >= STALE_TEMP || (age >= FRESH_TEMP && !alive()) {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => tracing::info!(
+                    path = %entry.path().display(),
+                    "removed a temporary file an interrupted save left behind"
+                ),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(path = %entry.path().display(), "{e}"),
+            }
+        }
+    }
 }
 
 /// `value` as one log line (no newline) in format `fmt`: a JSON object with the `format` key
