@@ -1380,6 +1380,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "melissa-statefile"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "melissa-voice"
 version = "0.0.2"
 dependencies = [
