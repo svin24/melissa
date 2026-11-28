@@ -58,7 +58,11 @@
 //!   `GET /ui/settings/tailscale[?waiting=1]` the region (polled while starting; `waiting`:
 //!   204 while a sign-in page is open), `POST /ui/settings/tailscale/{enable|disable}`, and
 //!   `POST /ui/settings/tailscale/sign-in`, whose answer alone carries the sign-in page's URL
-//!   (strict same-origin, no-store, audited `tailscale.login_started` without it).
+//!   (strict same-origin, no-store, audited `tailscale.login_started` without it). While
+//!   connected, "Open Melissa from your other devices": `GET /settings/tailscale?serve=1` the
+//!   Turn on form, `POST /ui/settings/tailscale/serve` (`name`, `password`; strict
+//!   same-origin, the password checked there), `POST /ui/settings/tailscale/serve/{off|cancel}`;
+//!   the region's `?https=1` and `?turning=1` polls.
 //! - First-run setup (`setup.rs`): `GET /setup[/{device|provider|model|extras}]`,
 //!   `POST /ui/setup/{device|model}`, `POST /ui/setup/{step}/later`, `POST /ui/setup/dismiss`;
 //!   `POST /ui/settings/tailscale/switch` (`enabled=on` or nothing) is Enable/Disable as one
@@ -497,6 +501,15 @@ pub(crate) fn ui_routes() -> Router<Ui> {
         .route("/ui/settings/tailscale/disable", post(tailscale::disable))
         .route("/ui/settings/tailscale/sign-in", post(tailscale::sign_in))
         .route("/ui/settings/tailscale/switch", post(tailscale::switch))
+        .route("/ui/settings/tailscale/serve", post(tailscale::serve_on))
+        .route(
+            "/ui/settings/tailscale/serve/off",
+            post(tailscale::serve_off),
+        )
+        .route(
+            "/ui/settings/tailscale/serve/cancel",
+            post(tailscale::serve_cancel),
+        )
         .route(pages::FILES_URL, get(files::page))
         .route("/ui/settings/files", post(files::save))
         .route(pages::VOICE_URL, get(voice::page))

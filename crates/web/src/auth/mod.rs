@@ -185,6 +185,11 @@ pub(crate) fn sensitive(method: &Method, path: &str) -> bool {
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return false;
     }
+    // Turning the HTTPS address on asks for the password in its own form; turning it off or
+    // cancelling only narrows who can reach Melissa.
+    if under(path, "/ui/settings/tailscale/serve") {
+        return false;
+    }
     (path.starts_with("/ui/apps/")
         && (path.ends_with("/setup-password/reveal") || path.ends_with("/setup-password/dismiss")))
         || path.ends_with("/force-delete")
@@ -210,26 +215,36 @@ fn is_api(path: &str) -> bool {
     path.starts_with("/api/")
 }
 
-/// The request came over HTTPS (directly or through a TLS proxy such as `tailscale serve`).
+/// The request came over HTTPS through a TLS proxy the listener trusts (`tailscale serve`).
+/// Only `crate::front` sets the header: it takes every incoming copy out and puts it back
+/// only on a listener that trusts its proxy. (An `Origin` header proves nothing: any client
+/// can send one.)
 pub(crate) fn https(headers: &HeaderMap) -> bool {
     headers
         .get("x-forwarded-proto")
         .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"https"))
-        || headers
-            .get(header::ORIGIN)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|o| o.starts_with("https://"))
 }
 
-/// The session cookie's value, under either name.
+/// Paths that take a password in their form: over plain HTTP only from this device.
+fn takes_password(path: &str) -> bool {
+    matches!(
+        path,
+        "/login" | "/claim" | "/reauth" | "/ui/account/password" | "/ui/settings/tailscale/serve"
+    ) || path.starts_with("/invite/")
+}
+
+/// The session cookie's value. Over HTTPS only the `__Host-` cookie counts: a plain one
+/// could have been set by any page on the same host name over HTTP (an app's port).
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    let secure_only = https(headers);
     for value in headers.get_all(header::COOKIE) {
         let Ok(text) = value.to_str() else { continue };
         for pair in text.split(';') {
             let Some((name, v)) = pair.trim().split_once('=') else {
                 continue;
             };
-            if (name == COOKIE_SECURE || name == COOKIE_PLAIN) && !v.is_empty() {
+            let ours = name == COOKIE_SECURE || (name == COOKIE_PLAIN && !secure_only);
+            if ours && !v.is_empty() {
                 return Some(v.to_string());
             }
         }
@@ -283,11 +298,20 @@ pub(crate) fn browser_label(headers: &HeaderMap) -> String {
     } else {
         ""
     };
-    if os.is_empty() {
-        browser.into()
+    let mut label = if os.is_empty() {
+        browser.to_string()
     } else {
         format!("{browser} on {os}")
+    };
+    // Who the tailnet says it is (Melissa's own `tailscale serve` only; `crate::front`):
+    // shown with the sessions and in the audit, never a way to sign in.
+    if let Some(login) = headers
+        .get(crate::front::TAILSCALE_LOGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        label.push_str(&format!(" · {login} on Tailscale"));
     }
+    label
 }
 
 /// A local path to come back to after signing in (never another site).
@@ -406,6 +430,20 @@ pub(crate) async fn layer(State(gate): State<Gate>, req: Request, next: Next) ->
             next,
         )
         .await;
+    }
+
+    // A password over plain HTTP crosses the network readable: only from this device.
+    if req.method() == Method::POST
+        && takes_password(&path)
+        && !https(req.headers())
+        && !crate::front::loopback_host(req.headers())
+    {
+        return refuse(
+            &req,
+            StatusCode::FORBIDDEN,
+            "Signing in from another device needs HTTPS. Open Melissa at her HTTPS address \
+             (Settings → Tailscale), or on this device.",
+        );
     }
 
     if need == Need::Public {

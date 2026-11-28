@@ -176,6 +176,16 @@ tailscale_port_line() {
     echo "PublishPort=$TAILSCALE_PORT:$TAILSCALE_PORT/udp"
 }
 
+# from_elsewhere: how to open the web UI from another device. The host's own Tailscale: the one
+# command to run (Melissa never changes the host's Tailscale); Melissa's own: Settings → Tailscale.
+from_elsewhere() {
+    if [ "$(host_tailscale 2>/dev/null)" = yes ]; then
+        echo "sudo tailscale serve --bg http://127.0.0.1:$UI_PORT (HTTPS on your tailnet), or ssh -L"
+    else
+        echo "Settings → Tailscale → Open Melissa from your other devices (HTTPS), or ssh -L"
+    fi
+}
+
 # tailscale_name HOSTNAME: the node name of Melissa's own Tailscale: melissa-<short host name>,
 # lower case letters, digits and dashes, at most 63 (TAILSCALE_NAME overrides it).
 tailscale_name() {
@@ -250,6 +260,37 @@ toml_set_addresses() {
         END {
             if (in_apps) put()
             else if (!seen) { print ""; print "[apps]"; print line }
+        }'
+}
+
+# The server believes X-Forwarded-* on its main listener only with [web] trust_forwarded, and
+# install.sh sets that only for the host's own `tailscale serve` in front of a loopback UI. This
+# exact line marks it as install.sh's (removed again when that no longer holds); a
+# trust_forwarded line of the owner's own is never touched.
+TRUST_LINE="trust_forwarded = true # install.sh: the host's tailscale serve (HOST_TAILSCALE=yes, UI_BIND on loopback)"
+
+# want_trust: yes when the host runs Tailscale and the web UI stays on loopback (UI_BIND). With
+# a wider UI_BIND every LAN client arrives through the container's forward as 127.0.0.1 and could
+# pick its own address, so never then (the server ignores it as well).
+want_trust() {
+    if [ "$(host_tailscale 2>/dev/null)" = yes ] && is_loopback "$UI_BIND"; then echo yes; else echo no; fi
+}
+
+# toml_set_trust yes|no: server.toml on stdin, with install.sh's trust_forwarded line under [web]
+# (yes, unless the file has its own) or without it (no).
+toml_set_trust() {
+    awk -v want="$1" -v line="$TRUST_LINE" '
+        $0 == line { next }
+        { buf[n++] = $0 }
+        /^[[:space:]]*trust_forwarded[[:space:]]*=/ { own = 1 }
+        END {
+            add = (want == "yes" && !own)
+            for (i = 0; i < n; i++) {
+                print buf[i]
+                sect = buf[i]; gsub(/[[:space:]]/, "", sect)
+                if (add && sect == "[web]") { print line; add = 0 }
+            }
+            if (add) { if (n) print ""; print "[web]"; print line }
         }'
 }
 
@@ -554,16 +595,41 @@ configure() {
             say "note: /etc/melissa/server.toml has no 'port_offset = $offset' under [apps]; app links name the wrong port"
         fi
         update_addresses "$list"
+        update_trust
         return 0
     fi
     for a in ${list//,/ }; do toml+="${toml:+, }\"$a\""; done
     [ -z "$toml" ] || body+="addresses = [$toml]"$'\n'
     [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
-    [ -n "$body" ] || return 0
-    printf '# Written by install.sh: app links use these.\n[apps]\n%s' "$body" \
+    if [ -n "$body" ]; then
+        toml=$(printf '# Written by install.sh: app links use these.\n[apps]\n%s' "$body")
+    else
+        toml=''
+    fi
+    toml=$(printf '%s' "$toml" | toml_set_trust "$(want_trust)")
+    [ -n "$toml" ] || return 0
+    printf '%s\n' "$toml" \
         | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/server.toml'
     podman exec melissa systemctl try-restart melissa-server
-    say "server config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+    [ -z "$body" ] || say "server config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+    [ "$(want_trust)" = no ] || say "server config: [web] trust_forwarded (the host's tailscale serve)"
+}
+
+# An existing server.toml: add or remove install.sh's [web] trust_forwarded line as the host's
+# Tailscale and UI_BIND now say (an install from before 2026-11-28 had it on by default).
+update_trust() {
+    local have want
+    have=$(podman exec melissa cat /etc/melissa/server.toml) || return 0
+    want=$(printf '%s\n' "$have" | toml_set_trust "$(want_trust)")
+    [ "$have" = "$want" ] && return 0
+    printf '%s\n' "$want" \
+        | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/server.toml.new && mv /etc/melissa/server.toml.new /etc/melissa/server.toml'
+    podman exec melissa systemctl try-restart melissa-server
+    if [ "$(want_trust)" = yes ]; then
+        say "server config: [web] trust_forwarded on (the host's tailscale serve forwards to the UI)"
+    else
+        say "server config: [web] trust_forwarded removed (UI_BIND=$UI_BIND or the host's Tailscale changed)"
+    fi
 }
 
 # The server.toml from an earlier install keeps its [apps] addresses; rewrite just that key when
@@ -836,8 +902,8 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
               (automatic: $AUTO_UPDATE)
   Tailscale:  $(case "$(host_tailscale)" in yes) echo "the host's (Melissa uses it)" ;; *) echo "Settings → Tailscale (Melissa's own, off until you enable it)" ;; esac)
-  From another machine: ssh -L 8080:127.0.0.1:$UI_PORT <this host>, or tailscale serve
-  (HTTPS; sign-in sends passwords, so not plain HTTP across the network). See $SHARE/README.md.
+  From another machine: $(from_elsewhere)
+  (sign-in sends passwords, so only HTTPS or this machine). See $SHARE/README.md.
   --privileged rootful container: it has root on this host.
   Uninstall:  sudo $LIBEXEC/uninstall.sh            (--purge also deletes the data)
 

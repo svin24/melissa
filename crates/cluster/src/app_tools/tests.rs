@@ -3575,6 +3575,8 @@ fn tailnet_tools(
         management: ts::Management::Melissa,
         setting: dir.join(ts::FILE_NAME),
         node_name: "melissa-box".into(),
+        serve_target: None,
+        ui_port: 8080,
         cli: Arc::new(ConnectedTailscale),
         service: Arc::new(ConnectedTailscale),
         audit: None,

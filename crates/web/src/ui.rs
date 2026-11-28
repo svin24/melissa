@@ -591,8 +591,13 @@ fn error_page(e: LeadError) -> Response {
         .into_response()
 }
 
-/// The `Host` header, for app links built from the address the visitor used.
+/// The `Host` header, for app links built from the address the visitor used. Not through
+/// Melissa's own `tailscale serve`: that name is HTTPS-only in the browser (HSTS) while apps
+/// are plain HTTP, so the links use the addresses the app tools give (the tailnet address).
 pub(crate) fn host(headers: &HeaderMap) -> Option<&str> {
+    if crate::front::via_tailscale_serve(headers) {
+        return None;
+    }
     headers.get(header::HOST).and_then(|h| h.to_str().ok())
 }
 

@@ -33,9 +33,9 @@ use crate::{
     ui::Ui,
 };
 
-type Source = Option<Extension<ConnectInfo<SocketAddr>>>;
+pub(crate) type Source = Option<Extension<ConnectInfo<SocketAddr>>>;
 
-fn src(s: &Source) -> String {
+pub(crate) fn src(s: &Source) -> String {
     s.as_ref()
         .map(|c| c.0 .0.ip().to_string())
         .unwrap_or_else(|| "local".into())
@@ -69,7 +69,7 @@ pub(crate) fn settings_routes() -> Router<Ui> {
 }
 
 /// What a person reads for an error.
-fn say(e: &AuthError) -> String {
+pub(crate) fn say(e: &AuthError) -> String {
     match e {
         AuthError::WrongCredentials => "Wrong username or password.".into(),
         AuthError::SlowDown { wait_secs } => {
@@ -108,7 +108,7 @@ fn status_for(e: &AuthError) -> StatusCode {
 }
 
 /// Run a password check on a blocking thread.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, AuthError> + Send + 'static,
 ) -> Result<T, AuthError> {
     tokio::task::spawn_blocking(f)

@@ -9,6 +9,9 @@ const RUNNING: &str = include_str!("fixtures/running.json");
 const NEEDS_LOGIN: &str = include_str!("fixtures/needs_login.json");
 const NEEDS_LOGIN_URL: &str = include_str!("fixtures/needs_login_url.json");
 const URL: &str = "https://login.tailscale.com/a/0123456789abcdef";
+const TARGET: &str = "http://127.0.0.1:8082";
+const ALLOW_HTTPS: &str = "https://login.tailscale.com/f/serve?node=n0000000000001";
+const OURS: &str = r#"{"TCP":{"443":{"HTTPS":true}},"Web":{"melissa-box.tail0000.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8082"}}}}}"#;
 
 // --- detection and names -----------------------------------------------------------------
 
@@ -156,6 +159,27 @@ struct Fake {
     login_completes: bool,
     /// The unit fails to start.
     start_fails: bool,
+    /// `tailscale serve status --json`.
+    serve_config: Mutex<String>,
+    /// How `tailscale serve --bg` goes.
+    serve_mode: Mutex<ServeMode>,
+    /// A waiting `tailscale serve`: its end, and whether it was stopped.
+    waiting: Mutex<Option<WaitingCli>>,
+}
+
+/// A waiting CLI's end (to send) and its stop signal (to check).
+type WaitingCli = (
+    tokio::sync::oneshot::Sender<Result<(), String>>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum ServeMode {
+    #[default]
+    Done,
+    /// The tailnet has HTTPS off: the CLI prints the page and waits.
+    NeedsHttps,
+    Fails,
 }
 
 impl Fake {
@@ -194,6 +218,69 @@ impl Cli for Fake {
             Ok(())
         })
     }
+    fn set_hostname<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.call(&format!("set --hostname={name}"));
+            let leaked: &'static str = Box::leak(
+                RUNNING
+                    .replace("\"melissa-box", &format!("\"{name}"))
+                    .into_boxed_str(),
+            );
+            *self.status.lock().unwrap() = leaked;
+            Ok(())
+        })
+    }
+    fn serve_status(&self) -> BoxFuture<'_, Result<String, String>> {
+        Box::pin(async move { Ok(self.serve_config.lock().unwrap().clone()) })
+    }
+    fn serve_reset(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            self.call("serve reset");
+            *self.serve_config.lock().unwrap() = "{}".into();
+            Ok(())
+        })
+    }
+    fn serve_start<'a>(&'a self, target: &'a str) -> BoxFuture<'a, Result<ServeStart, String>> {
+        Box::pin(async move {
+            self.call(&format!("serve {target}"));
+            match *self.serve_mode.lock().unwrap() {
+                ServeMode::Done => {
+                    *self.serve_config.lock().unwrap() = OURS.into();
+                    Ok(ServeStart::Done)
+                }
+                ServeMode::Fails => Err("`tailscale serve` failed (exit status: 1)".into()),
+                ServeMode::NeedsHttps => {
+                    let (done_tx, done) = tokio::sync::oneshot::channel();
+                    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+                    *self.waiting.lock().unwrap() = Some((done_tx, cancelled));
+                    Ok(ServeStart::Waiting {
+                        url: LoginUrl::parse(ALLOW_HTTPS),
+                        done,
+                        cancel,
+                    })
+                }
+            }
+        })
+    }
+}
+
+impl Fake {
+    /// The owner allowed HTTPS: the waiting CLI finishes.
+    fn https_allowed(&self) {
+        *self.serve_config.lock().unwrap() = OURS.into();
+        let (done, _) = self.waiting.lock().unwrap().take().expect("a waiting CLI");
+        done.send(Ok(())).unwrap();
+    }
+
+    /// The waiting CLI was stopped.
+    fn waiting_stopped(&self) -> bool {
+        let mut w = self.waiting.lock().unwrap();
+        let (_, cancelled) = w.as_mut().expect("a waiting CLI");
+        matches!(
+            cancelled.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        )
+    }
 }
 
 impl Service for Fake {
@@ -225,6 +312,8 @@ fn control(dir: &Path, management: Management, fake: Arc<Fake>) -> TailscaleCont
         management,
         setting: dir.join(FILE_NAME),
         node_name: "melissa-box".into(),
+        serve_target: Some(TARGET.into()),
+        ui_port: 8080,
         cli: fake.clone(),
         service: fake,
         audit: Some(AuditLog::new(dir.join("audit.jsonl"))),
@@ -402,6 +491,255 @@ async fn tools_never_return_the_sign_in_url() {
         .await
         .unwrap();
     assert_eq!(out["state"], "not_managed");
+}
+
+// --- open from other devices (tailscale serve) -------------------------------------------------
+
+/// Enabled and signed in.
+async fn connected(tag: &str, fake: Arc<Fake>) -> (PathBuf, TailscaleControl) {
+    let dir = scratch(tag);
+    let c = control(&dir, Management::Melissa, fake.clone());
+    c.enable("ui").await.unwrap();
+    *fake.status.lock().unwrap() = RUNNING;
+    *fake.serve_config.lock().unwrap() = "{}".into();
+    (dir, c)
+}
+
+#[tokio::test]
+async fn serve_is_offered_only_while_connected_and_managed() {
+    let dir = scratch("serve-offered");
+    let fake = Arc::new(Fake::default());
+    let c = control(&dir, Management::Melissa, fake.clone());
+    assert_eq!(c.serve_state().await, Serve::Unavailable, "off");
+    assert!(matches!(
+        c.serve_on("ui", None).await,
+        Err(TailscaleError::Not("not connected"))
+    ));
+    c.enable("ui").await.unwrap();
+    assert_eq!(c.serve_state().await, Serve::Unavailable, "signed out");
+    let host = control(&dir, Management::Host, fake.clone());
+    assert_eq!(host.serve_state().await, Serve::Unavailable);
+    assert!(matches!(
+        host.serve_on("ui", None).await,
+        Err(TailscaleError::NotManaged)
+    ));
+    assert_eq!(host.ui_port(), 8080);
+}
+
+#[tokio::test]
+async fn serve_turns_on_and_off() {
+    let fake = Arc::new(Fake::default());
+    let (dir, c) = connected("serve-on", fake.clone()).await;
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert_eq!(
+        c.own_addresses().await,
+        ["melissa-box.tail0000.ts.net", "100.64.0.7"]
+    );
+
+    let on = c.serve_on("ui", Some("melissa-box")).await.unwrap();
+    assert_eq!(
+        on,
+        Serve::On {
+            url: "https://melissa-box.tail0000.ts.net".into()
+        }
+    );
+    assert!(c.serve_setting());
+    // Same name: no rename. Melissa starts from an empty configuration.
+    assert_eq!(
+        fake.calls(),
+        ["start", "serve reset", "serve http://127.0.0.1:8082"]
+    );
+    // App links leave the HTTPS name out (HSTS would turn their http:// links into https).
+    c.forget();
+    assert_eq!(c.own_addresses().await, ["100.64.0.7"]);
+
+    // Changed behind Melissa's back (another target, a Funnel): set up again.
+    *fake.serve_config.lock().unwrap() = OURS.replace("8082", "9999");
+    assert_eq!(c.serve_state().await, Serve::TurningOn);
+    for _ in 0..50 {
+        if matches!(c.serve_state().await, Serve::On { .. }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(matches!(c.serve_state().await, Serve::On { .. }));
+
+    assert_eq!(c.serve_off("ui").await.unwrap(), Serve::Off);
+    assert!(!c.serve_setting());
+    assert_eq!(*fake.serve_config.lock().unwrap(), "{}");
+    let log = audit(&dir);
+    assert!(log.contains("\"action\":\"tailscale.serve_on\""), "{log}");
+    assert!(log.contains("\"action\":\"tailscale.serve_off\""), "{log}");
+    assert!(log.contains("node melissa-box"), "{log}");
+}
+
+#[tokio::test]
+async fn serve_renames_the_node_first() {
+    let fake = Arc::new(Fake::default());
+    let (dir, c) = connected("serve-name", fake.clone()).await;
+    for bad in ["Living Room", "-box", "box-", "", "b\u{e4}r"] {
+        assert!(
+            matches!(
+                c.serve_on("ui", Some(bad)).await,
+                Err(TailscaleError::BadName)
+            ),
+            "{bad:?}"
+        );
+    }
+    assert!(!c.serve_setting(), "nothing happened");
+    let on = c.serve_on("ui", Some("Box-7")).await.unwrap();
+    assert_eq!(
+        on,
+        Serve::On {
+            url: "https://box-7.tail0000.ts.net".into()
+        }
+    );
+    assert!(fake.calls().contains(&"set --hostname=box-7".to_string()));
+    assert_eq!(c.node_name(), "box-7", "kept for the next sign-in");
+    assert!(audit(&dir).contains("renamed from melissa-box to box-7"));
+}
+
+#[tokio::test]
+async fn serve_waits_for_https_to_be_allowed() {
+    let fake = Arc::new(Fake::default());
+    *fake.serve_mode.lock().unwrap() = ServeMode::NeedsHttps;
+    let (_dir, c) = connected("serve-https", fake.clone()).await;
+    let state = c.serve_on("ui", None).await.unwrap();
+    let Serve::NeedsHttps(Some(url)) = &state else {
+        panic!("{state:?}")
+    };
+    assert_eq!(url.expose(), ALLOW_HTTPS);
+    assert!(!c.serve_setting(), "not on yet");
+    // Agents see the state, never the page.
+    let out = tool::TailscaleStatus(c.clone())
+        .call(json_empty())
+        .await
+        .unwrap();
+    assert_eq!(out["web_ui_https"]["state"], "needs_https");
+    assert!(!out.to_string().contains("login.tailscale.com"), "{out}");
+
+    // The owner allows HTTPS: the CLI finishes, and it is on.
+    fake.https_allowed();
+    for _ in 0..50 {
+        if c.serve_setting() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(matches!(c.serve_state().await, Serve::On { .. }));
+    let out = tool::TailscaleStatus(c.clone())
+        .call(json_empty())
+        .await
+        .unwrap();
+    assert_eq!(out["web_ui_https"]["state"], "on");
+    assert_eq!(
+        out["web_ui_https"]["url"],
+        "https://melissa-box.tail0000.ts.net"
+    );
+}
+
+#[tokio::test]
+async fn cancel_stops_the_waiting_cli() {
+    let fake = Arc::new(Fake::default());
+    *fake.serve_mode.lock().unwrap() = ServeMode::NeedsHttps;
+    let (_dir, c) = connected("serve-cancel", fake.clone()).await;
+    c.serve_on("ui", None).await.unwrap();
+    assert!(!fake.waiting_stopped());
+    c.serve_cancel();
+    assert!(fake.waiting_stopped());
+    assert_eq!(c.serve_state().await, Serve::Off);
+}
+
+#[tokio::test]
+async fn a_failed_try_is_reported_once_and_the_row_is_off() {
+    let fake = Arc::new(Fake::default());
+    *fake.serve_mode.lock().unwrap() = ServeMode::Fails;
+    let (dir, c) = connected("serve-fail", fake.clone()).await;
+    c.serve_on("ui", None).await.unwrap();
+    let failure = c.take_serve_failure().expect("a failure");
+    assert!(failure.detail.contains("failed"), "{failure:?}");
+    assert_eq!(c.take_serve_failure(), None, "once");
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert!(audit(&dir).contains("didn't turn on"));
+}
+
+#[tokio::test]
+async fn disable_removes_the_https_address_first() {
+    let fake = Arc::new(Fake::default());
+    let (dir, c) = connected("serve-disable", fake.clone()).await;
+    c.serve_on("ui", None).await.unwrap();
+    c.disable("ui").await.unwrap();
+    let calls = fake.calls();
+    let reset = calls.iter().rposition(|c| c == "serve reset").unwrap();
+    let logout = calls.iter().position(|c| c == "logout").unwrap();
+    assert!(reset < logout, "{calls:?}");
+    assert!(!c.serve_setting());
+    assert!(audit(&dir).contains("tailscale.serve_off"));
+}
+
+#[tokio::test]
+async fn each_start_sets_it_up_again_or_removes_a_leftover() {
+    let fake = Arc::new(Fake::default());
+    let (_dir, c) = connected("serve-resume", fake.clone()).await;
+    c.serve_on("ui", None).await.unwrap();
+    // A restart: tailscaled lost it.
+    *fake.serve_config.lock().unwrap() = "{}".into();
+    c.resume_serve().await;
+    for _ in 0..50 {
+        if *fake.serve_config.lock().unwrap() == OURS {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(*fake.serve_config.lock().unwrap(), OURS);
+
+    // Off, but something is configured: removed.
+    c.serve_off("ui").await.unwrap();
+    *fake.serve_config.lock().unwrap() = OURS.into();
+    c.resume_serve().await;
+    assert_eq!(*fake.serve_config.lock().unwrap(), "{}");
+}
+
+/// Security review 2026-11-28 (S2): while the setting is off, something served on this node's
+/// name (an agent running the CLI as the melissa uid) is removed at the next state read, never
+/// shown as Off while it is served.
+#[tokio::test]
+async fn while_off_a_configuration_melissa_didnt_set_up_is_removed() {
+    let fake = Arc::new(Fake::default());
+    let (dir, c) = connected("serve-foreign", fake.clone()).await;
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert!(
+        !fake.calls().iter().any(|c| c == "serve reset"),
+        "nothing to remove"
+    );
+    let app = OURS.replace("8082", "30001");
+    *fake.serve_config.lock().unwrap() = app;
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert_eq!(*fake.serve_config.lock().unwrap(), "{}", "removed");
+    let log = audit(&dir);
+    assert!(log.contains("didn't set up"), "{log}");
+    // Even Melissa's own target is removed while the setting is off.
+    *fake.serve_config.lock().unwrap() = OURS.into();
+    assert_eq!(c.serve_state().await, Serve::Off);
+    assert_eq!(*fake.serve_config.lock().unwrap(), "{}");
+}
+
+#[test]
+fn the_setting_file_keeps_the_other_fields() {
+    let dir = scratch("serve-file");
+    let path = dir.join(FILE_NAME);
+    update_file(&path, |f| {
+        f.enabled = true;
+        f.serve = true;
+        f.name = Some("box-7".into());
+    })
+    .unwrap();
+    write_setting(&path, false).unwrap();
+    let f = read_file(&path).unwrap();
+    assert!(!f.enabled && f.serve);
+    assert_eq!(f.name.as_deref(), Some("box-7"));
+    // Root's check reads it too.
+    assert_eq!(should_run(&path, Some("no")), Ok(false));
 }
 
 fn json_empty() -> serde_json::Value {

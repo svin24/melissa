@@ -9,7 +9,7 @@ use melissa_agent::{
 };
 use serde_json::{json, Value};
 
-use super::{Management, State, TailscaleControl, TailscaleError};
+use super::{Management, Serve, State, TailscaleControl, TailscaleError};
 
 /// The tool result for a state: never a sign-in URL.
 pub fn report(control: &TailscaleControl, state: &State) -> Value {
@@ -81,7 +81,10 @@ impl Tool for TailscaleStatus {
                           `not_managed` (the host runs Tailscale itself, or this install has \
                           none of Melissa's), `off`, `starting`, `sign_in_needed`, \
                           `needs_approval`, `connected` (with the node's name and tailnet \
-                          addresses) or `error`. Read only.",
+                          addresses) or `error`; `web_ui_https`: whether the web UI opens \
+                          over HTTPS from tailnet devices (`on` with its `url`, `off`, \
+                          `needs_https`, `turning_on`, `unavailable`; only the user changes \
+                          it). Read only.",
             labels: Labels::READ_ONLY,
             params: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         }
@@ -94,9 +97,28 @@ impl Tool for TailscaleStatus {
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, ToolError>> {
         Box::pin(async move {
             no_args(&args)?;
-            Ok(report(&self.0, &self.0.state().await))
+            let mut out = report(&self.0, &self.0.state().await);
+            add_serve(&mut out, &self.0.serve_state().await);
+            Ok(out)
         })
     }
+}
+
+/// "Open Melissa from your other devices", read only: never the page that allows HTTPS, and
+/// no tool turns it on (the owner does, with their password, in Settings → Tailscale).
+pub fn add_serve(out: &mut Value, serve: &Serve) {
+    let mut s = json!({ "state": serve.as_str() });
+    match serve {
+        Serve::On { url } => s["url"] = json!(url),
+        Serve::Off | Serve::NeedsHttps(_) | Serve::TurningOn => {
+            s["note"] = json!(
+                "Only the user turns this on or off, in Settings → Tailscale (Open Melissa \
+                 from your other devices). Don't offer to do it."
+            );
+        }
+        Serve::Unavailable => {}
+    }
+    out["web_ui_https"] = s;
 }
 
 /// `enable_tailscale`: turn Melissa's Tailscale on; the owner approves it every time.
@@ -152,7 +174,9 @@ impl Tool for EnableTailscale {
                 Err(e @ TailscaleError::Save(_)) | Err(e @ TailscaleError::Failed(_)) => {
                     Err(ToolError::Failed(e.to_string()))
                 }
-                Err(e @ TailscaleError::Not(_)) => Err(ToolError::Failed(e.to_string())),
+                Err(e @ TailscaleError::Not(_)) | Err(e @ TailscaleError::BadName) => {
+                    Err(ToolError::Failed(e.to_string()))
+                }
             }
         })
     }

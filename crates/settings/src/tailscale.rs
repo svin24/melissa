@@ -20,6 +20,11 @@
 //!   filter lets it reach the app ports under "Tailnet" and wider, never under "This device",
 //!   and drops everything else it sends to the container (`app_access::ruleset`). App links add
 //!   the node's MagicDNS name and address ([`TailscaleControl::own_addresses`]).
+//! - **Open from other devices** ([`serve`], MVP #1, owner 2026-11-28): `tailscale serve` on
+//!   Melissa's own tailscaled terminates HTTPS on the node's MagicDNS name and forwards to the
+//!   server's second loopback listener (the only one that trusts forwarded headers). Off by
+//!   default; the owner turns it on in Settings → Tailscale with their password, re-applied at
+//!   each start, removed by Turn off and by Disable. Audited `tailscale.serve_on`/`_off`.
 //! - **Network calls:** only while enabled, tailscaled talks to Tailscale's coordination server
 //!   and DERP relays (PLAN.md section 4, owner-approved).
 
@@ -36,7 +41,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{write_private, SettingsError};
 
+pub mod serve;
 pub mod tool;
+
+pub use serve::{Serve, ServeFailure, ServeStart};
 
 #[cfg(test)]
 mod tests;
@@ -132,21 +140,32 @@ pub fn node_name(raw: Option<&str>) -> String {
 
 // --- the setting file --------------------------------------------------------------------
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SettingFile {
     #[serde(default)]
     enabled: bool,
+    /// `tailscale serve` for the web UI is on (Settings → Tailscale → Open Melissa from your
+    /// other devices).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    serve: bool,
+    /// The node's name on the tailnet chosen by the owner (else install.sh's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 /// Is Melissa's Tailscale enabled? A missing file is off. Errors never quote the file (root
 /// reads a file the server's user writes): not a regular file (a symlink is refused), too
 /// big, or not a valid setting.
 pub fn read_setting(path: &Path) -> Result<bool, String> {
+    read_file(path).map(|f| f.enabled)
+}
+
+fn read_file(path: &Path) -> Result<SettingFile, String> {
     let shown = path.display();
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SettingFile::default()),
         Err(e) => return Err(format!("cannot read {shown}: {}", e.kind())),
     };
     if !meta.file_type().is_file() {
@@ -159,19 +178,44 @@ pub fn read_setting(path: &Path) -> Result<bool, String> {
     if text.len() as u64 > MAX_SETTING_BYTES {
         return Err(format!("{shown} is too big"));
     }
-    toml::from_str::<SettingFile>(&text)
-        .map(|f| f.enabled)
-        .map_err(|_| format!("{shown} is not a valid setting"))
+    toml::from_str::<SettingFile>(&text).map_err(|_| format!("{shown} is not a valid setting"))
 }
 
-fn write_setting(path: &Path, enabled: bool) -> Result<(), SettingsError> {
-    let text = format!(
-        "# Melissa's own Tailscale (Settings → Tailscale), written by Melissa.\nenabled = {enabled}\n"
-    );
+fn write_file(path: &Path, file: &SettingFile) -> Result<(), SettingsError> {
+    let body = toml::to_string(file).map_err(|e| SettingsError::Write {
+        path: path.display().to_string(),
+        source: std::io::Error::other(e.to_string()),
+    })?;
+    let text =
+        format!("# Melissa's own Tailscale (Settings → Tailscale), written by Melissa.\n{body}");
     write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {
         path: path.display().to_string(),
         source,
     })
+}
+
+/// Change the setting file, keeping what else it says (an unreadable one starts over).
+fn update_file(path: &Path, change: impl FnOnce(&mut SettingFile)) -> Result<(), SettingsError> {
+    let mut file = read_file(path).unwrap_or_default();
+    change(&mut file);
+    write_file(path, &file)
+}
+
+#[cfg(test)]
+fn write_setting(path: &Path, enabled: bool) -> Result<(), SettingsError> {
+    update_file(path, |f| f.enabled = enabled)
+}
+
+/// A name the owner typed for the node: a DNS label (letters, digits and dashes, at most 63,
+/// no dash at either end), lower-cased. `None`: not usable.
+pub fn valid_node_name(raw: &str) -> Option<String> {
+    let name = raw.trim().to_ascii_lowercase();
+    let ok = !name.is_empty()
+        && name.len() <= 63
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    ok.then_some(name)
 }
 
 /// For the unit's `ExecCondition` (root): start tailscaled only when the setting says so and
@@ -261,6 +305,8 @@ pub struct Daemon {
     /// Set while running.
     pub node: Option<Node>,
     pub health: Vec<String>,
+    /// Names tailscaled can get HTTPS certificates for: empty while the tailnet has HTTPS off.
+    pub cert_domains: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -275,6 +321,8 @@ struct RawStatus {
     health: Option<Vec<String>>,
     #[serde(rename = "CurrentTailnet", default)]
     tailnet: Option<RawTailnet>,
+    #[serde(rename = "CertDomains", default)]
+    cert_domains: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -322,6 +370,7 @@ pub fn parse_status(json: &str) -> Result<Daemon, String> {
         login_url,
         node,
         health: raw.health.unwrap_or_default(),
+        cert_domains: raw.cert_domains.unwrap_or_default(),
     })
 }
 
@@ -402,6 +451,23 @@ pub trait Cli: Send + Sync {
     fn start_login<'a>(&'a self, node_name: &'a str) -> BoxFuture<'a, Result<(), String>>;
     /// `tailscale logout`: the node leaves the tailnet (its key expires).
     fn logout(&self) -> BoxFuture<'_, Result<(), String>>;
+    /// `tailscale set --hostname=<name>`.
+    fn set_hostname<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("not supported".to_string()) })
+    }
+    /// `tailscale serve status --json` (the JSON text).
+    fn serve_status(&self) -> BoxFuture<'_, Result<String, String>> {
+        Box::pin(async { Err("not supported".to_string()) })
+    }
+    /// `tailscale serve reset`: no serve configuration left.
+    fn serve_reset(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Err("not supported".to_string()) })
+    }
+    /// `tailscale serve --bg --https=443 <target>`: done, or waiting for the tailnet to allow
+    /// HTTPS (the CLI waits and finishes by itself once it is allowed).
+    fn serve_start<'a>(&'a self, _target: &'a str) -> BoxFuture<'a, Result<ServeStart, String>> {
+        Box::pin(async { Err("not supported".to_string()) })
+    }
 }
 
 /// Starts and stops tailscaled (the unit).
@@ -488,6 +554,26 @@ impl Cli for TailscaleCommand {
     fn logout(&self) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move { self.run(&["logout"]).await.map(|_| ()) })
     }
+
+    fn set_hostname<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.run(&["set", &format!("--hostname={name}")])
+                .await
+                .map(|_| ())
+        })
+    }
+
+    fn serve_status(&self) -> BoxFuture<'_, Result<String, String>> {
+        Box::pin(self.run(&["serve", "status", "--json"]))
+    }
+
+    fn serve_reset(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.run(&["serve", "reset"]).await.map(|_| ()) })
+    }
+
+    fn serve_start<'a>(&'a self, target: &'a str) -> BoxFuture<'a, Result<ServeStart, String>> {
+        Box::pin(serve::run_serve(self.command(), target, self.timeout))
+    }
 }
 
 /// `systemctl start|stop melissa-tailscaled.service` (polkit lets the server do exactly that).
@@ -541,6 +627,9 @@ pub enum TailscaleError {
     /// Nothing to do in this state (e.g. a sign-in while off or connected).
     #[error("not possible now: Tailscale is {0}")]
     Not(&'static str),
+    /// A name for the node that isn't a DNS label.
+    #[error("not a usable name: use letters, digits and dashes")]
+    BadName,
     #[error(transparent)]
     Save(#[from] SettingsError),
     /// For the log and the agents; the page shows a short line.
@@ -566,7 +655,14 @@ pub struct TailscaleControl {
 struct Inner {
     management: Management,
     setting: PathBuf,
+    /// install.sh's name (`MELISSA_TAILSCALE_NAME`), unless the owner chose another.
     node_name: String,
+    /// Where `tailscale serve` forwards (the server's second loopback listener); `None`:
+    /// this server has no such listener, so it can't be turned on.
+    serve_target: Option<String>,
+    /// The web UI's port on this computer (for the host's own `tailscale serve` command).
+    ui_port: u16,
+    serve: std::sync::Mutex<serve::Pending>,
     cli: Arc<dyn Cli>,
     service: Arc<dyn Service>,
     audit: Option<AuditLog>,
@@ -581,6 +677,10 @@ pub struct Parts {
     pub management: Management,
     pub setting: PathBuf,
     pub node_name: String,
+    /// `http://127.0.0.1:<port>` of the listener `tailscale serve` forwards to.
+    pub serve_target: Option<String>,
+    /// The web UI's port on this computer.
+    pub ui_port: u16,
     pub cli: Arc<dyn Cli>,
     pub service: Arc<dyn Service>,
     pub audit: Option<AuditLog>,
@@ -594,6 +694,9 @@ impl TailscaleControl {
                 management: parts.management,
                 setting: parts.setting,
                 node_name: parts.node_name,
+                serve_target: parts.serve_target,
+                ui_port: parts.ui_port,
+                serve: std::sync::Mutex::new(serve::Pending::Idle),
                 cli: parts.cli,
                 service: parts.service,
                 audit: parts.audit,
@@ -605,14 +708,22 @@ impl TailscaleControl {
     }
 
     /// This install: the setting in `config_dir`, the facts install.sh passed in, the real CLI
-    /// and unit.
-    pub fn system(config_dir: &Path, audit: Option<AuditLog>) -> Self {
+    /// and unit. `serve_target`: the listener `tailscale serve` forwards to; `ui_port`: the
+    /// web UI's port on this computer.
+    pub fn system(
+        config_dir: &Path,
+        audit: Option<AuditLog>,
+        serve_target: Option<String>,
+        ui_port: u16,
+    ) -> Self {
         let host = std::env::var(HOST_ENV).ok();
         let name = std::env::var(NODE_NAME_ENV).ok();
         Self::new(Parts {
             management: management(built_in(), host.as_deref()),
             setting: config_dir.join(FILE_NAME),
             node_name: node_name(name.as_deref()),
+            serve_target,
+            ui_port,
             cli: Arc::new(TailscaleCommand::default()),
             service: Arc::new(SystemdService::default()),
             audit,
@@ -624,9 +735,27 @@ impl TailscaleControl {
         self.inner.management
     }
 
-    /// The name this device gets on the tailnet.
-    pub fn node_name(&self) -> &str {
-        &self.inner.node_name
+    /// The name this device gets on the tailnet: the owner's choice, else install.sh's.
+    pub fn node_name(&self) -> String {
+        read_file(&self.inner.setting)
+            .ok()
+            .and_then(|f| f.name)
+            .and_then(|n| valid_node_name(&n))
+            .unwrap_or_else(|| self.inner.node_name.clone())
+    }
+
+    /// The web UI's port on this computer.
+    pub fn ui_port(&self) -> u16 {
+        self.inner.ui_port
+    }
+
+    /// This device's MagicDNS name while Melissa's Tailscale is connected (the web UI answers
+    /// to it).
+    pub async fn own_dns_name(&self) -> Option<String> {
+        match self.cached_state().await {
+            State::Connected(n) => n.dns_name,
+            _ => None,
+        }
     }
 
     /// The saved setting (off when it can't be read).
@@ -682,10 +811,16 @@ impl TailscaleControl {
     /// Addresses of this device on the tailnet that reach the container directly (app links
     /// use the NodePort there, not the host's published port): the MagicDNS name, then the
     /// IPv4 address. Empty unless Melissa's Tailscale is connected.
+    ///
+    /// While the web UI is served on the MagicDNS name, links leave the name out: browsers
+    /// that opened the UI there remember HTTPS for that name (HSTS) and would not open an
+    /// app's plain HTTP port on it.
     pub async fn own_addresses(&self) -> Vec<String> {
+        let serving = self.serve_setting();
         match self.cached_state().await {
             State::Connected(n) => n
                 .dns_name
+                .filter(|_| !serving)
                 .into_iter()
                 .chain(n.ipv4.map(|ip| ip.to_string()))
                 .collect(),
@@ -713,7 +848,7 @@ impl TailscaleControl {
         }
         let _one = self.inner.lock.lock().await;
         self.forget();
-        write_setting(&self.inner.setting, true)?;
+        update_file(&self.inner.setting, |f| f.enabled = true)?;
         let started = self.inner.service.start().await;
         let state = match &started {
             Ok(()) => state_from(
@@ -729,7 +864,7 @@ impl TailscaleControl {
         self.audit(
             "settings.tailscale",
             actor,
-            &format!("enabled (node {}); {outcome}", self.inner.node_name),
+            &format!("enabled (node {}); {outcome}", self.node_name()),
         );
         self.forget();
         match started {
@@ -745,6 +880,8 @@ impl TailscaleControl {
         }
         let _one = self.inner.lock.lock().await;
         self.forget();
+        // The HTTPS address goes first (it would stop working anyway).
+        self.serve_off_locked(actor).await;
         let logout = match self.daemon().await {
             Ok(d) if matches!(d.backend, Backend::NeedsLogin | Backend::NoState) => {
                 "not signed in".to_string()
@@ -755,7 +892,7 @@ impl TailscaleControl {
             },
             Err(_) => "not running".into(),
         };
-        write_setting(&self.inner.setting, false)?;
+        update_file(&self.inner.setting, |f| f.enabled = false)?;
         let stopped = self.inner.service.stop().await;
         self.audit(
             "settings.tailscale",
@@ -789,9 +926,10 @@ impl TailscaleControl {
             Backend::NeedsMachineAuth => return Err(TailscaleError::Not("waiting for approval")),
             _ if now.login_url.is_some() => now,
             _ => {
+                let name = self.node_name();
                 self.inner
                     .cli
-                    .start_login(&self.inner.node_name)
+                    .start_login(&name)
                     .await
                     .map_err(TailscaleError::Failed)?;
                 self.wait_for(|d| d.login_url.is_some() || d.backend == Backend::Running)
@@ -805,7 +943,7 @@ impl TailscaleControl {
                 self.audit(
                     "tailscale.login_started",
                     actor,
-                    &format!("sign-in started for node {}", self.inner.node_name),
+                    &format!("sign-in started for node {}", self.node_name()),
                 );
                 Ok(Login::Url(url))
             }

@@ -1935,8 +1935,10 @@ svg.glyph {
   background: var(--color-attention-fg);
 }
 
+/* Needs attention (a device not ready, an app failing): honey, like the badge's dot
+   (`Health::tone_mark`; owner, 2026-11-28). Caution is for errors and destructive actions. */
 .dot.h-problem {
-  background: var(--color-caution-bg);
+  background: var(--color-attention-fg);
 }
 
 /* --- Page header and blocks ------------------------------------------------------------- */
@@ -5587,6 +5589,15 @@ table.usage th[scope="row"] {
 .field .hint {
   font-weight: var(--font-weight-regular);
   color: var(--color-text-muted);
+}
+
+/* The server's verdict on a field (COMPONENT-SPEC 2.16): in place of the hint. */
+.field .field-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-weight: var(--font-weight-regular);
+  color: var(--field-error-text);
 }
 
 .field-row {

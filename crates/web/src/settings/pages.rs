@@ -6,15 +6,16 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        about_head, action_button, actions, away_card, badge, code, command_block, confirm_card,
-        danger_confirm, detail_head, disclosure, external_button, facts, group, inline_form,
-        inline_number, inline_select, inline_text_form, license_text, lines_field, link,
-        link_button, live_region, log_view, markdown_document, new_tab_button, notice,
-        one_field_form, pick_list, plain_action, progress_bar, provider_logo, region,
-        select_field_at, setting_card, setting_row, setting_row_details, setting_row_full,
-        setting_row_with, settings_form, settings_frame_at, settings_head, settings_tools_oob,
-        split_card, text_field, toggle, var_list, Btn, Choice, ConfirmCard, DangerConfirm, Glyph,
-        LogLine, Nav, PickRow, SettingsHead, SettingsSection, Toggle, Tone, VarRow,
+        about_head, action_button, actions, away_card, badge, busy_button, code, command_block,
+        confirm_card, danger_confirm, detail_head, disclosure, external_button, facts, group,
+        inline_form, inline_number, inline_select, inline_text_form, license_text, lines_field,
+        link, link_button, live_region, log_view, markdown_document, new_tab_button, notice,
+        one_field_form, people::password_checked, pick_list, plain_action, progress_bar,
+        provider_logo, region, select_field_at, setting_card, setting_row, setting_row_details,
+        setting_row_full, setting_row_with, settings_form, settings_frame_at, settings_head,
+        settings_tools_oob, split_card, text_field, text_field_checked, toggle, var_list, Btn,
+        Choice, ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsHead,
+        SettingsSection, Toggle, Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -1586,8 +1587,141 @@ pub struct TailscaleView {
     /// Refresh the region from this URL every few seconds (starting, waiting for a sign-in).
     pub poll: Option<&'static str>,
     pub flash: Option<Flash>,
+    /// Raw text behind the flash's "Show details" (never the message itself).
+    pub details: Option<String>,
     /// In first-run setup: a switch instead of Enable/Disable, no heading, no filled button.
     pub compact: bool,
+    /// The row under it: open Melissa from other devices (MVP #1; owner's Penpot draft
+    /// "Tailscale: open from other devices", 2026-11-28). `None`: not shown.
+    pub serve: Option<ServeRow>,
+}
+
+/// "Open Melissa from your other devices".
+pub enum ServeRow {
+    /// Off: Turn on opens the form in place. `failed`: the last try didn't work (its notice
+    /// is above), the line is just "Off.".
+    Off {
+        failed: bool,
+    },
+    /// The form: the name on the tailnet (with the address it gives) and the password again.
+    Form {
+        name: String,
+        address: Option<String>,
+        name_error: Option<String>,
+        password_error: Option<String>,
+    },
+    /// The tailnet has HTTPS off: the page that allows it (new tab). `waiting`: the page has
+    /// been handed out before (the line says Melissa waits).
+    NeedsHttps {
+        url: Option<String>,
+        waiting: bool,
+    },
+    TurningOn,
+    On {
+        url: String,
+    },
+    /// The computer runs its own Tailscale: the command to run there.
+    Host {
+        command: String,
+    },
+}
+
+/// The row's title.
+const SERVE_TITLE: &str = "Open Melissa from your other devices";
+/// Where Turn on leads: the page with the form open.
+pub const SERVE_FORM_URL: &str = "/settings/tailscale?serve=1";
+
+fn serve_row(row: &ServeRow) -> Markup {
+    match row {
+        ServeRow::Off { failed } => setting_row(
+            SERVE_TITLE,
+            Some(if *failed {
+                "Off."
+            } else {
+                "Off. Gives Melissa an HTTPS address on your tailnet."
+            }),
+            link_button(Btn::primary(), SERVE_FORM_URL, "Turn on"),
+        ),
+        ServeRow::Form {
+            name,
+            address,
+            name_error,
+            password_error,
+        } => {
+            let hint = address.as_ref().map(|a| format!("Address: {a}"));
+            setting_row_full(
+                Some(SERVE_TITLE),
+                html! {
+                    (notice(
+                        "Tailscale puts this device's name into public certificate logs, where \
+                         anyone can read it. Change the name first if it says who you are or \
+                         where you live.",
+                        Tone::Attention,
+                    ))
+                    (settings_form(
+                        "/ui/settings/tailscale/serve",
+                        TAILSCALE_ID,
+                        "Turn on",
+                        Some(TAILSCALE_URL),
+                        html! {
+                            (text_field_checked("name", "Name on your tailnet", name, hint.as_deref(), name_error.as_deref()))
+                            (password_checked(
+                                "password",
+                                "Your password",
+                                Some("Asked again because this opens Melissa to other devices."),
+                                password_error.as_deref(),
+                            ))
+                        },
+                    ))
+                },
+            )
+        }
+        ServeRow::NeedsHttps { url, waiting } => setting_row(
+            SERVE_TITLE,
+            Some(if *waiting {
+                "Waiting for HTTPS to be allowed in Tailscale…"
+            } else {
+                "HTTPS is off for your tailnet. Allow it in Tailscale; Melissa carries on when it is on."
+            }),
+            actions(html! {
+                @if let Some(u) = url {
+                    (new_tab_button(Btn::primary(), u, "Allow HTTPS in Tailscale", None))
+                }
+                (plain_action("/ui/settings/tailscale/serve/cancel", TAILSCALE_ID, "Cancel", false))
+            }),
+        ),
+        ServeRow::TurningOn => setting_row(
+            SERVE_TITLE,
+            Some("Getting the HTTPS certificate from Tailscale. This can take a minute."),
+            busy_button(Btn::secondary(), "Turning on…"),
+        ),
+        ServeRow::On { url } => setting_row_with(
+            html! { (SERVE_TITLE) },
+            Some(html! { "On." }),
+            plain_action(
+                "/ui/settings/tailscale/serve/off",
+                TAILSCALE_ID,
+                "Turn off",
+                false,
+            ),
+            Some(html! {
+                p { "Open on your phone or laptop:" }
+                (command_block(url))
+                p.quiet.small { "The other device must be signed in to the same tailnet." }
+            }),
+        ),
+        ServeRow::Host { command } => setting_row_with(
+            html! { (SERVE_TITLE) },
+            Some(html! {
+                "Tailscale on this computer isn't Melissa's, so Melissa can't turn this on. Run this on the computer:"
+            }),
+            html! {},
+            Some(html! {
+                (command_block(command))
+                p.quiet.small { "Then open the https address it prints, on a device signed in to the same tailnet." }
+            }),
+        ),
+    }
 }
 
 pub fn tailscale_page(f: &Frame<'_>, v: &TailscaleView) -> Markup {
@@ -1599,8 +1733,16 @@ pub fn tailscale_page(f: &Frame<'_>, v: &TailscaleView) -> Markup {
 }
 
 pub fn tailscale_region(v: &TailscaleView) -> Markup {
-    const DISABLE_ASK: &str =
-        "Disable Tailscale? This device leaves your tailnet, and tailnet devices can't open its apps.";
+    let serving = matches!(
+        v.serve,
+        Some(ServeRow::On { .. } | ServeRow::TurningOn | ServeRow::NeedsHttps { .. })
+    );
+    let disable_ask = if serving {
+        "Disable Tailscale? This device leaves your tailnet, tailnet devices can't open its apps, \
+         and Melissa's HTTPS address stops working."
+    } else {
+        "Disable Tailscale? This device leaves your tailnet, and tailnet devices can't open its apps."
+    };
     let controls = html! {
         @if let Some(url) = &v.login_url {
             (external_button(url, "Open Tailscale sign-in"))
@@ -1611,7 +1753,7 @@ pub fn tailscale_region(v: &TailscaleView) -> Markup {
             (plain_action("/ui/settings/tailscale/enable", TAILSCALE_ID, label, true))
         }
         @if v.disable {
-            (action_button(Btn::secondary(), "/ui/settings/tailscale/disable", TAILSCALE_ID, "Disable", DISABLE_ASK))
+            (action_button(Btn::secondary(), "/ui/settings/tailscale/disable", TAILSCALE_ID, "Disable", disable_ask))
         }
     };
     if v.compact {
@@ -1624,7 +1766,11 @@ pub fn tailscale_region(v: &TailscaleView) -> Markup {
         v.poll.is_some(),
         html! {
             @if let Some(f) = &v.flash { (notice(&f.text, f.tone)) }
-            (setting_card(None, setting_row("Tailscale", Some(&v.sentence), actions(controls))))
+            @if let Some(d) = &v.details { (disclosure("Show details", false, code(d))) }
+            (setting_card(None, html! {
+                (setting_row("Tailscale", Some(&v.sentence), actions(controls)))
+                @if let Some(s) = &v.serve { (serve_row(s)) }
+            }))
         },
     )
 }

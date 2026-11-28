@@ -11,7 +11,7 @@ use super::{
 };
 use crate::auth::{pending::PENDING_SECS, CSRF_HEADER};
 
-const HOST: &str = "melissa.example.com";
+const HOST: &str = "localhost:8080";
 
 /// Settings → People's "Invite" from the People page (owner, sensitive).
 fn invite(s: &NewSession) -> axum::http::Request<Body> {

@@ -189,8 +189,14 @@ Apps over Melissa's own Tailscale: tailnet devices reach the app ports on the no
 MagicDNS name (at the NodePort, 30000–30079, whatever `APP_PORT_BASE` is) once Settings → Apps is *Tailnet*
 or wider; under *This device* nothing from `tailscale0` gets in. Everything else tailnet devices send to the
 container (the web UI, k3s's API, the kubelet) is dropped (`melissa_app_access`'s `input` chain), at every
-setting. Melissa's own Tailscale doesn't serve the web UI on the tailnet yet (use the host's `tailscale serve`,
-below).
+setting. The web UI reaches the tailnet only through `tailscale serve` (HTTPS, below).
+
+**Open Melissa from your other devices** (Settings → Tailscale, once connected): Turn on asks for your
+password and the node's name (it goes into public certificate logs, so pick one that doesn't say who you
+are), then runs `tailscale serve --bg --https=443 http://127.0.0.1:8082` inside the container. The UI is then
+at `https://<name>.<tailnet>.ts.net` for devices on your tailnet. If your tailnet has HTTPS off, Melissa
+shows Tailscale's page to allow it and carries on when it is on. Turn off (or Disable) removes it. Melissa
+applies it again at each start. Apps stay plain HTTP on their ports and are never served on that name.
 
 tailscaled listens on 41641/udp, which install.sh publishes on the host (only when the host doesn't run
 Tailscale) so other devices can connect directly instead of through DERP relays behind podman's NAT. A host
@@ -211,13 +217,30 @@ reset-owner` prints a one-hour link that sets a new one. The CLI (`melissa-serve
 needs no password: it uses a local socket only root and Melissa's user can open, and acts as the owner.
 
 ### From another machine
-Sign-in runs over plain HTTP, which sends passwords readable on the network. Keep `UI_BIND=127.0.0.1` and use:
+Melissa takes passwords only over HTTPS or from this device: a sign-in over plain HTTP from another
+device is refused. Keep `UI_BIND=127.0.0.1` and use:
+- Melissa's own Tailscale: Settings → Tailscale → Open Melissa from your other devices (above).
+- Tailscale on the host: `sudo tailscale serve --bg http://127.0.0.1:8080` (your `UI_PORT`) serves it on
+  your tailnet over HTTPS; Settings → Tailscale shows the command. Only for a tailnet of people you trust
+  (no Funnel).
 - SSH: `ssh -L 8080:127.0.0.1:8080 you@host`, then open http://127.0.0.1:8080 on your machine.
-- Tailscale on the host: `sudo tailscale serve --bg 8080` serves it on your tailnet over HTTPS. (Melissa's
-  own Tailscale doesn't serve the UI yet.)
-  Only for a tailnet of people you trust (no Funnel).
 - For apps on the tailnet or the LAN: Settings → Apps (a host firewall other than firewalld must allow
   30000–30079; see "firewalld").
+
+The server checks the host name of every request (against DNS rebinding): `localhost`, loopback addresses,
+the node's own MagicDNS name, names in `[web] hosts` in server.toml, and `*.ts.net` over HTTPS from the
+host's `tailscale serve`. Other names get "Wrong address". Settings in `[web]`:
+- `trust_forwarded`: believe `X-Forwarded-*` on the main listener (the host's `tailscale serve` in front of
+  it). Off by default; install.sh sets it when the host runs Tailscale and `UI_BIND` is loopback. Ignored
+  when `UI_BIND` is wider: every LAN client would come in as 127.0.0.1 and could name any address.
+- `hosts`: more names to answer to, e.g. a LAN name with `UI_BIND` wider than loopback (browsing works;
+  sign-in still needs HTTPS or this device).
+- `proxy_listen` (127.0.0.1:8082): the listener Melissa's own `tailscale serve` forwards to. Loopback only.
+
+Upgrading: a host `tailscale serve` to the UI port needs `[web] trust_forwarded = true`: run install.sh
+again (it adds it), or add it to server.toml by hand. Plain-HTTP LAN access (`UI_BIND` not loopback) now
+needs the name in `[web] hosts` to browse, and signing in over plain HTTP from another device is refused
+(decided 2026-11-28): use one of the ways above until LAN HTTPS comes.
 
 ### Docker on the same host
 Docker sets the iptables `FORWARD` policy to DROP and accepts only its own bridges. An nftables accept
