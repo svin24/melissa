@@ -160,6 +160,11 @@ eq "HOST_TAILSCALE=yes" yes "$(host_tailscale)"
 eq "the host's Tailscale: no port published" "" "$(tailscale_port_line)"
 HOST_TAILSCALE=no
 eq "Melissa's own: tailscaled's port published" "PublishPort=41641:41641/udp" "$(tailscale_port_line)"
+eq "HOST_TAILSCALE=no but the host runs tailscaled: not published" "" \
+    "$(FAKE_TAILSCALED=yes tailscale_port_line 2>/dev/null)"
+mkdir "$tsdir/tailscale0"
+eq "HOST_TAILSCALE=no but tailscale0 on the host: not published" "" "$(tailscale_port_line 2>/dev/null)"
+rmdir "$tsdir/tailscale0"
 eq "the same port as melissa-tailscaled.service" yes \
     "$(yes_no grep -q -- '--port=41641' "$here/rootfs/usr/lib/systemd/system/melissa-tailscaled.service")"
 eq "melissa.container has the port placeholder" yes \

@@ -161,11 +161,19 @@ host_tailscale() {
 }
 
 # tailscale_port_line: publish Melissa's own tailscaled's UDP port (direct connections, not only
-# DERP relays) unless the host runs Tailscale, whose tailscaled has that port.
+# DERP relays) unless the host runs Tailscale, whose tailscaled has that port. Also not with
+# HOST_TAILSCALE=no on a host that runs it anyway: podman reserves a published UDP port on the
+# host, so the container would not start while the host's tailscaled holds it.
 TAILSCALE_PORT=41641
 tailscale_port_line() {
     local host; host=$(host_tailscale) || return 1
-    [ "$host" = yes ] || echo "PublishPort=$TAILSCALE_PORT:$TAILSCALE_PORT/udp"
+    [ "$host" = yes ] && return 0
+    if [ "$(HOST_TAILSCALE=auto host_tailscale)" = yes ]; then
+        echo "melissa-install: NOTICE: the host runs Tailscale too (its tailscaled holds $TAILSCALE_PORT/udp):" \
+            "not published; Melissa's own Tailscale connects through other ports or DERP relays" >&2
+        return 0
+    fi
+    echo "PublishPort=$TAILSCALE_PORT:$TAILSCALE_PORT/udp"
 }
 
 # tailscale_name HOSTNAME: the node name of Melissa's own Tailscale: melissa-<short host name>,
