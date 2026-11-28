@@ -245,7 +245,9 @@ fn read_small(path: &Path, max: u64) -> Result<Option<String>, String> {
     let shown = path.display();
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        // No symlink; and a FIFO (or device) left here can't block root's open: it's refused
+        // by the type check below. O_NONBLOCK changes nothing for a regular file.
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
         .open(path);
     let file = match file {
         Ok(f) => f,
@@ -889,7 +891,8 @@ pub fn prepare(
                 for n in names {
                     let src = at(root, K3S_CONFIG_D).join(&n);
                     if let Ok(bytes) = std::fs::read(&src) {
-                        write_root(&d.join(&n), &bytes, 0o644).map_err(|e| e.to_string())?;
+                        // 0600: a local override may hold a secret (k3s runs as root).
+                        write_root(&d.join(&n), &bytes, 0o600).map_err(|e| e.to_string())?;
                     }
                 }
             }
@@ -1050,9 +1053,26 @@ fn hand_over(dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
     f.sync_all().map_err(|e| e.to_string())
 }
 
+/// May root drain and delete node `name`? Only a peer in the setting (a device this server
+/// invited), never this device's own node (`status`: root's own status file).
+fn removable(config_dir: &Path, status: &Path, name: &str) -> Result<(), String> {
+    if node_label(name).as_deref() != Some(name) {
+        return Err("not a node name".into());
+    }
+    let setting = read_setting(&config_dir.join(FILE_NAME))?;
+    if setting.role != Role::Server || !setting.peers.iter().any(|p| p.name == name) {
+        return Err(format!("{name} is not a device in this cluster"));
+    }
+    match read_status(status) {
+        Some(s) if !s.node_name.is_empty() && s.node_name != name => Ok(()),
+        Some(s) if s.node_name == name => Err("that is this device's own node".into()),
+        _ => Err("this device's node name is not known yet".into()),
+    }
+}
+
 /// Root: run the request the server left in `config_dir`, answer there. The request file goes
-/// either way.
-pub fn run_request(config_dir: &Path, runner: &dyn Runner) -> Answer {
+/// either way. `status`: root's status file ([`STATUS_FILE`]).
+pub fn run_request(config_dir: &Path, status: &Path, runner: &dyn Runner) -> Answer {
     let path = config_dir.join(REQUEST_FILE);
     let request = read_small(&path, 4096).and_then(|t| {
         let t = t.ok_or("no request")?;
@@ -1065,9 +1085,7 @@ pub fn run_request(config_dir: &Path, runner: &dyn Runner) -> Answer {
             hand_over(config_dir, INVITATION_TOKEN_FILE, token.as_bytes())
         }
         Request::RemoveNode { name } => {
-            if node_label(&name).as_deref() != Some(name.as_str()) {
-                return Err("not a node name".into());
-            }
+            removable(config_dir, status, &name)?;
             runner.remove_node(&name)
         }
         Request::Restart => runner.restart_k3s(),
@@ -1080,6 +1098,8 @@ pub fn run_request(config_dir: &Path, runner: &dyn Runner) -> Answer {
     let data = serde_json::to_vec(&answer).unwrap_or_default();
     if let Err(e) = hand_over(config_dir, ANSWER_FILE, &data) {
         tracing::error!("cluster: cannot answer the server: {e}");
+        // Without an answer the server never reads a new token: don't leave it lying there.
+        let _ = std::fs::remove_file(config_dir.join(INVITATION_TOKEN_FILE));
     }
     answer
 }
@@ -1458,8 +1478,11 @@ impl ClusterControl {
         }
         // The token first (from the running server), then the restart that moves the node IP
         // and flannel to the tailnet (and puts the address in the API certificate).
-        self.request(&Request::CreateToken).await?;
         let path = self.inner.config_dir.join(INVITATION_TOKEN_FILE);
+        if let Err(e) = self.request(&Request::CreateToken).await {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
         let token = read_small(&path, MAX_TOKEN_BYTES)
             .ok()
             .flatten()

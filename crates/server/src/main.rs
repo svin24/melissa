@@ -671,7 +671,11 @@ fn cluster_command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         [c] if c == "run" => {
-            let answer = cluster::run_request(&config_dir, &cluster::SystemRunner);
+            let answer = cluster::run_request(
+                &config_dir,
+                std::path::Path::new(cluster::STATUS_FILE),
+                &cluster::SystemRunner,
+            );
             match answer.error {
                 None => Ok(()),
                 Some(e) => bail!("melissa-cluster: {e}"),

@@ -91,6 +91,9 @@ pub const WIPE: &[&str] = &[
     "/var/lib/melissa-container/etc-melissa/tailscale.toml",
     "/var/lib/melissa-container/etc-melissa/cluster.toml",
     "/var/lib/melissa-container/etc-melissa/cluster-join.token",
+    "/var/lib/melissa-container/etc-melissa/cluster-invitation.token",
+    "/var/lib/melissa-container/etc-melissa/cluster-request.json",
+    "/var/lib/melissa-container/etc-melissa/cluster-answer.json",
     // Melissa's own Tailscale (never the host's: that one isn't in this container).
     "/var/lib/melissa-tailscale",
     // k3s: the datastore, every app's volumes, the pods' and the network's leftovers.

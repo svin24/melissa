@@ -521,7 +521,8 @@ fn label_nodes_reads_the_setting_and_this_nodes_name() {
 fn requests_hand_back_tokens_in_a_private_file() {
     let dir = scratch("cluster-request");
     write_private(&dir.join(REQUEST_FILE), br#"{"action":"create_token"}"#).unwrap();
-    let a = run_request(&dir, &FakeRunner);
+    let status = dir.join("status.json");
+    let a = run_request(&dir, &status, &FakeRunner);
     assert!(a.ok, "{a:?}");
     assert!(!dir.join(REQUEST_FILE).exists());
     let tok = dir.join(INVITATION_TOKEN_FILE);
@@ -538,14 +539,36 @@ fn requests_hand_back_tokens_in_a_private_file() {
         br#"{"action":"remove_node","name":"x; rm -rf /"}"#,
     )
     .unwrap();
-    assert!(!run_request(&dir, &FakeRunner).ok);
-    write_private(
-        &dir.join(REQUEST_FILE),
-        br#"{"action":"remove_node","name":"laptop"}"#,
-    )
-    .unwrap();
-    assert!(run_request(&dir, &FakeRunner).ok);
-    assert!(!run_request(&dir, &FakeRunner).ok, "no request");
+    assert!(!run_request(&dir, &status, &FakeRunner).ok);
+    let remove = |name: &str| {
+        write_private(
+            &dir.join(REQUEST_FILE),
+            format!(r#"{{"action":"remove_node","name":"{name}"}}"#).as_bytes(),
+        )
+        .unwrap();
+        run_request(&dir, &status, &FakeRunner)
+    };
+    // Root removes only a device this server invited (a peer), never its own node.
+    assert!(!remove("laptop").ok, "no setting: no peers");
+    write_setting(&dir.join(FILE_NAME), &server_setting()).unwrap();
+    assert!(!remove("laptop").ok, "own node name unknown");
+    let own = Status {
+        node_name: "desktop".into(),
+        ..Status::default()
+    };
+    std::fs::write(&status, serde_json::to_vec(&own).unwrap()).unwrap();
+    assert!(!remove("stranger").ok, "not a peer");
+    assert!(!remove("desktop").ok, "this device");
+    let mut s = server_setting();
+    s.peers.push(Peer {
+        name: "desktop".into(),
+        address: "100.64.0.3".parse().unwrap(),
+    });
+    write_setting(&dir.join(FILE_NAME), &s).unwrap();
+    let a = remove("desktop");
+    assert!(a.error.unwrap().contains("own node"), "even when listed");
+    assert!(remove("laptop").ok);
+    assert!(!run_request(&dir, &status, &FakeRunner).ok, "no request");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -558,7 +581,7 @@ struct InlineStarter {
 impl Starter for InlineStarter {
     fn start(&self) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            run_request(&self.dir, &FakeRunner);
+            run_request(&self.dir, &self.dir.join("status.json"), &FakeRunner);
             Ok(())
         })
     }
@@ -611,7 +634,15 @@ async fn control_invites_joins_removes_and_leaves() {
         )
         .await
         .is_err());
-    std::fs::remove_file(dir.join("status.json")).unwrap();
+    let status = Status {
+        node_name: "home".into(),
+        ..Status::default()
+    };
+    std::fs::write(
+        dir.join("status.json"),
+        serde_json::to_vec(&status).unwrap(),
+    )
+    .unwrap();
     let inv = c
         .create_invitation(
             "100.64.0.1".parse().unwrap(),
@@ -946,4 +977,71 @@ fn joining_under_the_servers_own_name_is_refused() {
         st.errors
     );
     assert!(t.app_data_at(K3S_DATA), "nothing moved");
+}
+
+#[test]
+fn root_never_blocks_on_a_fifo_and_keeps_copied_dropins_private() {
+    let dir = scratch("cluster-fifo");
+    let fifo = dir.join(FILE_NAME);
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    // Would block forever in open() without O_NONBLOCK (no writer).
+    let e = read_setting(&fifo).unwrap_err();
+    assert!(e.contains("not a regular file"), "{e}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    let t = server_with_app("cluster-dropin-mode");
+    std::fs::write(
+        at(&t.root, K3S_CONFIG_D).join("90-local.yaml"),
+        "token: local\n",
+    )
+    .unwrap();
+    t.join();
+    t.prepare(Some("Laptop")).unwrap();
+    let copied = at(&t.root, AGENT_CONFIG)
+        .parent()
+        .unwrap()
+        .join("config.yaml.d/90-local.yaml");
+    assert_eq!(
+        std::fs::metadata(copied).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+/// Answers can't be written (the server's directory is gone): the token must not stay.
+#[test]
+fn a_token_without_an_answer_is_removed() {
+    struct Vanishing;
+    impl Runner for Vanishing {
+        fn create_token(&self, _: &str) -> Result<String, String> {
+            Ok("K10tok::abc.def".into())
+        }
+        fn remove_node(&self, _: &str) -> Result<(), String> {
+            unreachable!()
+        }
+        fn restart_k3s(&self) -> Result<(), String> {
+            unreachable!()
+        }
+        fn node_roles(&self) -> Result<String, String> {
+            unreachable!()
+        }
+        fn label_node(&self, _: &str, _: Role) -> Result<(), String> {
+            unreachable!()
+        }
+    }
+    let dir = scratch("cluster-no-answer");
+    write_private(&dir.join(REQUEST_FILE), br#"{"action":"create_token"}"#).unwrap();
+    // A directory where the answer goes: hand_over can't create the file.
+    std::fs::create_dir(dir.join(ANSWER_FILE)).unwrap();
+    std::fs::write(dir.join(ANSWER_FILE).join("x"), "").unwrap();
+    let a = run_request(&dir, &dir.join("status.json"), &Vanishing);
+    assert!(a.ok);
+    assert!(!dir.join(INVITATION_TOKEN_FILE).exists());
+    let _ = std::fs::remove_dir_all(dir);
 }
