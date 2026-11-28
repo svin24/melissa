@@ -448,7 +448,10 @@ sysctls() {
 }
 
 install_files() {
-    local auto_line=
+    local auto_line= host_ts ts_port_line
+    # Outside the sed below: a failure there would silently drop the PublishPort line.
+    host_ts=$(host_tailscale) || die "cannot tell whether the host runs Tailscale (HOST_TAILSCALE)"
+    ts_port_line=$(tailscale_port_line) || die "cannot decide whether to publish Tailscale's port"
     [ "$AUTO_UPDATE" = off ] || auto_line="AutoUpdate=$AUTO_UPDATE"
     mkdir -p "$STATE/status" "$STATE/request" "$(dirname "$QUADLET")" "$LIBEXEC" "$SHARE"
     chmod 0755 "$STATE" "$STATE/status"; chmod 0700 "$STATE/request"
@@ -456,8 +459,8 @@ install_files() {
     sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
         -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
-        -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$(host_tailscale)#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
-        -e "s#@TAILSCALE_PORT_LINE@#$(tailscale_port_line)#" \
+        -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$host_ts#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
+        -e "s#@TAILSCALE_PORT_LINE@#$ts_port_line#" \
         "$here/melissa.container" > "$QUADLET"
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     # uninstall.sh and what it sources, so it works without the checkout (get.sh deletes its copy).
