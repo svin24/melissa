@@ -321,6 +321,12 @@ eq "the marker directory belongs to root and the server's group" yes \
     "$(yes_no grep -qx 'd /var/lib/melissa-container/reset 0770 root melissa -' "$here/rootfs/usr/lib/tmpfiles.d/melissa-container.conf")"
 eq "the image enables the reset units" yes \
     "$(yes_no grep -q 'melissa-factory-reset.path melissa-factory-reset.service; ' "$here/Containerfile")"
+eq "the image enables the backup units" yes \
+    "$(yes_no grep -q 'systemctl enable melissa-backup.path melissa-backup.timer; ' "$here/Containerfile")"
+eq "backup requests belong to root and the server's group" yes \
+    "$(yes_no grep -qx 'd /var/lib/melissa-container/backup-request 0770 root melissa -' "$here/rootfs/usr/lib/tmpfiles.d/melissa-container.conf")"
+eq "backup settings and key are root's only" yes \
+    "$(yes_no grep -qx 'd /var/lib/melissa-container/backup 0700 root root -' "$here/rootfs/usr/lib/tmpfiles.d/melissa-container.conf")"
 eq "uninstall.sh never runs a reset" no "$(yes_no grep -q factory-reset "$here/uninstall.sh")"
 eq "uninstall.sh removes its LIBEXEC copies" yes "$(yes_no grep -qF '"$LIBEXEC/uninstall.sh" "$LIBEXEC/trust.sh" "$LIBEXEC/apparmor.sh"' "$here/uninstall.sh")"
 # --- The claim line at the end of the install -------------------------------------------------

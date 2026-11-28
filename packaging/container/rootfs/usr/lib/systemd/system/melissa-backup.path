@@ -1,0 +1,11 @@
+# Backups: start melissa-backup.service when the server leaves a request (crates/backup/src/request.rs).
+# The service removes every request it finds, so this settles once it has run.
+[Unit]
+Description=Melissa: watch for backup requests
+
+[Path]
+DirectoryNotEmpty=/var/lib/melissa-container/backup-request
+Unit=melissa-backup.service
+
+[Install]
+WantedBy=multi-user.target

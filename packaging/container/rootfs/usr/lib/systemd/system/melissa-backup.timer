@@ -1,0 +1,12 @@
+# Backups: every hour melissa-backup.service checks the owner's schedule (weekly on Sunday at 03:00 by
+# default, in the device's time zone) and backs up when a run is due; a failed run (drive not connected)
+# is tried again after six hours.
+[Unit]
+Description=Melissa: check the backup schedule hourly
+
+[Timer]
+OnCalendar=*-*-* *:05:00
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
