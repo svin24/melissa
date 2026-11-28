@@ -860,7 +860,7 @@ Roadmap (rough, phases may overlap):
   image) behind a `BackupEngine` trait, a root `melissa-backup` unit driven by fixed-name requests, Melissa's
   state + a raw k3s snapshot + every app's export (spec, labels, Secret values, volumes) with app-aware hooks
   (the spec's `backup` field), weekly by default, optional encryption with a recovery key, marker-checked
-  drive, one-app restore. Open: the drive helper, the Settings UI, the first-run restore flow (Q112).
+  drive, one-app restore. Open: the drive helper, the Settings UI, the first-run restore flow (Q113).
 - **M5 — Published image:** the container image signed and on an update channel (ghcr.io; owner's yes given
   2026-11-27, `:edge` from master first, `:stable` from tags); later
   the reference distro (bootc, archived) with an installer/first-boot flow.
@@ -971,7 +971,8 @@ Roadmap (rough, phases may overlap):
     `deploy_app` check free space against the image size + volume sizes first, and should apps get their
     own volume/quota (local-path does not enforce PVC sizes)?
     2026-11-28: a one-app restore needs room for the restored copy and keeps the replaced data as
-    `<volume>.pre-restore` until the next restore; backup staging (k3s datastore copy) is on `/var` too.
+    `<volume>.pre-restore-<UTC time>` for 7 days (every restore adds one); backup staging (k3s datastore
+    copy) is on `/var` too.
 37. `POST /api/tools/{name}` and the confirmation inbox are reachable by any local process until the
     loopback API has auth. Sandboxed agents no longer reach it (2026-11-18: deny-by-default egress, each
     sandbox only sees its own MCP socket), except backends configured with `network = "host"`; other local
@@ -1804,4 +1805,8 @@ Roadmap (rough, phases may overlap):
     Melissa's settings in the clear: say so plainly in the UI. (f) A periodic `restic check` and telling
     the owner when backups fail or are overdue. (g) Nix packaging of the root unit (container only
     today). (h) Offsite (M4): a second repository on a VPS (rest-server or sftp) with the same engine.
-    (i) Q112 (d): whether backups should keep rotated transcript files.
+    (i) Q112 (d): whether backups should keep rotated transcript files. (j) From
+    `docs/design/STATE-INVENTORY-2026-11-28.md` "For the backup feature", not done yet: record the Melissa
+    release with the state snapshot and refuse a restore into an older image; and the state copy is taken
+    while the server runs (every store writes whole files atomically, so files may be of different moments,
+    never half written): stop the server or hold its store locks for the copy?
