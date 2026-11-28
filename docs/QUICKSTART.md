@@ -197,7 +197,9 @@ Reboot first if k3s ran, so no pod mounts are left under `/var/lib/kubelet`.
 
 ## Known limitations
 
-- Pre-alpha: the UI and the chat are new and change often; chats may not survive an upgrade.
+- Pre-alpha: the UI and the chat are new and change often. Chats, settings and accounts are kept across
+  updates; after a roll back to an older version, what a newer one saved is shown but not changed until
+  you update again.
 - Loopback only: passwords go only over HTTPS or from this device, and there is no LAN HTTPS yet. Use
   Tailscale or SSH ([Use it from another machine](#use-it-from-another-machine)).
 - Agents reach the internet only through Melissa's proxy. A CLI version that needs a new host for its AI
