@@ -49,6 +49,8 @@ fn the_lists_never_reach_what_stays() {
                 "/var/lib/melissa/",
                 "/var/lib/melissa-container/etc-melissa/",
                 "/var/lib/melissa-tailscale",
+                "/var/lib/melissa-container/cluster",
+                "/run/melissa-cluster",
                 "/var/lib/rancher/k3s",
                 "/var/lib/kubelet",
                 "/var/lib/cni",
