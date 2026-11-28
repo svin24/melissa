@@ -255,11 +255,7 @@ fn apps_empty(snap: &ClusterSnapshot, owner: &Principal) -> String {
 fn device_of(snap: &ClusterSnapshot, name: Option<String>) -> DetailDevice {
     match snap.devices.first() {
         Some(d) => {
-            let (health, status) = match d.ready {
-                Some(true) => (Health::Ok, "Online"),
-                Some(false) => (Health::Problem, "Not ready"),
-                None => (Health::Idle, "Status unknown"),
-            };
+            let (health, status) = d.health();
             let os =
                 d.os.as_deref()
                     .map(|o| o.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
