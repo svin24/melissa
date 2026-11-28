@@ -8,4 +8,7 @@ Wants=network-online.target
 Type=oneshot
 # Only file names are read from the request directory (never contents); fixed actions only.
 ExecStart=/usr/local/libexec/melissa/melissa-host-update requests
-TimeoutStartSec=30min
+# An apply may wait for an automatic update that runs (one at a time), then download.
+TimeoutStartSec=90min
+# Cut off (a timeout, a kill) while switching images: finish or undo it in the background.
+ExecStopPost=-/usr/local/libexec/melissa/melissa-host-update resume-later

@@ -37,6 +37,40 @@ pub struct Prefs {
     /// icons); apps without one get an icon derived from their name.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub app_icons: std::collections::BTreeMap<String, AppIconPref>,
+    /// How the pages show times of day (Settings → About → This device).
+    #[serde(skip_serializing_if = "TimeFormat::is_default")]
+    pub time_format: TimeFormat,
+}
+
+/// 24-hour ("15:00"), 12-hour ("3:00 PM"), or whatever the browser's language uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeFormat {
+    /// The browser's language decides (its `Accept-Language`).
+    #[default]
+    Browser,
+    H24,
+    H12,
+}
+
+impl TimeFormat {
+    pub const ALL: [Self; 3] = [Self::Browser, Self::H24, Self::H12];
+
+    fn is_default(&self) -> bool {
+        *self == Self::Browser
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::H24 => "h24",
+            Self::H12 => "h12",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.as_str() == s)
+    }
 }
 
 /// An app's icon as picked in the UI (names checked by the UI when read).

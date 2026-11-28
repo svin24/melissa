@@ -199,16 +199,31 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
 ## Updates: rules
 - Host kind: `/run/.containerenv` or `/run/systemd/container` → container; else "from source". Release:
   `/usr/lib/melissa/release` (version, revision, runtime), else `MELISSA_VERSION`, else the cargo version.
-- The lead agent can't run the host's podman. Check/apply/rollback: an empty file with that fixed name in
-  `/run/melissa-update-request` (bind mount); the host's path unit runs `melissa-host-update requests`, which acts
-  on those names only. Status comes back read-only in `/run/melissa-update/{status,last}.json`. Restart:
+- The lead agent can't run the host's podman. Check/apply/rollback and the settings (`auto-on`, `auto-off`,
+  `schedule-<daily|mon..sun>-<00..23>`): an empty file with that fixed name in `/run/melissa-update-request`
+  (bind mount; a newer setting of the same kind replaces the older file; a request older than 10 minutes no
+  longer counts as pending); the host's path unit runs
+  `melissa-host-update requests`, which acts on those names only. Status comes back read-only in
+  `/run/melissa-update/{status,last,action}.json` (`action.json` only while something runs: step and
+  download bytes). Restart:
   `systemctl restart --no-block melissa-server.service`, allowed by polkit for user `melissa` only.
-- Page: version + one status ("Up to date", "Update available", "Ready to install"), Update / Roll back
-  buttons, the last result; installed-as, revision, images, automatic updates (and Nix commands) behind
-  "Details". Apply and rollback restart Melissa: the UI first returns a short `confirm_card`; only
-  `confirm=yes` (API: `{"confirm": true}`, CLI `--yes`) starts them. Without the helper mounts: one line, no
-  host commands (UI and API); from source the page shows `git pull && just demo`.
-- Automatic updates: the install's `AUTO_UPDATE` (podman-auto-update.timer), under Details, not changeable there.
+- Page (owner design 2026-11-28): version + one status at a time (busy, didn't start, failed, rolled back,
+  update available, up to date), its notice with one action, "Update Melissa" the one primary button, What's
+  new (compare or release link, new tab); every technical fact and Roll back (in-page `action_button`
+  confirm) under "Details". No confirmation card for Update (it can be rolled back); the API still needs
+  `{"confirm": true}` (CLI `--yes`). While a check, an update or a rollback runs nothing is pressable, the
+  region polls `GET /ui/settings/updates` (the poll that finds nothing running fills a polite announcer
+  out of band), the inside of the sections bar's Updates link polls `GET /ui/update-hint` (the link stays, so
+  keyboard focus does) and
+  shows the spinner, and the server refuses check/apply/rollback/restart, the settings and Reset (409 in the
+  API). Without the helper mounts: one line, no host commands (UI and API); from source the page shows
+  `git pull && just demo`.
+- Automatic updates card (registry images only): the switch (`POST /ui/settings/updates/auto`, warning while
+  off), When (`POST /ui/settings/updates/when`, day + whole hour, times in the owner's time format via
+  `crate::time_format::Hours`) and Channel (Edge only for now).
+- Time format (Settings → About → This device, with the device name): Follow browser (Accept-Language), 24-hour
+  or 12-hour, `time_format` in `ui.toml`. Use `Hours::pick(prefs.time_format, &headers)` wherever a page shows
+  a time of day.
 - CLI: `melissa-server update [status]`, `update check|apply|rollback|restart [--yes]`.
 
 ## Voice: rules (2026-11-20)

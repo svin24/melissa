@@ -70,7 +70,15 @@ fn view(ui: &Ui) -> AboutView {
         credits: ACKNOWLEDGMENTS,
         notices: &NOTICES,
         rust_report: Path::new(RUST_REPORT).is_file(),
+        device: super::device::this_device(ui),
     }
+}
+
+/// The page with "This device" as given (a form's answer without script).
+pub(super) async fn page_with_device(ui: &Ui, device: pages::ThisDeviceView) -> maud::Markup {
+    let mut v = view(ui);
+    v.device = Some(device);
+    ui.framed(|f| pages::about_page(f, &v)).await
 }
 
 /// The value of About's row in the phone's Settings list.

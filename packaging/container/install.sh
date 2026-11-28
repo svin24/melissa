@@ -32,7 +32,12 @@
 #                                   existing server.toml's addresses are rewritten to match).
 #   ALLOW_ADDRESS_MISMATCH=no       yes: skip that check (something else forwards those addresses)
 #   AUTO_UPDATE=                    registry (default for registry images), local (default for
-#                                   localhost/ images) or off. Not off: enables podman-auto-update.timer.
+#                                   localhost/ images) or off: whether melissa-auto-update.timer
+#                                   installs newer images by itself (Settings → Updates switches it).
+#                                   A daily check (melissa-check.timer, no download) runs either way.
+#   SCHEDULE=daily-03               when automatic updates run: daily or mon..sun, and the hour
+#                                   00..23 in the host's time (within 15 minutes after it). Default:
+#                                   the one in install.env (Settings → Updates → When), else daily-03.
 #   SET_SYSCTLS=yes                 write the kubelet's host sysctls to /etc/sysctl.d (see below)
 #   HOST_TAILSCALE=auto             does the host run Tailscale? auto: yes when tailscale0 exists or
 #                                   tailscaled.service is active. yes: Melissa uses the host's and
@@ -67,6 +72,13 @@ if [ -z "${IMAGE:-}" ] && [ -r "$INSTALL_ENV" ]; then
     IMAGE=$(sed -n 's/^IMAGE=//p' "$INSTALL_ENV" | tr -d '"' | tail -n 1)
     [ -n "${AUTO_UPDATE:-}" ] || AUTO_UPDATE=$(sed -n 's/^AUTO_UPDATE=//p' "$INSTALL_ENV" | tr -d '"' | tail -n 1)
 fi
+# The owner's update time is kept by a reinstall (Settings → Updates writes it to install.env).
+if [ -z "${SCHEDULE:-}" ] && [ -r "$INSTALL_ENV" ]; then
+    SCHEDULE=$(sed -n 's/^SCHEDULE=//p' "$INSTALL_ENV" | tr -d '"' | tail -n 1)
+fi
+SCHEDULE=${SCHEDULE:-daily-03}
+[[ $SCHEDULE =~ ^(daily|mon|tue|wed|thu|fri|sat|sun)-([01][0-9]|2[0-3])$ ]] \
+    || { echo "melissa-install: SCHEDULE must be daily-HH or mon..sun-HH (HH 00..23)" >&2; exit 2; }
 IMAGE=${IMAGE:-$SIGNED_REPO:$CHANNEL}
 VERIFY=${VERIFY:-yes}
 UI_PORT=${UI_PORT:-8080}
@@ -81,6 +93,7 @@ NET_CHECK=${NET_CHECK:-yes}
 NET_CHECK_HOST=${NET_CHECK_HOST:-example.com}
 SYS_NET=${SYS_NET:-/sys/class/net}
 case "$IMAGE" in localhost/*) AUTO_UPDATE=${AUTO_UPDATE:-local} ;; *) AUTO_UPDATE=${AUTO_UPDATE:-registry} ;; esac
+case "$AUTO_UPDATE" in registry | local | off) ;; *) echo "melissa-install: AUTO_UPDATE must be registry, local or off" >&2; exit 2 ;; esac
 APP_PORT_LAST=$((APP_PORT_BASE + 79))
 
 QUADLET=${QUADLET:-/etc/containers/systemd/melissa.container}
@@ -92,6 +105,8 @@ SHARE=/usr/local/share/melissa
 SYSCTL_FILE=/etc/sysctl.d/90-melissa-kubelet.conf
 MODULES_FILE=/etc/modules-load.d/melissa.conf
 DOCKER_FORWARD_UNIT=melissa-docker-forward.service
+# The container's name (Quadlet ContainerName=).
+CONTAINER_NAME=melissa
 # k3s's pod and service networks inside the container; the podman network must not overlap them.
 K3S_CIDRS="10.42.0.0/16 10.43.0.0/16"
 # The kubelet inside sets these host-wide (they are not namespaced). Values as the kubelet wants them.
@@ -497,15 +512,14 @@ sysctls() {
 }
 
 install_files() {
-    local auto_line= host_ts ts_port_line
+    local host_ts ts_port_line
     # Outside the sed below: a failure there would silently drop the PublishPort line.
     host_ts=$(host_tailscale) || die "cannot tell whether the host runs Tailscale (HOST_TAILSCALE)"
     ts_port_line=$(tailscale_port_line) || die "cannot decide whether to publish Tailscale's port"
-    [ "$AUTO_UPDATE" = off ] || auto_line="AutoUpdate=$AUTO_UPDATE"
     mkdir -p "$STATE/status" "$STATE/request" "$(dirname "$QUADLET")" "$LIBEXEC" "$SHARE"
     chmod 0755 "$STATE" "$STATE/status"; chmod 0700 "$STATE/request"
     printf '%s\n' br_netfilter overlay > "$MODULES_FILE"
-    sed -e "s#@IMAGE@#$IMAGE#" -e "s#@AUTO_UPDATE_LINE@#$auto_line#" -e "s#@UI_BIND@#$UI_BIND#" \
+    sed -e "s#@IMAGE@#$IMAGE#" -e "s#@UI_BIND@#$UI_BIND#" \
         -e "s#@UI_PORT@#$UI_PORT#" -e "s#@BIND@#$BIND#" -e "s#@APP_PORT_BASE@#$APP_PORT_BASE#" \
         -e "s#@APP_PORT_LAST@#$APP_PORT_LAST#" -e "s#@PUBLISH_BIND@#$(publish_bind)#" \
         -e "s#@APPARMOR_LINE@#$APPARMOR_LINE#" -e "s#@HOST_TAILSCALE@#$host_ts#" -e "s#@TAILSCALE_NAME@#$(tailscale_name "$(hostname)")#" \
@@ -514,22 +528,21 @@ install_files() {
     install -m 0755 "$here/host/melissa-host-update" "$LIBEXEC/melissa-host-update"
     # uninstall.sh and what it sources, so it works without the checkout (get.sh deletes its copy).
     install -m 0755 "$here/uninstall.sh" "$here/trust.sh" "$here/apparmor.sh" "$LIBEXEC/"
-    install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" "$UNITDIR/"
+    install -m 0644 "$here/host/melissa-update.path" "$here/host/melissa-update.service" \
+        "$here/host/melissa-auto-update.timer" "$here/host/melissa-auto-update.service" \
+        "$here/host/melissa-check.timer" "$here/host/melissa-check.service" "$UNITDIR/"
     install -m 0644 "$here/README.md" "$SHARE/README.md"
     local timer_ours=${TIMER_OURS:-no} docker_subnets=''
     if [ -r "$STATE/install.env" ]; then
         timer_ours=$(sed -n 's/^TIMER_OURS=//p' "$STATE/install.env")
         docker_subnets=$(env_get DOCKER_FORWARD_SUBNETS)
     fi
-    if [ "$AUTO_UPDATE" != off ] && ! systemctl is-enabled -q podman-auto-update.timer 2>/dev/null; then
-        systemctl enable -q --now podman-auto-update.timer
-        timer_ours=yes
-        say "enabled podman-auto-update.timer (daily; it updates containers labelled for auto-update)"
-    fi
+    timer_ours=$(podman_timer_migrate "${timer_ours:-no}")
     cat > "$STATE/install.env" <<EOF
 # Written by packaging/container/install.sh; read by melissa-host-update and uninstall.sh.
 IMAGE=$IMAGE
 AUTO_UPDATE=$AUTO_UPDATE
+SCHEDULE=$SCHEDULE
 VERIFY=$VERIFY
 POLICY_CREATED=$POLICY_CREATED
 APPARMOR_PROFILE=$APPARMOR_PROFILE
@@ -544,6 +557,47 @@ EOF
     [ -e "$QUADLET_GENERATED" ] \
         || die "Quadlet did not generate melissa.service (check: /usr/libexec/podman/quadlet -dryrun)"
     systemctl enable -q --now melissa-update.path
+    update_timers
+}
+
+# The automatic update's time (drop-in) and whether its timer is on, written by the helper itself
+# (Settings → Updates changes them the same way); the daily check timer is always on.
+update_timers() {
+    (
+        local st=$STATE ud=$UNITDIR
+        # shellcheck source=packaging/container/host/melissa-host-update
+        . "$here/host/melissa-host-update"
+        STATE=$st UNITDIR=$ud
+        paths
+        load_env
+        timers
+    )
+}
+
+# Before 2026-11-28 install.sh enabled podman-auto-update.timer for Melissa (TIMER_OURS=yes) and the
+# Quadlet carried AutoUpdate=. Melissa now has her own timer: turn podman's off again, unless other
+# containers on this host have come to rely on it (QUADLET_DIRS: where system Quadlets live,
+# podman-systemd.unit(5); tests point it elsewhere). Prints the new TIMER_OURS.
+QUADLET_DIRS=(/etc/containers/systemd /usr/share/containers/systemd)
+podman_timer_migrate() {
+    local others d f
+    if [ "$1" != yes ]; then echo no; return; fi
+    # Containers that exist now, and Quadlets that may create one later (not started yet).
+    others=$( {
+        podman ps -a --filter label=io.containers.autoupdate --format '{{.Names}}' 2>/dev/null
+        for d in "${QUADLET_DIRS[@]}"; do
+            for f in "$d"/*.container; do
+                [ -f "$f" ] && grep -qE '^[[:space:]]*AutoUpdate=' "$f" && basename "$f" .container
+            done
+        done
+    } | grep -vx "$CONTAINER_NAME" | sort -u | paste -sd ' ')
+    if [ -n "$others" ]; then
+        say "left podman-auto-update.timer on: other containers use it ($others); it no longer updates Melissa" >&2
+    else
+        systemctl disable -q --now podman-auto-update.timer 2>/dev/null || true
+        say "disabled podman-auto-update.timer (install.sh had enabled it for Melissa; melissa-auto-update.timer runs her updates now)" >&2
+    fi
+    echo no
 }
 
 # The app addresses for the server's config: what people type before :port. For every address
@@ -872,7 +926,7 @@ wait_for() { # seconds, description, command...
 case "${1:-}" in
 --preflight) preflight; exit $? ;;
 "") ;;
-*) sed -n '2,53p' "$0"; exit 2 ;;
+*) sed -n '2,58p' "$0"; exit 2 ;;
 esac
 
 preflight || die "preflight failed (see above)"
@@ -900,7 +954,7 @@ Melissa is running (systemctl status melissa). k3s needs a minute or two on the 
   Agents:     sudo podman exec -it melissa melissa-setup            (e.g. agent opencode)
   Chat:       sudo podman exec -it melissa melissa-server chat
   Updates:    Settings → Updates, or sudo $LIBEXEC/melissa-host-update check|apply|rollback
-              (automatic: $AUTO_UPDATE)
+              (automatic: $(if [ "$AUTO_UPDATE" = off ]; then echo "off; a daily check still looks"; else echo "$SCHEDULE, within 15 minutes"; fi))
   Tailscale:  $(case "$(host_tailscale)" in yes) echo "the host's (Melissa uses it)" ;; *) echo "Settings → Tailscale (Melissa's own, off until you enable it)" ;; esac)
   From another machine: $(from_elsewhere)
   (sign-in sends passwords, so only HTTPS or this machine). See $SHARE/README.md.

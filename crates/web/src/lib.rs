@@ -27,6 +27,7 @@ mod settings;
 mod setup_password;
 mod state;
 mod threads;
+pub mod time_format;
 pub mod tokens;
 mod ui;
 mod usage;
@@ -2920,55 +2921,113 @@ mod tests {
             let (app, _) = app_with(Some(fx.settings(HostKind::Container, true)));
             let (_, _, html) = send(&app, get("/settings/updates")).await;
             for want in [
-                "Downloaded, used at the next start",
+                // One status at a time: the failed check wins over the downloaded update.
+                "Check failed",
+                "reach the update server",
                 "0.1.1",
                 "sha256:5b0d3c1e9f2a",
-                "Previous (for a rollback)",
-                "Ready to install",
-                ">Update<",
+                "Previous version",
                 ">Roll back<",
                 "&lt;i&gt;registry down",
-                "On (daily)",
-                "abc1234",
+                "Install updates automatically",
+                "Every day at",
                 "<summary>Details</summary>",
             ] {
                 assert!(html.contains(want), "missing {want}");
             }
-            // Apply without a yes: the confirmation card, nothing requested.
-            let (status, _, html) = send(&app, form("/ui/settings/updates/apply", "", true)).await;
-            assert_eq!(status, StatusCode::OK);
             assert!(
-                html.contains("Update and restart Melissa?") && html.contains("name=\"confirm\"")
+                !html.contains("id=\"device-name\""),
+                "the name moved to About"
             );
-            let (_, _, html) = send(&app, form("/ui/settings/updates/rollback", "", true)).await;
-            assert!(html.contains("Go back to the previous version?"));
+            // An empty announcer in the page; the poll that finds nothing running fills it (out of
+            // band, only its inside), so screen readers hear the outcome.
+            assert!(html.contains("id=\"updates-said\" role=\"status\" aria-live=\"polite\"></p>"));
+            let (_, _, region) = send(&app, get("/ui/settings/updates")).await;
+            assert!(
+                region.contains("hx-swap-oob=\"innerHTML\">Check failed. Melissa couldn"),
+                "{region}"
+            );
+            // The API still needs a yes for what restarts Melissa.
             let (status, _) = send_json(&app, json_post("/api/settings/updates/apply", "{}")).await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert!(fx.audit().is_empty(), "nothing was requested");
-            assert_eq!(
-                std::fs::read_dir(fx.dir.join("update-request"))
+            let requests = || -> Vec<String> {
+                let mut v: Vec<String> = std::fs::read_dir(fx.dir.join("update-request"))
                     .unwrap()
-                    .count(),
-                0
-            );
+                    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect();
+                v.sort();
+                v
+            };
+            assert!(requests().is_empty());
             let (status, body) = send_json(&app, get("/api/settings/updates")).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["host"], "container");
             assert_eq!(body["release"]["version"], "0.3.1");
+            assert_eq!(body["busy"], serde_json::Value::Null);
             assert_eq!(
                 body["actions"],
                 serde_json::json!(["check", "apply", "rollback", "restart"])
             );
-            // With a yes: an empty request file for the host helper, and an audit line.
-            let (status, _) = send_json(
+            // The time and the switch: fixed request names, checked against the fixed lists;
+            // the newest of a kind replaces the older one.
+            let (_, _, html) = send(
                 &app,
-                json_post("/api/settings/updates/apply", r#"{"confirm": true}"#),
+                form("/ui/settings/updates/when", "day=wed&hour=../x", true),
             )
             .await;
-            assert_eq!(status, StatusCode::ACCEPTED);
+            assert!(html.contains("Pick a day and an hour"), "{html}");
+            assert!(requests().is_empty());
+            send(
+                &app,
+                form("/ui/settings/updates/when", "day=sun&hour=04", true),
+            )
+            .await;
+            send(
+                &app,
+                form("/ui/settings/updates/when", "day=wed&hour=23", true),
+            )
+            .await;
+            assert_eq!(requests(), ["schedule-wed-23"]);
+            let (_, _, html) = send(&app, form("/ui/settings/updates/auto", "", true)).await;
+            assert_eq!(requests(), ["auto-off", "schedule-wed-23"]);
+            assert!(
+                html.contains("misses security fixes"),
+                "the warning while off"
+            );
+            send(&app, form("/ui/settings/updates/auto", "enabled=on", true)).await;
+            assert_eq!(requests(), ["auto-on", "schedule-wed-23"]);
+            for f in requests() {
+                std::fs::remove_file(fx.dir.join("update-request").join(f)).unwrap();
+            }
+            // Update Melissa from the page: no confirmation card, the request at once.
+            let (status, _, html) = send(&app, form("/ui/settings/updates/apply", "", true)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(requests(), ["apply"]);
             let req = fx.dir.join("update-request/apply");
             assert_eq!(std::fs::metadata(&req).unwrap().len(), 0);
             assert!(fx.audit().contains("apply requested"));
+            // Now it counts as running: the page polls, and nothing else starts.
+            assert!(
+                html.contains("Updating") && html.contains("hx-trigger"),
+                "{html}"
+            );
+            let (status, body) = send_json(
+                &app,
+                json_post("/api/settings/updates/rollback", r#"{"confirm": true}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["busy"], true);
+            let (_, _, html) = send(&app, form("/ui/settings/updates/check", "", true)).await;
+            assert!(html.contains("Melissa is updating"), "{html}");
+            send(&app, form("/ui/settings/updates/auto", "", true)).await;
+            assert_eq!(requests(), ["apply"], "settings wait too");
+            let (_, _, tab) = send(&app, get("/ui/update-hint")).await;
+            assert!(
+                tab.contains("spin") && tab.contains("Updating Melissa"),
+                "{tab}"
+            );
             // Without the helper: one short line, no host commands, and a 501 for actions.
             let fx2 = SettingsFixture::new("updates-nohelper");
             let (app, _) = app_with(Some(fx2.settings(HostKind::Container, false)));
@@ -2998,6 +3057,194 @@ mod tests {
             assert!(html.contains("git pull"));
         }
 
+        /// For the visual check of Settings → Updates (not run by default): writes each state
+        /// of the page (and About's This device) to `MELISSA_SHOTS_DIR`. Serve them over HTTP
+        /// at `/settings/updates` with `/assets/` from `crates/web/assets`.
+        #[tokio::test]
+        #[ignore]
+        async fn dump_update_states() {
+            let Ok(out) = std::env::var("MELISSA_SHOTS_DIR") else {
+                return;
+            };
+            let out = std::path::PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            let now = melissa_settings::updates::now_secs();
+            let fx = SettingsFixture::new("update-shots");
+            let dir = fx.dir.join("update");
+            let req = fx.dir.join("update-request");
+            std::fs::create_dir_all(&dir).unwrap();
+            let (app, _) = app_with(Some(fx.settings(HostKind::Container, true)));
+            let img = |v: &str, rev: &str| {
+                format!(
+                    r#"{{"id":"7e1a0c3f55d2","digest":"sha256:5b0d3c1e9f2a4b6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e","created":"2026-11-26T10:00:00Z","version":"{v}","revision":"{rev}","size":141000000}}"#
+                )
+            };
+            let write = |status: &str, last: Option<String>, action: Option<String>| {
+                std::fs::write(dir.join("status.json"), status).unwrap();
+                match last {
+                    Some(l) => std::fs::write(dir.join("last.json"), l).unwrap(),
+                    None => {
+                        let _ = std::fs::remove_file(dir.join("last.json"));
+                    }
+                }
+                match action {
+                    Some(a) => std::fs::write(dir.join("action.json"), a).unwrap(),
+                    None => {
+                        let _ = std::fs::remove_file(dir.join("action.json"));
+                    }
+                }
+                for e in std::fs::read_dir(&req).unwrap() {
+                    std::fs::remove_file(e.unwrap().path()).unwrap();
+                }
+            };
+            // The host timer's next start, as the helper writes it (systemd's answer).
+            let next = crate::settings::updates::next_run(
+                melissa_settings::updates::Schedule::default(),
+                &crate::settings::updates::local_now(),
+            )
+            .map_or(0, |z| z.timestamp().as_second());
+            let status = |auto: &str, extra: &str| {
+                format!(
+                    r#"{{"image":"registry.example.com/melissa:edge","auto_update":"{auto}","schedule":"daily-03","next_run":{next},"running":{},"previous":{}{extra}}}"#,
+                    img("0.0.4", "9e2b5f1"),
+                    img("0.0.3", "7c41d0e")
+                )
+            };
+            let checked = format!(
+                r#"{{"action":"check","ok":true,"at":{},"kind":"up_to_date"}}"#,
+                now - 300
+            );
+            let shoot = |name: &'static str| {
+                let app = app.clone();
+                let out = out.clone();
+                async move {
+                    let (_, _, html) = send(&app, get("/settings/updates")).await;
+                    std::fs::write(out.join(format!("{name}.html")), html).unwrap();
+                }
+            };
+            write(&status("registry", ""), Some(checked.clone()), None);
+            shoot("01-up-to-date").await;
+            write(
+                &status(
+                    "registry",
+                    &format!(
+                        r#","just_updated":{{"from":"0.0.3","from_revision":"7c41d0e","to":"0.0.4","to_revision":"9e2b5f1","at":{}}}"#,
+                        now - 3 * 3600
+                    ),
+                ),
+                Some(checked.clone()),
+                None,
+            );
+            shoot("02-just-updated").await;
+            write(
+                &status(
+                    "registry",
+                    &format!(r#","available":{}"#, img("0.0.5", "a1b2c3d")),
+                ),
+                Some(format!(
+                    r#"{{"action":"check","ok":true,"at":{},"kind":"available","version":"0.0.5"}}"#,
+                    now - 300
+                )),
+                None,
+            );
+            shoot("03-available").await;
+            std::fs::write(req.join("check"), "").unwrap();
+            shoot("04-checking").await;
+            let action = |step: &str, done: u64| {
+                Some(format!(
+                    r#"{{"action":"apply","step":"{step}","version":"0.0.5","bytes_done":{done},"bytes_total":141000000,"started":{},"updated":{now}}}"#,
+                    now - 60
+                ))
+            };
+            let avail = status(
+                "registry",
+                &format!(r#","available":{}"#, img("0.0.5", "a1b2c3d")),
+            );
+            write(
+                &avail,
+                Some(checked.clone()),
+                action("download", 59_000_000),
+            );
+            shoot("05-downloading").await;
+            write(
+                &avail,
+                Some(checked.clone()),
+                action("restart", 141_000_000),
+            );
+            shoot("06-restarting").await;
+            write(&avail, Some(checked.clone()), action("health", 141_000_000));
+            shoot("07-health-check").await;
+            write(
+                &status("registry", ""),
+                Some(checked.clone()),
+                Some(format!(
+                    r#"{{"action":"rollback","step":"rollback","version":"0.0.3","bytes_done":0,"bytes_total":0,"started":{now},"updated":{now}}}"#
+                )),
+            );
+            shoot("08-rolling-back").await;
+            write(
+                &status(
+                    "registry",
+                    &format!(
+                        r#","held":{{"version":"0.0.5","revision":"a1b2c3d","reason":"failed","at":{},"message":"Melissa didn't answer within 3 minutes"}}"#,
+                        now - 1800
+                    ),
+                ),
+                Some(format!(
+                    r#"{{"action":"apply","ok":false,"at":{},"kind":"no_start","version":"0.0.5"}}"#,
+                    now - 1800
+                )),
+                None,
+            );
+            shoot("09-failed").await;
+            write(
+                &avail,
+                Some(format!(
+                    r#"{{"action":"apply","ok":false,"at":{},"kind":"download","message":"connection reset","version":"0.0.5"}}"#,
+                    now - 600
+                )),
+                None,
+            );
+            shoot("10-download-failed").await;
+            write(
+                &status(
+                    "registry",
+                    &format!(
+                        r#","held":{{"version":"0.0.5","revision":"a1b2c3d","reason":"rolled_back","at":{}}}"#,
+                        now - 3600
+                    ),
+                ),
+                Some(checked.clone()),
+                None,
+            );
+            shoot("11-rolled-back").await;
+            write(&status("off", ""), Some(checked.clone()), None);
+            shoot("12-auto-off").await;
+            // Every Sunday at 4 in the afternoon, in the 12-hour format the owner picked.
+            send(
+                &app,
+                form("/ui/settings/time-format", "time_format=h12", true),
+            )
+            .await;
+            let next_sun = crate::settings::updates::next_run(
+                melissa_settings::updates::Schedule::parse("sun-16").unwrap(),
+                &crate::settings::updates::local_now(),
+            )
+            .map_or(0, |z| z.timestamp().as_second());
+            write(
+                &status("registry", "")
+                    .replace("daily-03", "sun-16")
+                    .replace(
+                        &format!("\"next_run\":{next}"),
+                        &format!("\"next_run\":{next_sun}"),
+                    ),
+                Some(checked.clone()),
+                None,
+            );
+            shoot("14-weekday-12-hour").await;
+            let (_, _, html) = send(&app, get("/settings/about")).await;
+            std::fs::write(out.join("13-about-this-device.html"), html).unwrap();
+        }
         fn json_post(uri: &str, body: &str) -> axum::http::Request<Body> {
             axum::http::Request::post(uri)
                 .header(header::CONTENT_TYPE, "application/json")

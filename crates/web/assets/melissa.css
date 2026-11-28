@@ -1854,8 +1854,15 @@ details.menu-confirm > summary::-webkit-details-marker {
   height: var(--size-icon-sm);
 }
 
+/* The Updates link while a check, an update or a rollback runs: the spinner in the glyph's
+   slot (the same .spin, dotted and still under reduced motion). */
+.tab-icon > .spin {
+  width: var(--size-icon-sm);
+  height: var(--size-icon-sm);
+}
+
 .tab[aria-current="page"],
-.tab.has-update {
+.tab:has(.update-dot) {
   color: var(--color-text-default);
 }
 
@@ -1865,6 +1872,11 @@ details.menu-confirm > summary::-webkit-details-marker {
 
 .tab-update {
   margin-left: auto;
+}
+
+/* The swapped inside of the Updates link takes no box of its own. */
+.tab-state {
+  display: contents;
 }
 
 .tab-icon {
@@ -3056,6 +3068,30 @@ progress {
   width: 100%;
   height: 10px;
   accent-color: var(--color-action-bg);
+}
+
+/* A step without a known size (a restart, a health check): a still, partly filled bar in the
+   middle; no animation, so nothing to reduce. */
+.meter progress:indeterminate {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-full);
+  /* A lighter tint of the action colour than a determinate bar (board 04b). */
+  --meter-still: color-mix(in srgb, var(--color-action-bg) 55%, var(--color-bg-surface));
+  background: linear-gradient(
+    to right,
+    var(--color-bg-fill) 0 35%,
+    var(--meter-still) 35% 60%,
+    var(--color-bg-fill) 60%
+  );
+}
+
+.meter progress:indeterminate::-moz-progress-bar {
+  background: transparent;
+}
+
+.meter progress:indeterminate::-webkit-progress-bar {
+  background: transparent;
 }
 
 .composer.dropping .composer-box {
@@ -4664,6 +4700,12 @@ th {
   vertical-align: -0.2em;
 }
 
+/* Neutral: a fact, not a warning (Updates' "Back on 0.0.3 since 09:14"); COMPONENT-SPEC 2.10
+   fills every notice with its tone's soft colour. */
+.notice.tone-neutral {
+  background: var(--color-bg-fill);
+}
+
 .notice.tone-info {
   background: var(--color-action-soft);
 }
@@ -4963,9 +5005,33 @@ form.inline {
   white-space: nowrap;
 }
 
+/* wide_only / narrow_only: one part placed differently on phones (Updates' badge and button). */
+.wide-only {
+  display: contents;
+}
+
+.narrow-only {
+  display: none;
+}
+
+@container settings-main (max-width: 600px) {
+  .wide-only {
+    display: none;
+  }
+
+  .narrow-only {
+    display: contents;
+  }
+
+  /* A row control holding only wide parts takes no space on phones. */
+  .setting-control:has(> .wide-only):not(:has(> :not(.wide-only))) {
+    display: none;
+  }
+}
+
 /* A narrow section (768px): the tools without "Checked just now" (owner board D2b). */
 @container settings-main (max-width: 600px) {
-  .settings-tools .checked span {
+  .settings-tools .checked > span {
     display: none;
   }
 }
@@ -5049,6 +5115,13 @@ main:empty {
   font-size: var(--font-size-md);
 }
 
+/* Why a card's settings can't be changed right now (between its heading and the card). */
+.setting-lead {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
 .setting-card {
   background: var(--color-bg-surface);
   border: var(--border-width-hairline) solid var(--color-border-default);
@@ -5064,12 +5137,13 @@ main:empty {
 
 /* A row (owner decision 5, 2026-11-23): 40px with one line, 56px with a description; the
    control on the right (32px), wrapping below the text only when there is no room beside it.
-   The text has its own 4px above and below, so a control and the text both sit 8px in. */
+   The text and the control each have their own 4px above and below, so both sit 8px in, beside
+   each other or wrapped (a wrapped last row keeps 8px to the card's edge; 2026-11-28). */
 .setting-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-4);
+  gap: 0 var(--space-4);
   min-height: var(--size-row-md);
   padding: var(--space-1) var(--space-4);
 }
@@ -5106,6 +5180,7 @@ main:empty {
 }
 
 .setting-control {
+  padding-block: var(--space-1);
   display: flex;
   flex: 0 1 auto;
   flex-wrap: wrap;
@@ -5128,6 +5203,8 @@ main:empty {
 .setting-extra {
   flex: 1 0 100%;
   min-width: 0;
+  /* The row has no gap between lines: 4px under the text + 8px here, as before. */
+  padding-top: var(--space-2);
   padding-bottom: var(--space-2);
 }
 
@@ -5270,6 +5347,25 @@ main:empty {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* On a narrow phone the fields give way instead of pushing out of the card (320px). */
+.inline-form > .select-wrap,
+.inline-form > .inline-text {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.inline-form > .select-wrap > select.input {
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+/* Two selects (Updates → When: day, hour): the short second one keeps its width. */
+.inline-form > .select-wrap ~ .select-wrap {
+  flex-shrink: 0;
 }
 
 .inline-number {
@@ -5323,7 +5419,7 @@ table.usage th[scope="row"] {
   font-size: var(--font-size-control-md);
 }
 
-.checked span::after {
+.checked > span::after {
   content: " ·";
 }
 
@@ -7155,7 +7251,8 @@ ol.steps > li::marker {
     margin-left: 0;
   }
 
-  .tab .glyph {
+  .tab .glyph,
+  .tab-icon > .spin {
     width: var(--size-icon-md);
     height: var(--size-icon-md);
   }
@@ -7844,7 +7941,7 @@ a.suggestion {
   .settings-parent,
   .settings-sep,
   .settings-lead,
-  .settings-tools .checked span {
+  .settings-tools .checked > span {
     display: none;
   }
 

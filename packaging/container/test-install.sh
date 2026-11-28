@@ -562,6 +562,11 @@ eq "AppArmor: nothing else unloaded" "apparmor_parser -r $APPARMOR_DIR/melissa-c
         "$(yes_no grep -qx 'PodmanArgs=--security-opt apparmor=melissa-container' "$QUADLET")"
     eq "install_files: no placeholder left" no "$(yes_no grep -qE '^[^#]*@[A-Z_]+@' "$QUADLET")"
     eq "install_files: recorded in install.env" yes "$(. "$STATE/install.env"; [ "$APPARMOR_PROFILE" = yes ] && echo yes)"
+    eq "install_files: the update time in install.env" daily-03 "$(. "$STATE/install.env"; echo "$SCHEDULE")"
+    eq "install_files: the timer's drop-in" yes \
+        "$(yes_no grep -qx 'OnCalendar=\*-\*-\* 03:00:00' "$UNITDIR/melissa-auto-update.timer.d/schedule.conf")"
+    eq "install_files: Melissa's timer units installed" yes \
+        "$(yes_if 'for u in melissa-auto-update.timer melissa-auto-update.service melissa-check.timer melissa-check.service; do [ -e "$UNITDIR/$u" ] || exit 1; done')"
     APPARMOR_PROFILE=no APPARMOR_LINE=
     install_files
     eq "install_files, no AppArmor: an empty line" "" "$(grep -n 'apparmor\|^@' "$QUADLET" | grep -v '^[0-9]*:#')"
@@ -770,6 +775,239 @@ eq "host-update probes without podman events" yes \
     "$(yes_no grep -q 'podman --events-backend=none --log-level=error exec' "$hu")"
 eq "host-update has no other podman exec" no "$(yes_no grep -qE '^[^#]*podman exec' "$hu")"
 eq "host-update parses" yes "$(yes_no bash -n "$hu")"
+
+# --- melissa-host-update: the owner's schedule, requests, check without download, held versions ---
+eq "the Quadlet has no AutoUpdate= (Melissa's own timer updates her)" no \
+    "$(yes_no grep -qE '^(AutoUpdate=|@AUTO_UPDATE_LINE@)' "$here/melissa.container")"
+eq "auto-update timer: no catch-up at boot" yes "$(yes_no grep -qx 'Persistent=false' "$here/host/melissa-auto-update.timer")"
+eq "auto-update timer: within 15 minutes" yes "$(yes_no grep -qx 'RandomizedDelaySec=900' "$here/host/melissa-auto-update.timer")"
+eq "auto-update service runs auto" yes \
+    "$(yes_no grep -qx 'ExecStart=/usr/local/libexec/melissa/melissa-host-update auto' "$here/host/melissa-auto-update.service")"
+eq "check service only checks" yes \
+    "$(yes_no grep -qx 'ExecStart=/usr/local/libexec/melissa/melissa-host-update check' "$here/host/melissa-check.service")"
+eq "install.sh no longer enables podman-auto-update.timer" no \
+    "$(yes_no grep -qE '^[^#]*enable[^#]*podman-auto-update.timer' "$here/install.sh")"
+eq "uninstall.sh removes Melissa's timers" yes \
+    "$(yes_if 'grep -q "melissa-auto-update.timer melissa-check.timer" "$here/uninstall.sh" && grep -q "melissa-auto-update.timer.d" "$here/uninstall.sh"')"
+eq "SCHEDULE: default daily-03" "daily-03" "$(unset SCHEDULE; INSTALL_ENV=/nonexistent; . "$here/install.sh"; echo "$SCHEDULE")"
+eq "SCHEDULE: refused when malformed" no "$(yes_if '(export INSTALL_ENV=/nonexistent SCHEDULE="daily-3"; . "$here/install.sh")')"
+eq "AUTO_UPDATE: refused when unknown" no "$(yes_if '(export INSTALL_ENV=/nonexistent AUTO_UPDATE=sometimes; . "$here/install.sh")')"
+hu_t=$(mktemp -d)
+printf 'IMAGE=localhost/melissa:latest\nAUTO_UPDATE=off\nSCHEDULE=sun-05\n' > "$hu_t/env"
+eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL_ENV="$hu_t/env"; . "$here/install.sh"; echo "$SCHEDULE")"
+(
+    # shellcheck source=packaging/container/host/melissa-host-update
+    . "$hu"
+    set +e
+    fails=0
+    STATE="$hu_t/state" UNITDIR="$hu_t/units"
+    paths
+    mkdir -p "$REQUESTS" "$STATUS"
+    calls="$hu_t/calls"
+    systemctl() { echo "systemctl $*" >> "$calls"; [ "$1" != show ] || echo "@1764385200"; }
+    # podman: Melissa runs image "cur" (pulled by digest sha256:aaa1); nothing else is stored.
+    podman() {
+        case "$*" in
+        "container inspect melissa --format {{.Image}}") echo cur ;;
+        "image inspect "*"{{.Id}}") echo cur ;;
+        "image inspect cur --format {{range .RepoDigests}}{{.}} {{end}}") echo "ghcr.io/svin24/melissa@sha256:aaa1 " ;;
+        "image inspect "*"--format {{index .Labels"*) echo 0.0.3 ;;
+        "image inspect cur --format "*) echo "cur|sha256:aaa1|2026-11-26T10:00:00Z|0.0.3|7c41d0e" ;;
+        "image exists "*) return 1 ;;
+        *) echo "podman $*" >> "$calls"; return 1 ;;
+        esac
+    }
+    skopeo() { echo "$SKOPEO_OUT"; }
+    IMAGE=ghcr.io/svin24/melissa:edge AUTO_UPDATE=registry SCHEDULE=daily-03
+
+    eq "OnCalendar: every day" '*-*-* 03:00:00' "$(on_calendar daily-03)"
+    eq "OnCalendar: one weekday" 'Sun *-*-* 23:00:00' "$(on_calendar sun-23)"
+    for s in daily-00 mon-09 sun-23; do eq "schedule $s is valid" yes "$(yes_no valid_schedule "$s")"; done
+    for s in daily-24 daily-3 monday-03 sun-03x "daily-03;x" "../x-03" ""; do
+        eq "schedule '$s' is refused" no "$(yes_no valid_schedule "$s")"; done
+
+    # Requests: a time, auto off, and names that are not ours (deleted, never acted on).
+    : > "$ENV_FILE"
+    touch "$REQUESTS/schedule-sun-05" "$REQUESTS/auto-off" "$REQUESTS/schedule-xyz-99" "$REQUESTS/reboot"
+    requests > /dev/null
+    eq "requests: the directory is emptied" "" "$(ls -A "$REQUESTS")"
+    eq "requests: install.env has the owner's choice" "AUTO_UPDATE=off SCHEDULE=sun-05" \
+        "$(grep -E '^(AUTO_UPDATE|SCHEDULE)=' "$ENV_FILE" | paste -sd ' ')"
+    eq "requests: the drop-in has the time" yes "$(yes_no grep -qx 'OnCalendar=Sun \*-\*-\* 05:00:00' "$DROPIN")"
+    eq "requests: the drop-in resets the default first" yes "$(yes_no grep -qx 'OnCalendar=' "$DROPIN")"
+    eq "requests: off disables the timer" yes "$(yes_no grep -qx 'systemctl disable -q --now melissa-auto-update.timer' "$calls")"
+    eq "requests: the check timer stays on" yes "$(yes_no grep -qx 'systemctl enable -q --now melissa-check.timer' "$calls")"
+    eq "requests: status.json has the schedule and no next run while off" yes \
+        "$(yes_if 'grep -q "\"schedule\":\"sun-05\",\"next_run\":null" "$STATUS/status.json"')"
+    : > "$calls"
+    touch "$REQUESTS/auto-on"
+    requests > /dev/null
+    eq "auto-on: registry image → registry" "AUTO_UPDATE=registry" "$(grep '^AUTO_UPDATE=' "$ENV_FILE")"
+    eq "auto-on: timer enabled and restarted (new time, no run now)" yes \
+        "$(yes_if 'grep -qx "systemctl enable -q melissa-auto-update.timer" "$calls" && grep -qx "systemctl restart melissa-auto-update.timer" "$calls"')"
+    eq "auto-on: next run in status.json" yes "$(yes_no grep -q '"next_run":1764385200' "$STATUS/status.json")"
+    eq "status.json is valid JSON" yes "$(yes_no python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUS/status.json")"
+
+    # Check: never downloads, compares the tag's digest with the running image's.
+    : > "$calls"
+    SKOPEO_OUT="sha256:aaa1|0.0.3|7c41d0e|100 200 "
+    check > /dev/null
+    eq "check: same digest is up to date" up_to_date "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "check: no available update" yes "$(yes_no grep -q '"available":null' "$STATUS/status.json")"
+    eq "check: nothing pulled" no "$(yes_no grep -q 'podman pull' "$calls")"
+    eq "check: no action left behind" no "$(yes_no test -e "$STATUS/action.json")"
+    SKOPEO_OUT="sha256:bbb2|0.0.4|9e2b5f1|100 200 "
+    check > /dev/null
+    eq "check: a new digest is available, with its version and size" yes \
+        "$(yes_no grep -q '"available":{"id":"","digest":"sha256:bbb2","created":"","version":"0.0.4","revision":"9e2b5f1","size":300}' "$STATUS/status.json")"
+    eq "check: last says available" available "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "status.json with an update is valid JSON" yes "$(yes_no python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUS/status.json")"
+    # A version that failed is held: not offered, and auto skips it.
+    printf '{"id":"x","digests":"sha256:bbb2","version":"0.0.4","revision":"9e2b5f1","reason":"failed","at":1,"message":""}\n' > "$STATE/held.json"
+    check > /dev/null
+    eq "held: not available" yes "$(yes_no grep -q '"available":null' "$STATUS/status.json")"
+    eq "held: shown in status.json" yes "$(yes_no grep -q '"held":{"id":"x"' "$STATUS/status.json")"
+    eq "held: last says held" held "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    update auto > /dev/null
+    eq "held: auto skips it without a download" yes \
+        "$(yes_if '! grep -q "podman pull" "$calls" && grep -q "\"action\":\"auto\",\"ok\":true,\"at\":[0-9]*,\"kind\":\"held\"" "$STATUS/last.json"')"
+    SKOPEO_OUT="sha256:ccc3|0.0.5|aaaaaaa|100 "
+    check > /dev/null
+    eq "held: a newer version lifts the hold" no "$(yes_no test -e "$STATE/held.json")"
+    eq "held: the newer one is available" yes "$(yes_no grep -q '"version":"0.0.5"' "$STATUS/status.json")"
+    AUTO_UPDATE=off
+    eq "auto with automatic updates off does nothing" "melissa-host-update: automatic updates are off" "$(auto)"
+    # The registry can't be reached: a failed check, the page's state stays readable.
+    skopeo() { echo "pinging container registry: connection refused"; return 1; }
+    check > /dev/null
+    eq "check: unreachable registry is a failed check" "false check" \
+        "$(sed -n 's/.*"ok":\([a-z]*\),.*"kind":"\([^"]*\)".*/\1 \2/p' "$STATUS/last.json")"
+    exit "$fails"
+) || fails=$((fails + $?))
+# Apply: download with progress, restart, health check; a new image that doesn't start is rolled
+# back and held. podman and systemctl are stand-ins that keep "what runs" in a file.
+(
+    # shellcheck source=packaging/container/host/melissa-host-update
+    . "$hu"
+    set +e
+    fails=0
+    STATE="$hu_t/apply" UNITDIR="$hu_t/units2"
+    paths
+    mkdir -p "$REQUESTS" "$STATUS"
+    calls="$hu_t/acalls"; : > "$calls"
+    echo cur > "$hu_t/running"; echo cur > "$hu_t/tagged"
+    IMAGE=ghcr.io/svin24/melissa:edge AUTO_UPDATE=registry SCHEDULE=daily-03 START_WAIT=0
+    systemctl() {
+        echo "systemctl $*" >> "$calls"
+        case "$1" in
+        restart) cp "$hu_t/tagged" "$hu_t/running" ;;
+        is-active) [ "$NEW_STARTS" = yes ] ;;
+        esac
+    }
+    podman() {
+        case "$*" in
+        "container inspect melissa --format {{.Image}}") cat "$hu_t/running" ;;
+        "image inspect ghcr.io/svin24/melissa:edge --format {{.Id}}") cat "$hu_t/tagged" ;;
+        "image inspect "*"{{.Id}}") echo "${3}" ;;
+        "image inspect cur --format {{range .RepoDigests}}{{.}} {{end}}") echo "ghcr.io/svin24/melissa@sha256:aaa1 " ;;
+        "image inspect new --format {{range .RepoDigests}}{{.}} {{end}}") echo "ghcr.io/svin24/melissa@sha256:bbb2 " ;;
+        "image inspect cur --format {{index .Labels \"org.opencontainers.image.version\"}}") echo 0.0.3 ;;
+        "image inspect new --format {{index .Labels \"org.opencontainers.image.version\"}}") echo 0.0.4 ;;
+        "image inspect "*"--format {{index .Labels"*) echo abc1234 ;;
+        "image inspect "*) echo "$3|sha256:x|2026-11-26T10:00:00Z|0.0.x|abc1234" ;;
+        "pull -q ghcr.io/svin24/melissa:edge") echo new > "$hu_t/tagged"; echo "podman pull" >> "$calls" ;;
+        "tag cur ghcr.io/svin24/melissa:edge") echo cur > "$hu_t/tagged"; echo "podman tag back" >> "$calls" ;;
+        "--events-backend=none --log-level=error exec melissa systemctl is-active -q "*) [ "$NEW_STARTS" = yes ] ;;
+        "image exists "*) return 1 ;;
+        *) echo "podman $*" >> "$calls"; return 1 ;;
+        esac
+    }
+    skopeo() { echo "sha256:bbb2|0.0.4|9e2b5f1|100 200 "; }
+    sleep() { :; }
+    NEW_STARTS=no
+    update apply > /dev/null
+    eq "apply: downloaded and restarted" yes "$(yes_if 'grep -qx "podman pull" "$calls" && grep -qx "systemctl restart melissa.service" "$calls"')"
+    eq "apply, no start: back on the old image" "cur" "$(cat "$hu_t/running")"
+    eq "apply, no start: tagged back" yes "$(yes_no grep -qx 'podman tag back' "$calls")"
+    eq "apply, no start: the new one is held as failed" yes \
+        "$(yes_if 'grep -q "\"id\":\"new\",\"digests\":\"sha256:bbb2\",\"version\":\"0.0.4\"" "$STATE/held.json" && grep -q "\"reason\":\"failed\"" "$STATE/held.json"')"
+    eq "apply, no start: last says no_start for 0.0.4" yes \
+        "$(yes_if 'grep -q "\"ok\":false" "$STATUS/last.json" && grep -q "\"kind\":\"no_start\"" "$STATUS/last.json" && grep -q "\"version\":\"0.0.4\"" "$STATUS/last.json"')"
+    eq "apply, no start: no action left behind" no "$(yes_no test -e "$STATUS/action.json")"
+    # Try again (manual apply ignores the hold) and this time it starts.
+    : > "$calls"; NEW_STARTS=yes START_WAIT=60
+    update apply > /dev/null
+    eq "apply: running the new image" new "$(cat "$hu_t/running")"
+    eq "apply: the hold is lifted" no "$(yes_no test -e "$STATE/held.json")"
+    eq "apply: just_updated from 0.0.3 to 0.0.4" yes \
+        "$(yes_if 'grep -q "\"from\":\"0.0.3\",\"from_revision\":\"abc1234\",\"to\":\"0.0.4\"" "$STATE/updated.json"')"
+    eq "apply: just_updated in status.json" yes "$(yes_no grep -q '"just_updated":{"from":"0.0.3"' "$STATUS/status.json")"
+    eq "apply: last says updated" updated "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "apply: no in-progress marker left" no "$(yes_no test -e "$STATE/in-progress")"
+    # While images switch, a start in between doesn't move the rollback tag.
+    echo cur > "$STATE/running-id"; printf 'apply\ncur\nnew\n0.0.3\n0.0.4\n' > "$STATE/in-progress"
+    : > "$calls"
+    note_running
+    eq "in progress: running-id kept" cur "$(cat "$STATE/running-id")"
+    eq "in progress: nothing tagged" no "$(yes_no grep -q 'podman tag' "$calls")"
+    # Cut off after the restart (a reboot): the new image runs and answers -> finished.
+    rm -f "$STATE/updated.json"
+    resume > /dev/null
+    eq "resume: healthy new image -> updated" updated "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "resume: just_updated written" yes "$(yes_no test -s "$STATE/updated.json")"
+    eq "resume: marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    # Cut off, and the new image doesn't answer -> back on the old one, the new one held.
+    printf 'apply\ncur\nnew\n0.0.3\n0.0.4\n' > "$STATE/in-progress"
+    NEW_STARTS=no START_WAIT=0
+    resume > /dev/null
+    eq "resume: unhealthy -> back on the old image" cur "$(cat "$hu_t/running")"
+    eq "resume: ...the new one held as failed" yes "$(yes_no grep -q '"reason":"failed"' "$STATE/held.json")"
+    eq "resume: ...last says no_start" no_start "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "resume: ...marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    resume > "$hu_t/rout"
+    eq "resume: nothing cut off does nothing" "" "$(cat "$hu_t/rout")"
+    # A rollback whose previous image doesn't start: the current one is put back, not held.
+    : > "$calls"
+    rollback > /dev/null
+    eq "rollback fails: still on the image that ran" cur "$(cat "$hu_t/running")"
+    eq "rollback fails: the name points at it again" yes "$(yes_no grep -qx 'podman tag back' "$calls")"
+    eq "rollback fails: no hold on the running image" no "$(yes_no test -e "$STATE/held.json")"
+    eq "rollback fails: last says so" "false no_start" \
+        "$(sed -n 's/.*"ok":\([a-z]*\),.*"kind":"\([^"]*\)".*/\1 \2/p' "$STATUS/last.json")"
+    eq "rollback fails: marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    eq "clean: ASCII only, no quotes" 'x y' "$(clean $'\xc3\xa9x "y\\')"
+    exit "$fails"
+) || fails=$((fails + $?))
+# Migration: podman-auto-update.timer goes off only if install.sh had turned it on, and no other
+# container uses it.
+(
+    set +e
+    fails=0
+    calls="$hu_t/mcalls"; : > "$calls"
+    mkdir -p "$hu_t/q1" "$hu_t/q2"
+    printf '[Container]\nAutoUpdate=registry\n' > "$hu_t/q1/melissa.container"
+    QUADLET_DIRS=("$hu_t/q1" "$hu_t/q2")
+    systemctl() { echo "systemctl $*" >> "$calls"; }
+    podman() { printf '%s\n' $PODMAN_PS; }
+    PODMAN_PS="melissa"
+    eq "migrate: not ours: left alone" "no" "$(podman_timer_migrate no 2>/dev/null)"
+    eq "migrate: not ours: no systemctl" "" "$(cat "$calls")"
+    eq "migrate: ours, only Melissa used it: disabled" "no" "$(podman_timer_migrate yes 2>/dev/null)"
+    eq "migrate: ...with systemctl disable" yes "$(yes_no grep -qx 'systemctl disable -q --now podman-auto-update.timer' "$calls")"
+    : > "$calls"
+    PODMAN_PS="melissa nextcloud"
+    out=$(podman_timer_migrate yes 2>&1 >/dev/null)
+    eq "migrate: another container uses it: kept" "" "$(cat "$calls")"
+    eq "migrate: ...and says so" yes "$(yes_no grep -q 'other containers use it (nextcloud)' <<<"$out")"
+    # A Quadlet with AutoUpdate= whose container doesn't exist yet counts too.
+    : > "$calls"; PODMAN_PS="melissa"
+    printf '[Container]\n AutoUpdate=local\n' > "$hu_t/q2/gitea.container"
+    out=$(podman_timer_migrate yes 2>&1 >/dev/null)
+    eq "migrate: a Quadlet with AutoUpdate=: kept" "" "$(cat "$calls")"
+    eq "migrate: ...named" yes "$(yes_no grep -q 'other containers use it (gitea)' <<<"$out")"
+    exit "$fails"
+) || fails=$((fails + $?))
+rm -rf "$hu_t"
 
 if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all install.sh tests passed"

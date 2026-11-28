@@ -6,15 +6,17 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        about_head, action_button, actions, away_card, badge, busy_button, code, command_block,
-        confirm_card, danger_confirm, detail_head, disclosure, external_button, facts, group,
-        inline_form, inline_number, inline_select, inline_text_form, license_text, lines_field,
-        link, link_button, live_region, log_view, markdown_document, new_tab_button, notice,
+        about_head, action_button, actions, announce_oob, announcer, away_card, badge, busy_button,
+        code, command_block, confirm_card, danger_confirm, detail_head, disclosure,
+        external_button, facts, group, inline_form, inline_number, inline_select,
+        inline_select_with, inline_text_form, license_text, lines_field, link, link_button,
+        live_region, log_view, markdown_document, narrow_only, new_tab_button, notice,
         one_field_form, people::password_checked, pick_list, plain_action, progress_bar,
-        provider_logo, region, select_field_at, setting_card, setting_row, setting_row_details,
-        setting_row_full, setting_row_with, settings_form, settings_frame_at, settings_head,
-        settings_tools_oob, split_card, text_field, text_field_checked, toggle, var_list, Btn,
-        Choice, ConfirmCard, DangerConfirm, Glyph, LogLine, Nav, PickRow, SettingsHead,
+        provider_logo, region, select_field_at, setting_card, setting_card_with, setting_row,
+        setting_row_details, setting_row_full, setting_row_with, settings_form, settings_frame_at,
+        settings_head, settings_head_busy, settings_tools_oob, split_card, status_badge,
+        text_field, text_field_checked, toggle, update_tab_state, var_list, wide_only, Btn, Choice,
+        ConfirmCard, DangerConfirm, Glyph, LogLine, Mark, Nav, PickRow, SettingsHead,
         SettingsSection, Toggle, Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
@@ -95,7 +97,7 @@ pub const SECTIONS: [Section; 14] = [
         label: "Updates",
         group: "System",
         icon: Glyph::Refresh,
-        keywords: "Melissa version check for updates update roll back restart automatic updates This device Device name rename",
+        keywords: "Melissa version check for updates update roll back restart automatic updates schedule when time channel edge",
     },
     Section {
         href: DEVELOPER_URL,
@@ -131,7 +133,7 @@ pub const SECTIONS: [Section; 14] = [
         label: "About",
         group: "Melissa",
         icon: Glyph::Info,
-        keywords: "About version revision build license licence MIT credits acknowledgments third-party notices sponsor donate source code GitHub report a problem issues",
+        keywords: "About This device Device name rename Time format 24-hour 12-hour clock version revision build license licence MIT credits acknowledgments third-party notices sponsor donate source code GitHub report a problem issues",
     },
 ];
 
@@ -189,9 +191,9 @@ pub const VOICE_ID: &str = "voice-settings";
 /// The Developer section: Agent tasks (`/tasks` redirects here when the lead agent is present).
 pub const DEVELOPER_URL: &str = "/settings/developer";
 
-/// The Updates section: Melissa's version and this device's name.
+/// The Updates section: Melissa's version, its status and automatic updates.
 pub const UPDATES_URL: &str = "/settings/updates";
-/// DOM id of the device name's region on the Updates page (its form swaps it).
+/// DOM id of the device name's region on the About page (its form swaps it).
 pub const DEVICE_NAME_ID: &str = "device-name";
 
 /// DOM id of the Providers region (forms swap it).
@@ -742,170 +744,324 @@ fn details_view(c: &ProviderCard, v: &ProvidersView, url: &str) -> Markup {
 
 // --- Updates ------------------------------------------------------------------------------------
 
-/// One container image line.
-pub struct ImageLine {
-    pub label: &'static str,
-    pub image: String,
-    pub detail: String,
+/// The bar while an update or a rollback runs: its label ("Downloading 0.0.4… 42%"), the size
+/// ("59 of 141 MB"), how far (`total` 0: unknown, a still bar) and the line below it.
+pub struct BusyView {
+    pub label: String,
+    pub text: String,
+    pub done: u64,
+    pub total: u64,
+    pub below: String,
+}
+
+/// What a notice's one button does.
+pub enum NoticeAction {
+    None,
+    /// Posts apply ("Try again", "Install 0.0.4 anyway").
+    Apply(String),
+    /// Roll back, asked in the page first: the question.
+    Rollback(String),
+}
+
+/// The status notice: failed, rolled back or just updated.
+pub struct UpdateNotice {
+    pub text: String,
+    pub tone: Tone,
+    pub action: NoticeAction,
+    pub whats_new: Option<String>,
+}
+
+/// The Automatic updates card.
+pub struct AutoView {
+    pub on: bool,
+    /// Why nothing here can be changed now (an update or a rollback runs).
+    pub locked: Option<&'static str>,
+    /// `daily`, `mon` … `sun`.
+    pub day: &'static str,
+    /// `00` … `23`.
+    pub hour: String,
+    /// The 24 hours: (value, label in the chosen time format).
+    pub hours: Vec<(String, String)>,
+    /// "UTC+01:00".
+    pub device_time: String,
+    /// `edge` or `stable`; None: a custom image (no channel row).
+    pub channel: Option<&'static str>,
 }
 
 /// What the Updates page shows.
+#[derive(Default)]
 pub struct UpdatesView {
+    /// "Version 0.0.3".
     pub version: String,
-    /// The image state in a word or two ("Up to date"), where the buttons work.
-    pub status: Option<(&'static str, Tone)>,
-    /// One short sentence where updating from here isn't the way.
-    pub note: Option<&'static str>,
-    /// Behind Details: installed as, revision, automatic updates.
-    pub details: Vec<(&'static str, String)>,
-    pub images: Vec<ImageLine>,
+    /// The one status: word, tone, spinner.
+    pub badge: Option<(&'static str, Tone, bool)>,
+    /// The bar while an update or a rollback runs.
+    pub busy: Option<BusyView>,
+    pub notice: Option<UpdateNotice>,
+    /// One quiet line ("Next automatic update: tonight around 03:00.").
+    pub line: Option<String>,
+    /// The page's one primary button ("Update Melissa").
+    pub primary: Option<&'static str>,
+    pub whats_new: Option<String>,
+    /// Behind Details: (label, value, monospaced).
+    pub details: Vec<(&'static str, String, bool)>,
+    /// The previous version, under Details, with Roll back while nothing runs.
+    pub previous: Option<String>,
+    pub can_rollback: bool,
+    pub rollback_question: String,
     /// "Checked 5 min ago" (empty: nothing to check here).
     pub checked: String,
-    pub last: Option<Flash>,
-    pub flash: Option<Flash>,
-    /// Buttons the page may show (the helper is there).
     pub can_check: bool,
-    pub can_apply: bool,
-    pub can_rollback: bool,
-    /// A pending confirmation for `apply` or `rollback`.
-    pub confirm: Option<&'static str>,
+    /// Something runs: the head bar's button is busy (a check) or disabled.
+    pub head_busy: Option<melissa_settings::updates::Busy>,
+    /// The region polls itself while something runs.
+    pub live: bool,
+    /// The sections bar's Updates link, updated with the region.
+    pub tab: crate::components::UpdateHint,
+    /// The switch, time and channel (container installs with a registry image).
+    pub auto: Option<AutoView>,
+    pub flash: Option<Flash>,
+    /// One short sentence where updating from here isn't the way.
+    pub note: Option<&'static str>,
     /// Commands to type (Nix and runs from source only): (label, command).
     pub commands: Vec<(String, String)>,
     /// Show the commands at once (runs from source) instead of behind Details.
     pub commands_open: bool,
     pub pending: Option<Pending>,
     pub manual_restart: Option<String>,
-    /// This device's name (owner only, like the page).
-    pub device: DeviceNameView,
+    /// Read out to screen readers when a poll finds the work done ("Up to date. Updated from …").
+    pub announce: Option<String>,
 }
 
-/// The device name's field: the saved name (else the host's) and the last save's answer.
-pub struct DeviceNameView {
-    pub value: String,
-    pub flash: Option<Flash>,
-}
+/// DOM id of the Updates page's screen-reader announcer.
+const UPDATES_SAID_ID: &str = "updates-said";
 
-/// The device's name as a field and a Save button; its form swaps only this region.
-pub fn device_name_region(v: &DeviceNameView) -> Markup {
-    region(
-        DEVICE_NAME_ID,
-        setting_row_with(
-            html! { "Device name" },
-            Some(html! { "Shown in Melissa only." }),
-            inline_text_form(
-                super::device::SAVE_URL,
-                DEVICE_NAME_ID,
-                "name",
-                "Device name",
-                &v.value,
-                64,
-            ),
-            v.flash.as_ref().map(|f| notice(&f.text, f.tone)),
-        ),
-    )
-}
+/// Where the region asks for itself while something runs.
+pub const UPDATES_REGION_URL: &str = "/ui/settings/updates";
+const CHECK_URL: &str = "/ui/settings/updates/check";
+const APPLY_URL: &str = "/ui/settings/updates/apply";
+const ROLLBACK_URL: &str = "/ui/settings/updates/rollback";
+const AUTO_URL: &str = "/ui/settings/updates/auto";
+const WHEN_URL: &str = "/ui/settings/updates/when";
 
 pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
     let head = SettingsHead {
         lead: None,
         tools: updates_tools(v),
     };
-    frame(f, "Updates", head, updates_body(v))
+    frame(
+        f,
+        "Updates",
+        head,
+        html! { (announcer(UPDATES_SAID_ID)) (updates_body(v)) },
+    )
 }
 
-/// The head bar's tools: when Melissa last looked, and Check for updates.
+/// The head bar's tools: when Melissa last looked, and Check now (busy while a check runs,
+/// disabled while an update or a rollback does).
 fn updates_tools(v: &UpdatesView) -> Option<Markup> {
-    (!v.checked.is_empty()).then(|| {
-        settings_head(
-            &v.checked,
-            "/ui/settings/updates/check",
-            UPDATES_ID,
-            if v.can_check {
-                "Check for updates"
-            } else {
-                "Look again"
-            },
-            Btn::secondary().sm(),
-        )
+    use melissa_settings::updates::Busy;
+    if v.checked.is_empty() || !v.can_check {
+        return None;
+    }
+    let look = Btn::secondary().sm();
+    Some(match v.head_busy {
+        Some(Busy::Checking) => settings_head_busy("", "Checking\u{2026}", look, true),
+        Some(_) => settings_head_busy("", "Check now", look, false),
+        None => settings_head(&v.checked, CHECK_URL, UPDATES_ID, "Check now", look),
     })
 }
 
-/// The region for htmx answers: the section and, out of band, the head bar's tools.
+/// The region for htmx answers and its poll: the section and, out of band, the head bar's tools
+/// and the sections bar's Updates link.
 pub fn updates_region(v: &UpdatesView) -> Markup {
     html! {
         (updates_body(v))
         (settings_tools_oob(updates_tools(v).unwrap_or_default()))
+        (update_tab_state(&v.tab, true))
+        @if let Some(t) = &v.announce { (announce_oob(UPDATES_SAID_ID, t)) }
+    }
+}
+
+fn notice_view(n: &UpdateNotice) -> Markup {
+    html! {
+        (notice(&n.text, n.tone))
+        @if !matches!(n.action, NoticeAction::None) || n.whats_new.is_some() {
+            (actions(html! {
+                @match &n.action {
+                    NoticeAction::None => {},
+                    NoticeAction::Apply(label) => (plain_action(APPLY_URL, UPDATES_ID, label, false)),
+                    NoticeAction::Rollback(q) => (action_button(Btn::secondary(), ROLLBACK_URL, UPDATES_ID, "Roll back", q)),
+                }
+                @if let Some(u) = &n.whats_new { (new_tab_button(Btn::link(), u, "What\u{2019}s new", Some(Glyph::Expand))) }
+            }))
+        }
     }
 }
 
 fn updates_body(v: &UpdatesView) -> Markup {
-    let melissa = html! { "Version " (v.version) };
-    let mut detail_rows: Vec<(&str, Markup)> = v
-        .details
-        .iter()
-        .map(|(k, val)| (*k, html! { (val) }))
-        .collect();
-    for i in &v.images {
-        detail_rows.push((
-            i.label,
-            html! { (code(&i.image)) br; span.quiet { (i.detail) } },
-        ));
-    }
     let commands = html! {
         @for (label, cmd) in &v.commands {
             p.quiet { (label) }
             (command_block(cmd))
         }
     };
-    html! {
-        div id=(UPDATES_ID) {
-            @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
-            @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
-            @if let Some(action) = v.confirm {
-                @if action == "apply" {
-                    (confirm_card(&ConfirmCard {
-                        title: "Update and restart Melissa?",
-                        text: "Apps and chats pause for a few minutes. Data is kept, and you can roll back.",
-                        action: "/ui/settings/updates/apply",
-                        target: UPDATES_ID,
-                        confirm: "Update",
-                        cancel_href: UPDATES_URL,
-                    }))
-                } @else {
-                    (confirm_card(&ConfirmCard {
-                        title: "Go back to the previous version?",
-                        text: "Melissa restarts on it. Apps and chats pause for a few minutes. Data is kept.",
-                        action: "/ui/settings/updates/rollback",
-                        target: UPDATES_ID,
-                        confirm: "Roll back",
-                        cancel_href: UPDATES_URL,
-                    }))
+    let mut rows: Vec<(&str, Markup)> = v
+        .details
+        .iter()
+        .map(|(k, val, mono)| {
+            (
+                *k,
+                if *mono {
+                    code(val)
+                } else {
+                    html! { (val) }
+                },
+            )
+        })
+        .collect();
+    if let Some(p) = &v.previous {
+        rows.push((
+            "Previous version",
+            html! {
+                (p)
+                @if v.can_rollback {
+                    " " (action_button(Btn::secondary().sm(), ROLLBACK_URL, UPDATES_ID, "Roll back", &v.rollback_question))
                 }
-            }
-            // One card (2026-11-23): Melissa with her details, then the device's name.
-            (setting_card(None, html! {
-                (setting_row_with(
-                    html! { "Melissa" },
-                    Some(melissa),
-                    html! {
-                        @if let Some((word, tone)) = v.status { (badge(word, tone)) }
-                        @if v.can_rollback { (plain_action("/ui/settings/updates/rollback", UPDATES_ID, "Roll back", false)) }
-                        @if v.can_apply { (plain_action("/ui/settings/updates/apply", UPDATES_ID, "Update", true)) }
-                    },
-                    Some(html! {
-                        @if let Some(n) = v.note { p.quiet { (n) } }
-                        @if let Some(l) = &v.last { (notice(&l.text, l.tone)) }
-                        @if v.commands_open { (commands) }
-                        (disclosure("Details", false, html! {
-                            (facts(&detail_rows))
-                            @if !v.commands_open { (commands) }
-                        }))
-                    }),
-                ))
-                (device_name_region(&v.device))
-            }))
-        }
+            },
+        ));
     }
+    let badge = v.badge.map(|(word, tone, spin)| {
+        status_badge(word, tone, if spin { Mark::Spin } else { Mark::None })
+    });
+    let primary = v
+        .primary
+        .map(|label| plain_action(APPLY_URL, UPDATES_ID, label, true));
+    let content = html! {
+        @if let Some(fl) = &v.flash { (notice(&fl.text, fl.tone)) }
+        @if let Some(p) = v.pending { (pending_note(p, v.manual_restart.as_deref())) }
+        (setting_card(None, setting_row_with(
+            html! { "Melissa" },
+            Some(html! { (v.version) }),
+            // Wide: the badge and the button beside the name. Phones (owner, 2026-11-28; board
+            // 11): the badge under the version and the button under the text, left-aligned.
+            wide_only(html! {
+                @if let Some(b) = &badge { (b) }
+                @if let Some(button) = &primary { (button) }
+            }),
+            Some(html! {
+                @if let Some(b) = &badge { (narrow_only(b.clone())) }
+                @if let Some(b) = &v.busy {
+                    (progress_bar(&b.label, &b.text, b.done, b.total))
+                    p.quiet { (b.below) }
+                }
+                @if let Some(n) = &v.notice { (notice_view(n)) }
+                @if let Some(n) = v.note { p.quiet { (n) } }
+                @if let Some(l) = &v.line { p.quiet { (l) } }
+                @if let Some(u) = &v.whats_new {
+                    (actions(html! {
+                        @if let Some(button) = &primary { (narrow_only(button.clone())) }
+                        (new_tab_button(Btn::link(), u, "What\u{2019}s new", Some(Glyph::Expand)))
+                    }))
+                } @else if let Some(button) = &primary {
+                    (narrow_only(actions(button.clone())))
+                }
+                @if v.commands_open { (commands) }
+                (disclosure("Details", false, html! {
+                    (facts(&rows))
+                    @if !v.commands_open { (commands) }
+                }))
+            }),
+        )))
+        @if let Some(a) = &v.auto { (auto_card(a)) }
+    };
+    live_region(UPDATES_ID, UPDATES_REGION_URL, 2, v.live, content)
+}
+
+/// Automatic updates: the switch (with the warning while off), When (day and whole hour, saved
+/// on change) and the channel. Everything disabled while an update or a rollback runs.
+fn auto_card(a: &AutoView) -> Markup {
+    let busy = a.locked.is_some();
+    let days: Vec<Choice<'_>> = melissa_settings::updates::UpdateDay::ALL
+        .iter()
+        .map(|d| Choice {
+            value: d.as_str(),
+            label: d.label(),
+            enabled: true,
+        })
+        .collect();
+    let hours: Vec<Choice<'_>> = a
+        .hours
+        .iter()
+        .map(|(value, label)| Choice {
+            value,
+            label,
+            enabled: true,
+        })
+        .collect();
+    let channels: Vec<Choice<'_>> = [
+        ("edge", "Edge"),
+        ("beta", "Beta (not available yet)"),
+        ("stable", "Stable (not available yet)"),
+    ]
+    .into_iter()
+    .map(|(value, label)| Choice {
+        value,
+        // Only the channel this install follows: switching comes later (PLAN 101c).
+        label: if Some(value) == a.channel && value != "edge" {
+            "Stable"
+        } else {
+            label
+        },
+        enabled: Some(value) == a.channel,
+    })
+    .collect();
+    setting_card_with(
+        Some("Automatic updates"),
+        a.locked,
+        html! {
+            (setting_row_with(
+                html! { "Install updates automatically" },
+                Some(html! {
+                    @if a.on { "Melissa restarts for a few minutes while it updates. Data is kept." }
+                    @else { "Off." }
+                }),
+                toggle(&Toggle {
+                    action: AUTO_URL,
+                    target: UPDATES_ID,
+                    label: "Install updates automatically",
+                    on: a.on,
+                    locked: a.locked,
+                }),
+                (!a.on).then(|| notice(
+                    "Without automatic updates, Melissa misses security fixes until you update by hand on this page. Melissa still checks once a day and puts a dot on Updates when an update is ready.",
+                    Tone::Attention,
+                )),
+            ))
+            @if a.on {
+                (setting_row_with(
+                    html! { "When" },
+                    Some(html! { "Around this time, up to 15 minutes later. Device time (" (a.device_time) ")." }),
+                    inline_form(WHEN_URL, UPDATES_ID, html! {
+                        (inline_select_with("day", "How often", &days, a.day, busy))
+                        (inline_select_with("hour", "Time", &hours, &a.hour, busy))
+                    }),
+                    None,
+                ))
+            }
+            @if let Some(c) = a.channel {
+                (setting_row_with(
+                    html! { "Channel" },
+                    Some(html! {
+                        @if c == "edge" { "Edge gets every change as soon as it\u{2019}s built. Beta and Stable come later." }
+                        @else { "Stable gets tested releases." }
+                    }),
+                    inline_select_with("channel", "Channel", &channels, c, busy),
+                    None,
+                ))
+            }
+        },
+    )
 }
 
 // --- Permissions ---------------------------------------------------------------------------------
@@ -1997,7 +2153,7 @@ pub fn mb(bytes: u64) -> String {
 /// DOM id of the About region.
 pub const ABOUT_ID: &str = "about";
 /// Melissa's public pages (fixed; they open in a new tab).
-const SOURCE_URL: &str = "https://github.com/svin24/melissa";
+pub(crate) const SOURCE_URL: &str = "https://github.com/svin24/melissa";
 const ISSUES_URL: &str = "https://github.com/svin24/melissa/issues";
 const SPONSOR_URL: &str = "https://github.com/sponsors/svin24";
 
@@ -2021,6 +2177,76 @@ pub struct AboutView {
     pub notices: &'static [Notice],
     /// The image ships a license report for the Rust crates ([`RUST_LICENSES_URL`]).
     pub rust_report: bool,
+    /// This device's name and time format (the owner only).
+    pub device: Option<ThisDeviceView>,
+}
+
+/// About's "This device" card: the device's name and how pages show times of day.
+pub struct ThisDeviceView {
+    pub name: DeviceNameView,
+    pub time_format: TimeFormatView,
+}
+
+/// The time format's select and the last save's answer.
+pub struct TimeFormatView {
+    /// `browser`, `h24` or `h12`.
+    pub value: &'static str,
+    pub flash: Option<Flash>,
+}
+
+/// DOM id of the time format's region on the About page.
+pub const TIME_FORMAT_ID: &str = "time-format";
+/// Where its form posts.
+pub const TIME_FORMAT_URL: &str = "/ui/settings/time-format";
+
+/// Time format: 24-hour, 12-hour or the browser's; saved on change (Save without script).
+pub fn time_format_region(v: &TimeFormatView) -> Markup {
+    let choices: [(String, String); 3] = [
+        ("browser".into(), "Follow browser".into()),
+        ("h24".into(), "24-hour (15:00)".into()),
+        ("h12".into(), "12-hour (3:00\u{a0}PM)".into()),
+    ];
+    region(
+        TIME_FORMAT_ID,
+        setting_row_with(
+            html! { "Time format" },
+            Some(html! { "How Melissa\u{2019}s pages show times of day." }),
+            inline_form(
+                TIME_FORMAT_URL,
+                TIME_FORMAT_ID,
+                inline_select("time_format", "Time format", &choices, v.value),
+            ),
+            v.flash.as_ref().map(|f| notice(&f.text, f.tone)),
+        ),
+    )
+}
+
+// This device (owner only; moved from Updates, 2026-11-28).
+
+/// The device name's field: the saved name (else the host's) and the last save's answer.
+pub struct DeviceNameView {
+    pub value: String,
+    pub flash: Option<Flash>,
+}
+
+/// The device's name as a field and a Save button; its form swaps only this region.
+pub fn device_name_region(v: &DeviceNameView) -> Markup {
+    region(
+        DEVICE_NAME_ID,
+        setting_row_with(
+            html! { "Device name" },
+            Some(html! { "Shown in Melissa only." }),
+            inline_text_form(
+                super::device::SAVE_URL,
+                DEVICE_NAME_ID,
+                "name",
+                "Device name",
+                &v.value,
+                64,
+            ),
+            v.flash.as_ref().map(|f| notice(&f.text, f.tone)),
+        ),
+    )
 }
 
 pub fn about_page(f: &Frame<'_>, v: &AboutView) -> Markup {
@@ -2042,7 +2268,8 @@ pub fn about_region(v: &AboutView) -> Markup {
         ABOUT_ID,
         html! {
             // One card for Melissa and her links, one for the licenses (2026-11-23). The
-            // pre-alpha warning is the banner's.
+            // pre-alpha warning is the banner's. The owner also gets This device (2026-11-28:
+            // the device name moved here from Updates until a Network/Devices page exists).
             (setting_card(None, html! {
                 (about_head("Melissa", &detail))
                 (setting_row(
@@ -2055,6 +2282,12 @@ pub fn about_region(v: &AboutView) -> Markup {
                     },
                 ))
             }))
+            @if let Some(d) = &v.device {
+                (setting_card(Some("This device"), html! {
+                    (device_name_region(&d.name))
+                    (time_format_region(&d.time_format))
+                }))
+            }
             (setting_card(Some("Licenses"), html! {
                 (setting_row_details(
                     "Melissa\u{2019}s license",

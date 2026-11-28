@@ -4,7 +4,7 @@
 # Images on ghcr.io/svin24/melissa are signed in GitHub Actions (.github/workflows/container.yml) with
 # Melissa's cosign key; the public half is melissa-signing.pub next to this file. install.sh adds one entry
 # for that repository to podman's /etc/containers/policy.json (sigstoreSigned, keyPath), so every pull of
-# it (install, Settings → Updates, podman-auto-update) is refused unless the signature matches. Other
+# it (install, Settings → Updates, Melissa's update timers) is refused unless the signature matches. Other
 # images and the rest of the policy are left as they were. uninstall.sh removes the entry again.
 #
 # Paths are variables so test-install.sh can run this without root.

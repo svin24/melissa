@@ -146,6 +146,7 @@ const OWNER_PREFIXES: &[&str] = &[
     "/api/settings/updates",
     "/ui/settings/restart",
     "/ui/settings/device-name",
+    "/ui/settings/time-format",
     "/settings/reset",
     "/ui/settings/reset",
     "/api/settings/reset",

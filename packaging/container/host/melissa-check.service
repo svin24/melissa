@@ -1,0 +1,10 @@
+[Unit]
+Description=Melissa: look for a newer image (no download)
+Documentation=file:///usr/local/share/melissa/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/melissa/melissa-host-update check
+TimeoutStartSec=10min

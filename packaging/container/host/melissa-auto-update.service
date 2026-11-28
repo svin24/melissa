@@ -1,0 +1,14 @@
+[Unit]
+Description=Melissa: install a newer image if there is one (automatic update)
+Documentation=file:///usr/local/share/melissa/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Download, restart, health check and, if the new image does not start, back to the old one; a
+# version that failed or was rolled back from is skipped until a newer one comes out.
+ExecStart=/usr/local/libexec/melissa/melissa-host-update auto
+TimeoutStartSec=90min
+# Cut off (a timeout, a kill) while switching images: finish or undo it in the background.
+ExecStopPost=-/usr/local/libexec/melissa/melissa-host-update resume-later
