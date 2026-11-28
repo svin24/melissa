@@ -410,7 +410,14 @@ tag from it, so a failing run revokes an earlier pass. CI runs this gate before 
   asserts that Ubuntu's restriction is still on (`kernel.apparmor_restrict_unprivileged_userns` is 1,
   `bwrap-userns-restrict` loaded). escape-test.sh and gvisor-test.sh run the image under the profile and
   check it applies, so a pass shows the image works on a stock Ubuntu 26.04 ("Ubuntu and AppArmor" above).
-- `gvisor-test.sh` also runs, but is advisory for now: a failure does not block publishing.
+- `gvisor-test.sh` also runs, on its own runner beside publishing, with the image the gate passed. It is
+  advisory for now: a failure does not block publishing.
+- Build cache: the Containerfile's cache mounts (cargo registry and target dir, cargo-about, the whisper.cpp
+  build; rootless buildah keeps them in `/var/tmp/buildah-cache-<uid>`) are kept between runs with
+  `actions/cache`, keyed on the builder's `rustc -vV` and the build inputs (Cargo.lock, Cargo.toml files,
+  Containerfile, whisper.lock, whisper-build.sh). Only pushes to master save it, after dropping Melissa's own
+  crates (rebuilt every time anyway). Manual runs may read master's cache; release tags build without any
+  cache. To start afresh, change `CACHE_PREFIX` in the workflow.
 - The signing key's private half lives in the GitHub environments `edge` and `stable`
   (`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`), never in the repo.
 

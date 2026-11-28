@@ -5,6 +5,10 @@
 #   push tag vX.Y.Z     build, gate, publish :X.Y.Z, then :X.Y and :stable
 #   workflow_dispatch   build and gate only; never publishes
 #
+# Build cache: the Containerfile's cache mounts (cargo registry and target, cargo-about, whisper.cpp) are
+# kept between runs with actions/cache. Only pushes to master save it; other refs may read master's but never
+# write one master reads; release tags build without it. The gVisor check runs beside publish.
+#
 # Only the image that passed the sandbox escape suite (localhost/melissa:escape-tested, same image ID) is
 # pushed, once, to its immutable tag. It is signed by digest with Melissa's cosign key (environment secrets
 # COSIGN_PRIVATE_KEY, COSIGN_PASSWORD; public half packaging/container/melissa-signing.pub) and gets a
@@ -26,6 +30,8 @@ concurrency:
 
 env:
   REPO: ghcr.io/svin24/melissa
+  # Change to start the build cache afresh.
+  CACHE_PREFIX: container-build-v1
 
 jobs:
   build-gate:
@@ -44,10 +50,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: scripts/release-check.sh "$GITHUB_REF_NAME"
 
-      - name: Free disk
+      # The runner has about 80 GB free and the build needs about 25 GB; deleting the preinstalled SDKs
+      # took 60 to 90 seconds, so it happens only when space is short.
+      - name: Free disk (only when short)
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/CodeQL"
           df -h /
+          avail=$(df --output=avail -BG / | tail -n 1 | tr -dc 0-9)
+          if [ "$avail" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/CodeQL"
+            df -h /
+          fi
 
       # Ubuntu support as shipped: Melissa's own AppArmor profile for its container (what install.sh
       # loads; escape-test.sh and gvisor-test.sh run the image under it and check that it applies).
@@ -69,8 +81,48 @@ jobs:
             exit 1
           fi
 
+      # The builder's toolchain stage alone (the full build reuses the layer), for the cache key: Rust
+      # artifacts are only reusable with the same rustc, and that is Fedora's current one.
+      - name: Builder toolchain and cache key
+        id: prep
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) podman build --layers --network=host \
+            -f packaging/container/Containerfile --target toolchain -t localhost/melissa-toolchain:ci .
+          rustc=$(podman run --rm --network=none localhost/melissa-toolchain:ci rustc -vV)
+          echo "$rustc"
+          rustc_key=$(printf '%s' "$rustc" | sha256sum | cut -c1-16)
+          inputs=$(git ls-files -z Cargo.lock '*Cargo.toml' packaging/container/Containerfile \
+            packaging/container/whisper.lock packaging/container/whisper-build.sh | xargs -0 cat | sha256sum | cut -c1-16)
+          prefix="$CACHE_PREFIX-$rustc_key-"
+          save=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/master ]; then save=true; fi
+          { echo "prefix=$prefix"; echo "key=$prefix$inputs"; echo "save=$save"; } >> "$GITHUB_OUTPUT"
+          # Where rootless buildah keeps its cache mounts (one subdirectory each).
+          echo "BUILDAH_CACHE=${TMPDIR:-/var/tmp}/buildah-cache-$(id -u)" >> "$GITHUB_ENV"
+
+      - name: Restore the build cache
+        id: cache
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.BUILDAH_CACHE }}
+          key: ${{ steps.prep.outputs.key }}
+          restore-keys: |
+            ${{ steps.prep.outputs.prefix }}
+            ${{ env.CACHE_PREFIX }}-
+
+      # From another rustc only cargo-about's and whisper.cpp's caches are of use; an old cargo target dir
+      # would only grow with artifacts nothing reads.
+      - name: Drop Rust artifacts of another rustc
+        if: steps.cache.outputs.cache-matched-key != '' && !startsWith(steps.cache.outputs.cache-matched-key, steps.prep.outputs.prefix)
+        run: |
+          for d in "$BUILDAH_CACHE"/*/; do
+            if [ -d "$d/release/.fingerprint" ]; then echo "removing ${d%/}"; rm -rf "$d"; fi
+          done
+
       # As `just container-build`: rootless, --layers, --network=host, SOURCE_DATE_EPOCH = last commit time.
       - name: Build localhost/melissa:dev
+        id: build
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/server/Cargo.toml | head -n 1)
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) podman build --layers --network=host \
@@ -93,6 +145,30 @@ jobs:
           fi
           echo "image_id=$id" >> "$GITHUB_OUTPUT"
 
+      # After the gate, whose suite build fills the cargo target dir too. Melissa's own crates are rebuilt
+      # every time (the Containerfile touches them), so they are left out.
+      - name: Prune the build cache
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.prep.outputs.save == 'true' && steps.cache.outputs.cache-hit != 'true'"
+        run: |
+          if [ -z "$(ls -A "$BUILDAH_CACHE" 2>/dev/null)" ]; then
+            echo "::warning::no build cache in $BUILDAH_CACHE (did buildah move its cache mounts?)"
+            exit 0
+          fi
+          for r in "$BUILDAH_CACHE"/*/release; do
+            [ -d "$r/.fingerprint" ] || continue
+            rm -rf "$r/incremental" "$r/examples"
+            find "$r" "$r/deps" "$r/.fingerprint" "$r/build" -mindepth 1 -maxdepth 1 \
+              \( -name 'melissa*' -o -name 'libmelissa*' -o -name 'it-*' \) -exec rm -rf {} +
+          done
+          du -sh "$BUILDAH_CACHE"/* || true
+
+      - name: Save the build cache
+        if: "!cancelled() && steps.build.outcome == 'success' && steps.prep.outputs.save == 'true' && steps.cache.outputs.cache-hit != 'true'"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.BUILDAH_CACHE }}
+          key: ${{ steps.prep.outputs.key }}
+
       - name: Upload the escape suite log
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -101,10 +177,55 @@ jobs:
           path: target/escape-test-image.log
           if-no-files-found: warn
 
-      # Advisory for now: a failure shows in the run but does not block publishing.
+      # Also on manual runs: the gvisor job tests this archive.
+      - name: Save the tested image
+        run: podman save --format oci-archive -o target/melissa.oci.tar localhost/melissa:escape-tested
+
+      - name: Hand it to the publish and gvisor jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: target/melissa.oci.tar
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  # Advisory for now: a failure shows in the run but does not block publishing. On its own runner, beside
+  # publish, with the image the gate passed.
+  gvisor:
+    needs: build-gate
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+
+      - name: Load the tested image
+        env:
+          IMAGE_ID: ${{ needs.build-gate.outputs.image_id }}
+        run: |
+          podman load -q -i "$RUNNER_TEMP/image/melissa.oci.tar"
+          rm -f "$RUNNER_TEMP/image/melissa.oci.tar"
+          id=$(podman image inspect --format '{{.Id}}' localhost/melissa:escape-tested)
+          if [ "$id" != "$IMAGE_ID" ]; then
+            echo "::error::loaded image $id is not the tested one ($IMAGE_ID)"
+            exit 1
+          fi
+
+      # As in build-gate: Ubuntu's restriction stays on; gvisor-test.sh loads Melissa's profile and checks it.
       - name: gVisor end to end (advisory)
         continue-on-error: true
-        run: packaging/container/gvisor-test.sh localhost/melissa:dev
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          packaging/container/gvisor-test.sh localhost/melissa:escape-tested
 
       - name: Upload the gVisor log
         if: always()
@@ -113,20 +234,6 @@ jobs:
           name: gvisor-test-image-log
           path: target/gvisor-test-image.log
           if-no-files-found: ignore
-
-      - name: Save the tested image
-        if: github.event_name == 'push'
-        run: podman save --format oci-archive -o target/melissa.oci.tar localhost/melissa:escape-tested
-
-      - name: Hand it to the publish job
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: image
-          path: target/melissa.oci.tar
-          retention-days: 1
-          compression-level: 0
-          if-no-files-found: error
 
   publish:
     needs: build-gate

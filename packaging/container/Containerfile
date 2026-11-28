@@ -8,13 +8,21 @@ ARG BASE=registry.fedoraproject.org/fedora:45
 ARG BUILDER=registry.fedoraproject.org/fedora:45
 
 # ---- stage 1: build the Melissa binaries --------------------------------------------
-FROM ${BUILDER} AS build
+# The toolchain on its own: CI builds this target first and keys its build cache on its rustc
+# (.github/workflows/container.yml); the full build then reuses the layer.
+FROM ${BUILDER} AS toolchain
 RUN dnf -y install --setopt=install_weak_deps=False cargo rust gcc && dnf clean all
+
+FROM toolchain AS build
 # cargo-about writes the third-party license report (about.toml, `just licenses`). Same version as the
-# dev shell (devenv.nix); built once, then cached as this layer.
+# dev shell (devenv.nix). Installed into a cache mount, so it is compiled once per version and rustc
+# (cargo install skips an identical install), also when the layer cache is empty, as on CI runners.
 ARG CARGO_ABOUT_VERSION=0.9.0
 RUN --mount=type=cache,target=/root/.cargo/registry \
-    cargo install --locked --features cli --root /usr/local "cargo-about@${CARGO_ABOUT_VERSION}"
+    --mount=type=cache,target=/opt/cargo-about,id=melissa-cargo-about \
+    cargo install --locked --features cli --root /opt/cargo-about "cargo-about@${CARGO_ABOUT_VERSION}" \
+ && install -D -m 0755 /opt/cargo-about/bin/cargo-about /usr/local/bin/cargo-about \
+ && cargo about --version
 WORKDIR /src
 # LICENSE and ACKNOWLEDGMENTS.md are built into the binary (Settings → About).
 COPY Cargo.toml Cargo.lock clippy.toml about.toml about.hbs LICENSE ACKNOWLEDGMENTS.md ./
@@ -103,29 +111,12 @@ RUN set -eu; . /gvisor.lock; mkdir -p /out/gvisor-bin /src; cd /src; \
     [ "$(/out/runsc --version | head -n1)" = "runsc version release-${GVISOR_VERSION}" ]
 
 # ---- stage 3: build whisper.cpp's CLI for voice input (version and hash in whisper.lock) ----
-# A separate program, not linked into melissa-server: the server stays lean and C++-free, and a
-# crash or the model's memory ends with each run. CPU only; GGML_CPU_ALL_VARIANTS builds the x86-64
-# variants (SSE4.2 ... AVX-512) and the best one for the host's CPU is loaded at runtime, so the image
-# runs on any x86-64 box. No SDL, ffmpeg, curl or server: Melissa sends it plain 16 kHz WAV files.
+# whisper-build.sh has the recipe (CPU only, all x86-64 variants loaded at runtime) and keeps the result
+# in a cache mount keyed on whisper.lock and itself, so it compiles once per version, not on every build.
 FROM ${BUILDER} AS whisper
-RUN dnf -y install --setopt=install_weak_deps=False cmake gcc-c++ make && dnf clean all
-COPY packaging/container/whisper.lock /whisper.lock
-RUN set -eu; . /whisper.lock; mkdir -p /src /out; cd /src; \
-    curl -fsSL --retry 3 -o whisper.tar.gz \
-        "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v${WHISPER_VERSION}.tar.gz"; \
-    printf '%s  whisper.tar.gz\n' "$WHISPER_SHA256" | sha256sum -c -; \
-    tar xzf whisper.tar.gz --strip-components=1; \
-    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-        -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=OFF \
-        -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF \
-        -DWHISPER_FFMPEG=OFF -DWHISPER_CURL=OFF \
-        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'; \
-    cmake --build build -j"$(nproc)"; \
-    install -m 0755 build/bin/whisper-cli /out/; \
-    find build \( -name 'libwhisper.so*' -o -name 'libggml.so*' -o -name 'libggml-base.so*' \
-        -o -name 'libggml-cpu-*.so' \) -exec cp -P {} /out/ \; ; \
-    install -D -m 0644 LICENSE /licenses/LICENSE; \
-    /out/whisper-cli --help >/dev/null 2>&1
+COPY packaging/container/whisper.lock packaging/container/whisper-build.sh /whisper/
+RUN --mount=type=cache,target=/cache,id=melissa-whisper \
+    sh /whisper/whisper-build.sh /cache /out /licenses
 
 # ---- stage 4: the runtime image -------------------------------------------------------
 FROM ${BASE}
