@@ -107,8 +107,27 @@ impl Tree {
         std::fs::read_to_string(at(&self.root, abs)).unwrap_or_default()
     }
 
+    /// Root's setting (what root's own actions write).
     fn set(&self, s: &Setting) {
-        write_setting(&self.config.join(FILE_NAME), s).unwrap();
+        write_trusted(&self.root, s).unwrap();
+    }
+
+    /// Root's setting, unreadable.
+    fn break_setting(&self) {
+        let state = at(&self.root, STATE_DIR);
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join(STATE_SETTING), "role = \"agent\"\n").unwrap();
+    }
+
+    /// The agent's join token as root keeps it.
+    fn give_token(&self) {
+        let state = at(&self.root, STATE_DIR);
+        std::fs::create_dir_all(&state).unwrap();
+        write_root(&state.join("agent-token"), b"K10abc::server:secret", 0o600).unwrap();
+    }
+
+    fn token(&self) -> PathBuf {
+        at(&self.root, STATE_DIR).join("agent-token")
     }
 }
 
@@ -313,25 +332,15 @@ fn join_and_leave_keep_the_single_node_data() {
     assert_eq!(st.role, Role::Server);
     assert!(!st.errors.is_empty());
 
-    // With the token the server handed over.
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret\n").unwrap();
+    // With root's token.
+    t.give_token();
     let st = t.prepare(Some("Laptop")).unwrap();
     assert_eq!(st.role, Role::Agent);
     assert_eq!(
         st.node_name, "laptop",
         "a fresh agent takes the device name"
     );
-    assert!(
-        !t.config.join(JOIN_TOKEN_FILE).exists(),
-        "moved to root's state"
-    );
-    let token = at(&t.root, STATE_DIR).join("agent-token");
-    assert_eq!(
-        std::fs::read_to_string(&token).unwrap(),
-        "K10abc::server:secret"
-    );
-    let mode = std::fs::metadata(&token).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600);
+    let token = t.token();
     // The server's data waits in the backup, untouched.
     assert_eq!(
         std::fs::read_to_string(at(&t.root, SERVER_BACKUP).join("storage/pvc-app/file")).unwrap(),
@@ -383,8 +392,8 @@ fn join_and_leave_keep_the_single_node_data() {
 #[test]
 fn a_broken_setting_never_makes_an_agent() {
     let t = Tree::new("cluster-broken");
-    std::fs::write(t.config.join(FILE_NAME), "role = \"agent\"\n").unwrap();
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"t").unwrap();
+    t.break_setting();
+    t.give_token();
     let st = t.prepare(None).unwrap();
     assert_eq!(st.role, Role::Server);
     assert!(!st.errors.is_empty());
@@ -396,7 +405,7 @@ fn an_existing_backup_stops_the_switch() {
     std::fs::create_dir_all(at(&t.root, K3S_DATA).join("server")).unwrap();
     std::fs::create_dir_all(at(&t.root, SERVER_BACKUP).join("server")).unwrap();
     t.set(&agent_setting());
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"t").unwrap();
+    t.give_token();
     assert!(
         t.prepare(None).is_err(),
         "never overwrite a kept server's data"
@@ -405,19 +414,39 @@ fn an_existing_backup_stops_the_switch() {
     assert!(at(&t.root, SERVER_BACKUP).join("server").exists());
 }
 
-struct FakeRunner;
+/// Records what root ran; `laptop` is the only node it can remove.
+#[derive(Default)]
+struct Rec {
+    calls: std::sync::Mutex<Vec<String>>,
+}
 
-impl Runner for FakeRunner {
+impl Rec {
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+    fn push(&self, c: &str) {
+        self.calls.lock().unwrap().push(c.into());
+    }
+}
+
+impl Runner for Rec {
     fn create_token(&self, ttl: &str) -> Result<String, String> {
         assert_eq!(ttl, "1h");
+        self.push("token");
         Ok("K10tok::abc.def".into())
     }
     fn remove_node(&self, name: &str) -> Result<(), String> {
+        self.push(&format!("remove {name}"));
         (name == "laptop")
             .then_some(())
             .ok_or("no such node".into())
     }
     fn restart_k3s(&self) -> Result<(), String> {
+        self.push("restart");
+        Ok(())
+    }
+    fn refresh_firewall(&self) -> Result<(), String> {
+        self.push("firewall");
         Ok(())
     }
     fn node_roles(&self) -> Result<String, String> {
@@ -438,6 +467,23 @@ fn server_setting() -> Setting {
         }],
         ..Setting::default()
     }
+}
+
+fn set_status(root: &Path, name: &str) {
+    let status = Status {
+        node_name: name.into(),
+        ..Status::default()
+    };
+    write_root(
+        &at(root, STATUS_FILE),
+        &serde_json::to_vec(&status).unwrap(),
+        0o644,
+    )
+    .unwrap();
+}
+
+fn trusted(t: &Tree) -> Setting {
+    read_setting(&at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap()
 }
 
 #[test]
@@ -475,6 +521,9 @@ impl Runner for LabelRunner {
     fn restart_k3s(&self) -> Result<(), String> {
         unreachable!()
     }
+    fn refresh_firewall(&self) -> Result<(), String> {
+        unreachable!()
+    }
     fn node_roles(&self) -> Result<String, String> {
         Ok(self.listed.into())
     }
@@ -485,28 +534,24 @@ impl Runner for LabelRunner {
 }
 
 #[test]
-fn label_nodes_reads_the_setting_and_this_nodes_name() {
-    let root = scratch("cluster-label");
-    let config = root.join("etc/melissa");
-    std::fs::create_dir_all(&config).unwrap();
+fn label_nodes_reads_roots_setting_and_this_nodes_name() {
+    let t = Tree::new("cluster-label");
     let runner = LabelRunner {
         listed: "desktop \nlaptop \n",
         labelled: RefCell::default(),
     };
     // No setting: a single device, no kubectl at all (node_roles would be called otherwise).
-    assert_eq!(label_nodes(&root, &config, &runner), Ok(0));
-    write_setting(&config.join(FILE_NAME), &server_setting()).unwrap();
-    let status = Status {
-        node_name: "desktop".into(),
-        ..Status::default()
-    };
-    write_root(
-        &at(&root, STATUS_FILE),
-        &serde_json::to_vec(&status).unwrap(),
-        0o644,
+    assert_eq!(label_nodes(&t.root, &t.config, &runner), Ok(0));
+    // The server's user's file is not root's setting.
+    std::fs::write(
+        t.config.join(FILE_NAME),
+        toml::to_string(&server_setting()).unwrap(),
     )
     .unwrap();
-    assert_eq!(label_nodes(&root, &config, &runner), Ok(2));
+    assert_eq!(label_nodes(&t.root, &t.config, &runner), Ok(0));
+    t.set(&server_setting());
+    set_status(&t.root, "desktop");
+    assert_eq!(label_nodes(&t.root, &t.config, &runner), Ok(2));
     assert_eq!(
         *runner.labelled.borrow(),
         vec![
@@ -514,136 +559,331 @@ fn label_nodes_reads_the_setting_and_this_nodes_name() {
             ("laptop".to_string(), Role::Agent)
         ]
     );
-    let _ = std::fs::remove_dir_all(root);
+}
+
+fn ask(t: &Tree, request: &str, runner: &Rec) -> Answer {
+    write_private(&t.config.join(REQUEST_FILE), request.as_bytes()).unwrap();
+    run_request(&t.root, &t.config, runner)
 }
 
 #[test]
-fn requests_hand_back_tokens_in_a_private_file() {
-    let dir = scratch("cluster-request");
-    write_private(&dir.join(REQUEST_FILE), br#"{"action":"create_token"}"#).unwrap();
-    let status = dir.join("status.json");
-    let a = run_request(&dir, &status, &FakeRunner);
-    assert!(a.ok, "{a:?}");
-    assert!(!dir.join(REQUEST_FILE).exists());
-    let tok = dir.join(INVITATION_TOKEN_FILE);
-    assert_eq!(std::fs::read_to_string(&tok).unwrap(), "K10tok::abc.def");
-    assert_eq!(
-        std::fs::metadata(&tok).unwrap().permissions().mode() & 0o777,
-        0o600
+fn the_servers_user_can_neither_join_nor_invite() {
+    let t = Tree::new("cluster-gate");
+    set_status(&t.root, "desktop");
+    let before = std::fs::read_dir(at(&t.root, STATE_DIR)).map_or(0, |d| d.count());
+    let rec = Rec::default();
+    // Joining: refused before the token is read; the handed token goes.
+    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10join::x.y").unwrap();
+    let a = ask(
+        &t,
+        r#"{"action":"join","server_url":"https://100.64.0.9:6443","server_name":"home","own_address":"100.64.0.1"}"#,
+        &rec,
     );
-    let answer = std::fs::read_to_string(dir.join(ANSWER_FILE)).unwrap();
-    assert!(!answer.contains("K10tok"), "{answer}");
-
-    write_private(
-        &dir.join(REQUEST_FILE),
-        br#"{"action":"remove_node","name":"x; rm -rf /"}"#,
+    assert!(!a.ok);
+    assert!(a.error.unwrap().contains("owner's confirmation"));
+    assert!(!t.config.join(JOIN_TOKEN_FILE).exists());
+    assert!(!t.config.join(REQUEST_FILE).exists());
+    // An invitation: refused, no token minted.
+    let a = ask(
+        &t,
+        r#"{"action":"invite","own_address":"100.64.0.1","peer":{"name":"laptop","address":"100.64.0.2"}}"#,
+        &rec,
+    );
+    assert!(!a.ok);
+    assert!(!t.config.join(INVITATION_TOKEN_FILE).exists());
+    let answer = std::fs::read_to_string(t.config.join(ANSWER_FILE)).unwrap();
+    assert!(!answer.contains("K10"), "{answer}");
+    // Nothing ran, root's state is as it was.
+    assert!(rec.calls().is_empty(), "{:?}", rec.calls());
+    assert_eq!(
+        std::fs::read_dir(at(&t.root, STATE_DIR)).map_or(0, |d| d.count()),
+        before
+    );
+    assert!(!t.token().exists());
+    // Writing the old files and restarting k3s changes nothing either.
+    std::fs::write(
+        t.config.join(FILE_NAME),
+        toml::to_string(&agent_setting()).unwrap(),
     )
     .unwrap();
-    assert!(!run_request(&dir, &status, &FakeRunner).ok);
-    let remove = |name: &str| {
-        write_private(
-            &dir.join(REQUEST_FILE),
-            format!(r#"{{"action":"remove_node","name":"{name}"}}"#).as_bytes(),
-        )
-        .unwrap();
-        run_request(&dir, &status, &FakeRunner)
-    };
-    // Root removes only a device this server invited (a peer), never its own node.
-    assert!(!remove("laptop").ok, "no setting: no peers");
-    write_setting(&dir.join(FILE_NAME), &server_setting()).unwrap();
-    assert!(!remove("laptop").ok, "own node name unknown");
-    let own = Status {
-        node_name: "desktop".into(),
-        ..Status::default()
-    };
-    std::fs::write(&status, serde_json::to_vec(&own).unwrap()).unwrap();
-    assert!(!remove("stranger").ok, "not a peer");
-    assert!(!remove("desktop").ok, "this device");
-    let mut s = server_setting();
-    s.peers.push(Peer {
-        name: "desktop".into(),
-        address: "100.64.0.3".parse().unwrap(),
-    });
-    write_setting(&dir.join(FILE_NAME), &s).unwrap();
-    let a = remove("desktop");
-    assert!(a.error.unwrap().contains("own node"), "even when listed");
-    assert!(remove("laptop").ok);
-    assert!(!run_request(&dir, &status, &FakeRunner).ok, "no request");
-    let _ = std::fs::remove_dir_all(dir);
+    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10join::x.y").unwrap();
+    let st = t.prepare(None).unwrap();
+    assert_eq!((st.role, st.peers), (Role::Server, 0));
+    assert!(!t.token().exists());
+    assert_eq!(trusted(&t), Setting::default());
+    assert_eq!(
+        read_trusted(&t.root, &t.config).unwrap(),
+        Setting::default()
+    );
+    // A bad request, or none: refused.
+    assert!(!ask(&t, r#"{"action":"restart"}"#, &rec).ok);
+    assert!(!run_request(&t.root, &t.config, &rec).ok, "no request");
 }
 
-/// Runs [`run_request`] in place of systemd (the root oneshot), counting firewall refreshes.
+#[test]
+fn root_itself_joins_and_invites() {
+    let t = Tree::new("cluster-root-actions");
+    set_status(&t.root, "desktop");
+    let rec = Rec::default();
+    let invite = |name: &str, addr: &str| Invite {
+        own_address: "100.64.0.1".parse().unwrap(),
+        peer: Peer {
+            name: name.into(),
+            address: addr.parse().unwrap(),
+        },
+    };
+    assert!(root_invite(
+        &t.root,
+        &t.config,
+        Origin::Root,
+        &invite("desktop", "100.64.0.2"),
+        &rec
+    )
+    .is_err());
+    let token = root_invite(
+        &t.root,
+        &t.config,
+        Origin::Root,
+        &invite("laptop", "100.64.0.2"),
+        &rec,
+    )
+    .unwrap();
+    assert_eq!(token, "K10tok::abc.def");
+    assert_eq!(trusted(&t), server_setting());
+    assert!(
+        at(&t.root, STATE_DIR).join(HAS_PEERS).exists(),
+        "the label timer runs"
+    );
+    // The token from the running server, then the restart that moves the node IP.
+    assert_eq!(rec.calls(), ["firewall", "token", "restart"]);
+    // A second device: no restart (the node IP is already on the tailnet).
+    root_invite(
+        &t.root,
+        &t.config,
+        Origin::Root,
+        &invite("tablet", "100.64.0.3"),
+        &rec,
+    )
+    .unwrap();
+    assert_eq!(rec.calls().len(), 5);
+    assert_eq!(trusted(&t).peers.len(), 2);
+
+    // Joining (another device's view): root's token, 0600, never in the setting.
+    let t = Tree::new("cluster-root-join");
+    set_status(&t.root, "laptop");
+    let rec = Rec::default();
+    let join = Join {
+        server_url: "https://100.64.0.1:6443".into(),
+        server_name: "Desktop".into(),
+        own_address: "100.64.0.2".parse().unwrap(),
+    };
+    assert!(root_join(&t.root, Origin::Server, &join, "K10join::x.y", &rec).is_err());
+    assert!(rec.calls().is_empty());
+    assert!(root_join(&t.root, Origin::Root, &join, "two words", &rec).is_err());
+    let same = Join {
+        server_name: "laptop".into(),
+        ..join.clone()
+    };
+    assert!(root_join(&t.root, Origin::Root, &same, "K10join::x.y", &rec).is_err());
+    let by_name = Join {
+        server_url: "https://desktop.example.ts.net:6443".into(),
+        ..join.clone()
+    };
+    assert!(
+        root_join(&t.root, Origin::Root, &by_name, "K10join::x.y", &rec).is_err(),
+        "the server is named by its tailnet address (firewall)"
+    );
+    root_join(&t.root, Origin::Root, &join, "K10join::x.y\n", &rec).unwrap();
+    let s = trusted(&t);
+    assert_eq!((s.role, s.peers[0].name.as_str()), (Role::Agent, "desktop"));
+    let text = std::fs::read_to_string(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
+    assert!(!text.contains("K10join"), "{text}");
+    assert_eq!(std::fs::read_to_string(t.token()).unwrap(), "K10join::x.y");
+    for f in [t.token(), at(&t.root, STATE_DIR).join(STATE_SETTING)] {
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(rec.calls(), ["firewall", "restart"]);
+    // An agent invites nobody.
+    assert!(root_invite(
+        &t.root,
+        &t.config,
+        Origin::Root,
+        &invite("tablet", "100.64.0.3"),
+        &rec
+    )
+    .is_err());
+}
+
+#[test]
+fn the_servers_user_may_remove_devices_and_leave() {
+    let t = Tree::new("cluster-narrowing");
+    let rec = Rec::default();
+    let remove = |name: &str| {
+        ask(
+            &t,
+            &format!(r#"{{"action":"remove_node","name":"{name}"}}"#),
+            &rec,
+        )
+    };
+    assert!(!remove("x; rm -rf /").ok);
+    // Root removes only a device it invited (a peer), never its own node.
+    assert!(!remove("laptop").ok, "no peers");
+    let mut s = server_setting();
+    s.peers.push(Peer {
+        name: "tablet".into(),
+        address: "100.64.0.3".parse().unwrap(),
+    });
+    t.set(&s);
+    assert!(!remove("laptop").ok, "own node name unknown");
+    set_status(&t.root, "desktop");
+    assert!(!remove("stranger").ok, "not a peer");
+    assert!(!remove("desktop").ok, "this device");
+    s.peers.push(Peer {
+        name: "desktop".into(),
+        address: "100.64.0.4".parse().unwrap(),
+    });
+    t.set(&s);
+    let a = remove("desktop");
+    assert!(a.error.unwrap().contains("own node"), "even when listed");
+    assert!(rec.calls().is_empty());
+    // One of several: its node goes, the firewall closes to it, no restart.
+    assert!(remove("laptop").ok);
+    assert_eq!(rec.calls(), ["remove laptop", "firewall"]);
+    let after = trusted(&t);
+    assert_eq!(after.peers.len(), 2);
+    assert_eq!(after.node_ip, s.node_ip);
+    // The last peers gone: back to single-node settings (no tailnet node IP), applied by a
+    // restart. A node that can't be deleted is still dropped (the answer says so).
+    t.set(&server_setting());
+    let rec2 = Rec::default();
+    let a = ask(&t, r#"{"action":"remove_node","name":"laptop"}"#, &rec2);
+    assert!(a.ok, "{a:?}");
+    assert_eq!(rec2.calls(), ["remove laptop", "firewall", "restart"]);
+    assert_eq!(trusted(&t), Setting::default());
+    assert!(!at(&t.root, STATE_DIR).join(HAS_PEERS).exists());
+    let st = t.prepare(None).unwrap();
+    assert_eq!(st.peers, 0);
+    assert!(!t.read(SERVER_DROPIN).contains("node-ip"));
+
+    // Leaving: root's setting back to the default, firewall, restart.
+    t.set(&agent_setting());
+    let rec3 = Rec::default();
+    assert!(ask(&t, r#"{"action":"leave"}"#, &rec3).ok);
+    assert_eq!(rec3.calls(), ["firewall", "restart"]);
+    assert_eq!(trusted(&t), Setting::default());
+}
+
+#[test]
+fn an_older_install_is_taken_over_once() {
+    // k3s ran under the old code (a pinned name) as an agent set up the old way: cluster.toml
+    // and the handed token in /etc/melissa, root's token already moved.
+    let t = server_with_app("cluster-takeover");
+    std::fs::remove_file(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
+    std::fs::write(
+        t.config.join(FILE_NAME),
+        toml::to_string(&agent_setting()).unwrap(),
+    )
+    .unwrap();
+    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret\n").unwrap();
+    // Before k3s's start takes it over, the firewall already sees it.
+    assert_eq!(read_trusted(&t.root, &t.config).unwrap(), agent_setting());
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!(st.role, Role::Agent);
+    assert_eq!(trusted(&t), agent_setting());
+    assert_eq!(
+        std::fs::read_to_string(t.token()).unwrap(),
+        "K10abc::server:secret"
+    );
+    assert!(!t.config.join(FILE_NAME).exists());
+    assert!(!t.config.join(JOIN_TOKEN_FILE).exists());
+    // From now on the old file is ignored: another server written there changes nothing.
+    let mut other = agent_setting();
+    other.server_url = Some("https://100.64.0.66:6443".into());
+    std::fs::write(t.config.join(FILE_NAME), toml::to_string(&other).unwrap()).unwrap();
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!(st.server_url.as_deref(), Some("https://100.64.0.1:6443"));
+    assert!(t.read(AGENT_CONFIG).contains("100.64.0.1:6443"));
+
+    // A server with the defaults (no cluster.toml): just works, root keeps the default.
+    let t = server_with_app("cluster-takeover-server");
+    std::fs::remove_file(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!((st.role, st.node_name.as_str()), (Role::Server, "melissa"));
+    assert_eq!(trusted(&t), Setting::default());
+
+    // An older install with an unreadable cluster.toml: not taken over until it is fixed.
+    let t = server_with_app("cluster-takeover-broken");
+    std::fs::remove_file(at(&t.root, STATE_DIR).join(STATE_SETTING)).unwrap();
+    std::fs::write(t.config.join(FILE_NAME), "peers = 3\n").unwrap();
+    let st = t.prepare(Some("Laptop")).unwrap();
+    assert_eq!(st.role, Role::Server);
+    assert!(!st.errors.is_empty());
+    assert!(!at(&t.root, STATE_DIR).join(STATE_SETTING).exists());
+}
+
+#[test]
+fn a_factory_reset_wipes_roots_cluster_state() {
+    assert!(crate::factory_reset::WIPE.contains(&STATE_DIR));
+}
+
+/// Runs [`run_request`] in place of systemd (the root oneshot).
 struct InlineStarter {
-    dir: PathBuf,
-    firewall: std::sync::atomic::AtomicUsize,
+    root: PathBuf,
+    config: PathBuf,
+    rec: Rec,
 }
 
 impl Starter for InlineStarter {
     fn start(&self) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            run_request(&self.dir, &self.dir.join("status.json"), &FakeRunner);
+            run_request(&self.root, &self.config, &self.rec);
             Ok(())
         })
-    }
-    fn refresh_firewall(&self) -> BoxFuture<'_, Result<(), String>> {
-        self.firewall
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Box::pin(async { Ok(()) })
     }
 }
 
 #[tokio::test]
-async fn control_invites_joins_removes_and_leaves() {
-    let dir = scratch("cluster-control");
+async fn control_asks_root_and_audits() {
+    let t = Tree::new("cluster-control");
     let starter = Arc::new(InlineStarter {
-        dir: dir.clone(),
-        firewall: Default::default(),
+        root: t.root.clone(),
+        config: t.config.clone(),
+        rec: Rec::default(),
     });
-    let audit = AuditLog::new(dir.join("audit.jsonl"));
+    let audit = AuditLog::new(t.root.join("audit.jsonl"));
     let c = ClusterControl::new(
-        dir.clone(),
-        dir.join("status.json"),
+        t.config.clone(),
+        at(&t.root, STATUS_FILE),
         starter.clone(),
         Some(audit),
     );
-    // Two devices of one name can't be in one cluster.
-    let status = Status {
-        node_name: "desktop".into(),
-        ..Status::default()
+    set_status(&t.root, "desktop");
+    let join = Join {
+        server_url: "https://100.64.0.9:6443".into(),
+        server_name: "Desktop".into(),
+        own_address: "100.64.0.1".parse().unwrap(),
     };
-    std::fs::write(
-        dir.join("status.json"),
-        serde_json::to_vec(&status).unwrap(),
-    )
-    .unwrap();
+    // Two devices of one name can't be in one cluster (checked before root is asked).
     let same = Peer {
         name: "desktop".into(),
         address: "100.64.0.2".parse().unwrap(),
     };
-    assert!(c
-        .create_invitation("100.64.0.1".parse().unwrap(), same, "owner")
-        .await
-        .is_err());
-    assert!(c
-        .join(
-            "https://100.64.0.9:6443",
-            "Desktop",
-            "100.64.0.1".parse().unwrap(),
-            Secret("K10join::x.y".into()),
-            "owner",
-        )
-        .await
-        .is_err());
-    let status = Status {
-        node_name: "home".into(),
-        ..Status::default()
-    };
-    std::fs::write(
-        dir.join("status.json"),
-        serde_json::to_vec(&status).unwrap(),
-    )
-    .unwrap();
-    let inv = c
+    assert!(matches!(
+        c.create_invitation("100.64.0.1".parse().unwrap(), same, "owner")
+            .await,
+        Err(ClusterError::Invalid(_))
+    ));
+    assert!(matches!(
+        c.join(join.clone(), Secret::new("K10join::x.y".into()), "owner")
+            .await,
+        Err(ClusterError::Invalid(_))
+    ));
+    set_status(&t.root, "home");
+    // Root refuses both for now (Q108); nothing ran, no token anywhere.
+    let e = c
         .create_invitation(
             "100.64.0.1".parse().unwrap(),
             Peer {
@@ -653,65 +893,37 @@ async fn control_invites_joins_removes_and_leaves() {
             "owner",
         )
         .await
-        .unwrap();
-    assert_eq!(inv.server_url, "https://100.64.0.1:6443");
-    assert_eq!(inv.token.expose(), "K10tok::abc.def");
-    assert!(
-        !format!("{inv:?}").contains("K10tok"),
-        "Debug hides the token"
-    );
-    assert!(!dir.join(INVITATION_TOKEN_FILE).exists(), "read once");
-    let s = c.setting();
-    assert_eq!(
-        s.peer_addresses(),
-        vec!["100.64.0.2".parse::<IpAddr>().unwrap()]
-    );
-    assert_eq!(s.flannel_iface.as_deref(), Some("tailscale0"));
-    assert_eq!(
-        starter.firewall.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-
-    c.remove_device("laptop", "owner").await.unwrap();
-    assert!(c.setting().peers.is_empty());
-    assert!(c.remove_device("Bad Name", "owner").await.is_err());
-
-    // Joining: the token goes to its own 0600 file (root moves it), never the setting.
-    c.join(
-        "https://100.64.0.9:6443",
-        "Desktop",
-        "100.64.0.1".parse().unwrap(),
-        Secret("K10join::x.y".into()),
-        "owner",
-    )
-    .await
-    .unwrap();
-    let s = c.setting();
-    assert_eq!(s.role, Role::Agent);
-    assert_eq!(s.peers[0].name, "desktop");
-    let text = std::fs::read_to_string(dir.join(FILE_NAME)).unwrap();
-    assert!(!text.contains("K10join"), "{text}");
-    assert_eq!(
-        std::fs::read_to_string(dir.join(JOIN_TOKEN_FILE)).unwrap(),
-        "K10join::x.y"
-    );
-    assert!(
-        c.join(
-            "https://desktop.example.ts.net:6443",
-            "desktop",
-            "100.64.0.1".parse().unwrap(),
-            Secret("t".into()),
-            "owner"
-        )
+        .unwrap_err();
+    assert!(e.to_string().contains("owner's confirmation"), "{e}");
+    let e = c
+        .join(join, Secret::new("K10join::x.y".into()), "owner")
         .await
-        .is_err(),
-        "the server is named by its tailnet address (firewall)"
-    );
+        .unwrap_err();
+    assert!(e.to_string().contains("owner's confirmation"), "{e}");
+    assert!(!t.config.join(JOIN_TOKEN_FILE).exists());
+    assert!(starter.rec.calls().is_empty());
 
+    // Root's own invitation; then the owner removes the device from the server's side.
+    root_invite(
+        &t.root,
+        &t.config,
+        Origin::Root,
+        &Invite {
+            own_address: "100.64.0.1".parse().unwrap(),
+            peer: Peer {
+                name: "laptop".into(),
+                address: "100.64.0.2".parse().unwrap(),
+            },
+        },
+        &Rec::default(),
+    )
+    .unwrap();
+    c.remove_device("laptop", "owner").await.unwrap();
+    assert_eq!(trusted(&t), Setting::default());
+    assert!(c.remove_device("Bad Name", "owner").await.is_err());
     c.leave("owner").await.unwrap();
-    assert_eq!(c.setting(), Setting::default());
-    assert!(!dir.join(JOIN_TOKEN_FILE).exists());
-    let log = std::fs::read_to_string(dir.join("audit.jsonl")).unwrap();
+
+    let log = std::fs::read_to_string(t.root.join("audit.jsonl")).unwrap();
     for action in [
         "cluster.invitation_created",
         "cluster.device_removed",
@@ -721,7 +933,6 @@ async fn control_invites_joins_removes_and_leaves() {
         assert!(log.contains(action), "{action}");
     }
     assert!(!log.contains("K10"), "no token in the audit log");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -747,8 +958,7 @@ fn the_switch_from_inside_k3s_never_kills_its_caller() {
     // Through a real switch: the data moves, the caller lives.
     let t = Tree::new("cluster-own-cgroup");
     std::fs::create_dir_all(at(&t.root, K3S_DATA).join("server")).unwrap();
-    t.set(&agent_setting());
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret").unwrap();
+    t.join();
     let host = FakeHost::default();
     let st = prepare(&t.root, &t.config, &input(None), &host, &mut |_| {}).unwrap();
     assert_eq!(st.role, Role::Agent);
@@ -793,7 +1003,7 @@ impl Tree {
 
     fn join(&self) {
         self.set(&agent_setting());
-        write_private(&self.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret").unwrap();
+        self.give_token();
     }
 
     /// Back to a server: the app's data in place, its old name, nothing of it anywhere else.
@@ -810,7 +1020,6 @@ impl Tree {
 
 #[test]
 fn joining_cut_short_at_any_step_finishes_or_goes_back() {
-    let state = |t: &Tree| at(&t.root, STATE_DIR);
     // Each step of server → agent, as a crash would leave it.
     let steps: [Cut; 4] = [
         ("token taken, nothing moved", |_| {}),
@@ -831,14 +1040,6 @@ fn joining_cut_short_at_any_step_finishes_or_goes_back() {
         for finish in [true, false] {
             let t = server_with_app("cluster-cut-join");
             t.join();
-            // The token as step 1 leaves it.
-            write_root(
-                &state(&t).join("agent-token"),
-                b"K10abc::server:secret",
-                0o600,
-            )
-            .unwrap();
-            let _ = std::fs::remove_file(t.config.join(JOIN_TOKEN_FILE));
             cut(&t);
             if finish {
                 let st = t.prepare(Some("Laptop")).unwrap();
@@ -931,7 +1132,7 @@ fn an_agent_never_leaves_by_itself() {
     assert_eq!(t.prepare(Some("Laptop")).unwrap().role, Role::Agent);
     let token = at(&t.root, STATE_DIR).join("agent-token");
     // A broken setting: k3s waits; nothing moves, the token stays.
-    std::fs::write(t.config.join(FILE_NAME), "role = \"agent\"\n").unwrap();
+    t.break_setting();
     let e = t.prepare(Some("Laptop")).unwrap_err();
     assert!(e.contains("unreadable"), "{e}");
     assert!(token.exists());
@@ -952,7 +1153,7 @@ fn a_broken_setting_on_a_clustered_server_changes_nothing() {
     std::fs::create_dir_all(at(&t.root, K3S_DATA).join("server")).unwrap();
     t.set(&server_setting());
     assert_eq!(t.prepare(Some("Desktop")).unwrap().node_name, "melissa");
-    std::fs::write(t.config.join(FILE_NAME), "peers = 3\n").unwrap();
+    t.break_setting();
     let st = t.prepare(Some("Desktop")).unwrap();
     assert_eq!(st.role, Role::Server);
     assert_eq!(
@@ -968,7 +1169,7 @@ fn joining_under_the_servers_own_name_is_refused() {
     let mut s = agent_setting();
     s.peers[0].name = "laptop".into();
     t.set(&s);
-    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret").unwrap();
+    t.give_token();
     let st = t.prepare(Some("Laptop")).unwrap();
     assert_eq!(st.role, Role::Server);
     assert!(
@@ -1012,36 +1213,4 @@ fn root_never_blocks_on_a_fifo_and_keeps_copied_dropins_private() {
         std::fs::metadata(copied).unwrap().permissions().mode() & 0o777,
         0o600
     );
-}
-
-/// Answers can't be written (the server's directory is gone): the token must not stay.
-#[test]
-fn a_token_without_an_answer_is_removed() {
-    struct Vanishing;
-    impl Runner for Vanishing {
-        fn create_token(&self, _: &str) -> Result<String, String> {
-            Ok("K10tok::abc.def".into())
-        }
-        fn remove_node(&self, _: &str) -> Result<(), String> {
-            unreachable!()
-        }
-        fn restart_k3s(&self) -> Result<(), String> {
-            unreachable!()
-        }
-        fn node_roles(&self) -> Result<String, String> {
-            unreachable!()
-        }
-        fn label_node(&self, _: &str, _: Role) -> Result<(), String> {
-            unreachable!()
-        }
-    }
-    let dir = scratch("cluster-no-answer");
-    write_private(&dir.join(REQUEST_FILE), br#"{"action":"create_token"}"#).unwrap();
-    // A directory where the answer goes: hand_over can't create the file.
-    std::fs::create_dir(dir.join(ANSWER_FILE)).unwrap();
-    std::fs::write(dir.join(ANSWER_FILE).join("x"), "").unwrap();
-    let a = run_request(&dir, &dir.join("status.json"), &Vanishing);
-    assert!(a.ok);
-    assert!(!dir.join(INVITATION_TOKEN_FILE).exists());
-    let _ = std::fs::remove_dir_all(dir);
 }

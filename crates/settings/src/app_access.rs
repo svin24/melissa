@@ -20,7 +20,7 @@
 //! Everything else to those ports is dropped. Traffic from `tailscale0` to the container
 //! itself (not the app ports: the UI forward, k3s's API, the kubelet) is dropped at every
 //! level, replies to the container's own connections excepted, and k3s's ports from the
-//! **cluster peers** ([`ClusterPeers`], `cluster.toml`, multi-device): a server lets its peers
+//! **cluster peers** ([`ClusterPeers`], root's cluster setting, multi-device): a server lets its peers
 //! reach 6443/tcp (API), 10250/tcp (kubelet) and 8472/udp (flannel VXLAN), an agent lets its
 //! server reach 10250/tcp and 8472/udp (not the other agents yet: pods on two agents can't talk,
 //! PLAN Q109). Only those addresses, only on `tailscale0`; never in the closed table. The container itself (`lo`)

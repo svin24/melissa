@@ -1,7 +1,9 @@
 // Melissa, container image only: the server (user `melissa`) may start melissa-cluster.service, which
-// runs the one request the server left in /etc/melissa/cluster-request.json (a join token, remove a
-// device's node, restart k3s for a role change). Nothing else: no other unit or verb. Owner-only in
-// the server; no agent tool reaches it. See melissa_settings::cluster.
+// runs the one request the server left in /etc/melissa/cluster-request.json against root's own
+// cluster setting. Only narrowing actions pass (remove a joined device, leave the cluster); joining
+// another cluster and invitations are refused by root until the owner's on-screen confirmation
+// exists (PLAN Q108). Nothing else: no other unit or verb. Owner-only in the server; no agent tool
+// reaches it. See melissa_settings::cluster.
 polkit.addRule(function (action, subject) {
     if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "melissa") {
         return polkit.Result.NOT_HANDLED;

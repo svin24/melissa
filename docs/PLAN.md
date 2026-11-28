@@ -1670,7 +1670,21 @@ Roadmap (rough, phases may overlap):
     2026-11-28): (a).** Joining another cluster and creating an invitation happen only after the owner
     confirms on screen in the UI, and root verifies that confirmation through a path the `melissa` uid (and
     so unsandboxed agents) cannot forge. The mechanism is designed together with the Tailscale + Devices
-    screen; not built yet.
+    screen; not built yet. **Done (2026-11-28, groundwork branch, parked):** root keeps the trusted cluster
+    state itself in `/var/lib/melissa-container/cluster` (0700 root: the setting with role, server URL,
+    node IP, flannel interface and peers; the agent's token); `cluster prepare`, the firewall
+    (`melissa-app-access`) and the node labeller read only that. An older install's `cluster.toml` (and a
+    handed join token) is taken over once, at the first k3s start after the update, then removed; later
+    files there are ignored. Widening actions (join, invitation with a join token) pass one root-side gate,
+    `cluster::allow_widening`, which for now accepts only root itself (`podman exec -it melissa
+    melissa-server cluster join|invite ...`); requests from the server (`melissa-cluster.service`) are
+    refused. Narrowing actions (remove a device, leave) stay open to the server via polkit, checked against
+    root's setting; removing the last peer or leaving also clears the node IP and flannel interface (k3s
+    starts without Tailscale). Factory reset wipes the state directory. **Remaining:** the root
+    `melissa-confirm` service issuing single-use tickets bound to one action (kind, server URL or peer),
+    shown and approved on screen by the owner; `allow_widening` then accepts a `Server` request carrying a
+    valid ticket (the TODO in the code), and the Devices screen calls `ClusterControl::join` and
+    `create_invitation`.
 109. Flannel between agents (2026-11-28, review of the multi-device groundwork). With three or more devices,
     pods on two agents talk over flannel's VXLAN (8472/udp) directly, agent to agent. An agent's firewall lets
     in only its server (its peer list holds the server alone: `ClusterControl::join`), so agent-to-agent pod

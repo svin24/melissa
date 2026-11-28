@@ -5,12 +5,21 @@
 //! k3s **agent** of another Melissa (join), make it a server that others join (invitation), and
 //! go back (leave). The pieces:
 //!
-//! - **The setting** ([`FILE_NAME`], `/etc/melissa/cluster.toml`, written by the server's user
-//!   `melissa`): role, server URL, this device's tailnet address and interface, and the cluster
-//!   peers (tailnet addresses) the firewall lets in ([`crate::app_access`]). No secret.
-//! - **The join token**: the server writes it to [`JOIN_TOKEN_FILE`] (0600) next to the
-//!   setting; root moves it into [`STATE_DIR`] (0700 root) at the next k3s start and k3s reads
-//!   it from there (`token-file`). It is never logged, never in the setting, never shown to agents.
+//! - **The setting** ([`Setting`]: role, server URL, this device's tailnet address and
+//!   interface, the cluster peers the firewall lets in; no secret) is **root's**: it lives in
+//!   [`STATE_DIR`] ([`STATE_SETTING`], 0700 root), and only root's own code writes it. Nothing
+//!   root does reads what the server's user `melissa` writes to decide *who* this device trusts
+//!   (Q108): that uid also runs unsandboxed agent backends. `/etc/melissa/cluster.toml`
+//!   ([`FILE_NAME`]) is read once, to migrate an install from before ([`read_trusted`]), then
+//!   removed.
+//! - **Widening actions** (joining another cluster, an invitation with a join token) pass
+//!   [`allow_widening`]: for now only root itself (`melissa-server cluster join|invite`, run as
+//!   root from the host through `podman exec`) passes it; a request from the server is refused
+//!   until the owner's on-screen confirmation exists (Q108, a root service issuing single-use
+//!   tickets bound to the action). **Narrowing actions** (remove a device, leave) are open to
+//!   the server through `melissa-cluster.service` (polkit), checked against root's setting.
+//! - **The join token**: root keeps it in [`STATE_DIR`] (`agent-token`, 0600) and k3s reads it
+//!   from there (`token-file`). It is never logged, never in the setting, never shown to agents.
 //! - **The node name** ([`node_label`], [`decide_name`]): from the device name set in setup
 //!   (`ui.toml`), else the Tailscale name install.sh passed (`melissa-<host>`), else the host
 //!   name. It is pinned in [`STATE_DIR`] the first time k3s starts, because k3s registers a
@@ -18,17 +27,16 @@
 //!   name changes only while that is harmless (a server with no app volumes and no peers), or
 //!   when the device joins a cluster (a fresh agent data directory).
 //! - **`melissa-server cluster prepare`** (root, from k3s-prepare before every k3s start): reads
-//!   all that, switches the k3s data directory when the role changed (kept as a backup; each
-//!   directory carries a mark, [`DATA_MARK`], saying whose data it is, so a switch cut short
-//!   anywhere is finished by the next start and a server's data is never deleted; an unreadable
-//!   setting switches nothing), and renders k3s's configuration: a server gets
+//!   root's setting, switches the k3s data directory when the role changed (kept as a backup;
+//!   each directory carries a mark, [`DATA_MARK`], saying whose data it is, so a switch cut
+//!   short anywhere is finished by the next start and a server's data is never deleted; an
+//!   unreadable setting switches nothing), and renders k3s's configuration: a server gets
 //!   `/etc/rancher/k3s/config.yaml.d/50-melissa-cluster.yaml`; an agent gets its own config
 //!   directory ([`AGENT_CONFIG`]) without the server-only keys. It writes the mode for the unit
-//!   ([`ENV_FILE`]) and a status for the server ([`STATUS_FILE`]: role and node name, no secret).
+//!   ([`ENV_FILE`]) and a status for the server ([`STATUS_FILE`]: role, node name, peers; no
+//!   secret).
 //! - **`melissa-server cluster run`** (root, `melissa-cluster.service`, started by the server
-//!   through polkit): the actions that need k3s's admin rights ([`Request`]): a join token for
-//!   an invitation, draining and deleting a removed device's node, restarting k3s to apply a
-//!   role change.
+//!   through polkit): the server's [`Request`], run as [`Origin::Server`].
 //! - [`ClusterControl`]: the server's side (owner-only actions; no agent tool sees a token).
 
 use std::{
@@ -50,9 +58,16 @@ use crate::{factory_reset::at, write_private, SettingsError};
 #[cfg(test)]
 mod tests;
 
-/// The setting, next to `app-access.toml` (`/etc/melissa` in the container).
+/// The setting as the server's user wrote it before root kept it (`/etc/melissa`): read once
+/// by root to migrate an older install ([`read_trusted`]), then removed. Never trusted after.
 pub const FILE_NAME: &str = "cluster.toml";
-/// A join token on its way from the server to root (0600, server's user; root removes it).
+/// Root's setting in [`STATE_DIR`] (0600 root): the only one root acts on.
+pub const STATE_SETTING: &str = "setting.toml";
+/// In [`STATE_DIR`] while root's setting is a server with peers: `melissa-cluster-label.timer`'s
+/// condition, so a single device never ticks.
+pub const HAS_PEERS: &str = "has-peers";
+/// A join token on its way from the server to root (0600, server's user; root removes it, and
+/// uses it only once a join passes [`allow_widening`]).
 pub const JOIN_TOKEN_FILE: &str = "cluster-join.token";
 /// What the server asks root to do ([`Request`], JSON), next to the setting.
 pub const REQUEST_FILE: &str = "cluster-request.json";
@@ -60,7 +75,7 @@ pub const REQUEST_FILE: &str = "cluster-request.json";
 pub const ANSWER_FILE: &str = "cluster-answer.json";
 /// A new invitation's join token, from root to the server (0600, server's user; read once).
 pub const INVITATION_TOKEN_FILE: &str = "cluster-invitation.token";
-/// Root's own state: the pinned node name, the agent's token, the data role (0700 root).
+/// Root's own state: the setting, the pinned node name, the agent's token (0700 root).
 pub const STATE_DIR: &str = "/var/lib/melissa-container/cluster";
 /// k3s's data directory.
 pub const K3S_DATA: &str = "/var/lib/rancher/k3s";
@@ -138,7 +153,7 @@ pub struct Peer {
     pub address: IpAddr,
 }
 
-/// `cluster.toml`. The default is today's single-node server.
+/// Root's cluster setting ([`STATE_SETTING`]). The default is today's single-node server.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Setting {
@@ -283,17 +298,64 @@ pub fn read_setting(path: &Path) -> Result<Setting, String> {
     Ok(setting)
 }
 
-fn write_setting(path: &Path, setting: &Setting) -> Result<(), SettingsError> {
-    setting.validate().map_err(SettingsError::Invalid)?;
+fn setting_text(setting: &Setting) -> Result<String, String> {
+    setting.validate()?;
     let mut text = String::from(
-        "# This device's place in a Melissa cluster, written by Melissa (no secrets here).\n\
+        "# This device's place in a Melissa cluster, written by root (no secrets here).\n\
          # Default (empty): a single-node k3s server.\n",
     );
-    text.push_str(&toml::to_string(setting).map_err(|e| SettingsError::Failed(e.to_string()))?);
-    write_private(path, text.as_bytes()).map_err(|source| SettingsError::Write {
-        path: path.display().to_string(),
-        source,
-    })
+    text.push_str(&toml::to_string(setting).map_err(|e| e.to_string())?);
+    Ok(text)
+}
+
+/// Root's state directory under `root`, made if missing, 0700.
+fn ensure_state_dir(root: &Path) -> Result<PathBuf, String> {
+    let state = at(root, STATE_DIR);
+    std::fs::create_dir_all(&state).map_err(|e| format!("creating {}: {e}", state.display()))?;
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{}: {e}", state.display()))?;
+    Ok(state)
+}
+
+/// An install from before root kept the setting: k3s started under that code (it pinned a node
+/// name) and root has no setting of its own yet. Only then is `cluster.toml` read, once.
+fn legacy_install(state: &Path) -> bool {
+    state.join(STATE_SETTING).symlink_metadata().is_err()
+        && state.join("node-name").symlink_metadata().is_ok()
+}
+
+/// The setting root acts on: its own ([`STATE_SETTING`]); on an install from before, until the
+/// first `prepare` takes it over, the old `cluster.toml` in `config_dir`; else the default (a
+/// single-node server). A `cluster.toml` on a new install, or after the takeover, is ignored.
+pub fn read_trusted(root: &Path, config_dir: &Path) -> Result<Setting, String> {
+    let state = at(root, STATE_DIR);
+    let own = state.join(STATE_SETTING);
+    if own.symlink_metadata().is_ok() {
+        read_setting(&own)
+    } else if legacy_install(&state) {
+        read_setting(&config_dir.join(FILE_NAME))
+    } else {
+        Ok(Setting::default())
+    }
+}
+
+/// Write root's setting (checked; 0600 in [`STATE_DIR`]).
+pub fn write_trusted(root: &Path, setting: &Setting) -> Result<(), String> {
+    let text = setting_text(setting)?;
+    let state = ensure_state_dir(root)?;
+    write_root(&state.join(STATE_SETTING), text.as_bytes(), 0o600)
+        .map_err(|e| format!("saving the cluster setting: {e}"))?;
+    let marker = state.join(HAS_PEERS);
+    if setting.role == Role::Server && !setting.peers.is_empty() {
+        write_root(&marker, b"", 0o600).map_err(|e| format!("{}: {e}", marker.display()))
+    } else {
+        match std::fs::remove_file(&marker) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("{}: {e}", marker.display()))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 // --- the node name -----------------------------------------------------------------------------
@@ -404,7 +466,7 @@ fn yaml_str(s: &str) -> String {
 /// The drop-in for a server.
 pub fn server_dropin(node_name: &str, setting: &Setting) -> String {
     let mut out = String::from(
-        "# Written by `melissa-server cluster prepare` before every k3s start (cluster.toml).\n\
+        "# Written by `melissa-server cluster prepare` before every k3s start (root's cluster setting).\n\
          # Do not edit; local overrides go in 90-local.yaml.\n",
     );
     out.push_str(&format!("node-name: {}\n", yaml_str(node_name)));
@@ -422,7 +484,7 @@ pub fn server_dropin(node_name: &str, setting: &Setting) -> String {
 /// The agent's main config file (its `config.yaml.d` holds the shared, agent-valid drop-ins).
 pub fn agent_config(node_name: &str, setting: &Setting, token_file: &Path) -> String {
     let mut out = String::from(
-        "# Written by `melissa-server cluster prepare` before every k3s start (cluster.toml).\n",
+        "# Written by `melissa-server cluster prepare` before every k3s start (root's cluster setting).\n",
     );
     if let Some(url) = &setting.server_url {
         out.push_str(&format!("server: {}\n", yaml_str(url)));
@@ -622,10 +684,11 @@ pub fn prepare(
     host: &dyn crate::factory_reset::Host,
     say: &mut dyn FnMut(&str),
 ) -> Result<Status, String> {
-    let state = at(root, STATE_DIR);
-    std::fs::create_dir_all(&state).map_err(|e| format!("creating {}: {e}", state.display()))?;
-    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("{}: {e}", state.display()))?;
+    let state = ensure_state_dir(root)?;
+    // Root has no setting of its own yet: this start takes one over (the old cluster.toml once,
+    // on an install from before; else the default).
+    let taking_over = state.join(STATE_SETTING).symlink_metadata().is_err();
+    let legacy = legacy_install(&state);
     let mut errors = Vec::new();
     let data = at(root, K3S_DATA);
     let pin_file = state.join("node-name");
@@ -653,7 +716,12 @@ pub fn prepare(
     };
     let _ = std::fs::remove_file(&legacy_role_file);
 
-    let setting = match read_setting(&config_dir.join(FILE_NAME)) {
+    let source = if legacy {
+        config_dir.join(FILE_NAME)
+    } else {
+        state.join(STATE_SETTING)
+    };
+    let setting = match read_trusted(root, config_dir) {
         Ok(s) => Some(s),
         Err(e) => {
             say(&format!("cluster: {e}"));
@@ -669,14 +737,17 @@ pub fn prepare(
         None if current == Some(Role::Server)
             || (current.is_none() && data_dir(&at(root, SERVER_BACKUP))? == DataDir::Absent) =>
         {
-            say("cluster: staying a server, nothing changed; fix cluster.toml");
+            say(&format!(
+                "cluster: staying a server, nothing changed; fix {}",
+                source.display()
+            ));
             (Setting::default(), true)
         }
         None => {
             return Err(format!(
                 "{} is unreadable and this device is {}: k3s waits until it is fixed (nothing was \
                  moved or removed)",
-                config_dir.join(FILE_NAME).display(),
+                source.display(),
                 match current {
                     Some(r) => format!("a k3s {}", r.as_str()),
                     None => "between roles".into(),
@@ -685,17 +756,27 @@ pub fn prepare(
         }
     };
 
-    // 1. A new join token from the server: root's, 0600.
-    let handed = config_dir.join(JOIN_TOKEN_FILE);
-    match read_small(&handed, MAX_TOKEN_BYTES) {
-        Ok(Some(t)) if !t.trim().is_empty() => {
-            write_root(&token, t.trim().as_bytes(), 0o600)
-                .map_err(|e| format!("saving the join token: {e}"))?;
-            let _ = std::fs::remove_file(&handed);
-            say("cluster: took the new join token");
+    // 1. Taking the setting over (once): from here on only root's own copy counts. An install
+    //    from before also hands over a join token its server left (the old way of joining).
+    if taking_over && !broken {
+        if legacy {
+            let handed = config_dir.join(JOIN_TOKEN_FILE);
+            match read_small(&handed, MAX_TOKEN_BYTES) {
+                Ok(Some(t)) if !t.trim().is_empty() => {
+                    write_root(&token, t.trim().as_bytes(), 0o600)
+                        .map_err(|e| format!("saving the join token: {e}"))?;
+                    say("cluster: took the join token left for the old way of joining");
+                }
+                Ok(_) => {}
+                Err(e) => errors.push(e),
+            }
         }
-        Ok(_) => {}
-        Err(e) => errors.push(e),
+        write_trusted(root, &setting)?;
+        if legacy {
+            let _ = std::fs::remove_file(config_dir.join(JOIN_TOKEN_FILE));
+            let _ = std::fs::remove_file(config_dir.join(FILE_NAME));
+            say("cluster: took the setting over from cluster.toml (root keeps it now)");
+        }
     }
 
     // 2. Role switch. Every step is idempotent and the data's role travels with it (its mark),
@@ -945,16 +1026,102 @@ pub fn take_stale_node(root: &Path) -> Option<String> {
 
 // --- root: requests ----------------------------------------------------------------------------
 
+/// Join a server as its agent (what the owner copies from the server's invitation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Join {
+    /// `https://<the server's tailnet address>:6443`.
+    pub server_url: String,
+    /// The server's node name (the firewall lets it in under this name).
+    pub server_name: String,
+    /// This device's tailnet address (its node IP once joined).
+    pub own_address: IpAddr,
+}
+
+impl Join {
+    /// The setting this join makes (checked): an agent of that server, its only peer.
+    pub fn setting(&self) -> Result<Setting, String> {
+        let host = server_url_host(&self.server_url)?;
+        let server_address: IpAddr = host
+            .parse()
+            .map_err(|_| "server_url must name the server's tailnet address".to_string())?;
+        let server_name = node_label(&self.server_name).ok_or("not a device name")?;
+        let s = Setting {
+            role: Role::Agent,
+            server_url: Some(self.server_url.trim_end_matches('/').to_string()),
+            node_ip: Some(self.own_address),
+            flannel_iface: Some(crate::tailscale::INTERFACE.into()),
+            peers: vec![Peer {
+                name: server_name,
+                address: server_address,
+            }],
+        };
+        s.validate()?;
+        Ok(s)
+    }
+}
+
+/// A join token's shape (k3s's tokens are short, one word); trimmed.
+pub fn check_token(token: &str) -> Result<&str, String> {
+    let t = token.trim();
+    if t.is_empty() || t.len() > MAX_TOKEN_BYTES as usize || t.contains(char::is_whitespace) {
+        return Err("that is not a join token".into());
+    }
+    Ok(t)
+}
+
+/// An invitation: this device serves on its tailnet address `own_address` and lets `peer` in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Invite {
+    pub own_address: IpAddr,
+    pub peer: Peer,
+}
+
 /// What the server asks root for (`melissa-cluster.service`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    /// A join token for one device (`k3s token create --ttl 1h`), back to the server only.
-    CreateToken,
-    /// Drain and delete a device's node.
+    /// Widening: an invitation (setting, then a join token back to the server only). Passes
+    /// [`allow_widening`] first: refused for now.
+    Invite(Invite),
+    /// Widening: become an agent of another server (the token waits in [`JOIN_TOKEN_FILE`]).
+    /// Passes [`allow_widening`] first: refused for now.
+    Join(Join),
+    /// Narrowing: drain and delete a peer's node, drop it from the peers.
     RemoveNode { name: String },
-    /// Restart k3s so `prepare` applies the setting (a role change, a new node IP).
-    Restart,
+    /// Narrowing: back to a single-node server.
+    Leave,
+}
+
+/// Who asks root for an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Root itself: `melissa-server cluster join|invite|remove|leave` run as root (the host's
+    /// admin, `podman exec`). The server's user can't run anything as root but
+    /// `melissa-cluster.service`, whose command is fixed (`cluster run`: [`Origin::Server`]).
+    Root,
+    /// A request the server's user left for `melissa-cluster.service` (polkit). That uid also
+    /// runs unsandboxed agent backends (Q85h), so it alone never widens who controls this device.
+    Server,
+}
+
+/// The gate for actions that widen who controls this device or its workloads: joining another
+/// cluster (its control plane then schedules here) and minting a join token (another device may
+/// join this one). Narrowing actions (remove a device, leave) don't pass through here.
+///
+/// For now only [`Origin::Root`] passes. TODO(Q108): accept [`Origin::Server`] with a single-use
+/// ticket from a root confirmation service (`melissa-confirm`) that the owner approved on screen,
+/// bound to this exact action (its kind, server URL or peer); the ticket is checked and consumed
+/// here, root-side, never by the server.
+pub fn allow_widening(origin: Origin, what: &str) -> Result<(), String> {
+    match origin {
+        Origin::Root => Ok(()),
+        Origin::Server => Err(format!(
+            "{what} needs the owner's confirmation on this device, which is not built yet; for \
+             now run `melissa-server cluster` as root in the container (podman exec)"
+        )),
+    }
 }
 
 /// Root's answer (no secret: a token goes in its own file).
@@ -972,8 +1139,10 @@ pub trait Runner {
     fn create_token(&self, ttl: &str) -> Result<String, String>;
     /// `k3s kubectl drain` then `delete node`.
     fn remove_node(&self, name: &str) -> Result<(), String>;
-    /// `systemctl restart k3s.service`.
+    /// `systemctl restart k3s.service` (`prepare` applies root's setting).
     fn restart_k3s(&self) -> Result<(), String>;
+    /// Re-apply the firewall (`melissa-app-access.service`) after the peers changed.
+    fn refresh_firewall(&self) -> Result<(), String>;
     /// The nodes and their [`ROLE_LABEL`]: one `<name> <value>` line each (value may be empty).
     fn node_roles(&self) -> Result<String, String>;
     /// Set [`ROLE_LABEL`] on a node (`kubectl label --overwrite`).
@@ -1012,7 +1181,7 @@ pub fn role_labels_needed(setting: &Setting, own: &str, listed: &str) -> Vec<(St
 /// role ([`ROLE_LABEL`]). Returns how many were labelled. Cheap when there is nothing to do: no
 /// peers, no kubectl.
 pub fn label_nodes(root: &Path, config_dir: &Path, runner: &dyn Runner) -> Result<usize, String> {
-    let setting = read_setting(&config_dir.join(FILE_NAME))?;
+    let setting = read_trusted(root, config_dir)?;
     if setting.role != Role::Server || setting.peers.is_empty() {
         return Ok(0);
     }
@@ -1053,43 +1222,165 @@ fn hand_over(dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
     f.sync_all().map_err(|e| e.to_string())
 }
 
-/// May root drain and delete node `name`? Only a peer in the setting (a device this server
-/// invited), never this device's own node (`status`: root's own status file).
-fn removable(config_dir: &Path, status: &Path, name: &str) -> Result<(), String> {
+/// The names this device has or will take as a node (root's status: pinned, and wanted).
+fn own_names(root: &Path) -> Vec<String> {
+    read_status(&at(root, STATUS_FILE))
+        .map(|s| {
+            [Some(s.node_name), s.wanted_name]
+                .into_iter()
+                .flatten()
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The firewall first, then k3s; a firewall that wasn't refreshed is reported after.
+fn apply(runner: &dyn Runner, restart: bool) -> Result<(), String> {
+    let firewall = runner.refresh_firewall();
+    if restart {
+        runner.restart_k3s()?;
+    }
+    firewall.map_err(|e| format!("the firewall was not refreshed: {e}"))
+}
+
+/// Root: become an agent of another server (widening: [`allow_widening`] first). Saves the
+/// token and the setting in [`STATE_DIR`], lets the server in, restarts k3s (`prepare` switches
+/// the data directory, keeping the single-node data as a backup).
+pub fn root_join(
+    root: &Path,
+    origin: Origin,
+    join: &Join,
+    token: &str,
+    runner: &dyn Runner,
+) -> Result<(), String> {
+    allow_widening(origin, "joining another cluster")?;
+    let setting = join.setting()?;
+    // k3s refuses a second node of the same name (and retries forever).
+    if setting
+        .peers
+        .iter()
+        .any(|p| own_names(root).contains(&p.name))
+    {
+        return Err("the server has this device's name: rename one of the two first".into());
+    }
+    let token = check_token(token)?;
+    let state = ensure_state_dir(root)?;
+    write_root(&state.join("agent-token"), token.as_bytes(), 0o600)
+        .map_err(|e| format!("saving the join token: {e}"))?;
+    write_trusted(root, &setting)?;
+    apply(runner, true)
+}
+
+/// Root: an invitation (widening: [`allow_widening`] first). This device stays the server, now
+/// on its tailnet address; `peer` gets in through the firewall; a join token valid
+/// [`INVITATION_TTL`] comes back (never logged). A first invitation restarts k3s (node IP and
+/// flannel move to the tailnet, the address goes into the API certificate).
+pub fn root_invite(
+    root: &Path,
+    config_dir: &Path,
+    origin: Origin,
+    invite: &Invite,
+    runner: &dyn Runner,
+) -> Result<String, String> {
+    allow_widening(origin, "an invitation")?;
+    let peer = &invite.peer;
+    if node_label(&peer.name).as_deref() != Some(peer.name.as_str()) {
+        return Err("not a device name".into());
+    }
+    if own_names(root).contains(&peer.name) {
+        return Err("that is this device's name: rename one of the two first".into());
+    }
+    let mut s = read_trusted(root, config_dir)?;
+    if s.role != Role::Server {
+        return Err("this device is an agent in another cluster".into());
+    }
+    let moved = s.node_ip != Some(invite.own_address)
+        || s.flannel_iface.as_deref() != Some(crate::tailscale::INTERFACE);
+    s.node_ip = Some(invite.own_address);
+    s.flannel_iface = Some(crate::tailscale::INTERFACE.into());
+    s.peers
+        .retain(|p| p.name != peer.name && p.address != peer.address);
+    s.peers.push(peer.clone());
+    write_trusted(root, &s)?;
+    let firewall = runner.refresh_firewall();
+    // The token first (from the running server), then the restart.
+    let token = runner.create_token(INVITATION_TTL)?;
+    if moved {
+        runner.restart_k3s()?;
+    }
+    if let Err(e) = firewall {
+        tracing::warn!("cluster: the firewall was not refreshed: {e}");
+    }
+    Ok(token)
+}
+
+/// Root: remove a device (narrowing): only a peer in root's setting, never this device's own
+/// node. Drains and deletes its node, drops it from the peers (the firewall closes to it). The
+/// last peer gone: back to the default single-node config (no tailnet node IP or flannel
+/// interface, so k3s starts with Tailscale off too), applied by a restart.
+pub fn root_remove(
+    root: &Path,
+    config_dir: &Path,
+    name: &str,
+    runner: &dyn Runner,
+) -> Result<(), String> {
     if node_label(name).as_deref() != Some(name) {
         return Err("not a node name".into());
     }
-    let setting = read_setting(&config_dir.join(FILE_NAME))?;
-    if setting.role != Role::Server || !setting.peers.iter().any(|p| p.name == name) {
+    let mut s = read_trusted(root, config_dir)?;
+    if s.role != Role::Server || !s.peers.iter().any(|p| p.name == name) {
         return Err(format!("{name} is not a device in this cluster"));
     }
-    match read_status(status) {
-        Some(s) if !s.node_name.is_empty() && s.node_name != name => Ok(()),
-        Some(s) if s.node_name == name => Err("that is this device's own node".into()),
-        _ => Err("this device's node name is not known yet".into()),
+    match read_status(&at(root, STATUS_FILE)) {
+        Some(st) if !st.node_name.is_empty() && st.node_name != name => {}
+        Some(st) if st.node_name == name => return Err("that is this device's own node".into()),
+        _ => return Err("this device's node name is not known yet".into()),
     }
+    let removed = runner.remove_node(name);
+    s.peers.retain(|p| p.name != name);
+    let single = s.peers.is_empty() && (s.node_ip.is_some() || s.flannel_iface.is_some());
+    if single {
+        s.node_ip = None;
+        s.flannel_iface = None;
+    }
+    write_trusted(root, &s)?;
+    let applied = apply(runner, single);
+    removed.and(applied)
 }
 
-/// Root: run the request the server left in `config_dir`, answer there. The request file goes
-/// either way. `status`: root's status file ([`STATUS_FILE`]).
-pub fn run_request(config_dir: &Path, status: &Path, runner: &dyn Runner) -> Answer {
+/// Root: leave the cluster (narrowing): back to a single-node server (its kept data comes back,
+/// the agent's token goes: `prepare`), no peers.
+pub fn root_leave(root: &Path, runner: &dyn Runner) -> Result<(), String> {
+    write_trusted(root, &Setting::default())?;
+    apply(runner, true)
+}
+
+/// Root: run the request the server left in `config_dir` ([`Origin::Server`]), answer there.
+/// The request file and a handed join token go either way.
+pub fn run_request(root: &Path, config_dir: &Path, runner: &dyn Runner) -> Answer {
     let path = config_dir.join(REQUEST_FILE);
     let request = read_small(&path, 4096).and_then(|t| {
         let t = t.ok_or("no request")?;
         serde_json::from_str::<Request>(&t).map_err(|_| "not a valid request".to_string())
     });
     let _ = std::fs::remove_file(&path);
+    let handed = config_dir.join(JOIN_TOKEN_FILE);
     let result = request.and_then(|r| match r {
-        Request::CreateToken => {
-            let token = runner.create_token(INVITATION_TTL)?;
+        Request::Invite(invite) => {
+            let token = root_invite(root, config_dir, Origin::Server, &invite, runner)?;
             hand_over(config_dir, INVITATION_TOKEN_FILE, token.as_bytes())
         }
-        Request::RemoveNode { name } => {
-            removable(config_dir, status, &name)?;
-            runner.remove_node(&name)
+        Request::Join(join) => {
+            // The gate before the token is even read.
+            allow_widening(Origin::Server, "joining another cluster")?;
+            let token = read_small(&handed, MAX_TOKEN_BYTES)?.ok_or("no join token")?;
+            root_join(root, Origin::Server, &join, &token, runner)
         }
-        Request::Restart => runner.restart_k3s(),
+        Request::RemoveNode { name } => root_remove(root, config_dir, &name, runner),
+        Request::Leave => root_leave(root, runner),
     });
+    let _ = std::fs::remove_file(&handed);
     let answer = Answer {
         ok: result.is_ok(),
         error: result.err(),
@@ -1195,6 +1486,15 @@ impl Runner for SystemRunner {
         .map(|_| ())
     }
 
+    fn refresh_firewall(&self) -> Result<(), String> {
+        output(
+            "systemctl",
+            &["start", crate::app_access::UNIT],
+            Duration::from_secs(60),
+        )
+        .map(|_| ())
+    }
+
     fn node_roles(&self) -> Result<String, String> {
         let key = ROLE_LABEL.replace('.', "\\.");
         let template = format!(
@@ -1252,8 +1552,6 @@ pub fn after_start(root: &Path) -> Result<(), String> {
 /// Starts the root oneshot and waits for it (the server's user, through polkit).
 pub trait Starter: Send + Sync {
     fn start(&self) -> BoxFuture<'_, Result<(), String>>;
-    /// Re-apply the firewall (`melissa-app-access.service`) after the peers changed.
-    fn refresh_firewall(&self) -> BoxFuture<'_, Result<(), String>>;
 }
 
 async fn systemctl_start(unit: &str, timeout: Duration) -> Result<(), String> {
@@ -1269,19 +1567,12 @@ async fn systemctl_start(unit: &str, timeout: Duration) -> Result<(), String> {
     }
 }
 
-/// `systemctl start melissa-cluster.service` and `melissa-app-access.service`.
+/// `systemctl start melissa-cluster.service`.
 pub struct SystemdStarter;
 
 impl Starter for SystemdStarter {
     fn start(&self) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(systemctl_start(UNIT, Duration::from_secs(240)))
-    }
-
-    fn refresh_firewall(&self) -> BoxFuture<'_, Result<(), String>> {
-        Box::pin(systemctl_start(
-            crate::app_access::UNIT,
-            Duration::from_secs(30),
-        ))
     }
 }
 
@@ -1290,6 +1581,10 @@ impl Starter for SystemdStarter {
 pub struct Secret(String);
 
 impl Secret {
+    pub fn new(token: String) -> Self {
+        Self(token)
+    }
+
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -1309,6 +1604,15 @@ pub struct Invitation {
     pub token: Secret,
 }
 
+/// The server URL for this device's tailnet address.
+pub fn server_url_for(own_address: IpAddr) -> String {
+    let host = match own_address {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+    format!("https://{host}:{API_PORT}")
+}
+
 /// Errors from [`ClusterControl`]'s actions (no message holds a token).
 #[derive(Debug, thiserror::Error)]
 pub enum ClusterError {
@@ -1320,9 +1624,11 @@ pub enum ClusterError {
     Failed(String),
 }
 
-/// The setting, the root oneshot and the audit log, for the owner's actions. Cheap to clone.
-/// **Owner-only**: callers gate every action like Settings' actions (signed-in owner, password
-/// again); no agent tool calls these (agents get [`ClusterControl::status`] only).
+/// The owner's actions, sent to root's oneshot ([`Request`]), and the audit log. Cheap to
+/// clone. **Owner-only**: callers gate every action like Settings' actions (signed-in owner,
+/// password again); no agent tool calls these (agents get [`ClusterControl::status`] only).
+/// Root checks every request against its own setting; joining and invitations are refused
+/// there until the owner's confirmation exists ([`allow_widening`], Q108).
 #[derive(Clone)]
 pub struct ClusterControl {
     inner: Arc<Inner>,
@@ -1364,19 +1670,7 @@ impl ClusterControl {
         )
     }
 
-    fn setting_path(&self) -> PathBuf {
-        self.inner.config_dir.join(FILE_NAME)
-    }
-
-    /// The setting (default when unreadable).
-    pub fn setting(&self) -> Setting {
-        read_setting(&self.setting_path()).unwrap_or_else(|e| {
-            tracing::warn!("{e}; treated as a single-node server");
-            Setting::default()
-        })
-    }
-
-    /// What root last applied (role and node name; no secret). Safe for agents.
+    /// What root last applied (role, node name, how many peers; no secret). Safe for agents.
     pub fn status(&self) -> Option<Status> {
         read_status(&self.inner.status)
     }
@@ -1440,10 +1734,16 @@ impl ClusterControl {
         }
     }
 
+    fn outcome<T>(r: &Result<T, ClusterError>, ok: &str) -> String {
+        match r {
+            Ok(_) => ok.to_string(),
+            Err(e) => format!("refused or failed: {e}"),
+        }
+    }
+
     /// Invite a device: this device stays (or becomes) the server on its tailnet address
     /// `own_address`, lets `peer` in through the firewall, and gets a join token valid
-    /// [`INVITATION_TTL`] for the owner to hand over. A first invitation restarts k3s (node IP
-    /// and flannel move to the tailnet).
+    /// [`INVITATION_TTL`] for the owner to hand over. Root refuses it for now (Q108).
     pub async fn create_invitation(
         &self,
         own_address: IpAddr,
@@ -1451,12 +1751,6 @@ impl ClusterControl {
         actor: &str,
     ) -> Result<Invitation, ClusterError> {
         let _one = self.inner.lock.lock().await;
-        let mut s = self.setting();
-        if s.role != Role::Server {
-            return Err(ClusterError::Invalid(
-                "this device is an agent in another cluster".into(),
-            ));
-        }
         if node_label(&peer.name).as_deref() != Some(peer.name.as_str()) {
             return Err(ClusterError::Invalid("not a device name".into()));
         }
@@ -1465,181 +1759,112 @@ impl ClusterControl {
                 "that is this device's name: rename one of the two first".into(),
             ));
         }
-        let moved = s.node_ip != Some(own_address)
-            || s.flannel_iface.as_deref() != Some(crate::tailscale::INTERFACE);
-        s.node_ip = Some(own_address);
-        s.flannel_iface = Some(crate::tailscale::INTERFACE.into());
-        s.peers
-            .retain(|p| p.name != peer.name && p.address != peer.address);
-        s.peers.push(peer.clone());
-        write_setting(&self.setting_path(), &s)?;
-        if let Err(e) = self.inner.starter.refresh_firewall().await {
-            tracing::warn!("cluster: firewall not refreshed: {e}");
-        }
-        // The token first (from the running server), then the restart that moves the node IP
-        // and flannel to the tailnet (and puts the address in the API certificate).
         let path = self.inner.config_dir.join(INVITATION_TOKEN_FILE);
-        if let Err(e) = self.request(&Request::CreateToken).await {
-            let _ = std::fs::remove_file(&path);
-            return Err(e);
-        }
+        let asked = self
+            .request(&Request::Invite(Invite {
+                own_address,
+                peer: peer.clone(),
+            }))
+            .await;
         let token = read_small(&path, MAX_TOKEN_BYTES)
             .ok()
             .flatten()
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty());
         let _ = std::fs::remove_file(&path);
-        let token = token.ok_or_else(|| ClusterError::Failed("no join token came back".into()))?;
-        if moved {
-            self.request(&Request::Restart).await?;
-        }
+        let result = asked.and_then(|()| {
+            token.ok_or_else(|| ClusterError::Failed("no join token came back".into()))
+        });
         self.audit(
             actor,
             "cluster.invitation_created",
             &format!(
-                "invited {} ({}), token valid {INVITATION_TTL}",
-                peer.name, peer.address
+                "invite {} ({}): {}",
+                peer.name,
+                peer.address,
+                Self::outcome(&result, &format!("token valid {INVITATION_TTL}"))
             ),
         );
-        let host = match own_address {
-            IpAddr::V4(v4) => v4.to_string(),
-            IpAddr::V6(v6) => format!("[{v6}]"),
-        };
         Ok(Invitation {
-            server_url: format!("https://{host}:{API_PORT}"),
-            token: Secret(token),
+            server_url: server_url_for(own_address),
+            token: Secret(result?),
         })
     }
 
     /// Join a server: this device becomes its k3s agent. The single-node data is kept as a
-    /// backup (apps here stop until [`ClusterControl::leave`]).
-    pub async fn join(
-        &self,
-        server_url: &str,
-        server_name: &str,
-        own_address: IpAddr,
-        token: Secret,
-        actor: &str,
-    ) -> Result<(), ClusterError> {
+    /// backup (apps here stop until [`ClusterControl::leave`]). Root refuses it for now (Q108).
+    pub async fn join(&self, join: Join, token: Secret, actor: &str) -> Result<(), ClusterError> {
         let _one = self.inner.lock.lock().await;
-        let host = server_url_host(server_url).map_err(ClusterError::Invalid)?;
-        let server_address: IpAddr = host.parse().map_err(|_| {
-            ClusterError::Invalid("server_url must name the server's tailnet address".into())
-        })?;
-        let server_name = node_label(server_name)
-            .ok_or_else(|| ClusterError::Invalid("not a device name".into()))?;
+        let setting = join.setting().map_err(ClusterError::Invalid)?;
+        let Some(server) = setting.peers.first() else {
+            return Err(ClusterError::Invalid("no server to join".into()));
+        };
         // k3s refuses a second node of the same name (and retries forever).
-        if self.own_names().contains(&server_name) {
+        if self.own_names().contains(&server.name) {
             return Err(ClusterError::Invalid(
                 "the server has this device's name: rename one of the two first".into(),
             ));
         }
-        let t = token.expose().trim();
-        if t.is_empty() || t.len() > MAX_TOKEN_BYTES as usize || t.contains(char::is_whitespace) {
-            return Err(ClusterError::Invalid("that is not a join token".into()));
-        }
-        let s = Setting {
-            role: Role::Agent,
-            server_url: Some(server_url.trim_end_matches('/').to_string()),
-            node_ip: Some(own_address),
-            flannel_iface: Some(crate::tailscale::INTERFACE.into()),
-            peers: vec![Peer {
-                name: server_name.clone(),
-                address: server_address,
-            }],
-        };
-        s.validate().map_err(ClusterError::Invalid)?;
-        write_private(&self.inner.config_dir.join(JOIN_TOKEN_FILE), t.as_bytes()).map_err(
-            |source| {
-                ClusterError::Save(SettingsError::Write {
-                    path: JOIN_TOKEN_FILE.into(),
-                    source,
-                })
-            },
-        )?;
-        write_setting(&self.setting_path(), &s)?;
-        if let Err(e) = self.inner.starter.refresh_firewall().await {
-            tracing::warn!("cluster: firewall not refreshed: {e}");
-        }
-        let restarted = self.request(&Request::Restart).await;
+        let t = check_token(token.expose()).map_err(ClusterError::Invalid)?;
+        let handed = self.inner.config_dir.join(JOIN_TOKEN_FILE);
+        write_private(&handed, t.as_bytes()).map_err(|source| {
+            ClusterError::Save(SettingsError::Write {
+                path: JOIN_TOKEN_FILE.into(),
+                source,
+            })
+        })?;
+        let result = self.request(&Request::Join(join.clone())).await;
+        // Root removes it either way; also when root never ran.
+        let _ = std::fs::remove_file(&handed);
         self.audit(
             actor,
             "cluster.join",
             &format!(
-                "joining {server_name} ({server_address}) as an agent; {}",
-                if restarted.is_ok() {
-                    "k3s restarting"
-                } else {
-                    "k3s not restarted"
-                }
+                "join {} ({}) as an agent: {}",
+                server.name,
+                server.address,
+                Self::outcome(&result, "k3s restarting")
             ),
         );
-        restarted
+        result
     }
 
     /// Remove a device from this server's cluster: drain and delete its node, drop it from the
-    /// peers (the firewall closes to it).
+    /// peers (the firewall closes to it; the last one gone, back to single-node settings).
     pub async fn remove_device(&self, name: &str, actor: &str) -> Result<(), ClusterError> {
         let _one = self.inner.lock.lock().await;
-        let mut s = self.setting();
-        if s.role != Role::Server {
-            return Err(ClusterError::Invalid(
-                "only the server removes devices".into(),
-            ));
-        }
         if node_label(name).as_deref() != Some(name) {
             return Err(ClusterError::Invalid("not a device name".into()));
         }
         if self.own_node_name().as_deref() == Some(name) {
             return Err(ClusterError::Invalid("that is this device".into()));
         }
-        let removed = self
+        let result = self
             .request(&Request::RemoveNode { name: name.into() })
             .await;
-        s.peers.retain(|p| p.name != name);
-        write_setting(&self.setting_path(), &s)?;
-        if let Err(e) = self.inner.starter.refresh_firewall().await {
-            tracing::warn!("cluster: firewall not refreshed: {e}");
-        }
         self.audit(
             actor,
             "cluster.device_removed",
-            &format!(
-                "removed {name}; {}",
-                if removed.is_ok() {
-                    "node deleted"
-                } else {
-                    "node not deleted"
-                }
-            ),
+            &format!("remove {name}: {}", Self::outcome(&result, "node deleted")),
         );
-        removed
+        result
     }
 
     /// Leave the cluster: back to a single-node server (its kept data comes back), no peers.
     pub async fn leave(&self, actor: &str) -> Result<(), ClusterError> {
         let _one = self.inner.lock.lock().await;
-        let before = self.setting();
-        write_setting(&self.setting_path(), &Setting::default())?;
-        let _ = std::fs::remove_file(self.inner.config_dir.join(JOIN_TOKEN_FILE));
-        if let Err(e) = self.inner.starter.refresh_firewall().await {
-            tracing::warn!("cluster: firewall not refreshed: {e}");
-        }
-        let restarted = self.request(&Request::Restart).await;
+        let before = self.status().unwrap_or_default();
+        let result = self.request(&Request::Leave).await;
         self.audit(
             actor,
             "cluster.leave",
             &format!(
-                "left the cluster (was {}, {} peers); {}",
+                "leave the cluster (was {}, {} peers): {}",
                 before.role.as_str(),
-                before.peers.len(),
-                if restarted.is_ok() {
-                    "k3s restarting"
-                } else {
-                    "k3s not restarted"
-                }
+                before.peers,
+                Self::outcome(&result, "k3s restarting")
             ),
         );
-        restarted
+        result
     }
 }
