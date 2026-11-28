@@ -396,7 +396,7 @@ tag from it, so a failing run revokes an earlier pass. CI runs this gate before 
 
 | Trigger | Tags |
 |---|---|
-| push to `master` | `sha-<rev>` (never moved), then `edge` |
+| push to `master` | `sha-<rev>` (never moved), then `edge`; none for a push that only changes `docs/`, `README.md` or `AGENTS.md` (`edge` stays on the last image) |
 | tag `vX.Y.Z` | `X.Y.Z` (never moved), then `X.Y` and `stable` |
 | manual run | none: build and gate only |
 

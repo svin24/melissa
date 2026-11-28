@@ -2,6 +2,7 @@
 # Docs: packaging/container/README.md, "Published images and CI" and "Release gate".
 #
 #   push to master      build, gate, publish ghcr.io/svin24/melissa:sha-<rev>, then :edge
+#                       (not for docs-only pushes: see paths-ignore)
 #   push tag vX.Y.Z     build, gate, publish :X.Y.Z, then :X.Y and :stable
 #   workflow_dispatch   build and gate only; never publishes
 #
@@ -20,6 +21,14 @@ on:
   push:
     branches: [master]
     tags: ["v*.*.*"]
+    # A push to master that changes only these builds nothing: the image would be the same, so :edge
+    # stays on the last image built and that commit gets no sha-<rev>. Nothing listed here may end up in
+    # the image (ACKNOWLEDGMENTS.md and LICENSE do; the Containerfile COPYs no docs). Tag pushes ignore
+    # path filters and always build.
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "AGENTS.md"
   workflow_dispatch:
 
 permissions: {}
