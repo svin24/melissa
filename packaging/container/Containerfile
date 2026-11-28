@@ -287,7 +287,7 @@ RUN set -eu; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }; \
     # The data volume is owned by these numbers: melissa 994, melissa-kube 995 (sysusers.d/melissa.conf).
-    grep -qx 'u melissa 994:994 .*' /usr/lib/sysusers.d/melissa.conf \
+    grep -qx 'u melissa 994 .*' /usr/lib/sysusers.d/melissa.conf \
         && grep -qx 'g melissa-kube 995 - -' /usr/lib/sysusers.d/melissa.conf \
         || { echo "lint: melissa/melissa-kube ids must stay pinned to 994/995"; exit 1; }
 
