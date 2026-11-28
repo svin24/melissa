@@ -1,0 +1,24 @@
+# Melissa: label this device's and the joined devices' k3s nodes with their role
+# (node-restriction.kubernetes.io/melissa-role=server|agent, for placement). Only a server with
+# peers in /etc/melissa/cluster.toml does anything; otherwise it exits without calling kubectl.
+# The prefix is one a kubelet may not set on its own node (NodeRestriction), so an agent can't
+# relabel itself: only this root unit on the server sets it. Started by melissa-cluster-label.timer
+# (a device that joins shows up within a minute) and once after k3s starts (30-cluster.conf).
+# Container image only. Code: melissa_settings::cluster::label_nodes.
+[Unit]
+Description=Melissa: label cluster nodes with their role
+RequiresMountsFor=/var/lib/melissa-container
+# Only while k3s runs (no start of its own).
+Requisite=k3s.service
+After=k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/melissa-server cluster label
+NoNewPrivileges=yes
+PrivateTmp=yes
+TimeoutStartSec=150
+# Every minute: keep systemd's start/finish lines out of the journal; what the command prints and
+# failures still show.
+SyslogLevel=notice
+LogLevelMax=notice

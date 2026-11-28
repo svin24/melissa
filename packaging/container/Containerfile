@@ -270,6 +270,8 @@ RUN set -eu; \
         /usr/lib/systemd/system/melissa-app-access.service \
         /usr/lib/systemd/system/melissa-tailscaled.service \
         /usr/lib/systemd/system/melissa-cluster.service \
+        /usr/lib/systemd/system/melissa-cluster-label.service \
+        /usr/lib/systemd/system/melissa-cluster-label.timer \
         /usr/lib/systemd/system/melissa-factory-reset.path \
         /usr/lib/systemd/system/melissa-factory-reset.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \

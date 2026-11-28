@@ -396,6 +396,101 @@ impl Runner for FakeRunner {
     fn restart_k3s(&self) -> Result<(), String> {
         Ok(())
     }
+    fn node_roles(&self) -> Result<String, String> {
+        Err("not used".into())
+    }
+    fn label_node(&self, _: &str, _: Role) -> Result<(), String> {
+        Err("not used".into())
+    }
+}
+
+fn server_setting() -> Setting {
+    Setting {
+        node_ip: Some("100.64.0.1".parse().unwrap()),
+        flannel_iface: Some("tailscale0".into()),
+        peers: vec![Peer {
+            name: "laptop".into(),
+            address: "100.64.0.2".parse().unwrap(),
+        }],
+        ..Setting::default()
+    }
+}
+
+#[test]
+fn the_server_labels_its_own_and_the_joined_nodes_roles() {
+    let s = server_setting();
+    let listed = "desktop server\nlaptop \nstranger \n\n";
+    // Its own already has it; the joined laptop gets `agent`; a node that isn't a peer: left.
+    assert_eq!(
+        role_labels_needed(&s, "desktop", listed),
+        vec![("laptop".to_string(), Role::Agent)]
+    );
+    // A node claiming the wrong role is corrected.
+    assert_eq!(
+        role_labels_needed(&s, "desktop", "desktop agent\nlaptop agent\n"),
+        vec![("desktop".to_string(), Role::Server)]
+    );
+    // Not joined yet: nothing to do. An agent, or a server without peers: never.
+    assert!(role_labels_needed(&s, "desktop", "desktop server\n").is_empty());
+    assert!(role_labels_needed(&agent_setting(), "laptop", "desktop \nlaptop \n").is_empty());
+    assert!(role_labels_needed(&Setting::default(), "desktop", "desktop \n").is_empty());
+}
+
+struct LabelRunner {
+    listed: &'static str,
+    labelled: RefCell<Vec<(String, Role)>>,
+}
+
+impl Runner for LabelRunner {
+    fn create_token(&self, _: &str) -> Result<String, String> {
+        unreachable!()
+    }
+    fn remove_node(&self, _: &str) -> Result<(), String> {
+        unreachable!()
+    }
+    fn restart_k3s(&self) -> Result<(), String> {
+        unreachable!()
+    }
+    fn node_roles(&self) -> Result<String, String> {
+        Ok(self.listed.into())
+    }
+    fn label_node(&self, name: &str, role: Role) -> Result<(), String> {
+        self.labelled.borrow_mut().push((name.into(), role));
+        Ok(())
+    }
+}
+
+#[test]
+fn label_nodes_reads_the_setting_and_this_nodes_name() {
+    let root = scratch("cluster-label");
+    let config = root.join("etc/melissa");
+    std::fs::create_dir_all(&config).unwrap();
+    let runner = LabelRunner {
+        listed: "desktop \nlaptop \n",
+        labelled: RefCell::default(),
+    };
+    // No setting: a single device, no kubectl at all (node_roles would be called otherwise).
+    assert_eq!(label_nodes(&root, &config, &runner), Ok(0));
+    write_setting(&config.join(FILE_NAME), &server_setting()).unwrap();
+    let status = Status {
+        node_name: "desktop".into(),
+        ..Status::default()
+    };
+    write_root(
+        &at(&root, STATUS_FILE),
+        &serde_json::to_vec(&status).unwrap(),
+        0o644,
+    )
+    .unwrap();
+    assert_eq!(label_nodes(&root, &config, &runner), Ok(2));
+    assert_eq!(
+        *runner.labelled.borrow(),
+        vec![
+            ("desktop".to_string(), Role::Server),
+            ("laptop".to_string(), Role::Agent)
+        ]
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

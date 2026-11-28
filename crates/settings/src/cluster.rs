@@ -85,6 +85,11 @@ pub const UNIT: &str = "melissa-cluster.service";
 pub const API_PORT: u16 = 6443;
 pub const KUBELET_PORT: u16 = 10250;
 pub const VXLAN_PORT: u16 = 8472;
+/// The node label that says a node's role (`server`, `agent`), for placement. Under the
+/// `node-restriction.kubernetes.io/` prefix, which k3s's NodeRestriction admission keeps a
+/// kubelet from setting on its own node: only the server's root sets it ([`label_nodes`]), so an
+/// agent can't relabel itself to draw work meant for another device.
+pub const ROLE_LABEL: &str = "node-restriction.kubernetes.io/melissa-role";
 /// How long an invitation's join token is valid.
 pub const INVITATION_TTL: &str = "1h";
 /// Most peers in the setting.
@@ -808,6 +813,63 @@ pub trait Runner {
     fn remove_node(&self, name: &str) -> Result<(), String>;
     /// `systemctl restart k3s.service`.
     fn restart_k3s(&self) -> Result<(), String>;
+    /// The nodes and their [`ROLE_LABEL`]: one `<name> <value>` line each (value may be empty).
+    fn node_roles(&self) -> Result<String, String>;
+    /// Set [`ROLE_LABEL`] on a node (`kubectl label --overwrite`).
+    fn label_node(&self, name: &str, role: Role) -> Result<(), String>;
+}
+
+/// The role labels to set: this device's node `own` gets `server`, the peers' nodes `agent`;
+/// only nodes that exist (`listed`, [`Runner::node_roles`]) and don't have it yet. Nothing on an
+/// agent (its server labels the nodes) or on a server without peers.
+pub fn role_labels_needed(setting: &Setting, own: &str, listed: &str) -> Vec<(String, Role)> {
+    if setting.role != Role::Server || setting.peers.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for line in listed.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(name), value) = (parts.next(), parts.next().unwrap_or("")) else {
+            continue;
+        };
+        let want = if name == own {
+            Role::Server
+        } else if setting.peers.iter().any(|p| p.name == name) {
+            Role::Agent
+        } else {
+            continue;
+        };
+        if value != want.as_str() && node_label(name).as_deref() == Some(name) {
+            out.push((name.to_string(), want));
+        }
+    }
+    out
+}
+
+/// Root on the server (`melissa-server cluster label`: after k3s starts and every minute,
+/// `melissa-cluster-label.timer`): label this device's and the joined devices' nodes with their
+/// role ([`ROLE_LABEL`]). Returns how many were labelled. Cheap when there is nothing to do: no
+/// peers, no kubectl.
+pub fn label_nodes(root: &Path, config_dir: &Path, runner: &dyn Runner) -> Result<usize, String> {
+    let setting = read_setting(&config_dir.join(FILE_NAME))?;
+    if setting.role != Role::Server || setting.peers.is_empty() {
+        return Ok(0);
+    }
+    let own = read_status(&at(root, STATUS_FILE))
+        .map(|s| s.node_name)
+        .unwrap_or_default();
+    let needed = role_labels_needed(&setting, &own, &runner.node_roles()?);
+    let mut errors = Vec::new();
+    for (name, role) in &needed {
+        if let Err(e) = runner.label_node(name, *role) {
+            errors.push(format!("{name}: {e}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(needed.len())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// Write a file into the server's directory as root, owned by the directory's owner, 0600,
@@ -951,6 +1013,34 @@ impl Runner for SystemRunner {
             "systemctl",
             &["restart", "--no-block", "k3s.service"],
             Duration::from_secs(30),
+        )
+        .map(|_| ())
+    }
+
+    fn node_roles(&self) -> Result<String, String> {
+        let key = ROLE_LABEL.replace('.', "\\.");
+        let template = format!(
+            "jsonpath={{range .items[*]}}{{.metadata.name}} {{.metadata.labels.{key}}}{{\"\\n\"}}{{end}}"
+        );
+        output(
+            "/usr/bin/k3s",
+            &["kubectl", "get", "nodes", "-o", &template],
+            Duration::from_secs(60),
+        )
+    }
+
+    fn label_node(&self, name: &str, role: Role) -> Result<(), String> {
+        let label = format!("{ROLE_LABEL}={}", role.as_str());
+        output(
+            "/usr/bin/k3s",
+            &[
+                "kubectl",
+                "label",
+                "--overwrite",
+                &format!("node/{name}"),
+                &label,
+            ],
+            Duration::from_secs(60),
         )
         .map(|_| ())
     }

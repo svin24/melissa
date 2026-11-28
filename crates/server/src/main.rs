@@ -153,6 +153,8 @@ const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
   cluster prepare             (root, container: k3s-prepare) this device's k3s role and node
                               name from /etc/melissa/cluster.toml: k3s config, data directory
   cluster after-start         (root, container: k3s.service) delete the old node after a rename
+  cluster label               (root, container: melissa-cluster-label.timer) label this
+                              device's and the joined devices' nodes with their role
   cluster run                 (root, container: melissa-cluster.service) the server's request
   cluster status              role and node name now (no secrets)
   tailscale enabled [<file>]  (root, container: melissa-tailscaled.service) exit 0 when
@@ -654,7 +656,19 @@ fn cluster_command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         [c] if c == "after-start" => {
+            // Best effort: the timer labels again within a minute.
+            if let Err(e) = cluster::label_nodes(root, &config_dir, &cluster::SystemRunner) {
+                eprintln!("melissa-cluster: node roles not labelled: {e}");
+            }
             cluster::after_start(root).map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))
+        }
+        [c] if c == "label" => {
+            let n = cluster::label_nodes(root, &config_dir, &cluster::SystemRunner)
+                .map_err(|e| anyhow::anyhow!("melissa-cluster: {e}"))?;
+            if n > 0 {
+                println!("melissa-cluster: labelled {n} node(s) with their role");
+            }
+            Ok(())
         }
         [c] if c == "run" => {
             let answer = cluster::run_request(&config_dir, &cluster::SystemRunner);
@@ -669,7 +683,7 @@ fn cluster_command(args: &[String]) -> anyhow::Result<()> {
             println!("{text}");
             Ok(())
         }
-        _ => bail!("usage: melissa-server cluster prepare | after-start | run | status"),
+        _ => bail!("usage: melissa-server cluster prepare | after-start | label | run | status"),
     }
 }
 
