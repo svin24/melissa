@@ -78,8 +78,9 @@ just container-smoke           # sudo: checks k3s, Traefik, policies, an app por
 - **Security:** the container is rootful and `--privileged` (k3s and the agent sandbox need namespaces, mounts
   and netfilter): root in it is root on your machine. The kubelet needs a few host sysctls; install.sh sets them in
   `/etc/sysctl.d/90-melissa-kubelet.conf`, tells you, and uninstall restores the old values.
-- **Updates:** Settings → Updates (check, apply, roll back) and a daily automatic update (`AUTO_UPDATE=off` to
-  skip). An image without Melissa's signature is refused. Apps, chats and agent sign-ins live on the `melissa-var` volume and survive updates and reinstalls.
+- **Updates:** Settings → Updates (check, update, roll back, the automatic update's switch and time) and an
+  automatic update every day at 03:00 (`SCHEDULE=sun-04` for another time, `AUTO_UPDATE=off` to skip; a daily
+  check still runs). An image without Melissa's signature is refused. Apps, chats and agent sign-ins live on the `melissa-var` volume and survive updates and reinstalls.
 - **Apps** (web UIs and other ports such as a game server's, TCP or UDP) answer on ports 30000-30079.
   The ports are published on all host addresses, but Melissa's own filter decides who gets in: Settings →
   Apps, this device (default), your tailnet, or your home network. Agents ask you before they open apps to more devices. App links follow the setting.
@@ -170,7 +171,8 @@ install.sh puts a copy of uninstall.sh (with `trust.sh` and `apparmor.sh`, which
 
 Both stop Melissa and remove the Quadlet, the update helper and its units, `/etc/modules-load.d/melissa.conf`
 and the sysctl file (restoring the old values), remove the signature check for Melissa's image from
-`/etc/containers/policy.json`, and turn `podman-auto-update.timer` off again if install.sh turned it on.
+`/etc/containers/policy.json`, remove Melissa's update timers, and turn `podman-auto-update.timer` off again if an older install.sh turned
+it on.
 
 - **Without `--purge`** it keeps the `melissa-var` volume (apps, chats, sign-ins, config), root's images
   (the installed one, e.g. `ghcr.io/svin24/melissa:edge`, and `localhost/melissa-rollback:previous`) and

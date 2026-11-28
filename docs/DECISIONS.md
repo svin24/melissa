@@ -2125,3 +2125,19 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   `ip_forward`, `bridge-nf-call-ip(6)tables` and IPv6 forwarding itself (its agent's system setup) and
   kube-proxy `route_localnet`; containerd sets `ping_group_range` in pods. Host-wide keys (`kernel.*`, `vm.*`,
   `fs.*`) are never set from inside; install.sh writes the kubelet's to the host's `/etc/sysctl.d`.
+- **2026-11-28 — Updates: Melissa's own schedule, one status at a time.** Owner decisions on the Updates
+  design (Penpot board "Updates"): automatic updates run from Melissa's own `melissa-auto-update.timer`, not
+  `podman-auto-update.timer` (left alone; install.sh turns it off only if it had turned it on and no other
+  container uses it, recorded as `TIMER_OURS` in install.env). The owner picks every day or one weekday and a
+  whole hour (default every day at 03:00; `OnCalendar` in a drop-in, `RandomizedDelaySec=900`,
+  `Persistent=false`: no catch-up at boot). `melissa-host-update auto` pulls, compares, applies, waits for the
+  lead agent, rolls back on failure and then skips that version (`held.json`) until a newer one appears; a
+  manual Update may still install it. Switched off, a daily `melissa-check.timer` still looks (registry digest
+  and labels without downloading: skopeo, else the registry API), so Settings shows the dot. Settings sends
+  only fixed request names (`auto-on`, `auto-off`, `schedule-<daily|mon..sun>-<00..23>`), checked against
+  fixed lists on both sides. The page shows one status at a time, nothing pressable while something runs (the
+  server refuses restart-causing requests too), a determinate download bar (`action.json`, about once a
+  second, never 100% before done), no confirmation before Update, Roll back in Details and in a 7-day
+  "Updated from … to …" notice. The device name moved to About → This device, with a new time format
+  preference (Follow browser by default, 24-hour, 12-hour) that every page showing a time of day uses.
+  Alternatives: keep podman-auto-update (no schedule, no skip, no progress, no check without download).

@@ -94,9 +94,13 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   firewalld (2026-11-27): install.sh only reads it. With `StrictForwardPorts=no` (default) firewalld accepts
   podman's DNAT'd traffic before zones; with `yes` netavark refuses published ports, so the preflight stops
   with the commands to change it (README "firewalld"; Q106).
-- **Updates:** Quadlet `AutoUpdate=` with `podman-auto-update.timer` (daily), plus Settings → Updates
-  Check/Apply/Roll back through a host helper (`melissa-host-update`) that the lead agent triggers with fixed-name
-  request files in a bind-mounted directory; the previous image is kept for a rollback (DECISIONS 2026-11-19).
+- **Updates:** Melissa's own `melissa-auto-update.timer` (the owner's day and hour, default every day at
+  03:00, up to 15 minutes later, no catch-up at boot) and a daily check-only `melissa-check.timer`, plus
+  Settings → Updates Check/Update/Roll back and the switch and time, all through a host helper
+  (`melissa-host-update`) that the lead agent triggers with fixed-name request files in a bind-mounted
+  directory; the previous image is kept for a rollback, a version that didn't start or was rolled back from
+  is skipped by automatic updates (DECISIONS 2026-11-19, 2026-11-28 "Updates: Melissa's own schedule"). The
+  Quadlet has no `AutoUpdate=` any more; `podman-auto-update.timer` is left alone.
   Since 2026-11-27 (owner; DECISIONS): install.sh writes a podman `policy.json` entry (`sigstoreSigned`,
   `keyPath` to the public key from `packaging/container/melissa-signing.pub`, `matchRepository`) for
   `ghcr.io/svin24/melissa` only, so podman refuses unsigned images there on install, in Settings → Updates and in
@@ -741,7 +745,7 @@ Minecraft server and lets them make their own agents.
   code is printed at the end of `install.sh`, kept 0600 in `<state>/auth/setup-code.json` until it is used or
   expires (a restart keeps it). Then the owner goes through `/setup`: **Device** (a display name, prefilled
   with the host name, `device_name` in `ui.toml`; shown in the chat header and the sidebar's device line; it
-  does not rename the Tailscale or k3s node; renamed later under Settings → Updates → This device), **Provider** (the providers as tiles with their status; the
+  does not rename the Tailscale or k3s node; renamed later under Settings → About → This device), **Provider** (the providers as tiles with their status; the
   chosen one's Install / Sign in / API key are the Settings → Providers forms and handlers), **Model**
   (the usable providers' models, Melissa's current one chosen; "Use this model" writes `lead/backend.json`
   through `Lead::use_backend`) and **Extras** (Voice input and Tailscale switches, both off; the Settings
@@ -982,10 +986,11 @@ Roadmap (rough, phases may overlap):
 43. ~~`install_app` from an attended, untainted lead agent needs no confirmation (decided 2026-11-18).~~
     Superseded 2026-11-19: with agent-written specs, every `deploy_app`/`update_app` is confirmed (the user sees
     what runs). Disk (36) still open.
-20. Update policy: the container uses podman-auto-update.timer (daily, Quadlet `AutoUpdate=`; podman rolls back
-    when the new container fails to start) and Settings' Apply (rolls back when the lead agent doesn't come up). Open:
-    health checks beyond "the lead agent is active" (k3s Ready, apps), a schedule/maintenance window, and whether
-    automatic updates should default to on (they do now, with a notice; `AUTO_UPDATE=off`).
+20. Update policy: the container uses Melissa's own `melissa-auto-update.timer` (owner's day and whole hour,
+    default daily 03:00, `SCHEDULE=` at install; decided 2026-11-28) and Settings' Update; both roll back when
+    the lead agent doesn't come up and skip that version afterwards. Automatic updates default to on
+    (`AUTO_UPDATE=off`, or the switch in Settings; a daily check still runs). Open: health checks beyond "the
+    lead agent is active" (k3s Ready, apps).
 44. Workspaces and agents (2026-11-18, replaces the old ownership question): the user's `workspace reassign` goes through
     the daemon's local API (no root), like `confirm approve`; with accounts (28) and the API exposure (37),
     who may reassign? Should a workspace ever go back to "unassigned" (admission forbids it today), and should the
@@ -1597,10 +1602,12 @@ Roadmap (rough, phases may overlap):
     an agent that runs commands can transform the value (`rev`, one character per call, `od`) or read it
     some other way; only (a)-(d) shrink that.
 101. Publishing follow-ups (owner, 2026-11-27; DECISIONS "Publishing images from GitHub Actions"; research
-    `docs/design/RELEASES-AND-UPDATES-2026-11-24.md` section 7). Next phase, not started: (a) no-clone install
-    (host files shipped inside the image, install.sh fetched or extracted from it); (b) helper-driven verified
-    updates instead of `podman-auto-update`; (c) a channel switch (`:edge`/`:stable`) in Settings; (d) richer
-    Updates page states; (c) and (d) need the owner's UI review and a Penpot design first. Still open: (e) when
+    `docs/design/RELEASES-AND-UPDATES-2026-11-24.md` section 7). Next phase: (a) no-clone install
+    (host files shipped inside the image, install.sh fetched or extracted from it), not started; (b) helper-driven
+    updates instead of `podman-auto-update`: done 2026-11-28 (pull, compare, apply, health wait, roll back,
+    skip; signature checks stay podman's `policy.json`); (c) a channel switch (`:edge`/`:stable`) in Settings:
+    the Channel row is there (Edge only; Beta and Stable "not available yet"), switching is not built; (d)
+    richer Updates page states: done 2026-11-28 (owner's Penpot design). Still open: (e) when
     the gVisor test becomes a hard gate; (f) key rotation and what a device does when the key in
     `melissa-signing.pub` changes (old installs only trust the old key); (g) moving to keyless once
     containers/image supports URI identities (`buildSignerURI`) or cosign 3 bundles; (h) the first release number,
