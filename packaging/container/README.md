@@ -374,10 +374,13 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
 Root's `melissa-backup.service` (restic pinned in `restic.lock`) backs up Melissa's state, k3s and every
 app's data to a drive, weekly by default. Started by `melissa-backup.path` (server requests in
 `/var/lib/melissa-container/backup-request`) and hourly by `melissa-backup.timer` (the schedule). No
-Settings page and no drive helper yet; by hand, as root in the container:
+Settings page and no drive helper yet; by hand, as root in the container (the target must be a
+mounted drive's mount point; an unencrypted backup leaves the apps' secrets out, and provider sign-ins
+are never backed up):
 - `melissa-server backup setup <empty dir> [--no-encryption]`: set up a drive (prints the recovery key once);
 - `melissa-server backup now`, `... snapshots`, `... restore-app <app> [<time>]`, `... status`;
 - `melissa-server backup adopt <dir>`: use backups already on a drive (asks for the key).
+- A restore keeps the data it replaced next to it as `<volume>.pre-restore-<UTC time>` for 7 days.
 
 ## Updates (Settings → Updates)
 - **Automatic**: `melissa-auto-update.timer` runs `melissa-host-update auto` at the owner's time

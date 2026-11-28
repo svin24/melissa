@@ -9,10 +9,15 @@
 Description=Melissa: backups (requests and the schedule)
 RequiresMountsFor=/var/lib/melissa-container
 After=k3s.service
+# Started by the path unit for every request: no start limit, or a burst of requests would fail
+# the service and leave the path unit dead. ExecStopPost paces the starts instead.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/melissa-server backup unit
+# At most one start every two seconds, also when the run fails.
+ExecStopPost=/usr/bin/sleep 2
 NoNewPrivileges=yes
 PrivateTmp=yes
 # A first backup of big app volumes takes a while; stay out of the apps' way.

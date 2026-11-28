@@ -327,6 +327,12 @@ eq "backup requests belong to root and the server's group" yes \
     "$(yes_no grep -qx 'd /var/lib/melissa-container/backup-request 0770 root melissa -' "$here/rootfs/usr/lib/tmpfiles.d/melissa-container.conf")"
 eq "backup settings and key are root's only" yes \
     "$(yes_no grep -qx 'd /var/lib/melissa-container/backup 0700 root root -' "$here/rootfs/usr/lib/tmpfiles.d/melissa-container.conf")"
+eq "the server may write backup requests" yes \
+    "$(yes_no grep -qx 'ReadWritePaths=-/var/lib/melissa-container/backup-request' "$units/melissa-server.service.d/10-container.conf")"
+eq "the server's temporary request files don't start the backup unit" yes \
+    "$(yes_no grep -qx 'PathExistsGlob=/var/lib/melissa-container/backup-request/\[!.\]\*' "$units/melissa-backup.path")"
+eq "the backup unit has no start limit (a burst of requests can't fail its path unit)" yes \
+    "$(yes_no grep -qx 'StartLimitIntervalSec=0' "$units/melissa-backup.service")"
 eq "uninstall.sh never runs a reset" no "$(yes_no grep -q factory-reset "$here/uninstall.sh")"
 eq "uninstall.sh removes its LIBEXEC copies" yes "$(yes_no grep -qF '"$LIBEXEC/uninstall.sh" "$LIBEXEC/trust.sh" "$LIBEXEC/apparmor.sh"' "$here/uninstall.sh")"
 # --- The claim line at the end of the install -------------------------------------------------
