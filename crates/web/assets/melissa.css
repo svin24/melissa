@@ -1862,7 +1862,7 @@ details.menu-confirm > summary::-webkit-details-marker {
 }
 
 .tab[aria-current="page"],
-.tab.has-update {
+.tab:has(.update-dot) {
   color: var(--color-text-default);
 }
 
@@ -1872,6 +1872,11 @@ details.menu-confirm > summary::-webkit-details-marker {
 
 .tab-update {
   margin-left: auto;
+}
+
+/* The swapped inside of the Updates link takes no box of its own. */
+.tab-state {
+  display: contents;
 }
 
 .tab-icon {
@@ -3071,11 +3076,13 @@ progress {
   appearance: none;
   border: 0;
   border-radius: var(--radius-full);
+  /* A lighter tint of the action colour than a determinate bar (board 04b). */
+  --meter-still: color-mix(in srgb, var(--color-action-bg) 55%, var(--color-bg-surface));
   background: linear-gradient(
     to right,
-    var(--color-border-default) 0 35%,
-    var(--color-action-bg) 35% 60%,
-    var(--color-border-default) 60%
+    var(--color-bg-fill) 0 35%,
+    var(--meter-still) 35% 60%,
+    var(--color-bg-fill) 60%
   );
 }
 
@@ -4696,7 +4703,7 @@ th {
 /* Neutral: a fact, not a warning (Updates' "Back on 0.0.3 since 09:14"); COMPONENT-SPEC 2.10
    fills every notice with its tone's soft colour. */
 .notice.tone-neutral {
-  background: var(--color-bg-sunken);
+  background: var(--color-bg-fill);
 }
 
 .notice.tone-info {

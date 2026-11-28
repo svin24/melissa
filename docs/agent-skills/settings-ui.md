@@ -201,7 +201,8 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   `/usr/lib/melissa/release` (version, revision, runtime), else `MELISSA_VERSION`, else the cargo version.
 - The lead agent can't run the host's podman. Check/apply/rollback and the settings (`auto-on`, `auto-off`,
   `schedule-<daily|mon..sun>-<00..23>`): an empty file with that fixed name in `/run/melissa-update-request`
-  (bind mount; a newer setting of the same kind replaces the older file); the host's path unit runs
+  (bind mount; a newer setting of the same kind replaces the older file; a request older than 10 minutes no
+  longer counts as pending); the host's path unit runs
   `melissa-host-update requests`, which acts on those names only. Status comes back read-only in
   `/run/melissa-update/{status,last,action}.json` (`action.json` only while something runs: step and
   download bytes). Restart:
@@ -211,7 +212,9 @@ update status/actions, or adding a Settings section. Load the `melissa-ui` skill
   new (compare or release link, new tab); every technical fact and Roll back (in-page `action_button`
   confirm) under "Details". No confirmation card for Update (it can be rolled back); the API still needs
   `{"confirm": true}` (CLI `--yes`). While a check, an update or a rollback runs nothing is pressable, the
-  region polls `GET /ui/settings/updates`, the sections bar's Updates link polls `GET /ui/update-hint` and
+  region polls `GET /ui/settings/updates` (the poll that finds nothing running fills a polite announcer
+  out of band), the inside of the sections bar's Updates link polls `GET /ui/update-hint` (the link stays, so
+  keyboard focus does) and
   shows the spinner, and the server refuses check/apply/rollback/restart, the settings and Reset (409 in the
   API). Without the helper mounts: one line, no host commands (UI and API); from source the page shows
   `git pull && just demo`.

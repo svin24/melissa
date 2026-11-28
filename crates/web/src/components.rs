@@ -2084,6 +2084,17 @@ pub fn truncated(text: &str, max: usize) -> Markup {
     html! { span title=(text) { (short) @if cut { "…" } } }
 }
 
+/// An empty polite live region for screen readers, filled later by [`announce_oob`]. It must be
+/// in the page before its text changes, or nothing is read out (a region swapped in whole isn't).
+pub fn announcer(id: &str) -> Markup {
+    html! { p.visually-hidden id=(id) role="status" aria-live="polite" {} }
+}
+
+/// New words for an [`announcer`], out of band: only its inside changes, so they are read out.
+pub fn announce_oob(id: &str, text: &str) -> Markup {
+    html! { p.visually-hidden id=(id) role="status" aria-live="polite" hx-swap-oob="innerHTML" { (text) } }
+}
+
 /// A region that refreshes itself from `url` every `seconds` while `live` is true.
 /// The server returns the same region again, so polling stops once `live` turns false.
 pub fn live_region(id: &str, url: &str, seconds: u32, live: bool, content: Markup) -> Markup {
@@ -2278,9 +2289,9 @@ pub use panel::{
     glyph, inline_form, inline_number, inline_select, inline_select_with, inline_text_form,
     overlay_dialog, panel, section_bar, setting_card, setting_card_with, setting_row,
     setting_row_details, setting_row_full, setting_row_with, settings_frame_at, settings_tools_oob,
-    update_tab, usage_table, Glyph, SettingsHead, SettingsSection, UpdateHint, UsageRow,
-    OVERLAY_BODY_ID, OVERLAY_ID, SETTINGS_MAIN_ID, SETTINGS_TOOLS_ID, UPDATE_HINT_URL,
-    UPDATE_TAB_ID,
+    update_tab, update_tab_state, usage_table, Glyph, SettingsHead, SettingsSection, UpdateHint,
+    UsageRow, OVERLAY_BODY_ID, OVERLAY_ID, SETTINGS_MAIN_ID, SETTINGS_TOOLS_ID, UPDATE_HINT_URL,
+    UPDATE_STATE_ID, UPDATE_TAB_ID,
 };
 
 /// When a section last looked, and the button that looks again, e.g. "Checked just now ·

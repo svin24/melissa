@@ -6,17 +6,18 @@ use maud::{html, Markup};
 use super::apply::Pending;
 use crate::{
     components::{
-        about_head, action_button, actions, away_card, badge, busy_button, code, command_block,
-        confirm_card, danger_confirm, detail_head, disclosure, external_button, facts, group,
-        inline_form, inline_number, inline_select, inline_select_with, inline_text_form,
-        license_text, lines_field, link, link_button, live_region, log_view, markdown_document,
-        new_tab_button, notice, one_field_form, people::password_checked, pick_list, plain_action,
-        progress_bar, provider_logo, region, select_field_at, setting_card, setting_card_with,
-        setting_row, setting_row_details, setting_row_full, setting_row_with, settings_form,
-        settings_frame_at, settings_head, settings_head_busy, settings_tools_oob, split_card,
-        status_badge, text_field, text_field_checked, toggle, update_tab, var_list, Btn, Choice,
-        ConfirmCard, DangerConfirm, Glyph, LogLine, Mark, Nav, PickRow, SettingsHead,
-        SettingsSection, Toggle, Tone, VarRow,
+        about_head, action_button, actions, announce_oob, announcer, away_card, badge, busy_button,
+        code, command_block, confirm_card, danger_confirm, detail_head, disclosure,
+        external_button, facts, group, inline_form, inline_number, inline_select,
+        inline_select_with, inline_text_form, license_text, lines_field, link, link_button,
+        live_region, log_view, markdown_document, new_tab_button, notice, one_field_form,
+        people::password_checked, pick_list, plain_action, progress_bar, provider_logo, region,
+        select_field_at, setting_card, setting_card_with, setting_row, setting_row_details,
+        setting_row_full, setting_row_with, settings_form, settings_frame_at, settings_head,
+        settings_head_busy, settings_tools_oob, split_card, status_badge, text_field,
+        text_field_checked, toggle, update_tab_state, var_list, Btn, Choice, ConfirmCard,
+        DangerConfirm, Glyph, LogLine, Mark, Nav, PickRow, SettingsHead, SettingsSection, Toggle,
+        Tone, VarRow,
     },
     components::{avatar, icon_picker, Avatar},
     pages::{rail_for, Frame},
@@ -828,7 +829,12 @@ pub struct UpdatesView {
     pub commands_open: bool,
     pub pending: Option<Pending>,
     pub manual_restart: Option<String>,
+    /// Read out to screen readers when a poll finds the work done ("Up to date. Updated from …").
+    pub announce: Option<String>,
 }
+
+/// DOM id of the Updates page's screen-reader announcer.
+const UPDATES_SAID_ID: &str = "updates-said";
 
 /// Where the region asks for itself while something runs.
 pub const UPDATES_REGION_URL: &str = "/ui/settings/updates";
@@ -843,7 +849,12 @@ pub fn updates_page(f: &Frame<'_>, v: &UpdatesView) -> Markup {
         lead: None,
         tools: updates_tools(v),
     };
-    frame(f, "Updates", head, updates_body(v))
+    frame(
+        f,
+        "Updates",
+        head,
+        html! { (announcer(UPDATES_SAID_ID)) (updates_body(v)) },
+    )
 }
 
 /// The head bar's tools: when Melissa last looked, and Check now (busy while a check runs,
@@ -867,7 +878,8 @@ pub fn updates_region(v: &UpdatesView) -> Markup {
     html! {
         (updates_body(v))
         (settings_tools_oob(updates_tools(v).unwrap_or_default()))
-        (update_tab(&v.tab, true))
+        (update_tab_state(&v.tab, true))
+        @if let Some(t) = &v.announce { (announce_oob(UPDATES_SAID_ID, t)) }
     }
 }
 
@@ -1010,7 +1022,7 @@ fn auto_card(a: &AutoView) -> Markup {
                     locked: a.locked,
                 }),
                 (!a.on).then(|| notice(
-                    "Without automatic updates, Melissa misses security fixes until you update by hand on this page. Melissa still checks once a day and puts a dot on Settings when an update is ready.",
+                    "Without automatic updates, Melissa misses security fixes until you update by hand on this page. Melissa still checks once a day and puts a dot on Updates when an update is ready.",
                     Tone::Attention,
                 )),
             ))

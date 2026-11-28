@@ -539,20 +539,33 @@ pub const UPDATE_HINT_URL: &str = "/ui/update-hint";
 /// DOM id of the sections bar's Updates link.
 pub const UPDATE_TAB_ID: &str = "tab-update";
 
-/// The sections bar's Updates link alone: idle, with the dot (an update is available) or with
-/// the spinner (busy; it polls [`UPDATE_HINT_URL`] then). `oob`: as an out-of-band update (the
-/// Updates page's region carries it while it polls).
-pub fn update_tab(update: &UpdateHint, oob: bool) -> Markup {
+/// DOM id of the inside of the Updates link (what polls and gets swapped).
+pub const UPDATE_STATE_ID: &str = "tab-update-state";
+
+/// The sections bar's Updates link: idle, with the dot (an update is available) or with the
+/// spinner (busy). Only its inside ([`update_tab_state`]) is ever replaced, so keyboard focus
+/// on the link stays where it is.
+pub fn update_tab(update: &UpdateHint) -> Markup {
+    html! {
+        a.tab.tab-update id=(UPDATE_TAB_ID) href=(update.href) title="Updates" {
+            (update_tab_state(update, false))
+            span.tab-label { "Updates" }
+        }
+    }
+}
+
+/// The inside of the Updates link: the glyph, dot or spinner and the words for screen readers.
+/// While busy it asks [`UPDATE_HINT_URL`] every 5 s; the answer without `busy` ends the polling.
+/// `oob`: as an out-of-band update (the Updates page's region carries it while it polls).
+pub fn update_tab_state(update: &UpdateHint, oob: bool) -> Markup {
     let busy = update.busy;
-    let title = busy.unwrap_or(update.label);
     let state = match (busy, update.available) {
         (Some(_), _) => "busy",
         (None, true) => "available",
         (None, false) => "none",
     };
     html! {
-        a.tab.tab-update.has-update[update.available && busy.is_none()] id=(UPDATE_TAB_ID)
-            href=(update.href) title=(title) data-update=(state)
+        span.tab-state id=(UPDATE_STATE_ID) data-update=(state)
             hx-get=[busy.map(|_| UPDATE_HINT_URL)] hx-trigger=[busy.map(|_| "every 5s")]
             hx-swap=[busy.map(|_| "outerHTML")] hx-swap-oob=[oob.then_some("true")] {
             span.tab-icon {
@@ -563,7 +576,6 @@ pub fn update_tab(update: &UpdateHint, oob: bool) -> Markup {
                 }
                 @if update.available && busy.is_none() { span.update-dot aria-hidden="true" {} }
             }
-            span.tab-label { "Updates" }
             @if let Some(b) = busy {
                 span.visually-hidden { ": " (b) }
             } @else if update.available {
@@ -592,7 +604,7 @@ pub fn section_bar(current: Nav, update: &UpdateHint) -> Markup {
             (tab("/settings", "Settings", "Settings", Glyph::Gear, current == Nav::Settings))
             (tab("/cluster", "Apps", "Apps", Glyph::Hexagon, current == Nav::Cluster))
             (tab("/usage", "Usage", "Usage and resources", Glyph::Chart, current == Nav::Usage))
-            (update_tab(update, false))
+            (update_tab(update))
         }
     }
 }
@@ -726,16 +738,16 @@ mod tests {
 
     #[test]
     fn the_updates_link_shows_the_dot_or_the_spinner() {
-        let idle = update_tab(&UpdateHint::NONE, false).into_string();
+        let idle = update_tab(&UpdateHint::NONE).into_string();
         assert!(idle.contains("data-update=\"none\"") && !idle.contains("hx-get"));
         let available = UpdateHint {
             label: "Melissa update available",
             available: true,
             ..UpdateHint::NONE
         };
-        let html = update_tab(&available, false).into_string();
+        let html = update_tab(&available).into_string();
         assert!(
-            html.contains("update-dot") && html.contains("has-update"),
+            html.contains("update-dot") && html.contains("data-update=\"available\""),
             "{html}"
         );
         // Busy: the spinner, no dot, a poll until it ends; out of band for the region's answer.
@@ -743,7 +755,7 @@ mod tests {
             busy: Some("Updating Melissa"),
             ..available
         };
-        let html = update_tab(&busy, true).into_string();
+        let html = update_tab_state(&busy, true).into_string();
         assert!(
             html.contains("spin") && !html.contains("update-dot"),
             "{html}"
@@ -751,6 +763,8 @@ mod tests {
         assert!(
             html.contains("hx-get=\"/ui/update-hint\"") && html.contains("hx-swap-oob=\"true\"")
         );
-        assert!(html.contains("title=\"Updating Melissa\""));
+        // Only the inside polls: the link itself (and keyboard focus on it) stays.
+        assert!(html.starts_with("<span") && !html.contains("<a "), "{html}");
+        assert!(html.contains("Updating Melissa"));
     }
 }

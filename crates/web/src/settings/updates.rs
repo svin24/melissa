@@ -26,7 +26,7 @@ use super::{
     providers::{agent_versions, manual_restart},
 };
 use crate::{
-    components::{update_tab, Tone, UpdateHint},
+    components::{update_tab_state, Tone, UpdateHint},
     is_htmx,
     time_format::Hours,
     ui::Ui,
@@ -125,7 +125,7 @@ fn channel_label(c: &str) -> &'static str {
 // --- Time ------------------------------------------------------------------------------------------
 
 /// Now in the host's time zone (the container follows the host's, Quadlet `Timezone=local`).
-fn local_now() -> Zoned {
+pub(crate) fn local_now() -> Zoned {
     Timestamp::now().to_zoned(TimeZone::system())
 }
 
@@ -135,7 +135,7 @@ fn zoned(secs: u64, tz: &TimeZone) -> Option<Zoned> {
 }
 
 /// The automatic update's next start after `now` (without its up-to-15-minute delay).
-fn next_run(s: Schedule, now: &Zoned) -> Option<Zoned> {
+pub(crate) fn next_run(s: Schedule, now: &Zoned) -> Option<Zoned> {
     let mut date = now.date();
     for _ in 0..8 {
         let at = date
@@ -337,7 +337,23 @@ pub(super) fn list_word(ui: &Ui) -> &'static str {
         })
 }
 
-fn auto_words(env: &UpdateEnv, state: &UpdateState, now: &Zoned, hours: Hours) -> String {
+/// When the automatic update runs next: the host timer's own answer (`next_run` in status.json),
+/// unless a change still waits for the helper or the answer is already past (then computed from
+/// the schedule). None while on means the timer isn't scheduled on the host.
+fn planned_run(state: &UpdateState, now: &Zoned) -> Option<Zoned> {
+    let st = state.status.as_ref()?;
+    let computed = || next_run(state.schedule(), now);
+    if state.pending.schedule.is_some() || state.pending.auto.is_some() {
+        return computed();
+    }
+    match st.next_run.and_then(|s| zoned(s, now.time_zone())) {
+        Some(at) if at > *now => Some(at),
+        Some(_) => computed(),
+        None => None,
+    }
+}
+
+fn auto_words(env: &UpdateEnv, state: &UpdateState, run: Option<&Zoned>, hours: Hours) -> String {
     if env.kind == HostKind::Nix {
         return if env.nixos() {
             "Through the NixOS configuration (system.autoUpgrade), if set".into()
@@ -364,12 +380,15 @@ fn auto_words(env: &UpdateEnv, state: &UpdateState, now: &Zoned, hours: Hours) -
         UpdateDay::Daily => format!("Every day at {at}"),
         d => format!("{} at {at}", d.label()),
     };
-    if let Some(run) = next_run(sched, now) {
-        let end = hours.time(sched.hour, 15);
-        out.push_str(&format!(
-            " · next run {} between {at} and {end}",
-            run.strftime("%Y-%m-%d")
-        ));
+    match run {
+        Some(run) => {
+            let end = hours.time(sched.hour, 15);
+            out.push_str(&format!(
+                " · next run {} between {at} and {end}",
+                run.strftime("%Y-%m-%d")
+            ));
+        }
+        None => out.push_str(" · not scheduled on the host (melissa-auto-update.timer)"),
     }
     out
 }
@@ -533,7 +552,7 @@ async fn view(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> UpdatesView
         }
         details.push((
             "Automatic updates",
-            auto_words(env, &state, &now, hours),
+            auto_words(env, &state, None, hours),
             false,
         ));
         if let Some(i) = env.container_image() {
@@ -556,10 +575,13 @@ async fn view(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> UpdatesView
     let local = st.local_image();
     let auto_on = state.auto_on();
     let sched = state.schedule();
+    let run = planned_run(&state, &now);
     let next = (!local && auto_on)
-        .then(|| next_run(sched, &now))
+        .then_some(run.as_ref())
         .flatten()
-        .map(|r| when_words(&r, &now, hours));
+        .map(|r| when_words(r, &now, hours));
+    // The version that runs (after a rollback: the one Melissa went back to), as the notices say.
+    v.version = format!("Version {here}");
     let shown = shown(&state, st);
     let busy = state.busy();
     v.badge = Some(badge_for(&shown));
@@ -578,7 +600,7 @@ async fn view(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> UpdatesView
         } else if !auto_on {
             Some("Automatic updates are off.".into())
         } else {
-            None
+            Some("Automatic updates are on, but the host has no time planned for them. Details has more.".into())
         }
     };
     match &shown {
@@ -781,7 +803,7 @@ async fn view(ui: &Ui, headers: &HeaderMap, flash: Option<Flash>) -> UpdatesView
     }
     details.push((
         "Automatic updates",
-        auto_words(env, &state, &now, hours),
+        auto_words(env, &state, run.as_ref(), hours),
         false,
     ));
     if let Some(h) = &st.held {
@@ -855,13 +877,33 @@ pub(super) async fn page(State(ui): State<Ui>, headers: HeaderMap) -> Response {
 
 /// `GET /ui/settings/updates`: the region alone (its poll while something runs).
 pub(super) async fn region(State(ui): State<Ui>, headers: HeaderMap) -> Response {
-    let v = view(&ui, &headers, None).await;
+    let mut v = view(&ui, &headers, None).await;
+    // The poll that finds the work done says so to screen readers (once: it stops polling).
+    if !v.live {
+        v.announce = Some(announcement(&v));
+    }
     pages::updates_region(&v).into_response()
+}
+
+/// "Up to date. Updated from 0.0.3 to 0.0.4 today at 03:07." (the badge and the notice or line).
+fn announcement(v: &UpdatesView) -> String {
+    let word = v.badge.map_or("", |(w, ..)| w);
+    let more = v
+        .notice
+        .as_ref()
+        .map(|n| n.text.as_str())
+        .or(v.line.as_deref())
+        .unwrap_or("");
+    match (word.is_empty(), more.is_empty()) {
+        (false, false) => format!("{word}. {more}"),
+        (false, true) => word.to_string(),
+        _ => more.to_string(),
+    }
 }
 
 /// `GET /ui/update-hint`: the sections bar's Updates link (its poll while something runs).
 pub(crate) async fn hint_link(State(ui): State<Ui>) -> Response {
-    update_tab(&hint(&ui.settings), false).into_response()
+    update_tab_state(&hint(&ui.settings), false).into_response()
 }
 
 /// What an action did, or why not.
@@ -1244,6 +1286,31 @@ mod tests {
             version_words(Some("0.0.4"), Some("aee030d"), Some("0.0.2")),
             "0.0.4"
         );
+    }
+
+    #[test]
+    fn the_host_timer_says_when_unless_a_change_waits() {
+        let now = at(2026, 11, 28, 14, 0);
+        let secs = |z: &Zoned| u64::try_from(z.timestamp().as_second()).unwrap();
+        let timer = at(2026, 11, 29, 3, 7);
+        let mut state = UpdateState {
+            status: Some(ImageStatus {
+                next_run: Some(secs(&timer)),
+                ..ImageStatus::default()
+            }),
+            ..UpdateState::default()
+        };
+        assert_eq!(planned_run(&state, &now).unwrap(), timer);
+        // Past (a status written before the run): computed from the schedule instead.
+        state.status.as_mut().unwrap().next_run = Some(secs(&now) - 60);
+        assert_eq!(planned_run(&state, &now).unwrap().hour(), 3);
+        // Not scheduled on the host: None (the page says so).
+        state.status.as_mut().unwrap().next_run = None;
+        assert!(planned_run(&state, &now).is_none());
+        // A new time the helper hasn't written yet: computed from it.
+        state.pending.schedule = Schedule::parse("wed-23");
+        let run = planned_run(&state, &now).unwrap();
+        assert_eq!((run.day(), run.hour()), (2, 23));
     }
 
     #[test]

@@ -134,7 +134,7 @@ mod reset;
 mod schedules;
 pub(crate) mod setup;
 mod tailscale;
-mod updates;
+pub(crate) mod updates;
 mod voice;
 
 use std::{

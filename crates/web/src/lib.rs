@@ -2939,6 +2939,14 @@ mod tests {
                 !html.contains("id=\"device-name\""),
                 "the name moved to About"
             );
+            // An empty announcer in the page; the poll that finds nothing running fills it (out of
+            // band, only its inside), so screen readers hear the outcome.
+            assert!(html.contains("id=\"updates-said\" role=\"status\" aria-live=\"polite\"></p>"));
+            let (_, _, region) = send(&app, get("/ui/settings/updates")).await;
+            assert!(
+                region.contains("hx-swap-oob=\"innerHTML\">Check failed. Melissa couldn"),
+                "{region}"
+            );
             // The API still needs a yes for what restarts Melissa.
             let (status, _) = send_json(&app, json_post("/api/settings/updates/apply", "{}")).await;
             assert_eq!(status, StatusCode::CONFLICT);
@@ -3089,9 +3097,15 @@ mod tests {
                     std::fs::remove_file(e.unwrap().path()).unwrap();
                 }
             };
+            // The host timer's next start, as the helper writes it (systemd's answer).
+            let next = crate::settings::updates::next_run(
+                melissa_settings::updates::Schedule::default(),
+                &crate::settings::updates::local_now(),
+            )
+            .map_or(0, |z| z.timestamp().as_second());
             let status = |auto: &str, extra: &str| {
                 format!(
-                    r#"{{"image":"registry.example.com/melissa:edge","auto_update":"{auto}","schedule":"daily-03","running":{},"previous":{}{extra}}}"#,
+                    r#"{{"image":"registry.example.com/melissa:edge","auto_update":"{auto}","schedule":"daily-03","next_run":{next},"running":{},"previous":{}{extra}}}"#,
                     img("0.0.4", "9e2b5f1"),
                     img("0.0.3", "7c41d0e")
                 )
@@ -3206,6 +3220,28 @@ mod tests {
             shoot("11-rolled-back").await;
             write(&status("off", ""), Some(checked.clone()), None);
             shoot("12-auto-off").await;
+            // Every Sunday at 4 in the afternoon, in the 12-hour format the owner picked.
+            send(
+                &app,
+                form("/ui/settings/time-format", "time_format=h12", true),
+            )
+            .await;
+            let next_sun = crate::settings::updates::next_run(
+                melissa_settings::updates::Schedule::parse("sun-16").unwrap(),
+                &crate::settings::updates::local_now(),
+            )
+            .map_or(0, |z| z.timestamp().as_second());
+            write(
+                &status("registry", "")
+                    .replace("daily-03", "sun-16")
+                    .replace(
+                        &format!("\"next_run\":{next}"),
+                        &format!("\"next_run\":{next_sun}"),
+                    ),
+                Some(checked.clone()),
+                None,
+            );
+            shoot("14-weekday-12-hour").await;
             let (_, _, html) = send(&app, get("/settings/about")).await;
             std::fs::write(out.join("13-about-this-device.html"), html).unwrap();
         }
