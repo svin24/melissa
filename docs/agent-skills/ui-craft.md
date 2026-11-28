@@ -149,7 +149,8 @@ owner (PLAN.md open question 75), not a rule. Don't start it unasked.
 Melissa's voice is **facts only, technical and dry**: plain sentences in the user's words, Melissa or the
 helper as the subject, no adjectives about ourselves. [T] Less text is better (owner, 2026-11-19): a status is
 one short phrase, help is one short sentence at most, internals go behind a disclosure, no host commands in
-the container UI. [M]
+the container UI (one approved exception, owner 2026-11-28: Settings → Tailscale shows the host's
+`sudo tailscale serve` command, with Copy, when the host runs its own Tailscale). [M]
 
 **Words** [M]. The UI says **"helper"** for an agent the user made, **"Melissa"** for the lead agent, **"app"** for a
 workspace, **"provider"** for an agent program (Claude Code, Grok, ...). Internal terms (lead agent, workspace,

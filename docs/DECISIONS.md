@@ -2075,3 +2075,26 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007. Alternatives:
   the stop-with-instructions approach (kept as fallback), install.sh disabling Ubuntu's profile (host-wide),
   a path-attached profile (above). PLAN question 104.
+- **2026-11-28 — HTTPS access from other devices, phase 1: Melissa's own `tailscale serve` (owner).** MVP
+  blocker #1. The server (uid `melissa`, tailscaled's operator) runs `tailscale serve --bg --https=443
+  http://127.0.0.1:8082` on Melissa's own tailscaled. Off by default; the owner turns it on in Settings →
+  Tailscale with the password, and may first rename the node, because the name goes into public certificate
+  transparency logs. Applied again at each start; Turn off (no confirmation) and Disable remove it. When the
+  tailnet has HTTPS off, the CLI's enable page is shown like the sign-in URL (new tab, the region polls). When
+  the host runs its own Tailscale Melissa doesn't touch it: the UI shows `sudo tailscale serve --bg
+  http://127.0.0.1:<UI port>` with Copy (an approved exception to the no-host-commands rule) and install.sh
+  prints it. Security: a second loopback listener (`[web] proxy_listen`) is the only one that trusts
+  `X-Forwarded-*`, which every listener strips first; `https()` no longer falls back to the Origin; over HTTPS
+  only the `__Host-` Secure cookie counts; password forms are refused over plain HTTP unless the Host is
+  loopback; Host names are checked (loopback, this node's MagicDNS name, `[web] hosts`) against DNS
+  rebinding; HSTS (`max-age=86400`, no `includeSubDomains`, no `preload`) only on the ts.net origin; the
+  sign-in limits count per `X-Forwarded-For` only on the trusting listener (Q87a); Tailscale identity headers
+  are shown and audited, never used to sign in; agents see the serve state read-only; audit events
+  `tailscale.serve_on`/`tailscale.serve_off`. Apps are never served over HTTPS on the UI hostname (HSTS),
+  so app links drop the MagicDNS name while serve is on. Existing users of the host's `tailscale serve` keep
+  working (`[web] trust_forwarded`, on by default unless Melissa runs Tailscale). Why: HTTPS with a publicly
+  trusted certificate and no CA to install, on a network only the owner's devices reach. Alternatives: a
+  local CA on the LAN (phase 2: root-held, name-constrained, `<host>.local` on 7383; Q22), Funnel (public,
+  rejected), trusting forwarded headers on the main listener (anything on the host could forge them).
+  A future root confirm service (Q108) needs its own hostname: ts.net is on the Public Suffix List, but the
+  `melissa` uid can rewrite the serve config. Design: `docs/design/HTTPS-ACCESS-2026-11-28.md`.

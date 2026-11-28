@@ -87,8 +87,12 @@ just container-smoke           # sudo: checks k3s, Traefik, policies, an app por
 
 ### Use it from another machine
 
-The web UI listens on `127.0.0.1:8080` of the host only (sign-in runs over plain HTTP). Reach it through SSH,
-which does the authentication. `<host>` is the machine running Melissa, `<user>` your account there; `-N`
+The web UI listens on `127.0.0.1:8080` of the host only, and Melissa takes passwords from another device
+only over HTTPS. The simplest way is Melissa's own Tailscale: Settings → Tailscale → **Enable**, sign in,
+then **Open Melissa from your other devices** → Turn on. The UI is then at
+`https://<name>.<tailnet>.ts.net` for your tailnet's devices.
+
+Without Tailscale, reach it through SSH, which does the authentication. `<host>` is the machine running Melissa, `<user>` your account there; `-N`
 keeps the tunnel open without a shell:
 ```
 ssh -N -L 8080:127.0.0.1:8080 <user>@<host>
@@ -97,13 +101,13 @@ then browse to http://127.0.0.1:8080 on the other computer (another local port i
 `-L 18080:127.0.0.1:8080`). In `~/.ssh/config`: `Host melissa` / `HostName <host>` / `User <user>` /
 `LocalForward 8080 127.0.0.1:8080`, then `ssh -N melissa`.
 
-**Optional, Tailscale:** on the host, `tailscale serve` publishes the UI to your tailnet with a Tailscale
-certificate:
+**The host runs Tailscale itself:** Melissa leaves it alone; Settings → Tailscale shows the command that
+publishes the UI to your tailnet with a Tailscale certificate:
 ```
-sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
+sudo tailscale serve --bg http://127.0.0.1:8080
 ```
-It is then at `https://<host>.example.ts.net:8443` (your tailnet's name instead of `example.ts.net`);
-`tailscale serve --https=8443 off` turns it off.
+It is then at `https://<host>.example-tailnet.ts.net` (your tailnet's name instead of `example-tailnet`);
+`sudo tailscale serve reset` turns it off. An existing `--https=8443` setup keeps working.
 
 Everyone who can reach that address on your tailnet sees the sign-in page; only people with an account
 (the owner and the members they invite) get further. Restricting who can reach the host on that port with
@@ -184,8 +188,8 @@ Reboot first if k3s ran, so no pod mounts are left under `/var/lib/kubelet`.
 ## Known limitations
 
 - Pre-alpha: the UI and the chat are new and change often; chats may not survive an upgrade.
-- Loopback only: sign-in runs over plain HTTP, so Melissa refuses to listen on a LAN address. Use SSH or
-  `tailscale serve` ([Use it from another machine](#use-it-from-another-machine)).
+- Loopback only: passwords go only over HTTPS or from this device, and there is no LAN HTTPS yet. Use
+  Tailscale or SSH ([Use it from another machine](#use-it-from-another-machine)).
 - Agents reach the internet only through Melissa's proxy. A CLI version that needs a new host for its AI
   service fails with a network error; the audit log shows `egress.deny` for it.
 - Container: if installing an agent says "This container can't reach the internet", the host's firewall

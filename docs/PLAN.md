@@ -224,6 +224,12 @@ Kept separate from the container-first text above on purpose (two tracks, two au
   coordination server (login.tailscale.com, controlplane.tailscale.com) and DERP relays; no logs go to
   Tailscale (`--no-logs-no-support`). The image build downloads the pinned binaries from pkgs.tailscale.com
   and their licenses from GitHub (build time only). Open items: Q85.
+- **HTTPS from other devices (owner, 2026-11-28; DECISIONS; `docs/design/HTTPS-ACCESS-2026-11-28.md`):**
+  phase 1 is Melissa's own `tailscale serve` (ts.net certificate, tailnet only), turned on in Settings →
+  Tailscale with the password, to a second loopback listener (`[web] proxy_listen`), the only one that trusts
+  forwarded headers. Passwords are refused over plain HTTP except from this device. Phase 2 is LAN HTTPS
+  from a root-held, name-constrained local CA (`<host>.local`, port 7383; Q22). Apps are never served over
+  HTTPS on the UI hostname.
 - Public exposure goes through an edge agent (VPS) over the mesh, not by opening home router ports.
 - The LAN UI must keep working with no internet.
 
@@ -886,6 +892,9 @@ Roadmap (rough, phases may overlap):
     and data migrations (Nextcloud major versions must not be skipped) staged and rolled back?
 22. LAN DNS + TLS for `*.<domain>`: plan is `*.melissa.home.arpa` served by the agent, wildcard cert from a CA the lead agent
     generates. Android apps often refuse user-installed CAs; how will the Android app and browsers trust it?
+    **Answered for the UI (owner, 2026-11-28; DECISIONS "HTTPS access from other devices"):** phase 1 is
+    Melissa's own `tailscale serve` (built); phase 2 is a root-held, name-constrained local CA for
+    `<host>.local` on port 7383 (not built; the Android app pins the CA). App TLS stays open (Q56).
 23. Datastore snapshots before staging an update that bumps k3s's Kubernetes minor (rollback restores binaries, not /var).
 24. Agent CLI logins under the sandbox: the user's credential file is bind-mounted read-write. Does OAuth token
     refresh work there (rename onto a bind mount fails with EBUSY)? Or should Melissa keep its own CLI logins
@@ -1053,7 +1062,8 @@ Roadmap (rough, phases may overlap):
     per-app access limits (ties to 22 and 38); is 80 apps per device enough; at multi-device, should the port be
     unique cluster-wide so a link survives an app moving devices? Narrowed 2026-11-27: with federation (each
     device its own k3s) ports stay per device; NodePorts are cluster-wide only inside an opt-in layer-2 k3s
-    group (Q103).
+    group (Q103). 2026-11-28: apps are never served over HTTPS on the UI's ts.net hostname (its HSTS would
+    break their plain-HTTP links); app links leave out the MagicDNS name while the UI is served there.
 57. Nextcloud's trusted hosts are the device's addresses at install time (no wildcards). If the address changes
     (DHCP, new tailnet) Nextcloud refuses it until the next `update_app`. Decided 2026-11-19: later the lead agent
     refreshes apps' trusted addresses when the device's addresses change; until then owners set `[apps]
@@ -1368,9 +1378,9 @@ Roadmap (rough, phases may overlap):
     first, interactive sign-in through a server-to-browser URL. Still open: (a) **Auth keys:** no auth-key
     field for now (interactive sign-in only); add one (stored like a secret, never shown to agents) for
     headless setups? Owner 2026-11-27: interactive sign-in suffices for now; device pairing (Q102) doesn't need
-    auth keys. (b) **UI over the tailnet:** `tailscale serve` (HTTPS with a ts.net certificate) for the
-    web UI is the next step, once logins exist (6c); it would also give the secure context passkeys and
-    notifications need (Q22, Q83). Not exposed today: `tailscale0` can reach only the app ports. (c) Detection
+    auth keys. (b) **UI over the tailnet:** built 2026-11-28 (DECISIONS "HTTPS access from other
+    devices"): Settings → Tailscale → Open Melissa from your other devices. It also gives the secure context
+    passkeys and notifications need (Q83). Still unverified on a real tailnet: Q110. (c) Detection
     happens at install: a host that starts or stops running Tailscale later needs install.sh again (or
     `HOST_TAILSCALE=`); should the host helper report it at each start? An install from before the check has
     no flag and is treated as not Melissa's. (d) Image size: the two static binaries add about 78 MB; a
@@ -1392,13 +1402,16 @@ Roadmap (rough, phases may overlap):
 87. Logins (2026-11-21; DECISIONS "Logins"). (a) Behind the container's UI forward and `tailscale serve` every
     request comes from a local address, so the per-address limit counts everyone together: 30 failed tries
     (or 10 on a known username) lock sign-in for 15 minutes for all. Trust `X-Forwarded-For` from the local
-    proxy, or limit per username only? (b) An open event stream (SSE) keeps running after its session is
+    proxy, or limit per username only? **Decided 2026-11-28:** per `X-Forwarded-For` (its last entry) only on
+    a listener that trusts its proxy (Melissa's serve listener, or the main one with `[web]
+    trust_forwarded`); the container's UI forward and SSH tunnels still count together. (b) An open event stream (SSE) keeps running after its session is
     revoked, until it reconnects. (c) In step 1 members keep Developer (No permission prompts, Full access),
     Permissions, Schedules and the setup password card; they move under permissions in step 3. (d) Any app
     access change asks for the password again, not only widening. (e) Account and People reuse the Key and
     Person icons; a people icon is a new glyph (design). The sign-in pages, Account and People are built from
-    existing components without a Figma design: owner review. (f) Does `tailscale serve` send
-    `X-Forwarded-Proto: https` (for the `__Host-` cookie)? Verify on a real tailnet. (g) Session lifetimes
+    existing components without a Figma design: owner review. (f) ~~Does `tailscale serve` send
+    `X-Forwarded-Proto: https`?~~ **Answered 2026-11-28:** it does (Tailscale's serve proxy sets it), and
+    only the serve listener believes it; still to confirm on a real tailnet with the rest of Q110. (g) Session lifetimes
     (7 days idle, 30 days at most) and the 5-minute password window: right for a household? (h) Per-person
     API tokens for remote clients (desktop/Android, 6b) are not built; the CLI uses the host socket. (i) Failed
     tries and the setup code live in memory: a restart clears lockouts and makes a new code.
@@ -1703,3 +1716,15 @@ Roadmap (rough, phases may overlap):
     the tailnet could then inject VXLAN into the pod network: not without encryption); (c) flannel's
     WireGuard backend between nodes instead of VXLAN (one more port, peers authenticated by key). Until then,
     the Devices screen should not offer a third device, or say that apps across two agents can't talk.
+110. HTTPS through Melissa's own `tailscale serve` (2026-11-28; DECISIONS "HTTPS access from other devices";
+    `docs/design/HTTPS-ACCESS-2026-11-28.md`). Built and tested against fakes only. To verify on a real
+    tailnet: (a) the CLI's output and waiting when the tailnet has HTTPS off (Melissa reads the
+    `login.tailscale.com` URL from it and keeps it running until allowed); (b) that tailscaled answers :443
+    for serve before the container's nft `input` chain, which drops everything but the app ports from
+    `tailscale0`; (c) that the operator uid may run `serve` and `set --hostname`; (d) the headers (Q87f) and
+    the first-visit certificate delay. Open: (e) the re-apply at start and the self-repair are audited as
+    actor "melissa", not the person who turned it on; (f) plain-HTTP LAN users (`UI_BIND` not loopback) now get 421 for
+    names not in `[web] hosts` and can't sign in over plain HTTP: should install.sh add the LAN name to
+    `[web] hosts` when `UI_BIND` is wider? (g) The busy button and the field-error state are new component
+    states built from the Penpot draft: owner review. (h) The device row's "Problem" dot now uses the
+    attention tone, the same as "Busy".
