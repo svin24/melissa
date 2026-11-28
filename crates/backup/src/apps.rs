@@ -123,9 +123,13 @@ impl AppExport {
         }
     }
 
-    pub fn parse(text: &str) -> Result<Self, BackupError> {
-        let e: Self = serde_json::from_str(text)
-            .map_err(|e| BackupError::Invalid(format!("app.json in the backup: {e}")))?;
+    /// Read `app.json` from a restored snapshot. Everything in a backup is untrusted (a drive
+    /// can be changed while it is away): every name and path is checked here before a restore
+    /// uses it. Volume paths must be plain and inside `storage_root` (k3s's local-path
+    /// storage, [`LOCAL_PATH_ROOT`] on a device).
+    pub fn parse(text: &str, storage_root: &Path) -> Result<Self, BackupError> {
+        let bad = |why: String| BackupError::Invalid(format!("app.json in the backup: {why}"));
+        let e: Self = serde_json::from_str(text).map_err(|e| bad(e.to_string()))?;
         if e.format > EXPORT_FORMAT {
             return Err(BackupError::Invalid(format!(
                 "the app backup was made by a newer Melissa (format {})",
@@ -133,10 +137,139 @@ impl AppExport {
             )));
         }
         if !valid_app_name(&e.app) {
-            return Err(BackupError::Invalid("app.json names no valid app".into()));
+            return Err(bad("it names no valid app".into()));
+        }
+        if !["dump", "stop", "live", "skip"].contains(&e.mode.as_str()) {
+            return Err(bad(format!("unknown mode `{}`", short(&e.mode))));
+        }
+        if !(0..=MAX_REPLICAS).contains(&e.replicas) {
+            return Err(bad("replicas out of range".into()));
+        }
+        if e.spec.as_ref().is_some_and(|s| s.len() > MAX_SPEC_BYTES) {
+            return Err(bad("the spec is too large".into()));
+        }
+        if e.volumes.len() > MAX_VOLUMES || e.volumes_left_out.len() > MAX_VOLUMES {
+            return Err(bad("too many volumes".into()));
+        }
+        let root = storage_root;
+        for (i, v) in e.volumes.iter().enumerate() {
+            if !volume_name_ok(&v.volume) {
+                return Err(bad(format!("bad volume name `{}`", short(&v.volume))));
+            }
+            if !k8s_name(&v.pvc, 253) {
+                return Err(bad(format!("bad claim name `{}`", short(&v.pvc))));
+            }
+            if !volume_path_ok(&v.path, root) {
+                return Err(bad(format!(
+                    "volume {} is at {}, outside {}",
+                    v.volume,
+                    short(&v.path.to_string_lossy()),
+                    root.display()
+                )));
+            }
+            if e.volumes[..i]
+                .iter()
+                .any(|o| o.volume == v.volume || o.path == v.path)
+            {
+                return Err(bad(format!("volume {} is listed twice", v.volume)));
+            }
+        }
+        if let Some(n) = e.volumes_left_out.iter().find(|n| !volume_name_ok(n)) {
+            return Err(bad(format!("bad volume name `{}`", short(n))));
+        }
+        if let Some(d) = &e.dump {
+            if !melissa_appspec::backup::file_name(d) {
+                return Err(bad(format!("bad dump file name `{}`", short(d))));
+            }
+        }
+        let labels_ok = e.labels.iter().all(|(k, v)| {
+            KEPT_LABELS.contains(&k.as_str()) && v.len() <= 63 && !v.contains(char::is_control)
+        });
+        let annotations_ok = e.annotations.iter().all(|(k, v)| {
+            KEPT_ANNOTATIONS.contains(&k.as_str()) && v.len() <= 1024 && !v.contains('\0')
+        });
+        if !labels_ok || !annotations_ok {
+            return Err(bad("unexpected labels or annotations".into()));
         }
         Ok(e)
     }
+}
+
+/// Limits for what a backup's `app.json` may hold.
+const MAX_REPLICAS: i32 = 100;
+const MAX_SPEC_BYTES: usize = 256 * 1024;
+const MAX_VOLUMES: usize = 64;
+const MAX_SECRETS: usize = 64;
+const MAX_SECRET_KEYS: usize = 64;
+
+/// The first characters of an untrusted string, for an error message.
+fn short(s: &str) -> String {
+    s.chars()
+        .take(80)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+/// A Kubernetes object name: lowercase letters, digits, `-` and `.`, starting and ending
+/// with a letter or digit.
+fn k8s_name(s: &str, max: usize) -> bool {
+    !s.is_empty()
+        && s.len() <= max
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+        && s.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && s.ends_with(|c: char| c.is_ascii_alphanumeric())
+}
+
+/// A spec volume name, or `pvc:<claim>` for a claim no spec volume names.
+fn volume_name_ok(s: &str) -> bool {
+    match s.strip_prefix("pvc:") {
+        Some(claim) => k8s_name(claim, 253),
+        None => k8s_name(s, 63) && !s.contains('.'),
+    }
+}
+
+/// A Secret's data key (Kubernetes: `[-._a-zA-Z0-9]+`, at most 253).
+fn secret_key_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && s != "."
+        && s != ".."
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b))
+}
+
+/// Read `secrets.json` from a restored snapshot: only the Secrets in `allowed` (the app's own
+/// generated ones, from its spec on this device now), with well-formed keys and base64 values.
+pub fn parse_secrets(text: &str, allowed: &[String]) -> Result<Vec<SecretData>, BackupError> {
+    let bad = |why: String| BackupError::Invalid(format!("secrets in the backup: {why}"));
+    let secrets: Vec<SecretData> = serde_json::from_str(text).map_err(|e| bad(e.to_string()))?;
+    if secrets.len() > MAX_SECRETS {
+        return Err(bad("too many".into()));
+    }
+    for (i, s) in secrets.iter().enumerate() {
+        if !allowed.contains(&s.name) {
+            return Err(bad(format!(
+                "`{}` is not one of the app's secrets",
+                short(&s.name)
+            )));
+        }
+        if secrets[..i].iter().any(|o| o.name == s.name) {
+            return Err(bad(format!("`{}` is listed twice", s.name)));
+        }
+        if s.data.len() > MAX_SECRET_KEYS {
+            return Err(bad(format!("`{}` has too many keys", s.name)));
+        }
+        for (k, v) in &s.data {
+            if !secret_key_ok(k) {
+                return Err(bad(format!("`{}` has a bad key", s.name)));
+            }
+            if base64::engine::general_purpose::STANDARD.decode(v).is_err() {
+                return Err(bad(format!("`{}` has a value that is not base64", s.name)));
+            }
+        }
+    }
+    Ok(secrets)
 }
 
 /// One Secret's values.
@@ -582,15 +715,93 @@ mod tests {
         };
         let e = AppExport::of(&info, "stop");
         let text = serde_json::to_string(&e).unwrap();
-        assert_eq!(AppExport::parse(&text).unwrap(), e);
-        assert!(AppExport::parse(&text.replace("\"format\":1", "\"format\":7")).is_err());
-        assert!(AppExport::parse(&text.replace("notes", "Not An App")).is_err());
+        let root = Path::new(LOCAL_PATH_ROOT);
+        assert_eq!(AppExport::parse(&text, root).unwrap(), e);
+        assert!(AppExport::parse(&text.replace("\"format\":1", "\"format\":7"), root).is_err());
+        assert!(AppExport::parse(&text.replace("notes", "Not An App"), root).is_err());
         let s = SecretData {
             name: "notes-secret-x".into(),
             data: BTreeMap::from([("x".into(), "c2VjcmV0".into())]),
         };
         let dbg = format!("{s:?}");
         assert!(!dbg.contains("c2VjcmV0"), "{dbg}");
+    }
+
+    fn export_json(volumes: serde_json::Value, extra: serde_json::Value) -> String {
+        let mut v = serde_json::json!({
+            "format": 1, "app": "notes", "spec": null, "labels": {}, "annotations": {},
+            "replicas": 1, "mode": "stop", "volumes": volumes,
+        });
+        if let (Some(o), Some(x)) = (v.as_object_mut(), extra.as_object()) {
+            o.extend(x.clone());
+        }
+        v.to_string()
+    }
+
+    #[test]
+    fn a_tampered_app_json_is_refused() {
+        let root = Path::new(LOCAL_PATH_ROOT);
+        let ok_vol = serde_json::json!([{"volume": "data", "pvc": "notes-data",
+            "path": "/var/lib/rancher/k3s/storage/pvc-1_app-notes_notes-data"}]);
+        AppExport::parse(&export_json(ok_vol.clone(), serde_json::json!({})), root).unwrap();
+        let evil_volumes = [
+            // Root's directories into an app volume (or the other way round).
+            serde_json::json!([{"volume": "data", "pvc": "notes-data", "path": "/etc"}]),
+            serde_json::json!([{"volume": "data", "pvc": "notes-data", "path": "/root/.ssh"}]),
+            serde_json::json!([{"volume": "data", "pvc": "notes-data",
+                "path": "/var/lib/rancher/k3s/storage/../server"}]),
+            serde_json::json!([{"volume": "data", "pvc": "notes-data",
+                "path": "/var/lib/rancher/k3s/storage"}]),
+            serde_json::json!([{"volume": "data", "pvc": "notes-data",
+                "path": "var/lib/rancher/k3s/storage/x"}]),
+            serde_json::json!([{"volume": "../x", "pvc": "notes-data",
+                "path": "/var/lib/rancher/k3s/storage/x"}]),
+            serde_json::json!([{"volume": "data", "pvc": "../../x",
+                "path": "/var/lib/rancher/k3s/storage/x"}]),
+            serde_json::json!([
+                {"volume": "data", "pvc": "a", "path": "/var/lib/rancher/k3s/storage/x"},
+                {"volume": "db", "pvc": "b", "path": "/var/lib/rancher/k3s/storage/x"}]),
+        ];
+        for v in evil_volumes {
+            assert!(
+                AppExport::parse(&export_json(v.clone(), serde_json::json!({})), root).is_err(),
+                "{v}"
+            );
+        }
+        for extra in [
+            serde_json::json!({"mode": "sh -c reboot"}),
+            serde_json::json!({"replicas": 100000}),
+            serde_json::json!({"replicas": -1}),
+            serde_json::json!({"dump": "../../etc/shadow"}),
+            serde_json::json!({"volumes_left_out": ["../x"]}),
+            serde_json::json!({"labels": {"melissa.io/app": "other"}}),
+            serde_json::json!({"annotations": {"kubectl.kubernetes.io/x": "y"}}),
+            serde_json::json!({"app": "../etc"}),
+        ] {
+            assert!(
+                AppExport::parse(&export_json(ok_vol.clone(), extra.clone()), root).is_err(),
+                "{extra}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tampered_secrets_json_is_refused() {
+        let allowed = vec!["notes-secret-admin-password".to_string()];
+        let good = r#"[{"name":"notes-secret-admin-password","data":{"admin_password":"czNj"}}]"#;
+        assert_eq!(parse_secrets(good, &allowed).unwrap().len(), 1);
+        for evil in [
+            // Another app's or a system Secret.
+            r#"[{"name":"k3s-serving","data":{}}]"#,
+            r#"[{"name":"../x","data":{}}]"#,
+            r#"[{"name":"notes-secret-admin-password","data":{"../k":"czNj"}}]"#,
+            r#"[{"name":"notes-secret-admin-password","data":{"k":"not base64!"}}]"#,
+            r#"[{"name":"notes-secret-admin-password","data":{}},
+                {"name":"notes-secret-admin-password","data":{}}]"#,
+            r#"{"name":"x"}"#,
+        ] {
+            assert!(parse_secrets(evil, &allowed).is_err(), "{evil}");
+        }
     }
 
     #[test]

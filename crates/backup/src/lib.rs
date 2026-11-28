@@ -63,10 +63,18 @@ pub const ADMIN_KUBECONFIG: &str = "/etc/rancher/k3s/k3s.yaml";
 /// the old one's snapshots as its own (and no real host name lands on the drive).
 pub const SNAPSHOT_HOST: &str = "melissa";
 
-/// `abs` (one of the constants) under `root` (`/` on the device, a temporary tree in tests).
+/// `abs` under `root` (`/` on the device, a temporary tree in tests, a staging directory for
+/// a restored snapshot). Only plain name components are kept: `..` and `.` are dropped, so the
+/// result never leaves `root` by its spelling (symlinks on the way are checked where it
+/// matters, [`fsutil::inside`]).
 pub fn at(root: &Path, abs: impl AsRef<Path>) -> PathBuf {
-    let abs = abs.as_ref();
-    root.join(abs.strip_prefix("/").unwrap_or(abs))
+    let mut out = root.to_path_buf();
+    for c in abs.as_ref().components() {
+        if let std::path::Component::Normal(part) = c {
+            out.push(part);
+        }
+    }
+    out
 }
 
 /// Errors. Messages are for the owner (status page, journal) and never hold a secret.
@@ -112,6 +120,23 @@ pub(crate) fn io(what: impl Into<String>) -> impl FnOnce(std::io::Error) -> Back
 /// Unix seconds now.
 pub fn now() -> i64 {
     jiff::Timestamp::now().as_second()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn at_never_climbs_out() {
+        let r = Path::new("/staging");
+        assert_eq!(at(r, "/var/lib/x"), Path::new("/staging/var/lib/x"));
+        assert_eq!(at(r, "/var/../../etc"), Path::new("/staging/var/etc"));
+        assert_eq!(
+            at(r, "../../etc/./shadow"),
+            Path::new("/staging/etc/shadow")
+        );
+        assert_eq!(at(r, "/"), r);
+    }
 }
 
 #[cfg(test)]

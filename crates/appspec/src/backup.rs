@@ -202,6 +202,19 @@ impl Backup {
             if !seen.insert(e.as_str()) {
                 return Err(err(&path, format!("`{e}` is listed twice")));
             }
+            // With a dump, a volume left out whole is only in the dump: without a restore
+            // command its data could never come back. (In the other modes leaving out a whole
+            // volume means "not worth keeping", e.g. a cache.)
+            if self.mode == BackupMode::Dump && parsed.path.is_none() && self.restore.is_none() {
+                return Err(err(
+                    &path,
+                    format!(
+                        "volume `{}` is left out whole, so its data is only in the dump: add a \
+                         `restore` command, or exclude paths inside it instead",
+                        parsed.volume
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -558,6 +571,12 @@ mod tests {
             (
                 json!({"mode": "skip", "exclude": ["data"]}),
                 "backup.exclude",
+            ),
+            // A whole volume only in a dump that can't be loaded again.
+            (
+                json!({"mode": "dump", "dump": {"container": "db", "command": ["x"], "file": "a"},
+                       "exclude": ["data/cache", "pg"]}),
+                "backup.exclude[1]",
             ),
         ];
         for (backup, field) in cases {

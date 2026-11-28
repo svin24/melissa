@@ -190,16 +190,27 @@ pub fn take(dir: &Path) -> Result<(Vec<Request>, Vec<String>), BackupError> {
         let entry = entry.map_err(io(format!("reading {}", dir.display())))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
-        // A settings request being written (the server's temporary file); one left behind by a
-        // crash goes after a minute (the path unit would otherwise keep starting the service).
+        let meta = match path.symlink_metadata() {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(io(format!("reading {}", path.display()))(e)),
+        };
+        // Requests are regular files: anything else (a directory, symlink, FIFO, socket) goes
+        // at once, unread.
+        if !meta.file_type().is_file() {
+            fsutil::remove_any(&path)?;
+            problems.push(format!("removed `{}`: not a request file", short(&name)));
+            continue;
+        }
+        // A settings request being written (the server's temporary file; the path unit
+        // ignores dot files). One left behind by a crash, or dated in the future, goes now.
         if name.starts_with('.') {
-            let stale = path
-                .symlink_metadata()
-                .and_then(|m| m.modified())
+            let fresh = meta
+                .modified()
                 .ok()
                 .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age.as_secs() > 60);
-            if stale {
+                .is_some_and(|age| age.as_secs() <= TEMP_GRACE_SECS);
+            if !fresh {
                 fsutil::remove_any(&path)?;
             }
             continue;
@@ -213,12 +224,7 @@ pub fn take(dir: &Path) -> Result<(Vec<Request>, Vec<String>), BackupError> {
                 Err(e) => Err(format!("settings request refused: {e}")),
             }
         } else {
-            Request::from_name(&name).ok_or_else(|| {
-                format!(
-                    "unknown request `{}`",
-                    name.chars().take(80).collect::<String>()
-                )
-            })
+            Request::from_name(&name).ok_or_else(|| format!("unknown request `{}`", short(&name)))
         };
         fsutil::remove_any(&path)?;
         match parsed {
@@ -231,10 +237,87 @@ pub fn take(dir: &Path) -> Result<(Vec<Request>, Vec<String>), BackupError> {
     Ok((requests, problems))
 }
 
+/// How long the server's temporary file may sit in the request directory.
+const TEMP_GRACE_SECS: u64 = 60;
+/// Requests taken while another run held the lock, in root's config directory (outside the
+/// watched directory, so they don't start the unit again and again).
+pub const HELD_FILE: &str = "held-requests.json";
+
+fn short(name: &str) -> String {
+    name.chars()
+        .take(80)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Held {
+    /// File names of the requests without contents.
+    #[serde(default)]
+    names: Vec<String>,
+    #[serde(default)]
+    config: Option<ConfigRequest>,
+}
+
+/// Keep `requests` in `config_dir` for the next run (added to any already held).
+pub fn hold(config_dir: &Path, requests: &[Request]) -> Result<(), BackupError> {
+    if requests.is_empty() {
+        return Ok(());
+    }
+    let mut held = load_held(config_dir)?;
+    for r in requests {
+        match r {
+            Request::Config(c) => held.config = Some(c.clone()),
+            other => {
+                let name = other.file_name();
+                if !held.names.contains(&name) {
+                    held.names.push(name);
+                }
+            }
+        }
+    }
+    let text = serde_json::to_vec(&held).map_err(|e| BackupError::Failed(e.to_string()))?;
+    fsutil::ensure_dir(config_dir, 0o700)?;
+    fsutil::write_atomic(&config_dir.join(HELD_FILE), &text, 0o600, false)
+}
+
+fn load_held(config_dir: &Path) -> Result<Held, BackupError> {
+    match fsutil::read_small(&config_dir.join(HELD_FILE), MAX_CONFIG_BYTES * 4) {
+        Ok(Some(text)) => Ok(serde_json::from_str(&text).unwrap_or_default()),
+        Ok(None) => Ok(Held::default()),
+        Err(e) => Err(e),
+    }
+}
+
+/// The requests [`hold`] kept (removed from there), checked like new ones.
+pub fn take_held(config_dir: &Path) -> Result<Vec<Request>, BackupError> {
+    let held = load_held(config_dir)?;
+    fsutil::remove_any(&config_dir.join(HELD_FILE))?;
+    let mut out: Vec<Request> = held.config.map(Request::Config).into_iter().collect();
+    out.extend(held.names.iter().filter_map(|n| Request::from_name(n)));
+    Ok(out)
+}
+
+/// Requests from both places, without duplicates, in handling order.
+pub fn merge(mut a: Vec<Request>, b: Vec<Request>) -> Vec<Request> {
+    for r in b {
+        // A newer settings request replaces a held one.
+        if let Request::Config(_) = r {
+            a.retain(|x| !matches!(x, Request::Config(_)));
+        }
+        if !a.contains(&r) {
+            a.push(r);
+        }
+    }
+    a.sort_by_key(Request::rank);
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{config::Schedule, test_support::scratch};
+    use std::time::Duration;
 
     #[test]
     fn names_round_trip_and_nothing_else_parses() {
@@ -305,6 +388,80 @@ mod tests {
         let left: Vec<_> = std::fs::read_dir(&req).unwrap().flatten().collect();
         assert_eq!(left.len(), 1);
         assert_eq!(take(&d.join("missing")).unwrap().0, vec![]);
+    }
+
+    #[test]
+    fn nothing_in_the_directory_can_block_root_or_stay_behind() {
+        let d = scratch("requests-odd");
+        // A FIFO named like a request would block a plain open for reading.
+        for name in ["config.json", "run"] {
+            let made = std::process::Command::new("mkfifo")
+                .arg(d.join(name))
+                .status()
+                .unwrap();
+            assert!(made.success());
+        }
+        std::fs::create_dir(d.join("init")).unwrap();
+        let outside = scratch("requests-odd-outside").join("kept");
+        std::fs::write(&outside, "kept").unwrap();
+        std::os::unix::fs::symlink(&outside, d.join("ack-key")).unwrap();
+        // Temporary files: a fresh one stays (the server is writing it), an old one and one
+        // dated in the future go.
+        std::fs::write(d.join(".fresh.tmp"), "").unwrap();
+        for (name, when) in [
+            (
+                ".old.tmp",
+                std::time::SystemTime::now() - Duration::from_secs(3600),
+            ),
+            (
+                ".future.tmp",
+                std::time::SystemTime::now() + Duration::from_secs(86_400 * 365),
+            ),
+        ] {
+            let f = std::fs::File::create(d.join(name)).unwrap();
+            f.set_modified(when).unwrap();
+        }
+        let (taken, problems) = take(&d).unwrap();
+        assert!(taken.is_empty(), "{taken:?}");
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        let left: Vec<String> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, [".fresh.tmp"]);
+        // The link went, not what it pointed at.
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept");
+    }
+
+    #[test]
+    fn requests_held_during_a_run_come_back_once() {
+        let d = scratch("requests-held");
+        let restore = Request::RestoreApp {
+            app: "notes".into(),
+            at: None,
+        };
+        hold(&d, &[Request::Run, restore.clone()]).unwrap();
+        hold(
+            &d,
+            &[
+                Request::Run,
+                Request::Config(ConfigRequest {
+                    schedule: Some(Schedule::Off),
+                    ..Default::default()
+                }),
+            ],
+        )
+        .unwrap();
+        let held = take_held(&d).unwrap();
+        assert_eq!(held.len(), 3, "{held:?}");
+        assert!(take_held(&d).unwrap().is_empty());
+        let all = merge(held, vec![Request::Run, Request::AckKey]);
+        assert_eq!(all.len(), 4);
+        assert!(matches!(all[0], Request::Config(_)));
+        assert_eq!(all[1], Request::AckKey);
+        assert_eq!(all[2], restore);
+        assert_eq!(all[3], Request::Run);
     }
 
     #[test]

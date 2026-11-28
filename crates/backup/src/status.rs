@@ -41,6 +41,10 @@ pub struct Status {
     pub recovery_key_pending: bool,
     /// The last request's problem (a refused setting, a drive that wasn't empty).
     pub problem: Option<String>,
+    /// A scheduled backup (this slot, unix seconds) was missed because the drive wasn't
+    /// there; it runs within the hour once the drive is back.
+    #[serde(default)]
+    pub waiting_for_drive: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +67,10 @@ pub struct Report {
     /// Why the whole run failed (drive missing, wrong key); item problems are in `items`.
     pub error: Option<String>,
     pub items: Vec<ItemResult>,
+    /// The backup is not encrypted, so the apps' Secret values were left out (owner decision
+    /// 2026-11-28): a restore keeps the values the apps have then.
+    #[serde(default)]
+    pub secrets_left_out: bool,
 }
 
 /// One item of a run: `state`, `k3s`, `app:<name>`, `retention`.

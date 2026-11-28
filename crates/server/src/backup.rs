@@ -6,8 +6,9 @@
 //!   arrives, and hourly by its timer): handle the requests, then the scheduled backup if due.
 //! - `status`: print the status JSON.
 //! - `now`: back up now and print the report.
-//! - `setup <dir> [--no-encryption]`: by hand, set up a drive at any directory (root may pick
-//!   any; the server only below `/run/melissa-backup`). Prints the recovery key once.
+//! - `setup <dir> [--no-encryption]`: by hand, set up a drive (root may pick any mounted
+//!   drive's mount point; the server only below `/run/melissa-backup`). Prints the recovery
+//!   key once.
 //! - `adopt <dir>`: use the backups already on a drive (the key is read from stdin when they
 //!   are encrypted).
 //! - `snapshots`: list what the drive holds.
@@ -63,7 +64,7 @@ pub fn command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         [c] if c == "now" => {
-            let _lock = device.lock()?;
+            let _lock = device.begin()?;
             let report = device.backup("host");
             println!("{}", serde_json::to_string_pretty(&report)?);
             let ok = report.ok;
@@ -79,7 +80,7 @@ pub fn command(args: &[String]) -> anyhow::Result<()> {
                 [f] if f == "--no-encryption" => false,
                 _ => bail!(USAGE),
             };
-            let _lock = device.lock()?;
+            let _lock = device.begin()?;
             let mut config = device.config()?;
             config.target = Some(target(dir)?);
             config.encrypted = encrypted;
@@ -101,7 +102,7 @@ pub fn command(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         [c, dir] if c == "adopt" => {
-            let _lock = device.lock()?;
+            let _lock = device.begin()?;
             let mut config = Config {
                 target: Some(target(dir)?),
                 ..device.config()?
@@ -141,7 +142,7 @@ pub fn command(args: &[String]) -> anyhow::Result<()> {
                 ),
                 _ => bail!(USAGE),
             };
-            let _lock = device.lock()?;
+            let _lock = device.begin()?;
             let report = device.restore_app(app, at, "host");
             println!("{}", serde_json::to_string_pretty(&report)?);
             let ok = report.ok;

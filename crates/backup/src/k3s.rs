@@ -20,6 +20,8 @@ use crate::{fsutil, io, BackupError};
 pub const SERVER_DIR: &str = "/var/lib/rancher/k3s/server";
 /// The datastore, relative to [`SERVER_DIR`].
 pub const DB: &str = "db/state.db";
+/// The datastore's directory (with its `-wal`/`-shm` while k3s runs), swapped as a whole.
+pub const DB_DIR: &str = "db";
 /// Copied as they are (relative to [`SERVER_DIR`]); `cred` and `tls` are directories.
 pub const FILES: &[&str] = &["token", "tls", "cred"];
 /// The k3s version this image ships (`K3S_VERSION=`).
@@ -94,15 +96,19 @@ fn vacuum_into(sqlite: &Path, db: &Path, out: &Path) -> Result<(), BackupError> 
 }
 
 /// Put a restored copy (`staged`, as [`stage`] made it) in place of `server`'s state, for a
-/// same-version rollback. k3s must be stopped. What was there is kept as `*.pre-restore`.
+/// same-version rollback. k3s must be stopped. What was there is kept as a safety copy
+/// (`*.pre-restore-<stamp>`). The whole `db/` directory is swapped, so the live datastore's
+/// write-ahead log (`-wal`, `-shm`) goes into the safety copy with it, never away.
 /// `version`: this device's k3s version; a copy from another version is refused.
 pub fn place(
     staged: &Path,
     server: &Path,
     version: Option<&str>,
+    stamp: &str,
 ) -> Result<Vec<PathBuf>, BackupError> {
-    let recorded = std::fs::read_to_string(staged.join(VERSION_FILE))
+    let recorded = fsutil::read_small(&staged.join(VERSION_FILE), 256)
         .ok()
+        .flatten()
         .map(|v| v.trim().to_string());
     match (recorded.as_deref(), version) {
         (Some(a), Some(b)) if a == b => {}
@@ -115,21 +121,25 @@ pub fn place(
             )))
         }
     }
-    if !staged.join(DB).is_file() {
+    let db = staged.join(DB);
+    if db.symlink_metadata().map(|m| m.is_file()).unwrap_or(false) {
+        fsutil::inside(staged, &db)?;
+    } else {
         return Err(BackupError::Invalid("the snapshot has no datastore".into()));
     }
-    let mut placed = Vec::new();
-    // The datastore's write-ahead log belongs to the old database.
-    for side in ["db/state.db-wal", "db/state.db-shm"] {
-        fsutil::remove_any(&server.join(side))?;
-    }
-    for rel in std::iter::once(DB).chain(FILES.iter().copied()) {
+    // Everything checked before anything moves.
+    let mut parts = Vec::new();
+    for rel in std::iter::once(DB_DIR).chain(FILES.iter().copied()) {
         let src = staged.join(rel);
         if src.symlink_metadata().is_err() {
             continue;
         }
-        let dst = server.join(rel);
-        fsutil::swap_in(&src, &dst, &[])?;
+        fsutil::inside(staged, &src)?;
+        parts.push((src, server.join(rel)));
+    }
+    let mut placed = Vec::new();
+    for (src, dst) in parts {
+        fsutil::swap_in(&src, &dst, &[], stamp)?;
         placed.push(dst);
     }
     Ok(placed)
@@ -190,16 +200,39 @@ mod tests {
         assert!(!staging.join("db/state.db-wal").exists());
 
         std::fs::write(s.join(DB), "datastore-2").unwrap();
-        assert!(place(&staging, &s, Some("v2")).is_err());
-        assert!(place(&staging, &s, None).is_err());
-        let placed = place(&staging, &s, Some("v1")).unwrap();
+        let st = "20261128T031000Z";
+        assert!(place(&staging, &s, Some("v2"), st).is_err());
+        assert!(place(&staging, &s, None, st).is_err());
+        let placed = place(&staging, &s, Some("v1"), st).unwrap();
         assert_eq!(placed.len(), 4);
         assert_eq!(std::fs::read_to_string(s.join(DB)).unwrap(), "datastore-1");
         assert!(!s.join("db/state.db-wal").exists());
+        // The live datastore and its write-ahead log are kept together.
+        let pre = s.join(format!("db.pre-restore-{st}"));
         assert_eq!(
-            std::fs::read_to_string(fsutil::pre_restore_path(&s.join(DB))).unwrap(),
+            std::fs::read_to_string(pre.join("state.db")).unwrap(),
             "datastore-2"
         );
+        assert_eq!(
+            std::fs::read_to_string(pre.join("state.db-wal")).unwrap(),
+            "wal"
+        );
+    }
+
+    #[test]
+    fn a_tampered_snapshot_cannot_point_outside() {
+        let d = scratch("k3s-evil");
+        let s = server(&d, "live");
+        let staged = d.join("staged");
+        std::fs::create_dir_all(staged.join("db")).unwrap();
+        std::fs::write(staged.join(DB), "x").unwrap();
+        std::fs::write(staged.join(VERSION_FILE), "v1\n").unwrap();
+        std::fs::create_dir_all(d.join("secret-elsewhere")).unwrap();
+        std::os::unix::fs::symlink(d.join("secret-elsewhere"), staged.join("tls")).unwrap();
+        assert!(place(&staged, &s, Some("v1"), "20261128T031000Z").is_err());
+        // Nothing moved.
+        assert_eq!(std::fs::read_to_string(s.join(DB)).unwrap(), "live");
+        assert!(s.join("tls/server-ca.key").is_file());
     }
 
     #[test]

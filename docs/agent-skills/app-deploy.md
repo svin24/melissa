@@ -234,7 +234,8 @@ app turns out to need more (`app_logs` shows DNS working but connections timing 
 
 ## Backups (2026-11-28, `crates/appspec/src/backup.rs`, docs/design/BACKUPS-2026-11-28.md)
 Every app is backed up (weekly by default) by root's `melissa-backup.service`: its spec, workspace
-labels, the values of its generated Secrets and its volumes' data. The spec's optional `backup` field
+labels, its volumes' data and, only when the backup is encrypted, the values of its generated
+Secrets (an unencrypted restore keeps the app's current ones). The spec's optional `backup` field
 says how its data is made consistent; the user sees it in the confirmation (`backup: ...`).
 - `stop` (also when there is no `backup` field): scaled to 0, volumes copied, scaled back. Always
   consistent, a short break each run.
@@ -242,7 +243,8 @@ says how its data is made consistent; the user sees it in the confirmation (`bac
   the image has a shell) and its stdout is stored as `dump.file`; then the volumes are copied live
   without `exclude`. On a restore the volumes come back, the app starts, and `restore.command` gets the
   dump on stdin (`restore.stdin` must be `dump.file`). Without `restore` the dump is only a step before
-  the copy (Redis's BGSAVE). A stopped app is copied as it is (no dump, excludes of whole volumes
+  the copy (Redis's BGSAVE), and no volume may be left out whole (its data would only be in a dump
+  nothing can load; refused). A stopped app is copied as it is (no dump, excludes of whole volumes
   ignored).
 - `live`: copied while running (apps whose files are always consistent: static sites, media).
 - `skip`: no volume data (caches, scratch); spec and secrets still.

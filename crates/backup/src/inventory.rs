@@ -30,8 +30,8 @@ pub fn kept_names(dir: &str) -> Vec<&'static str> {
         .iter()
         .filter_map(|e: &&'static str| {
             let e: &'static Path = Path::new(*e);
-            // Only direct children: deeper excludes (home/.cache) live inside a restored child
-            // and are simply missing after a restore (caches).
+            // Only direct children: a deeper exclude would live inside a restored child and
+            // simply be missing after a restore.
             (e.parent() == Some(Path::new(dir)))
                 .then(|| e.file_name()?.to_str())
                 .flatten()
@@ -73,11 +73,12 @@ mod tests {
     #[test]
     fn kept_names_are_the_direct_excludes() {
         let kept = kept_names("/var/lib/melissa");
+        // The provider sign-ins (the home) are never backed up: this device's stay.
         assert!(
-            kept.contains(&"tmp") && kept.contains(&"models"),
+            kept.contains(&"tmp") && kept.contains(&"models") && kept.contains(&"home"),
             "{kept:?}"
         );
-        assert!(!kept.contains(&".cache"), "{kept:?}");
+        assert!(!kept.contains(&"auth"), "{kept:?}");
         let etc = kept_names("/var/lib/melissa-container/etc-melissa");
         assert!(etc.contains(&"server.toml"), "{etc:?}");
     }

@@ -191,14 +191,15 @@ pub const TMPFILES: &[&str] = &[
 /// without [`BACKUP_EXCLUDE`] and [`KEEP`].
 pub const BACKUP_STATE: &[&str] = SWEEP;
 
-/// Inside [`BACKUP_STATE`] but never backed up: temporary files, caches, the voice model
-/// (downloaded again), the install's own `server.toml`, and the cluster's tokens and requests
-/// (a restored device gets a fresh cluster identity).
+/// Inside [`BACKUP_STATE`] but never backed up: temporary files, the voice model (downloaded
+/// again), the server user's home (the provider CLIs, their sign-ins and caches: never in a
+/// backup, owner decision 2026-11-28; after a restore the agents are set up and signed in
+/// again), the install's own `server.toml`, and the cluster's tokens and requests (a restored
+/// device gets a fresh cluster identity).
 pub const BACKUP_EXCLUDE: &[&str] = &[
     "/var/lib/melissa/tmp",
     "/var/lib/melissa/models",
-    "/var/lib/melissa/home/.cache",
-    "/var/lib/melissa/home/.npm",
+    "/var/lib/melissa/home",
     "/var/lib/melissa-container/etc-melissa/server.toml",
     "/var/lib/melissa-container/etc-melissa/providers.toml.broken",
     "/var/lib/melissa-container/etc-melissa/cluster.toml",
