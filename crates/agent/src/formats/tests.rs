@@ -11,6 +11,7 @@ use crate::{
     files::{FileBoxes, Keep},
     lead::{
         backends::{load_choice, ModelCache},
+        conversation::{load_session, save_session, saved_taint, SavedSession},
         registry::AgentRegistry,
         schedules::Schedules,
         usage::Usage,
@@ -101,6 +102,63 @@ fn a_state_directory_from_before_formats_loads() {
         crate::lead::transcript::Transcript::new(state.join("lead/transcript.jsonl"), 1 << 20);
     let chat = transcript.load_chat(10);
     assert_eq!(chat.len(), 7, "{chat:?}");
+
+    let session = load_session(&state.join("lead/session.json")).unwrap();
+    assert_eq!(
+        (session.backend.as_str(), session.session_id.as_str()),
+        ("claude-session", "00000000-0000-4000-8000-000000000001")
+    );
+    assert!(session.tainted);
+    assert!(saved_taint(&state.join("lead")));
+
+    let ids = crate::sandbox::users::Range {
+        start: 1000,
+        count: 6,
+    };
+    let table =
+        crate::sandbox::users::load_table(&state.join("agent-users.json"), ids, ids).unwrap();
+    assert_eq!(table.slots.get("d-0a1b2c3d.a1"), Some(&1));
+    assert_eq!(table.slots.get("lead"), Some(&0));
+
+    let hub = crate::provider_usage::UsageHub::open(&state.join("lead"));
+    let claude = hub.counted("claude").unwrap();
+    assert_eq!(claude.since, 1_764_200_000);
+    assert_eq!(claude.models["opus"].tokens.input, 1200);
+    assert!((claude.windows["five_hour"].used_pct - 42.0).abs() < 1e-9);
+
+    let threads = crate::lead::threads::Threads::new(state.join("threads"));
+    let thread = threads.read("lead", "d-0a1b2c3d.a1").unwrap();
+    assert_eq!(thread.len(), 2);
+    assert_eq!(thread[1].text, "All backups ran.");
+    assert!(thread[1].verified);
+    // New messages go on after the old ones, each on its own line, in the current format.
+    threads.record(&crate::lead::threads::ThreadEntry::new(
+        "lead",
+        "d-0a1b2c3d.a1",
+        "message",
+        "data",
+        "Thanks.",
+    ));
+    let thread = threads.read("lead", "d-0a1b2c3d.a1").unwrap();
+    assert_eq!(thread.len(), 3);
+    assert_eq!(thread[2].text, "Thanks.");
+
+    // The audit log is only appended to: the old lines stay exactly as they were.
+    let audit_path = state.join("audit.jsonl");
+    let old_audit = std::fs::read_to_string(&audit_path).unwrap();
+    crate::audit::AuditLog::new(&audit_path)
+        .append(&crate::audit::AuditRecord::now(
+            "task.finish",
+            3,
+            "claude-session",
+            "done",
+        ))
+        .unwrap();
+    let audit = std::fs::read_to_string(&audit_path).unwrap();
+    let new_line = audit.strip_prefix(&old_audit).unwrap();
+    let record: serde_json::Value = serde_json::from_str(new_line.trim_end()).unwrap();
+    assert_eq!(record["format"], 1);
+    assert_eq!(record["action"], "task.finish");
     std::fs::remove_dir_all(state).unwrap();
 }
 
@@ -126,6 +184,14 @@ fn files_from_a_newer_melissa_are_never_changed() {
     let retention_path = state.join("files/retention.json");
     let backend_path = state.join("lead/backend.json");
     let usage_path = state.join("lead/usage.json");
+    let models_path = state.join("lead/models.json");
+    let session_path = state.join("lead/session.json");
+    let provider_usage_path = state.join("lead/provider-usage.json");
+    let device_path = state.join("device.json");
+    // A model list to save, from the old file (before it becomes a newer one).
+    let options = ModelCache::open(models_path.clone())
+        .get("claude-session")
+        .unwrap();
     let newer: Vec<(PathBuf, String)> = [
         &registry_path,
         &schedules_path,
@@ -133,6 +199,10 @@ fn files_from_a_newer_melissa_are_never_changed() {
         &retention_path,
         &backend_path,
         &usage_path,
+        &models_path,
+        &session_path,
+        &provider_usage_path,
+        &device_path,
     ]
     .into_iter()
     .map(|p| (p.clone(), make_newer(p)))
@@ -174,6 +244,51 @@ fn files_from_a_newer_melissa_are_never_changed() {
     .is_err());
     let usage = Usage::load(&state.join("lead")).unwrap();
     usage.save(&state.join("lead"));
+
+    // The model cache reads as empty and a fresh list is not saved over the file.
+    let models = ModelCache::open(models_path.clone());
+    assert!(models.get("claude-session").is_none());
+    models.put(
+        "claude-session",
+        &crate::session::ModelList {
+            current: None,
+            options,
+        },
+    );
+
+    // The saved session is read (resume works), counts as tainted, and is not saved over.
+    let session = load_session(&session_path).unwrap();
+    assert!(saved_taint(&state.join("lead")));
+    save_session(
+        &session_path,
+        &SavedSession {
+            tainted: false,
+            ..session
+        },
+    );
+
+    // Provider usage starts empty here and the newer counters are not overwritten.
+    let hub = crate::provider_usage::UsageHub::open(&state.join("lead"));
+    hub.observe(
+        "claude",
+        "p",
+        crate::provider_usage::Observation::ProcessTotals(vec![
+            crate::provider_usage::ModelTokens {
+                model: "opus".into(),
+                tokens: crate::provider_usage::TokenCount {
+                    input: 5,
+                    ..Default::default()
+                },
+                cost_micros: None,
+                currency: None,
+            },
+        ]),
+        1,
+    );
+
+    // The device keeps its id; its file is not rewritten.
+    let device = DeviceIdentity::load_or_create(&device_path).unwrap();
+    assert_eq!(device.id, DEVICE);
 
     for (path, text) in newer {
         assert_eq!(

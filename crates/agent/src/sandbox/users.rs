@@ -242,10 +242,10 @@ impl Tools {
 
 /// The table: which slot of the range each key has. Slots are never handed to another key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Table {
+pub(crate) struct Table {
     uid_start: u32,
     gid_start: u32,
-    slots: BTreeMap<String, u32>,
+    pub(crate) slots: BTreeMap<String, u32>,
 }
 
 /// Agent users are on: the server's ids, its subordinate ranges, the helpers, the table.
@@ -656,7 +656,7 @@ pub fn cleanup_maps(
     )
 }
 
-fn load_table(path: &Path, uids: Range, gids: Range) -> Result<Table, String> {
+pub(crate) fn load_table(path: &Path, uids: Range, gids: Range) -> Result<Table, String> {
     let fresh = Table {
         uid_start: uids.start,
         gid_start: gids.start,

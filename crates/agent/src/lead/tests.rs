@@ -1106,6 +1106,8 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
         tool: Some("app_logs".into()),
         subject: Some("nextcloud".into()),
     }));
+    // Also kept apart from session.json, which a newer Melissa's could make read-only.
+    assert!(dir.join("lead/tainted").exists());
     drop(s);
 
     // After a restart the chat is back (in memory only, renumbered, between markers).
@@ -1170,6 +1172,7 @@ async fn a_restart_restores_the_chat_and_a_new_chat_starts_fresh_and_untainted()
     assert!(audit.contains("confirmation.withdrawn"), "{audit}");
     assert!(audit.contains("lead.fresh_start"), "{audit}");
     assert!(!dir.join("lead/session.json").exists());
+    assert!(!dir.join("lead/tainted").exists());
     // One chat: nothing is archived, the chat goes on with a fresh start in it.
     assert!(s.lead.past_chats().is_empty());
     assert!(!dir.join("lead/chats").exists());
