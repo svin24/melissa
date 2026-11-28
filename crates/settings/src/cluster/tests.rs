@@ -3,9 +3,19 @@ use std::{cell::RefCell, path::PathBuf, time::Duration};
 use super::*;
 use crate::{factory_reset::Host, test_support::scratch};
 
-#[derive(Default)]
+/// `own`: the caller's cgroup; k3s-prepare runs in k3s.service's (`.control` with Delegate=yes).
 struct FakeHost {
+    own: Option<String>,
     calls: RefCell<Vec<String>>,
+}
+
+impl Default for FakeHost {
+    fn default() -> Self {
+        Self {
+            own: Some("/system.slice/k3s.service/.control".into()),
+            calls: RefCell::default(),
+        }
+    }
 }
 
 impl Host for FakeHost {
@@ -18,8 +28,19 @@ impl Host for FakeHost {
     fn stop_units(&self, _: &[&str]) -> Result<(), String> {
         Ok(())
     }
-    fn kill_leftovers(&self) {
-        self.calls.borrow_mut().push("kill".into());
+    fn own_cgroup(&self) -> Option<String> {
+        self.own.clone()
+    }
+    fn kill_cgroup(&self, cgroup: &str) {
+        let own = self.own.as_deref().unwrap_or("/system.slice/k3s.service");
+        assert!(
+            own != cgroup && !own.starts_with(&format!("{cgroup}/")),
+            "killed the caller's own cgroup {cgroup}"
+        );
+        self.calls.borrow_mut().push(format!("kill {cgroup}"));
+    }
+    fn kill_shims(&self) {
+        self.calls.borrow_mut().push("kill shims".into());
     }
     fn mounts(&self) -> Result<Vec<PathBuf>, String> {
         Ok(Vec::new())
@@ -638,4 +659,50 @@ async fn control_invites_joins_removes_and_leaves() {
     }
     assert!(!log.contains("K10"), "no token in the audit log");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_switch_from_inside_k3s_never_kills_its_caller() {
+    // k3s-prepare runs `cluster prepare` inside k3s.service's cgroup: a role switch kills the
+    // pods and the shims (by name), never that cgroup (Restart=always would loop on it).
+    for own in [
+        Some("/system.slice/k3s.service/.control"),
+        Some("/system.slice/k3s.service"),
+        None,
+    ] {
+        let host = FakeHost {
+            own: own.map(str::to_string),
+            calls: RefCell::default(),
+        };
+        crate::factory_reset::kill_leftovers(&host);
+        assert_eq!(
+            *host.calls.borrow(),
+            vec!["kill /kubepods", "kill /kubepods.slice", "kill shims"],
+            "{own:?}"
+        );
+    }
+    // Through a real switch: the data moves, the caller lives.
+    let t = Tree::new("cluster-own-cgroup");
+    std::fs::create_dir_all(at(&t.root, K3S_DATA).join("server")).unwrap();
+    t.set(&agent_setting());
+    write_private(&t.config.join(JOIN_TOKEN_FILE), b"K10abc::server:secret").unwrap();
+    let host = FakeHost::default();
+    let st = prepare(&t.root, &t.config, &input(None), &host, &mut |_| {}).unwrap();
+    assert_eq!(st.role, Role::Agent);
+    assert!(host.calls.borrow().contains(&"kill shims".to_string()));
+    assert!(!host
+        .calls
+        .borrow()
+        .iter()
+        .any(|c| c.contains("k3s.service")));
+    // A reset from its own unit does kill k3s.service's leftovers.
+    let host = FakeHost {
+        own: Some("/system.slice/melissa-factory-reset.service".into()),
+        calls: RefCell::default(),
+    };
+    crate::factory_reset::kill_leftovers(&host);
+    assert!(host
+        .calls
+        .borrow()
+        .contains(&"kill /system.slice/k3s.service".to_string()));
 }

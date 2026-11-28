@@ -559,7 +559,7 @@ fn move_data(host: &dyn crate::factory_reset::Host, from: &Path, to: &Path) -> R
     if from.symlink_metadata().is_err() {
         return Ok(());
     }
-    host.kill_leftovers();
+    crate::factory_reset::kill_leftovers(host);
     crate::factory_reset::unmount_below(host, from, true)?;
     std::fs::rename(from, to)
         .map_err(|e| format!("moving {} to {}: {e}", from.display(), to.display()))

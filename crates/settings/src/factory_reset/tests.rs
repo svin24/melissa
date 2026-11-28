@@ -316,8 +316,16 @@ impl Host for Fake {
         Ok(())
     }
 
-    fn kill_leftovers(&self) {
-        self.log("kill leftovers");
+    fn own_cgroup(&self) -> Option<String> {
+        Some("/system.slice/melissa-factory-reset.service".into())
+    }
+
+    fn kill_cgroup(&self, cgroup: &str) {
+        self.log(&format!("kill leftovers {cgroup}"));
+    }
+
+    fn kill_shims(&self) {
+        self.log("kill shims");
     }
 
     fn mounts(&self) -> Result<Vec<PathBuf>, String> {
@@ -522,6 +530,12 @@ fn a_reset_removes_the_list_keeps_the_rest_and_starts_unclaimed() {
     assert!(pos("tailscale logout") < pos("stop"));
     assert!(pos("stop") < pos("kill leftovers"));
     assert!(pos("kill leftovers") < pos("unmount"));
+    // The reset runs in its own unit: k3s.service's cgroup (the shims) goes too.
+    assert!(
+        calls.contains(&format!("kill leftovers {K3S_CGROUP}")),
+        "{calls:?}"
+    );
+    assert!(pos("kill leftovers") < pos("kill shims"));
     assert!(pos("journal detach") < pos("journal attach"));
     assert!(pos("tmpfiles") < pos("start"));
     assert_eq!(calls.last().unwrap(), &format!("start {}", START.join(" ")));
