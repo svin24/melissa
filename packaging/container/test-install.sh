@@ -943,6 +943,39 @@ eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL
         "$(yes_if 'grep -q "\"from\":\"0.0.3\",\"from_revision\":\"abc1234\",\"to\":\"0.0.4\"" "$STATE/updated.json"')"
     eq "apply: just_updated in status.json" yes "$(yes_no grep -q '"just_updated":{"from":"0.0.3"' "$STATUS/status.json")"
     eq "apply: last says updated" updated "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "apply: no in-progress marker left" no "$(yes_no test -e "$STATE/in-progress")"
+    # While images switch, a start in between doesn't move the rollback tag.
+    echo cur > "$STATE/running-id"; printf 'apply\ncur\nnew\n0.0.3\n0.0.4\n' > "$STATE/in-progress"
+    : > "$calls"
+    note_running
+    eq "in progress: running-id kept" cur "$(cat "$STATE/running-id")"
+    eq "in progress: nothing tagged" no "$(yes_no grep -q 'podman tag' "$calls")"
+    # Cut off after the restart (a reboot): the new image runs and answers -> finished.
+    rm -f "$STATE/updated.json"
+    resume > /dev/null
+    eq "resume: healthy new image -> updated" updated "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "resume: just_updated written" yes "$(yes_no test -s "$STATE/updated.json")"
+    eq "resume: marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    # Cut off, and the new image doesn't answer -> back on the old one, the new one held.
+    printf 'apply\ncur\nnew\n0.0.3\n0.0.4\n' > "$STATE/in-progress"
+    NEW_STARTS=no START_WAIT=0
+    resume > /dev/null
+    eq "resume: unhealthy -> back on the old image" cur "$(cat "$hu_t/running")"
+    eq "resume: ...the new one held as failed" yes "$(yes_no grep -q '"reason":"failed"' "$STATE/held.json")"
+    eq "resume: ...last says no_start" no_start "$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$STATUS/last.json")"
+    eq "resume: ...marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    resume > "$hu_t/rout"
+    eq "resume: nothing cut off does nothing" "" "$(cat "$hu_t/rout")"
+    # A rollback whose previous image doesn't start: the current one is put back, not held.
+    : > "$calls"
+    rollback > /dev/null
+    eq "rollback fails: still on the image that ran" cur "$(cat "$hu_t/running")"
+    eq "rollback fails: the name points at it again" yes "$(yes_no grep -qx 'podman tag back' "$calls")"
+    eq "rollback fails: no hold on the running image" no "$(yes_no test -e "$STATE/held.json")"
+    eq "rollback fails: last says so" "false no_start" \
+        "$(sed -n 's/.*"ok":\([a-z]*\),.*"kind":"\([^"]*\)".*/\1 \2/p' "$STATUS/last.json")"
+    eq "rollback fails: marker gone" no "$(yes_no test -e "$STATE/in-progress")"
+    eq "clean: ASCII only, no quotes" 'x y' "$(clean $'\xc3\xa9x "y\\')"
     exit "$fails"
 ) || fails=$((fails + $?))
 # Migration: podman-auto-update.timer goes off only if install.sh had turned it on, and no other
@@ -951,6 +984,9 @@ eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL
     set +e
     fails=0
     calls="$hu_t/mcalls"; : > "$calls"
+    mkdir -p "$hu_t/q1" "$hu_t/q2"
+    printf '[Container]\nAutoUpdate=registry\n' > "$hu_t/q1/melissa.container"
+    QUADLET_DIRS=("$hu_t/q1" "$hu_t/q2")
     systemctl() { echo "systemctl $*" >> "$calls"; }
     podman() { printf '%s\n' $PODMAN_PS; }
     PODMAN_PS="melissa"
@@ -963,6 +999,12 @@ eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL
     out=$(podman_timer_migrate yes 2>&1 >/dev/null)
     eq "migrate: another container uses it: kept" "" "$(cat "$calls")"
     eq "migrate: ...and says so" yes "$(yes_no grep -q 'other containers use it (nextcloud)' <<<"$out")"
+    # A Quadlet with AutoUpdate= whose container doesn't exist yet counts too.
+    : > "$calls"; PODMAN_PS="melissa"
+    printf '[Container]\n AutoUpdate=local\n' > "$hu_t/q2/gitea.container"
+    out=$(podman_timer_migrate yes 2>&1 >/dev/null)
+    eq "migrate: a Quadlet with AutoUpdate=: kept" "" "$(cat "$calls")"
+    eq "migrate: ...named" yes "$(yes_no grep -q 'other containers use it (gitea)' <<<"$out")"
     exit "$fails"
 ) || fails=$((fails + $?))
 rm -rf "$hu_t"

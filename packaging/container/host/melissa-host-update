@@ -13,6 +13,10 @@
 #   melissa-host-update timers     write the automatic update time and switch the timer on or off
 #                                  (SCHEDULE and AUTO_UPDATE in install.env)
 #   melissa-host-update requests   melissa-update.service: carry out what the server asked for
+#   melissa-host-update resume     finish an update or rollback that was cut off (a reboot, a crash,
+#                                  a unit timeout): health check, else back to the image before
+#   melissa-host-update resume-later   start `resume` in the background if one was cut off
+#                                  (Melissa's ExecStartPost, the update units' ExecStopPost)
 #
 # The server (inside the container, unprivileged) asks by creating an empty file in
 # /var/lib/melissa-container/request (bind-mounted at /run/melissa-update-request), named check,
@@ -24,6 +28,9 @@
 #   last.json    {"action", "ok", "at", "message", "kind", "version"}
 #   action.json  while something runs: {"action", "step", "version", "bytes_done", "bytes_total",
 #                 "started", "updated"}
+# While an update or rollback switches images, $STATE/in-progress says which (mode, old and new
+# image id, their versions): starts in between don't move the rollback tag, and a cut-off one is
+# finished or undone by `resume`.
 set -u
 umask 022
 
@@ -57,8 +64,9 @@ load_env() {
     valid_schedule "$SCHEDULE" || SCHEDULE=daily-03
 }
 
+# Printable ASCII only (so cutting bytes never splits a character), no quotes or backslashes.
 # shellcheck disable=SC1003 # a backslash inside single quotes, as meant
-clean() { printf '%s' "$1" | tr -d '\000-\037"\\' | cut -c1-"${2:-300}"; }
+clean() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037"\\\177-\377' | LC_ALL=C cut -c1-"${2:-300}"; }
 now() { date +%s; }
 
 write() { # write <name>: stdin -> $STATUS/<name>, atomically, 0644
@@ -129,6 +137,9 @@ image_json() { # image_json <image ref or id> -> {"id","digest","created","versi
 # under $PREVIOUS so a rollback can return to it.
 note_running() {
     local cur seen old
+    # Mid-update or mid-rollback: a start in between (the new image, or the old one put back) is
+    # not a new "previous"; the action records the outcome itself.
+    [ -e "$STATE/in-progress" ] && return 0
     cur=$(running_id) || return 0
     [ -n "$cur" ] || return 0
     seen=$(cat "$STATE/running-id" 2>/dev/null || true)
@@ -151,7 +162,7 @@ remote() {
     local out sizes s
     R_DIGEST='' R_VERSION='' R_REVISION='' R_SIZE=0 R_ERR=''
     if command -v skopeo >/dev/null 2>&1; then
-        out=$(skopeo inspect --no-tags --format \
+        out=$(skopeo --command-timeout 2m inspect --no-tags --format \
             '{{.Digest}}|{{index .Labels "org.opencontainers.image.version"}}|{{index .Labels "org.opencontainers.image.revision"}}|{{range .LayersData}}{{.Size}} {{end}}' \
             "docker://$1" 2>&1) || { R_ERR=$out; return 1; }
         IFS='|' read -r R_DIGEST R_VERSION R_REVISION sizes <<<"$out"
@@ -277,6 +288,103 @@ wait_up() { # wait_up <image id> [action version]: Melissa runs it and her serve
     return 1
 }
 
+# --- Switching images -----------------------------------------------------------------------------
+
+# restart_unit <action> <step> [version]: restart Melissa, refreshing action.json meanwhile (a start
+# can take minutes; the page treats an action not refreshed for 15 minutes as gone).
+restart_unit() {
+    local pid rc
+    act "$1" "$2" "${3:-}"
+    systemctl restart "$UNIT" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        act "$1" "$2" "${3:-}"
+        sleep 5
+    done
+    wait "$pid"; rc=$?
+    return "$rc"
+}
+
+mark() { printf '%s\n' "$@" | keep in-progress; } # mark <mode> <old id> <new id> <old version> <new version>
+unmark() { rm -f "$STATE/in-progress"; }
+
+# update_done <mode> <old id> <new id> <old version> <new version>: the new image runs and answers.
+update_done() {
+    rm -f "$STATE/available.json" "$STATE/held.json"
+    printf '{"from":"%s","from_revision":"%s","to":"%s","to_revision":"%s","at":%s}\n' \
+        "$(clean "$4" 64)" "$(clean "$(label "$2" org.opencontainers.image.revision)" 64)" \
+        "$(clean "$5" 64)" "$(clean "$(label "$3" org.opencontainers.image.revision)" 64)" \
+        "$(now)" | keep updated.json
+    unmark; act_done; status; last "$1" true updated "running ${3:0:12}" "$5"
+}
+
+# update_undo <mode> <old id> <new id> <old version> <new version> <ref> <why>: the new image did
+# not come up; hold it, put the old one back under the name and restart on it.
+update_undo() {
+    hold "$3" failed "$7"
+    podman tag "$2" "$6"
+    restart_unit rollback restart "$4"
+    wait_up "$2" rollback "$4" || true
+    unmark; act_done; status
+    last "$1" false no_start "the new image (${3:0:12}) did not start; back on ${2:0:12}" "$5"
+}
+
+# rollback_done <old id> <new id> <old version> <new version>: back on the previous image.
+rollback_done() {
+    rm -f "$STATE/available.json" "$STATE/updated.json"
+    unmark; act_done; status; last rollback true rolled_back "running ${2:0:12}" "$4"
+}
+
+# rollback_undo <old id> <new id> <old version> <new version> <ref>: the previous image did not
+# start; put back the one that ran (no longer held) so Melissa is up again.
+rollback_undo() {
+    rm -f "$STATE/held.json"
+    podman tag "$1" "$5"
+    restart_unit rollback restart "$3"
+    wait_up "$1" rollback "$3" || true
+    unmark; act_done; status
+    last rollback false no_start "the previous image did not start; back on ${1:0:12}" "$4"
+}
+
+# Finish what a cut-off update or rollback left: if the new image runs, check it as the action would
+# have; otherwise go back to the old one.
+resume() {
+    local mode old new from to r cur
+    lock -w 3600 || return 1
+    [ -r "$STATE/in-progress" ] || return 0
+    { read -r mode; read -r old; read -r new; read -r from; read -r to; } < "$STATE/in-progress"
+    case "$mode" in apply|auto|rollback) ;; *) unmark; return 0 ;; esac
+    r=$(ref); cur=$(running_id || true)
+    echo "melissa-host-update: finishing a $mode that was cut off (${old:0:12} -> ${new:0:12})"
+    if [ -n "$new" ] && [ "$cur" = "$new" ] && wait_up "$new" "$mode" "$to"; then
+        if [ "$mode" = rollback ]; then rollback_done "$old" "$new" "$from" "$to"
+        else update_done "$mode" "$old" "$new" "$from" "$to"; fi
+        return 0
+    fi
+    if [ -n "$old" ] && [ "$cur" = "$old" ]; then
+        # The switch never happened: make sure the name points at what runs, and say so.
+        podman tag "$old" "$r" 2>/dev/null || true
+        [ "$mode" = rollback ] && rm -f "$STATE/held.json"
+        unmark; act_done; status
+        last "$mode" false interrupted "cut off before the restart; still on ${old:0:12}" "$to"
+        return 1
+    fi
+    [ -n "$old" ] || { unmark; act_done; status; return 1; }
+    if [ "$mode" = rollback ]; then rollback_undo "$old" "$new" "$from" "$to" "$r"
+    else update_undo "$mode" "$old" "$new" "$from" "$to" "$r" \
+        "Melissa did not answer after the update was cut off (a restart or a crash)"; fi
+    return 1
+}
+
+# A cut-off action: the marker is there and nothing holds the lock.
+cut_off() { [ -e "$STATE/in-progress" ] && flock -n "$STATE/lock" true; }
+
+resume_later() {
+    cut_off || return 0
+    systemd-run --no-block --quiet --collect --unit=melissa-update-resume \
+        "$(readlink -f "$0")" resume 2>/dev/null || true
+}
+
 # --- Actions --------------------------------------------------------------------------------------
 
 check() {
@@ -365,25 +473,14 @@ update() {
     fi
     to=$(label "$new" org.opencontainers.image.version)
     echo "melissa-host-update: restarting Melissa on ${new:0:12} (was ${cur:0:12})"
-    act "$mode" restart "$to"
-    systemctl restart "$UNIT"
+    mark "$mode" "$cur" "$new" "$from" "$to"
+    restart_unit "$mode" restart "$to"
     if wait_up "$new" "$mode" "$to"; then
-        rm -f "$STATE/available.json" "$STATE/held.json"
-        printf '{"from":"%s","from_revision":"%s","to":"%s","to_revision":"%s","at":%s}\n' \
-            "$(clean "$from" 64)" "$(clean "$(label "$cur" org.opencontainers.image.revision)" 64)" \
-            "$(clean "$to" 64)" "$(clean "$(label "$new" org.opencontainers.image.revision)" 64)" \
-            "$(now)" | keep updated.json
-        act_done; status; last "$mode" true updated "running ${new:0:12}" "$to"
+        update_done "$mode" "$cur" "$new" "$from" "$to"
         return 0
     fi
-    # The new image did not come up: put the old one back under the name and restart on it.
-    act rollback restart "$from"
-    hold "$new" failed "Melissa did not answer within $((START_WAIT / 60)) minutes after the restart"
-    podman tag "$cur" "$r"
-    systemctl restart "$UNIT"
-    wait_up "$cur" rollback "$from" || true
-    act_done; status
-    last "$mode" false no_start "the new image (${new:0:12}) did not start; back on ${cur:0:12}" "$to"
+    update_undo "$mode" "$cur" "$new" "$from" "$to" "$r" \
+        "Melissa did not answer within $((START_WAIT / 60)) minutes after the restart"
     return 1
 }
 
@@ -394,7 +491,7 @@ auto() {
 }
 
 rollback() {
-    local r cur prev to
+    local r cur prev to from
     lock -w 3600 || { last rollback false busy "another update is running"; return 1; }
     r=$(ref); cur=$(running_id || true)
     prev=$(image_id "$PREVIOUS" || true)
@@ -402,15 +499,18 @@ rollback() {
         status; last rollback false no_previous "there is no previous image"; return 1
     fi
     to=$(label "$prev" org.opencontainers.image.version)
+    from=$(label "$cur" org.opencontainers.image.version)
     act rollback restart "$to"
+    mark rollback "$cur" "$prev" "$from" "$to"
     [ -n "$cur" ] && hold "$cur" rolled_back
     podman tag "$prev" "$r"
-    systemctl restart "$UNIT"
+    restart_unit rollback restart "$to"
     if wait_up "$prev" rollback "$to"; then
-        rm -f "$STATE/available.json" "$STATE/updated.json"
-        act_done; status; last rollback true rolled_back "running ${prev:0:12}" "$to"
+        rollback_done "$cur" "$prev" "$from" "$to"
+    elif [ -n "$cur" ]; then
+        rollback_undo "$cur" "$prev" "$from" "$to" "$r"; return 1
     else
-        act_done; status; last rollback false no_start "the previous image did not start" "$to"; return 1
+        unmark; act_done; status; last rollback false no_start "the previous image did not start" "$to"; return 1
     fi
 }
 
@@ -423,9 +523,16 @@ on_calendar() { # daily-03 -> "*-*-* 03:00:00", sun-03 -> "Sun *-*-* 03:00:00"
 }
 
 set_env() { # set_env KEY VALUE in install.env (a token without quotes or spaces)
-    local f=$ENV_FILE
+    local f=$ENV_FILE keep
     [ -e "$f" ] || : > "$f"
-    { grep -v "^$1=" "$f" || true; echo "$1=$2"; } > "$f.new" && mv -f "$f.new" "$f"
+    keep=$(grep -vc "^$1=" "$f")
+    # Replace the file only when the new one is whole (a full disk must not truncate it).
+    if { grep -v "^$1=" "$f"; echo "$1=$2"; } > "$f.new" 2>/dev/null \
+        && [ "$(grep -vc "^$1=" "$f.new")" = "$keep" ] && grep -qx "$1=$2" "$f.new"; then
+        mv -f "$f.new" "$f"
+    else
+        rm -f "$f.new"; echo "melissa-host-update: could not write $f" >&2; return 1
+    fi
 }
 
 # Write the drop-in with the owner's time and switch the automatic update on or off. The check
@@ -452,28 +559,31 @@ auto_mode() { # what AUTO_UPDATE is when on, for this image
 # --- Requests from the server ---------------------------------------------------------------------
 
 requests() {
-    local verb todo=() f n setting=no
+    local verb todo=() seen=() f n setting=no
     [ -d "$REQUESTS" ] || return 0
+    # One look at the directory: only these names are acted on and deleted, so a request made
+    # meanwhile stays for the next run (the path unit starts it again).
+    while IFS= read -r -d '' f; do seen+=("${f##*/}"); done \
+        < <(find "$REQUESTS" -mindepth 1 -maxdepth 1 -print0)
+    has() { local x; for x in "${seen[@]}"; do [ "$x" = "$1" ] && return 0; done; return 1; }
     for n in auto-off auto-on; do
-        if [ -e "$REQUESTS/$n" ] || [ -L "$REQUESTS/$n" ]; then
+        if has "$n"; then
             if [ "$n" = auto-on ]; then AUTO_UPDATE=$(auto_mode); else AUTO_UPDATE=off; fi
             setting=yes
         fi
     done
-    for f in "$REQUESTS"/schedule-*; do
-        [ -e "$f" ] || [ -L "$f" ] || continue
-        n=${f##*/}; n=${n#schedule-}
+    for f in "${seen[@]}"; do
+        case "$f" in schedule-*) ;; *) continue ;; esac
+        n=${f#schedule-}
         if valid_schedule "$n"; then SCHEDULE=$n; setting=yes; fi
     done
     for verb in check apply rollback; do
-        f="$REQUESTS/$verb"
-        if [ -e "$f" ] || [ -L "$f" ]; then todo+=("$verb"); fi
+        if has "$verb"; then todo+=("$verb"); fi
     done
-    # Empty the directory: known names were noted, anything else is ignored. rm never follows links.
-    find "$REQUESTS" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    # Delete what was seen: known names were noted, anything else is ignored. rm never follows links.
+    for f in "${seen[@]}"; do rm -rf -- "${REQUESTS:?}/$f"; done
     if [ "$setting" = yes ]; then
-        set_env AUTO_UPDATE "$AUTO_UPDATE"
-        set_env SCHEDULE "$SCHEDULE"
+        set_env AUTO_UPDATE "$AUTO_UPDATE" && set_env SCHEDULE "$SCHEDULE"
         timers
         status
         echo "melissa-host-update: automatic updates $AUTO_UPDATE, schedule $SCHEDULE"
@@ -486,9 +596,14 @@ requests() {
 load_env
 mkdir -p "$STATUS"
 case "${1:-}" in
-status) status ;;
-check|apply|auto|rollback|requests|timers)
+status) status; if [ "$(id -u)" = 0 ]; then resume_later; fi ;;
+check|requests)
     [ "$(id -u)" = 0 ] || { echo "melissa-host-update: run as root" >&2; exit 1; }
+    # A cut-off update first (it needs the lock the action would take).
+    cut_off && resume
     "$1" ;;
-*) sed -n '2,27p' "$0"; exit 2 ;;
+apply|auto|rollback|timers|resume|resume-later)
+    [ "$(id -u)" = 0 ] || { echo "melissa-host-update: run as root" >&2; exit 1; }
+    "${1//-/_}" ;;
+*) sed -n '2,34p' "$0"; exit 2 ;;
 esac

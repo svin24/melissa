@@ -112,7 +112,7 @@ if [ "$PURGE" = yes ]; then
     say "purged"
 else
     rm -rf "$STATE/request" "$STATE/status" "$STATE/running-id" "$STATE/available-for" \
-        "$STATE/available.json" "$STATE/held.json" "$STATE/updated.json" "$STATE/lock" "$STATE/pull-tmp"
+        "$STATE/available.json" "$STATE/held.json" "$STATE/updated.json" "$STATE/lock" "$STATE/in-progress" "$STATE/pull-tmp"
     say "removed. Kept: volume melissa-var (your data), images ($IMAGE${IMAGE:+, }$PREVIOUS if present),"
     say "  $STATE/install.env. Install again to continue, or run with --purge to delete them."
 fi

@@ -576,12 +576,21 @@ update_timers() {
 
 # Before 2026-11-28 install.sh enabled podman-auto-update.timer for Melissa (TIMER_OURS=yes) and the
 # Quadlet carried AutoUpdate=. Melissa now has her own timer: turn podman's off again, unless other
-# containers on this host have come to rely on it. Prints the new TIMER_OURS.
+# containers on this host have come to rely on it (QUADLET_DIRS: where system Quadlets live,
+# podman-systemd.unit(5); tests point it elsewhere). Prints the new TIMER_OURS.
+QUADLET_DIRS=(/etc/containers/systemd /usr/share/containers/systemd)
 podman_timer_migrate() {
-    local others
+    local others d f
     if [ "$1" != yes ]; then echo no; return; fi
-    others=$(podman ps -a --filter label=io.containers.autoupdate --format '{{.Names}}' 2>/dev/null \
-        | grep -vx "$CONTAINER_NAME" | paste -sd ' ')
+    # Containers that exist now, and Quadlets that may create one later (not started yet).
+    others=$( {
+        podman ps -a --filter label=io.containers.autoupdate --format '{{.Names}}' 2>/dev/null
+        for d in "${QUADLET_DIRS[@]}"; do
+            for f in "$d"/*.container; do
+                [ -f "$f" ] && grep -qE '^[[:space:]]*AutoUpdate=' "$f" && basename "$f" .container
+            done
+        done
+    } | grep -vx "$CONTAINER_NAME" | sort -u | paste -sd ' ')
     if [ -n "$others" ]; then
         say "left podman-auto-update.timer on: other containers use it ($others); it no longer updates Melissa" >&2
     else
