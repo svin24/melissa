@@ -502,6 +502,54 @@ fn a_newer_melissas_login_store_is_read_and_never_written() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A sign-out made while a newer Melissa's login store is read-only survives a restart (in
+/// its own small file), and is folded into the store once that can be written again.
+#[test]
+fn sign_outs_last_while_a_newer_login_store_is_read_only() {
+    let dir = std::env::temp_dir().join(format!("melissa-auth-revoked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let f = Fixture::with(Auth::open(&dir).unwrap());
+    let gone = f.claimed();
+    let kept = f
+        .auth
+        .login("Ana", "owner-password", "198.51.100.1", "Firefox")
+        .unwrap();
+    let file = dir.join(FILE_NAME);
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    doc["format"] = 7.into();
+    let newer = serde_json::to_string_pretty(&doc).unwrap();
+    std::fs::write(&file, &newer).unwrap();
+
+    let older = Fixture::with(Auth::open(&dir).unwrap());
+    older.auth.sign_out(&gone.token, "198.51.100.1");
+    assert!(older.auth.session(&gone.token).is_none());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
+    assert!(dir.join(REVOKED_FILE_NAME).exists());
+
+    // Restarted, still on the older Melissa: the sign-out held.
+    let restarted = Fixture::with(Auth::open(&dir).unwrap());
+    assert!(restarted.auth.session(&gone.token).is_none());
+    assert!(restarted.auth.session(&kept.token).is_some());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
+
+    // The store is writable again (here: back in this version's format): folded in.
+    doc["format"] = 1.into();
+    std::fs::write(&file, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    let updated = Fixture::with(Auth::open(&dir).unwrap());
+    assert!(updated.auth.session(&gone.token).is_none());
+    assert!(updated.auth.session(&kept.token).is_some());
+    assert!(dir.join(REVOKED_FILE_NAME).exists());
+    updated
+        .auth
+        .login("Ana", "owner-password", "198.51.100.1", "Firefox")
+        .unwrap();
+    assert!(!dir.join(REVOKED_FILE_NAME).exists());
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains(&gone.view.id), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A login store from before formats existed (no `format` key) loads.
 #[test]
 fn a_login_store_from_before_formats_loads() {

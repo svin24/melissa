@@ -253,6 +253,36 @@ struct Inner {
     data: Data,
     setup: Option<SetupCode>,
     limits: limits::Limits,
+    /// `auth.json` was written by a newer Melissa: it is never written; sign-outs and
+    /// withdrawn invites go to [`REVOKED_FILE_NAME`] instead.
+    read_only: bool,
+    /// [`REVOKED_FILE_NAME`] was applied at open and is still on disk.
+    revoked_pending: bool,
+}
+
+/// Sign-outs and withdrawn invites made while `auth.json` is read-only (after a rollback):
+/// its own small file, in a format every Melissa since 2026-11-28 writes, so they survive a
+/// restart and the newer Melissa applies them when it is back. Applied at every open and
+/// removed after the next successful save of `auth.json`. Every later version must keep
+/// reading it.
+const REVOKED_FILE_NAME: &str = "revoked.json";
+
+/// `revoked.json`'s format.
+pub const REVOKED_FORMAT: melissa_statefile::JsonFormat = melissa_statefile::Format {
+    name: "sign-out list",
+    current: 1,
+    migrations: &[],
+    v1_marker: true,
+};
+
+/// What [`REVOKED_FILE_NAME`] holds: SHA-256 hashes of revoked session cookies, ids of
+/// withdrawn invites.
+#[derive(Default, Serialize, Deserialize)]
+struct Revoked {
+    #[serde(default)]
+    sessions: Vec<String>,
+    #[serde(default)]
+    invites: Vec<String>,
 }
 
 /// The login store. Cheap to clone; clones share state.
@@ -320,19 +350,40 @@ impl Auth {
             .map_err(io)?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io)?;
         let path = dir.join(FILE_NAME);
-        let data = match std::fs::read(&path) {
+        let (mut data, read_only) = match std::fs::read(&path) {
             Ok(bytes) => {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
                     .map_err(io)?;
-                melissa_statefile::parse_json::<Data>(&path, &AUTH_FORMAT, &bytes)
-                    .map_err(io)?
-                    .value
+                let loaded = melissa_statefile::parse_json::<Data>(&path, &AUTH_FORMAT, &bytes)
+                    .map_err(io)?;
+                (loaded.value, loaded.read_only)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Data::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Data::default(), false),
             Err(e) => return Err(io(e)),
         };
+        let revoked_path = dir.join(REVOKED_FILE_NAME);
+        let revoked = match melissa_statefile::read_json::<Revoked>(&revoked_path, &REVOKED_FORMAT)
+        {
+            Ok(r) => r.map(|r| r.value),
+            Err(e) => {
+                // Which sessions were signed out is unknown: none is trusted (fails closed).
+                tracing::error!("{e}; every session is signed out");
+                data.sessions.clear();
+                None
+            }
+        };
+        if let Some(r) = &revoked {
+            data.sessions.retain(|s| !r.sessions.contains(&s.hash));
+            data.invites.retain(|i| !r.invites.contains(&i.id));
+        }
         let claimed = data.accounts.iter().any(|a| a.role == Role::Owner);
         let auth = Self::with_data(data, Some(path));
+        {
+            let mut inner = auth.lock();
+            inner.read_only = read_only;
+            // Applied above; removed once auth.json has been saved without them (next save).
+            inner.revoked_pending = revoked.is_some();
+        }
         if claimed {
             auth.forget_setup_code()?;
         } else {
@@ -391,6 +442,8 @@ impl Auth {
                 data,
                 setup: None,
                 limits: limits::Limits::default(),
+                read_only: false,
+                revoked_pending: false,
             })),
             path,
             clock: Arc::new(system_now),
@@ -438,6 +491,46 @@ impl Auth {
         }
     }
 
+    /// Make sign-outs (session cookie hashes) and withdrawn invites (ids), already removed
+    /// from `inner`, last: in `auth.json`, or while that is a newer Melissa's (read-only) in
+    /// [`REVOKED_FILE_NAME`], so they survive a restart either way. A failure is logged as an
+    /// error: the revocation then holds only until the next restart.
+    fn persist_revocation(&self, inner: &mut Inner, sessions: &[String], invites: &[String]) {
+        let result = if inner.read_only {
+            self.add_revoked(sessions, invites)
+        } else {
+            self.save(inner)
+        };
+        if let Err(e) = result {
+            tracing::error!("a sign-out could not be saved (it holds until a restart): {e}");
+        }
+    }
+
+    fn add_revoked(&self, sessions: &[String], invites: &[String]) -> Result<(), AuthError> {
+        let Some(path) = self
+            .path
+            .as_ref()
+            .map(|p| p.with_file_name(REVOKED_FILE_NAME))
+        else {
+            return Ok(());
+        };
+        let mut list = melissa_statefile::read_json::<Revoked>(&path, &REVOKED_FORMAT)
+            .map_err(io)?
+            .map(|l| l.value)
+            .unwrap_or_default();
+        for s in sessions {
+            if !list.sessions.contains(s) {
+                list.sessions.push(s.clone());
+            }
+        }
+        for i in invites {
+            if !list.invites.contains(i) {
+                list.invites.push(i.clone());
+            }
+        }
+        save_json(&path, &REVOKED_FORMAT, &list)
+    }
+
     /// Drop what has expired and write the file (atomically, 0600).
     fn save(&self, inner: &mut Inner) -> Result<(), AuthError> {
         let now = self.now();
@@ -446,7 +539,17 @@ impl Auth {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        save_json(path, &AUTH_FORMAT, &inner.data)
+        save_json(path, &AUTH_FORMAT, &inner.data)?;
+        if inner.revoked_pending {
+            // Applied at open and now in auth.json: the list has done its job.
+            match std::fs::remove_file(path.with_file_name(REVOKED_FILE_NAME)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    tracing::warn!("removing the sign-out list: {e}");
+                }
+                _ => inner.revoked_pending = false,
+            }
+        }
+        Ok(())
     }
 
     fn hash(&self, password: &str) -> Result<String, AuthError> {
@@ -716,7 +819,13 @@ impl Auth {
             .position(|s| constant_time_eq(s.hash.as_bytes(), hash.as_bytes()))?;
         if !session_alive(&inner.data.sessions[idx], now) {
             inner.data.sessions.remove(idx);
-            let _ = self.save(&mut inner);
+            // Only tidying: an expired session stays expired after a restart whether or not
+            // this is saved (and it is not while auth.json is read-only).
+            if !inner.read_only {
+                if let Err(e) = self.save(&mut inner) {
+                    tracing::warn!("saving the session list: {e}");
+                }
+            }
             return None;
         }
         let s = inner.data.sessions[idx].clone();
@@ -728,7 +837,9 @@ impl Auth {
             .clone();
         if now.saturating_sub(s.last_seen) >= TOUCH_SECS {
             inner.data.sessions[idx].last_seen = now;
-            if let Err(e) = self.save(&mut inner) {
+            if inner.read_only {
+                // "Last used" only; not worth a warning on every request.
+            } else if let Err(e) = self.save(&mut inner) {
                 tracing::warn!("saving the session list: {e}");
             }
         }
@@ -749,7 +860,7 @@ impl Auth {
         };
         let s = inner.data.sessions.remove(idx);
         let who = username_of(&inner, &s.account);
-        let _ = self.save(&mut inner);
+        self.persist_revocation(&mut inner, &[s.hash], &[]);
         drop(inner);
         self.emit("auth.logout", &who, source, "signed out");
     }
@@ -777,15 +888,21 @@ impl Auth {
     /// Sign out one of `account`'s sessions by its public id. False if there is none.
     pub fn revoke_session(&self, account: &str, id: &str, source: &str) -> bool {
         let mut inner = self.lock();
-        let before = inner.data.sessions.len();
+        let gone: Vec<String> = inner
+            .data
+            .sessions
+            .iter()
+            .filter(|s| s.account == account && s.id == id)
+            .map(|s| s.hash.clone())
+            .collect();
         inner
             .data
             .sessions
             .retain(|s| !(s.account == account && s.id == id));
-        let removed = inner.data.sessions.len() < before;
+        let removed = !gone.is_empty();
         if removed {
             let who = username_of(&inner, account);
-            let _ = self.save(&mut inner);
+            self.persist_revocation(&mut inner, &gone, &[]);
             drop(inner);
             self.emit(
                 "auth.session_revoked",
@@ -800,11 +917,17 @@ impl Auth {
     /// Sign out every session of `account` ("Sign out everywhere"). Returns how many.
     pub fn revoke_all(&self, account: &str, source: &str) -> usize {
         let mut inner = self.lock();
-        let before = inner.data.sessions.len();
+        let gone: Vec<String> = inner
+            .data
+            .sessions
+            .iter()
+            .filter(|s| s.account == account)
+            .map(|s| s.hash.clone())
+            .collect();
         inner.data.sessions.retain(|s| s.account != account);
-        let n = before - inner.data.sessions.len();
+        let n = gone.len();
         let who = username_of(&inner, account);
-        let _ = self.save(&mut inner);
+        self.persist_revocation(&mut inner, &gone, &[]);
         drop(inner);
         self.emit(
             "auth.session_revoked",
@@ -995,7 +1118,7 @@ impl Auth {
         let removed = inner.data.invites.len() < before;
         if removed {
             let who = username_of(&inner, by);
-            let _ = self.save(&mut inner);
+            self.persist_revocation(&mut inner, &[], &[id.to_string()]);
             drop(inner);
             self.emit("auth.invite_revoked", &who, source, id.to_string());
         }
