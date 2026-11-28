@@ -168,7 +168,7 @@ RUN rm -f /README.md
 RUN set -eu; \
     systemctl enable melissa-server.service k3s.service melissa-kubeconfig.service \
         melissa-ui-forward.socket melissa-app-access.service melissa-tailscaled.service \
-        melissa-factory-reset.path melissa-factory-reset.service; \
+        melissa-netns-sysctl.service melissa-factory-reset.path melissa-factory-reset.service; \
     # podman gives the container its network and DNS; nothing inside may take them over.
     systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket \
         systemd-networkd-wait-online.service 2>/dev/null || true; \
@@ -183,6 +183,14 @@ RUN set -eu; \
         sleep.target suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target \
         systemd-suspend.service systemd-hibernate.service systemd-hybrid-sleep.service \
         systemd-suspend-then-hibernate.service 2>/dev/null; \
+    # Devices and kernel settings are the host's business too. --privileged shares the host's /dev and a
+    # writable /sys: a udevd here would replay "add" for every host device at each start (seen 2026-11-28:
+    # the host desktop announced an external USB drive as just plugged in whenever Melissa started), and
+    # systemd-sysctl would apply this image's sysctl.d to the host's kernel. The package is not installed
+    # (packages.txt); masked as well, so a dependency that pulls it in later cannot start it.
+    systemctl mask systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+        systemd-udevd-varlink.socket systemd-udev-trigger.service systemd-udev-settle.service \
+        systemd-udev-load-credentials.service systemd-sysctl.service 2>/dev/null; \
     # The container is recreated from the image at every start (Quadlet), and on updates; only /var is
     # a volume. Keep on it: k3s's node password (k3s refuses to rejoin its own datastore without it) and
     # the server's config (/etc/melissa: server.toml with [apps] addresses, Settings' providers.toml).
@@ -248,13 +256,22 @@ RUN set -eu; \
     npm --version >/dev/null || { echo "lint: npm missing"; exit 1; }; \
     # The tailscale package (its own tailscaled.service, enabled) must not come in: only the
     # pinned binaries, run by melissa-tailscaled.service while the owner has it on.
-    for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld; do \
+    for p in kernel-core bootc sshd openssh-server NetworkManager tailscale chrony firewalld systemd-udev; do \
         if rpm -q "$p" >/dev/null 2>&1; then echo "lint: $p must not be in the container"; exit 1; fi; done; \
     systemctl is-enabled -q melissa-server.service k3s.service melissa-ui-forward.socket \
         melissa-app-access.service melissa-tailscaled.service melissa-factory-reset.path \
-        melissa-factory-reset.service; \
+        melissa-factory-reset.service melissa-netns-sysctl.service; \
+    # The container netns's sysctls (fallback for an old Quadlet): net.* keys only, never host-wide ones.
+    test -x /usr/libexec/melissa-container/netns-sysctl || { echo "lint: netns-sysctl missing"; exit 1; }; \
+    ! grep -v -e '^#' -e '^$' -e '^net\.' /usr/lib/melissa/netns-sysctl.conf \
+        || { echo "lint: netns-sysctl.conf may hold only net.* keys"; exit 1; }; \
     test ! -e /usr/lib/systemd/system/tailscaled.service || { echo "lint: tailscaled.service must not exist"; exit 1; }; \
-    for u in systemd-logind.service sleep.target suspend.target hibernate.target; do \
+    # Nothing may replay uevents on the host's devices (see the masks above).
+    for f in /usr/bin/udevadm /usr/lib/systemd/systemd-udevd /usr/lib/systemd/systemd-sysctl; do \
+        test ! -e "$f" || { echo "lint: $f must not be in the container (host devices)"; exit 1; }; done; \
+    for u in systemd-logind.service sleep.target suspend.target hibernate.target \
+        systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+        systemd-udev-trigger.service systemd-udev-settle.service systemd-sysctl.service; do \
         [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] || { echo "lint: $u must be masked"; exit 1; }; done; \
     systemd-analyze verify --man=no /usr/lib/systemd/system/melissa-server.service \
         /usr/lib/systemd/system/k3s.service /usr/lib/systemd/system/melissa-ui-forward.socket \
@@ -264,7 +281,8 @@ RUN set -eu; \
         /usr/lib/systemd/system/melissa-cluster-label.service \
         /usr/lib/systemd/system/melissa-cluster-label.timer \
         /usr/lib/systemd/system/melissa-factory-reset.path \
-        /usr/lib/systemd/system/melissa-factory-reset.service; \
+        /usr/lib/systemd/system/melissa-factory-reset.service \
+        /usr/lib/systemd/system/melissa-netns-sysctl.service; \
     grep -q '^MELISSA_VERSION=' /usr/lib/melissa/release; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }

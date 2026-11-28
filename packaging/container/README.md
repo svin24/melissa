@@ -464,6 +464,13 @@ just gvisor-test-image          # or: just gvisor-test-image localhost/melissa:<
   from `melissa`'s subordinate ids (`/etc/subuid`: `melissa:1879048192:65536`, set in the image; agent users,
   DECISIONS). With rootful podman those ids are the host's own: no host user has them.
 - SELinux reads as disabled inside (k3s `selinux: false`); the host confines the container as podman does.
+- The host's devices and power stay the host's: `--privileged` shares `/dev` and a writable `/sys`, so the
+  image has no udev (a udevd inside replayed "add" for every host device, such as USB drives, at each start),
+  and masks udev, `systemd-sysctl`, logind and the sleep targets; `/dev/input` is hidden. The image lint and
+  the escape-test gate check this. The container's own network namespace gets its few `net.*` settings
+  (loose `rp_filter`, no source routing, unprivileged ping) from `Sysctl=` lines in the Quadlet, and again
+  at boot from `melissa-netns-sysctl.service` (for installs with an older Quadlet; it skips itself unless
+  the container is on podman's bridge). Nothing inside sets host-wide sysctls.
 - The update channel carries three fixed words as file names; the host helper takes no arguments from
   the container.
 

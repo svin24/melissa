@@ -344,12 +344,14 @@ app_network() {
     return "$fail"
 }
 
-# Power is the host's: no logind or sleep units inside (a privileged container's logind would act on
-# the host's lid switch and suspend the host), and /dev/input is an empty nodev tmpfs.
+# Power and devices are the host's: no logind or sleep units inside (a privileged container's logind
+# would act on the host's lid switch and suspend the host), no udev or systemd-sysctl (udevd replayed
+# "add" for every host device at each start), and /dev/input is an empty nodev tmpfs.
 host_power() {
     local u s fail=0 dev
     for u in systemd-logind.service systemd-logind-varlink.socket sleep.target suspend.target \
-        hibernate.target hybrid-sleep.target suspend-then-hibernate.target systemd-suspend.service; do
+        hibernate.target hybrid-sleep.target suspend-then-hibernate.target systemd-suspend.service \
+        systemd-udevd.service systemd-udevd-kernel.socket systemd-udev-trigger.service systemd-sysctl.service; do
         s=$(in_ctr systemctl is-enabled "$u" 2>/dev/null || true)
         if [ "$s" = masked ]; then echo "PASS: $u masked"; else echo "FAIL: $u is '$s', not masked"; fail=1; fi
     done
@@ -390,6 +392,15 @@ up)
         #   only the bridge gateway (the host) on eth0; pods and other containers are dropped.
         if [ "$ROOTFUL" = 1 ]; then net=(--network=bridge -p "127.0.0.1:$UI_PORT:8081")
         else net=(--network=pasta:--host-lo-to-ns-lo -p "127.0.0.1:$UI_PORT:8080"); fi
+        # The container netns's sysctls, as the Quadlet sets them (melissa.container; only net.*).
+        # pasta names the interface after the host's, so eth0's own keys only on the bridge; rootless,
+        # ping_group_range may only name gids mapped into the user namespace (crun: EINVAL), so rootful only.
+        net+=(--sysctl net.ipv4.conf.default.rp_filter=2 --sysctl net.ipv4.conf.default.accept_source_route=0
+            --sysctl net.ipv4.conf.default.promote_secondaries=1)
+        if [ "$ROOTFUL" = 1 ]; then
+            net+=(--sysctl net.ipv4.conf.eth0.rp_filter=2 --sysctl net.ipv4.conf.eth0.accept_source_route=0
+                --sysctl net.ipv4.conf.eth0.promote_secondaries=1 --sysctl "net.ipv4.ping_group_range=0 2147483647")
+        fi
         podman run -d --name "$NAME" --hostname "$NAME" \
             --privileged --systemd=always --tmpfs /dev/input -e XDG_CONFIG_HOME=/etc \
             ${HOST_TAILSCALE:+-e "MELISSA_HOST_TAILSCALE=$HOST_TAILSCALE"} \

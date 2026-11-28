@@ -69,7 +69,8 @@ form one k3s cluster. Design and runbook: `docs/design/INTERCONNECT-2026-11-27.m
   kernel, bootloader, bootc, sshd, NetworkManager, chrony or firewalld: **the host provides networking, time and
   SSH.** Tailscale is the host's when it runs it; otherwise the image's own pinned static binaries, **off by
   default** (Settings → Tailscale, section 4; DECISIONS 2026-11-21). logind and the sleep targets are masked (the container must never handle the host's
-  power keys or lid). An image lint step checks what must and must not be in it. `/usr/lib/melissa/release`
+  power keys or lid); no udev inside and its units masked (it would replay uevents for the host's devices;
+  DECISIONS 2026-11-28). An image lint step checks what must and must not be in it. `/usr/lib/melissa/release`
   carries version, revision and `MELISSA_RUNTIME=container`.
 - **Install** (`packaging/container/install.sh`, root): preflight (podman ≥ 5, cgroup v2 controllers, br_netfilter
   and overlay, free ports, bridge subnet vs k3s's), the Quadlet `/etc/containers/systemd/melissa.container`

@@ -2100,3 +2100,28 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   rejected), trusting forwarded headers on the main listener (anything on the host could forge them).
   A future root confirm service (Q108) needs its own hostname: ts.net is on the Public Suffix List, but the
   `melissa` uid can rewrite the serve config. Design: `docs/design/HTTPS-ACCESS-2026-11-28.md`.
+- **2026-11-28 — The container never touches the host's devices: no udev inside, its units masked.** Found
+  by the owner: at every Melissa start the host desktop (KDE) announced an external USB drive as just plugged
+  in. The image installed `systemd-udev`, whose `systemd-udevd` and `systemd-udev-trigger` run in sysinit
+  (`ConditionPathIsReadWrite=/sys`, true under `--privileged`), so udevd inside replayed "add" uevents for
+  every device on the host's shared `/dev` and `/sys`; host udev rules and desktop daemons reacted. The same
+  package's `systemd-sysctl` applied the image's `sysctl.d` (e.g. `kernel.core_pattern`) to the host's kernel.
+  Nothing inside needs udev: k3s, containerd, kubelet, local-path-provisioner, gVisor and tailscaled use
+  device nodes and `/sys` directly, which the host's udev already maintains (`/dev/disk/by-*`, `/dev/net/tun`).
+  So `packages.txt` drops `systemd-udev`, the Containerfile masks the udev units and `systemd-sysctl`
+  anyway (a later dependency cannot bring them back to life), the image lint fails on the package, its
+  binaries or an unmasked unit, and the escape-test gate checks the booted container. Alternative: keep the
+  package masked (no benefit; it also ships sysupdate, repart, TPM and hwdb units Melissa has no use for).
+  The container has its own network namespace (podman bridge), so the namespaced keys systemd-sysctl set
+  there (`50-default.conf`: `rp_filter`=2, `accept_source_route`=0, `promote_secondaries`=1 on `default` and
+  `eth0`; `ping_group_range` for agents on the container's network) now come from `Sysctl=` lines in the
+  Quadlet: podman applies them to the container's namespace only and refuses `net.*` with the host's
+  network. So an image-only update (an older Quadlet without those lines) keeps them, the image also sets
+  them at boot: `melissa-netns-sysctl.service` (before k3s, Tailscale and the server) applies
+  `/usr/lib/melissa/netns-sysctl.conf` (the same keys, `net.*` only, deliberately outside any `sysctl.d`). It
+  runs only when the default route goes through `eth0` and `eth0` is a veth (podman's bridge; with the host's
+  network the default route is the host's own interface), refuses non-`net.*` keys, and logs and skips a
+  missing key without failing the boot. No other sysctl file was in the image (none from k3s, Tailscale or Melissa). k3s sets
+  `ip_forward`, `bridge-nf-call-ip(6)tables` and IPv6 forwarding itself (its agent's system setup) and
+  kube-proxy `route_localnet`; containerd sets `ping_group_range` in pods. Host-wide keys (`kernel.*`, `vm.*`,
+  `fs.*`) are never set from inside; install.sh writes the kubelet's to the host's `/etc/sysctl.d`.

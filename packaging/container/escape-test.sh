@@ -87,6 +87,17 @@ case "$state" in
     *) echo "FAIL: the image did not boot (systemd: ${state:-no answer})"; exit 1 ;;
 esac
 sudo podman exec "$NAME" id melissa >/dev/null
+# --privileged shares the host's /dev: no udev inside may run (it replayed "add" for every host device,
+# e.g. USB drives, at each start) and no systemd-sysctl may write the host's kernel settings.
+for u in systemd-udevd.service systemd-udevd-kernel.socket systemd-udevd-control.socket \
+    systemd-udev-trigger.service systemd-udev-settle.service systemd-sysctl.service; do
+    st=$(sudo podman exec "$NAME" systemctl is-enabled "$u" 2>/dev/null || true)
+    act=$(sudo podman exec "$NAME" systemctl is-active "$u" 2>/dev/null || true)
+    if [ "$st" != masked ] || [ "$act" = active ] || [ "$act" = activating ]; then
+        echo "FAIL: $u must be masked and not running (is-enabled: ${st:-?}, is-active: ${act:-?})"; exit 1
+    fi
+done
+echo "   host devices: udev and sysctl units masked, not running"
 # The suite must run under Melissa's profile where the host has AppArmor, not unconfined.
 if [ "${#aa_args[@]}" -gt 0 ]; then
     label=$(sudo podman exec "$NAME" sh -c 'cat /proc/1/attr/apparmor/current 2>/dev/null || cat /proc/1/attr/current' | tr -d '\0')

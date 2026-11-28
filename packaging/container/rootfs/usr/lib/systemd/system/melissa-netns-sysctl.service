@@ -1,0 +1,18 @@
+# The container network namespace's net.* sysctls (/usr/lib/melissa/netns-sysctl.conf), before k3s,
+# Tailscale and the server use the network. The Quadlet sets the same keys (Sysctl=); this keeps them
+# on an install whose Quadlet predates that (image-only update). Skips itself unless the container has
+# its own network (podman bridge, eth0 a veth); never sets host-wide keys; never fails the boot.
+# Container image only. Docs: DECISIONS.md 2026-11-28.
+[Unit]
+Description=Melissa: container network sysctls
+ConditionVirtualization=container
+Before=k3s.service melissa-tailscaled.service melissa-server.service melissa-ui-forward.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/melissa-container/netns-sysctl
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target
