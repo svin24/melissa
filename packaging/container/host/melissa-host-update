@@ -3,57 +3,113 @@
 # the host (installed by packaging/container/install.sh to /usr/local/libexec/melissa/).
 #
 #   melissa-host-update status     write the image status for Settings (also after every start)
-#   melissa-host-update check      look for a newer image (registry: podman auto-update --dry-run,
-#                                  or a pull without restarting when automatic updates are off)
-#   melissa-host-update apply      pull the newer image and restart Melissa on it; if it does not
+#   melissa-host-update check      look for a newer image without downloading it (the registry's
+#                                  digest for the image's tag; melissa-check.timer, daily)
+#   melissa-host-update apply      download the newer image and restart Melissa on it; if it does not
 #                                  come up, go back to the image it ran before
+#   melissa-host-update auto       apply, unless the newer image is one that failed or was rolled
+#                                  back from (melissa-auto-update.timer, at the owner's time)
 #   melissa-host-update rollback   restart Melissa on the previous image
+#   melissa-host-update timers     write the automatic update time and switch the timer on or off
+#                                  (SCHEDULE and AUTO_UPDATE in install.env)
 #   melissa-host-update requests   melissa-update.service: carry out what the server asked for
 #
-# The server (inside the container, unprivileged) asks by creating an empty file named check, apply
-# or rollback in /var/lib/melissa-container/request (bind-mounted at /run/melissa-update-request).
-# Only those names are acted on; file contents are never read and nothing else travels from the web.
+# The server (inside the container, unprivileged) asks by creating an empty file in
+# /var/lib/melissa-container/request (bind-mounted at /run/melissa-update-request), named check,
+# apply, rollback, auto-on, auto-off or schedule-<daily|mon|...|sun>-<00..23>. Only those names are
+# acted on; file contents are never read and nothing else travels from the web.
 # Results go to /var/lib/melissa-container/status (root, read-only inside at /run/melissa-update):
-#   status.json  {"image", "auto_update", "running", "staged", "available", "previous"}
-#   last.json    {"action", "ok", "at", "message"}
+#   status.json  {"image", "auto_update", "schedule", "next_run", "tz_offset", "running", "staged",
+#                 "available", "previous", "held", "just_updated"}
+#   last.json    {"action", "ok", "at", "message", "kind", "version"}
+#   action.json  while something runs: {"action", "step", "version", "bytes_done", "bytes_total",
+#                 "started", "updated"}
 set -u
 umask 022
 
 NAME=melissa
 UNIT=melissa.service
 STATE=/var/lib/melissa-container
-STATUS=$STATE/status
-REQUESTS=$STATE/request
+UNITDIR=/etc/systemd/system
+TIMER=melissa-auto-update.timer
+CHECK_TIMER=melissa-check.timer
 # The image Melissa ran before the current one (for a rollback). A local tag, never pushed.
 PREVIOUS=localhost/melissa-rollback:previous
+# How long a new image may take to start before Melissa goes back (seconds).
+START_WAIT=${START_WAIT:-180}
 
-# install.sh records the settings it used (IMAGE, AUTO_UPDATE, ...).
+# install.sh records the settings it used (IMAGE, AUTO_UPDATE, SCHEDULE, ...).
 IMAGE=
 AUTO_UPDATE=off
-# shellcheck source=/dev/null
-[ -r "$STATE/install.env" ] && . "$STATE/install.env"
+SCHEDULE=daily-03
 
-mkdir -p "$STATUS"
+paths() {
+    STATUS=$STATE/status
+    REQUESTS=$STATE/request
+    ENV_FILE=$STATE/install.env
+    DROPIN=$UNITDIR/$TIMER.d/schedule.conf
+}
+paths
 
+load_env() {
+    # shellcheck source=/dev/null
+    [ -r "$ENV_FILE" ] && . "$ENV_FILE"
+    valid_schedule "$SCHEDULE" || SCHEDULE=daily-03
+}
+
+# shellcheck disable=SC1003 # a backslash inside single quotes, as meant
 clean() { printf '%s' "$1" | tr -d '\000-\037"\\' | cut -c1-"${2:-300}"; }
+now() { date +%s; }
 
 write() { # write <name>: stdin -> $STATUS/<name>, atomically, 0644
     local tmp
+    mkdir -p "$STATUS"
     tmp=$(mktemp "$STATUS/.$1.XXXXXX") || return 1
     cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATUS/$1"
 }
 
-last() { # last <action> <ok:true|false> [message]
-    printf '{"action":"%s","ok":%s,"at":%s,"message":"%s"}\n' \
-        "$1" "$2" "$(date +%s)" "$(clean "${3:-}")" | write last.json
-    echo "melissa-host-update: $1 ok=$2 ${3:-}"
+keep() { # keep <file under $STATE>: stdin, atomically (the helper's own records)
+    local tmp
+    tmp=$(mktemp "$STATE/.$1.XXXXXX") || return 1
+    cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATE/$1"
 }
+
+last() { # last <action> <ok:true|false> <kind> [message] [version]
+    printf '{"action":"%s","ok":%s,"at":%s,"kind":"%s","message":"%s","version":"%s"}\n' \
+        "$1" "$2" "$(now)" "$(clean "$3" 20)" "$(clean "${4:-}")" "$(clean "${5:-}" 64)" | write last.json
+    echo "melissa-host-update: $1 ok=$2 ${4:-}"
+}
+
+# --- What runs now (action.json, for the page's progress) ----------------------------------------
+
+ACT_STARTED=0
+act() { # act <action> <step> [version] [bytes done] [bytes total]
+    [ "$ACT_STARTED" = 0 ] && ACT_STARTED=$(now)
+    printf '{"action":"%s","step":"%s","version":"%s","bytes_done":%s,"bytes_total":%s,"started":%s,"updated":%s}\n' \
+        "$1" "$2" "$(clean "${3:-}" 64)" "${4:-0}" "${5:-0}" "$ACT_STARTED" "$(now)" | write action.json
+}
+act_done() { rm -f "$STATUS/action.json"; ACT_STARTED=0; }
+
+# One action at a time (the timers and the server's requests). A check skips when busy.
+lock() { exec 9>"$STATE/lock" && flock "$@" 9; }
+
+# --- Images ---------------------------------------------------------------------------------------
 
 running_id() { podman container inspect "$NAME" --format '{{.Image}}' 2>/dev/null; }
 image_id() { podman image inspect "$1" --format '{{.Id}}' 2>/dev/null; }
 ref() { # the image the Quadlet runs
     [ -n "$IMAGE" ] && { echo "$IMAGE"; return; }
     podman container inspect "$NAME" --format '{{.ImageName}}' 2>/dev/null
+}
+# The manifest digests an image was pulled by (sha256:..., space separated).
+digests() {
+    podman image inspect "$1" --format '{{range .RepoDigests}}{{.}} {{end}}' 2>/dev/null \
+        | tr ' ' '\n' | sed -n 's/.*@\(sha256:[0-9a-f]*\)$/\1/p' | sort -u | paste -sd ' '
+}
+label() { # label <image> <name>
+    local v
+    v=$(podman image inspect "$1" --format "{{index .Labels \"$2\"}}" 2>/dev/null) || return 0
+    [ "$v" = "<no value>" ] || printf '%s' "$v"
 }
 
 image_json() { # image_json <image ref or id> -> {"id","digest","created","version","revision"} or null
@@ -69,8 +125,8 @@ image_json() { # image_json <image ref or id> -> {"id","digest","created","versi
         "$(clean "$version" 64)" "$(clean "$revision" 64)"
 }
 
-# Remember which image ran last; when it changes (apply, rollback, the podman-auto-update timer),
-# keep the one before under $PREVIOUS so a rollback can return to it.
+# Remember which image ran last; when it changes (apply, rollback, auto), keep the one before
+# under $PREVIOUS so a rollback can return to it.
 note_running() {
     local cur seen old
     cur=$(running_id) || return 0
@@ -87,28 +143,120 @@ note_running() {
     printf '%s\n' "$cur" > "$STATE/running-id"
 }
 
-status() { # status [available-json]
-    local r cur staged=null prev=null avail=${1:-}
+# --- The registry, without downloading ------------------------------------------------------------
+
+# remote <ref>: the tag's manifest digest (R_DIGEST) and, with skopeo, its version, revision and
+# download size (R_VERSION, R_REVISION, R_SIZE). Without skopeo, one HEAD request for the digest.
+remote() {
+    local out sizes s
+    R_DIGEST='' R_VERSION='' R_REVISION='' R_SIZE=0 R_ERR=''
+    if command -v skopeo >/dev/null 2>&1; then
+        out=$(skopeo inspect --no-tags --format \
+            '{{.Digest}}|{{index .Labels "org.opencontainers.image.version"}}|{{index .Labels "org.opencontainers.image.revision"}}|{{range .LayersData}}{{.Size}} {{end}}' \
+            "docker://$1" 2>&1) || { R_ERR=$out; return 1; }
+        IFS='|' read -r R_DIGEST R_VERSION R_REVISION sizes <<<"$out"
+        [ "$R_VERSION" = "<no value>" ] && R_VERSION=
+        [ "$R_REVISION" = "<no value>" ] && R_REVISION=
+        for s in $sizes; do case "$s" in *[!0-9]*) ;; *) R_SIZE=$((R_SIZE + s)) ;; esac; done
+    else
+        R_DIGEST=$(registry_digest "$1") || { R_ERR=$R_DIGEST; R_DIGEST=; return 1; }
+    fi
+    case "$R_DIGEST" in sha256:*) ;; *) R_ERR="no digest for $1"; R_DIGEST=; return 1 ;; esac
+    R_VERSION=$(clean "$R_VERSION" 64); R_REVISION=$(clean "$R_REVISION" 64)
+}
+
+# registry_digest <host/repo:tag>: the Docker-Content-Digest of the tag (anonymous token if asked).
+registry_digest() {
+    local host rest repo tag url hdrs auth realm service scope token
+    host=${1%%/*}; rest=${1#*/}
+    case "$rest" in *@sha256:*) echo "${rest#*@}"; return 0 ;; esac
+    case "${rest##*/}" in *:*) repo=${rest%:*}; tag=${rest##*:} ;; *) repo=$rest; tag=latest ;; esac
+    [ "$host" = docker.io ] && host=registry-1.docker.io
+    url="https://$host/v2/$repo/manifests/$tag"
+    local accept="Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
+    hdrs=$(curl -sSI --max-time 60 -H "$accept" "$url" 2>&1) || { echo "$hdrs"; return 1; }
+    if grep -qi '^HTTP/[0-9.]* 401' <<<"$hdrs"; then
+        auth=$(grep -i '^www-authenticate: *bearer' <<<"$hdrs" | tr -d '\r')
+        realm=$(sed -n 's/.*realm="\([^"]*\)".*/\1/p' <<<"$auth")
+        service=$(sed -n 's/.*service="\([^"]*\)".*/\1/p' <<<"$auth")
+        scope=$(sed -n 's/.*scope="\([^"]*\)".*/\1/p' <<<"$auth")
+        case "$realm" in https://*) ;; *) echo "registry asks for an unknown sign-in"; return 1 ;; esac
+        token=$(curl -sS --max-time 60 -G --data-urlencode "service=$service" \
+            --data-urlencode "scope=$scope" "$realm" | sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p')
+        [ -n "$token" ] || { echo "no token from $realm"; return 1; }
+        # The token on stdin, not in the process list.
+        hdrs=$(printf 'Authorization: Bearer %s\n' "$token" \
+            | curl -sSI --max-time 60 -H "$accept" -H @- "$url" 2>&1) || { echo "$hdrs"; return 1; }
+    fi
+    grep -qi '^HTTP/[0-9.]* 200' <<<"$hdrs" || { head -n 1 <<<"$hdrs" | tr -d '\r'; return 1; }
+    grep -i '^docker-content-digest:' <<<"$hdrs" | tr -d '\r' | awk '{print $2}' | head -n 1
+}
+
+# The digest runs now (or is the one the tag already points to locally).
+is_current() { # is_current <digest> <image id>
+    case " $(digests "$2") " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# --- Held versions (failed or rolled back from; automatic updates skip them) -----------------------
+
+held_digests() { sed -n 's/.*"digests":"\([^"]*\)".*/\1/p' "$STATE/held.json" 2>/dev/null; }
+held_id() { sed -n 's/.*"id":"\([^"]*\)".*/\1/p' "$STATE/held.json" 2>/dev/null; }
+is_held() { # is_held <digest or image id>
+    [ -n "$1" ] && [ -r "$STATE/held.json" ] || return 1
+    [ "$(held_id)" = "$1" ] && return 0
+    case " $(held_digests) " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+hold() { # hold <image id> <reason: failed|rolled_back> [message]
+    printf '{"id":"%s","digests":"%s","version":"%s","revision":"%s","reason":"%s","at":%s,"message":"%s"}\n' \
+        "$(clean "$1" 80)" "$(clean "$(digests "$1")" 400)" \
+        "$(clean "$(label "$1" org.opencontainers.image.version)" 64)" \
+        "$(clean "$(label "$1" org.opencontainers.image.revision)" 64)" \
+        "$2" "$(now)" "$(clean "${3:-}")" | keep held.json
+}
+
+# --- status.json ----------------------------------------------------------------------------------
+
+next_run() { # the automatic update's next start (Unix seconds), or null
+    local us
+    [ "$AUTO_UPDATE" = off ] && { echo null; return; }
+    us=$(systemctl show "$TIMER" -p NextElapseUSecRealtime --value --timestamp=unix 2>/dev/null)
+    us=${us#@}
+    case "$us" in ''|*[!0-9]*) echo null ;; *) echo "$us" ;; esac
+}
+
+available_json() { # the update the last check found, while it is newer than what runs and not held
+    local cur=$1 f=$STATE/available.json
+    [ -r "$f" ] || { echo null; return; }
+    [ "$(sed -n 's/.*"for":"\([^"]*\)".*/\1/p' "$f")" = "$cur" ] || { echo null; return; }
+    is_held "$(sed -n 's/.*"digest":"\([^"]*\)".*/\1/p' "$f")" && { echo null; return; }
+    sed -n 's/,"for":"[^"]*"//; 1p' "$f"
+}
+
+status() {
+    local r cur staged=null prev=null held=null updated=null refid
     note_running
     r=$(ref)
     cur=$(running_id || true)
     # A newer image already in local storage under the same name: used at the next start.
-    local refid; refid=$(image_id "$r" || true)
-    if [ -n "$refid" ] && [ -n "$cur" ] && [ "$refid" != "$cur" ]; then staged=$(image_json "$refid"); fi
+    refid=$(image_id "$r" || true)
+    if [ -n "$refid" ] && [ -n "$cur" ] && [ "$refid" != "$cur" ] && ! is_held "$refid"; then
+        staged=$(image_json "$refid")
+    fi
     if podman image exists "$PREVIOUS" && [ "$(image_id "$PREVIOUS")" != "$cur" ]; then
         prev=$(image_json "$PREVIOUS")
     fi
-    # Keep a found update until something changes the running image.
-    if [ -z "$avail" ] && [ -r "$STATUS/status.json" ] && [ -r "$STATE/available-for" ] \
-        && [ "$(cat "$STATE/available-for")" = "$cur" ]; then
-        avail='{}'
-    fi
-    [ -n "$avail" ] || avail=null
-    printf '{"image":"%s","auto_update":"%s","running":%s,"staged":%s,"available":%s,"previous":%s}\n' \
-        "$(clean "$r" 200)" "$(clean "$AUTO_UPDATE" 20)" \
-        "$( [ -n "$cur" ] && image_json "$cur" || echo null)" "$staged" "$avail" "$prev" \
+    [ -r "$STATE/held.json" ] && held=$(head -n 1 "$STATE/held.json")
+    [ -r "$STATE/updated.json" ] && updated=$(head -n 1 "$STATE/updated.json")
+    printf '{"image":"%s","auto_update":"%s","schedule":"%s","next_run":%s,"tz_offset":"%s","running":%s,"staged":%s,"available":%s,"previous":%s,"held":%s,"just_updated":%s}\n' \
+        "$(clean "$r" 200)" "$(clean "$AUTO_UPDATE" 20)" "$SCHEDULE" "$(next_run)" "$(date +%z)" \
+        "$( [ -n "$cur" ] && image_json "$cur" || echo null)" "$staged" "$(available_json "$cur")" \
+        "$prev" "$held" "$updated" \
         | write status.json
 }
+
+# --- Health ---------------------------------------------------------------------------------------
 
 # A command inside the container, for health probes that poll every few seconds. Quiet: otherwise
 # each one writes two long podman events (exec, exec_died) and a harmless conmon warning to this
@@ -116,9 +264,10 @@ status() { # status [available-json]
 # is the answer. (One exec: `systemctl is-active` with several units is 0 when any is active.)
 probe() { podman --events-backend=none --log-level=error exec "$NAME" "$@" 2>/dev/null; }
 
-wait_up() { # wait until Melissa runs <image id> and its server is active (or time out)
-    local want=$1 end=$(( $(date +%s) + 180 ))
-    while [ "$(date +%s)" -lt "$end" ]; do
+wait_up() { # wait_up <image id> [action version]: Melissa runs it and her server is active
+    local want=$1 end=$(( $(now) + START_WAIT ))
+    while [ "$(now)" -lt "$end" ]; do
+        [ -n "${2:-}" ] && act "$2" health "${3:-}"
         if systemctl is-active -q "$UNIT" && [ "$(running_id)" = "$want" ] \
             && probe systemctl is-active -q melissa-server.service melissa-queen.service; then
             return 0
@@ -128,94 +277,218 @@ wait_up() { # wait until Melissa runs <image id> and its server is active (or ti
     return 1
 }
 
+# --- Actions --------------------------------------------------------------------------------------
+
 check() {
-    local r cur out
+    local r cur
+    lock -n || { echo "melissa-host-update: busy, check skipped"; return 0; }
     r=$(ref); cur=$(running_id || true)
-    rm -f "$STATE/available-for"
     case "$r" in
     localhost/*)
-        # A local image (built here or `podman load`ed): nothing to download.
-        status; last check true "local image: load a newer one with podman load, then apply"; return 0 ;;
+        # A local image (built here or `podman load`ed): nothing to look up.
+        rm -f "$STATE/available.json"
+        status; last check true up_to_date "local image: load a newer one with podman load"; return 0 ;;
     esac
-    if [ "$AUTO_UPDATE" = registry ]; then
-        out=$(podman auto-update --dry-run --format '{{.Unit}} {{.Updated}}' 2>&1) \
-            || { status; last check false "$out"; return 1; }
-        if grep -q "^$UNIT pending" <<<"$out"; then
-            printf '%s\n' "$cur" > "$STATE/available-for"
-            status '{}'; last check true "an update is available"
-        else
-            status; last check true "up to date"
-        fi
-    else
-        # No auto-update label: download the newest image (no restart); it shows as staged.
-        out=$(podman pull -q "$r" 2>&1) || { status; last check false "$out"; return 1; }
-        status
-        if [ "$(image_id "$r")" != "$cur" ]; then last check true "an update is downloaded"
-        else last check true "up to date"; fi
+    act check check
+    if ! remote "$r"; then
+        act_done; status; last check false check "$R_ERR"; return 1
     fi
+    if [ -z "$cur" ] || is_current "$R_DIGEST" "$cur"; then
+        rm -f "$STATE/available.json"
+        act_done; status; last check true up_to_date "up to date"
+        return 0
+    fi
+    printf '{"id":"","digest":"%s","created":"","version":"%s","revision":"%s","size":%s,"for":"%s"}\n' \
+        "$R_DIGEST" "$R_VERSION" "$R_REVISION" "$R_SIZE" "$cur" | keep available.json
+    # A newer image than the one held back: the hold has done its job.
+    if [ -r "$STATE/held.json" ] && ! is_held "$R_DIGEST"; then rm -f "$STATE/held.json"; fi
+    act_done; status
+    if is_held "$R_DIGEST"; then last check true held "the newer image is held back" "$R_VERSION"
+    else last check true available "an update is available" "$R_VERSION"; fi
 }
 
-apply() {
-    local r cur new out
-    r=$(ref); cur=$(running_id) || { last apply false "Melissa is not running"; return 1; }
+# pull <ref> <size> <action> <version>: download with progress in action.json (about once a second;
+# podman's temporary download directory grows as it fetches). Never 100 % before the pull is done.
+pull() {
+    local tmp out pid size got cap rc
+    tmp=$STATE/pull-tmp; out=$(mktemp "$STATE/.pull.XXXXXX")
+    rm -rf "$tmp"; mkdir -p "$tmp"
+    TMPDIR=$tmp podman pull -q "$1" > "$out" 2>&1 &
+    pid=$!
+    size=$2; cap=$(( size * 99 / 100 ))
+    while kill -0 "$pid" 2>/dev/null; do
+        got=$(du -sb "$tmp" 2>/dev/null | cut -f1); got=${got:-0}
+        [ "$size" -gt 0 ] && [ "$got" -gt "$cap" ] && got=$cap
+        act "$3" download "$4" "$got" "$size"
+        sleep 1
+    done
+    wait "$pid"; rc=$?
+    PULL_OUT=$(tail -n 5 "$out")
+    rm -rf "$tmp" "$out"
+    return "$rc"
+}
+
+# update <apply|auto>: download what the tag points to, restart on it, wait for the server, and go
+# back if it does not come up (the version is then held: automatic updates skip it).
+update() {
+    local mode=$1 r cur new from to
+    lock -w 3600 || { last "$mode" false busy "another update is running"; return 1; }
+    r=$(ref); cur=$(running_id) || { last "$mode" false not_running "Melissa is not running"; return 1; }
+    from=$(label "$cur" org.opencontainers.image.version)
+    act "$mode" check
     case "$r" in
-    localhost/*) ;;
-    *) out=$(podman pull -q "$r" 2>&1) || { status; last apply false "$out"; return 1; } ;;
+    localhost/*)
+        new=$(image_id "$r")
+        if [ "$mode" = auto ] && is_held "$new"; then
+            act_done; status; last auto true held "the local image is held back"; return 0
+        fi ;;
+    *)
+        if remote "$r"; then
+            if is_current "$R_DIGEST" "$cur"; then
+                rm -f "$STATE/available.json"
+                act_done; status; last "$mode" true up_to_date "already up to date"; return 0
+            fi
+            if [ "$mode" = auto ] && is_held "$R_DIGEST"; then
+                act_done; status; last auto true held "skipped the held-back version" "$R_VERSION"; return 0
+            fi
+        elif [ "$mode" = auto ]; then
+            act_done; status; last auto false check "$R_ERR"; return 1
+        fi
+        if ! pull "$r" "$R_SIZE" "$mode" "$R_VERSION"; then
+            act_done; status; last "$mode" false download "$PULL_OUT" "$R_VERSION"; return 1
+        fi
+        new=$(image_id "$r") ;;
     esac
-    new=$(image_id "$r")
     if [ -z "$new" ] || [ "$new" = "$cur" ]; then
-        rm -f "$STATE/available-for"; status; last apply true "already up to date"; return 0
+        rm -f "$STATE/available.json"
+        act_done; status; last "$mode" true up_to_date "already up to date"; return 0
     fi
+    to=$(label "$new" org.opencontainers.image.version)
     echo "melissa-host-update: restarting Melissa on ${new:0:12} (was ${cur:0:12})"
+    act "$mode" restart "$to"
     systemctl restart "$UNIT"
-    if wait_up "$new"; then
-        rm -f "$STATE/available-for"; status; last apply true "running ${new:0:12}"
+    if wait_up "$new" "$mode" "$to"; then
+        rm -f "$STATE/available.json" "$STATE/held.json"
+        printf '{"from":"%s","from_revision":"%s","to":"%s","to_revision":"%s","at":%s}\n' \
+            "$(clean "$from" 64)" "$(clean "$(label "$cur" org.opencontainers.image.revision)" 64)" \
+            "$(clean "$to" 64)" "$(clean "$(label "$new" org.opencontainers.image.revision)" 64)" \
+            "$(now)" | keep updated.json
+        act_done; status; last "$mode" true updated "running ${new:0:12}" "$to"
         return 0
     fi
     # The new image did not come up: put the old one back under the name and restart on it.
+    act rollback restart "$from"
+    hold "$new" failed "Melissa did not answer within $((START_WAIT / 60)) minutes after the restart"
     podman tag "$cur" "$r"
     systemctl restart "$UNIT"
-    wait_up "$cur" || true
-    status
-    last apply false "the new image (${new:0:12}) did not start; back on ${cur:0:12}"
+    wait_up "$cur" rollback "$from" || true
+    act_done; status
+    last "$mode" false no_start "the new image (${new:0:12}) did not start; back on ${cur:0:12}" "$to"
     return 1
 }
 
+apply() { update apply; }
+auto() {
+    if [ "$AUTO_UPDATE" = off ]; then echo "melissa-host-update: automatic updates are off"; return 0; fi
+    update auto
+}
+
 rollback() {
-    local r cur prev
+    local r cur prev to
+    lock -w 3600 || { last rollback false busy "another update is running"; return 1; }
     r=$(ref); cur=$(running_id || true)
     prev=$(image_id "$PREVIOUS" || true)
     if [ -z "$prev" ] || [ "$prev" = "$cur" ]; then
-        status; last rollback false "there is no previous image"; return 1
+        status; last rollback false no_previous "there is no previous image"; return 1
     fi
+    to=$(label "$prev" org.opencontainers.image.version)
+    act rollback restart "$to"
+    [ -n "$cur" ] && hold "$cur" rolled_back
     podman tag "$prev" "$r"
     systemctl restart "$UNIT"
-    if wait_up "$prev"; then
-        rm -f "$STATE/available-for"; status
-        msg="running ${prev:0:12}"
-        [ "$AUTO_UPDATE" = off ] || msg="$msg; automatic updates may install the newer image again"
-        last rollback true "$msg"
+    if wait_up "$prev" rollback "$to"; then
+        rm -f "$STATE/available.json" "$STATE/updated.json"
+        act_done; status; last rollback true rolled_back "running ${prev:0:12}" "$to"
     else
-        status; last rollback false "the previous image did not start"; return 1
+        act_done; status; last rollback false no_start "the previous image did not start" "$to"; return 1
     fi
 }
 
+# --- Schedule -------------------------------------------------------------------------------------
+
+valid_schedule() { [[ $1 =~ ^(daily|mon|tue|wed|thu|fri|sat|sun)-([01][0-9]|2[0-3])$ ]]; }
+on_calendar() { # daily-03 -> "*-*-* 03:00:00", sun-03 -> "Sun *-*-* 03:00:00"
+    local d=${1%-*} h=${1#*-}
+    if [ "$d" = daily ]; then echo "*-*-* $h:00:00"; else echo "${d^} *-*-* $h:00:00"; fi
+}
+
+set_env() { # set_env KEY VALUE in install.env (a token without quotes or spaces)
+    local f=$ENV_FILE
+    [ -e "$f" ] || : > "$f"
+    { grep -v "^$1=" "$f" || true; echo "$1=$2"; } > "$f.new" && mv -f "$f.new" "$f"
+}
+
+# Write the drop-in with the owner's time and switch the automatic update on or off. The check
+# timer runs whatever the setting (a check downloads nothing), so the page knows of updates.
+timers() {
+    mkdir -p "$(dirname "$DROPIN")"
+    printf '# Written by melissa-host-update from SCHEDULE=%s (Settings → Updates).\n[Timer]\nOnCalendar=\nOnCalendar=%s\n' \
+        "$SCHEDULE" "$(on_calendar "$SCHEDULE")" > "$DROPIN.new" && mv -f "$DROPIN.new" "$DROPIN"
+    systemctl daemon-reload
+    if [ "$AUTO_UPDATE" = off ]; then
+        systemctl disable -q --now "$TIMER" 2>/dev/null || true
+    else
+        systemctl enable -q "$TIMER"
+        # A restart takes the new time; with Persistent=false it does not run the update now.
+        systemctl restart "$TIMER"
+    fi
+    systemctl enable -q --now "$CHECK_TIMER"
+}
+
+auto_mode() { # what AUTO_UPDATE is when on, for this image
+    case "$(ref)" in localhost/*) echo local ;; *) echo registry ;; esac
+}
+
+# --- Requests from the server ---------------------------------------------------------------------
+
 requests() {
-    local verb todo=() f
+    local verb todo=() f n setting=no
     [ -d "$REQUESTS" ] || return 0
+    for n in auto-off auto-on; do
+        if [ -e "$REQUESTS/$n" ] || [ -L "$REQUESTS/$n" ]; then
+            if [ "$n" = auto-on ]; then AUTO_UPDATE=$(auto_mode); else AUTO_UPDATE=off; fi
+            setting=yes
+        fi
+    done
+    for f in "$REQUESTS"/schedule-*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        n=${f##*/}; n=${n#schedule-}
+        if valid_schedule "$n"; then SCHEDULE=$n; setting=yes; fi
+    done
     for verb in check apply rollback; do
         f="$REQUESTS/$verb"
         if [ -e "$f" ] || [ -L "$f" ]; then todo+=("$verb"); fi
     done
     # Empty the directory: known names were noted, anything else is ignored. rm never follows links.
     find "$REQUESTS" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    if [ "$setting" = yes ]; then
+        set_env AUTO_UPDATE "$AUTO_UPDATE"
+        set_env SCHEDULE "$SCHEDULE"
+        timers
+        status
+        echo "melissa-host-update: automatic updates $AUTO_UPDATE, schedule $SCHEDULE"
+    fi
     for verb in "${todo[@]}"; do "$verb"; done
 }
 
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+
+load_env
+mkdir -p "$STATUS"
 case "${1:-}" in
 status) status ;;
-check|apply|rollback|requests)
+check|apply|auto|rollback|requests|timers)
     [ "$(id -u)" = 0 ] || { echo "melissa-host-update: run as root" >&2; exit 1; }
     "$1" ;;
-*) sed -n '2,20p' "$0"; exit 2 ;;
+*) sed -n '2,27p' "$0"; exit 2 ;;
 esac

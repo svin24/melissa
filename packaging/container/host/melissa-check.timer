@@ -1,0 +1,13 @@
+# Melissa looks for a newer image once a day, whether automatic updates are on or off, so Settings
+# shows when one is ready. A check downloads nothing and never restarts Melissa.
+[Unit]
+Description=Melissa: daily check for a newer image
+
+[Timer]
+OnCalendar=*-*-* 12:00:00
+RandomizedDelaySec=6h
+Persistent=true
+Unit=melissa-check.service
+
+[Install]
+WantedBy=timers.target

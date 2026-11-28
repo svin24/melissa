@@ -19,7 +19,8 @@ HostName=melissa
 # Scheduled jobs run in local time: follow the host's time zone (the image defaults to UTC).
 Timezone=local
 Image=@IMAGE@
-@AUTO_UPDATE_LINE@
+# No AutoUpdate=: Melissa's own melissa-auto-update.timer updates her at the owner's time, with a
+# health check and rollback (melissa-host-update auto); podman-auto-update.timer leaves her alone.
 # k3s mounts, writes netfilter rules and creates pod network namespaces; the agent sandbox needs
 # nested namespaces. Rootful, this is root on the host (docs: "Security").
 PodmanArgs=--privileged --systemd=always

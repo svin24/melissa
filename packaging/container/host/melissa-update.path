@@ -1,5 +1,6 @@
-# Melissa: run the host update helper when the server drops a request (an empty file named check,
-# apply or rollback) into /var/lib/melissa-container/request (bind-mounted into the container).
+# Melissa: run the host update helper when the server drops a request (an empty file with a fixed
+# name: check, apply, rollback, auto-on, auto-off, schedule-...) into /var/lib/melissa-container/request
+# (bind-mounted into the container).
 [Unit]
 Description=Melissa update requests from Settings → Updates
 

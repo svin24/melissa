@@ -1,0 +1,16 @@
+# Melissa's automatic update: at the owner's time (Settings → Updates → When), within 15 minutes of
+# it. melissa-host-update writes the time to melissa-auto-update.timer.d/schedule.conf and switches
+# this timer on or off. Separate from podman-auto-update.timer, which other containers may use.
+[Unit]
+Description=Melissa: automatic update at the chosen time
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=900
+AccuracySec=1min
+# A device that was off or asleep at that time waits for the next one (no restart at boot).
+Persistent=false
+Unit=melissa-auto-update.service
+
+[Install]
+WantedBy=timers.target

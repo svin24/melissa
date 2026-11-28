@@ -70,8 +70,11 @@ if systemctl cat melissa.service >/dev/null 2>&1; then
     systemctl stop melissa.service || true
 fi
 podman rm -f -i melissa >/dev/null 2>&1 || true
-systemctl disable -q --now melissa-update.path 2>/dev/null || true
+systemctl disable -q --now melissa-update.path melissa-auto-update.timer melissa-check.timer 2>/dev/null || true
+rm -rf "$UNITDIR/melissa-auto-update.timer.d"
 rm -f "$QUADLET" "$UNITDIR/melissa-update.path" "$UNITDIR/melissa-update.service" \
+    "$UNITDIR/melissa-auto-update.timer" "$UNITDIR/melissa-auto-update.service" \
+    "$UNITDIR/melissa-check.timer" "$UNITDIR/melissa-check.service" \
     "$LIBEXEC/melissa-host-update" "$SHARE/README.md" "$MODULES_FILE" \
     "$LIBEXEC/uninstall.sh" "$LIBEXEC/trust.sh" "$LIBEXEC/apparmor.sh"
 rmdir "$LIBEXEC" "$SHARE" 2>/dev/null || true
@@ -108,7 +111,8 @@ if [ "$PURGE" = yes ]; then
     rm -rf "$STATE"
     say "purged"
 else
-    rm -rf "$STATE/request" "$STATE/status" "$STATE/running-id" "$STATE/available-for"
+    rm -rf "$STATE/request" "$STATE/status" "$STATE/running-id" "$STATE/available-for" \
+        "$STATE/available.json" "$STATE/held.json" "$STATE/updated.json" "$STATE/lock" "$STATE/pull-tmp"
     say "removed. Kept: volume melissa-var (your data), images ($IMAGE${IMAGE:+, }$PREVIOUS if present),"
     say "  $STATE/install.env. Install again to continue, or run with --purge to delete them."
 fi

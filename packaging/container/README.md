@@ -64,7 +64,8 @@ Settings (environment of install.sh): `CHANNEL` (edge), `IMAGE` (`ghcr.io/svin24
 (30000), `BIND` (0.0.0.0: app ports on every address; Melissa's filter lets only this device in until you
 change Settings → Apps, see "Who may open apps"), `APP_ADDRESSES`
 (see "Network"), `ALLOW_ADDRESS_MISMATCH` (no), `AUTO_UPDATE` (`registry` | `local` | `off`),
-`SET_SYSCTLS` (yes), `DOCKER_FORWARD` (auto; see "Docker on the same host"), `NET_CHECK` (yes).
+`SCHEDULE` (`daily-03`: when automatic updates run, `daily` or `mon`..`sun` and the hour; a reinstall keeps
+the one chosen in Settings), `SET_SYSCTLS` (yes), `DOCKER_FORWARD` (auto; see "Docker on the same host"), `NET_CHECK` (yes).
 `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
 
@@ -102,7 +103,10 @@ sudo podman exec -it melissa melissa-server chat
   `kernel.keys.root_maxbytes=25000000`. These are not namespaced: the kubelet inside the privileged
   container sets them on the host anyway (any k3s does), so install.sh sets them openly, prints a notice
   and keeps the old values; uninstall.sh restores them. `SET_SYSCTLS=no` leaves them to the kubelet.
-- Unless `AUTO_UPDATE=off`: enables `podman-auto-update.timer` (if it was off; uninstall turns it off again).
+- Melissa's update timers: `melissa-auto-update.timer` (at `SCHEDULE`, off with `AUTO_UPDATE=off`; its time
+  in `melissa-auto-update.timer.d/schedule.conf`) and `melissa-check.timer` (daily check, no download). It
+  never enables `podman-auto-update.timer`; an install from before 2026-11-28 that had enabled it turns it
+  off again, unless other containers use it.
 - Only when Docker is on the host: `/etc/systemd/system/melissa-docker-forward.service` and two rules in
   Docker's `DOCKER-USER` chain (see "Docker on the same host"; uninstall removes both).
 - Only when the host has AppArmor (Ubuntu): Melissa's profile `/etc/apparmor.d/melissa-container`, loaded,
@@ -365,25 +369,35 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
 - To remove everything instead (the volume too), see Uninstall.
 
 ## Updates (Settings → Updates)
-- **Automatic**: Quadlet `AutoUpdate=registry` (registry images) or `local` (images loaded on the host),
-  run daily by `podman-auto-update.timer`; podman rolls back by itself if the new container fails.
-- **Check / Apply / Roll back** in Settings. The server can't run the host's podman. It creates an empty
-  file named `check`, `apply` or `rollback` in `/run/melissa-update-request` (bind mount of
-  `/var/lib/melissa-container/request`). `melissa-update.path` starts `melissa-host-update requests`, which
-  acts on those three names only (never reads contents; anything else is deleted) and writes
-  `status.json`/`last.json` to `/var/lib/melissa-container/status` (read-only inside at
-  `/run/melissa-update`).
-  - check: registry + auto-update → `podman auto-update --dry-run`; `AUTO_UPDATE=off` → pulls (no restart);
-    local image → nothing to fetch (load a newer one with `podman load`, tag it as the image name).
-  - apply: pull (registry), restart on the new image, wait for the server; if it doesn't come up, retag
-    the old image and restart on it.
-  - rollback: the image Melissa ran before is kept as `localhost/melissa-rollback:previous` (also after a
-    timer update); rollback retags it and restarts. With automatic updates on, the next timer run may
-    install the newer image again.
+- **Automatic**: `melissa-auto-update.timer` runs `melissa-host-update auto` at the owner's time
+  (Settings → Updates → When: every day or one weekday, a whole hour in the host's time, default
+  `daily-03`), within 15 minutes after it (`RandomizedDelaySec=900`). A device that was off then waits for
+  the next time (`Persistent=false`). The Quadlet has no `AutoUpdate=`, so a host-wide
+  `podman-auto-update.timer` leaves Melissa alone. auto = apply, except that a version that did not start
+  or was rolled back from is skipped until a newer one comes out.
+- **Daily check**: `melissa-check.timer` looks for a newer image every day, automatic updates on or off. It
+  downloads nothing: it compares the tag's manifest digest (`skopeo inspect`, which also gives the version
+  and download size; without skopeo one `HEAD` request to the registry) with the running image's.
+- **Check / Apply / Roll back**, the switch and the time in Settings. The server can't run the host's
+  podman. It creates an empty file in `/run/melissa-update-request` (bind mount of
+  `/var/lib/melissa-container/request`) named `check`, `apply`, `rollback`, `auto-on`, `auto-off` or
+  `schedule-<daily|mon|...|sun>-<00..23>`. `melissa-update.path` starts `melissa-host-update requests`,
+  which acts on those names only (never reads contents; anything else is deleted). The switch and the time
+  are written to `install.env` (`AUTO_UPDATE`, `SCHEDULE`) and the timer's drop-in. Results go to
+  `/var/lib/melissa-container/status` (read-only inside at `/run/melissa-update`): `status.json` (images,
+  schedule, next run, held version, last update), `last.json` (the last action's outcome) and, while one
+  runs, `action.json` (step and download progress, about once a second). One action at a time (`flock`).
+  - apply: pull (registry; progress from podman's temporary download directory), restart on the new image,
+    wait for the server; if it doesn't come up within 3 minutes, retag the old image, restart on it and
+    hold the new version (automatic updates skip it; Settings offers Try again).
+  - rollback: the image Melissa ran before is kept as `localhost/melissa-rollback:previous`; rollback
+    retags it, restarts and holds the version it left until a newer one comes out.
+  - local image (`localhost/`): nothing to look up; apply and auto restart on a newer image loaded under
+    the same name.
 - Same from the host: `sudo /usr/local/libexec/melissa/melissa-host-update check|apply|rollback|status`.
 - **Signature check** (published image): podman's `/etc/containers/policy.json` requires a `sigstoreSigned`
   signature by Melissa's key (`keyPath`, `matchRepository`) for `ghcr.io/svin24/melissa`. It applies to every
-  pull of that repository: install, Settings → Updates and `podman-auto-update`. If the signature is missing
+  pull of that repository: install, Settings → Updates and automatic updates. If the signature is missing
   or does not match, podman refuses the pull, the running image stays, and Settings → Updates shows the error.
   Other images are not affected. Local builds (`localhost/`) are not signed and not checked.
 - Version: `/usr/lib/melissa/release` in the image (`MELISSA_VERSION`, `MELISSA_REVISION`) and the
