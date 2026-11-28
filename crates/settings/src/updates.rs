@@ -717,14 +717,29 @@ fn read_running(dir: &Path, now: u64) -> Option<RunningAction> {
     Some(r)
 }
 
-/// The requests in `dir` the helper hasn't picked up (only names Melissa places count).
+/// How long a request the helper hasn't picked up still counts (seconds). Older ones are left
+/// over (the host's path unit isn't running): they must not keep the page busy for good.
+pub const PENDING_STALE_SECS: u64 = 600;
+
+/// The requests in `dir` the helper hasn't picked up (only names Melissa places count, and only
+/// for [`PENDING_STALE_SECS`]).
 pub fn read_pending(dir: &Path) -> PendingRequests {
     let mut p = PendingRequests::default();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return p;
     };
+    let now = std::time::SystemTime::now();
+    let fresh = |e: &std::fs::DirEntry| {
+        e.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            // A time in the future (clock moved back) counts as new.
+            .is_none_or(|age| age.as_secs() <= PENDING_STALE_SECS)
+    };
     let mut names: Vec<String> = entries
         .filter_map(|e| e.ok())
+        .filter(|e| fresh(e))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
@@ -947,7 +962,8 @@ fn place_request(dir: &Path, name: &str) -> Result<(), SettingsError> {
         .create(true)
         .truncate(true)
         .open(&path)
-        .map(|_| ())
+        // A fresh time even when the file was there (pending requests age out by it).
+        .and_then(|f| f.set_modified(std::time::SystemTime::now()))
         .map_err(|source| SettingsError::Write {
             path: path.display().to_string(),
             source,
@@ -1286,6 +1302,19 @@ mod tests {
         assert_eq!(st.busy(), Some(Busy::Checking));
         std::fs::write(env.request_dir.join("apply"), "").unwrap();
         assert_eq!(env.state().busy(), Some(Busy::Updating));
+        // Left over for longer than PENDING_STALE_SECS (the helper isn't picking requests up):
+        // no longer busy, so the owner isn't locked out.
+        let old =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(PENDING_STALE_SECS + 60);
+        for name in ["check", "apply"] {
+            std::fs::File::options()
+                .write(true)
+                .open(env.request_dir.join(name))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        assert_eq!(env.state().busy(), None);
         let _ = std::fs::remove_dir_all(root);
     }
 
