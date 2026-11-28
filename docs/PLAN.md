@@ -904,8 +904,13 @@ Roadmap (rough, phases may overlap):
     /var).~~ Built 2026-11-28 (DECISIONS): `melissa-host-update` stops Melissa before every update's image switch
     and copies k3s's `server/db`, `server/cred` (with the Secrets key) and `server/token` off the volume into
     `/var/lib/melissa-container/snapshots/<time>-<image>` (host, root, 0700; newest 3). A rollback (or a failed
-    update) to an image whose datastore format differs (Kubernetes minor, Secrets encrypted or not) restores the
-    snapshot taken when that image was left; the replaced datastore is kept in the snapshot's `replaced-*`.
+    update) to an image whose datastore format differs (Kubernetes minor, Secrets encrypted or not; recorded at
+    snapshot time) restores that update's own snapshot, only if the live datastore is the one it came from
+    (token hash; a factory reset also deletes the snapshots), staged and swapped in by renames with the original
+    put back on failure; a swap that can't be undone leaves Melissa stopped with `datastore_error` in
+    status.json. The replaced datastore is kept in the snapshot's `replaced-*`. Hosts still on the old helper
+    keep Secrets encryption off for an existing datastore until install.sh is re-run (`k3s-encryption-hold`).
+    (e) Settings → Updates doesn't show `datastore_error` yet (needs a design).
     Open: (a) restoring loses cluster changes made since the update (apps deployed or removed; app volumes stay):
     say so in Settings → Updates before a rollback? (b) a snapshot is not a backup (same disk, pruned after
     3 updates); the backup feature must take its own. (c) Downtime grows by the copy (seconds for a small

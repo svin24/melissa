@@ -425,6 +425,8 @@ impl Tree {
         w("/var/lib/rancher/.melissa-relabeled", "");
         w("/etc/hostname", "melissa");
         std::fs::create_dir_all(at(&root, MARKER_DIR)).unwrap();
+        // The host helper's request directory (container).
+        std::fs::create_dir_all(at(&root, UPDATE_REQUEST_DIR)).unwrap();
         Self {
             root,
             device_id: device.id,
@@ -470,6 +472,13 @@ impl Tree {
             assert!(self.exists(k), "{k} was removed");
         }
         assert!(!self.marker().exists(), "the marker stays");
+        // The host is asked to delete its datastore snapshots (old data, old Secrets key).
+        let forget = at(&self.root, UPDATE_REQUEST_DIR).join(FORGET_SNAPSHOTS);
+        assert_eq!(
+            std::fs::read(&forget).unwrap(),
+            b"",
+            "no forget-snapshots request"
+        );
         let state = at(&self.root, "/var/lib/melissa");
         // Exactly one audit line, the reset.
         let audit = std::fs::read_to_string(state.join("audit.jsonl")).unwrap();

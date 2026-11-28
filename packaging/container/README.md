@@ -69,6 +69,15 @@ the one chosen in Settings), `SET_SYSCTLS` (yes), `DOCKER_FORWARD` (auto; see "D
 `install.sh --preflight` only checks.
 Running install.sh again updates the installation (the data stays).
 
+### Upgrading: re-run install.sh before updating to the Secrets-encryption release
+Images from 2026-11-28 on encrypt k3s Secrets, and an older image can't read them. The host's update helper
+(installed by install.sh) snapshots k3s's datastore before every update so a rollback to an older image can
+put it back; a helper from before that takes no snapshot. **Re-run `sudo packaging/container/install.sh`
+(same settings) before updating to this release.** Until the host has the new helper, the image keeps
+Secrets encryption off for an existing datastore (`k3s-encryption-hold`, from k3s-prepare: it looks for
+`snapshots=1` in `/run/melissa-update/helper`) and turns it on at the first start after the helper wrote
+that file (any helper run, e.g. the daily check, then the next restart or update).
+
 ### Migrating a local-build install
 ```
 sudo IMAGE=ghcr.io/svin24/melissa:edge packaging/container/install.sh
@@ -405,11 +414,18 @@ Erases Melissa's data and starts her again **unclaimed**, with a new device id a
   - datastore snapshots: before every image switch the helper copies k3s's `server/db`, `server/cred` (with
     the Secrets encryption key) and `server/token` off the stopped `melissa-var` volume into
     `/var/lib/melissa-container/snapshots/<UTC time>-<image id>` (root, 0700; the newest 3; `meta` records
-    the image and its datastore format). Not enough disk for it: no update. Going back to an image whose k3s
-    needs another datastore format (another Kubernetes minor, or Secrets encryption on or off) restores that
-    image's snapshot: cluster changes since the update (apps deployed or removed) are lost, app data stays,
-    and the replaced datastore is kept in the snapshot's `replaced-<time>/`. Same format: nothing restored.
-    A snapshot is not a backup (same disk, pruned).
+    the image left and the one coming, the datastore format each needs, and a hash of k3s's token, which
+    identifies the datastore). Not enough disk for it: no update. Going back to the image left (a failed
+    update, or Roll back) when the two formats differ (another Kubernetes minor, or Secrets encryption on
+    or off) restores that update's snapshot, and only that one (named in the in-progress marker, then in
+    `rollback-snapshot`): a half-written one means the new image never ran, so nothing is restored.
+    Refused when the live datastore is another one (a factory reset since; the reset also asks the helper
+    to delete the snapshots with a `forget-snapshots` request). Cluster changes since the update (apps
+    deployed or removed) are lost, app data stays. The restore is staged on the volume (`db.restore`) and
+    swapped in by renames; a failure puts the original back. If even that fails, Melissa is left stopped,
+    `status.json` has `datastore_error` and updates are refused until the owner has looked and removed
+    `/var/lib/melissa-container/datastore-error`. The replaced datastore is kept in the snapshot's
+    `replaced-<time>/`. Same format: nothing restored. A snapshot is not a backup (same disk, pruned).
   - local image (`localhost/`): nothing to look up; apply and auto restart on a newer image loaded under
     the same name.
 - Same from the host: `sudo /usr/local/libexec/melissa/melissa-host-update check|apply|rollback|status`.

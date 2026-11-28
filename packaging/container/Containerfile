@@ -289,6 +289,7 @@ RUN set -eu; \
     grep -qx 'secrets-encryption: true' /etc/rancher/k3s/config.yaml.d/10-melissa.yaml \
         || { echo "lint: k3s secrets-encryption must be on"; exit 1; }; \
     test -x /usr/libexec/melissa/k3s-secrets-encrypt || { echo "lint: k3s-secrets-encrypt missing"; exit 1; }; \
+    test -x /usr/libexec/melissa-container/k3s-encryption-hold || { echo "lint: k3s-encryption-hold missing"; exit 1; }; \
     # systemd-sysusers must run at every start (it creates the melissa user).
     test ! -e /etc/.updated || { echo "lint: /etc/.updated would skip systemd-sysusers"; exit 1; }; \
     # The data volume is owned by these numbers: melissa 994, melissa-kube 995 (sysusers.d/melissa.conf).

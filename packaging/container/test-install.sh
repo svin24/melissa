@@ -1026,43 +1026,118 @@ eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL
     }
     skopeo() { echo "sha256:bbb2|0.0.4|9e2b5f1|100 "; }
     sleep() { :; }
+    kind() { sed -n 's/.*"ok":\([a-z]*\),.*"kind":"\([^"]*\)".*/\1 \2/p' "$STATUS/last.json"; }
+    units() { grep -oE 'systemctl (stop|start|restart) melissa.service' "$calls" | cut -d' ' -f2 | paste -sd ' '; }
+    # Back to the start: Melissa on "cur", the old datastore without an encryption key.
+    again() {
+        echo cur > "$hu_t/srunning"; echo cur > "$hu_t/stagged"
+        rm -rf "$srv/db" "$srv/db.restore" "$srv/db.replaced"; mkdir -p "$srv/db"; echo OLD > "$srv/db/state.db"
+        rm -f "$srv/cred/encryption-config.json" "$STATE/held.json" "$STATE/rollback-snapshot" \
+            "$STATE/datastore-error" "$STATE/in-progress"
+        : > "$calls"
+    }
+    # The new image ran: its k3s migrated the datastore and encrypted the Secrets.
+    new_ran() { echo NEW > "$srv/db/state.db"; echo KEY > "$srv/cred/encryption-config.json"; }
     # Four older snapshots: after this update only the newest three remain (this one among them).
     for t in 20260101T000000Z 20260102T000000Z 20260103T000000Z 20260104T000000Z; do
         mkdir -p "$SNAPSHOTS/$t-old"; done
     update apply > /dev/null
-    snap=$(snapshot_for cur)
+    snap=$SNAPSHOTS/$(cut -d' ' -f2 "$STATE/rollback-snapshot" 2>/dev/null)
     eq "snapshot: running the new image" new "$(cat "$hu_t/srunning")"
-    eq "snapshot: taken for the image left" yes "$(yes_no test -n "$snap")"
-    eq "snapshot: Melissa stopped for the copy, before the restart" "stop restart" \
-        "$(grep -oE 'systemctl (stop|restart) melissa.service' "$calls" | cut -d' ' -f2 | paste -sd ' ')"
+    eq "snapshot: recorded for a rollback to cur" yes "$(yes_if '[ "$(cut -d" " -f1 "$STATE/rollback-snapshot")" = cur ] && [ -d "$snap" ]')"
+    eq "snapshot: Melissa stopped for the copy, before the restart" "stop restart" "$(units)"
     eq "snapshot: the datastore, keys and token copied" "OLD pw tok" \
         "$(cat "$snap/db/state.db" "$snap/cred/passwd" "$snap/token" 2>/dev/null | paste -sd ' ')"
-    eq "snapshot: its datastore format recorded" "format=1.37 plain" "$(grep '^format=' "$snap/meta")"
-    eq "snapshot: root only" 700 "$(stat -c %a "$SNAPSHOTS")"
+    eq "snapshot: both formats recorded when taken" "format=1.37 plain to_image=new to_format=1.38 encrypted" \
+        "$(grep -E '^(format|to_image|to_format)=' "$snap/meta" | paste -sd ' ')"
+    eq "snapshot: which datastore (token hash)" "$(sha256sum < "$srv/token" | cut -c1-64)" "$(meta "$snap" datastore)"
+    eq "snapshot: root only" "700 700" "$(stat -c %a "$SNAPSHOTS" "$snap" | paste -sd ' ')"
     eq "snapshot: the newest three kept" "20260103T000000Z-old 20260104T000000Z-old ${snap##*/}" \
         "$(find "$SNAPSHOTS" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')"
-    # The new image's k3s migrated the datastore and encrypted its Secrets.
-    echo NEW > "$srv/db/state.db"; echo KEY > "$srv/cred/encryption-config.json"
-    : > "$calls"
+    new_ran; : > "$calls"
+    # The formats come from meta: no image is started at restore time.
+    FMT_cur=broken FMT_new=broken
     rollback > /dev/null
+    FMT_cur="v1.37.2+k3s1 plain" FMT_new="v1.38.0+k3s1 encrypted"
     eq "restore: back on the previous image" cur "$(cat "$hu_t/srunning")"
     eq "restore: the datastore from before the update" OLD "$(cat "$srv/db/state.db")"
     eq "restore: its keys (no encryption key then)" no "$(yes_no test -e "$srv/cred/encryption-config.json")"
+    eq "restore: nothing staged left on the volume" "" "$(ls -d "$srv"/db.* 2>/dev/null)"
     eq "restore: the replaced datastore and key kept" "NEW KEY" \
         "$(cat "$snap"/replaced-*/db/state.db "$snap"/replaced-*/cred/encryption-config.json 2>/dev/null | paste -sd ' ')"
-    eq "restore: stopped before the copy" "stop restart" \
-        "$(grep -oE 'systemctl (stop|restart) melissa.service' "$calls" | cut -d' ' -f2 | paste -sd ' ')"
+    eq "restore: stopped before the swap" "stop restart" "$(units)"
     eq "restore: last says so" yes "$(yes_no grep -q 'datastore restored from before the update' "$STATUS/last.json")"
+
     # Same format both ways (a Melissa-only update): the datastore stays as it is.
-    FMT_new="v1.37.4+k3s1 plain"
-    podman tag new ghcr.io/svin24/melissa:edge; systemctl restart melissa.service
-    echo LATEST > "$srv/db/state.db"
-    rm -f "$STATE/held.json"
+    again; FMT_new="v1.37.4+k3s1 plain"
+    update apply > /dev/null; echo LATEST > "$srv/db/state.db"
     rollback > /dev/null
     eq "same format: rolled back" cur "$(cat "$hu_t/srunning")"
     eq "same format: datastore kept" LATEST "$(cat "$srv/db/state.db")"
     eq "same format: last has no restore" no "$(yes_no grep -q 'restored' "$STATUS/last.json")"
+    FMT_new="v1.38.0+k3s1 encrypted"
+
+    # Fix 1: the swap fails and is undone: the datastore as it was, Melissa restarted on the old image.
+    again; update apply > /dev/null; new_ran
+    mv() { case "$1" in *db.restore) return 1 ;; *) command mv "$@" ;; esac; }
+    rollback > /dev/null
+    eq "swap fails, undone: datastore as it was" "NEW KEY" "$(cat "$srv/db/state.db" "$srv/cred/encryption-config.json" | paste -sd ' ')"
+    eq "swap fails, undone: nothing staged left" "" "$(ls -d "$srv"/db.* 2>/dev/null)"
+    eq "swap fails, undone: last says not restored" yes "$(yes_no grep -q 'datastore not restored: the swap failed and was undone' "$STATUS/last.json")"
+    # The swap fails and can't be undone: Melissa is left stopped and status.json says so.
+    again; update apply > /dev/null; new_ran
+    mv() { case "$1" in *db.restore|*db.replaced) return 1 ;; *) command mv "$@" ;; esac; }
+    : > "$calls"
+    rollback > /dev/null; rc=$?
+    unset -f mv
+    eq "swap broken: non-zero exit" 1 "$rc"
+    eq "swap broken: never restarted" "stop" "$(units)"
+    eq "swap broken: last says datastore" "false datastore" "$(kind)"
+    eq "swap broken: status.json has the error" yes "$(yes_no grep -q '"datastore_error":"rolling back to cur; RESTORING' "$STATUS/status.json")"
+    eq "status.json with a datastore error is valid JSON" yes "$(yes_no python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUS/status.json")"
+    update apply > /dev/null # (not in a subshell: it would wait for this shell's lock)
+    eq "swap broken: further updates refused" "false datastore" "$(kind)"
+    # A crash during the swap: resume puts the original back first.
+    again; mkdir -p "$hu_t/keep/cred"
+    command mv "$srv/db" "$srv/db.replaced"; mkdir -p "$srv/db.restore"; echo SNAP > "$srv/db.restore/state.db"
+    printf '%s\n%s\n' "$srv" "$hu_t/keep" > "$STATE/restore-swap"
+    resume > /dev/null
+    eq "cut-off swap: resume puts the datastore back" OLD "$(cat "$srv/db/state.db")"
+    eq "cut-off swap: staged copy and record gone" "no no" \
+        "$(yes_no test -e "$srv/db.restore") $(yes_no test -e "$STATE/restore-swap")"
+
+    # Fix 2: cut off while taking the snapshot (only .partial): resume restores nothing, not an older
+    # complete snapshot of the same image.
+    again
+    older=$SNAPSHOTS/20260105T000000.000000000Z-cur; mkdir -p "$older/db"; echo ANCIENT > "$older/db/state.db"
+    printf 'image=cur\nformat=1.37 plain\nto_image=new\nto_format=1.38 encrypted\ndatastore=%s\n' \
+        "$(sha256sum < "$srv/token" | cut -c1-64)" > "$older/meta"
+    cut=20260106T000000.000000000Z-cur; mkdir -p "$SNAPSHOTS/$cut.partial/db"
+    printf 'apply\ncur\nnew\n0.0.3\n0.0.4\n%s\n' "$cut" > "$STATE/in-progress"
+    echo stopped > "$hu_t/srunning"; echo new > "$hu_t/stagged"; new_ran
+    START_WAIT=0
+    resume > /dev/null
+    START_WAIT=60
+    eq "cut-off snapshot: back on the old image" cur "$(cat "$hu_t/srunning")"
+    eq "cut-off snapshot: the older snapshot is not restored" NEW "$(cat "$srv/db/state.db")"
+
+    # Fix 3: a factory reset since the update (new token): the restore is refused, nothing changes.
+    again; update apply > /dev/null; new_ran
+    echo newtok > "$srv/token"
+    rollback > /dev/null
+    eq "reset since: datastore not restored" NEW "$(cat "$srv/db/state.db")"
+    eq "reset since: last says why" yes "$(yes_no grep -q 'a factory reset since' "$STATUS/last.json")"
+    echo tok > "$srv/token"
+    # ...and the reset's request deletes the snapshots.
+    touch "$REQUESTS/forget-snapshots"
+    requests > /dev/null
+    eq "forget-snapshots: snapshots and the rollback record gone" "no no" \
+        "$(yes_no test -e "$SNAPSHOTS") $(yes_no test -e "$STATE/rollback-snapshot")"
+    eq "forget-snapshots: request removed" "" "$(ls -A "$REQUESTS")"
+    eq "helper file says snapshots=1" "snapshots=1" "$(helper_file; cat "$STATUS/helper")"
+
     # No room for a copy: no update, Melissa started again on the image she ran.
+    again
     df() { printf 'Filesystem 1-blocks Used Available Use%% Mounted\nx 100 100 0 100%% /\n'; }
     rm -f "$STATE/held.json"; : > "$calls"
     update apply > /dev/null
@@ -1073,6 +1148,24 @@ eq "SCHEDULE: a reinstall keeps the owner's" "sun-05" "$(unset SCHEDULE; INSTALL
         "$(sed -n 's/.*"ok":\([a-z]*\),.*"kind":"\([^"]*\)".*/\1 \2/p' "$STATUS/last.json")"
     eq "no room: marker gone" no "$(yes_no test -e "$STATE/in-progress")"
     unset -f df
+    exit "$fails"
+) || fails=$((fails + $?))
+# k3s-encryption-hold: an older datastore stays unencrypted until the host helper snapshots.
+(
+    set +e
+    fails=0
+    holdsh="$here/rootfs/usr/libexec/melissa-container/k3s-encryption-hold"
+    r="$hu_t/hold"; hf="$r/etc/rancher/k3s/config.yaml.d/15-melissa-encryption-hold.yaml"
+    held() { MELISSA_ROOT="$r" sh "$holdsh" 2>/dev/null; if [ -e "$hf" ]; then echo held; else echo on; fi; }
+    mkdir -p "$r/run/melissa-update"
+    eq "hold: a new datastore is encrypted from the start" on "$(held)"
+    mkdir -p "$r/var/lib/rancher/k3s/server/db" "$r/var/lib/rancher/k3s/server/cred"
+    eq "hold: an older datastore, older helper: held" held "$(held)"
+    eq "hold: ...by turning it off" yes "$(yes_no grep -qx 'secrets-encryption: false' "$hf")"
+    echo 'snapshots=1' > "$r/run/melissa-update/helper"
+    eq "hold: the new helper: on (and the file goes)" on "$(held)"
+    rm -f "$r/run/melissa-update/helper"; touch "$r/var/lib/rancher/k3s/server/cred/encryption-config.json"
+    eq "hold: already encrypted: never held" on "$(held)"
     exit "$fails"
 ) || fails=$((fails + $?))
 # Migration: podman-auto-update.timer goes off only if install.sh had turned it on, and no other

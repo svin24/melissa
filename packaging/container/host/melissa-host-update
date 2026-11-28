@@ -257,7 +257,7 @@ available_json() { # the update the last check found, while it is newer than wha
 }
 
 status() {
-    local r cur staged=null prev=null held=null updated=null refid
+    local r cur staged=null prev=null held=null updated=null dserr=null refid
     note_running
     r=$(ref)
     cur=$(running_id || true)
@@ -271,12 +271,19 @@ status() {
     fi
     [ -r "$STATE/held.json" ] && held=$(head -n 1 "$STATE/held.json")
     [ -r "$STATE/updated.json" ] && updated=$(head -n 1 "$STATE/updated.json")
-    printf '{"image":"%s","auto_update":"%s","schedule":"%s","next_run":%s,"tz_offset":"%s","running":%s,"staged":%s,"available":%s,"previous":%s,"held":%s,"just_updated":%s}\n' \
+    # A datastore restore that failed half way (datastore_broken): until the owner removes the file.
+    [ -r "$STATE/datastore-error" ] && dserr="\"$(clean "$(head -n 1 "$STATE/datastore-error")" 400)\""
+    printf '{"image":"%s","auto_update":"%s","schedule":"%s","next_run":%s,"tz_offset":"%s","running":%s,"staged":%s,"available":%s,"previous":%s,"held":%s,"just_updated":%s,"datastore_error":%s}\n' \
         "$(clean "$r" 200)" "$(clean "$AUTO_UPDATE" 20)" "$SCHEDULE" "$(next_run)" "$(date +%z)" \
         "$( [ -n "$cur" ] && image_json "$cur" || echo null)" "$staged" "$(available_json "$cur")" \
-        "$prev" "$held" "$updated" \
+        "$prev" "$held" "$updated" "$dserr" \
         | write status.json
 }
+
+# What this helper can do, for the image (read-only inside at /run/melissa-update/helper): k3s-prepare
+# turns Secrets encryption on for an older datastore only once the host snapshots before updates.
+HELPER_FEATURES="snapshots=1"
+helper_file() { printf '%s\n' "$HELPER_FEATURES" | write helper; }
 
 # --- Health ---------------------------------------------------------------------------------------
 
@@ -326,15 +333,14 @@ datastore_format() {
     echo "${BASH_REMATCH[1]} $e"
 }
 
-# The snapshot taken when <image id> was left (the newest), or nothing.
-snapshot_for() {
-    local d id=$1 found=
-    [ -n "$id" ] && [ -d "$SNAPSHOTS" ] || return 1
-    for d in "$SNAPSHOTS"/*-"${id:0:12}"; do
-        [ -d "$d" ] && [ "$(sed -n 's/^image=//p' "$d/meta" 2>/dev/null)" = "$id" ] && found=$d
-    done
-    [ -n "$found" ] && echo "$found"
-}
+# Which datastore this is: a hash of k3s's server token (new with every datastore, e.g. after a
+# factory reset). Empty without one.
+datastore_id() { [ -r "$1/token" ] && sha256sum < "$1/token" | cut -c1-64; }
+
+meta() { sed -n "s/^$2=//p" "$1/meta" 2>/dev/null | head -n 1; } # meta <snapshot dir> <key>
+
+# A snapshot name for <image id> taken now: <UTC time, to the nanosecond>-<image id, 12>.
+snapshot_name() { echo "$(date -u +%Y%m%dT%H%M%S.%NZ)-${1:0:12}"; }
 
 # The newest KEEP_SNAPSHOTS (names start with their UTC time); half-written ones go.
 prune_snapshots() {
@@ -346,17 +352,19 @@ prune_snapshots() {
     return 0
 }
 
-# snapshot <action> <image id> <version>: stop Melissa and copy k3s's datastore (server/db), its token
-# and keys (server/cred, with the Secrets encryption key) off the volume into
-# $SNAPSHOTS/<UTC time>-<image id>. Stopped, so the copy is consistent (k3s's documented SQLite backup
-# is a copy of server/db plus the token; the key decrypts its Secrets). Nothing to copy (an agent
-# node, no datastore): 0, Melissa left running. SNAP_ERR says why it failed.
+# snapshot <action> <image id> <version> <new image id> <name>: stop Melissa and copy k3s's datastore
+# (server/db), its token and keys (server/cred, with the Secrets encryption key) off the volume into
+# $SNAPSHOTS/<name>. Stopped, so the copy is consistent (k3s's documented SQLite backup is a copy of
+# server/db plus the token; the key decrypts its Secrets). meta records the image left and the one
+# coming with the datastore format each needs, and which datastore it is (datastore_id). Nothing to
+# copy (an agent node, no datastore): 0, Melissa left running. SNAP_ERR says why it failed.
 snapshot() {
-    local dir need free dst tmp fmt
+    local dir need free dst tmp fmt to_fmt
     SNAP_ERR=
     dir=$(k3s_server_dir) || { echo "melissa-host-update: no volume $VOLUME, no datastore snapshot"; return 0; }
     [ -d "$dir/db" ] || { echo "melissa-host-update: no k3s datastore on $VOLUME, no snapshot"; return 0; }
     fmt=$(datastore_format "$2") || fmt=unknown
+    to_fmt=$(datastore_format "$4") || to_fmt=unknown
     act "$1" snapshot "$3"
     systemctl stop "$UNIT" || { SNAP_ERR="could not stop Melissa"; return 1; }
     if ! ( umask 077; mkdir -p "$SNAPSHOTS" ) || ! chmod 0700 "$SNAPSHOTS"; then
@@ -370,12 +378,14 @@ snapshot() {
         SNAP_ERR="not enough disk space for a datastore snapshot ($(( need / 1048576 )) MiB, twice that needed)"
         return 1
     fi
-    dst=$SNAPSHOTS/$(date -u +%Y%m%dT%H%M%SZ)-${2:0:12}; tmp=$dst.partial
+    dst=$SNAPSHOTS/$5; tmp=$dst.partial
+    [ ! -e "$dst" ] || { SNAP_ERR="snapshot $5 exists already"; return 1; }
     rm -rf "$tmp"
     if ( umask 077; mkdir "$tmp" ) && cp -a "$dir/db" "$tmp/db" \
         && { [ ! -e "$dir/cred" ] || cp -a "$dir/cred" "$tmp/cred"; } \
         && { [ ! -e "$dir/token" ] || cp -a "$dir/token" "$tmp/token"; } \
-        && printf 'image=%s\nformat=%s\nversion=%s\nat=%s\n' "$2" "$fmt" "$(clean "$3" 64)" "$(now)" > "$tmp/meta" \
+        && printf 'image=%s\nformat=%s\nto_image=%s\nto_format=%s\ndatastore=%s\nversion=%s\nat=%s\n' \
+            "$2" "$fmt" "$4" "$to_fmt" "$(datastore_id "$dir")" "$(clean "$3" 64)" "$(now)" > "$tmp/meta" \
         && mv "$tmp" "$dst"; then
         prune_snapshots
         echo "melissa-host-update: k3s datastore ($fmt) saved in $dst"
@@ -386,39 +396,144 @@ snapshot() {
     return 1
 }
 
-# restore_if_needed <action> <image going back to> <image leaving> <version>: when the image going
-# back needs another datastore format than the one leaving left (a Kubernetes minor bump, or Secrets
-# encryption switched), stop Melissa and put back the snapshot taken when it was left. Changes to the
-# cluster since then (apps deployed or removed) go with it; app data volumes stay. The datastore it
-# replaces is kept in the snapshot's replaced-<time>/. RESTORED says what was done (for last.json).
+# The Secrets key and its rotation state: what goes back with a restored datastore.
+KEYS="encryption-config.json encryption-state.json"
+
+# restore_if_needed <action> <snapshot name> <image going back to> <image leaving> <version>: when
+# that snapshot was taken leaving the image going back, for the image now leaving, and the two need
+# different datastore formats (meta, recorded at snapshot time: a Kubernetes minor bump, or Secrets
+# encryption switched), stop Melissa and put the snapshot back. Only that snapshot (the one this
+# update took or, for a rollback, the one the update recorded): a missing or half-written one means
+# the new image never ran on the datastore, nothing to undo. Refused when the live datastore is not
+# the one the snapshot came from (a factory reset since). Changes to the cluster since the update
+# (apps deployed or removed) go with it; app data volumes stay.
+#
+# Staged on the volume's filesystem first (db.restore, <key>.restore), then swapped in with renames;
+# any failure puts the original back. The replaced datastore and keys end up in the snapshot's
+# replaced-<time>/.
+# Returns 0 (restored, or nothing to do), 1 (not restored; the datastore is as it was), 2 (the swap
+# failed half way and could not be undone: the datastore's state is unknown, do not start Melissa).
+# RESTORED says what happened (for last.json).
 restore_if_needed() {
-    local snap want have dir keep f
+    local snap want have dir keep k need free live
     RESTORED=
-    snap=$(snapshot_for "$2") || { echo "melissa-host-update: no datastore snapshot for ${2:0:12}"; return 0; }
-    want=$(sed -n 's/^format=//p' "$snap/meta")
-    have=$(datastore_format "$3") || have=unknown
-    if [ "$want" = unknown ] || [ "$have" = unknown ] || [ "$want" = "$have" ]; then
-        echo "melissa-host-update: k3s datastore kept ($have, ${2:0:12} needs $want)"
+    snap=$SNAPSHOTS/$2
+    if [ -z "$2" ] || [ ! -d "$snap" ] || [ ! -r "$snap/meta" ]; then
+        echo "melissa-host-update: no datastore snapshot from this update (${2:-none}): datastore kept"
         return 0
     fi
-    dir=$(k3s_server_dir) || { echo "melissa-host-update: no volume $VOLUME, datastore not restored" >&2; return 1; }
-    echo "melissa-host-update: ${3:0:12} left the datastore as $have, ${2:0:12} needs $want: restoring $snap"
-    act "$1" restore "$4"
-    systemctl stop "$UNIT" || return 1
-    keep=$snap/replaced-$(date -u +%Y%m%dT%H%M%SZ)
-    ( umask 077; mkdir -p "$keep" ) || return 1
-    if [ -e "$dir/db" ]; then mv "$dir/db" "$keep/db" || return 1; fi
-    if [ -e "$dir/cred" ]; then cp -a "$dir/cred" "$keep/cred" || return 1; fi
-    cp -a "$snap/db" "$dir/db" || return 1
-    # The keys that go with that datastore (the Secrets encryption key and its rotation state).
-    if [ -d "$snap/cred" ] && [ -d "$dir/cred" ]; then
-        rm -f "$dir/cred/encryption-config.json" "$dir/cred/encryption-state.json"
-        for f in "$snap/cred/encryption-config.json" "$snap/cred/encryption-state.json"; do
-            if [ -e "$f" ]; then cp -a "$f" "$dir/cred/" || return 1; fi
-        done
+    if [ "$(meta "$snap" image)" != "$3" ] || [ "$(meta "$snap" to_image)" != "$4" ]; then
+        echo "melissa-host-update: snapshot $2 is not of ${3:0:12} -> ${4:0:12}: datastore kept"
+        return 0
     fi
-    RESTORED="; k3s's datastore restored from before the update (${snap##*/})"
+    want=$(meta "$snap" format); have=$(meta "$snap" to_format)
+    if [ -z "$want" ] || [ "$want" = unknown ] || [ -z "$have" ] || [ "$have" = unknown ] || [ "$want" = "$have" ]; then
+        echo "melissa-host-update: k3s datastore kept (${have:-unknown}, ${3:0:12} needs ${want:-unknown})"
+        return 0
+    fi
+    dir=$(k3s_server_dir) || { RESTORED="; datastore not restored: no volume $VOLUME"; return 1; }
+    live=$(datastore_id "$dir")
+    if [ -z "$live" ] || [ "$live" != "$(meta "$snap" datastore)" ]; then
+        RESTORED="; datastore not restored: it is not the one snapshot $2 came from (a factory reset since?)"
+        echo "melissa-host-update${RESTORED#;}" >&2
+        return 1
+    fi
+    need=$(du -sb "$snap/db" | awk '{ print $1 + 0 }')
+    free=$(df -PB1 "$dir" | awk 'NR == 2 { print $4 }')
+    if [ "$(( need * 2 ))" -gt "${free:-0}" ]; then
+        RESTORED="; datastore not restored: not enough disk space ($(( need / 1048576 )) MiB, twice that needed)"
+        return 1
+    fi
+    echo "melissa-host-update: ${4:0:12} left the datastore as $have, ${3:0:12} needs $want: restoring $snap"
+    act "$1" restore "$5"
+    systemctl stop "$UNIT" || { RESTORED="; datastore not restored: could not stop Melissa"; return 1; }
+    keep=$snap/replaced-$(date -u +%Y%m%dT%H%M%SZ)
+    # Stage: nothing live changes yet.
+    unstage() { rm -rf "$dir/db.restore"; for k in $KEYS; do rm -f "$dir/cred/$k.restore"; done; }
+    unstage
+    if ! { ( umask 077; mkdir -p "$keep/cred" ) \
+        && { [ ! -d "$dir/cred" ] || cp -a "$dir/cred/." "$keep/cred/"; } \
+        && cp -a "$snap/db" "$dir/db.restore" && stage_keys "$snap" "$dir"; }; then
+        unstage
+        RESTORED="; datastore not restored: could not stage the snapshot (the datastore is as it was)"
+        return 1
+    fi
+    # Swap (renames on one filesystem). The keys first: put back from $keep/cred on failure. The
+    # record lets `resume` undo a swap a crash cut off.
+    printf '%s\n%s\n' "$dir" "$keep" | keep restore-swap
+    if ! swap_in "$dir" "$keep"; then
+        if swap_back "$dir" "$keep"; then
+            rm -f "$STATE/restore-swap"; unstage
+            RESTORED="; datastore not restored: the swap failed and was undone (the datastore is as it was)"
+            return 1
+        fi
+        RESTORED="; RESTORING K3S'S DATASTORE FAILED HALF WAY: its state is unknown; Melissa is left stopped (copies in $keep and $snap)"
+        return 2
+    fi
+    rm -f "$STATE/restore-swap"
+    # The replaced datastore off the volume, beside the snapshot (a copy across filesystems).
+    if cp -a "$dir/db.replaced" "$keep/db"; then rm -rf "$dir/db.replaced"; fi
+    RESTORED="; k3s's datastore restored from before the update ($2)"
     return 0
+}
+
+stage_keys() { # stage_keys <snapshot dir> <server dir>
+    local k
+    for k in $KEYS; do
+        if [ -e "$1/cred/$k" ]; then cp -a "$1/cred/$k" "$2/cred/$k.restore" || return 1; fi
+    done
+}
+
+# swap_in <server dir> <keep dir>: the staged keys and datastore in place of the live ones.
+swap_in() {
+    local k
+    for k in $KEYS; do
+        if [ -e "$1/cred/$k.restore" ]; then mv -f "$1/cred/$k.restore" "$1/cred/$k" || return 1
+        else rm -f "$1/cred/$k" || return 1; fi
+    done
+    rm -rf "$1/db.replaced"
+    if [ -e "$1/db" ]; then mv "$1/db" "$1/db.replaced" || return 1; fi
+    mv "$1/db.restore" "$1/db"
+}
+
+# swap_back <server dir> <keep dir>: undo a partial swap_in (the keys from the copy, the datastore by
+# rename).
+swap_back() {
+    local k
+    for k in $KEYS; do
+        rm -f "$1/cred/$k"
+        if [ -e "$2/cred/$k" ]; then cp -a "$2/cred/$k" "$1/cred/$k" || return 1; fi
+    done
+    if [ -e "$1/db.replaced" ]; then
+        if [ -e "$1/db" ]; then rm -rf "$1/db" || return 1; fi
+        mv "$1/db.replaced" "$1/db" || return 1
+    fi
+    [ -e "$1/db" ]
+}
+
+# A restore that failed half way: say so in status.json (datastore_error) and last.json, leave Melissa
+# stopped. Updates and rollbacks refuse until the owner has looked and removed $STATE/datastore-error.
+datastore_broken() { # datastore_broken <action> <message> [version]
+    printf '%s\n' "$(clean "$2" 400)" | keep datastore-error
+    unmark; act_done; status
+    last "$1" false datastore "$2" "${3:-}"
+    echo "melissa-host-update: $2" >&2
+}
+datastore_blocked() { # datastore_blocked <action>: refuse while a failed restore waits for the owner
+    [ -e "$STATE/datastore-error" ] || return 1
+    last "$1" false datastore "k3s's datastore needs attention first: $(head -c 300 "$STATE/datastore-error")"
+}
+
+# A swap a crash cut off (resume): put the original datastore and keys back. 1 if that fails too.
+recover_swap() {
+    local dir keep
+    [ -r "$STATE/restore-swap" ] || return 0
+    { read -r dir; read -r keep; } < "$STATE/restore-swap"
+    echo "melissa-host-update: undoing a datastore restore that was cut off"
+    if [ -n "$dir" ] && [ -n "$keep" ] && swap_back "$dir" "$keep"; then
+        rm -rf "$dir/db.restore"; rm -f "$STATE/restore-swap"; return 0
+    fi
+    return 1
 }
 
 # --- Switching images -----------------------------------------------------------------------------
@@ -438,12 +553,16 @@ restart_unit() {
     return "$rc"
 }
 
-mark() { printf '%s\n' "$@" | keep in-progress; } # mark <mode> <old id> <new id> <old version> <new version>
+# mark <mode> <old id> <new id> <old version> <new version> [snapshot name]
+mark() { printf '%s\n' "$@" | keep in-progress; }
 unmark() { rm -f "$STATE/in-progress"; }
 
-# update_done <mode> <old id> <new id> <old version> <new version>: the new image runs and answers.
+# update_done <mode> <old id> <new id> <old version> <new version> [snapshot name]: the new image runs
+# and answers. The snapshot this update took is the one a rollback to the old image may restore.
 update_done() {
     rm -f "$STATE/available.json" "$STATE/held.json"
+    if [ -n "${6:-}" ] && [ -d "$SNAPSHOTS/$6" ]; then printf '%s %s\n' "$2" "$6" | keep rollback-snapshot
+    else rm -f "$STATE/rollback-snapshot"; fi
     printf '{"from":"%s","from_revision":"%s","to":"%s","to_revision":"%s","at":%s}\n' \
         "$(clean "$4" 64)" "$(clean "$(label "$2" org.opencontainers.image.revision)" 64)" \
         "$(clean "$5" 64)" "$(clean "$(label "$3" org.opencontainers.image.revision)" 64)" \
@@ -451,12 +570,18 @@ update_done() {
     unmark; act_done; status; last "$1" true updated "running ${3:0:12}" "$5"
 }
 
-# update_undo <mode> <old id> <new id> <old version> <new version> <ref> <why>: the new image did
-# not come up; hold it, put the old one back under the name and restart on it.
+# update_undo <mode> <old id> <new id> <old version> <new version> <ref> <why> [snapshot name]: the
+# new image did not come up; hold it, put the old one back under the name (and the datastore this
+# update's snapshot holds, if the formats differ) and restart on it.
 update_undo() {
+    local rc=0
     hold "$3" failed "$7"
     podman tag "$2" "$6"
-    restore_if_needed rollback "$2" "$3" "$4" || RESTORED="; restoring k3s's datastore failed (see the journal)"
+    restore_if_needed rollback "${8:-}" "$2" "$3" "$4" || rc=$?
+    if [ "$rc" = 2 ]; then
+        datastore_broken "$1" "the new image (${3:0:12}) did not start$RESTORED" "$5"
+        return 1
+    fi
     restart_unit rollback restart "$4"
     wait_up "$2" rollback "$4" || true
     unmark; act_done; status
@@ -465,7 +590,7 @@ update_undo() {
 
 # rollback_done <old id> <new id> <old version> <new version>: back on the previous image.
 rollback_done() {
-    rm -f "$STATE/available.json" "$STATE/updated.json"
+    rm -f "$STATE/available.json" "$STATE/updated.json" "$STATE/rollback-snapshot"
     unmark; act_done; status; last rollback true rolled_back "running ${2:0:12}$RESTORED" "$4"
 }
 
@@ -483,16 +608,21 @@ rollback_undo() {
 # Finish what a cut-off update or rollback left: if the new image runs, check it as the action would
 # have; otherwise go back to the old one.
 resume() {
-    local mode old new from to r cur
+    local mode old new from to snap r cur
     lock -w 3600 || return 1
+    if ! recover_swap; then
+        datastore_broken resume "a datastore restore was cut off and could not be undone; Melissa is left stopped (see $STATE/restore-swap)"
+        return 1
+    fi
     [ -r "$STATE/in-progress" ] || return 0
-    { read -r mode; read -r old; read -r new; read -r from; read -r to; } < "$STATE/in-progress"
+    snap=
+    { read -r mode; read -r old; read -r new; read -r from; read -r to; read -r snap; } < "$STATE/in-progress"
     case "$mode" in apply|auto|rollback) ;; *) unmark; return 0 ;; esac
     r=$(ref); cur=$(running_id || true)
     echo "melissa-host-update: finishing a $mode that was cut off (${old:0:12} -> ${new:0:12})"
     if [ -n "$new" ] && [ "$cur" = "$new" ] && wait_up "$new" "$mode" "$to"; then
         if [ "$mode" = rollback ]; then rollback_done "$old" "$new" "$from" "$to"
-        else update_done "$mode" "$old" "$new" "$from" "$to"; fi
+        else update_done "$mode" "$old" "$new" "$from" "$to" "$snap"; fi
         return 0
     fi
     if [ -n "$old" ] && [ "$cur" = "$old" ]; then
@@ -506,7 +636,7 @@ resume() {
     [ -n "$old" ] || { unmark; act_done; status; return 1; }
     if [ "$mode" = rollback ]; then rollback_undo "$old" "$new" "$from" "$to" "$r"
     else update_undo "$mode" "$old" "$new" "$from" "$to" "$r" \
-        "Melissa did not answer after the update was cut off (a restart or a crash)"; fi
+        "Melissa did not answer after the update was cut off (a restart or a crash)" "$snap"; fi
     return 1
 }
 
@@ -573,7 +703,7 @@ pull() {
 # update <apply|auto>: download what the tag points to, restart on it, wait for the server, and go
 # back if it does not come up (the version is then held: automatic updates skip it).
 update() {
-    local mode=$1 r cur new from to
+    local mode=$1 r cur new from to snap
     lock -w 3600 || { last "$mode" false busy "another update is running"; return 1; }
     r=$(ref); cur=$(running_id) || { last "$mode" false not_running "Melissa is not running"; return 1; }
     from=$(label "$cur" org.opencontainers.image.version)
@@ -606,9 +736,12 @@ update() {
         act_done; status; last "$mode" true up_to_date "already up to date"; return 0
     fi
     to=$(label "$new" org.opencontainers.image.version)
-    mark "$mode" "$cur" "$new" "$from" "$to"
+    datastore_blocked "$mode" && { act_done; status; return 1; }
+    # This update's snapshot, named in the marker: a cut-off update undoes with this one or none.
+    snap=$(snapshot_name "$cur")
+    mark "$mode" "$cur" "$new" "$from" "$to" "$snap"
     # The datastore as the running image left it (stops Melissa for the copy; the restart starts her).
-    if ! snapshot "$mode" "$cur" "$from"; then
+    if ! snapshot "$mode" "$cur" "$from" "$new" "$snap"; then
         # The name points at the new image since the pull: back to the one that ran, then start.
         podman tag "$cur" "$r"
         systemctl start "$UNIT"
@@ -620,11 +753,11 @@ update() {
     echo "melissa-host-update: restarting Melissa on ${new:0:12} (was ${cur:0:12})"
     restart_unit "$mode" restart "$to"
     if wait_up "$new" "$mode" "$to"; then
-        update_done "$mode" "$cur" "$new" "$from" "$to"
+        update_done "$mode" "$cur" "$new" "$from" "$to" "$snap"
         return 0
     fi
     update_undo "$mode" "$cur" "$new" "$from" "$to" "$r" \
-        "Melissa did not answer within $((START_WAIT / 60)) minutes after the restart"
+        "Melissa did not answer within $((START_WAIT / 60)) minutes after the restart" "$snap"
     return 1
 }
 
@@ -635,8 +768,9 @@ auto() {
 }
 
 rollback() {
-    local r cur prev to from
+    local r cur prev to from snap='' id name rc=0
     lock -w 3600 || { last rollback false busy "another update is running"; return 1; }
+    datastore_blocked rollback && { status; return 1; }
     r=$(ref); cur=$(running_id || true)
     prev=$(image_id "$PREVIOUS" || true)
     if [ -z "$prev" ] || [ "$prev" = "$cur" ]; then
@@ -644,13 +778,20 @@ rollback() {
     fi
     to=$(label "$prev" org.opencontainers.image.version)
     from=$(label "$cur" org.opencontainers.image.version)
+    # The snapshot the update from the previous image took (update_done recorded it).
+    if [ -r "$STATE/rollback-snapshot" ]; then
+        read -r id name < "$STATE/rollback-snapshot"
+        [ "$id" = "$prev" ] && snap=$name
+    fi
     act rollback restart "$to"
     mark rollback "$cur" "$prev" "$from" "$to"
     [ -n "$cur" ] && hold "$cur" rolled_back
     podman tag "$prev" "$r"
     RESTORED=
-    if [ -n "$cur" ] && ! restore_if_needed rollback "$prev" "$cur" "$to"; then
-        RESTORED="; restoring k3s's datastore failed (see the journal)"
+    if [ -n "$cur" ]; then restore_if_needed rollback "$snap" "$prev" "$cur" "$to" || rc=$?; fi
+    if [ "$rc" = 2 ]; then
+        datastore_broken rollback "rolling back to ${prev:0:12}$RESTORED" "$to"
+        return 1
     fi
     restart_unit rollback restart "$to"
     if wait_up "$prev" rollback "$to"; then
@@ -706,6 +847,13 @@ auto_mode() { # what AUTO_UPDATE is when on, for this image
 
 # --- Requests from the server ---------------------------------------------------------------------
 
+# Delete the datastore snapshots (a factory reset: they hold the old data and its Secrets key).
+forget_snapshots() {
+    lock -w 3600 || return 1
+    rm -rf -- "$SNAPSHOTS" "$STATE/rollback-snapshot"
+    echo "melissa-host-update: datastore snapshots deleted (factory reset)"
+}
+
 requests() {
     local verb todo=() seen=() f n setting=no
     [ -d "$REQUESTS" ] || return 0
@@ -725,6 +873,8 @@ requests() {
         n=${f#schedule-}
         if valid_schedule "$n"; then SCHEDULE=$n; setting=yes; fi
     done
+    # forget-snapshots: a factory reset inside removed the datastore these copies are of.
+    if has forget-snapshots; then todo+=(forget_snapshots); fi
     for verb in check apply rollback; do
         if has "$verb"; then todo+=("$verb"); fi
     done
@@ -743,6 +893,7 @@ requests() {
 
 load_env
 mkdir -p "$STATUS"
+helper_file 2>/dev/null || true
 case "${1:-}" in
 status) status; if [ "$(id -u)" = 0 ]; then resume_later; fi ;;
 check|requests)

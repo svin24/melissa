@@ -576,12 +576,32 @@ pub fn run_with(
     if let Err(e) = write_audit_line(&root, &marker) {
         say(&format!("factory reset: audit line not written: {e}"));
     }
+    if let Err(e) = ask_host_to_forget_snapshots(&root) {
+        say(&format!(
+            "factory reset: the host's datastore snapshots stay ({e}); a rollback refuses them"
+        ));
+    }
     remove_marker(&marker_path)?;
     if let Err(e) = host.start_units(START) {
         say(&format!("factory reset: starting Melissa again: {e}"));
     }
     say("factory reset: done; Melissa starts unclaimed");
     Ok(Outcome::Done)
+}
+
+/// The host helper's request directory (container only) and the request that deletes its copies
+/// of k3s's datastore (`melissa-host-update`, taken before each update): they hold the data and the
+/// Secrets key this reset removed. An empty file with a fixed name, like Settings → Updates' requests.
+pub const UPDATE_REQUEST_DIR: &str = "/run/melissa-update-request";
+pub const FORGET_SNAPSHOTS: &str = "forget-snapshots";
+
+/// Place the [`FORGET_SNAPSHOTS`] request where the host helper is (nothing to do without it).
+fn ask_host_to_forget_snapshots(root: &Path) -> Result<(), String> {
+    let dir = at(root, UPDATE_REQUEST_DIR);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::write(dir.join(FORGET_SNAPSHOTS), b"").map_err(|e| e.to_string())
 }
 
 /// Record `step` if it is further than the marker says.
