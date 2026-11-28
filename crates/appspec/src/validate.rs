@@ -495,6 +495,9 @@ impl AppSpec {
         if let Some(n) = &self.network {
             n.validate_for("")?;
         }
+        if let Some(b) = &self.backup {
+            b.validate(self)?;
+        }
         if self.to_text().len() > MAX_SPEC_BYTES {
             return Err(err(
                 "spec",

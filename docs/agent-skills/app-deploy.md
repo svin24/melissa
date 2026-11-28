@@ -53,7 +53,11 @@ produces locked-down objects) and the admission policies, never the prompt.
                                                     // network | developer | other (default)
   "isolation": "gvisor",                            // gvisor (default) | standard; see "Isolation"
   "network": {"internet": true, "lan": false,       // what it may reach (all off if absent), see
-              "links": [{"app": "postgres", "port": "db"}]} // "Network" below
+              "links": [{"app": "postgres", "port": "db"}]}, // "Network" below
+  "backup": {"mode": "dump",                        // dump | stop (default) | live | skip; see "Backups"
+             "dump": {"container": "db", "command": ["pg_dumpall", "-U", "postgres"], "file": "db.sql"},
+             "restore": {"container": "db", "command": ["psql", "-U", "postgres", "-d", "postgres"], "stdin": "db.sql"},
+             "exclude": ["pgdata", "data/cache"]}   // "<volume>" or "<volume>/<path>"
 }
 ```
 Limits: 6 public ports (web included), 16 ports, 8 volumes, 16 secrets, 128 KiB stored spec,
@@ -227,6 +231,32 @@ things (game servers fetching their jar, package mirrors, updates, external APIs
 broker in another app (a sidecar in the same pod needs nothing), `lan` only for apps that talk to devices at
 home (Home Assistant, a media server's DLNA). The owner sees it on the card. Ask with `set_app_network` when an
 app turns out to need more (`app_logs` shows DNS working but connections timing out).
+
+## Backups (2026-11-28, `crates/appspec/src/backup.rs`, docs/design/BACKUPS-2026-11-28.md)
+Every app is backed up (weekly by default) by root's `melissa-backup.service`: its spec, workspace
+labels, the values of its generated Secrets and its volumes' data. The spec's optional `backup` field
+says how its data is made consistent; the user sees it in the confirmation (`backup: ...`).
+- `stop` (also when there is no `backup` field): scaled to 0, volumes copied, scaled back. Always
+  consistent, a short break each run.
+- `dump`: `dump.command` runs in `dump.container` (argv, like `app_exec`; `["sh", "-c", ...]` only if
+  the image has a shell) and its stdout is stored as `dump.file`; then the volumes are copied live
+  without `exclude`. On a restore the volumes come back, the app starts, and `restore.command` gets the
+  dump on stdin (`restore.stdin` must be `dump.file`). Without `restore` the dump is only a step before
+  the copy (Redis's BGSAVE). A stopped app is copied as it is (no dump, excludes of whole volumes
+  ignored).
+- `live`: copied while running (apps whose files are always consistent: static sites, media).
+- `skip`: no volume data (caches, scratch); spec and secrets still.
+- `exclude`: `<volume>` (all of it) or `<volume>/<path>` (plain path parts), not copied: a database's
+  own files when the dump covers them, caches, thumbnails.
+
+Agent guidance: `deploy_app`/`update_app` answer with `backup` when the spec has none: for a known
+database image (postgres, postgis, pgvector, timescaledb, mariadb, mysql, redis, valkey) a
+`suggestion` from the catalogue (`known_dumps()`; a SQLite template too) to add with `update_app`
+after checking it fits the image (user names, password variables). For any other app that keeps data
+in a database or has its own export command, **research its documented backup method** (its docs'
+"backup" page, its CLI) and propose a `backup` field; otherwise leave it out (stop is safe). Never put a
+secret's value in a command: use the container's environment (`"$MARIADB_ROOT_PASSWORD"` under `sh
+-c`). Agents have no backup tools: running, restoring and the drive are the owner's (Settings, later).
 
 ## Tools and labels
 | tool | labels | notes |

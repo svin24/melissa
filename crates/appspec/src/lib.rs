@@ -16,8 +16,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod backup;
 mod validate;
 
+pub use backup::{Backup, BackupMode, DumpHook, RestoreHook};
 pub use validate::{normalize_image, ImageRef};
 
 /// Default domain for app ingress hosts (`<app>.<domain>`); `home.arpa` is reserved for home
@@ -112,6 +114,10 @@ pub struct AppSpec {
     /// change of the default never moves a deployed app ([`AppSpec::isolation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<Isolation>,
+    /// How the app's data is backed up (2026-11-28, [`backup`]). Absent: the app is stopped
+    /// briefly while its volumes are copied ([`AppSpec::backup_mode`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<Backup>,
 }
 
 /// Most links one app may declare.
@@ -702,7 +708,15 @@ impl AppSpec {
         }
         out.push(format!("may reach: {}", self.network_or_default().words()));
         out.push(format!("isolation: {}", self.isolation().describe()));
+        if let Some(b) = &self.backup {
+            out.push(format!("backup: {}", b.words()));
+        }
         out
+    }
+
+    /// How backups copy the app's data: the spec's `backup.mode`, else [`BackupMode::Stop`].
+    pub fn backup_mode(&self) -> BackupMode {
+        self.backup.as_ref().map_or(BackupMode::Stop, |b| b.mode)
     }
 
     /// The network permissions, defaults filled in.

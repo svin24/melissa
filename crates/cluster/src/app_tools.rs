@@ -761,9 +761,39 @@ macro_rules! spec_help {
     updates, external APIs), lan? (devices on the home network), links? [{app, port?}] (other \
     apps on this device it connects to, e.g. a database app; port = their port name, absent = \
     all)}: apps reach none of that by default; declare only what the app needs, the owner sees \
-    and approves it (set_app_network changes it later without a restart). Containers share \
-    one pod: a database sidecar is at localhost."
+    and approves it (set_app_network changes it later without a restart), backup? {mode: \
+    dump|stop|live|skip, dump? {container, command, file}, restore? {container, command, \
+    stdin: the dump file}, exclude? [\"<volume>\" or \"<volume>/<path>\"]} (how backups copy \
+    the app's data; absent: stopped briefly; databases: dump with their own tool). Containers \
+    share one pod: a database sidecar is at localhost."
     };
+}
+
+/// For a spec without a `backup` field: the catalogue's hook for a database it knows, or a
+/// reminder that backups stop the app (docs/agent-skills/app-deploy.md, "Backups").
+fn backup_advice(spec: &AppSpec) -> Option<Value> {
+    if spec.backup.is_some() {
+        return None;
+    }
+    Some(match melissa_appspec::backup::suggest(spec) {
+        Some(s) => json!({
+            "mode": "stop",
+            "suggestion": s.backup,
+            "why": s.why,
+            "note": format!(
+                "no `backup` field: each backup stops the app briefly. Suggested: the \
+                 `suggestion` as the spec's `backup` field (update_app), after checking it fits \
+                 this image ({})",
+                s.note
+            ),
+        }),
+        None => json!({
+            "mode": "stop",
+            "note": "no `backup` field: each backup stops the app briefly. If the app has its \
+                     own dump or export command (a database, an app's backup CLI), research it \
+                     and add a `backup` field with update_app",
+        }),
+    })
 }
 
 /// The shared deploy path of `deploy_app` and `update_app`.
@@ -1280,6 +1310,9 @@ impl Deployer {
                 })
             })
             .collect();
+        if let Some(advice) = backup_advice(&spec) {
+            out["backup"] = advice;
+        }
         merge(&mut out, checked_links(&self.settings, &app, &ports).await);
         Ok(out)
     }
