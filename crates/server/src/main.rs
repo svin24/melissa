@@ -97,6 +97,25 @@ const AGENT_PROMPT: &str = include_str!("../prompts/agent.md");
 /// Set by install.sh in the Quadlet: the web UI's port on the host (UI_PORT). Unset: the
 /// port of `listen` (a server running on the host itself).
 const UI_PORT_ENV: &str = "MELISSA_UI_PORT";
+/// Set by install.sh in the Quadlet: the host address the web UI is published on (UI_BIND).
+/// Unset: the server runs on the host itself (`listen` is loopback).
+const UI_BIND_ENV: &str = "MELISSA_UI_BIND";
+
+/// Whether the main listener may believe `X-Forwarded-*`: only when asked to (`[web]
+/// trust_forwarded`) and the UI isn't published beyond loopback (`ui_bind`, the container's
+/// UI_BIND). A bind that isn't a loopback IP or `localhost` counts as wider.
+fn trust_main_listener(trust_forwarded: bool, ui_bind: Option<&str>) -> bool {
+    let wide = ui_bind.map(str::trim).is_some_and(|b| {
+        !b.is_empty()
+            && b != "localhost"
+            && !b
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    trust_forwarded && !wide
+}
 
 const USAGE: &str = "usage: melissa-server [--config <path>] [COMMAND]
   (none)                      serve the web UI, the lead agent and agents
@@ -1127,12 +1146,20 @@ async fn serve(
     }
     // HTTPS from other devices (DECISIONS 2026-11-28; `melissa_web::front`). With Melissa's
     // own Tailscale, a second loopback listener is `tailscale serve`'s target and the only
-    // one that believes X-Forwarded-*; the main one then believes nothing. Otherwise the
-    // host may run `tailscale serve` in front of the main listener (as the docs said before):
-    // it keeps believing its HTTPS proxy unless `[web] trust_forwarded = false`.
+    // one that believes X-Forwarded-*. The main one believes them only with `[web]
+    // trust_forwarded` (install.sh: the host's own `tailscale serve` in front of it), and
+    // never when the container publishes the UI beyond loopback: every connection through
+    // that forward comes from 127.0.0.1, so anyone on the LAN could pick their own address.
     let ts = start.tailscale;
     let own_ts = ts.management() == Management::Melissa;
-    let trust_main = config.web.trust_forwarded.unwrap_or(!own_ts);
+    let ui_bind = std::env::var(UI_BIND_ENV).ok();
+    let trust_main = trust_main_listener(config.web.trust_forwarded, ui_bind.as_deref());
+    if config.web.trust_forwarded && !trust_main {
+        tracing::warn!(
+            ui_bind = ui_bind.as_deref().unwrap_or(""),
+            "[web] trust_forwarded ignored: the web UI is published beyond loopback"
+        );
+    }
     if own_ts {
         match tokio::net::TcpListener::bind(config.web.proxy_listen).await {
             Ok(proxy) => {
@@ -1484,6 +1511,21 @@ mod tests {
 
     fn parse(args: &[&str]) -> anyhow::Result<(Option<PathBuf>, Command)> {
         parse_args(args.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Forwarded headers on the main listener: only when asked, and never with the UI
+    /// published beyond loopback (security review 2026-11-28, S1).
+    #[test]
+    fn the_main_listener_trusts_a_proxy_only_on_loopback() {
+        assert!(!trust_main_listener(false, None), "off by default");
+        assert!(trust_main_listener(true, None), "a server on the host");
+        for bind in ["127.0.0.1", "::1", "[::1]", "localhost", " 127.0.0.2 ", ""] {
+            assert!(trust_main_listener(true, Some(bind)), "{bind:?}");
+        }
+        for bind in ["0.0.0.0", "192.0.2.7", "::", "box.example.com"] {
+            assert!(!trust_main_listener(true, Some(bind)), "{bind:?}");
+            assert!(!trust_main_listener(false, Some(bind)), "{bind:?}");
+        }
     }
 
     /// "Turn it off" must never become an uninstall (owner's test, 2026-11-19).

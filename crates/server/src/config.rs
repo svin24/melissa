@@ -56,9 +56,11 @@ pub struct WebSection {
     /// from `listen`.
     pub proxy_listen: SocketAddr,
     /// Believe `X-Forwarded-*` on `listen` too: an HTTPS proxy on this computer forwards to it
-    /// (the host's own `tailscale serve`, as the docs said before Melissa served HTTPS
-    /// herself). Unset: yes unless Melissa runs Tailscale herself (then no).
-    pub trust_forwarded: Option<bool>,
+    /// (the host's own `tailscale serve`). Off by default: anything that reaches `listen`
+    /// could then pick its own client address and dodge the sign-in limits. install.sh turns
+    /// it on only when the host runs Tailscale and the UI stays on loopback; the server
+    /// ignores it when the container publishes the UI beyond loopback (`MELISSA_UI_BIND`).
+    pub trust_forwarded: bool,
     /// More host names the web UI answers to besides loopback and this device's MagicDNS
     /// name (e.g. a name your own HTTPS proxy uses). Sign-in still needs HTTPS or loopback.
     pub hosts: Vec<String>,
@@ -68,7 +70,7 @@ impl Default for WebSection {
     fn default() -> Self {
         Self {
             proxy_listen: SocketAddr::from(([127, 0, 0, 1], 8082)),
-            trust_forwarded: None,
+            trust_forwarded: false,
             hosts: Vec::new(),
         }
     }
@@ -795,13 +797,14 @@ mod tests {
     fn web_section() {
         let d = ServerConfig::default();
         assert_eq!(d.web.proxy_listen.to_string(), "127.0.0.1:8082");
-        assert_eq!(d.web.trust_forwarded, None, "decided by who runs Tailscale");
+        assert!(!d.web.trust_forwarded, "off unless asked for");
         assert!(d.validate().is_ok());
         let c: ServerConfig = toml::from_str(
-            "[web]\ntrust_forwarded = false\nhosts = [\"box.example.com\", \"192.0.2.7\"]",
+            "[web]\ntrust_forwarded = true\nhosts = [\"box.example.com\", \"192.0.2.7\"]",
         )
         .unwrap();
         assert!(c.validate().is_ok());
+        assert!(c.web.trust_forwarded);
         for bad in [
             "[web]\nproxy_listen = \"0.0.0.0:8082\"",
             "[web]\nproxy_listen = \"127.0.0.1:8080\"",

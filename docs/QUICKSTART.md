@@ -107,7 +107,15 @@ publishes the UI to your tailnet with a Tailscale certificate:
 sudo tailscale serve --bg http://127.0.0.1:8080
 ```
 It is then at `https://<host>.example-tailnet.ts.net` (your tailnet's name instead of `example-tailnet`);
-`sudo tailscale serve reset` turns it off. An existing `--https=8443` setup keeps working.
+`sudo tailscale serve reset` turns it off. An existing `--https=8443` setup keeps working. Melissa must
+believe that proxy: the container's install.sh sets `[web] trust_forwarded = true` in server.toml (run it
+again after updating from an older version); on NixOS set `services.melissa.settings.web.trust_forwarded =
+true`, elsewhere add it under `[web]` in server.toml. (With it on, other users of the host who reach the UI's
+port can claim any client address to the sign-in limits; the per-username limit still holds.)
+
+**Plain HTTP on the LAN** (`UI_BIND` wider than loopback): pages load if the name is in `[web] hosts`, but
+signing in from another device over plain HTTP is refused, since the password would cross the network
+readable. Use Tailscale or SSH as above; HTTPS on the LAN itself comes later.
 
 Everyone who can reach that address on your tailnet sees the sign-in page; only people with an account
 (the owner and the members they invite) get further. Restricting who can reach the host on that port with

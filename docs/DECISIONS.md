@@ -2092,7 +2092,9 @@ everywhere modern hardware is"); nothing else. Why: "modern Linux devices with m
   are shown and audited, never used to sign in; agents see the serve state read-only; audit events
   `tailscale.serve_on`/`tailscale.serve_off`. Apps are never served over HTTPS on the UI hostname (HSTS),
   so app links drop the MagicDNS name while serve is on. Existing users of the host's `tailscale serve` keep
-  working (`[web] trust_forwarded`, on by default unless Melissa runs Tailscale). Why: HTTPS with a publicly
+  working (`[web] trust_forwarded`; amended after the security review the same day: off by default,
+  install.sh sets it only for the host's Tailscale with a loopback `UI_BIND`, and the server ignores it when
+  the UI is published beyond loopback). Why: HTTPS with a publicly
   trusted certificate and no CA to install, on a network only the owner's devices reach. Alternatives: a
   local CA on the LAN (phase 2: root-held, name-constrained, `<host>.local` on 7383; Q22), Funnel (public,
   rejected), trusting forwarded headers on the main listener (anything on the host could forge them).

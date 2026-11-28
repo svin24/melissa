@@ -179,8 +179,38 @@ eq "melissa.container tells the server the UI port" yes \
     "$(yes_no grep -qx 'Environment=MELISSA_UI_PORT=@UI_PORT@' "$here/melissa.container")"
 eq "the server's unit takes the UI port" yes \
     "$(yes_no grep -qx 'PassEnvironment=MELISSA_UI_PORT' "$here/rootfs/usr/lib/systemd/system/melissa-server.service.d/10-container.conf")"
+eq "melissa.container tells the server the UI bind" yes \
+    "$(yes_no grep -qx 'Environment=MELISSA_UI_BIND=@UI_BIND@' "$here/melissa.container")"
+eq "the server's unit takes the UI bind" yes \
+    "$(yes_no grep -qx 'PassEnvironment=MELISSA_UI_BIND' "$here/rootfs/usr/lib/systemd/system/melissa-server.service.d/10-container.conf")"
+# [web] trust_forwarded: only for the host's tailscale serve in front of a loopback UI.
+UI_BIND=127.0.0.1; eq "host Tailscale, loopback UI: trust the host's serve" yes "$(want_trust)"
+UI_BIND=0.0.0.0; eq "host Tailscale, UI on the LAN: never" no "$(want_trust)"
+UI_BIND=192.0.2.7; eq "host Tailscale, UI on one LAN address: never" no "$(want_trust)"
+UI_BIND=127.0.0.1
+eq "trust: a new [web] section" "[web]
+$TRUST_LINE" "$(printf '' | toml_set_trust yes)"
+eq "trust: appended after [apps]" "[apps]
+port_offset = 0
+
+[web]
+$TRUST_LINE" "$(printf '[apps]\nport_offset = 0\n' | toml_set_trust yes)"
+eq "trust: under an existing [web]" "[web]
+$TRUST_LINE
+hosts = [\"box.example.com\"]" "$(printf '[web]\nhosts = ["box.example.com"]\n' | toml_set_trust yes)"
+eq "trust: the owner's own line is kept" "[web]
+trust_forwarded = false" "$(printf '[web]\ntrust_forwarded = false\n' | toml_set_trust yes)"
+eq "trust: added once" "[web]
+$TRUST_LINE" "$(printf '[web]\n%s\n' "$TRUST_LINE" | toml_set_trust yes)"
+eq "trust: install.sh's line removed" "[web]
+hosts = []" "$(printf '[web]\n%s\nhosts = []\n' "$TRUST_LINE" | toml_set_trust no)"
+eq "trust: no, nothing else changes" "[apps]
+port_offset = 0" "$(printf '[apps]\nport_offset = 0\n' | toml_set_trust no)"
+HOST_TAILSCALE=no
+eq "Melissa's own Tailscale: never trust the main listener" no "$(want_trust)"
 HOST_TAILSCALE=maybe
 eq "a bad HOST_TAILSCALE fails" no "$(yes_no host_tailscale)"
+eq "a bad HOST_TAILSCALE: no trust" no "$(want_trust)"
 HOST_TAILSCALE=auto
 unset -f systemctl
 rm -rf "$tsdir"

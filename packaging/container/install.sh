@@ -263,6 +263,37 @@ toml_set_addresses() {
         }'
 }
 
+# The server believes X-Forwarded-* on its main listener only with [web] trust_forwarded, and
+# install.sh sets that only for the host's own `tailscale serve` in front of a loopback UI. This
+# exact line marks it as install.sh's (removed again when that no longer holds); a
+# trust_forwarded line of the owner's own is never touched.
+TRUST_LINE="trust_forwarded = true # install.sh: the host's tailscale serve (HOST_TAILSCALE=yes, UI_BIND on loopback)"
+
+# want_trust: yes when the host runs Tailscale and the web UI stays on loopback (UI_BIND). With
+# a wider UI_BIND every LAN client arrives through the container's forward as 127.0.0.1 and could
+# pick its own address, so never then (the server ignores it as well).
+want_trust() {
+    if [ "$(host_tailscale 2>/dev/null)" = yes ] && is_loopback "$UI_BIND"; then echo yes; else echo no; fi
+}
+
+# toml_set_trust yes|no: server.toml on stdin, with install.sh's trust_forwarded line under [web]
+# (yes, unless the file has its own) or without it (no).
+toml_set_trust() {
+    awk -v want="$1" -v line="$TRUST_LINE" '
+        $0 == line { next }
+        { buf[n++] = $0 }
+        /^[[:space:]]*trust_forwarded[[:space:]]*=/ { own = 1 }
+        END {
+            add = (want == "yes" && !own)
+            for (i = 0; i < n; i++) {
+                print buf[i]
+                sect = buf[i]; gsub(/[[:space:]]/, "", sect)
+                if (add && sect == "[web]") { print line; add = 0 }
+            }
+            if (add) { if (n) print ""; print "[web]"; print line }
+        }'
+}
+
 # --- AppArmor: Melissa's own profile for its container (apparmor.sh) -------------------------
 # APPARMOR_PROFILE: did install.sh load it (yes: melissa.container runs the container under it,
 # uninstall.sh removes it)? APPARMOR_LINE: the Quadlet line for it (empty: none).
@@ -564,16 +595,41 @@ configure() {
             say "note: /etc/melissa/server.toml has no 'port_offset = $offset' under [apps]; app links name the wrong port"
         fi
         update_addresses "$list"
+        update_trust
         return 0
     fi
     for a in ${list//,/ }; do toml+="${toml:+, }\"$a\""; done
     [ -z "$toml" ] || body+="addresses = [$toml]"$'\n'
     [ "$offset" = 0 ] || body+="port_offset = $offset"$'\n'
-    [ -n "$body" ] || return 0
-    printf '# Written by install.sh: app links use these.\n[apps]\n%s' "$body" \
+    if [ -n "$body" ]; then
+        toml=$(printf '# Written by install.sh: app links use these.\n[apps]\n%s' "$body")
+    else
+        toml=''
+    fi
+    toml=$(printf '%s' "$toml" | toml_set_trust "$(want_trust)")
+    [ -n "$toml" ] || return 0
+    printf '%s\n' "$toml" \
         | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/server.toml'
     podman exec melissa systemctl try-restart melissa-server
-    say "server config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+    [ -z "$body" ] || say "server config: [apps] $(printf '%s' "$body" | paste -sd ' ' -)"
+    [ "$(want_trust)" = no ] || say "server config: [web] trust_forwarded (the host's tailscale serve)"
+}
+
+# An existing server.toml: add or remove install.sh's [web] trust_forwarded line as the host's
+# Tailscale and UI_BIND now say (an install from before 2026-11-28 had it on by default).
+update_trust() {
+    local have want
+    have=$(podman exec melissa cat /etc/melissa/server.toml) || return 0
+    want=$(printf '%s\n' "$have" | toml_set_trust "$(want_trust)")
+    [ "$have" = "$want" ] && return 0
+    printf '%s\n' "$want" \
+        | podman exec -i melissa sh -c 'umask 022; cat > /etc/melissa/server.toml.new && mv /etc/melissa/server.toml.new /etc/melissa/server.toml'
+    podman exec melissa systemctl try-restart melissa-server
+    if [ "$(want_trust)" = yes ]; then
+        say "server config: [web] trust_forwarded on (the host's tailscale serve forwards to the UI)"
+    else
+        say "server config: [web] trust_forwarded removed (UI_BIND=$UI_BIND or the host's Tailscale changed)"
+    fi
 }
 
 # The server.toml from an earlier install keeps its [apps] addresses; rewrite just that key when

@@ -231,13 +231,16 @@ The server checks the host name of every request (against DNS rebinding): `local
 the node's own MagicDNS name, names in `[web] hosts` in server.toml, and `*.ts.net` over HTTPS from the
 host's `tailscale serve`. Other names get "Wrong address". Settings in `[web]`:
 - `trust_forwarded`: believe `X-Forwarded-*` on the main listener (the host's `tailscale serve` in front of
-  it). On by default unless Melissa runs Tailscale herself; set `false` if nothing proxies to the UI.
+  it). Off by default; install.sh sets it when the host runs Tailscale and `UI_BIND` is loopback. Ignored
+  when `UI_BIND` is wider: every LAN client would come in as 127.0.0.1 and could name any address.
 - `hosts`: more names to answer to, e.g. a LAN name with `UI_BIND` wider than loopback (browsing works;
   sign-in still needs HTTPS or this device).
 - `proxy_listen` (127.0.0.1:8082): the listener Melissa's own `tailscale serve` forwards to. Loopback only.
 
-Upgrading: a host `tailscale serve` to the UI port keeps working. Plain-HTTP LAN access (`UI_BIND` not
-loopback) now needs the name in `[web] hosts`, and signing in from there needs one of the ways above.
+Upgrading: a host `tailscale serve` to the UI port needs `[web] trust_forwarded = true`: run install.sh
+again (it adds it), or add it to server.toml by hand. Plain-HTTP LAN access (`UI_BIND` not loopback) now
+needs the name in `[web] hosts` to browse, and signing in over plain HTTP from another device is refused
+(decided 2026-11-28): use one of the ways above until LAN HTTPS comes.
 
 ### Docker on the same host
 Docker sets the iptables `FORWARD` policy to DROP and accepts only its own bridges. An nftables accept
