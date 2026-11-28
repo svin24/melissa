@@ -129,15 +129,15 @@ RUN pkgs=$(sed 's/#.*//' /tmp/packages.txt | xargs) \
  && dnf clean all && rm -rf /tmp/packages.txt /run/dnf /var/cache/* /var/log/dnf* /var/lib/dnf
 
 # k3s (rarely changes): binary + kubectl/crictl/ctr links, LICENSE, airgap images in /usr.
-COPY --from=k3s /out/ /tmp/k3s/
+# Bind-mounted from its stage, not COPYed: a COPY layer plus the install would store k3s twice.
 COPY packaging/common/usr/lib/melissa/k3s.lock /usr/lib/melissa/k3s.lock
-RUN set -eu; . /usr/lib/melissa/k3s.lock; \
+RUN --mount=type=bind,from=k3s,source=/out,target=/tmp/k3s \
+    set -eu; . /usr/lib/melissa/k3s.lock; \
     install -m 0755 /tmp/k3s/k3s /usr/bin/k3s; \
     for link in kubectl crictl ctr; do ln -sf k3s "/usr/bin/$link"; done; \
     install -D -m 0644 /tmp/k3s/LICENSE /usr/share/licenses/k3s/LICENSE; \
     install -D -m 0644 /tmp/k3s/airgap.tar.zst \
-        "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst"; \
-    rm -rf /tmp/k3s
+        "/usr/lib/melissa/k3s/images/k3s-airgap-images-${K3S_VERSION}-amd64.tar.zst"
 
 # Tailscale (rarely changes): Melissa's own, run by melissa-tailscaled.service only when enabled.
 COPY --from=tailscale /out/tailscale /usr/bin/tailscale
